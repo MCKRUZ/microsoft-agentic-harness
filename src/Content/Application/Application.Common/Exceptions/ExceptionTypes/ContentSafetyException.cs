@@ -90,12 +90,16 @@ public sealed class ContentSafetyException : ApplicationExceptionBase
     /// </code>
     /// </example>
     public ContentSafetyException(string reason, string? category)
-        : base(
-            category is not null
-                ? $"Content blocked [{category}]: {reason}"
-                : $"Content blocked: {reason}")
+        : base(FormatMessage(reason, category))
+    {
+        Category = category;
+    }
+
+    private static string FormatMessage(string reason, string? category)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(reason);
-        Category = category;
+        return category is not null
+            ? $"Content blocked [{category}]: {reason}"
+            : $"Content blocked: {reason}";
     }
 }

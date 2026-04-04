@@ -50,6 +50,32 @@ public class AppConfig
     /// Gets or sets the logging infrastructure settings.
     /// </summary>
     public LoggingConfig Logging { get; set; } = new();
+
+    /// <summary>
+    /// Gets or sets the agent execution settings.
+    /// </summary>
+    public AgentConfig Agent { get; set; } = new();
+}
+
+/// <summary>
+/// Configuration for agent execution including timeouts, content safety,
+/// and token budget defaults.
+/// </summary>
+public class AgentConfig
+{
+    /// <summary>
+    /// Gets or sets the default timeout in seconds for MediatR requests.
+    /// Applied by <c>TimeoutBehavior</c> when a request does not specify its own timeout.
+    /// </summary>
+    /// <value>Default: 30 seconds.</value>
+    public int DefaultRequestTimeoutSec { get; set; } = 30;
+
+    /// <summary>
+    /// Gets or sets the default token budget per agent session.
+    /// Applied by <c>TokenBudgetBehavior</c> when no per-agent budget is configured.
+    /// </summary>
+    /// <value>Default: 128,000 tokens.</value>
+    public long DefaultTokenBudget { get; set; } = 128_000;
 }
 
 /// <summary>
