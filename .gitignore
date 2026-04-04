@@ -1,0 +1,46 @@
+## .NET
+bin/
+obj/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Bb]uild/
+bld/
+[Pp]ackages/
+TestResults/
+
+## IDE
+.vs/
+.vscode/
+*.swp
+*~
+
+## User secrets & local config
+CLAUDE.local.md
+appsettings.*.json
+!appsettings.json
+!appsettings.Development.json
+.env*
+secrets/
+
+## OS
+Thumbs.db
+.DS_Store
+
+## Coverage
+coverage/
+*.coverage
+*.coveragexml
+
+## NuGet
+*.nupkg
+.nuget/
+
+## Temp
+*.tmp
+*.log
