@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/Domain/">
+    <Project Path="Content/Domain/Domain.Common/Domain.Common.csproj" />
+  </Folder>
+  <Folder Name="/Application/">
+    <Project Path="Content/Application/Application.Common/Application.Common.csproj" />
+  </Folder>
+</Solution>
