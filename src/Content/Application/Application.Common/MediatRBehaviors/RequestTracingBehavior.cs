@@ -4,14 +4,15 @@ using MediatR;
 namespace Application.Common.MediatRBehaviors;
 
 /// <summary>
-/// Outermost pipeline behavior that wraps each request in an OpenTelemetry
-/// <see cref="Activity"/> span. Replaces both <c>UnhandledExceptionBehavior</c>
-/// (exceptions are recorded on the span) and <c>RequestPerformanceBehavior</c>
-/// (span duration is the timing).
+/// Pipeline behavior that wraps each request in an OpenTelemetry
+/// <see cref="Activity"/> span. Replaces <c>RequestPerformanceBehavior</c>
+/// (span duration is the timing). Works alongside <c>UnhandledExceptionBehavior</c>
+/// which handles structured logging with agent context enrichment.
 /// </summary>
 /// <remarks>
 /// <para>
-/// Pipeline position: 1 (outermost). All other behaviors execute within this span,
+/// Pipeline position: 8 (inner). <c>UnhandledExceptionBehavior</c> is outermost (position 1).
+/// All other behaviors execute within this span,
 /// giving you end-to-end timing, exception recording, and custom tags in a single
 /// trace without redundant Stopwatch or try/catch behaviors.
 /// </para>
