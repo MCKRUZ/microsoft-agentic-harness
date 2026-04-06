@@ -1,5 +1,5 @@
 using System.Collections.Concurrent;
-using Application.Common.Models;
+using Domain.Common.Models;
 using Domain.Common.Config;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;

@@ -1,7 +1,7 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
-using Application.Common.Models;
 using Domain.Common.Config;
+using Domain.Common.Models;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 

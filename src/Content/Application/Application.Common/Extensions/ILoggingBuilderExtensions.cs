@@ -1,5 +1,5 @@
 using Application.Common.Logging;
-using Application.Common.Models;
+using Domain.Common.Models;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
@@ -99,15 +99,15 @@ public static class ILoggingBuilderExtensions
     }
 
     /// <summary>
-    /// Registers the agent-aware console formatter that renders identity prefixes,
-    /// turn boundary markers, and tool invocation indentation. Uses stable colors
-    /// per agent for visual differentiation.
+    /// Registers the execution-aware console formatter that renders identity prefixes,
+    /// step boundary markers, and operation indentation. Uses stable colors
+    /// per executor for visual differentiation.
     /// </summary>
-    public static ILoggingBuilder AddAgentConsoleFormatter(this ILoggingBuilder builder)
+    public static ILoggingBuilder AddExecutionConsoleFormatter(this ILoggingBuilder builder)
     {
-        builder.AddConsoleFormatter<AgentConsoleFormatter, ConsoleFormatterOptions>();
+        builder.AddConsoleFormatter<ExecutionConsoleFormatter, ConsoleFormatterOptions>();
         builder.AddConsole(options =>
-            options.FormatterName = AgentConsoleFormatter.FormatterName);
+            options.FormatterName = ExecutionConsoleFormatter.FormatterName);
 
         return builder;
     }

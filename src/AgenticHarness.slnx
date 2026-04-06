@@ -1,8 +1,10 @@
 <Solution>
   <Folder Name="/Domain/">
     <Project Path="Content/Domain/Domain.Common/Domain.Common.csproj" />
+    <Project Path="Content/Domain/Domain.AI/Domain.AI.csproj" />
   </Folder>
   <Folder Name="/Application/">
     <Project Path="Content/Application/Application.Common/Application.Common.csproj" />
+    <Project Path="Content/Application/Application.AI.Common/Application.AI.Common.csproj" />
   </Folder>
 </Solution>

@@ -27,7 +27,7 @@ public static class IServiceCollectionExtensions
     /// <remarks>
     /// <para>Providers registered:</para>
     /// <list type="bullet">
-    ///   <item><description><strong>AgentConsoleFormatter</strong> — always enabled, identity-aware console output</description></item>
+    ///   <item><description><strong>ExecutionConsoleFormatter</strong> — always enabled, identity-aware console output</description></item>
     ///   <item><description><strong>SimpleConsole</strong> — fallback with timestamps and scopes</description></item>
     ///   <item><description><strong>NamedPipe</strong> — when <c>PipeName</c> is configured</description></item>
     ///   <item><description><strong>FileLogger</strong> — when <c>LogsBasePath</c> is configured</description></item>
@@ -43,8 +43,8 @@ public static class IServiceCollectionExtensions
         {
             builder.ClearProviders();
 
-            // Agent-aware console formatter (always enabled)
-            builder.AddAgentConsoleFormatter();
+            // Execution-aware console formatter (always enabled)
+            builder.AddExecutionConsoleFormatter();
 
             // Fallback simple console for environments that don't support ANSI
             builder.AddSimpleConsole(options =>

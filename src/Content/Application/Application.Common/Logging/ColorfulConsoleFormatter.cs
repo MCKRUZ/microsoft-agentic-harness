@@ -10,9 +10,9 @@ namespace Application.Common.Logging;
 /// log level and logger category.
 /// </summary>
 /// <remarks>
-/// This is the general-purpose console formatter. For agent-aware formatting with
-/// identity prefixes, turn boundaries, and tool indentation, use
-/// <see cref="AgentConsoleFormatter"/> instead.
+/// This is the general-purpose console formatter. For execution-aware formatting with
+/// identity prefixes, step boundaries, and operation indentation, use
+/// <see cref="ExecutionConsoleFormatter"/> instead.
 /// <para>
 /// Register via <c>builder.AddConsole(o =&gt; o.FormatterName = "colorful")</c>
 /// and <c>builder.AddConsoleFormatter&lt;ColorfulConsoleFormatter, ConsoleFormatterOptions&gt;()</c>.
@@ -41,21 +41,21 @@ public sealed class ColorfulConsoleFormatter : ConsoleFormatter
         var shortLevel = LoggingHelper.GetShortLevel(logEntry.LogLevel);
         var shortCategory = LoggingHelper.GetShortCategory(logEntry.Category);
 
-        textWriter.Write(LoggingHelper.AnsiColors.Gray);
+        textWriter.Write(AnsiColors.Gray);
         textWriter.Write(timestamp.ToString("HH:mm:ss.fff"));
-        textWriter.Write(LoggingHelper.AnsiColors.Reset);
+        textWriter.Write(AnsiColors.Reset);
         textWriter.Write(' ');
 
         textWriter.Write(levelColor);
         textWriter.Write(shortLevel);
-        textWriter.Write(LoggingHelper.AnsiColors.Reset);
+        textWriter.Write(AnsiColors.Reset);
         textWriter.Write(' ');
 
-        textWriter.Write(LoggingHelper.AnsiColors.Cyan);
+        textWriter.Write(AnsiColors.Cyan);
         textWriter.Write('[');
         textWriter.Write(shortCategory);
         textWriter.Write(']');
-        textWriter.Write(LoggingHelper.AnsiColors.Reset);
+        textWriter.Write(AnsiColors.Reset);
         textWriter.Write(' ');
 
         WriteScopeInformation(textWriter, scopeProvider);
@@ -65,9 +65,9 @@ public sealed class ColorfulConsoleFormatter : ConsoleFormatter
 
         if (logEntry.Exception is not null)
         {
-            textWriter.Write(LoggingHelper.AnsiColors.Red);
+            textWriter.Write(AnsiColors.Red);
             textWriter.Write(logEntry.Exception.ToString());
-            textWriter.Write(LoggingHelper.AnsiColors.Reset);
+            textWriter.Write(AnsiColors.Reset);
             textWriter.WriteLine();
         }
     }
@@ -82,11 +82,11 @@ public sealed class ColorfulConsoleFormatter : ConsoleFormatter
             if (scope is null)
                 return;
 
-            writer.Write(LoggingHelper.AnsiColors.Gray);
+            writer.Write(AnsiColors.Gray);
             writer.Write("=> ");
             writer.Write(scope);
             writer.Write(' ');
-            writer.Write(LoggingHelper.AnsiColors.Reset);
+            writer.Write(AnsiColors.Reset);
         }, textWriter);
     }
 }

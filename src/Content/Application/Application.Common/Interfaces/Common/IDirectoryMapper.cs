@@ -1,7 +1,7 @@
 namespace Application.Common.Interfaces.Common;
 
 /// <summary>
-/// Resolves well-known directory paths for the agentic harness.
+/// Resolves well-known directory paths for the application.
 /// Abstracts file system layout so that Infrastructure implementations can
 /// vary paths per environment (development vs. container vs. Azure).
 /// </summary>
@@ -12,9 +12,9 @@ namespace Application.Common.Interfaces.Common;
 public interface IDirectoryMapper
 {
     /// <summary>
-    /// Gets the absolute path for a well-known harness directory.
+    /// Gets the absolute path for a well-known application directory.
     /// </summary>
     /// <param name="directory">The directory type to resolve.</param>
     /// <returns>Absolute path guaranteed to exist.</returns>
-    string GetAbsolutePath(HarnessDirectory directory);
+    string GetAbsolutePath(AppDirectory directory);
 }

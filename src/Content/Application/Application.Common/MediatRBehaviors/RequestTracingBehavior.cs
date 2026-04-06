@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Domain.Common.Telemetry;
 using MediatR;
 
 namespace Application.Common.MediatRBehaviors;
@@ -24,7 +25,7 @@ namespace Application.Common.MediatRBehaviors;
 public sealed class RequestTracingBehavior<TRequest, TResponse>
     : IPipelineBehavior<TRequest, TResponse> where TRequest : notnull
 {
-    private static readonly ActivitySource Source = new("AgenticHarness.MediatR");
+    private static readonly ActivitySource Source = new(AppSourceNames.AgenticHarnessMediatR);
 
     /// <inheritdoc />
     public async Task<TResponse> Handle(

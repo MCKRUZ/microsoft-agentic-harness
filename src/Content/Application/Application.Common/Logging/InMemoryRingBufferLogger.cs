@@ -1,4 +1,4 @@
-using Application.Common.Models;
+using Domain.Common.Models;
 using Microsoft.Extensions.Logging;
 
 namespace Application.Common.Logging;
@@ -54,7 +54,7 @@ public sealed class InMemoryRingBufferLogger : ILogger
             return;
 
         var message = formatter(state, exception);
-        var entry = LogEntry.CreateFromScope(logLevel, _category, eventId, message, exception, _scopeProvider);
+        var entry = LogEntryFactory.CreateFromScope(logLevel, _category, eventId, message, exception, _scopeProvider);
 
         _provider.AddEntry(entry);
     }

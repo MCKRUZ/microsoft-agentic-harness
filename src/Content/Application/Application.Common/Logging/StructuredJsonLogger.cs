@@ -8,8 +8,8 @@ namespace Application.Common.Logging;
 /// </summary>
 /// <remarks>
 /// Each log entry becomes a single JSON object on one line (NDJSON/JSONL format),
-/// including all scope properties from <see cref="AgentScopeProvider"/>. This enables
-/// post-hoc querying of agent sessions — filtering by agent, turn, tool, or level
+/// including all scope properties from <see cref="ExecutionScopeProvider"/>. This enables
+/// post-hoc querying of execution sessions — filtering by executor, step, operation, or level
 /// without parsing human-readable log formats.
 /// </remarks>
 public sealed class StructuredJsonLogger : ILogger
@@ -23,7 +23,7 @@ public sealed class StructuredJsonLogger : ILogger
     /// </summary>
     /// <param name="category">The logger category.</param>
     /// <param name="provider">The provider managing JSONL file output.</param>
-    /// <param name="scopeProvider">Optional scope provider for capturing agent context.</param>
+    /// <param name="scopeProvider">Optional scope provider for capturing execution context.</param>
     public StructuredJsonLogger(
         string category,
         StructuredJsonLoggerProvider provider,
@@ -54,7 +54,7 @@ public sealed class StructuredJsonLogger : ILogger
             return;
 
         var message = formatter(state, exception);
-        var agentScope = AgentScopeProvider.GetCurrentAgentScope(_scopeProvider);
+        var executionScope = ExecutionScopeProvider.GetCurrentScope(_scopeProvider);
 
         var entry = new Dictionary<string, object?>
         {
@@ -65,8 +65,8 @@ public sealed class StructuredJsonLogger : ILogger
             ["message"] = message
         };
 
-        if (agentScope is not null)
-            foreach (var (key, value) in agentScope.ToProperties())
+        if (executionScope is not null)
+            foreach (var (key, value) in executionScope.ToProperties())
                 entry[key] = value;
         if (exception is not null)
             entry["exception"] = exception.ToString();

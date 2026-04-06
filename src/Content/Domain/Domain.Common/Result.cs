@@ -75,6 +75,9 @@ public class Result
 
     /// <summary>Creates a content safety failure result.</summary>
     public static Result ContentBlocked(string reason) => new(false, [reason], ResultFailureType.ContentBlocked);
+
+    /// <summary>Creates a not-found failure result.</summary>
+    public static Result NotFound(string reason) => new(false, [reason], ResultFailureType.NotFound);
 }
 
 /// <summary>
@@ -109,6 +112,9 @@ public sealed class Result<T> : Result
 
     /// <summary>Creates a content safety failure result.</summary>
     public new static Result<T> ContentBlocked(string reason) => new(false, errors: [reason], failureType: ResultFailureType.ContentBlocked);
+
+    /// <summary>Creates a not-found failure result.</summary>
+    public new static Result<T> NotFound(string reason) => new(false, errors: [reason], failureType: ResultFailureType.NotFound);
 
     /// <summary>
     /// Implicit conversion from a non-null value to a successful result.

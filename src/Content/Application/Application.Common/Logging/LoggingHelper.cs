@@ -12,35 +12,10 @@ namespace Application.Common.Logging;
 public static partial class LoggingHelper
 {
     /// <summary>
-    /// ANSI color codes used by console formatters.
+    /// Stable ANSI colors for executor identity assignment.
+    /// Each executor gets a consistent color across the session based on its ID hash.
     /// </summary>
-    public static class AnsiColors
-    {
-        /// <summary>Reset to default terminal color.</summary>
-        public const string Reset = "\x1B[39m\x1B[22m";
-        /// <summary>Red — used for Error level.</summary>
-        public const string Red = "\x1B[31m";
-        /// <summary>Yellow — used for Warning level.</summary>
-        public const string Yellow = "\x1B[33m";
-        /// <summary>Green — used for Information level.</summary>
-        public const string Green = "\x1B[32m";
-        /// <summary>Cyan — used for Debug level.</summary>
-        public const string Cyan = "\x1B[36m";
-        /// <summary>Gray — used for Trace level and muted content.</summary>
-        public const string Gray = "\x1B[90m";
-        /// <summary>Magenta — used for Critical level.</summary>
-        public const string Magenta = "\x1B[35m";
-        /// <summary>Blue — used for agent identity.</summary>
-        public const string Blue = "\x1B[34m";
-        /// <summary>Bold modifier.</summary>
-        public const string Bold = "\x1B[1m";
-    }
-
-    /// <summary>
-    /// Stable ANSI colors for agent identity assignment.
-    /// Each agent gets a consistent color across the session based on its ID hash.
-    /// </summary>
-    private static readonly string[] AgentColors =
+    private static readonly string[] ExecutorColors =
     [
         "\x1B[32m", // Green
         "\x1B[33m", // Yellow
@@ -121,45 +96,45 @@ public static partial class LoggingHelper
     }
 
     /// <summary>
-    /// Returns a display name for an agent, using parent-child notation for subagents.
+    /// Returns a display name for an executor, using parent-child notation for sub-executors.
     /// </summary>
-    /// <param name="agentId">The agent's identifier.</param>
-    /// <param name="parentAgentId">The parent agent's identifier, or <c>null</c> for root agents.</param>
+    /// <param name="executorId">The executor's identifier.</param>
+    /// <param name="parentExecutorId">The parent executor's identifier, or <c>null</c> for root executors.</param>
     /// <returns>A formatted string like "main" or "main&gt;research".</returns>
     /// <example>
     /// <code>
-    /// LoggingHelper.GetAgentDisplayName("research", "main");  // "main>research"
-    /// LoggingHelper.GetAgentDisplayName("planner", null);     // "planner"
+    /// LoggingHelper.GetExecutorDisplayName("research", "main");  // "main>research"
+    /// LoggingHelper.GetExecutorDisplayName("planner", null);     // "planner"
     /// </code>
     /// </example>
-    public static string GetAgentDisplayName(string agentId, string? parentAgentId) =>
-        parentAgentId is null
-            ? agentId
-            : DisplayNameCache.GetOrAdd((agentId, parentAgentId),
-                static key => $"{key.ParentId}>{key.AgentId}");
+    public static string GetExecutorDisplayName(string executorId, string? parentExecutorId) =>
+        parentExecutorId is null
+            ? executorId
+            : DisplayNameCache.GetOrAdd((executorId, parentExecutorId),
+                static key => $"{key.ParentId}>{key.ExecutorId}");
 
-    private static readonly ConcurrentDictionary<(string AgentId, string? ParentId), string> DisplayNameCache = new();
+    private static readonly ConcurrentDictionary<(string ExecutorId, string? ParentId), string> DisplayNameCache = new();
 
     /// <summary>
-    /// Formats a token count as a compact human-readable string.
+    /// Formats a large number as a compact human-readable string.
     /// </summary>
-    /// <param name="tokens">The token count to format.</param>
+    /// <param name="count">The count to format.</param>
     /// <returns>A compact string like "128", "1.2k", or "15.3k".</returns>
-    public static string FormatTokenCount(long tokens) => tokens switch
+    public static string FormatCompactCount(long count) => count switch
     {
-        < 1_000 => tokens.ToString(),
-        < 10_000 => $"{tokens / 1_000.0:F1}k",
-        < 1_000_000 => $"{tokens / 1_000.0:F0}k",
-        _ => $"{tokens / 1_000_000.0:F1}M"
+        < 1_000 => count.ToString(),
+        < 10_000 => $"{count / 1_000.0:F1}k",
+        < 1_000_000 => $"{count / 1_000.0:F0}k",
+        _ => $"{count / 1_000_000.0:F1}M"
     };
 
     /// <summary>
     /// Formats a duration as a compact human-readable string optimized for
-    /// the sub-second to multi-minute range typical of tool executions.
+    /// the sub-second to multi-minute range typical of operation executions.
     /// </summary>
     /// <param name="duration">The time span to format.</param>
     /// <returns>A compact string like "45ms", "1.2s", or "2m03s".</returns>
-    public static string FormatToolDuration(TimeSpan duration) => duration.TotalMilliseconds switch
+    public static string FormatCompactDuration(TimeSpan duration) => duration.TotalMilliseconds switch
     {
         < 1 => "<1ms",
         < 1_000 => $"{duration.TotalMilliseconds:F0}ms",
@@ -168,23 +143,23 @@ public static partial class LoggingHelper
     };
 
     /// <summary>
-    /// Returns a deterministic ANSI color code for the given agent ID, ensuring
-    /// the same agent always renders with the same color across sessions.
+    /// Returns a deterministic ANSI color code for the given executor ID, ensuring
+    /// the same executor always renders with the same color across sessions.
     /// Uses FNV-1a hashing for cross-process determinism (unlike <c>string.GetHashCode</c>
     /// which is randomized per process in .NET Core).
     /// </summary>
-    /// <param name="agentId">The agent identifier to colorize.</param>
+    /// <param name="executorId">The executor identifier to colorize.</param>
     /// <returns>An ANSI escape sequence string.</returns>
-    public static string GetStableAgentColor(string agentId)
+    public static string GetStableExecutorColor(string executorId)
     {
         // FNV-1a hash for deterministic cross-process results
         var hash = 2166136261u;
-        foreach (var c in agentId)
+        foreach (var c in executorId)
         {
             hash ^= c;
             hash *= 16777619u;
         }
-        return AgentColors[hash % (uint)AgentColors.Length];
+        return ExecutorColors[hash % (uint)ExecutorColors.Length];
     }
 
     /// <summary>

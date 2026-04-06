@@ -1,6 +1,8 @@
 using Application.Common.Extensions;
 using Application.Common.Helpers;
+using Application.Common.Interfaces.Telemetry;
 using Application.Common.MediatRBehaviors;
+using Application.Common.OpenTelemetry;
 using Domain.Common.Config;
 using FluentValidation;
 using MediatR;
@@ -23,17 +25,14 @@ namespace Application.Common;
 /// <para>
 /// <strong>MediatR Pipeline Behavior Order (outermost → innermost):</strong>
 /// <list type="number">
-///   <item><description><c>UnhandledExceptionBehavior</c> — safety net, logs + rethrows</description></item>
 ///   <item><description><c>RequestValidationBehavior</c> — FluentValidation, returns Result failure</description></item>
 ///   <item><description><c>AuthorizationBehavior</c> — checks [Authorize] attributes</description></item>
-///   <item><description><c>AgentContextPropagationBehavior</c> — sets scoped agent identity</description></item>
-///   <item><description><c>ContentSafetyBehavior</c> — screens IContentScreenable requests</description></item>
-///   <item><description><c>ToolPermissionBehavior</c> — checks IToolRequest permissions</description></item>
 ///   <item><description><c>CachingBehavior</c> — hybrid memory/distributed cache</description></item>
 ///   <item><description><c>RequestTracingBehavior</c> — OTel spans with duration</description></item>
-///   <item><description><c>AuditTrailBehavior</c> — records IAuditable requests</description></item>
 ///   <item><description><c>TimeoutBehavior</c> — enforces IHasTimeout deadlines</description></item>
 /// </list>
+/// Agent-specific behaviors (UnhandledException, AgentContextPropagation, ContentSafety,
+/// ToolPermission, AuditTrail) are registered by <c>Application.AI.Common.DependencyInjection</c>.
 /// Registration order matters: first registered = outermost wrapper.
 /// </para>
 /// </remarks>
@@ -59,20 +58,19 @@ public static class DependencyInjection
             cfg.RegisterServicesFromAssembly(assembly));
 
         // Pipeline behaviors — registration order = execution order (outermost first)
+        // Agent-specific behaviors registered in Application.AI.Common.DependencyInjection
         services
-            .AddTransient(typeof(IPipelineBehavior<,>), typeof(UnhandledExceptionBehavior<,>))
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(RequestValidationBehavior<,>))
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(AuthorizationBehavior<,>))
-            .AddTransient(typeof(IPipelineBehavior<,>), typeof(AgentContextPropagationBehavior<,>))
-            .AddTransient(typeof(IPipelineBehavior<,>), typeof(ContentSafetyBehavior<,>))
-            .AddTransient(typeof(IPipelineBehavior<,>), typeof(ToolPermissionBehavior<,>))
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(CachingBehavior<,>))
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(RequestTracingBehavior<,>))
-            .AddTransient(typeof(IPipelineBehavior<,>), typeof(AuditTrailBehavior<,>))
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(TimeoutBehavior<,>));
 
         // Time abstraction — use TimeProvider.System (or FakeTimeProvider in tests)
         services.AddSingleton(TimeProvider.System);
+
+        // Base telemetry configurator — registers app-level OTel sources
+        services.AddSingleton<ITelemetryConfigurator, AppTelemetryConfigurator>();
 
         // Hybrid cache (memory + distributed backing store)
         services.AddHybridCache(cfg =>

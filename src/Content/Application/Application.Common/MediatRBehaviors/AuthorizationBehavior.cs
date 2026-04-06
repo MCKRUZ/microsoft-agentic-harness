@@ -3,6 +3,7 @@ using System.Reflection;
 using Application.Common.Attributes.SecurityAttributes;
 using Application.Common.Exceptions.ExceptionTypes;
 using Application.Common.Interfaces.Security;
+using Domain.Common.Helpers;
 using Domain.Common;
 using MediatR;
 
