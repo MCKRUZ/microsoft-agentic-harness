@@ -1,6 +1,7 @@
 using Domain.Common.Config.Connectors;
 using Domain.Common.Config.Http;
 using Domain.Common.Config.Infrastructure;
+using Domain.Common.Config.Observability;
 
 namespace Domain.Common.Config;
 
@@ -22,10 +23,11 @@ namespace Domain.Common.Config;
 /// ├── Agent          — Agent execution settings (timeouts, token budgets)
 /// ├── Http           — HTTP settings (CORS, authorization, maintenance)
 /// ├── Infrastructure — State management, content providers
-/// └── Connectors     — External system connector integrations
+/// ├── Connectors     — External system connector integrations
+/// └── Observability  — Sampling, PII filtering, rate limiting, exporters
 /// </code>
 /// </para>
-/// Additional sections (AI, Database, Observability, etc.) will be added
+/// Additional sections (AI, Database, etc.) will be added
 /// as the template expands.
 /// <para>
 /// <strong>Mutable setters are required by <c>IOptionsMonitor&lt;T&gt;</c> binding.</strong>
@@ -86,6 +88,12 @@ public class AppConfig
     /// behind a uniform <c>IConnectorClient</c> interface for agent tool invocation.
     /// </summary>
     public ConnectorsConfig Connectors { get; set; } = new();
+
+    /// <summary>
+    /// Gets or sets the observability pipeline configuration including
+    /// tail-based sampling, PII filtering, rate limiting, and multi-backend export.
+    /// </summary>
+    public ObservabilityConfig Observability { get; set; } = new();
 }
 
 /// <summary>

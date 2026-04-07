@@ -1,0 +1,6 @@
+# Environment variables (may contain secrets)
+.env
+
+# Downloaded collector binary
+otelcol-contrib.exe
+otelcol.tar.gz

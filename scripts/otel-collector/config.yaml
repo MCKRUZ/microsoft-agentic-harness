@@ -1,0 +1,196 @@
+# OpenTelemetry Collector Configuration for Agentic Harness
+# Deployment: Local development (Windows)
+# Version: 0.115.0
+#
+# Architecture Flow:
+#   Application (SDK) → Collector (OTLP/gRPC :4317) → Backends (Azure Monitor, Jaeger, Prometheus)
+#
+# Note: The harness implements tail-based sampling, PII filtering, and rate limiting
+# in-process via Infrastructure.Observability processors. This Collector config provides
+# the same capabilities for Docker-based deployments or when running the collector
+# as a standalone sidecar.
+
+receivers:
+  # OTLP receiver - accepts telemetry from the agentic harness
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+        max_recv_msg_size_mib: 16
+        max_concurrent_streams: 100
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  # Memory limiter - prevents Collector OOM
+  # CRITICAL: Must be first processor in pipeline
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 512
+    spike_limit_mib: 128
+
+  # Resource detection - adds host and environment metadata
+  resourcedetection:
+    detectors: [env, system]
+    timeout: 2s
+    override: false
+
+  # Attributes processor - add custom tags to all telemetry
+  attributes:
+    actions:
+      - key: deployment.environment
+        value: ${env:DEPLOYMENT_ENVIRONMENT}
+        action: upsert
+      - key: collector.version
+        value: 0.115.0
+        action: insert
+      - key: org.name
+        value: AgenticHarness
+        action: insert
+
+  # PII filtering - remove sensitive data BEFORE export
+  attributes/pii:
+    actions:
+      - key: http.request.header.authorization
+        action: delete
+      - key: http.request.header.cookie
+        action: delete
+      - key: http.request.header.x-api-key
+        action: delete
+      - key: http.response.header.set-cookie
+        action: delete
+      - key: user.email
+        action: hash
+      - key: enduser.id
+        action: hash
+
+  # Batch processor - reduces network calls, improves throughput
+  batch:
+    timeout: 10s
+    send_batch_size: 1024
+    send_batch_max_size: 2048
+
+  # Tail-based sampling - intelligent sampling based on trace characteristics
+  tail_sampling:
+    decision_wait: 30s
+    num_traces: 10000
+    expected_new_traces_per_sec: 100
+    policies:
+      # ALWAYS keep error traces
+      - name: errors-policy
+        type: status_code
+        status_code:
+          status_codes: [ERROR]
+
+      # ALWAYS keep slow requests (>5 seconds)
+      - name: slow-requests-policy
+        type: latency
+        latency:
+          threshold_ms: 5000
+
+      # ALWAYS keep AI agent executions
+      - name: ai-agent-policy
+        type: string_attribute
+        string_attribute:
+          key: gen_ai.system
+          values: ["semantic-kernel", "microsoft.extensions.ai", "microsoft.agents.ai"]
+          enabled_regex_matching: false
+          invert_match: false
+
+      # Sample 10% of successful fast requests
+      - name: probabilistic-policy
+        type: probabilistic
+        probabilistic:
+          sampling_percentage: 10.0
+
+      # Rate limiting - max 100 traces/sec per service
+      - name: rate-limit-policy
+        type: rate_limiting
+        rate_limiting:
+          spans_per_second: 100
+
+exporters:
+  # Azure Monitor exporter
+  azuremonitor:
+    connection_string: "${env:APPLICATIONINSIGHTS_CONNECTION_STRING}"
+    instrumentation_scope_logs_enabled: true
+    max_batch_size: 1024
+    max_batch_interval: 10s
+
+  # OTLP exporter - Jaeger
+  otlp/jaeger:
+    endpoint: "${env:JAEGER_ENDPOINT:-localhost:4317}"
+    tls:
+      insecure: true
+    timeout: 30s
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      max_elapsed_time: 300s
+
+  # Prometheus exporter - metrics only
+  prometheus:
+    endpoint: "0.0.0.0:8889"
+    namespace: agentic_harness
+    const_labels:
+      environment: ${env:DEPLOYMENT_ENVIRONMENT}
+      collector: otel-collector
+
+  # Debug exporter - development only
+  debug:
+    verbosity: detailed
+    sampling_initial: 5
+    sampling_thereafter: 200
+
+# Extensions - optional services for observability and debugging
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+    path: "/health"
+  pprof:
+    endpoint: 0.0.0.0:1777
+  zpages:
+    endpoint: 0.0.0.0:55679
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors:
+        - memory_limiter
+        - resourcedetection
+        - attributes
+        - attributes/pii
+        - tail_sampling
+        - batch
+      exporters:
+        - azuremonitor
+        - otlp/jaeger
+        - debug
+
+    metrics:
+      receivers: [otlp]
+      processors:
+        - memory_limiter
+        - resourcedetection
+        - attributes
+        - batch
+      exporters:
+        - azuremonitor
+        - prometheus
+        - debug
+
+  telemetry:
+    logs:
+      level: info
+      development: false
+      encoding: json
+      output_paths:
+        - stdout
+
+    metrics:
+      level: detailed
+      address: 0.0.0.0:8888
+
+  extensions: [health_check, pprof, zpages]

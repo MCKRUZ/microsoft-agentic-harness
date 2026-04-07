@@ -21,4 +21,12 @@ public static class ToolExecutionMetrics
     /// <summary>Error count by type. Tags: agent.tool.name, agent.tool.source, agent.tool.error_type.</summary>
     public static Counter<long> Errors { get; } =
         AppInstrument.Meter.CreateCounter<long>(ToolConventions.Errors, "{error}", "Tool execution errors");
+
+    /// <summary>Tool calls returning empty/null results. Tags: agent.tool.name.</summary>
+    public static Counter<long> EmptyResults { get; } =
+        AppInstrument.Meter.CreateCounter<long>(ToolConventions.EmptyResults, "{result}", "Tool calls returning empty results");
+
+    /// <summary>Tool result size in characters. Tags: agent.tool.name.</summary>
+    public static Histogram<int> ResultSize { get; } =
+        AppInstrument.Meter.CreateHistogram<int>(ToolConventions.ResultSize, "{char}", "Tool result size in characters");
 }

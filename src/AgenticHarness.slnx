@@ -12,5 +12,6 @@
     <Project Path="Content/Infrastructure/Infrastructure.AI/Infrastructure.AI.csproj" />
     <Project Path="Content/Infrastructure/Infrastructure.APIAccess/Infrastructure.APIAccess.csproj" />
     <Project Path="Content/Infrastructure/Infrastructure.AI.Connectors/Infrastructure.AI.Connectors.csproj" />
+    <Project Path="Content/Infrastructure/Infrastructure.Observability/Infrastructure.Observability.csproj" />
   </Folder>
 </Solution>

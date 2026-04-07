@@ -1,0 +1,90 @@
+# OpenTelemetry Collector + Jaeger for Agentic Harness
+# Usage: docker-compose up -d
+# Stop: docker-compose down
+
+services:
+  # OpenTelemetry Collector - central telemetry processing hub
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.115.0
+    container_name: agentic-harness-otel-collector
+    command: ["--config=/etc/otel-collector-config.yaml"]
+
+    volumes:
+      - ./config.yaml:/etc/otel-collector-config.yaml:ro
+
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+      - "8888:8888"   # Collector's own metrics
+      - "8889:8889"   # Prometheus exporter for app metrics
+      - "13133:13133" # Health check endpoint
+      - "1777:1777"   # pprof profiling
+      - "55679:55679" # zpages debugging UI
+
+    environment:
+      - APPLICATIONINSIGHTS_CONNECTION_STRING=${APPLICATIONINSIGHTS_CONNECTION_STRING:-}
+      - JAEGER_ENDPOINT=jaeger:4317
+      - DEPLOYMENT_ENVIRONMENT=${DEPLOYMENT_ENVIRONMENT:-development}
+
+    restart: unless-stopped
+
+    networks:
+      - otel-network
+
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "--quiet", "http://localhost:13133/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+  # Jaeger - distributed tracing UI for local development
+  jaeger:
+    image: jaegertracing/all-in-one:1.62
+    container_name: agentic-harness-jaeger
+
+    ports:
+      - "16686:16686"  # Jaeger UI - http://localhost:16686
+      - "14250:14250"  # Jaeger gRPC collector
+      - "14268:14268"  # Jaeger HTTP collector
+      - "9411:9411"    # Zipkin compatible endpoint
+
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+      - SPAN_STORAGE_TYPE=memory
+      - QUERY_BASE_PATH=/jaeger
+
+    restart: unless-stopped
+
+    networks:
+      - otel-network
+
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "--quiet", "http://localhost:14269"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+
+networks:
+  otel-network:
+    driver: bridge
+    name: agentic-harness-otel

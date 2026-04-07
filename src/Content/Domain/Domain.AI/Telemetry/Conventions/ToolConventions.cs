@@ -24,4 +24,24 @@ public static class ToolConventions
         public const string Mcp = "mcp";
         public const string SemanticKernel = "semantic_kernel";
     }
+
+    /// <summary>Gen AI operation name for tool execution spans.</summary>
+    public const string ExecuteToolOperation = "execute_tool";
+    /// <summary>Gen AI span attribute containing the tool call result text.</summary>
+    public const string ToolCallResult = "gen_ai.tool.call.result";
+    /// <summary>Gen AI span attribute for the operation name.</summary>
+    public const string GenAiOperationName = "gen_ai.operation.name";
+    /// <summary>Maximum tool result length before truncation.</summary>
+    public const int MaxResultLength = 4096;
+
+    /// <summary>Whether the tool returned an empty/null result (bool).</summary>
+    public const string ResultEmpty = "agent.tool.result_empty";
+    /// <summary>Tool result length in characters.</summary>
+    public const string ResultChars = "agent.tool.result_chars";
+    /// <summary>Whether the tool result exceeded the truncation threshold (bool).</summary>
+    public const string ResultTruncated = "agent.tool.result_truncated";
+    /// <summary>Counter: tool calls returning empty results.</summary>
+    public const string EmptyResults = "agent.tool.empty_results";
+    /// <summary>Histogram: tool result size in characters.</summary>
+    public const string ResultSize = "agent.tool.result_size";
 }

@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Application.AI.Common.OpenTelemetry.Instruments;
+using Domain.AI.Telemetry.Conventions;
 using Domain.Common.Telemetry;
 using OpenTelemetry;
 
@@ -17,11 +18,7 @@ namespace Application.AI.Common.OpenTelemetry.Processors;
 /// </remarks>
 public sealed class AgentFrameworkSpanProcessor : BaseProcessor<Activity>
 {
-    private const int MaxToolResultLength = 4096;
-    private const string ExecuteToolOperation = "execute_tool";
-    private const string ToolCallResultTag = "gen_ai.tool.call.result";
     private const string EventContentTag = "gen_ai.event.content";
-    private const string GenAIOperationNameKey = "gen_ai.operation.name";
     // Centralized in AiSourceNames — single place to update at SDK GA
     private static readonly string AgentFrameworkSource = AiSourceNames.AgentFrameworkExact;
 
@@ -31,15 +28,15 @@ public sealed class AgentFrameworkSpanProcessor : BaseProcessor<Activity>
         if (!string.Equals(data.Source.Name, AgentFrameworkSource, StringComparison.Ordinal))
             return;
 
-        var opName = data.GetTagItem(GenAIOperationNameKey) as string;
-        if (!string.Equals(opName, ExecuteToolOperation, StringComparison.Ordinal))
+        var opName = data.GetTagItem(ToolConventions.GenAiOperationName) as string;
+        if (!string.Equals(opName, ToolConventions.ExecuteToolOperation, StringComparison.Ordinal))
             return;
 
-        var toolResult = data.GetTagItem(ToolCallResultTag) as string;
+        var toolResult = data.GetTagItem(ToolConventions.ToolCallResult) as string;
         if (toolResult is not null)
         {
-            var truncated = toolResult.Length > MaxToolResultLength
-                ? string.Concat(toolResult.AsSpan(0, MaxToolResultLength), "...[truncated]")
+            var truncated = toolResult.Length > ToolConventions.MaxResultLength
+                ? string.Concat(toolResult.AsSpan(0, ToolConventions.MaxResultLength), "...[truncated]")
                 : toolResult;
             data.SetTag(EventContentTag, truncated);
         }

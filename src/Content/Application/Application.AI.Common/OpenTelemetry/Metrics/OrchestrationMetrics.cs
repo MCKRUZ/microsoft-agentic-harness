@@ -24,4 +24,8 @@ public static class OrchestrationMetrics
     /// <summary>Subagent spawn count. Tags: agent.name, agent.parent_agent.name.</summary>
     public static Counter<long> SubagentSpawns { get; } =
         AppInstrument.Meter.CreateCounter<long>(OrchestrationConventions.SubagentSpawns, "{spawn}", "Subagent spawn count");
+
+    /// <summary>Tool calls per session. Tags: agent.name, agent.tool.name.</summary>
+    public static Counter<long> ToolCalls { get; } =
+        AppInstrument.Meter.CreateCounter<long>(OrchestrationConventions.ToolCallCount, "{call}", "Tool calls per session");
 }
