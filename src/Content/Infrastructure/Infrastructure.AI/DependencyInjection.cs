@@ -1,4 +1,7 @@
 using Application.AI.Common.Interfaces.Tools;
+using Infrastructure.AI.Generators;
+using Infrastructure.AI.StateManagement;
+using Infrastructure.AI.StateManagement.Checkpoints;
 using Infrastructure.AI.Tools;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -41,6 +44,11 @@ public static class DependencyInjection
         // File system tool — ITool adapter for LLM consumption, registered with keyed DI
         services.AddKeyedSingleton<ITool>(FileSystemTool.ToolName, (sp, _) =>
             new FileSystemTool(sp.GetRequiredService<IFileSystemService>()));
+
+        // State management — markdown generator, JSON checkpoint manager, composite manager
+        services.AddSingleton<IStateMarkdownGenerator, StateMarkdownGenerator>();
+        services.AddSingleton<JsonCheckpointStateManager>();
+        services.AddSingleton<CompositeStateManager>();
 
         return services;
     }

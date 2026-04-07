@@ -1,4 +1,5 @@
 using Domain.Common.Config.Http;
+using Domain.Common.Config.Infrastructure;
 
 namespace Domain.Common.Config;
 
@@ -17,8 +18,9 @@ namespace Domain.Common.Config;
 /// AppConfig
 /// ├── Common    — General settings (thresholds, feature flags)
 /// ├── Logging   — Logging infrastructure settings (paths, levels)
-/// ├── Agent     — Agent execution settings (timeouts, token budgets)
-/// └── Http      — HTTP settings (CORS, authorization, maintenance)
+/// ├── Agent           — Agent execution settings (timeouts, token budgets)
+/// ├── Http            — HTTP settings (CORS, authorization, maintenance)
+/// └── Infrastructure  — State management, content providers
 /// </code>
 /// </para>
 /// Additional sections (AI, Database, Observability, etc.) will be added
@@ -69,6 +71,12 @@ public class AppConfig
     /// and maintenance mode behavior.
     /// </summary>
     public HttpConfig Http { get; set; } = new();
+
+    /// <summary>
+    /// Gets or sets the Infrastructure services configuration including
+    /// state management and content providers.
+    /// </summary>
+    public InfrastructureConfig Infrastructure { get; set; } = new();
 }
 
 /// <summary>
