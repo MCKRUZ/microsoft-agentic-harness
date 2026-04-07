@@ -1,3 +1,4 @@
+using Domain.Common.Config.Connectors;
 using Domain.Common.Config.Http;
 using Domain.Common.Config.Infrastructure;
 
@@ -16,11 +17,12 @@ namespace Domain.Common.Config;
 /// Configuration hierarchy:
 /// <code>
 /// AppConfig
-/// ├── Common    — General settings (thresholds, feature flags)
-/// ├── Logging   — Logging infrastructure settings (paths, levels)
-/// ├── Agent           — Agent execution settings (timeouts, token budgets)
-/// ├── Http            — HTTP settings (CORS, authorization, maintenance)
-/// └── Infrastructure  — State management, content providers
+/// ├── Common         — General settings (thresholds, feature flags)
+/// ├── Logging        — Logging infrastructure settings (paths, levels)
+/// ├── Agent          — Agent execution settings (timeouts, token budgets)
+/// ├── Http           — HTTP settings (CORS, authorization, maintenance)
+/// ├── Infrastructure — State management, content providers
+/// └── Connectors     — External system connector integrations
 /// </code>
 /// </para>
 /// Additional sections (AI, Database, Observability, etc.) will be added
@@ -77,6 +79,13 @@ public class AppConfig
     /// state management and content providers.
     /// </summary>
     public InfrastructureConfig Infrastructure { get; set; } = new();
+
+    /// <summary>
+    /// Gets or sets the external system connector integrations.
+    /// Each connector wraps an external REST API (GitHub, Jira, Azure DevOps, Slack)
+    /// behind a uniform <c>IConnectorClient</c> interface for agent tool invocation.
+    /// </summary>
+    public ConnectorsConfig Connectors { get; set; } = new();
 }
 
 /// <summary>
