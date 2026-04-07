@@ -1,3 +1,5 @@
+using Domain.Common.Config.Http;
+
 namespace Domain.Common.Config;
 
 /// <summary>
@@ -14,7 +16,9 @@ namespace Domain.Common.Config;
 /// <code>
 /// AppConfig
 /// ├── Common    — General settings (thresholds, feature flags)
-/// └── Logging   — Logging infrastructure settings (paths, levels)
+/// ├── Logging   — Logging infrastructure settings (paths, levels)
+/// ├── Agent     — Agent execution settings (timeouts, token budgets)
+/// └── Http      — HTTP settings (CORS, authorization, maintenance)
 /// </code>
 /// </para>
 /// Additional sections (AI, Database, Observability, etc.) will be added
@@ -30,7 +34,11 @@ namespace Domain.Common.Config;
 /// {
 ///   "AppConfig": {
 ///     "Common": { "SlowThresholdSec": 5 },
-///     "Logging": { "LogsBasePath": "/var/logs/agent-harness" }
+///     "Logging": { "LogsBasePath": "/var/logs/agent-harness" },
+///     "Http": {
+///       "CorsAllowedOrigins": "https://localhost:4200",
+///       "Authorization": { "Enabled": false }
+///     }
 ///   }
 /// }
 ///
@@ -55,6 +63,12 @@ public class AppConfig
     /// Gets or sets the agent execution settings.
     /// </summary>
     public AgentConfig Agent { get; set; } = new();
+
+    /// <summary>
+    /// Gets or sets the HTTP-related settings including CORS, authorization,
+    /// and maintenance mode behavior.
+    /// </summary>
+    public HttpConfig Http { get; set; } = new();
 }
 
 /// <summary>

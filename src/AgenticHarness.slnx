@@ -10,5 +10,6 @@
   <Folder Name="/Infrastructure/">
     <Project Path="Content/Infrastructure/Infrastructure.Common/Infrastructure.Common.csproj" />
     <Project Path="Content/Infrastructure/Infrastructure.AI/Infrastructure.AI.csproj" />
+    <Project Path="Content/Infrastructure/Infrastructure.APIAccess/Infrastructure.APIAccess.csproj" />
   </Folder>
 </Solution>

@@ -1,12 +1,15 @@
 using Application.Common.Interfaces.Security;
+using Domain.Common.Config;
+using Domain.Common.Config.Http;
 using Infrastructure.Common.Services;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 
 namespace Infrastructure.Common;
 
 /// <summary>
 /// Dependency injection configuration for the Infrastructure.Common layer.
-/// Registers cross-cutting infrastructure services: identity, file system, etc.
+/// Registers cross-cutting infrastructure services: identity, HTTP authorization config, etc.
 /// </summary>
 /// <remarks>
 /// Called from the Presentation composition root after Application dependencies:
@@ -30,6 +33,13 @@ public static class DependencyInjection
         // Identity — stub implementation, replace with real provider for production
         // Transient: real implementations will read per-request claims from HttpContext
         services.AddTransient<IIdentityService, IdentityService>();
+
+        // HTTP authorization config — resolved from AppConfig for endpoint filters
+        services.AddSingleton(sp =>
+        {
+            var appConfig = sp.GetRequiredService<IOptionsMonitor<AppConfig>>();
+            return appConfig.CurrentValue.Http.Authorization;
+        });
 
         return services;
     }
