@@ -1,7 +1,10 @@
 using CorrelationId.DependencyInjection;
 using Domain.Common.Config;
+using Infrastructure.APIAccess.Auth.Handlers;
+using Infrastructure.APIAccess.Auth.Providers;
 using Infrastructure.APIAccess.Common.Extensions;
 using Infrastructure.APIAccess.Services;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace Infrastructure.APIAccess;
@@ -26,6 +29,7 @@ public static class DependencyInjection
     ///   <item>Memory cache for endpoint resolution caching</item>
     ///   <item>ApiEndpointResolverService for typed client configuration</item>
     ///   <item>Default HTTP client with standard delegating handlers</item>
+    ///   <item>Permission-based authorization (policy provider + handler)</item>
     /// </list>
     /// </remarks>
     public static IServiceCollection AddInfrastructureApiAccessDependencies(
@@ -42,6 +46,10 @@ public static class DependencyInjection
             .AddMemoryCache()
             .AddSingleton<ApiEndpointResolverService>()
             .AddDefaultHttpClient();
+
+        // Permission-based authorization
+        services.AddSingleton<IAuthorizationPolicyProvider, PermissionPolicyProvider>();
+        services.AddSingleton<IAuthorizationHandler, PermissionAuthHandler>();
 
         return services;
     }
