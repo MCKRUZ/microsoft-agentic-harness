@@ -8,6 +8,7 @@
     <Project Path="Content/Application/Application.AI.Common/Application.AI.Common.csproj" />
   </Folder>
   <Folder Name="/Infrastructure/">
+    <Project Path="Content/Infrastructure/Infrastructure.Common/Infrastructure.Common.csproj" />
     <Project Path="Content/Infrastructure/Infrastructure.AI/Infrastructure.AI.csproj" />
   </Folder>
 </Solution>
