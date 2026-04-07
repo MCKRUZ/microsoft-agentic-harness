@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using Domain.Common.Config.Http;
 using Microsoft.AspNetCore.Http;
 
@@ -64,12 +66,25 @@ public sealed class HttpAuthEndpointFilter : IEndpointFilter
             return Results.Problem(detail: "Missing API Key HTTP header", statusCode: StatusCodes.Status401Unauthorized);
         }
 
-        if (!string.Equals(apiKey, _config.AccessKey1, StringComparison.Ordinal)
-            && !string.Equals(apiKey, _config.AccessKey2, StringComparison.Ordinal))
+        if (!FixedTimeEquals(apiKey!, _config.AccessKey1)
+            && !FixedTimeEquals(apiKey!, _config.AccessKey2))
         {
             return Results.Problem(detail: "Invalid API Key", statusCode: StatusCodes.Status403Forbidden);
         }
 
         return await next(context);
+    }
+
+    /// <summary>
+    /// Constant-time string comparison to prevent timing side-channel attacks.
+    /// </summary>
+    private static bool FixedTimeEquals(string input, string? expected)
+    {
+        if (string.IsNullOrEmpty(expected))
+            return false;
+
+        var inputBytes = Encoding.UTF8.GetBytes(input);
+        var expectedBytes = Encoding.UTF8.GetBytes(expected);
+        return CryptographicOperations.FixedTimeEquals(inputBytes, expectedBytes);
     }
 }

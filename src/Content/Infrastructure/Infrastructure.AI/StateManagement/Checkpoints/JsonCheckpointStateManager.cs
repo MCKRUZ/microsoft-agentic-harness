@@ -312,7 +312,28 @@ public class JsonCheckpointStateManager : IStateManager
     }
 
     private string GetStateFilePath(string workflowId)
-        => Path.Combine(_settings.BasePath, workflowId, "checkpoints", "workflow-state.json");
+    {
+        ValidatePathSegment(workflowId, nameof(workflowId));
+        return Path.Combine(_settings.BasePath, workflowId, "checkpoints", "workflow-state.json");
+    }
+
+    /// <summary>
+    /// Validates that a path segment does not contain directory traversal sequences
+    /// or invalid path characters that could escape the base path.
+    /// </summary>
+    private static void ValidatePathSegment(string segment, string paramName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(segment, paramName);
+
+        if (segment.Contains("..") ||
+            segment.Contains('/') ||
+            segment.Contains('\\') ||
+            segment.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+        {
+            throw new ArgumentException(
+                $"Value contains invalid path characters or traversal sequences.", paramName);
+        }
+    }
 
     private Task<StateConfiguration> GetStateConfigurationAsync(string workflowId, string nodeId, CancellationToken cancellationToken)
     {

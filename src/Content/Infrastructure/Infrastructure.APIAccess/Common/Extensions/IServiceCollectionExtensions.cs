@@ -226,8 +226,9 @@ public static class IServiceCollectionExtensions
         {
             options.AddDefaultPolicy(policy =>
             {
-                policy.AllowAnyOrigin();
-                policy.AllowAnyHeader();
+                policy
+                    .WithOrigins(origins)
+                    .AllowAnyHeader();
             });
 
             options.AddPolicy(PolicyNameConstants.CORS_CONFIG_POLICY, policy =>

@@ -199,5 +199,26 @@ public class MarkdownCheckpointDecorator : IStateManager
     }
 
     private string GetMarkdownFilePath(string workflowId)
-        => Path.Combine(_settings.BasePath, workflowId, "inputs", "workflow-state.md");
+    {
+        ValidatePathSegment(workflowId, nameof(workflowId));
+        return Path.Combine(_settings.BasePath, workflowId, "inputs", "workflow-state.md");
+    }
+
+    /// <summary>
+    /// Validates that a path segment does not contain directory traversal sequences
+    /// or invalid path characters that could escape the base path.
+    /// </summary>
+    private static void ValidatePathSegment(string segment, string paramName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(segment, paramName);
+
+        if (segment.Contains("..") ||
+            segment.Contains('/') ||
+            segment.Contains('\\') ||
+            segment.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+        {
+            throw new ArgumentException(
+                $"Value contains invalid path characters or traversal sequences.", paramName);
+        }
+    }
 }
