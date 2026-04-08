@@ -1,0 +1,28 @@
+<Project>
+	<PropertyGroup>
+		<TargetFramework>net10.0</TargetFramework>
+		<TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+		<NoWarn>$(NoWarn);KMEXPO00</NoWarn>
+		<NoWarn>$(NoWarn);MEAI001</NoWarn>
+		<NoWarn>$(NoWarn);AOAI001</NoWarn>
+		<NoWarn>$(NoWarn);OPENAI001</NoWarn>
+		<NoWarn>$(NoWarn);SKEXP0001</NoWarn>
+		<NoWarn>$(NoWarn);SKEXP0003</NoWarn>
+		<NoWarn>$(NoWarn);SKEXP0010</NoWarn>
+		<NoWarn>$(NoWarn);SKEXP0011</NoWarn>
+		<NoWarn>$(NoWarn);SKEXP0020</NoWarn>
+		<NoWarn>$(NoWarn);SKEXP0021</NoWarn>
+		<NoWarn>$(NoWarn);SKEXP0027</NoWarn>
+		<NoWarn>$(NoWarn);SKEXP0042</NoWarn>
+		<NoWarn>$(NoWarn);SKEXP0040</NoWarn>
+		<NoWarn>$(NoWarn);SKEXP0050</NoWarn>
+		<NoWarn>$(NoWarn);SKEXP0052</NoWarn>
+		<NoWarn>$(NoWarn);SKEXP0060</NoWarn>
+		<NoWarn>$(NoWarn);SKEXP0110</NoWarn>
+		<NoWarn>$(NoWarn);MAAI001</NoWarn>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<FrameworkReference Include="Microsoft.AspNetCore.App" />
+	</ItemGroup>
+</Project>

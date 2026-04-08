@@ -1,0 +1,86 @@
+<Project>
+
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+  </PropertyGroup>
+
+  <ItemGroup>
+
+    <!-- Domain layer -->
+    <PackageVersion Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.5" />
+    <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.5" />
+
+    <!-- Domain.AI -->
+    <PackageVersion Include="Microsoft.Extensions.AI.Abstractions" Version="10.3.0" />
+
+    <!-- Application layer -->
+    <PackageVersion Include="Azure.Identity" Version="1.13.2" />
+    <PackageVersion Include="FluentValidation" Version="11.11.0" />
+    <PackageVersion Include="FluentValidation.DependencyInjectionExtensions" Version="11.11.0" />
+    <PackageVersion Include="MediatR" Version="12.4.1" />
+    <PackageVersion Include="Microsoft.Extensions.Caching.Hybrid" Version="10.1.0" />
+    <PackageVersion Include="Microsoft.Extensions.Caching.Memory" Version="10.0.5" />
+    <PackageVersion Include="Microsoft.Extensions.Logging" Version="10.0.5" />
+    <PackageVersion Include="Microsoft.Extensions.Logging.Console" Version="10.0.5" />
+    <PackageVersion Include="Microsoft.Extensions.Options" Version="10.0.5" />
+    <PackageVersion Include="OpenTelemetry" Version="1.12.0" />
+
+    <!-- Application.AI.Common -->
+    <PackageVersion Include="Azure.AI.Agents.Persistent" Version="1.0.0" />
+    <PackageVersion Include="Microsoft.Agents.AI" Version="1.0.0-rc4" />
+    <PackageVersion Include="Microsoft.Extensions.AI" Version="10.3.0" />
+    <PackageVersion Include="Microsoft.Extensions.Caching.Abstractions" Version="10.0.5" />
+
+    <!-- Infrastructure layer -->
+    <PackageVersion Include="Ardalis.GuardClauses" Version="5.0.0" />
+    <PackageVersion Include="Microsoft.Extensions.Http" Version="10.0.5" />
+
+    <!-- Infrastructure.AI -->
+    <PackageVersion Include="Azure.AI.OpenAI" Version="2.8.0-beta.1" />
+    <PackageVersion Include="Microsoft.Agents.AI.OpenAI" Version="1.0.0-rc4" />
+
+    <!-- Infrastructure.AI.MCP -->
+    <PackageVersion Include="ModelContextProtocol" Version="1.2.0" />
+    <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.5" />
+
+    <!-- Infrastructure.AI.MCPServer -->
+    <PackageVersion Include="ModelContextProtocol.AspNetCore" Version="1.2.0" />
+    <PackageVersion Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.5" />
+
+    <!-- Infrastructure.APIAccess -->
+    <PackageVersion Include="Asp.Versioning.Http" Version="8.1.1" />
+    <PackageVersion Include="Asp.Versioning.Mvc.ApiExplorer" Version="8.1.1" />
+    <PackageVersion Include="CorrelationId" Version="3.0.1" />
+    <PackageVersion Include="Microsoft.Extensions.Http.Resilience" Version="10.2.0" />
+    <PackageVersion Include="Swashbuckle.AspNetCore.SwaggerGen" Version="10.1.0" />
+
+    <!-- Infrastructure.Observability -->
+    <PackageVersion Include="Azure.Monitor.OpenTelemetry.Exporter" Version="1.4.0" />
+    <PackageVersion Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.12.0" />
+    <PackageVersion Include="OpenTelemetry.Exporter.Prometheus.AspNetCore" Version="1.11.2-beta.1" />
+
+    <!-- Presentation layer -->
+    <PackageVersion Include="AspNetCore.HealthChecks.ApplicationStatus" Version="9.0.0" />
+    <PackageVersion Include="AspNetCore.HealthChecks.Azure.Storage.Blobs" Version="9.0.0" />
+    <PackageVersion Include="AspNetCore.HealthChecks.AzureKeyVault" Version="9.0.0" />
+    <PackageVersion Include="AspNetCore.HealthChecks.Publisher.ApplicationInsights" Version="9.0.0" />
+    <PackageVersion Include="AspNetCore.HealthChecks.Redis" Version="9.0.0" />
+    <PackageVersion Include="AspNetCore.HealthChecks.SqlServer" Version="9.0.0" />
+    <PackageVersion Include="AspNetCore.HealthChecks.UI" Version="9.0.0" />
+    <PackageVersion Include="AspNetCore.HealthChecks.UI.InMemory.Storage" Version="9.0.0" />
+    <PackageVersion Include="Azure.Extensions.AspNetCore.Configuration.Secrets" Version="1.4.0" />
+    <PackageVersion Include="Microsoft.Extensions.Caching.StackExchangeRedis" Version="9.0.4" />
+    <PackageVersion Include="Microsoft.Extensions.Configuration.AzureAppConfiguration" Version="8.1.0" />
+    <PackageVersion Include="Microsoft.Extensions.Configuration.UserSecrets" Version="10.0.5" />
+    <PackageVersion Include="Microsoft.Identity.Web" Version="3.8.4" />
+    <PackageVersion Include="OpenTelemetry.Extensions.Hosting" Version="1.12.0" />
+    <PackageVersion Include="OpenTelemetry.Instrumentation.AspNetCore" Version="1.11.1" />
+    <PackageVersion Include="OpenTelemetry.Instrumentation.Http" Version="1.11.1" />
+    <PackageVersion Include="OpenTelemetry.Instrumentation.Runtime" Version="1.11.0" />
+
+    <!-- Presentation.ConsoleUI / Presentation.LoggerUI -->
+    <PackageVersion Include="Spectre.Console" Version="0.54.1-alpha.0.31" />
+
+  </ItemGroup>
+
+</Project>
