@@ -13,18 +13,18 @@ namespace Application.Common.MediatRBehaviors;
 /// <remarks>
 /// Pipeline position: 2 (inside tracing, wraps everything else).
 /// Requests implementing <see cref="IHasTimeout"/> specify a custom timeout.
-/// Others use <c>AppConfig.Agent.DefaultRequestTimeoutSec</c>.
+/// Others use <c>AgentConfig.DefaultRequestTimeoutSec</c>.
 /// </remarks>
 public sealed class TimeoutBehavior<TRequest, TResponse>
     : IPipelineBehavior<TRequest, TResponse> where TRequest : notnull
 {
-    private readonly IOptionsMonitor<AppConfig> _config;
+    private readonly IOptionsMonitor<AgentConfig> _config;
     private readonly ILogger<TimeoutBehavior<TRequest, TResponse>> _logger;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="TimeoutBehavior{TRequest, TResponse}"/> class.
     /// </summary>
-    public TimeoutBehavior(IOptionsMonitor<AppConfig> config, ILogger<TimeoutBehavior<TRequest, TResponse>> logger)
+    public TimeoutBehavior(IOptionsMonitor<AgentConfig> config, ILogger<TimeoutBehavior<TRequest, TResponse>> logger)
     {
         _config = config;
         _logger = logger;
@@ -37,7 +37,7 @@ public sealed class TimeoutBehavior<TRequest, TResponse>
         CancellationToken cancellationToken)
     {
         var timeout = (request as IHasTimeout)?.Timeout
-            ?? TimeSpan.FromSeconds(_config.CurrentValue.Agent.DefaultRequestTimeoutSec);
+            ?? TimeSpan.FromSeconds(_config.CurrentValue.DefaultRequestTimeoutSec);
 
         try
         {

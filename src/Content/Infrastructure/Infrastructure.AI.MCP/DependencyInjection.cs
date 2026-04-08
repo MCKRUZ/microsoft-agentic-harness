@@ -1,5 +1,5 @@
 using Application.AI.Common.Interfaces;
-using Domain.Common.Config;
+using Domain.Common.Config.AI;
 using Infrastructure.AI.MCP.Services;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -30,10 +30,10 @@ public static class DependencyInjection
         // Connection manager — singleton, manages MCP client lifecycles
         services.AddSingleton<McpConnectionManager>(sp =>
         {
-            var appConfig = sp.GetRequiredService<IOptions<AppConfig>>();
+            var aiConfig = sp.GetRequiredService<IOptionsMonitor<AIConfig>>();
             var logger = sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<McpConnectionManager>>();
             var loggerFactory = sp.GetRequiredService<Microsoft.Extensions.Logging.ILoggerFactory>();
-            return new McpConnectionManager(logger, loggerFactory, appConfig.Value.AI.McpServers);
+            return new McpConnectionManager(logger, loggerFactory, aiConfig.CurrentValue.McpServers);
         });
 
         // Tool provider — singleton wrapping connection manager

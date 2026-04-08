@@ -42,11 +42,11 @@ public static class DependencyInjection
     /// Registers all Application.Common dependencies into the service collection.
     /// </summary>
     /// <param name="services">The service collection to configure.</param>
-    /// <param name="appConfig">Application configuration for logging and cache settings.</param>
+    /// <param name="loggingConfig">Logging configuration for provider activation decisions.</param>
     /// <returns>The service collection for chaining.</returns>
     public static IServiceCollection AddApplicationCommonDependencies(
         this IServiceCollection services,
-        AppConfig appConfig)
+        LoggingConfig? loggingConfig = null)
     {
         var assembly = Assembly.GetExecutingAssembly();
 
@@ -76,8 +76,8 @@ public static class DependencyInjection
         services.AddHybridCache(cfg =>
             cfg.DefaultEntryOptions = CacheOptionsHelper.GetHybridCacheOptions());
 
-        // Logging pipeline (providers configured by AppConfig.Logging)
-        services.ConfigureLogging(appConfig);
+        // Logging pipeline (providers configured by LoggingConfig)
+        services.ConfigureLogging(loggingConfig ?? new LoggingConfig());
 
         return services;
     }

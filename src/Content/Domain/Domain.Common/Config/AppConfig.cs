@@ -1,4 +1,6 @@
 using Domain.Common.Config.AI;
+using Domain.Common.Config.Azure;
+using Domain.Common.Config.Cache;
 using Domain.Common.Config.Connectors;
 using Domain.Common.Config.Http;
 using Domain.Common.Config.Infrastructure;
@@ -26,11 +28,11 @@ namespace Domain.Common.Config;
 /// ├── Infrastructure — State management, content providers
 /// ├── Connectors     — External system connector integrations
 /// ├── Observability  — Sampling, PII filtering, rate limiting, exporters
-/// └── AI             — MCP server/client, agent framework, model selection
+/// ├── AI             — MCP server/client, agent framework, model selection
+/// ├── Azure          — Azure platform services (AppInsights, SQL, B2C, KeyVault)
+/// └── Cache          — Caching strategy and Redis configuration
 /// </code>
 /// </para>
-/// Additional sections (AI, Database, etc.) will be added
-/// as the template expands.
 /// <para>
 /// <strong>Mutable setters are required by <c>IOptionsMonitor&lt;T&gt;</c> binding.</strong>
 /// Treat instances as read-only after DI setup. Do not mutate at runtime.
@@ -102,6 +104,18 @@ public class AppConfig
     /// settings, agent framework, and model selection.
     /// </summary>
     public AIConfig AI { get; set; } = new();
+
+    /// <summary>
+    /// Gets or sets the Azure platform services configuration including
+    /// Application Insights, SQL, Blob Storage, AD B2C, and Key Vault.
+    /// Services are only activated when their connection strings are configured.
+    /// </summary>
+    public AzureConfig Azure { get; set; } = new();
+
+    /// <summary>
+    /// Gets or sets the caching strategy and backing store configuration.
+    /// </summary>
+    public CacheConfig Cache { get; set; } = new();
 }
 
 /// <summary>
@@ -130,6 +144,20 @@ public class AgentConfig
 /// </summary>
 public class CommonConfig
 {
+    /// <summary>
+    /// Gets or sets the application display name, used in OTel resource attributes
+    /// and health check reporting.
+    /// </summary>
+    /// <value>Default: "AgenticHarness".</value>
+    public string ApplicationName { get; set; } = "AgenticHarness";
+
+    /// <summary>
+    /// Gets or sets the application version, used in OTel resource attributes
+    /// and API versioning metadata.
+    /// </summary>
+    /// <value>Default: "1.0".</value>
+    public string ApplicationVersion { get; set; } = "1.0";
+
     /// <summary>
     /// Gets or sets the threshold in seconds beyond which a request is considered slow.
     /// Used by <c>RequestPerformanceBehavior</c> to log warnings for slow operations.

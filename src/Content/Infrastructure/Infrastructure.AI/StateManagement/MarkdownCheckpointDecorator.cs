@@ -1,4 +1,3 @@
-using Domain.Common.Config;
 using Domain.Common.Config.Infrastructure;
 using Domain.Common.Workflow;
 using Infrastructure.AI.Generators;
@@ -46,17 +45,17 @@ public class MarkdownCheckpointDecorator : IStateManager
     /// <param name="inner">The inner state manager (typically JsonCheckpointStateManager)</param>
     /// <param name="logger">Logger for decorator operations</param>
     /// <param name="markdownGenerator">Generator for markdown output</param>
-    /// <param name="appConfig">Application configuration</param>
+    /// <param name="infraConfig">Infrastructure configuration</param>
     public MarkdownCheckpointDecorator(
         IStateManager inner,
         ILogger<MarkdownCheckpointDecorator> logger,
         IStateMarkdownGenerator markdownGenerator,
-        IOptionsMonitor<AppConfig> appConfig)
+        IOptionsMonitor<InfrastructureConfig> infraConfig)
     {
         _inner = inner;
         _logger = logger;
         _markdownGenerator = markdownGenerator;
-        _settings = appConfig.CurrentValue.Infrastructure.StateManagement;
+        _settings = infraConfig.CurrentValue.StateManagement;
 
         // Ensure base path exists
         if (!Directory.Exists(_settings.BasePath))

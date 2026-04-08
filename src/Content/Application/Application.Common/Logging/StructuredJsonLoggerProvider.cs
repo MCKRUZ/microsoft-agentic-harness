@@ -21,7 +21,7 @@ public sealed class StructuredJsonLoggerProvider : ILoggerProvider
 {
     private readonly ConcurrentDictionary<string, StructuredJsonLogger> _loggers = new();
     private readonly BlockingCollection<string> _messageQueue = new(1000);
-    private readonly IOptionsMonitor<AppConfig> _config;
+    private readonly IOptionsMonitor<LoggingConfig> _config;
     private readonly IExternalScopeProvider? _scopeProvider;
     private readonly object _lock = new();
 
@@ -43,7 +43,7 @@ public sealed class StructuredJsonLoggerProvider : ILoggerProvider
     /// <param name="config">Application configuration for resolving log paths.</param>
     /// <param name="scopeProvider">Optional scope provider for agent context extraction.</param>
     public StructuredJsonLoggerProvider(
-        IOptionsMonitor<AppConfig> config,
+        IOptionsMonitor<LoggingConfig> config,
         IExternalScopeProvider? scopeProvider = null)
     {
         _config = config;
@@ -65,7 +65,7 @@ public sealed class StructuredJsonLoggerProvider : ILoggerProvider
         {
             CloseCurrentRun();
 
-            var basePath = _config.CurrentValue.Logging.LogsBasePath;
+            var basePath = _config.CurrentValue.LogsBasePath;
             if (string.IsNullOrWhiteSpace(basePath))
                 return;
 

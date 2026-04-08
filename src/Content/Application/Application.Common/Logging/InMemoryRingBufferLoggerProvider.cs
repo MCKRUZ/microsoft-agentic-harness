@@ -12,7 +12,7 @@ namespace Application.Common.Logging;
 /// and debugging UIs to access recent log history without file I/O.
 /// </summary>
 /// <remarks>
-/// The buffer capacity is configured via <c>AppConfig.Logging.RingBufferCapacity</c>
+/// The buffer capacity is configured via <c>LoggingConfig.RingBufferCapacity</c>
 /// (default: 500). When the buffer is full, the oldest entry is silently discarded.
 /// <para>
 /// This provider is thread-safe and lock-free for writes. Reads via
@@ -45,10 +45,10 @@ public sealed class InMemoryRingBufferLoggerProvider : ILoggerProvider
     /// <param name="config">Application configuration for buffer capacity.</param>
     /// <param name="scopeProvider">Optional scope provider for agent context extraction.</param>
     public InMemoryRingBufferLoggerProvider(
-        IOptionsMonitor<AppConfig> config,
+        IOptionsMonitor<LoggingConfig> config,
         IExternalScopeProvider? scopeProvider = null)
     {
-        var capacity = Math.Max(10, config.CurrentValue.Logging.RingBufferCapacity);
+        var capacity = Math.Max(10, config.CurrentValue.RingBufferCapacity);
         _buffer = new LogEntry[capacity];
         _scopeProvider = scopeProvider;
     }

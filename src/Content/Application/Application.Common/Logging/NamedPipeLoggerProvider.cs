@@ -20,13 +20,13 @@ namespace Application.Common.Logging;
 /// # Linux/macOS
 /// cat /tmp/agentic-harness-logs
 /// </code>
-/// The pipe name is configurable via <c>AppConfig.Logging.PipeName</c>.
+/// The pipe name is configurable via <c>LoggingConfig.PipeName</c>.
 /// </remarks>
 public sealed class NamedPipeLoggerProvider : ILoggerProvider
 {
     private readonly ConcurrentDictionary<string, NamedPipeLogger> _loggers = new();
     private readonly BlockingCollection<string> _messageQueue = new(500);
-    private readonly IOptionsMonitor<AppConfig> _config;
+    private readonly IOptionsMonitor<LoggingConfig> _config;
     private readonly IExternalScopeProvider? _scopeProvider;
     private readonly CancellationTokenSource _cts = new();
     private readonly Thread _backgroundThread;
@@ -37,7 +37,7 @@ public sealed class NamedPipeLoggerProvider : ILoggerProvider
     /// </summary>
     /// <param name="config">Application configuration for pipe name resolution.</param>
     /// <param name="scopeProvider">Optional scope provider for agent context propagation.</param>
-    public NamedPipeLoggerProvider(IOptionsMonitor<AppConfig> config, IExternalScopeProvider? scopeProvider = null)
+    public NamedPipeLoggerProvider(IOptionsMonitor<LoggingConfig> config, IExternalScopeProvider? scopeProvider = null)
     {
         _config = config;
         _scopeProvider = scopeProvider;
@@ -63,7 +63,7 @@ public sealed class NamedPipeLoggerProvider : ILoggerProvider
 
     private void ProcessMessageQueue()
     {
-        var pipeName = _config.CurrentValue.Logging.PipeName;
+        var pipeName = _config.CurrentValue.PipeName;
 
         while (!_cts.Token.IsCancellationRequested)
         {

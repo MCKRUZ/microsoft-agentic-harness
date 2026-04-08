@@ -1,5 +1,4 @@
 using Application.Common.Interfaces.Security;
-using Domain.Common.Config;
 using Domain.Common.Config.Http;
 using Infrastructure.Common.Services;
 using Microsoft.Extensions.DependencyInjection;
@@ -34,11 +33,11 @@ public static class DependencyInjection
         // Transient: real implementations will read per-request claims from HttpContext
         services.AddTransient<IIdentityService, IdentityService>();
 
-        // HTTP authorization config — resolved from AppConfig for endpoint filters
+        // HTTP authorization config — resolved from HttpConfig for endpoint filters
         services.AddSingleton(sp =>
         {
-            var appConfig = sp.GetRequiredService<IOptionsMonitor<AppConfig>>();
-            return appConfig.CurrentValue.Http.Authorization;
+            var httpConfig = sp.GetRequiredService<IOptionsMonitor<HttpConfig>>();
+            return httpConfig.CurrentValue.Authorization;
         });
 
         return services;

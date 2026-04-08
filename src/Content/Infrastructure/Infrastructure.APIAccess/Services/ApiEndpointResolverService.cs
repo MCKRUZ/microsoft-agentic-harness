@@ -1,4 +1,3 @@
-using Domain.Common.Config;
 using Domain.Common.Config.Http;
 using Domain.Common.Models.Api;
 using Microsoft.Extensions.Caching.Memory;
@@ -10,7 +9,7 @@ namespace Infrastructure.APIAccess.Services;
 
 /// <summary>
 /// Resolves API endpoints and retrieves strongly-typed HTTP client configurations
-/// from <see cref="AppConfig"/>. Caches resolved endpoints to reduce repeated lookups.
+/// from <see cref="HttpConfig"/>. Caches resolved endpoints to reduce repeated lookups.
 /// </summary>
 /// <remarks>
 /// When service discovery is enabled for a client, this service health-checks all
@@ -19,26 +18,26 @@ namespace Infrastructure.APIAccess.Services;
 /// </remarks>
 public sealed class ApiEndpointResolverService
 {
-    private readonly IOptionsMonitor<AppConfig> _appConfig;
+    private readonly IOptionsMonitor<HttpConfig> _httpConfig;
     private readonly ILogger<ApiEndpointResolverService> _logger;
     private readonly IMemoryCache _cache;
 
     /// <summary>
     /// Initializes a new instance of <see cref="ApiEndpointResolverService"/>.
     /// </summary>
-    /// <param name="appConfig">Monitor for accessing current application configuration.</param>
+    /// <param name="httpConfig">Monitor for accessing current HTTP configuration.</param>
     /// <param name="logger">Logger for recording resolution events and errors.</param>
     /// <param name="cache">Memory cache for storing resolved endpoints.</param>
     public ApiEndpointResolverService(
-        IOptionsMonitor<AppConfig> appConfig,
+        IOptionsMonitor<HttpConfig> httpConfig,
         ILogger<ApiEndpointResolverService> logger,
         IMemoryCache cache)
     {
-        ArgumentNullException.ThrowIfNull(appConfig);
+        ArgumentNullException.ThrowIfNull(httpConfig);
         ArgumentNullException.ThrowIfNull(logger);
         ArgumentNullException.ThrowIfNull(cache);
 
-        _appConfig = appConfig;
+        _httpConfig = httpConfig;
         _logger = logger;
         _cache = cache;
     }

@@ -1,6 +1,5 @@
 using Asp.Versioning;
 using CorrelationId.HttpClient;
-using Domain.Common.Config;
 using Domain.Common.Config.Http;
 using Domain.Common.Constants;
 using Infrastructure.APIAccess.Handlers;
@@ -115,18 +114,18 @@ public static class IServiceCollectionExtensions
     /// Only configures Swagger when <c>OpenApiEnabled</c> is true in configuration.
     /// Includes XML documentation comments and security scheme when authorization is not service-managed.
     /// </remarks>
-    public static IServiceCollection AddCustomSwaggerGen(this IServiceCollection services, AppConfig appConfig)
+    public static IServiceCollection AddCustomSwaggerGen(this IServiceCollection services, HttpConfig httpConfig)
     {
-        ArgumentNullException.ThrowIfNull(appConfig);
+        ArgumentNullException.ThrowIfNull(httpConfig);
 
-        if (!appConfig.Http.HttpSwagger.OpenApiEnabled)
+        if (!httpConfig.HttpSwagger.OpenApiEnabled)
             return services;
 
         services.AddEndpointsApiExplorer();
 
         services.AddSwaggerGen(c =>
         {
-            var spec = appConfig.Http.HttpSwagger.OpenApiSpec;
+            var spec = httpConfig.HttpSwagger.OpenApiSpec;
             var info = spec.HttpOpenApiInfo;
 
             c.SwaggerDoc(spec.SpecName, new OpenApiInfo
@@ -153,7 +152,7 @@ public static class IServiceCollectionExtensions
             if (File.Exists(xmlFilePath))
                 c.IncludeXmlComments(xmlFilePath);
 
-            if (appConfig.Http.HttpSwagger.ServiceAuthorizationEnabled)
+            if (httpConfig.HttpSwagger.ServiceAuthorizationEnabled)
                 return;
 
             var securityScheme = info.HttpOpenApiSecurityScheme;
@@ -215,11 +214,11 @@ public static class IServiceCollectionExtensions
     /// <param name="services">The service collection to configure.</param>
     /// <param name="appConfig">Application configuration containing allowed origins.</param>
     /// <returns>The service collection for chaining.</returns>
-    public static IServiceCollection AddCustomCorsPolicy(this IServiceCollection services, AppConfig appConfig)
+    public static IServiceCollection AddCustomCorsPolicy(this IServiceCollection services, HttpConfig httpConfig)
     {
-        ArgumentNullException.ThrowIfNull(appConfig);
+        ArgumentNullException.ThrowIfNull(httpConfig);
 
-        var origins = appConfig.Http.CorsAllowedOrigins
+        var origins = httpConfig.CorsAllowedOrigins
             .Split(';', StringSplitOptions.RemoveEmptyEntries);
 
         services.AddCors(options =>
@@ -279,28 +278,28 @@ public static class IServiceCollectionExtensions
         services.AddResiliencePipeline(configurationName, (builder, context) =>
         {
             var serviceProvider = context.ServiceProvider;
-            var appConfig = serviceProvider.GetService<IOptionsMonitor<AppConfig>>()!.CurrentValue;
+            var httpConfig = serviceProvider.GetService<IOptionsMonitor<HttpConfig>>()!.CurrentValue;
 
             builder.AddRetry(new RetryStrategyOptions
             {
                 ShouldHandle = ex => new ValueTask<bool>(RetryableExceptions.Contains(ex.GetType())),
                 BackoffType = DelayBackoffType.Exponential,
                 UseJitter = true,
-                MaxRetryAttempts = appConfig.Http.Policies.HttpRetry.Count,
-                Delay = appConfig.Http.Policies.HttpRetry.Delay,
+                MaxRetryAttempts = httpConfig.Policies.HttpRetry.Count,
+                Delay = httpConfig.Policies.HttpRetry.Delay,
             });
 
             builder.AddTimeout(new TimeoutStrategyOptions
             {
-                Timeout = appConfig.Http.Policies.HttpTimeout.Timeout,
+                Timeout = httpConfig.Policies.HttpTimeout.Timeout,
             });
 
             builder.AddCircuitBreaker(new CircuitBreakerStrategyOptions
             {
-                FailureRatio = appConfig.Http.Policies.HttpCircuitBreaker.FailureRatio,
+                FailureRatio = httpConfig.Policies.HttpCircuitBreaker.FailureRatio,
                 SamplingDuration = TimeSpan.FromSeconds(30),
                 MinimumThroughput = 100,
-                BreakDuration = appConfig.Http.Policies.HttpCircuitBreaker.DurationOfBreak,
+                BreakDuration = httpConfig.Policies.HttpCircuitBreaker.DurationOfBreak,
             });
 
             builder.AddRateLimiter(new SlidingWindowRateLimiter(
@@ -343,8 +342,8 @@ public static class IServiceCollectionExtensions
             {
                 httpClientBuilder.ConfigureHttpClient((serviceProvider, httpClient) =>
                 {
-                    var appConfig = serviceProvider.GetRequiredService<IOptionsMonitor<AppConfig>>().CurrentValue;
-                    httpClient.Timeout = appConfig.Http.Policies.HttpTimeout.Timeout;
+                    var httpConfig = serviceProvider.GetRequiredService<IOptionsMonitor<HttpConfig>>().CurrentValue;
+                    httpClient.Timeout = httpConfig.Policies.HttpTimeout.Timeout;
                 });
 
                 httpClientBuilder.ConfigurePrimaryHttpMessageHandler(_ => new DefaultHttpClientHandler());

@@ -47,4 +47,25 @@ public class ObservabilityConfig
     /// Gets or sets the LLM token pricing configuration for cost estimation.
     /// </summary>
     public LlmPricingConfig LlmPricing { get; set; } = new();
+
+    /// <summary>
+    /// Gets or sets whether sensitive telemetry data (e.g., GenAI prompt/completion content)
+    /// is recorded in traces. Controls the <c>Microsoft.SemanticKernel.Experimental.GenAI.EnableOTelDiagnosticsSensitive</c>
+    /// AppContext switch. When <c>false</c>, only non-sensitive GenAI metadata (model, token counts)
+    /// is captured; prompt and completion text is omitted.
+    /// </summary>
+    /// <value>Default: <c>false</c>. Must be explicitly opted into — never enable in production
+    /// unless PII filtering and data retention policies are in place.</value>
+    public bool EnableSensitiveTelemetry { get; set; }
+
+    /// <summary>
+    /// Gets or sets the list of project assembly names that should use
+    /// web-specific OpenTelemetry configuration (ASP.NET Core instrumentation).
+    /// Projects not in this list use desktop/standalone OTel configuration.
+    /// </summary>
+    /// <value>Default: ["Infrastructure.AI.MCPServer"].</value>
+    public List<string> WebTelemetryProjects { get; set; } =
+    [
+        "Infrastructure.AI.MCPServer"
+    ];
 }

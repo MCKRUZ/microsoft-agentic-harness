@@ -22,7 +22,7 @@ public static class IServiceCollectionExtensions
     /// Provider activation is driven by <see cref="LoggingConfig"/> settings.
     /// </summary>
     /// <param name="services">The service collection to configure.</param>
-    /// <param name="appConfig">Application configuration containing logging settings.</param>
+    /// <param name="loggingConfig">Logging configuration for provider activation decisions.</param>
     /// <returns>The service collection for chaining.</returns>
     /// <remarks>
     /// <para>Providers registered:</para>
@@ -37,7 +37,7 @@ public static class IServiceCollectionExtensions
     /// </remarks>
     public static IServiceCollection ConfigureLogging(
         this IServiceCollection services,
-        AppConfig appConfig)
+        LoggingConfig loggingConfig)
     {
         services.AddLogging(builder =>
         {
@@ -56,15 +56,15 @@ public static class IServiceCollectionExtensions
             });
 
             // Named pipe for real-time streaming to a separate viewer
-            if (!string.IsNullOrWhiteSpace(appConfig.Logging.PipeName))
+            if (!string.IsNullOrWhiteSpace(loggingConfig.PipeName))
                 builder.AddNamedPipe();
 
             // File-based logging (human-readable + optional structured JSON)
-            if (!string.IsNullOrWhiteSpace(appConfig.Logging.LogsBasePath))
+            if (!string.IsNullOrWhiteSpace(loggingConfig.LogsBasePath))
             {
                 builder.AddFileLogger();
 
-                if (appConfig.Logging.EnableStructuredJson)
+                if (loggingConfig.EnableStructuredJson)
                     builder.AddStructuredJsonLogger();
             }
 

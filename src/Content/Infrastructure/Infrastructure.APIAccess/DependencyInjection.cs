@@ -1,5 +1,4 @@
 using CorrelationId.DependencyInjection;
-using Domain.Common.Config;
 using Infrastructure.APIAccess.Auth.Handlers;
 using Infrastructure.APIAccess.Auth.Providers;
 using Infrastructure.APIAccess.Common.Extensions;
@@ -20,7 +19,6 @@ public static class DependencyInjection
     /// Adds all Infrastructure.APIAccess dependencies to the service collection.
     /// </summary>
     /// <param name="services">The service collection to add services to.</param>
-    /// <param name="appConfig">The application configuration for HTTP settings.</param>
     /// <returns>The service collection for chaining.</returns>
     /// <remarks>
     /// Registers the following:
@@ -33,11 +31,8 @@ public static class DependencyInjection
     /// </list>
     /// </remarks>
     public static IServiceCollection AddInfrastructureApiAccessDependencies(
-        this IServiceCollection services,
-        AppConfig appConfig)
+        this IServiceCollection services)
     {
-        ArgumentNullException.ThrowIfNull(appConfig);
-
         services
             .AddDefaultCorrelationId(options =>
             {

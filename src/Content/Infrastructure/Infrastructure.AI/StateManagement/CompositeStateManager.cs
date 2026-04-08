@@ -1,4 +1,4 @@
-using Domain.Common.Config;
+using Domain.Common.Config.Infrastructure;
 using Domain.Common.Workflow;
 using Infrastructure.AI.Generators;
 using Infrastructure.AI.StateManagement.Checkpoints;
@@ -44,19 +44,18 @@ public class CompositeStateManager : IStateManager
     /// </summary>
     /// <param name="logger">Logger for operations</param>
     /// <param name="markdownGenerator">Generator for markdown output</param>
-    /// <param name="appConfig">Application configuration</param>
+    /// <param name="infraConfig">Infrastructure configuration</param>
     public CompositeStateManager(
         ILogger<CompositeStateManager> logger,
         IStateMarkdownGenerator markdownGenerator,
-        IOptionsMonitor<AppConfig> appConfig)
+        IOptionsMonitor<InfrastructureConfig> infraConfig)
     {
-        var settings = appConfig.CurrentValue.Infrastructure.StateManagement;
+        var settings = infraConfig.CurrentValue.StateManagement;
 
         // Create the inner manager (JSON checkpointing) with its own logger type
-        var afLogger = NullLogger<JsonCheckpointStateManager>.Instance;
         var inner = new JsonCheckpointStateManager(
             NullLogger<JsonCheckpointStateManager>.Instance,
-            appConfig);
+            infraConfig);
 
         // Only wrap with decorator if markdown generation is enabled
         if (settings.EnableMarkdownGeneration)
@@ -67,7 +66,7 @@ public class CompositeStateManager : IStateManager
                 inner,
                 decoratorLogger,
                 markdownGenerator,
-                appConfig);
+                infraConfig);
         }
         else
         {
@@ -81,14 +80,14 @@ public class CompositeStateManager : IStateManager
     /// <param name="inner">The inner state manager to wrap with markdown generation</param>
     /// <param name="logger">Logger for operations</param>
     /// <param name="markdownGenerator">Generator for markdown output</param>
-    /// <param name="appConfig">Application configuration</param>
+    /// <param name="infraConfig">Infrastructure configuration</param>
     public CompositeStateManager(
         IStateManager inner,
         ILogger<CompositeStateManager> logger,
         IStateMarkdownGenerator markdownGenerator,
-        IOptionsMonitor<AppConfig> appConfig)
+        IOptionsMonitor<InfrastructureConfig> infraConfig)
     {
-        var settings = appConfig.CurrentValue.Infrastructure.StateManagement;
+        var settings = infraConfig.CurrentValue.StateManagement;
 
         // Only wrap with decorator if markdown generation is enabled
         if (settings.EnableMarkdownGeneration)
@@ -99,7 +98,7 @@ public class CompositeStateManager : IStateManager
                 inner,
                 decoratorLogger,
                 markdownGenerator,
-                appConfig);
+                infraConfig);
         }
         else
         {

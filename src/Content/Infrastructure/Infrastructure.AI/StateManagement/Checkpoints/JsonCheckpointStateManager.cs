@@ -1,4 +1,3 @@
-using Domain.Common.Config;
 using Domain.Common.Config.Infrastructure;
 using Domain.Common.Workflow;
 using Microsoft.Extensions.Logging;
@@ -45,10 +44,10 @@ public class JsonCheckpointStateManager : IStateManager
 
     public JsonCheckpointStateManager(
         ILogger<JsonCheckpointStateManager> logger,
-        IOptionsMonitor<AppConfig> appConfig)
+        IOptionsMonitor<InfrastructureConfig> infraConfig)
     {
         _logger = logger;
-        _settings = appConfig.CurrentValue.Infrastructure.StateManagement;
+        _settings = infraConfig.CurrentValue.StateManagement;
 
         // Configure JSON options for Agent Framework compatibility
         _jsonOptions = new JsonSerializerOptions

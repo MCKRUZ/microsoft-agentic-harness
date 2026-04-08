@@ -36,7 +36,7 @@ public sealed class FileLoggerProvider : ILoggerProvider
 {
     private readonly ConcurrentDictionary<string, FileLogger> _loggers = new();
     private readonly BlockingCollection<(string Structured, string Console)> _messageQueue = new(1000);
-    private readonly IOptionsMonitor<AppConfig> _config;
+    private readonly IOptionsMonitor<LoggingConfig> _config;
     private readonly IExternalScopeProvider? _scopeProvider;
     private readonly object _lock = new();
 
@@ -61,7 +61,7 @@ public sealed class FileLoggerProvider : ILoggerProvider
     /// </summary>
     /// <param name="config">Application configuration for resolving log paths.</param>
     /// <param name="scopeProvider">Optional scope provider for agent context propagation.</param>
-    public FileLoggerProvider(IOptionsMonitor<AppConfig> config, IExternalScopeProvider? scopeProvider = null)
+    public FileLoggerProvider(IOptionsMonitor<LoggingConfig> config, IExternalScopeProvider? scopeProvider = null)
     {
         _config = config;
         _scopeProvider = scopeProvider;
@@ -83,7 +83,7 @@ public sealed class FileLoggerProvider : ILoggerProvider
         {
             CloseCurrentRun();
 
-            var basePath = _config.CurrentValue.Logging.LogsBasePath;
+            var basePath = _config.CurrentValue.LogsBasePath;
             if (string.IsNullOrWhiteSpace(basePath))
                 return;
 
@@ -128,7 +128,7 @@ public sealed class FileLoggerProvider : ILoggerProvider
 
             if (manifest is not null && _currentRunId is not null)
             {
-                var basePath = _config.CurrentValue.Logging.LogsBasePath;
+                var basePath = _config.CurrentValue.LogsBasePath;
                 if (!string.IsNullOrWhiteSpace(basePath))
                 {
                     var manifestWithCount = manifest with { LogEntryCount = _logEntryCount };

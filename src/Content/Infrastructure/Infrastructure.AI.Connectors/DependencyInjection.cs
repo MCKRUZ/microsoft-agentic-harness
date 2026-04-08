@@ -1,6 +1,5 @@
 using Application.AI.Common.Interfaces.Connectors;
 using Application.AI.Common.Interfaces.Tools;
-using Domain.Common.Config;
 using Infrastructure.AI.Connectors.AzureDevOps;
 using Infrastructure.AI.Connectors.Core;
 using Infrastructure.AI.Connectors.GitHub;
@@ -31,11 +30,9 @@ public static class DependencyInjection
     /// Registers AI connector clients and related services.
     /// </summary>
     /// <param name="services">The service collection.</param>
-    /// <param name="appConfig">Application configuration for validation.</param>
     /// <returns>The service collection for chaining.</returns>
     public static IServiceCollection AddAIConnectors(
-        this IServiceCollection services,
-        AppConfig appConfig)
+        this IServiceCollection services)
     {
         // Register connector clients
         services.AddSingleton<IConnectorClient, AzureDevOpsWorkItemsConnector>();
