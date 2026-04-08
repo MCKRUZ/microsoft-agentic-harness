@@ -1,3 +1,4 @@
+using Domain.Common.Config.AI;
 using Domain.Common.Config.Connectors;
 using Domain.Common.Config.Http;
 using Domain.Common.Config.Infrastructure;
@@ -24,7 +25,8 @@ namespace Domain.Common.Config;
 /// ├── Http           — HTTP settings (CORS, authorization, maintenance)
 /// ├── Infrastructure — State management, content providers
 /// ├── Connectors     — External system connector integrations
-/// └── Observability  — Sampling, PII filtering, rate limiting, exporters
+/// ├── Observability  — Sampling, PII filtering, rate limiting, exporters
+/// └── AI             — MCP server/client, agent framework, model selection
 /// </code>
 /// </para>
 /// Additional sections (AI, Database, etc.) will be added
@@ -94,6 +96,12 @@ public class AppConfig
     /// tail-based sampling, PII filtering, rate limiting, and multi-backend export.
     /// </summary>
     public ObservabilityConfig Observability { get; set; } = new();
+
+    /// <summary>
+    /// Gets or sets the AI services configuration including MCP server/client
+    /// settings, agent framework, and model selection.
+    /// </summary>
+    public AIConfig AI { get; set; } = new();
 }
 
 /// <summary>
