@@ -10,6 +10,7 @@
     <!-- Application layer -->
     <ProjectReference Include="..\..\Application\Application.Common\Application.Common.csproj" />
     <ProjectReference Include="..\..\Application\Application.AI.Common\Application.AI.Common.csproj" />
+    <ProjectReference Include="..\..\Application\Application.Core\Application.Core.csproj" />
 
     <!-- Infrastructure layer -->
     <ProjectReference Include="..\..\Infrastructure\Infrastructure.Common\Infrastructure.Common.csproj" />

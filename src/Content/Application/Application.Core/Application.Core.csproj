@@ -4,19 +4,24 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <RootNamespace>Application.AI.Common</RootNamespace>
+    <RootNamespace>Application.Core</RootNamespace>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Azure.AI.Agents.Persistent" Version="1.0.0" />
+    <PackageReference Include="FluentValidation" Version="11.11.0" />
+    <PackageReference Include="MediatR" Version="12.4.1" />
     <PackageReference Include="Microsoft.Agents.AI" Version="1.0.0-rc4" />
-    <PackageReference Include="Microsoft.Extensions.AI" Version="10.3.0" />
-    <PackageReference Include="Microsoft.Extensions.Caching.Abstractions" Version="10.0.5" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Agents\Skills\**\*.md" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\Application.Common\Application.Common.csproj" />
+    <ProjectReference Include="..\Application.AI.Common\Application.AI.Common.csproj" />
     <ProjectReference Include="..\..\Domain\Domain.AI\Domain.AI.csproj" />
+    <ProjectReference Include="..\..\Domain\Domain.Common\Domain.Common.csproj" />
   </ItemGroup>
 
 </Project>

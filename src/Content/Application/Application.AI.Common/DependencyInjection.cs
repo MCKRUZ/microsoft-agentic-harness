@@ -1,5 +1,11 @@
+using Application.AI.Common.Factories;
+using Application.AI.Common.Interfaces;
+using Application.AI.Common.Interfaces.Context;
+using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.MediatRBehaviors;
 using Application.AI.Common.OpenTelemetry;
+using Application.AI.Common.Services.Context;
+using Application.AI.Common.Services.Tools;
 using Application.Common.Interfaces.Telemetry;
 using MediatR;
 using Microsoft.Extensions.DependencyInjection;
@@ -53,6 +59,17 @@ public static class DependencyInjection
 
         // AI telemetry configurator — registers AI SDK OTel sources and processors
         services.AddSingleton<ITelemetryConfigurator, AiTelemetryConfigurator>();
+
+        // Agent factories — context mapping and agent creation
+        services.AddSingleton<AgentExecutionContextFactory>();
+        services.AddSingleton<IAgentFactory, AgentFactory>();
+
+        // Tool conversion — ITool to AITool bridge for keyed DI tools
+        services.AddSingleton<IToolConverter, AIToolConverter>();
+
+        // Context budget tracking and tiered context assembly
+        services.AddSingleton<IContextBudgetTracker, ContextBudgetTracker>();
+        services.AddTransient<ITieredContextAssembler, TieredContextAssembler>();
 
         return services;
     }

@@ -6,6 +6,7 @@
   <Folder Name="/Application/">
     <Project Path="Content/Application/Application.Common/Application.Common.csproj" />
     <Project Path="Content/Application/Application.AI.Common/Application.AI.Common.csproj" />
+    <Project Path="Content/Application/Application.Core/Application.Core.csproj" />
   </Folder>
   <Folder Name="/Infrastructure/">
     <Project Path="Content/Infrastructure/Infrastructure.Common/Infrastructure.Common.csproj" />
@@ -18,5 +19,7 @@
   </Folder>
   <Folder Name="/Presentation/">
     <Project Path="Content/Presentation/Presentation.Common/Presentation.Common.csproj" />
+    <Project Path="Content/Presentation/Presentation.LoggerUI/Presentation.LoggerUI.csproj" />
+    <Project Path="Content/Presentation/Presentation.ConsoleUI/Presentation.ConsoleUI.csproj" />
   </Folder>
 </Solution>

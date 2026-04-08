@@ -1,5 +1,6 @@
 using Application.AI.Common;
 using Application.Common;
+using Application.Core;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
 using Domain.Common.Config.Azure;
@@ -213,7 +214,7 @@ public static class IServiceCollectionExtensions
     ///   <item>Application.Common — MediatR, FluentValidation, pipeline behaviors</item>
     ///   <item>Application.AI.Common — Agent pipeline behaviors, AI telemetry configurator</item>
     ///   <item>Infrastructure.Common — Identity, HTTP authorization config</item>
-    ///   <item>Infrastructure.AI — Tools, state management, file system</item>
+    ///   <item>Infrastructure.AI — Tools, state management, file system, persistent agents</item>
     ///   <item>Infrastructure.AI.Connectors — External API connector clients</item>
     ///   <item>Infrastructure.AI.MCP — MCP client connection manager</item>
     ///   <item>Infrastructure.APIAccess — HTTP client factory, resilience, auth handlers</item>
@@ -227,12 +228,11 @@ public static class IServiceCollectionExtensions
         // Application layer
         services.AddApplicationCommonDependencies(appConfig.Logging);
         services.AddApplicationAIDependencies();
+        services.AddApplicationCoreDependencies();
 
         // Infrastructure layer
         services.AddInfrastructureCommonDependencies();
-        services.AddInfrastructureAIDependencies(
-            new[] { appConfig.Logging.LogsBasePath ?? string.Empty }
-                .Where(p => !string.IsNullOrEmpty(p)));
+        services.AddInfrastructureAIDependencies(appConfig);
         services.AddAIConnectors();
         services.AddMcpClientDependencies();
         services.AddInfrastructureApiAccessDependencies();
