@@ -21,6 +21,7 @@ public class App
 	private readonly ToolConverterExample _toolConverterExample;
 	private readonly PersistentAgentExample _persistentAgentExample;
 	private readonly A2AExample _a2aExample;
+	private readonly SetupSecretsExample _setupSecretsExample;
 
 	public App(
 		IOptionsMonitor<AppConfig> appConfig,
@@ -30,7 +31,8 @@ public class App
 		McpToolsExample mcpToolsExample,
 		ToolConverterExample toolConverterExample,
 		PersistentAgentExample persistentAgentExample,
-		A2AExample a2aExample)
+		A2AExample a2aExample,
+		SetupSecretsExample setupSecretsExample)
 	{
 		_appConfig = appConfig;
 		_loggerFactory = loggerFactory;
@@ -40,6 +42,7 @@ public class App
 		_toolConverterExample = toolConverterExample;
 		_persistentAgentExample = persistentAgentExample;
 		_a2aExample = a2aExample;
+		_setupSecretsExample = setupSecretsExample;
 	}
 
 	/// <summary>
@@ -81,6 +84,9 @@ public class App
 			case "a2a":
 				await _a2aExample.RunAsync();
 				break;
+			case "setup-secrets":
+				await _setupSecretsExample.RunAsync();
+				break;
 			default:
 				ConsoleHelper.DisplayError($"Unknown example: {exampleName}");
 				break;
@@ -103,7 +109,8 @@ public class App
 					"Tool Converter Demo",
 					"Persistent Agent (AI Foundry)",
 					"A2A Agent-to-Agent")
-				.AddChoiceGroup("[bold]Info[/]",
+				.AddChoiceGroup("[bold]Setup[/]",
+					"Setup User Secrets",
 					"Show Configuration")
 				.AddChoices("Exit"));
 
@@ -133,6 +140,10 @@ public class App
 
 				case "A2A Agent-to-Agent":
 					await _a2aExample.RunAsync();
+					break;
+
+				case "Setup User Secrets":
+					await _setupSecretsExample.RunAsync();
 					break;
 
 				case "Show Configuration":

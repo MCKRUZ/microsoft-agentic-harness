@@ -65,6 +65,8 @@ public sealed class ChatClientFactory : IChatClientFactory, IDisposable
         {
             AIAgentFrameworkClientType.AzureOpenAI => _serviceProvider.GetService<AzureOpenAIClient>() != null,
             AIAgentFrameworkClientType.OpenAI => _serviceProvider.GetService<OpenAIClient>() != null,
+            AIAgentFrameworkClientType.AzureAIInference => !string.IsNullOrWhiteSpace(_appConfig.CurrentValue.AI.AgentFramework.Endpoint)
+                && _appConfig.CurrentValue.AI.AgentFramework.IsConfigured,
             AIAgentFrameworkClientType.PersistentAgents => _adminClient != null,
             _ => false
         };
@@ -80,6 +82,7 @@ public sealed class ChatClientFactory : IChatClientFactory, IDisposable
         {
             AIAgentFrameworkClientType.AzureOpenAI => await GetAzureOpenAIChatClientAsync(deploymentOrAgentId, cancellationToken),
             AIAgentFrameworkClientType.OpenAI => await GetOpenAIChatClientAsync(deploymentOrAgentId, cancellationToken),
+            AIAgentFrameworkClientType.AzureAIInference => await GetAzureAIInferenceChatClientAsync(deploymentOrAgentId, cancellationToken),
             AIAgentFrameworkClientType.PersistentAgents => await GetPersistentAgentChatClientAsync(deploymentOrAgentId, cancellationToken),
             _ => throw new ArgumentException($"Unsupported AI framework client type: {clientType}", nameof(clientType))
         };
@@ -92,6 +95,7 @@ public sealed class ChatClientFactory : IChatClientFactory, IDisposable
         {
             { AIAgentFrameworkClientType.AzureOpenAI, IsAvailable(AIAgentFrameworkClientType.AzureOpenAI) },
             { AIAgentFrameworkClientType.OpenAI, IsAvailable(AIAgentFrameworkClientType.OpenAI) },
+            { AIAgentFrameworkClientType.AzureAIInference, IsAvailable(AIAgentFrameworkClientType.AzureAIInference) },
             { AIAgentFrameworkClientType.PersistentAgents, IsAvailable(AIAgentFrameworkClientType.PersistentAgents) }
         };
     }
@@ -130,6 +134,63 @@ public sealed class ChatClientFactory : IChatClientFactory, IDisposable
                 "AzureOpenAI is not configured. Register AzureOpenAIClient in DI.");
 
         return Task.FromResult(client.GetChatClient(deploymentName).AsIChatClient());
+    }
+
+    /// <summary>
+    /// Creates an <see cref="IChatClient"/> for Azure AI Foundry model deployments (Claude, Mistral, etc.)
+    /// using the OpenAI-compatible API that Azure AI Foundry exposes for all hosted models.
+    /// The client is created with a custom endpoint and cached for reuse.
+    /// </summary>
+    private async Task<IChatClient> GetAzureAIInferenceChatClientAsync(string deploymentName, CancellationToken cancellationToken)
+    {
+        var cacheKey = $"inference_{deploymentName}";
+
+        if (_clientCache.TryGetValue(cacheKey, out IChatClient? cached) && cached is not null)
+            return cached;
+
+        await _cacheLock.WaitAsync(cancellationToken);
+        try
+        {
+            if (_clientCache.TryGetValue(cacheKey, out cached) && cached is not null)
+                return cached;
+
+            var config = _appConfig.CurrentValue.AI.AgentFramework;
+            if (string.IsNullOrWhiteSpace(config.Endpoint) || string.IsNullOrWhiteSpace(config.ApiKey))
+            {
+                throw new InvalidOperationException(
+                    "Azure AI Inference is not configured. " +
+                    "Set AppConfig.AI.AgentFramework.Endpoint and ApiKey.");
+            }
+
+            if (!Uri.TryCreate(config.Endpoint, UriKind.Absolute, out var endpointUri))
+            {
+                throw new InvalidOperationException(
+                    $"Invalid Azure AI Inference endpoint URI: '{config.Endpoint}'");
+            }
+
+            _logger?.LogInformation(
+                "Creating Azure AI Inference client for deployment {Deployment} at {Endpoint}",
+                deploymentName, config.Endpoint);
+
+            var options = new OpenAIClientOptions { Endpoint = endpointUri };
+            var client = new OpenAIClient(
+                new System.ClientModel.ApiKeyCredential(config.ApiKey),
+                options);
+
+            var chatClient = client.GetChatClient(deploymentName).AsIChatClient();
+
+            _clientCache.Set(cacheKey, chatClient, new MemoryCacheEntryOptions
+            {
+                SlidingExpiration = TimeSpan.FromHours(1),
+                Size = 1
+            });
+
+            return chatClient;
+        }
+        finally
+        {
+            _cacheLock.Release();
+        }
     }
 
     private Task<IChatClient> GetOpenAIChatClientAsync(string deploymentName, CancellationToken cancellationToken)

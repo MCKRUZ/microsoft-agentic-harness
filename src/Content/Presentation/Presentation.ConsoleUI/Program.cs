@@ -16,6 +16,7 @@ namespace Presentation.ConsoleUI;
 ///   <item><c>--example tool-converter</c> — Run the tool converter demo non-interactively</item>
 ///   <item><c>--example persistent-agent</c> — Run the persistent agent demo non-interactively</item>
 ///   <item><c>--example a2a</c> — Run the A2A agent-to-agent demo non-interactively</item>
+///   <item><c>--example setup-secrets</c> — Run the user secrets setup wizard</item>
 ///   <item>(no args) — Interactive menu mode</item>
 /// </list>
 /// </remarks>
@@ -36,6 +37,7 @@ public class Program
 		services.AddTransient<ToolConverterExample>();
 		services.AddTransient<PersistentAgentExample>();
 		services.AddTransient<A2AExample>();
+		services.AddTransient<SetupSecretsExample>();
 		services.AddTransient<App>();
 
 		var serviceProvider = services.BuildServiceProvider();

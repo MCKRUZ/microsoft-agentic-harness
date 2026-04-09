@@ -84,7 +84,9 @@ public class ResearchAgentExample
 
 		while (true)
 		{
-			var input = AnsiConsole.Ask<string>($"[bold]Message {messages.Count + 1}:[/]");
+			var input = AnsiConsole.Prompt(
+				new TextPrompt<string>($"[bold]Message {messages.Count + 1}:[/]")
+					.AllowEmpty());
 			if (string.IsNullOrWhiteSpace(input)) break;
 			messages.Add(input);
 		}

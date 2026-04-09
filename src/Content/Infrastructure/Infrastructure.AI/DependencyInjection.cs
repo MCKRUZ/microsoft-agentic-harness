@@ -10,17 +10,22 @@ using Application.AI.Common.Interfaces.Prompts;
 using Application.AI.Common.Interfaces.Tools;
 using Application.Common.Factories;
 using Azure.AI.Agents.Persistent;
+using Azure.AI.OpenAI;
 using Domain.Common.Config;
+using Domain.Common.Config.AI;
 using Infrastructure.AI.A2A;
+using OpenAI;
 using Infrastructure.AI.Agents;
 using Infrastructure.AI.Compaction;
 using Infrastructure.AI.Compaction.Strategies;
 using Infrastructure.AI.Config;
+using Infrastructure.AI.Helpers;
 using Infrastructure.AI.Factories;
 using Infrastructure.AI.Generators;
 using Infrastructure.AI.Hooks;
 using Infrastructure.AI.Permissions;
 using Infrastructure.AI.Prompts;
+using Infrastructure.AI.Skills;
 using Infrastructure.AI.Prompts.Sections;
 using Infrastructure.AI.StateManagement;
 using Infrastructure.AI.StateManagement.Checkpoints;
@@ -58,6 +63,9 @@ public static class DependencyInjection
         this IServiceCollection services,
         AppConfig appConfig)
     {
+        // AI client registration — AzureOpenAIClient or OpenAIClient based on config
+        RegisterAIClients(services, appConfig);
+
         var allowedBasePaths = new[] { appConfig.Logging.LogsBasePath ?? string.Empty }
             .Where(p => !string.IsNullOrEmpty(p));
 
@@ -79,8 +87,11 @@ public static class DependencyInjection
                 appConfig.AI.AIFoundry.ProjectEndpoint, credential));
         }
 
-        // Chat client factory — creates IChatClient from Azure OpenAI / OpenAI / Persistent Agents
+        // Chat client factory — creates IChatClient from Azure OpenAI / OpenAI / AI Inference / Persistent Agents
         services.AddSingleton<IChatClientFactory, ChatClientFactory>();
+
+        // Skill loader — in-memory implementation for POC
+        services.AddSingleton<ISkillLoaderService, InMemorySkillLoaderService>();
 
         // Batched tool execution — parallel reads, serial writes
         services.AddSingleton<IToolConcurrencyClassifier, ToolConcurrencyClassifier>();
@@ -133,5 +144,37 @@ public static class DependencyInjection
         services.AddTransient<IConfigDiscoveryService, DirectoryWalkConfigDiscovery>();
 
         return services;
+    }
+
+    private static void RegisterAIClients(IServiceCollection services, AppConfig appConfig)
+    {
+        var framework = appConfig.AI.AgentFramework;
+        if (!framework.IsConfigured)
+            return;
+
+        switch (framework.ClientType)
+        {
+            case AIAgentFrameworkClientType.AzureOpenAI:
+                if (!string.IsNullOrWhiteSpace(framework.Endpoint)
+                    && Uri.TryCreate(framework.Endpoint, UriKind.Absolute, out var aoaiUri))
+                {
+                    services.AddSingleton(new AzureOpenAIClient(
+                        aoaiUri,
+                        new Azure.AzureKeyCredential(framework.ApiKey!),
+                        AgentFrameworkHelper.GetAzureOpenAIClientOptions()));
+                }
+                break;
+
+            case AIAgentFrameworkClientType.OpenAI:
+                services.AddSingleton(new OpenAIClient(
+                    new System.ClientModel.ApiKeyCredential(framework.ApiKey!),
+                    AgentFrameworkHelper.GetOpenAIClientOptions()));
+                break;
+
+            case AIAgentFrameworkClientType.AzureAIInference:
+                // No DI registration needed — ChatClientFactory creates the client
+                // directly with a custom endpoint and caches it internally.
+                break;
+        }
     }
 }

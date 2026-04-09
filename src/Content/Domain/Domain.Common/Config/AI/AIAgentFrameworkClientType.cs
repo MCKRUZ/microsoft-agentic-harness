@@ -16,6 +16,12 @@ public enum AIAgentFrameworkClientType
 	OpenAI,
 
 	/// <summary>
+	/// Azure AI Foundry Model Inference — non-OpenAI models (Claude, Mistral, etc.)
+	/// deployed via Azure AI Foundry using the Azure AI Inference SDK.
+	/// </summary>
+	AzureAIInference,
+
+	/// <summary>
 	/// Azure AI Foundry Persistent Agents — pre-configured agents with server-side state.
 	/// </summary>
 	PersistentAgents,
