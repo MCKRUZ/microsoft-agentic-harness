@@ -22,7 +22,6 @@ public class PermissionPolicyProviderTests
     [Fact]
     public async Task GetPolicyAsync_PermissionPrefixedName_BuildsPolicyWithRequirement()
     {
-        // "Permission0" maps to AuthPermissions.Access (value 0)
         var policy = await _provider.GetPolicyAsync("Permission0");
 
         policy.Should().NotBeNull();
@@ -34,7 +33,6 @@ public class PermissionPolicyProviderTests
 
         permissionRequirement.Permission.Should().Be(AuthPermissions.Access);
 
-        // Also requires authenticated user
         policy.Requirements
             .OfType<DenyAnonymousAuthorizationRequirement>()
             .Should().ContainSingle();
@@ -43,7 +41,6 @@ public class PermissionPolicyProviderTests
     [Fact]
     public async Task GetPolicyAsync_MultiplePermissions_BuildsPolicyWithAllRequirements()
     {
-        // "Permission0-1-2" maps to Access, TermsAgreement, Admin
         var policy = await _provider.GetPolicyAsync("Permission0-1-2");
 
         policy.Should().NotBeNull();
@@ -66,7 +63,6 @@ public class PermissionPolicyProviderTests
     {
         var policy = await _provider.GetPolicyAsync("SomeOtherPolicy");
 
-        // Fallback returns null for unregistered policies
         policy.Should().BeNull();
     }
 
@@ -76,5 +72,102 @@ public class PermissionPolicyProviderTests
         var policy = await _provider.GetDefaultPolicyAsync();
 
         policy.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task GetPolicyAsync_EmptyPermissionSegment_DelegatesToFallback()
+    {
+        // "Permission" with no suffix should delegate to fallback
+        var policy = await _provider.GetPolicyAsync("Permission");
+
+        // Fallback returns null for unregistered policies
+        policy.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task GetPolicyAsync_SingleAdminPermission_CreatesCorrectPolicy()
+    {
+        var policy = await _provider.GetPolicyAsync("Permission2");
+
+        policy.Should().NotBeNull();
+
+        var permissionRequirement = policy!.Requirements
+            .OfType<PermissionRequirement>()
+            .Should().ContainSingle()
+            .Subject;
+
+        permissionRequirement.Permission.Should().Be(AuthPermissions.Admin);
+    }
+
+    [Fact]
+    public async Task GetPolicyAsync_InvalidPermissionValue_SkipsInvalidSegment()
+    {
+        // 999 is not a defined AuthPermissions value, so it should be skipped
+        var policy = await _provider.GetPolicyAsync("Permission999");
+
+        policy.Should().NotBeNull();
+
+        // No PermissionRequirement added for undefined enum value
+        policy!.Requirements
+            .OfType<PermissionRequirement>()
+            .Should().BeEmpty();
+
+        // Still requires authenticated user
+        policy.Requirements
+            .OfType<DenyAnonymousAuthorizationRequirement>()
+            .Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task GetPolicyAsync_MixedValidAndInvalidPermissions_OnlyAddsValid()
+    {
+        // 0 is valid (Access), 999 is not, 2 is valid (Admin)
+        var policy = await _provider.GetPolicyAsync("Permission0-999-2");
+
+        policy.Should().NotBeNull();
+
+        var permissionRequirements = policy!.Requirements
+            .OfType<PermissionRequirement>()
+            .ToList();
+
+        permissionRequirements.Should().HaveCount(2);
+        permissionRequirements.Select(r => r.Permission)
+            .Should().BeEquivalentTo(new[]
+            {
+                AuthPermissions.Access,
+                AuthPermissions.Admin,
+            });
+    }
+
+    [Fact]
+    public async Task GetPolicyAsync_NonNumericSegment_SkipsInvalidSegment()
+    {
+        var policy = await _provider.GetPolicyAsync("Permissionabc");
+
+        policy.Should().NotBeNull();
+
+        policy!.Requirements
+            .OfType<PermissionRequirement>()
+            .Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task GetFallbackPolicyAsync_ReturnsNull()
+    {
+        var policy = await _provider.GetFallbackPolicyAsync();
+
+        // Default AuthorizationOptions does not set a fallback policy
+        policy.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task GetPolicyAsync_AlwaysRequiresAuthenticatedUser()
+    {
+        var policy = await _provider.GetPolicyAsync("Permission0");
+
+        policy.Should().NotBeNull();
+        policy!.Requirements
+            .OfType<DenyAnonymousAuthorizationRequirement>()
+            .Should().ContainSingle();
     }
 }

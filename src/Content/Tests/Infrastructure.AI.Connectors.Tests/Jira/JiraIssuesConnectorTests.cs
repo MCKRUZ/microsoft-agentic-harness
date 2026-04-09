@@ -3,37 +3,39 @@ using System.Text.Json;
 using Domain.Common.Config;
 using Domain.Common.Config.Connectors;
 using FluentAssertions;
-using Infrastructure.AI.Connectors.GitHub;
+using Infrastructure.AI.Connectors.Jira;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Moq;
 using Moq.Protected;
 using Xunit;
 
-namespace Infrastructure.AI.Connectors.Tests.GitHub;
+namespace Infrastructure.AI.Connectors.Tests.Jira;
 
-public class GitHubIssuesConnectorTests
+public class JiraIssuesConnectorTests
 {
     #region Test Infrastructure
 
     private readonly Mock<HttpMessageHandler> _mockHandler = new();
     private readonly Mock<IOptionsMonitor<AppConfig>> _appConfigMonitor = new();
 
-    private GitHubIssuesConnector CreateConnector(
-        string? accessToken = "test-token",
-        string baseUrl = "https://api.github.com",
-        string? defaultOwner = "test-owner",
+    private JiraIssuesConnector CreateConnector(
+        string? baseUrl = "https://test.atlassian.net",
+        string? email = "test@example.com",
+        string? apiToken = "test-api-token",
+        string? defaultProject = "TEST",
         int timeoutSeconds = 30)
     {
         var config = new AppConfig
         {
             Connectors = new ConnectorsConfig
             {
-                GitHub = new GitHubConfig
+                Jira = new JiraConfig
                 {
-                    AccessToken = accessToken,
                     BaseUrl = baseUrl,
-                    DefaultOwner = defaultOwner,
+                    Email = email,
+                    ApiToken = apiToken,
+                    DefaultProject = defaultProject,
                     TimeoutSeconds = timeoutSeconds
                 }
             }
@@ -44,8 +46,8 @@ public class GitHubIssuesConnectorTests
         var httpFactory = new Mock<IHttpClientFactory>();
         httpFactory.Setup(f => f.CreateClient(It.IsAny<string>())).Returns(httpClient);
 
-        return new GitHubIssuesConnector(
-            NullLogger<GitHubIssuesConnector>.Instance,
+        return new JiraIssuesConnector(
+            NullLogger<JiraIssuesConnector>.Instance,
             httpFactory.Object,
             _appConfigMonitor.Object);
     }
@@ -76,17 +78,33 @@ public class GitHubIssuesConnectorTests
     #region Properties
 
     [Fact]
-    public void IsAvailable_WhenTokenConfigured_ReturnsTrue()
+    public void IsAvailable_WhenFullyConfigured_ReturnsTrue()
     {
-        var connector = CreateConnector(accessToken: "ghp_test_token");
+        var connector = CreateConnector();
 
         connector.IsAvailable.Should().BeTrue();
     }
 
     [Fact]
-    public void IsAvailable_WhenNoToken_ReturnsFalse()
+    public void IsAvailable_WhenMissingBaseUrl_ReturnsFalse()
     {
-        var connector = CreateConnector(accessToken: null);
+        var connector = CreateConnector(baseUrl: null);
+
+        connector.IsAvailable.Should().BeFalse();
+    }
+
+    [Fact]
+    public void IsAvailable_WhenMissingEmail_ReturnsFalse()
+    {
+        var connector = CreateConnector(email: null);
+
+        connector.IsAvailable.Should().BeFalse();
+    }
+
+    [Fact]
+    public void IsAvailable_WhenMissingApiToken_ReturnsFalse()
+    {
+        var connector = CreateConnector(apiToken: null);
 
         connector.IsAvailable.Should().BeFalse();
     }
@@ -97,7 +115,7 @@ public class GitHubIssuesConnectorTests
         var connector = CreateConnector();
 
         connector.SupportedOperations.Should().BeEquivalentTo(
-            ["list_issues", "create_issue", "update_issue", "close_issue"]);
+            ["list_issues", "create_issue", "update_issue", "transition_issue"]);
     }
 
     [Fact]
@@ -105,7 +123,7 @@ public class GitHubIssuesConnectorTests
     {
         var connector = CreateConnector();
 
-        connector.ToolName.Should().Be("github_issues");
+        connector.ToolName.Should().Be("jira_issues");
     }
 
     #endregion
@@ -113,26 +131,21 @@ public class GitHubIssuesConnectorTests
     #region ValidateParametersAsync
 
     [Fact]
-    public async Task ValidateParametersAsync_ListIssues_MissingRepoAndNoDefaultOwner_ReturnsErrors()
+    public async Task ValidateParametersAsync_ListIssues_MissingProjectAndNoDefault_ReturnsError()
     {
-        var connector = CreateConnector(defaultOwner: null);
+        var connector = CreateConnector(defaultProject: null);
         var parameters = new Dictionary<string, object>();
 
         var errors = await connector.ValidateParametersAsync("list_issues", parameters);
 
-        errors.Should().Contain(e => e.Contains("Owner"));
-        errors.Should().Contain(e => e.Contains("Repository"));
+        errors.Should().Contain(e => e.Contains("Project"));
     }
 
     [Fact]
-    public async Task ValidateParametersAsync_ListIssues_WithOwnerAndRepo_ReturnsNoErrors()
+    public async Task ValidateParametersAsync_ListIssues_DefaultProjectUsed_ReturnsNoErrors()
     {
-        var connector = CreateConnector();
-        var parameters = new Dictionary<string, object>
-        {
-            ["owner"] = "my-org",
-            ["repo"] = "my-repo"
-        };
+        var connector = CreateConnector(defaultProject: "DEFAULT");
+        var parameters = new Dictionary<string, object>();
 
         var errors = await connector.ValidateParametersAsync("list_issues", parameters);
 
@@ -140,25 +153,15 @@ public class GitHubIssuesConnectorTests
     }
 
     [Fact]
-    public async Task ValidateParametersAsync_ListIssues_DefaultOwnerUsedWhenOwnerMissing_ReturnsNoErrors()
-    {
-        var connector = CreateConnector(defaultOwner: "default-org");
-        var parameters = new Dictionary<string, object> { ["repo"] = "my-repo" };
-
-        var errors = await connector.ValidateParametersAsync("list_issues", parameters);
-
-        errors.Should().BeEmpty();
-    }
-
-    [Fact]
-    public async Task ValidateParametersAsync_CreateIssue_MissingTitle_ReturnsError()
+    public async Task ValidateParametersAsync_CreateIssue_MissingSummaryAndIssueType_ReturnsErrors()
     {
         var connector = CreateConnector();
-        var parameters = new Dictionary<string, object> { ["repo"] = "my-repo" };
+        var parameters = new Dictionary<string, object>();
 
         var errors = await connector.ValidateParametersAsync("create_issue", parameters);
 
-        errors.Should().Contain(e => e.Contains("title"));
+        errors.Should().Contain(e => e.Contains("summary"));
+        errors.Should().Contain(e => e.Contains("Issue type"));
     }
 
     [Fact]
@@ -167,8 +170,8 @@ public class GitHubIssuesConnectorTests
         var connector = CreateConnector();
         var parameters = new Dictionary<string, object>
         {
-            ["repo"] = "my-repo",
-            ["title"] = "Bug fix"
+            ["summary"] = "Bug in login",
+            ["issueType"] = "Bug"
         };
 
         var errors = await connector.ValidateParametersAsync("create_issue", parameters);
@@ -177,25 +180,41 @@ public class GitHubIssuesConnectorTests
     }
 
     [Fact]
-    public async Task ValidateParametersAsync_UpdateIssue_MissingIssueNumber_ReturnsError()
+    public async Task ValidateParametersAsync_UpdateIssue_MissingIssueIdOrKey_ReturnsError()
     {
         var connector = CreateConnector();
-        var parameters = new Dictionary<string, object> { ["repo"] = "my-repo" };
+        var parameters = new Dictionary<string, object>();
 
         var errors = await connector.ValidateParametersAsync("update_issue", parameters);
 
-        errors.Should().Contain(e => e.Contains("Issue number"));
+        errors.Should().Contain(e => e.Contains("Issue ID or Key"));
     }
 
     [Fact]
-    public async Task ValidateParametersAsync_CloseIssue_MissingIssueNumber_ReturnsError()
+    public async Task ValidateParametersAsync_TransitionIssue_MissingRequiredParams_ReturnsErrors()
     {
         var connector = CreateConnector();
-        var parameters = new Dictionary<string, object> { ["repo"] = "my-repo" };
+        var parameters = new Dictionary<string, object>();
 
-        var errors = await connector.ValidateParametersAsync("close_issue", parameters);
+        var errors = await connector.ValidateParametersAsync("transition_issue", parameters);
 
-        errors.Should().Contain(e => e.Contains("Issue number"));
+        errors.Should().Contain(e => e.Contains("Issue ID or Key"));
+        errors.Should().Contain(e => e.Contains("Transition"));
+    }
+
+    [Fact]
+    public async Task ValidateParametersAsync_TransitionIssue_AllParamsPresent_ReturnsNoErrors()
+    {
+        var connector = CreateConnector();
+        var parameters = new Dictionary<string, object>
+        {
+            ["issueIdOrKey"] = "TEST-123",
+            ["transition"] = "Done"
+        };
+
+        var errors = await connector.ValidateParametersAsync("transition_issue", parameters);
+
+        errors.Should().BeEmpty();
     }
 
     #endregion
@@ -206,76 +225,72 @@ public class GitHubIssuesConnectorTests
     public async Task ListIssues_ValidParams_ReturnsSuccessWithIssues()
     {
         var connector = CreateConnector();
-        var jsonResponse = JsonSerializer.Serialize(new[]
+        var jsonResponse = JsonSerializer.Serialize(new
         {
-            new
+            total = 2,
+            issues = new[]
             {
-                number = 1,
-                title = "First issue",
-                state = "open",
-                user = new { login = "testuser" },
-                labels = new[] { new { name = "bug" } },
-                html_url = "https://github.com/test-owner/repo/issues/1",
-                created_at = "2026-01-01T00:00:00Z"
-            },
-            new
-            {
-                number = 2,
-                title = "Second issue",
-                state = "open",
-                user = new { login = "another" },
-                labels = new[] { new { name = "feature" } },
-                html_url = "https://github.com/test-owner/repo/issues/2",
-                created_at = "2026-01-02T00:00:00Z"
+                new
+                {
+                    key = "TEST-1",
+                    fields = new
+                    {
+                        summary = "First issue",
+                        status = new { name = "Open" },
+                        assignee = new { displayName = "John Doe" },
+                        priority = new { name = "High" },
+                        issuetype = new { name = "Bug" }
+                    }
+                },
+                new
+                {
+                    key = "TEST-2",
+                    fields = new
+                    {
+                        summary = "Second issue",
+                        status = new { name = "In Progress" },
+                        assignee = new { displayName = "Jane Smith" },
+                        priority = new { name = "Medium" },
+                        issuetype = new { name = "Task" }
+                    }
+                }
             }
         });
         SetupHttpResponse(HttpStatusCode.OK, jsonResponse);
 
-        var parameters = new Dictionary<string, object> { ["repo"] = "my-repo" };
+        var parameters = new Dictionary<string, object>();
         var result = await connector.ExecuteAsync("list_issues", parameters);
 
         result.IsSuccess.Should().BeTrue();
+        result.MarkdownResult.Should().Contain("TEST-1");
         result.MarkdownResult.Should().Contain("First issue");
-        result.MarkdownResult.Should().Contain("Second issue");
     }
 
     [Fact]
-    public async Task ListIssues_EmptyArray_ReturnsSuccessWithNoIssues()
+    public async Task ListIssues_EmptyResult_ReturnsSuccessWithNoIssues()
     {
         var connector = CreateConnector();
-        SetupHttpResponse(HttpStatusCode.OK, "[]");
+        var jsonResponse = JsonSerializer.Serialize(new { total = 0, issues = Array.Empty<object>() });
+        SetupHttpResponse(HttpStatusCode.OK, jsonResponse);
 
-        var parameters = new Dictionary<string, object> { ["repo"] = "my-repo" };
+        var parameters = new Dictionary<string, object>();
         var result = await connector.ExecuteAsync("list_issues", parameters);
 
         result.IsSuccess.Should().BeTrue();
-        result.MarkdownResult.Should().Contain("No open issues");
+        result.MarkdownResult.Should().Contain("No issues found");
     }
 
     [Fact]
     public async Task ListIssues_HttpError_ReturnsFailure()
     {
         var connector = CreateConnector();
-        SetupHttpResponse(HttpStatusCode.NotFound, "Not Found");
+        SetupHttpResponse(HttpStatusCode.Unauthorized, "Authentication failed");
 
-        var parameters = new Dictionary<string, object> { ["repo"] = "my-repo" };
+        var parameters = new Dictionary<string, object>();
         var result = await connector.ExecuteAsync("list_issues", parameters);
 
         result.IsSuccess.Should().BeFalse();
-        result.ErrorMessage.Should().Contain("NotFound");
-    }
-
-    [Fact]
-    public async Task ListIssues_ServerError_ReturnsFailure()
-    {
-        var connector = CreateConnector();
-        SetupHttpResponse(HttpStatusCode.InternalServerError, "Internal Server Error");
-
-        var parameters = new Dictionary<string, object> { ["repo"] = "my-repo" };
-        var result = await connector.ExecuteAsync("list_issues", parameters);
-
-        result.IsSuccess.Should().BeFalse();
-        result.ErrorMessage.Should().Contain("InternalServerError");
+        result.ErrorMessage.Should().Contain("Unauthorized");
     }
 
     [Fact]
@@ -284,7 +299,7 @@ public class GitHubIssuesConnectorTests
         var connector = CreateConnector();
         SetupHttpException(new HttpRequestException("Connection refused"));
 
-        var parameters = new Dictionary<string, object> { ["repo"] = "my-repo" };
+        var parameters = new Dictionary<string, object>();
         var result = await connector.ExecuteAsync("list_issues", parameters);
 
         result.IsSuccess.Should().BeFalse();
@@ -295,9 +310,9 @@ public class GitHubIssuesConnectorTests
     public async Task ListIssues_InvalidJson_ReturnsFailure()
     {
         var connector = CreateConnector();
-        SetupHttpResponse(HttpStatusCode.OK, "not valid json {{{");
+        SetupHttpResponse(HttpStatusCode.OK, "not valid json");
 
-        var parameters = new Dictionary<string, object> { ["repo"] = "my-repo" };
+        var parameters = new Dictionary<string, object>();
         var result = await connector.ExecuteAsync("list_issues", parameters);
 
         result.IsSuccess.Should().BeFalse();
@@ -309,45 +324,43 @@ public class GitHubIssuesConnectorTests
     #region CreateIssue
 
     [Fact]
-    public async Task CreateIssue_ValidParams_ReturnsSuccessWithIssueDetails()
+    public async Task CreateIssue_ValidParams_ReturnsSuccessWithIssueKey()
     {
         var connector = CreateConnector();
         var jsonResponse = JsonSerializer.Serialize(new
         {
-            number = 42,
-            title = "New bug",
-            state = "open",
-            html_url = "https://github.com/test-owner/repo/issues/42"
+            id = "10001",
+            key = "TEST-42",
+            self = "https://test.atlassian.net/rest/api/3/issue/10001"
         });
         SetupHttpResponse(HttpStatusCode.Created, jsonResponse);
 
         var parameters = new Dictionary<string, object>
         {
-            ["repo"] = "my-repo",
-            ["title"] = "New bug"
+            ["summary"] = "New bug report",
+            ["issueType"] = "Bug"
         };
         var result = await connector.ExecuteAsync("create_issue", parameters);
 
         result.IsSuccess.Should().BeTrue();
-        result.MarkdownResult.Should().Contain("#42");
-        result.MarkdownResult.Should().Contain("New bug");
+        result.MarkdownResult.Should().Contain("TEST-42");
+        result.MarkdownResult.Should().Contain("Jira Issue Created");
     }
 
     [Fact]
     public async Task CreateIssue_HttpError_ReturnsFailure()
     {
         var connector = CreateConnector();
-        SetupHttpResponse(HttpStatusCode.Unauthorized, "Bad credentials");
+        SetupHttpResponse(HttpStatusCode.BadRequest, "Invalid issue type");
 
         var parameters = new Dictionary<string, object>
         {
-            ["repo"] = "my-repo",
-            ["title"] = "New bug"
+            ["summary"] = "Test",
+            ["issueType"] = "InvalidType"
         };
         var result = await connector.ExecuteAsync("create_issue", parameters);
 
         result.IsSuccess.Should().BeFalse();
-        result.ErrorMessage.Should().Contain("Unauthorized");
     }
 
     [Fact]
@@ -358,8 +371,8 @@ public class GitHubIssuesConnectorTests
 
         var parameters = new Dictionary<string, object>
         {
-            ["repo"] = "my-repo",
-            ["title"] = "New bug"
+            ["summary"] = "Test",
+            ["issueType"] = "Bug"
         };
         var result = await connector.ExecuteAsync("create_issue", parameters);
 
@@ -375,8 +388,8 @@ public class GitHubIssuesConnectorTests
 
         var parameters = new Dictionary<string, object>
         {
-            ["repo"] = "my-repo",
-            ["title"] = "New bug"
+            ["summary"] = "Test",
+            ["issueType"] = "Bug"
         };
         var result = await connector.ExecuteAsync("create_issue", parameters);
 
@@ -391,20 +404,12 @@ public class GitHubIssuesConnectorTests
     public async Task UpdateIssue_ValidParams_ReturnsSuccess()
     {
         var connector = CreateConnector();
-        var jsonResponse = JsonSerializer.Serialize(new
-        {
-            number = 10,
-            title = "Updated title",
-            state = "open",
-            html_url = "https://github.com/test-owner/repo/issues/10"
-        });
-        SetupHttpResponse(HttpStatusCode.OK, jsonResponse);
+        SetupHttpResponse(HttpStatusCode.NoContent, "");
 
         var parameters = new Dictionary<string, object>
         {
-            ["repo"] = "my-repo",
-            ["issueNumber"] = 10,
-            ["title"] = "Updated title"
+            ["issueIdOrKey"] = "TEST-10",
+            ["summary"] = "Updated summary"
         };
         var result = await connector.ExecuteAsync("update_issue", parameters);
 
@@ -419,8 +424,7 @@ public class GitHubIssuesConnectorTests
 
         var parameters = new Dictionary<string, object>
         {
-            ["repo"] = "my-repo",
-            ["issueNumber"] = 10
+            ["issueIdOrKey"] = "TEST-10"
         };
         var result = await connector.ExecuteAsync("update_issue", parameters);
 
@@ -432,75 +436,100 @@ public class GitHubIssuesConnectorTests
     public async Task UpdateIssue_HttpError_ReturnsFailure()
     {
         var connector = CreateConnector();
-        SetupHttpResponse(HttpStatusCode.Forbidden, "Forbidden");
+        SetupHttpResponse(HttpStatusCode.NotFound, "Issue not found");
 
         var parameters = new Dictionary<string, object>
         {
-            ["repo"] = "my-repo",
-            ["issueNumber"] = 10,
-            ["title"] = "Updated"
+            ["issueIdOrKey"] = "TEST-999",
+            ["summary"] = "Updated"
         };
         var result = await connector.ExecuteAsync("update_issue", parameters);
 
         result.IsSuccess.Should().BeFalse();
     }
 
-    #endregion
-
-    #region CloseIssue
-
     [Fact]
-    public async Task CloseIssue_ValidParams_ReturnsSuccess()
-    {
-        var connector = CreateConnector();
-        var jsonResponse = JsonSerializer.Serialize(new
-        {
-            number = 5,
-            title = "Closed issue",
-            state = "closed",
-            html_url = "https://github.com/test-owner/repo/issues/5"
-        });
-        SetupHttpResponse(HttpStatusCode.OK, jsonResponse);
-
-        var parameters = new Dictionary<string, object>
-        {
-            ["repo"] = "my-repo",
-            ["issueNumber"] = 5
-        };
-        var result = await connector.ExecuteAsync("close_issue", parameters);
-
-        result.IsSuccess.Should().BeTrue();
-        result.MarkdownResult.Should().Contain("Closed");
-    }
-
-    [Fact]
-    public async Task CloseIssue_HttpError_ReturnsFailure()
-    {
-        var connector = CreateConnector();
-        SetupHttpResponse(HttpStatusCode.NotFound, "Issue not found");
-
-        var parameters = new Dictionary<string, object>
-        {
-            ["repo"] = "my-repo",
-            ["issueNumber"] = 999
-        };
-        var result = await connector.ExecuteAsync("close_issue", parameters);
-
-        result.IsSuccess.Should().BeFalse();
-    }
-
-    [Fact]
-    public async Task CloseIssue_NetworkError_ReturnsFailure()
+    public async Task UpdateIssue_NetworkError_ReturnsFailure()
     {
         var connector = CreateConnector();
         SetupHttpException(new HttpRequestException("Timeout"));
 
         var parameters = new Dictionary<string, object>
         {
-            ["repo"] = "my-repo",
-            ["issueNumber"] = 5
+            ["issueIdOrKey"] = "TEST-10",
+            ["summary"] = "Updated"
         };
-        var result = await connector.ExecuteAsync("close_issue", parameters);
+        var result = await connector.ExecuteAsync("update_issue", parameters);
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorMessage.Should().Contain("Network error");
+    }
+
+    #endregion
+
+    #region TransitionIssue
+
+    [Fact]
+    public async Task TransitionIssue_WithTransitionName_ReturnsSuccess()
+    {
+        var connector = CreateConnector();
+        SetupHttpResponse(HttpStatusCode.NoContent, "");
+
+        var parameters = new Dictionary<string, object>
+        {
+            ["issueIdOrKey"] = "TEST-5",
+            ["transition"] = "Done"
+        };
+        var result = await connector.ExecuteAsync("transition_issue", parameters);
+
+        result.IsSuccess.Should().BeTrue();
+        result.MarkdownResult.Should().Contain("Transitioned");
+    }
+
+    [Fact]
+    public async Task TransitionIssue_WithTransitionId_ReturnsSuccess()
+    {
+        var connector = CreateConnector();
+        SetupHttpResponse(HttpStatusCode.NoContent, "");
+
+        var parameters = new Dictionary<string, object>
+        {
+            ["issueIdOrKey"] = "TEST-5",
+            ["transition"] = "31"
+        };
+        var result = await connector.ExecuteAsync("transition_issue", parameters);
+
+        result.IsSuccess.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task TransitionIssue_HttpError_ReturnsFailure()
+    {
+        var connector = CreateConnector();
+        SetupHttpResponse(HttpStatusCode.BadRequest, "Invalid transition");
+
+        var parameters = new Dictionary<string, object>
+        {
+            ["issueIdOrKey"] = "TEST-5",
+            ["transition"] = "InvalidTransition"
+        };
+        var result = await connector.ExecuteAsync("transition_issue", parameters);
+
+        result.IsSuccess.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task TransitionIssue_NetworkError_ReturnsFailure()
+    {
+        var connector = CreateConnector();
+        SetupHttpException(new HttpRequestException("Connection reset"));
+
+        var parameters = new Dictionary<string, object>
+        {
+            ["issueIdOrKey"] = "TEST-5",
+            ["transition"] = "Done"
+        };
+        var result = await connector.ExecuteAsync("transition_issue", parameters);
 
         result.IsSuccess.Should().BeFalse();
         result.ErrorMessage.Should().Contain("Network error");
@@ -513,7 +542,7 @@ public class GitHubIssuesConnectorTests
     [Fact]
     public async Task ExecuteAsync_WhenUnavailable_ReturnsFailure()
     {
-        var connector = CreateConnector(accessToken: null);
+        var connector = CreateConnector(apiToken: null);
 
         var result = await connector.ExecuteAsync("list_issues", new Dictionary<string, object>());
 

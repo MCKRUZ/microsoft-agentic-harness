@@ -50,6 +50,18 @@ public class PermissionAuthHandlerTests
     }
 
     [Fact]
+    public async Task HandleRequirementAsync_AdminWithFalseAdminClaim_Fails()
+    {
+        var requirement = new PermissionRequirement(AuthPermissions.Admin);
+        var user = CreateAuthenticatedUser(new Claim(ClaimConstants.IsAdmin, "false"));
+        var context = CreateContext(user, requirement);
+
+        await _handler.HandleAsync(context);
+
+        context.HasSucceeded.Should().BeFalse();
+    }
+
+    [Fact]
     public async Task HandleRequirementAsync_TermsAgreementWithClaim_Succeeds()
     {
         var requirement = new PermissionRequirement(AuthPermissions.TermsAgreement);
@@ -74,6 +86,18 @@ public class PermissionAuthHandlerTests
     }
 
     [Fact]
+    public async Task HandleRequirementAsync_TermsAgreementWithFalseClaim_Fails()
+    {
+        var requirement = new PermissionRequirement(AuthPermissions.TermsAgreement);
+        var user = CreateAuthenticatedUser(new Claim(ClaimConstants.AgreedToTerms, "false"));
+        var context = CreateContext(user, requirement);
+
+        await _handler.HandleAsync(context);
+
+        context.HasSucceeded.Should().BeFalse();
+    }
+
+    [Fact]
     public async Task HandleRequirementAsync_UnauthenticatedUser_DoesNotSucceed()
     {
         var requirement = new PermissionRequirement(AuthPermissions.Access);
@@ -83,6 +107,32 @@ public class PermissionAuthHandlerTests
         await _handler.HandleAsync(context);
 
         context.HasSucceeded.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task HandleRequirementAsync_NullIdentity_DoesNotSucceed()
+    {
+        var requirement = new PermissionRequirement(AuthPermissions.Access);
+        var user = new ClaimsPrincipal();
+        var context = CreateContext(user, requirement);
+
+        await _handler.HandleAsync(context);
+
+        context.HasSucceeded.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task HandleRequirementAsync_UnknownPermission_ThrowsArgumentOutOfRange()
+    {
+        var unknownPermission = (AuthPermissions)999;
+        var requirement = new PermissionRequirement(unknownPermission);
+        var user = CreateAuthenticatedUser();
+        var context = CreateContext(user, requirement);
+
+        var act = () => _handler.HandleAsync(context);
+
+        await act.Should().ThrowAsync<ArgumentOutOfRangeException>()
+            .WithMessage("*Permission not configured*");
     }
 
     private static ClaimsPrincipal CreateAuthenticatedUser(params Claim[] additionalClaims)
