@@ -1,7 +1,10 @@
 using System.Collections.Concurrent;
 using Application.AI.Common.Exceptions;
 using Application.AI.Common.Interfaces.Context;
+using Domain.AI.Context;
+using Domain.Common.Config;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace Application.AI.Common.Services.Context;
 
@@ -13,20 +16,25 @@ namespace Application.AI.Common.Services.Context;
 /// <remarks>
 /// Logs a warning when an agent's budget consumption exceeds 80%, giving the orchestration
 /// loop an opportunity to compact or shed context before hitting the hard limit.
+/// Also tracks continuation deltas for diminishing returns detection.
 /// </remarks>
 public sealed class ContextBudgetTracker : IContextBudgetTracker
 {
     private const double WarningThreshold = 0.80;
 
     private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, int>> _allocations = new();
+    private readonly ConcurrentDictionary<string, ContinuationState> _continuationState = new();
+    private readonly IOptionsMonitor<AppConfig> _options;
     private readonly ILogger<ContextBudgetTracker> _logger;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="ContextBudgetTracker"/> class.
     /// </summary>
+    /// <param name="options">Application configuration for budget thresholds.</param>
     /// <param name="logger">Logger for budget warnings and diagnostics.</param>
-    public ContextBudgetTracker(ILogger<ContextBudgetTracker> logger)
+    public ContextBudgetTracker(IOptionsMonitor<AppConfig> options, ILogger<ContextBudgetTracker> logger)
     {
+        _options = options;
         _logger = logger;
     }
 
@@ -104,7 +112,10 @@ public sealed class ContextBudgetTracker : IContextBudgetTracker
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(agentName);
 
-        if (_allocations.TryRemove(agentName, out _))
+        var allocationsRemoved = _allocations.TryRemove(agentName, out _);
+        var continuationRemoved = _continuationState.TryRemove(agentName, out _);
+
+        if (allocationsRemoved || continuationRemoved)
         {
             _logger.LogInformation("Reset budget tracking for agent {AgentName}", agentName);
         }
@@ -119,5 +130,95 @@ public sealed class ContextBudgetTracker : IContextBudgetTracker
             return new Dictionary<string, int>();
 
         return new Dictionary<string, int>(agentAllocations);
+    }
+
+    /// <inheritdoc />
+    public BudgetAssessment AssessContinuation(string agentName, int totalBudget)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(agentName);
+        ArgumentOutOfRangeException.ThrowIfNegative(totalBudget);
+
+        var budgetConfig = _options.CurrentValue.AI.ContextManagement.Budget;
+        var totalAllocated = GetTotalAllocated(agentName);
+        var completionPercentage = totalBudget > 0 ? (double)totalAllocated / totalBudget : 0.0;
+        var state = _continuationState.GetValueOrDefault(agentName, new ContinuationState());
+
+        if (completionPercentage >= budgetConfig.CompletionThresholdRatio)
+        {
+            return new BudgetAssessment
+            {
+                Action = TokenBudgetAction.Stop,
+                Reason = $"Budget {completionPercentage:P0} consumed — at or above {budgetConfig.CompletionThresholdRatio:P0} threshold",
+                ContinuationCount = state.ContinuationCount,
+                CompletionPercentage = completionPercentage
+            };
+        }
+
+        if (state.ContinuationCount >= budgetConfig.DiminishingReturnsContinuationThreshold
+            && state.LastDelta < budgetConfig.DiminishingReturnsMinDelta
+            && state.PreviousDelta < budgetConfig.DiminishingReturnsMinDelta)
+        {
+            return new BudgetAssessment
+            {
+                Action = TokenBudgetAction.Stop,
+                Reason = $"Diminishing returns: last two deltas ({state.PreviousDelta}, {state.LastDelta}) below {budgetConfig.DiminishingReturnsMinDelta} threshold after {state.ContinuationCount} continuations",
+                ContinuationCount = state.ContinuationCount,
+                CompletionPercentage = completionPercentage
+            };
+        }
+
+        if (completionPercentage >= WarningThreshold)
+        {
+            return new BudgetAssessment
+            {
+                Action = TokenBudgetAction.Nudge,
+                Reason = $"Budget {completionPercentage:P0} consumed — approaching limit",
+                ContinuationCount = state.ContinuationCount,
+                CompletionPercentage = completionPercentage
+            };
+        }
+
+        return new BudgetAssessment
+        {
+            Action = TokenBudgetAction.Continue,
+            Reason = "Budget and progress healthy",
+            ContinuationCount = state.ContinuationCount,
+            CompletionPercentage = completionPercentage
+        };
+    }
+
+    /// <inheritdoc />
+    public void RecordContinuation(string agentName, int tokensProduced)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(agentName);
+        ArgumentOutOfRangeException.ThrowIfNegative(tokensProduced);
+
+        var updated = _continuationState.AddOrUpdate(
+            agentName,
+            _ => new ContinuationState
+            {
+                ContinuationCount = 1,
+                LastDelta = tokensProduced,
+                PreviousDelta = 0
+            },
+            (_, existing) => new ContinuationState
+            {
+                ContinuationCount = existing.ContinuationCount + 1,
+                LastDelta = tokensProduced,
+                PreviousDelta = existing.LastDelta
+            });
+
+        _logger.LogDebug(
+            "Agent {AgentName} continuation #{Count}: {TokensProduced} tokens",
+            agentName,
+            updated.ContinuationCount,
+            tokensProduced);
+    }
+
+    private sealed record ContinuationState
+    {
+        public int ContinuationCount { get; init; }
+        public int LastDelta { get; init; }
+        public int PreviousDelta { get; init; }
     }
 }

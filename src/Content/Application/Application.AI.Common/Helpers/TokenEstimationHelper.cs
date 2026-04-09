@@ -47,6 +47,17 @@ public static class TokenEstimationHelper
     }
 
     /// <summary>
+    /// Estimates the total token count for a list of chat messages.
+    /// </summary>
+    /// <param name="messages">The messages to estimate.</param>
+    /// <returns>The combined estimated token count.</returns>
+    public static int EstimateTokens(IReadOnlyList<Microsoft.Extensions.AI.ChatMessage> messages)
+    {
+        ArgumentNullException.ThrowIfNull(messages);
+        return messages.Sum(m => EstimateTokens(m.Text));
+    }
+
+    /// <summary>
     /// Checks whether a text fits within a token budget.
     /// </summary>
     /// <param name="text">The text to check.</param>

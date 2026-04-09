@@ -31,4 +31,10 @@
     <Project Path="Content/Presentation/Presentation.LoggerUI/Presentation.LoggerUI.csproj" />
     <Project Path="Content/Presentation/Presentation.ConsoleUI/Presentation.ConsoleUI.csproj" />
   </Folder>
+  <Folder Name="/Tests/">
+    <Project Path="Content/Tests/Domain.AI.Tests/Domain.AI.Tests.csproj" />
+    <Project Path="Content/Tests/Application.AI.Common.Tests/Application.AI.Common.Tests.csproj" />
+    <Project Path="Content/Tests/Application.Core.Tests/Application.Core.Tests.csproj" />
+    <Project Path="Content/Tests/Infrastructure.AI.Tests/Infrastructure.AI.Tests.csproj" />
+  </Folder>
 </Solution>

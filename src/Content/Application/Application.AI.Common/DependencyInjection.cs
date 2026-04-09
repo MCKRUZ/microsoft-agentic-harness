@@ -35,6 +35,7 @@ namespace Application.AI.Common;
 ///   <item><description><c>AuditTrailBehavior</c> — records IAuditable requests</description></item>
 ///   <item><description><c>ContentSafetyBehavior</c> — screens IContentScreenable requests</description></item>
 ///   <item><description><c>ToolPermissionBehavior</c> — checks IToolRequest permissions</description></item>
+///   <item><description><c>HookBehavior</c> — fires lifecycle hooks for tool and turn events</description></item>
 /// </list>
 /// </para>
 /// </remarks>
@@ -55,7 +56,8 @@ public static class DependencyInjection
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(AgentContextPropagationBehavior<,>))
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(AuditTrailBehavior<,>))
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(ContentSafetyBehavior<,>))
-            .AddTransient(typeof(IPipelineBehavior<,>), typeof(ToolPermissionBehavior<,>));
+            .AddTransient(typeof(IPipelineBehavior<,>), typeof(ToolPermissionBehavior<,>))
+            .AddTransient(typeof(IPipelineBehavior<,>), typeof(HookBehavior<,>));
 
         // AI telemetry configurator — registers AI SDK OTel sources and processors
         services.AddSingleton<ITelemetryConfigurator, AiTelemetryConfigurator>();

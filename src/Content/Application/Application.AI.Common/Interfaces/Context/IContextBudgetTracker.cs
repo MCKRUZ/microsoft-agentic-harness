@@ -1,4 +1,5 @@
 using Application.AI.Common.Exceptions;
+using Domain.AI.Context;
 
 namespace Application.AI.Common.Interfaces.Context;
 
@@ -66,4 +67,21 @@ public interface IContextBudgetTracker
     /// <param name="agentName">The agent identifier.</param>
     /// <returns>A read-only snapshot of component allocations. Empty if agent is not tracked.</returns>
     IReadOnlyDictionary<string, int> GetBreakdown(string agentName);
+
+    /// <summary>
+    /// Assesses whether the agent should continue producing output based on
+    /// budget consumption and diminishing returns detection.
+    /// </summary>
+    /// <param name="agentName">The agent identifier.</param>
+    /// <param name="totalBudget">The agent's total token budget.</param>
+    /// <returns>A budget assessment with the recommended action.</returns>
+    BudgetAssessment AssessContinuation(string agentName, int totalBudget);
+
+    /// <summary>
+    /// Records a continuation turn with the number of tokens produced.
+    /// Used by the diminishing returns detector to track output velocity.
+    /// </summary>
+    /// <param name="agentName">The agent identifier.</param>
+    /// <param name="tokensProduced">Tokens produced in this continuation turn.</param>
+    void RecordContinuation(string agentName, int tokensProduced);
 }

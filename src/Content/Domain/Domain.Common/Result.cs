@@ -78,6 +78,9 @@ public class Result
 
     /// <summary>Creates a not-found failure result.</summary>
     public static Result NotFound(string reason) => new(false, [reason], ResultFailureType.NotFound);
+
+    /// <summary>Creates a permission-required failure result.</summary>
+    public static Result PermissionRequired(string reason) => new(false, [reason], ResultFailureType.PermissionRequired);
 }
 
 /// <summary>
@@ -116,6 +119,9 @@ public sealed class Result<T> : Result
     /// <summary>Creates a not-found failure result.</summary>
     public new static Result<T> NotFound(string reason) => new(false, errors: [reason], failureType: ResultFailureType.NotFound);
 
+    /// <summary>Creates a permission-required failure result.</summary>
+    public new static Result<T> PermissionRequired(string reason) => new(false, errors: [reason], failureType: ResultFailureType.PermissionRequired);
+
     /// <summary>
     /// Implicit conversion from a non-null value to a successful result.
     /// Throws <see cref="ArgumentNullException"/> if value is null to prevent
@@ -148,5 +154,7 @@ public enum ResultFailureType
     /// <summary>Content blocked by safety middleware.</summary>
     ContentBlocked,
     /// <summary>Entity not found (404).</summary>
-    NotFound
+    NotFound,
+    /// <summary>Permission check requires user confirmation before proceeding.</summary>
+    PermissionRequired
 }

@@ -29,6 +29,12 @@ namespace Application.AI.Common.Interfaces.Tools;
 /// services.AddKeyedSingleton&lt;ITool&gt;("file_system", (sp, key) =&gt; new FileSystemTool(...));
 /// </code>
 /// </para>
+/// <para>
+/// <strong>Concurrency classification:</strong>
+/// Tools declare their concurrency safety via <see cref="IsReadOnly"/> and <see cref="IsConcurrencySafe"/>.
+/// The <see cref="IToolConcurrencyClassifier"/> uses these properties to partition batched tool calls
+/// into parallel (read-only) and serial (write) groups. Default values are fail-closed (assumes writes).
+/// </para>
 /// </remarks>
 public interface ITool
 {
@@ -40,6 +46,19 @@ public interface ITool
 
     /// <summary>Gets the list of operations this tool supports (e.g., "read", "write", "list").</summary>
     IReadOnlyList<string> SupportedOperations { get; }
+
+    /// <summary>
+    /// Whether this tool only reads state and never modifies it.
+    /// Read-only tools can safely run in parallel during batched execution.
+    /// Default is false (fail-closed — assumes writes).
+    /// </summary>
+    bool IsReadOnly => false;
+
+    /// <summary>
+    /// Whether this tool is safe to run concurrently with other tool invocations.
+    /// Default is false (fail-closed — assumes not safe).
+    /// </summary>
+    bool IsConcurrencySafe => false;
 
     /// <summary>
     /// Executes a tool operation with the given parameters.
