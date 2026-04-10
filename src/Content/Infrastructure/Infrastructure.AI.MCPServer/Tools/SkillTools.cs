@@ -28,7 +28,7 @@ public sealed class SkillTools(ISkillMetadataRegistry registry)
         [Description("Optional category to filter by (e.g. 'research', 'orchestration'). Omit to list all skills.")]
         string? category = null)
     {
-        var skills = string.IsNullOrEmpty(category)
+        var skills = string.IsNullOrWhiteSpace(category)
             ? registry.GetAll()
             : registry.GetByCategory(category);
 

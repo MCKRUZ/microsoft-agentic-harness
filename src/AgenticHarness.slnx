@@ -13,6 +13,7 @@
   <Folder Name="/Content/Infrastructure/" />
   <Folder Name="/Content/Tests/">
     <Project Path="Content/Tests/Domain.Common.Tests/Domain.Common.Tests.csproj" />
+    <Project Path="Content/Tests/Infrastructure.AI.MCPServer.Tests/Infrastructure.AI.MCPServer.Tests.csproj" />
     <Project Path="Content/Tests/Infrastructure.APIAccess.Tests/Infrastructure.APIAccess.Tests.csproj" />
     <Project Path="Content/Tests/Infrastructure.Common.Tests/Infrastructure.Common.Tests.csproj" />
     <Project Path="Content/Tests/Infrastructure.Observability.Tests/Infrastructure.Observability.Tests.csproj" />
