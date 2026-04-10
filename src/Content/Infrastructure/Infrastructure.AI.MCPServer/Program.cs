@@ -1,6 +1,8 @@
 using System.Threading.RateLimiting;
+using Application.AI.Common.Interfaces;
 using Domain.Common.Config;
 using Infrastructure.AI.MCPServer.Extensions;
+using Infrastructure.AI.Skills;
 
 namespace Infrastructure.AI.MCPServer;
 
@@ -25,6 +27,10 @@ public static class Program
 
         builder.Services.AddMcpServerServices(appConfig);
         builder.Services.AddMcpAuthentication(appConfig, builder.Configuration);
+
+        // Skill catalog — discovered from the configured skills directory
+        builder.Services.AddSingleton<SkillMetadataParser>();
+        builder.Services.AddSingleton<ISkillMetadataRegistry, SkillMetadataRegistry>();
 
         // Rate limiting
         builder.Services.AddRateLimiter(options =>

@@ -38,6 +38,9 @@ public static class McpServerExtensions
                 options.InitializationTimeout = mcpConfig.InitializationTimeout;
             })
             .WithHttpTransport()
+            // Always load tools/prompts from this assembly (SkillTools, etc.)
+            .WithToolsFromAssembly(typeof(McpServerExtensions).Assembly)
+            // Load additional tools/prompts from externally configured assemblies
             .LoadToolsFromAssemblies(mcpConfig)
             .LoadPromptsFromAssemblies(mcpConfig)
             .LoadResourcesFromAssemblies(mcpConfig)
