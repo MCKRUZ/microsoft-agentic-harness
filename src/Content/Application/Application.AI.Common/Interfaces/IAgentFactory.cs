@@ -61,6 +61,15 @@ public interface IAgentFactory
     Task<AIAgent> CreateAgentFromSkillAsync(string skillId, SkillAgentOptions options, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Creates agents for multiple skill IDs in a single call.
+    /// Skills that fail to load are logged and skipped; the returned dictionary contains only successful agents.
+    /// </summary>
+    /// <param name="skillIds">The skill identifiers to load.</param>
+    /// <param name="options">Optional configuration applied to all agents.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    Task<IDictionary<string, AIAgent>> CreateAgentsFromSkillsAsync(IEnumerable<string> skillIds, SkillAgentOptions? options = null, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Creates multiple agents by discovering skills in a category.
     /// </summary>
     Task<IDictionary<string, AIAgent>> CreateAgentsByCategoryAsync(string category, SkillAgentOptions? options = null, CancellationToken cancellationToken = default);

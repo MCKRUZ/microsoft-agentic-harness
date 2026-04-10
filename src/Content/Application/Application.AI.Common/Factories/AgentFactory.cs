@@ -23,7 +23,7 @@ public class AgentFactory : IAgentFactory
     private readonly IOptionsMonitor<AppConfig> _appConfig;
     private readonly IDistributedCache _distributedCache;
     private readonly ILoggerFactory _loggerFactory;
-    private readonly ISkillLoaderService _skillLoaderService;
+    private readonly ISkillMetadataRegistry _skillRegistry;
     private readonly AgentExecutionContextFactory _agentContextFactory;
     private readonly IChatClientFactory _chatClientFactory;
     private readonly IServiceProvider _serviceProvider;
@@ -36,7 +36,7 @@ public class AgentFactory : IAgentFactory
     /// <param name="distributedCache">Distributed cache for chat client middleware.</param>
     /// <param name="loggerFactory">Logger factory for creating middleware loggers.</param>
     /// <param name="agentContextFactory">Factory for mapping skills to execution contexts.</param>
-    /// <param name="skillLoaderService">Service for loading skill definitions and resources.</param>
+    /// <param name="skillRegistry">Registry for discovering skill metadata.</param>
     /// <param name="chatClientFactory">Factory for creating chat clients from configured providers.</param>
     /// <param name="serviceProvider">Service provider for resolving optional dependencies.</param>
     public AgentFactory(
@@ -45,7 +45,7 @@ public class AgentFactory : IAgentFactory
         IDistributedCache distributedCache,
         ILoggerFactory loggerFactory,
         AgentExecutionContextFactory agentContextFactory,
-        ISkillLoaderService skillLoaderService,
+        ISkillMetadataRegistry skillRegistry,
         IChatClientFactory chatClientFactory,
         IServiceProvider serviceProvider)
     {
@@ -54,7 +54,7 @@ public class AgentFactory : IAgentFactory
         _distributedCache = distributedCache;
         _loggerFactory = loggerFactory;
         _agentContextFactory = agentContextFactory;
-        _skillLoaderService = skillLoaderService;
+        _skillRegistry = skillRegistry;
         _chatClientFactory = chatClientFactory;
         _serviceProvider = serviceProvider;
     }
@@ -114,7 +114,7 @@ public class AgentFactory : IAgentFactory
                 agentContext.Name, agentContext.Tools.Count);
         }
 
-        // Create the agent
+        // Build agent options, wiring any AIContextProviders for progressive skill disclosure
         var agentOptions = new ChatClientAgentOptions
         {
             Name = agentContext.Name,
@@ -123,7 +123,10 @@ public class AgentFactory : IAgentFactory
             {
                 Instructions = agentContext.Instruction,
                 Tools = agentContext.Tools
-            }
+            },
+            AIContextProviders = agentContext.AIContextProviders?.Count > 0
+                ? agentContext.AIContextProviders
+                : null
         };
 
         var agent = new ChatClientAgent(middlewareEnabledChatClient, agentOptions);
@@ -166,6 +169,7 @@ public class AgentFactory : IAgentFactory
             Instruction = agentContext.Instruction,
             DeploymentName = agentContext.DeploymentName,
             Tools = agentContext.Tools,
+            AIContextProviders = agentContext.AIContextProviders,
             MiddlewareTypes = agentContext.MiddlewareTypes,
             AdditionalProperties = agentContext.AdditionalProperties,
             AgentId = agentId,
@@ -186,8 +190,9 @@ public class AgentFactory : IAgentFactory
     {
         _logger.LogDebug("Creating agent from skill: {SkillId}", skillId);
 
-        var skill = await _skillLoaderService.LoadSkillAsync(skillId, cancellationToken);
-        await LoadResourcesAsync(skill, options, cancellationToken);
+        var skill = _skillRegistry.TryGet(skillId)
+            ?? throw new InvalidOperationException(
+                $"Skill '{skillId}' not found. Ensure it exists in the configured skill paths.");
 
         var agentContext = await _agentContextFactory.MapToAgentContextAsync(skill, options);
         var agent = await CreateAgentAsync(agentContext, cancellationToken);
@@ -197,101 +202,41 @@ public class AgentFactory : IAgentFactory
     }
 
     /// <inheritdoc />
-    public async Task<IDictionary<string, AIAgent>> CreateAgentsByCategoryAsync(
-        string category, SkillAgentOptions? options = null, CancellationToken cancellationToken = default)
-    {
-        var skills = await _skillLoaderService.DiscoverByCategoryAsync(category, cancellationToken);
-        return await CreateAgentsFromSkillsAsync(skills, options, cancellationToken);
-    }
-
-    /// <inheritdoc />
-    public async Task<IDictionary<string, AIAgent>> CreateAgentsByTagsAsync(
-        IEnumerable<string> tags, SkillAgentOptions? options = null, CancellationToken cancellationToken = default)
-    {
-        var skills = await _skillLoaderService.DiscoverByTagsAsync(tags, cancellationToken);
-        return await CreateAgentsFromSkillsAsync(skills, options, cancellationToken);
-    }
-
-    private async Task<IDictionary<string, AIAgent>> CreateAgentsFromSkillsAsync(
-        IReadOnlyList<SkillDefinition> skills, SkillAgentOptions? options, CancellationToken cancellationToken)
+    public async Task<IDictionary<string, AIAgent>> CreateAgentsFromSkillsAsync(
+        IEnumerable<string> skillIds, SkillAgentOptions? options = null, CancellationToken cancellationToken = default)
     {
         var agents = new Dictionary<string, AIAgent>();
         options ??= new SkillAgentOptions();
 
-        foreach (var skill in skills)
+        foreach (var skillId in skillIds)
         {
             try
             {
-                var agent = await CreateAgentFromSkillAsync(skill.Id, options, cancellationToken);
-                agents[skill.Id] = agent;
+                var agent = await CreateAgentFromSkillAsync(skillId, options, cancellationToken);
+                agents[skillId] = agent;
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Failed to create agent for skill: {SkillId}", skill.Id);
+                _logger.LogWarning(ex, "Failed to create agent for skill: {SkillId}", skillId);
             }
         }
 
         return agents;
     }
 
-    private async Task LoadResourcesAsync(SkillDefinition skill, SkillAgentOptions options, CancellationToken cancellationToken)
+    /// <inheritdoc />
+    public async Task<IDictionary<string, AIAgent>> CreateAgentsByCategoryAsync(
+        string category, SkillAgentOptions? options = null, CancellationToken cancellationToken = default)
     {
-        if (options.LoadAllTemplates && skill.HasTemplates)
-        {
-            var templates = await _skillLoaderService.LoadAllTemplatesAsync(skill.Id, cancellationToken);
-            foreach (var template in skill.Templates)
-            {
-                if (templates.TryGetValue(template.FileName, out var content))
-                    template.Content = content;
-            }
-        }
+        var skills = _skillRegistry.GetByCategory(category);
+        return await CreateAgentsFromSkillsAsync(skills.Select(s => s.Id), options, cancellationToken);
+    }
 
-        if (options.TemplatesToLoad?.Count > 0)
-        {
-            foreach (var name in options.TemplatesToLoad)
-            {
-                try
-                {
-                    var content = await _skillLoaderService.LoadTemplateAsync(skill.Id, name, cancellationToken);
-                    var template = skill.Templates.FirstOrDefault(t =>
-                        t.FileName.Equals(name, StringComparison.OrdinalIgnoreCase));
-                    if (template != null)
-                        template.Content = content;
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "Failed to load template {Template} for skill {SkillId}", name, skill.Id);
-                }
-            }
-        }
-
-        if (options.LoadAllReferences && skill.HasReferences)
-        {
-            var references = await _skillLoaderService.LoadAllReferencesAsync(skill.Id, cancellationToken);
-            foreach (var reference in skill.References)
-            {
-                if (references.TryGetValue(reference.FileName, out var content))
-                    reference.Content = content;
-            }
-        }
-
-        if (options.ReferencesToLoad?.Count > 0)
-        {
-            foreach (var name in options.ReferencesToLoad)
-            {
-                try
-                {
-                    var content = await _skillLoaderService.LoadReferenceAsync(skill.Id, name, cancellationToken);
-                    var reference = skill.References.FirstOrDefault(r =>
-                        r.FileName.Equals(name, StringComparison.OrdinalIgnoreCase));
-                    if (reference != null)
-                        reference.Content = content;
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "Failed to load reference {Reference} for skill {SkillId}", name, skill.Id);
-                }
-            }
-        }
+    /// <inheritdoc />
+    public async Task<IDictionary<string, AIAgent>> CreateAgentsByTagsAsync(
+        IEnumerable<string> tags, SkillAgentOptions? options = null, CancellationToken cancellationToken = default)
+    {
+        var skills = _skillRegistry.GetByTags(tags);
+        return await CreateAgentsFromSkillsAsync(skills.Select(s => s.Id), options, cancellationToken);
     }
 }

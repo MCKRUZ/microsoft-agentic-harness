@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces.MediatR;
+using Application.Common.Interfaces.MediatR;
 using MediatR;
 using Microsoft.Extensions.AI;
 
@@ -8,8 +9,15 @@ namespace Application.Core.CQRS.Agents.ExecuteAgentTurn;
 /// Executes a single turn of an agent: sends a user message, the agent responds
 /// (potentially invoking tools), and returns the response.
 /// </summary>
-public record ExecuteAgentTurnCommand : IRequest<AgentTurnResult>, IAgentScopedRequest
+/// <remarks>
+/// Uses a 5-minute timeout to accommodate multi-step tool call chains.
+/// The default 30s MediatR timeout is too short for agentic workloads.
+/// </remarks>
+public record ExecuteAgentTurnCommand : IRequest<AgentTurnResult>, IAgentScopedRequest, IHasTimeout
 {
+	/// <inheritdoc/>
+	public TimeSpan? Timeout => TimeSpan.FromMinutes(5);
+
 	/// <summary>
 	/// The agent to execute the turn with. Must match a skill ID
 	/// that can be resolved by the agent factory.

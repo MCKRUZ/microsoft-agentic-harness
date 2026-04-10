@@ -49,15 +49,15 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
-    public void AddInfrastructureAIDependencies_RegistersISkillLoaderService()
+    public void AddInfrastructureAIDependencies_RegistersISkillMetadataRegistry()
     {
         var services = CreateBaseServices();
         services.AddInfrastructureAIDependencies(new AppConfig());
         using var provider = services.BuildServiceProvider();
 
-        var skillLoader = provider.GetService<ISkillLoaderService>();
+        var registry = provider.GetService<ISkillMetadataRegistry>();
 
-        skillLoader.Should().NotBeNull();
+        registry.Should().NotBeNull();
     }
 
     [Fact]

@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces.MediatR;
+using Application.Common.Interfaces.MediatR;
 using MediatR;
 
 namespace Application.Core.CQRS.Agents.RunOrchestratedTask;
@@ -7,8 +8,16 @@ namespace Application.Core.CQRS.Agents.RunOrchestratedTask;
 /// Runs an orchestrated task where an orchestrator agent decomposes a complex task,
 /// delegates subtasks to specialized sub-agents, and synthesizes results.
 /// </summary>
-public record RunOrchestratedTaskCommand : IRequest<OrchestratedTaskResult>, IAgentScopedRequest
+/// <remarks>
+/// Does NOT implement <c>IAgentScopedRequest</c>. Agent context is set per-turn by each
+/// <see cref="ExecuteAgentTurn.ExecuteAgentTurnCommand"/> dispatch, preventing double-initialization
+/// of the scoped <c>AgentExecutionContext</c> — same pattern as <c>RunConversationCommand</c>.
+/// </remarks>
+public record RunOrchestratedTaskCommand : IRequest<OrchestratedTaskResult>, IHasTimeout
 {
+	/// <inheritdoc/>
+	/// <remarks>10 minutes: planning turn + N sub-agent turns (each up to 5 min) + synthesis turn.</remarks>
+	public TimeSpan? Timeout => TimeSpan.FromMinutes(10);
 	/// <summary>
 	/// The orchestrator agent name/skill ID.
 	/// </summary>
@@ -34,10 +43,10 @@ public record RunOrchestratedTaskCommand : IRequest<OrchestratedTaskResult>, IAg
 	/// </summary>
 	public Func<OrchestrationProgress, Task>? OnProgress { get; init; }
 
-	// IAgentScopedRequest
-	public string AgentId => OrchestratorName;
+	/// <summary>
+	/// Conversation identifier shared across all turns of this orchestration.
+	/// </summary>
 	public string ConversationId { get; init; } = Guid.NewGuid().ToString();
-	public int TurnNumber => 0;
 }
 
 /// <summary>

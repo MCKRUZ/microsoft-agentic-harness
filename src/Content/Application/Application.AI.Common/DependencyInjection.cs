@@ -1,9 +1,11 @@
 using Application.AI.Common.Factories;
 using Application.AI.Common.Interfaces;
+using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Context;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.MediatRBehaviors;
 using Application.AI.Common.OpenTelemetry;
+using Application.AI.Common.Services.Agent;
 using Application.AI.Common.Services.Context;
 using Application.AI.Common.Services.Tools;
 using Application.Common.Interfaces.Telemetry;
@@ -58,6 +60,9 @@ public static class DependencyInjection
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(ContentSafetyBehavior<,>))
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(ToolPermissionBehavior<,>))
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(HookBehavior<,>));
+
+        // Scoped agent execution context — carries agent identity through the pipeline
+        services.AddScoped<IAgentExecutionContext, AgentExecutionContext>();
 
         // AI telemetry configurator — registers AI SDK OTel sources and processors
         services.AddSingleton<ITelemetryConfigurator, AiTelemetryConfigurator>();

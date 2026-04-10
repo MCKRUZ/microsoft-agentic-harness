@@ -25,4 +25,11 @@ public enum AIAgentFrameworkClientType
 	/// Azure AI Foundry Persistent Agents — pre-configured agents with server-side state.
 	/// </summary>
 	PersistentAgents,
+
+	/// <summary>
+	/// Anthropic Claude via Azure AI Foundry — uses the native Anthropic Messages API
+	/// at <c>/anthropic/v1/messages</c> under the Foundry resource endpoint.
+	/// Required for Claude models, which do not support the OpenAI-compatible inference endpoint.
+	/// </summary>
+	Anthropic,
 }

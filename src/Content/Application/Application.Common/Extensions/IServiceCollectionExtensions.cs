@@ -43,17 +43,20 @@ public static class IServiceCollectionExtensions
         {
             builder.ClearProviders();
 
-            // Execution-aware console formatter (always enabled)
-            builder.AddExecutionConsoleFormatter();
-
-            // Fallback simple console for environments that don't support ANSI
-            builder.AddSimpleConsole(options =>
+            if (!loggingConfig.SuppressConsoleOutput)
             {
-                options.IncludeScopes = true;
-                options.SingleLine = true;
-                options.ColorBehavior = LoggerColorBehavior.Enabled;
-                options.TimestampFormat = "yyyy-MM-dd HH:mm:ss ";
-            });
+                // Execution-aware console formatter
+                builder.AddExecutionConsoleFormatter();
+
+                // Fallback simple console for environments that don't support ANSI
+                builder.AddSimpleConsole(options =>
+                {
+                    options.IncludeScopes = true;
+                    options.SingleLine = true;
+                    options.ColorBehavior = LoggerColorBehavior.Enabled;
+                    options.TimestampFormat = "yyyy-MM-dd HH:mm:ss ";
+                });
+            }
 
             // Named pipe for real-time streaming to a separate viewer
             if (!string.IsNullOrWhiteSpace(loggingConfig.PipeName))

@@ -41,10 +41,19 @@ public sealed class ToolDiagnosticsMiddleware : DelegatingChatClient
         var toolsWereConfigured = options?.Tools is { Count: > 0 };
         LogToolsInOptions(options, nameof(GetResponseAsync));
 
-        var response = await base.GetResponseAsync(messages, options, cancellationToken);
-
-        LogToolCallsInResponse(response, toolsWereConfigured);
-        return response;
+        try
+        {
+            var response = await base.GetResponseAsync(messages, options, cancellationToken);
+            LogToolCallsInResponse(response, toolsWereConfigured);
+            return response;
+        }
+        catch (System.ClientModel.ClientResultException ex) when (ex.Status == 404)
+        {
+            _logger.LogError(ex,
+                "[ToolDiag] AI provider returned 404 — deployment not found. " +
+                "Verify AppConfig:AI:AgentFramework:DefaultDeployment and Endpoint in user-secrets.");
+            throw;
+        }
     }
 
     /// <inheritdoc />

@@ -200,4 +200,12 @@ public class LoggingConfig
     /// </summary>
     /// <value>Default: 500.</value>
     public int RingBufferCapacity { get; set; } = 500;
+
+    /// <summary>
+    /// Gets or sets whether console output logging is suppressed.
+    /// Set to <c>true</c> when running alongside a separate log viewer (e.g. LoggerUI via named pipe)
+    /// so that log noise does not appear in the console — only agent output does.
+    /// </summary>
+    /// <value>Default: <c>false</c>.</value>
+    public bool SuppressConsoleOutput { get; set; } = false;
 }

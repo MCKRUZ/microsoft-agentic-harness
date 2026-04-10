@@ -19,6 +19,7 @@
 
   <ItemGroup>
     <ProjectReference Include="../../Application/Application.Core/Application.Core.csproj" />
+    <ProjectReference Include="../../Application/Application.AI.Common/Application.AI.Common.csproj" />
   </ItemGroup>
 
 </Project>

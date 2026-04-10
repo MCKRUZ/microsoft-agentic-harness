@@ -78,7 +78,7 @@ public sealed class ChatClientFactoryTests : IDisposable
         providers.Should().ContainKey(AIAgentFrameworkClientType.OpenAI);
         providers.Should().ContainKey(AIAgentFrameworkClientType.AzureAIInference);
         providers.Should().ContainKey(AIAgentFrameworkClientType.PersistentAgents);
-        providers.Should().HaveCount(4);
+        providers.Should().HaveCount(5);
     }
 
     [Fact]
@@ -100,6 +100,65 @@ public sealed class ChatClientFactoryTests : IDisposable
         var act = () => factory.Dispose();
 
         act.Should().NotThrow();
+    }
+
+    // ── AzureAIInference uses correct SDK (not OpenAI) ────────────────────────
+
+    [Fact]
+    public async Task GetChatClientAsync_AzureAIInference_DoesNotWrapOpenAIChatClient()
+    {
+        // Regression: GetAzureAIInferenceChatClientAsync was using OpenAIClient which
+        // sends "Authorization: Bearer <key>". Azure AI Foundry requires "api-key: <key>".
+        // Fix: use Azure.AI.Inference.ChatCompletionsClient which sends the correct header.
+        _appConfig.AI.AgentFramework.Endpoint = "https://test.services.ai.azure.com";
+        _appConfig.AI.AgentFramework.ApiKey = "test-key";
+
+        using var factory = CreateFactory();
+        var client = await factory.GetChatClientAsync(
+            AIAgentFrameworkClientType.AzureAIInference, "test-model");
+
+        // Before fix: inner client is OpenAI.Chat.ChatClient (sends "Authorization: Bearer" — wrong for Azure)
+        // After fix:  inner client is Azure.AI.Inference-based (sends "api-key" — correct for Azure)
+        var openAiInner = client.GetService(typeof(OpenAI.Chat.ChatClient));
+        openAiInner.Should().BeNull("AzureAIInference must not use OpenAI ChatClient — wrong auth header for Azure");
+    }
+
+    // ── NormalizeAzureAIInferenceEndpoint ──────────────────────────────────────
+
+    [Theory]
+    [InlineData("https://myresource.services.ai.azure.com", "https://myresource.services.ai.azure.com/models")]
+    [InlineData("https://myresource.services.ai.azure.com/", "https://myresource.services.ai.azure.com/models")]
+    public void NormalizeAzureAIInferenceEndpoint_ServicesAiAzureComWithNoPath_AppendsModels(
+        string input, string expected)
+    {
+        var result = ChatClientFactory.NormalizeAzureAIInferenceEndpoint(new Uri(input));
+
+        result.ToString().TrimEnd('/').Should().Be(expected);
+    }
+
+    [Theory]
+    [InlineData("https://myresource.services.ai.azure.com/models")]
+    [InlineData("https://myresource.services.ai.azure.com/openai")]
+    public void NormalizeAzureAIInferenceEndpoint_ServicesAiAzureComWithPath_Unchanged(string input)
+    {
+        var uri = new Uri(input);
+
+        var result = ChatClientFactory.NormalizeAzureAIInferenceEndpoint(uri);
+
+        result.Should().Be(uri);
+    }
+
+    [Theory]
+    [InlineData("https://api.openai.com/v1")]
+    [InlineData("https://myresource.openai.azure.com/")]
+    [InlineData("https://custom.endpoint.com/api/v2")]
+    public void NormalizeAzureAIInferenceEndpoint_NonServicesAiAzureCom_Unchanged(string input)
+    {
+        var uri = new Uri(input);
+
+        var result = ChatClientFactory.NormalizeAzureAIInferenceEndpoint(uri);
+
+        result.Should().Be(uri);
     }
 
     public void Dispose()

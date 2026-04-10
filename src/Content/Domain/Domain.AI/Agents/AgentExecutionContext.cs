@@ -1,4 +1,5 @@
 using Domain.Common.Config.AI;
+using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 
 namespace Domain.AI.Agents;
@@ -60,6 +61,12 @@ public class AgentExecutionContext
 	/// Middleware types to apply to the agent's chat client pipeline.
 	/// </summary>
 	public IList<Type>? MiddlewareTypes { get; set; }
+
+	/// <summary>
+	/// AI context providers to invoke before and after each agent turn.
+	/// Used for progressive skill disclosure, memory, and compaction.
+	/// </summary>
+	public IList<AIContextProvider>? AIContextProviders { get; set; }
 
 	/// <summary>
 	/// Extensible configuration properties.

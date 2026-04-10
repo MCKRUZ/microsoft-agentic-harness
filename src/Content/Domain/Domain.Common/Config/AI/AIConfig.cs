@@ -78,4 +78,10 @@ public class AIConfig
     /// streaming tool execution.
     /// </summary>
     public OrchestrationConfig Orchestration { get; set; } = new();
+
+    /// <summary>
+    /// Gets or sets the filesystem skill discovery configuration.
+    /// Controls where SKILL.md files are loaded from.
+    /// </summary>
+    public SkillsConfig Skills { get; set; } = new();
 }

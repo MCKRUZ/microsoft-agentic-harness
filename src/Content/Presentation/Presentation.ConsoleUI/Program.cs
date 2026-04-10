@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Presentation.Common.Extensions;
 using Presentation.ConsoleUI.Examples;
 
@@ -41,6 +42,12 @@ public class Program
 		services.AddTransient<App>();
 
 		var serviceProvider = services.BuildServiceProvider();
+
+		// Start hosted services (skill seeding, etc.) — required because
+		// the console app doesn't use IHost which would start them automatically
+		foreach (var hostedService in serviceProvider.GetServices<IHostedService>())
+			await hostedService.StartAsync(CancellationToken.None);
+
 		var app = serviceProvider.GetRequiredService<App>();
 
 		// Route based on command-line arguments

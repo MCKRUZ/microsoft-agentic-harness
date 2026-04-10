@@ -22,8 +22,10 @@ public interface IAgentExecutionContext
     int? TurnNumber { get; }
 
     /// <summary>
-    /// Initializes the execution context with agent identity. Called once per request
-    /// by <c>AgentContextPropagationBehavior</c>.
+    /// Initializes or updates the execution context with agent identity.
+    /// Re-initialization is allowed for subsequent turns within the same agent/conversation
+    /// (updates turn number). Throws if called with a different agent or conversation,
+    /// which indicates a scope leak.
     /// </summary>
     void Initialize(string agentId, string conversationId, int turnNumber);
 }

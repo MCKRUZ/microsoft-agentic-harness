@@ -1,5 +1,6 @@
 using Application.AI.Common;
 using Application.Common;
+using Application.Common.Interfaces.Security;
 using Application.Core;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
@@ -19,8 +20,10 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.Extensions.Caching.StackExchangeRedis;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Identity.Web;
 using Presentation.Common.Helpers;
+using Presentation.Common.Security;
 
 namespace Presentation.Common.Extensions;
 
@@ -230,6 +233,9 @@ public static class IServiceCollectionExtensions
         services.AddApplicationAIDependencies();
         services.AddApplicationCoreDependencies();
 
+        // User identity — system user for console/worker, replace with HttpContextUser for web
+        services.AddScoped<IUser, SystemUser>();
+
         // Infrastructure layer
         services.AddInfrastructureCommonDependencies();
         services.AddInfrastructureAIDependencies(appConfig);
@@ -299,4 +305,5 @@ public static class IServiceCollectionExtensions
 
         return services;
     }
+
 }

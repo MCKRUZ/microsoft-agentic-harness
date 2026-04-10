@@ -43,6 +43,16 @@ public class SkillAgentOptions
 
 	#endregion
 
+	#region Skill Loading
+
+	/// <summary>
+	/// Override the skill search paths for this agent creation.
+	/// When null, paths from <c>AppConfig.AI.Skills</c> are used.
+	/// </summary>
+	public IList<string>? SkillPaths { get; set; }
+
+	#endregion
+
 	#region Agent Configuration
 
 	/// <summary>

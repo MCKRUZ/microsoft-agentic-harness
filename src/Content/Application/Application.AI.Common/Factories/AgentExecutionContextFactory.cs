@@ -6,6 +6,7 @@ using Domain.AI.Agents;
 using Domain.AI.Skills;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
+using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -15,13 +16,15 @@ namespace Application.AI.Common.Factories;
 
 /// <summary>
 /// Bridges declarative skill definitions (SKILL.md) to runtime <see cref="AgentExecutionContext"/>.
-/// Handles tool provisioning (MCP-first, keyed DI fallback), instruction assembly, and middleware resolution.
+/// Handles tool provisioning (MCP-first, keyed DI fallback), instruction assembly, middleware
+/// resolution, and wiring of <see cref="FileAgentSkillsProvider"/> for progressive skill disclosure.
 /// </summary>
 public class AgentExecutionContextFactory
 {
 	private readonly ILogger<AgentExecutionContextFactory> _logger;
 	private readonly IOptionsMonitor<AppConfig> _appConfig;
 	private readonly IServiceProvider _serviceProvider;
+	private readonly ILoggerFactory _loggerFactory;
 	private readonly IToolConverter? _toolConverter;
 	private readonly IMcpToolProvider? _mcpToolProvider;
 	private readonly IContextBudgetTracker? _budgetTracker;
@@ -30,6 +33,7 @@ public class AgentExecutionContextFactory
 		ILogger<AgentExecutionContextFactory> logger,
 		IOptionsMonitor<AppConfig> appConfig,
 		IServiceProvider serviceProvider,
+		ILoggerFactory loggerFactory,
 		IToolConverter? toolConverter = null,
 		IMcpToolProvider? mcpToolProvider = null,
 		IContextBudgetTracker? budgetTracker = null)
@@ -37,6 +41,7 @@ public class AgentExecutionContextFactory
 		_logger = logger;
 		_appConfig = appConfig;
 		_serviceProvider = serviceProvider;
+		_loggerFactory = loggerFactory;
 		_toolConverter = toolConverter;
 		_mcpToolProvider = mcpToolProvider;
 		_budgetTracker = budgetTracker;
@@ -44,6 +49,7 @@ public class AgentExecutionContextFactory
 
 	/// <summary>
 	/// Maps a skill definition and options to a runtime agent execution context.
+	/// Wires <see cref="FileAgentSkillsProvider"/> for progressive skill disclosure.
 	/// </summary>
 	public async Task<AgentExecutionContext> MapToAgentContextAsync(SkillDefinition skill, SkillAgentOptions options)
 	{
@@ -52,7 +58,10 @@ public class AgentExecutionContextFactory
 		var instruction = BuildInstruction(skill, options);
 		var tools = await BuildToolsAsync(skill, options);
 		var middlewareTypes = ResolveMiddlewareTypes(skill, options);
-		var frameworkType = options.FrameworkType ?? AIAgentFrameworkClientType.AzureOpenAI;
+		var aiContextProviders = BuildAIContextProviders(skill, options);
+		var frameworkType = options.FrameworkType
+			?? _appConfig.CurrentValue.AI?.AgentFramework?.ClientType
+			?? AIAgentFrameworkClientType.AzureOpenAI;
 
 		// Track context budget allocations
 		if (_budgetTracker != null)
@@ -62,8 +71,7 @@ public class AgentExecutionContextFactory
 
 			if (tools?.Count > 0)
 			{
-				// Rough estimate: ~50 tokens per tool for schema
-				var toolTokens = tools.Count * 50;
+				var toolTokens = tools.Count * 50; // ~50 tokens per tool schema
 				_budgetTracker.RecordAllocation(agentName, "tool_schemas", toolTokens);
 			}
 		}
@@ -77,13 +85,14 @@ public class AgentExecutionContextFactory
 			AgentId = options.AgentId ?? skill.AgentId,
 			AIAgentFrameworkType = frameworkType,
 			Tools = tools,
+			AIContextProviders = aiContextProviders,
 			MiddlewareTypes = middlewareTypes,
 			AdditionalProperties = BuildAdditionalProperties(skill, options)
 		};
 
 		_logger.LogInformation(
-			"Mapped skill {SkillId} to agent context {AgentName} with {ToolCount} tools",
-			skill.Id, agentName, tools?.Count ?? 0);
+			"Mapped skill {SkillId} to agent context {AgentName} with {ToolCount} tools and {ProviderCount} context providers",
+			skill.Id, agentName, tools?.Count ?? 0, aiContextProviders?.Count ?? 0);
 
 		return context;
 	}
@@ -110,31 +119,45 @@ public class AgentExecutionContextFactory
 		if (!string.IsNullOrEmpty(skill.Instructions))
 			parts.Add(skill.Instructions);
 
-		// Append loaded resource content if configured
-		if (options.IncludeResourcesInInstructions)
-		{
-			foreach (var template in skill.Templates.Where(t => t.IsLoaded))
-				parts.Add($"## Template: {template.FileName}\n{template.Content}");
-
-			foreach (var reference in skill.References.Where(r => r.IsLoaded))
-				parts.Add($"## Reference: {reference.FileName}\n{reference.Content}");
-		}
-
-		// Append resource manifest if configured
-		if (options.IncludeResourceManifest && skill.TotalResourceCount > 0)
-		{
-			var manifest = new List<string> { "## Available Resources" };
-			if (skill.HasTemplates)
-				manifest.AddRange(skill.Templates.Select(t => $"- Template: {t.FileName}"));
-			if (skill.HasReferences)
-				manifest.AddRange(skill.References.Select(r => $"- Reference: {r.FileName}"));
-			parts.Add(string.Join("\n", manifest));
-		}
-
 		if (!string.IsNullOrEmpty(options.AdditionalContext))
 			parts.Add(options.AdditionalContext);
 
 		return string.Join("\n\n", parts);
+	}
+
+	private IList<AIContextProvider>? BuildAIContextProviders(SkillDefinition skill, SkillAgentOptions options)
+	{
+		var providers = new List<AIContextProvider>();
+
+		// Resolve skill paths: options override > config default
+		var skillPaths = ResolveSkillPaths(options);
+
+		if (skillPaths.Count > 0)
+		{
+			var skillsProvider = new FileAgentSkillsProvider(
+				skillPaths,
+				options: null,
+				loggerFactory: _loggerFactory);
+
+			providers.Add(skillsProvider);
+
+			_logger.LogDebug("Wired FileAgentSkillsProvider for agent {SkillId} with {PathCount} path(s)",
+				skill.Id, skillPaths.Count);
+		}
+
+		return providers.Count > 0 ? providers : null;
+	}
+
+	private IReadOnlyList<string> ResolveSkillPaths(SkillAgentOptions options)
+	{
+		if (options.SkillPaths?.Count > 0)
+			return [.. options.SkillPaths];
+
+		var configPaths = _appConfig.CurrentValue.AI?.Skills?.AllPaths.ToList() ?? [];
+		return configPaths
+			.Select(p => Path.IsPathRooted(p) ? p : Path.GetFullPath(p))
+			.Where(Directory.Exists)
+			.ToList();
 	}
 
 	private async Task<List<AITool>> BuildToolsAsync(SkillDefinition skill, SkillAgentOptions options)

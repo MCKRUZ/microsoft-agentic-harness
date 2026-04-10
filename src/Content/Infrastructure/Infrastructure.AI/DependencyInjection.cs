@@ -14,6 +14,8 @@ using Azure.AI.OpenAI;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
 using Infrastructure.AI.A2A;
+using Infrastructure.AI.Audit;
+using Infrastructure.AI.ContentSafety;
 using OpenAI;
 using Infrastructure.AI.Agents;
 using Infrastructure.AI.Compaction;
@@ -90,8 +92,15 @@ public static class DependencyInjection
         // Chat client factory — creates IChatClient from Azure OpenAI / OpenAI / AI Inference / Persistent Agents
         services.AddSingleton<IChatClientFactory, ChatClientFactory>();
 
-        // Skill loader — in-memory implementation for POC
-        services.AddSingleton<ISkillLoaderService, InMemorySkillLoaderService>();
+        // Content safety — pass-through logging implementation for POC
+        services.AddSingleton<ITextContentSafetyService, StructuredLogContentSafetyService>();
+
+        // Audit — structured log sink for compliance traceability
+        services.AddSingleton<IAuditSink, StructuredLogAuditSink>();
+
+        // Skill metadata registry — filesystem discovery via FileAgentSkillLoader
+        services.AddSingleton<SkillMetadataParser>();
+        services.AddSingleton<ISkillMetadataRegistry, SkillMetadataRegistry>();
 
         // Batched tool execution — parallel reads, serial writes
         services.AddSingleton<IToolConcurrencyClassifier, ToolConcurrencyClassifier>();
@@ -120,7 +129,6 @@ public static class DependencyInjection
         services.AddSingleton<IPromptSectionCache, InMemoryPromptSectionCache>();
         services.AddSingleton<ISystemPromptComposer, MemoizedPromptComposer>();
         services.AddTransient<IPromptSectionProvider, AgentIdentitySectionProvider>();
-        services.AddTransient<IPromptSectionProvider, SkillInstructionsSectionProvider>();
         services.AddTransient<IPromptSectionProvider, ToolSchemasSectionProvider>();
         services.AddTransient<IPromptSectionProvider, PermissionRulesSectionProvider>();
         services.AddTransient<IPromptSectionProvider, SessionStateSectionProvider>();

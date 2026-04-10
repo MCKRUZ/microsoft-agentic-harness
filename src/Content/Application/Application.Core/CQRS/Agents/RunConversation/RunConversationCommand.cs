@@ -1,4 +1,4 @@
-using Application.AI.Common.Interfaces.MediatR;
+using Application.Common.Interfaces.MediatR;
 using MediatR;
 
 namespace Application.Core.CQRS.Agents.RunConversation;
@@ -8,8 +8,17 @@ namespace Application.Core.CQRS.Agents.RunConversation;
 /// The agent processes each message, potentially using tools, and continues
 /// until the conversation is complete or max turns is reached.
 /// </summary>
-public record RunConversationCommand : IRequest<ConversationResult>, IAgentScopedRequest
+/// <remarks>
+/// Does NOT implement <c>IAgentScopedRequest</c>. Agent context is set per-turn by each
+/// <see cref="ExecuteAgentTurn.ExecuteAgentTurnCommand"/> dispatch, preventing double-initialization
+/// of the scoped <c>AgentExecutionContext</c>.
+/// </remarks>
+public record RunConversationCommand : IRequest<ConversationResult>, IHasTimeout
 {
+	/// <inheritdoc/>
+	/// <remarks>10 minutes: up to <see cref="MaxTurns"/> agent turns, each potentially using tools.</remarks>
+	public TimeSpan? Timeout => TimeSpan.FromMinutes(10);
+
 	/// <summary>
 	/// The agent to run the conversation with.
 	/// </summary>
@@ -30,10 +39,10 @@ public record RunConversationCommand : IRequest<ConversationResult>, IAgentScope
 	/// </summary>
 	public Func<TurnProgress, Task>? OnProgress { get; init; }
 
-	// IAgentScopedRequest
-	public string AgentId => AgentName;
+	/// <summary>
+	/// Conversation identifier shared across all turns.
+	/// </summary>
 	public string ConversationId { get; init; } = Guid.NewGuid().ToString();
-	public int TurnNumber => 0;
 }
 
 /// <summary>
