@@ -23,4 +23,19 @@ public static class SafetyConventions
         public const string Block = "block";
         public const string Redact = "redact";
     }
+
+    /// <summary>
+    /// Well-known safety category identifiers used in <c>ContentSafetyException</c>
+    /// and content safety telemetry. Use these instead of raw strings.
+    /// </summary>
+    public static class CategoryValues
+    {
+        public const string Hate = "hate";
+        public const string Violence = "violence";
+        public const string SelfHarm = "self-harm";
+        public const string Sexual = "sexual";
+        public const string Pii = "pii";
+        public const string Jailbreak = "jailbreak";
+        public const string PromptInjection = "prompt-injection";
+    }
 }
