@@ -4,6 +4,7 @@ using Domain.AI.Skills;
 using MediatR;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
 namespace Application.Core.CQRS.Agents.RunOrchestratedTask;
@@ -18,16 +19,16 @@ namespace Application.Core.CQRS.Agents.RunOrchestratedTask;
 public class RunOrchestratedTaskCommandHandler : IRequestHandler<RunOrchestratedTaskCommand, OrchestratedTaskResult>
 {
 	private readonly IAgentFactory _agentFactory;
-	private readonly IMediator _mediator;
+	private readonly IServiceScopeFactory _scopeFactory;
 	private readonly ILogger<RunOrchestratedTaskCommandHandler> _logger;
 
 	public RunOrchestratedTaskCommandHandler(
 		IAgentFactory agentFactory,
-		IMediator mediator,
+		IServiceScopeFactory scopeFactory,
 		ILogger<RunOrchestratedTaskCommandHandler> logger)
 	{
 		_agentFactory = agentFactory;
-		_mediator = mediator;
+		_scopeFactory = scopeFactory;
 		_logger = logger;
 	}
 
@@ -86,13 +87,21 @@ public class RunOrchestratedTaskCommandHandler : IRequestHandler<RunOrchestrated
 
 				await ReportProgress(request, "delegation", agentName, $"Working on: {subtask}");
 
-				var conversationResult = await _mediator.Send(new RunConversationCommand
+				// Each sub-agent dispatch needs its own DI scope so that the scoped
+				// AgentExecutionContext is a fresh instance — not the one already bound
+				// to the orchestrator's conversation.
+				ConversationResult conversationResult;
+				await using (var scope = _scopeFactory.CreateAsyncScope())
 				{
-					AgentName = agentName,
-					UserMessages = [subtask],
-					MaxTurns = Math.Min(5, request.MaxTotalTurns - totalTurns),
-					ConversationId = request.ConversationId
-				}, cancellationToken);
+					var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
+					conversationResult = await mediator.Send(new RunConversationCommand
+					{
+						AgentName = agentName,
+						UserMessages = [subtask],
+						MaxTurns = Math.Min(5, request.MaxTotalTurns - totalTurns),
+						ConversationId = request.ConversationId
+					}, cancellationToken);
+				}
 
 				subAgentResults.Add(new SubAgentResult
 				{

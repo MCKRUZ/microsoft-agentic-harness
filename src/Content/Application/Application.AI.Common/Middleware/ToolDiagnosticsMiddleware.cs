@@ -38,6 +38,7 @@ public sealed class ToolDiagnosticsMiddleware : DelegatingChatClient
         ChatOptions? options = null,
         CancellationToken cancellationToken = default)
     {
+        options = DeduplicateTools(options);
         var toolsWereConfigured = options?.Tools is { Count: > 0 };
         LogToolsInOptions(options, nameof(GetResponseAsync));
 
@@ -56,12 +57,32 @@ public sealed class ToolDiagnosticsMiddleware : DelegatingChatClient
         }
     }
 
+    // Deduplicate tools by name (case-insensitive) before they reach the HTTP layer.
+    // The framework merges ChatOptions.Tools + AIContext.Tools from providers, which can
+    // produce duplicates that the Anthropic API rejects with "Tool names must be unique".
+    private static ChatOptions? DeduplicateTools(ChatOptions? options)
+    {
+        if (options?.Tools is not { Count: > 1 })
+            return options;
+
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var deduped = options.Tools.Where(t => seen.Add(t.Name)).ToList();
+
+        if (deduped.Count == options.Tools.Count)
+            return options;
+
+        var cloned = options.Clone();
+        cloned.Tools = deduped;
+        return cloned;
+    }
+
     /// <inheritdoc />
     public override async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
         IEnumerable<ChatMessage> messages,
         ChatOptions? options = null,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
+        options = DeduplicateTools(options);
         LogToolsInOptions(options, nameof(GetStreamingResponseAsync));
 
         await foreach (var chunk in base.GetStreamingResponseAsync(messages, options, cancellationToken))

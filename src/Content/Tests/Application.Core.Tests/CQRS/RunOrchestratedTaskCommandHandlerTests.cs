@@ -7,6 +7,7 @@ using FluentAssertions;
 using MediatR;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using Xunit;
@@ -17,13 +18,25 @@ public class RunOrchestratedTaskCommandHandlerTests
 {
     private readonly Mock<IAgentFactory> _agentFactory = new();
     private readonly Mock<IMediator> _mediator = new();
+    private readonly Mock<IServiceScopeFactory> _scopeFactory = new();
     private readonly RunOrchestratedTaskCommandHandler _handler;
 
     public RunOrchestratedTaskCommandHandlerTests()
     {
+        // Wire: scopeFactory → scope → serviceProvider → mediator
+        var scopedProvider = new Mock<IServiceProvider>();
+        scopedProvider
+            .Setup(sp => sp.GetService(typeof(IMediator)))
+            .Returns(_mediator.Object);
+
+        var serviceScope = new Mock<IServiceScope>();
+        serviceScope.Setup(s => s.ServiceProvider).Returns(scopedProvider.Object);
+
+        _scopeFactory.Setup(f => f.CreateScope()).Returns(serviceScope.Object);
+
         _handler = new RunOrchestratedTaskCommandHandler(
             _agentFactory.Object,
-            _mediator.Object,
+            _scopeFactory.Object,
             NullLogger<RunOrchestratedTaskCommandHandler>.Instance);
     }
 

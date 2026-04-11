@@ -145,6 +145,16 @@ public class AgentExecutionContextFactory
 				skill.Id, skillPaths.Count);
 		}
 
+		// Enforce allowed-tools constraint after all other providers have contributed tools.
+		// ToolPermissionFilter must be last so it operates on the complete tool set.
+		if (skill.AllowedTools?.Count > 0)
+		{
+			providers.Add(new Services.Agent.ToolPermissionFilter(skill.AllowedTools));
+
+			_logger.LogDebug("Wired ToolPermissionFilter for agent {SkillId} with {Count} allowed tool(s)",
+				skill.Id, skill.AllowedTools.Count);
+		}
+
 		return providers.Count > 0 ? providers : null;
 	}
 
@@ -195,7 +205,9 @@ public class AgentExecutionContextFactory
 		if (options.AdditionalTools?.Count > 0)
 			tools.AddRange(options.AdditionalTools);
 
-		return tools;
+		// Deduplicate by name — ToolDeclarations and AllowedTools can resolve the same tool
+		var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+		return tools.Where(t => seen.Add(t.Name)).ToList();
 	}
 
 	private async Task<IEnumerable<AITool>?> ProvisionToolAsync(Domain.AI.Tools.ToolDeclaration declaration)

@@ -23,6 +23,18 @@ public sealed class FileSystemService : IFileSystemService
 
     private static readonly HashSet<string> SystemDirectoryBlocklist = BuildSystemBlocklist();
 
+    // Directories skipped during recursive search — build artifacts and VCS internals
+    // would exhaust the scan limit before reaching actual source files.
+    private static readonly HashSet<string> SearchSkipDirectories = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".git", ".svn", ".hg",
+        "bin", "obj",
+        "node_modules", ".npm",
+        ".vs", ".vscode", ".idea",
+        ".claude", ".worktrees",
+        "packages", "publish",
+    };
+
     private readonly ILogger<FileSystemService> _logger;
     private readonly HashSet<string> _allowedBasePaths;
 
@@ -137,7 +149,7 @@ public sealed class FileSystemService : IFileSystemService
         var searchPattern = string.IsNullOrEmpty(pattern) ? "*.*" : pattern;
         var filesScanned = 0;
 
-        foreach (var file in Directory.EnumerateFiles(fullPath, searchPattern, SearchOption.AllDirectories))
+        foreach (var file in EnumerateFilesSkippingIgnored(fullPath, searchPattern, cancellationToken))
         {
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -172,6 +184,38 @@ public sealed class FileSystemService : IFileSystemService
         catch (ArgumentException)
         {
             return Task.FromResult(false);
+        }
+    }
+
+    private static IEnumerable<string> EnumerateFilesSkippingIgnored(
+        string root, string pattern, CancellationToken cancellationToken)
+    {
+        var queue = new Queue<string>();
+        queue.Enqueue(root);
+
+        while (queue.Count > 0)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var dir = queue.Dequeue();
+
+            IEnumerable<string> files;
+            try { files = Directory.EnumerateFiles(dir, pattern); }
+            catch (UnauthorizedAccessException) { continue; }
+            catch (IOException) { continue; }
+
+            foreach (var file in files)
+                yield return file;
+
+            IEnumerable<string> subdirs;
+            try { subdirs = Directory.EnumerateDirectories(dir); }
+            catch (UnauthorizedAccessException) { continue; }
+            catch (IOException) { continue; }
+
+            foreach (var sub in subdirs)
+            {
+                if (!SearchSkipDirectories.Contains(Path.GetFileName(sub)))
+                    queue.Enqueue(sub);
+            }
         }
     }
 

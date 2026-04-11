@@ -2,6 +2,7 @@ using Application.AI.Common.Interfaces.Tools;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace Application.AI.Common.Services.Tools;
 
@@ -66,11 +67,11 @@ public sealed class AIToolConverter : IToolConverter
             .AddOperations(activeOperations)
             .AddParameters(
                 ("operation", Required: true, $"One of: {string.Join(", ", activeOperations)}"),
-                ("parametersJson", Required: false, "JSON object with operation-specific arguments"))
+                ("parametersJson", Required: false, "Object containing operation-specific arguments (e.g. {\"path\": \"src\", \"search_term\": \"foo\"})"))
             .Build();
 
         var aiFunction = AIFunctionFactory.Create(
-            async (string operation, string? parametersJson, CancellationToken cancellationToken) =>
+            async (string operation, JsonElement? parametersJson, CancellationToken cancellationToken) =>
             {
                 if (!activeOperations.Contains(operation, StringComparer.OrdinalIgnoreCase))
                 {
@@ -114,24 +115,59 @@ public sealed class AIToolConverter : IToolConverter
     }
 
     /// <summary>
-    /// Parses JSON parameters string into a dictionary, returning an empty dictionary for null/empty input.
+    /// Parses parameters from a <see cref="JsonElement"/> into a string-keyed dictionary.
+    /// Handles three cases the LLM may produce:
+    /// <list type="bullet">
+    ///   <item><description>Object — direct parameter map (most common LLM output)</description></item>
+    ///   <item><description>String — JSON-encoded object, double-decoded</description></item>
+    ///   <item><description>Null / missing — returns empty dictionary</description></item>
+    /// </list>
     /// </summary>
-    private static IReadOnlyDictionary<string, object?> ParseParameters(string? parametersJson)
+    private static IReadOnlyDictionary<string, object?> ParseParameters(JsonElement? parametersJson)
     {
-        if (string.IsNullOrWhiteSpace(parametersJson))
+        if (parametersJson is not { } element || element.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
             return new Dictionary<string, object?>();
 
-        try
+        // LLM passed a JSON object directly — the common case
+        if (element.ValueKind == JsonValueKind.Object)
+            return FlattenElement(element);
+
+        // LLM passed a JSON string containing a nested JSON object
+        if (element.ValueKind == JsonValueKind.String)
         {
-            return JsonSerializer.Deserialize<Dictionary<string, object?>>(parametersJson)
-                   ?? new Dictionary<string, object?>();
-        }
-        catch (JsonException)
-        {
-            return new Dictionary<string, object?>
+            var raw = element.GetString();
+            if (string.IsNullOrWhiteSpace(raw))
+                return new Dictionary<string, object?>();
+
+            try
             {
-                ["raw_input"] = parametersJson
+                using var doc = JsonDocument.Parse(raw);
+                return FlattenElement(doc.RootElement);
+            }
+            catch (JsonException)
+            {
+                return new Dictionary<string, object?> { ["raw_input"] = raw };
+            }
+        }
+
+        return new Dictionary<string, object?>();
+    }
+
+    private static Dictionary<string, object?> FlattenElement(JsonElement obj)
+    {
+        var dict = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+        foreach (var prop in obj.EnumerateObject())
+        {
+            dict[prop.Name] = prop.Value.ValueKind switch
+            {
+                JsonValueKind.String => prop.Value.GetString(),
+                JsonValueKind.Number => prop.Value.TryGetInt64(out var i) ? (object?)i : prop.Value.GetDouble(),
+                JsonValueKind.True => true,
+                JsonValueKind.False => false,
+                JsonValueKind.Null => null,
+                _ => prop.Value.GetRawText()
             };
         }
+        return dict;
     }
 }

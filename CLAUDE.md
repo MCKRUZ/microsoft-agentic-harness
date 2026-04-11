@@ -23,13 +23,13 @@ Key architectural concepts from the reference:
 - **MediatR Pipeline**: Validation → Caching → Performance → Exception handling behaviors
 
 ## Commands
-- `dotnet build src/AgenticHarness.sln` — Build
-- `dotnet test src/AgenticHarness.sln` — Run all tests
+- `dotnet build src/AgenticHarness.slnx` — Build
+- `dotnet test src/AgenticHarness.slnx` — Run all tests
 - `dotnet test --collect:"XPlat Code Coverage"` — Tests with coverage
 - `dotnet run --project src/Content/Presentation/Presentation.ConsoleUI` — Run console
 
 ## Verification
-After changes: `dotnet build src/AgenticHarness.sln && dotnet test src/AgenticHarness.sln`
+After changes: `dotnet build src/AgenticHarness.slnx && dotnet test src/AgenticHarness.slnx`
 
 ## Code Style
 - Immutability: records, `with` expressions, `ImmutableList<T>`, init-only properties

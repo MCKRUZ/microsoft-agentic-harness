@@ -68,8 +68,17 @@ public static class DependencyInjection
         // AI client registration — AzureOpenAIClient or OpenAIClient based on config
         RegisterAIClients(services, appConfig);
 
-        var allowedBasePaths = new[] { appConfig.Logging.LogsBasePath ?? string.Empty }
-            .Where(p => !string.IsNullOrEmpty(p));
+        // Resolve relative paths from the exe directory (AppContext.BaseDirectory), not CWD.
+        // This ensures appsettings entries like "../../../../../../.." navigate correctly
+        // from bin/Debug/net10.0/ up to the repository root regardless of launch CWD.
+        var exeDir = AppContext.BaseDirectory;
+        var allowedBasePaths = appConfig.Infrastructure.FileSystem.AllowedBasePaths
+            .Select(p => Path.IsPathRooted(p) ? p : Path.GetFullPath(p, exeDir))
+            .Append(appConfig.Logging.LogsBasePath is { Length: > 0 } lp
+                ? Path.GetFullPath(lp, exeDir)
+                : string.Empty)
+            .Where(p => !string.IsNullOrEmpty(p))
+            .Distinct();
 
         // File system service — sandboxed file operations for direct consumption
         services.AddSingleton<IFileSystemService>(sp =>
