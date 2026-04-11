@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.A2A;
+using Infrastructure.AI.Security;
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Agents;
 using Application.AI.Common.Interfaces.Compaction;
@@ -65,6 +66,9 @@ public static class DependencyInjection
         this IServiceCollection services,
         AppConfig appConfig)
     {
+        // Secret redaction — applied at all persistence boundaries (traces, snapshots, manifests)
+        services.AddSingleton<ISecretRedactor, PatternSecretRedactor>();
+
         // AI client registration — AzureOpenAIClient or OpenAIClient based on config
         RegisterAIClients(services, appConfig);
 
