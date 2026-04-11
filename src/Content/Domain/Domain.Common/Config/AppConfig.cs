@@ -4,6 +4,7 @@ using Domain.Common.Config.Cache;
 using Domain.Common.Config.Connectors;
 using Domain.Common.Config.Http;
 using Domain.Common.Config.Infrastructure;
+using Domain.Common.Config.MetaHarness;
 using Domain.Common.Config.Observability;
 
 namespace Domain.Common.Config;
@@ -30,7 +31,8 @@ namespace Domain.Common.Config;
 /// ├── Observability  — Sampling, PII filtering, rate limiting, exporters
 /// ├── AI             — MCP server/client, agent framework, model selection
 /// ├── Azure          — Azure platform services (AppInsights, SQL, B2C, KeyVault)
-/// └── Cache          — Caching strategy and Redis configuration
+/// ├── Cache          — Caching strategy and Redis configuration
+/// └── MetaHarness    — Automated harness optimization loop
 /// </code>
 /// </para>
 /// <para>
@@ -116,6 +118,11 @@ public class AppConfig
     /// Gets or sets the caching strategy and backing store configuration.
     /// </summary>
     public CacheConfig Cache { get; set; } = new();
+
+    /// <summary>
+    /// Gets or sets the meta-harness optimization loop configuration.
+    /// </summary>
+    public MetaHarnessConfig MetaHarness { get; set; } = new();
 }
 
 /// <summary>
