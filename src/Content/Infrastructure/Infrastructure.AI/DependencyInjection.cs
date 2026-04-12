@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.A2A;
+using Application.AI.Common.Interfaces.Skills;
 using Application.AI.Common.Interfaces.Memory;
 using Application.AI.Common.Interfaces.Traces;
 using Infrastructure.AI.Memory;
@@ -121,6 +122,11 @@ public static class DependencyInjection
         // Skill metadata registry — filesystem discovery via FileAgentSkillLoader
         services.AddSingleton<SkillMetadataParser>();
         services.AddSingleton<ISkillMetadataRegistry, SkillMetadataRegistry>();
+
+        // Skill content provider — default filesystem implementation for normal agent runs
+        // CandidateSkillContentProvider is NOT registered here; the evaluator constructs it
+        // directly with a HarnessCandidate snapshot for candidate-isolated evaluation.
+        services.AddTransient<ISkillContentProvider, FileSystemSkillContentProvider>();
 
         // Batched tool execution — parallel reads, serial writes
         services.AddSingleton<IToolConcurrencyClassifier, ToolConcurrencyClassifier>();

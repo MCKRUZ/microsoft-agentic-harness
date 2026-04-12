@@ -1,6 +1,7 @@
 using Application.AI.Common.Helpers;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Context;
+using Application.AI.Common.Interfaces.Skills;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Interfaces.Traces;
 using Domain.AI.Agents;
@@ -31,6 +32,7 @@ public class AgentExecutionContextFactory
 	private readonly IMcpToolProvider? _mcpToolProvider;
 	private readonly IContextBudgetTracker? _budgetTracker;
 	private readonly IExecutionTraceStore? _traceStore;
+	private readonly ISkillContentProvider? _skillContentProvider;
 
 	public AgentExecutionContextFactory(
 		ILogger<AgentExecutionContextFactory> logger,
@@ -40,7 +42,8 @@ public class AgentExecutionContextFactory
 		IToolConverter? toolConverter = null,
 		IMcpToolProvider? mcpToolProvider = null,
 		IContextBudgetTracker? budgetTracker = null,
-		IExecutionTraceStore? traceStore = null)
+		IExecutionTraceStore? traceStore = null,
+		ISkillContentProvider? skillContentProvider = null)
 	{
 		_logger = logger;
 		_appConfig = appConfig;
@@ -50,6 +53,7 @@ public class AgentExecutionContextFactory
 		_mcpToolProvider = mcpToolProvider;
 		_budgetTracker = budgetTracker;
 		_traceStore = traceStore;
+		_skillContentProvider = skillContentProvider;
 	}
 
 	/// <summary>
@@ -87,6 +91,10 @@ public class AgentExecutionContextFactory
 		}
 
 		var additionalProps = BuildAdditionalProperties(skill, options);
+
+		// Expose candidate skill content provider so evaluation contexts can inject candidate content
+		if (_skillContentProvider != null)
+			additionalProps[ISkillContentProvider.AdditionalPropertiesKey] = _skillContentProvider;
 
 		// Start a trace run when a store is wired in
 		if (_traceStore != null)
