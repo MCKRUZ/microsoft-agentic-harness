@@ -34,6 +34,11 @@ public interface ISkillMetadataRegistry
     IReadOnlyList<SkillDefinition> GetByTags(IEnumerable<string> tags);
 
     /// <summary>
+    /// Returns skills matching the given skill type (e.g., "orchestration", "analysis").
+    /// </summary>
+    IReadOnlyList<SkillDefinition> GetBySkillType(string skillType);
+
+    /// <summary>
     /// Returns the filesystem paths that were searched during discovery.
     /// </summary>
     IReadOnlyList<string> SearchedPaths { get; }

@@ -143,6 +143,38 @@ public sealed class SkillMetadataRegistryTests
         registry.Should().NotBeNull();
     }
 
+    [Fact]
+    public void SkillMetadataRegistry_IncludesObjectives_InReturnedSkillDefinition()
+    {
+        if (!Directory.Exists(SkillsPath))
+            return;
+
+        var registry = CreateRegistry();
+
+        var skill = registry.TryGet("harness-proposer");
+
+        skill.Should().NotBeNull("harness-proposer SKILL.md includes ## Objectives");
+        skill!.Objectives.Should().NotBeNullOrWhiteSpace();
+        skill.HasObjectives.Should().BeTrue();
+    }
+
+    [Fact]
+    public void SkillMetadataRegistry_ExistingSkillsWithoutNewSections_ParseCorrectly()
+    {
+        if (!Directory.Exists(SkillsPath))
+            return;
+
+        var registry = CreateRegistry();
+
+        // orchestrator-agent has no ## Objectives or ## Trace Format — should parse without error
+        var skill = registry.TryGet("orchestrator-agent");
+
+        skill.Should().NotBeNull();
+        skill!.Objectives.Should().BeNull();
+        skill.TraceFormat.Should().BeNull();
+        skill.Instructions.Should().NotBeNullOrWhiteSpace();
+    }
+
     private sealed class OptionsMonitorStub : IOptionsMonitor<AppConfig>
     {
         public OptionsMonitorStub(AppConfig value) => CurrentValue = value;

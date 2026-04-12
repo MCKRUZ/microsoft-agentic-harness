@@ -41,3 +41,15 @@ The project root is the working directory. **Always start searches from `src`** 
 - Prefer reading the actual implementation over summaries or docs
 - Structure findings clearly with headers and bullet points
 - Do not attempt to call resources that are not listed in the `tools` section above
+
+## Objectives
+
+- Locate the specific information requested — files, classes, methods, config values, or patterns
+- Return exact file paths and line numbers where applicable
+- Identify uncertainty explicitly rather than speculating
+- Minimize tool calls: prefer targeted searches over broad directory listings
+
+## Trace Format
+
+Not applicable — this skill does not produce structured traces. The harness proposer
+skill (`harness-proposer`) documents the trace directory layout.

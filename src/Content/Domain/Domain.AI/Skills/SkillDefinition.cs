@@ -46,10 +46,24 @@ public class SkillDefinition
 	#region Level 2: Folder (Instructions — On Demand)
 
 	/// <summary>
-	/// Full instruction content (markdown body after frontmatter).
+	/// Full instruction content (markdown body after frontmatter, with structured sections removed).
 	/// Becomes the agent's system prompt. Target: ~5,000 tokens.
 	/// </summary>
 	public string? Instructions { get; set; } = string.Empty;
+
+	/// <summary>
+	/// Structured objectives extracted from the ## Objectives section of SKILL.md.
+	/// Surfaces success criteria, failure patterns, and trade-offs for the agent.
+	/// Null when the section is absent (backward compatible).
+	/// </summary>
+	public string? Objectives { get; set; }
+
+	/// <summary>
+	/// Trace directory layout documentation extracted from the ## Trace Format section of SKILL.md.
+	/// Used by the harness proposer to navigate execution trace directories.
+	/// Null when the section is absent (backward compatible).
+	/// </summary>
+	public string? TraceFormat { get; set; }
 
 	#endregion
 
@@ -219,6 +233,12 @@ public class SkillDefinition
 
 	#region Computed Properties
 
+	/// <summary>Whether this skill has structured objectives defined.</summary>
+	public bool HasObjectives => !string.IsNullOrWhiteSpace(Objectives);
+
+	/// <summary>Whether this skill has trace format documentation defined.</summary>
+	public bool HasTraceFormat => !string.IsNullOrWhiteSpace(TraceFormat);
+
 	public bool HasTemplates => Templates.Count > 0;
 	public bool HasReferences => References.Count > 0;
 	public bool HasScripts => Scripts?.Count > 0;
@@ -257,9 +277,12 @@ public class SkillDefinition
 	}
 
 	/// <summary>
-	/// Estimated tokens for Level 2 (instructions). Target: ~5,000.
+	/// Estimated tokens for Level 2 (instructions + structured sections). Target: ~5,000.
 	/// </summary>
-	public int Level2TokenEstimate => EstimateTokens(Instructions ?? string.Empty);
+	public int Level2TokenEstimate =>
+		EstimateTokens(Instructions ?? string.Empty) +
+		EstimateTokens(Objectives ?? string.Empty) +
+		EstimateTokens(TraceFormat ?? string.Empty);
 
 	/// <summary>
 	/// Estimated tokens for loaded Level 3 resources (excludes scripts).

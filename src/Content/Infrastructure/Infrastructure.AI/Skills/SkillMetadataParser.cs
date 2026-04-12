@@ -33,6 +33,8 @@ public sealed class SkillMetadataParser
         var frontmatter = ExtractFrontmatter(raw);
         var body = ExtractBody(raw, frontmatter);
 
+        var (objectives, traceFormat, instructions) = ExtractStructuredSections(body);
+
         var name = ParseString(frontmatter, "name") ?? Path.GetFileName(sourcePath);
         var description = ParseString(frontmatter, "description") ?? string.Empty;
 
@@ -41,7 +43,9 @@ public sealed class SkillMetadataParser
             Id = name,
             Name = name,
             Description = description,
-            Instructions = body,
+            Instructions = instructions,
+            Objectives = objectives,
+            TraceFormat = traceFormat,
             Category = ParseString(frontmatter, "category"),
             SkillType = ParseString(frontmatter, "skill_type"),
             Version = ParseString(frontmatter, "version"),
@@ -81,12 +85,16 @@ public sealed class SkillMetadataParser
             _logger.LogWarning(ex, "Could not read custom frontmatter from {Path}", skillFilePath);
         }
 
+        var (objectives, traceFormat, instructions) = ExtractStructuredSections(body);
+
         return new SkillDefinition
         {
             Id = skillName,
             Name = skillName,
             Description = skillDescription ?? string.Empty,
-            Instructions = body,
+            Instructions = instructions,
+            Objectives = objectives,
+            TraceFormat = traceFormat,
             Category = ParseString(rawFrontmatter, "category"),
             SkillType = ParseString(rawFrontmatter, "skill_type"),
             Version = ParseString(rawFrontmatter, "version"),
@@ -122,6 +130,121 @@ public sealed class SkillMetadataParser
 
         var bodyStart = closingDelimiter + 3;
         return bodyStart >= raw.Length ? string.Empty : raw[bodyStart..].Trim();
+    }
+
+    /// <summary>
+    /// Extracts Objectives, TraceFormat, and stripped Instructions from a skill body in one pass.
+    /// </summary>
+    private static (string? Objectives, string? TraceFormat, string Instructions) ExtractStructuredSections(string body)
+    {
+        return (
+            ExtractSection(body, "Objectives"),
+            ExtractSection(body, "Trace Format"),
+            StripSections(body, "Objectives", "Trace Format")
+        );
+    }
+
+    /// <summary>
+    /// Extracts the content of a named ## Heading section from a markdown body.
+    /// Returns null if the heading is not present. Content ends at the next ## heading or EOF.
+    /// Matching is case-insensitive; headings inside code fences are ignored.
+    /// </summary>
+    private static string? ExtractSection(string body, string heading)
+    {
+        var lines = body.Split('\n');
+        var searchHeading = $"## {heading}";
+
+        var startIdx = -1;
+        var inFence = false;
+        for (var i = 0; i < lines.Length; i++)
+        {
+            var trimmed = lines[i].Trim();
+            if (trimmed.StartsWith("```", StringComparison.Ordinal))
+                inFence = !inFence;
+
+            if (!inFence && trimmed.Equals(searchHeading, StringComparison.OrdinalIgnoreCase))
+            {
+                startIdx = i;
+                break;
+            }
+        }
+
+        if (startIdx < 0)
+            return null;
+
+        var endIdx = lines.Length;
+        inFence = false;
+        for (var i = startIdx + 1; i < lines.Length; i++)
+        {
+            var trimmed = lines[i].Trim();
+            if (trimmed.StartsWith("```", StringComparison.Ordinal))
+                inFence = !inFence;
+
+            if (!inFence && lines[i].TrimStart().StartsWith("## ", StringComparison.Ordinal))
+            {
+                endIdx = i;
+                break;
+            }
+        }
+
+        var content = string.Join('\n', lines[(startIdx + 1)..endIdx]).Trim();
+        return string.IsNullOrWhiteSpace(content) ? null : content;
+    }
+
+    /// <summary>
+    /// Returns the body with the specified ## Heading sections removed.
+    /// Consecutive blank lines left by removal are collapsed to at most one.
+    /// Headings inside code fences are not treated as section boundaries.
+    /// </summary>
+    private static string StripSections(string body, params string[] headings)
+    {
+        var headingSet = new HashSet<string>(
+            headings.Select(h => $"## {h}"),
+            StringComparer.OrdinalIgnoreCase);
+
+        var lines = body.Split('\n');
+        var result = new List<string>(lines.Length);
+        var skipping = false;
+        var inFence = false;
+
+        foreach (var line in lines)
+        {
+            var trimmed = line.Trim();
+            if (trimmed.StartsWith("```", StringComparison.Ordinal))
+                inFence = !inFence;
+
+            if (!inFence && headingSet.Contains(trimmed))
+            {
+                skipping = true;
+                continue;
+            }
+
+            if (!inFence && skipping && line.TrimStart().StartsWith("## ", StringComparison.Ordinal))
+                skipping = false;
+
+            if (!skipping)
+                result.Add(line);
+        }
+
+        // Collapse runs of blank lines to at most one
+        var normalized = new List<string>(result.Count);
+        var blankRun = 0;
+        foreach (var line in result)
+        {
+            if (string.IsNullOrWhiteSpace(line))
+            {
+                blankRun++;
+                if (blankRun <= 1)
+                    normalized.Add(line);
+            }
+            else
+            {
+                blankRun = 0;
+                normalized.Add(line);
+            }
+        }
+
+        return string.Join('\n', normalized).Trim();
     }
 
     private static string? ParseString(string? frontmatter, string key)

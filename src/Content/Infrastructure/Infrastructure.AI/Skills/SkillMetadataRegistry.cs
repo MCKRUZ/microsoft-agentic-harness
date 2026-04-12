@@ -78,6 +78,16 @@ public sealed class SkillMetadataRegistry : ISkillMetadataRegistry
             .ToList();
     }
 
+    /// <inheritdoc />
+    public IReadOnlyList<SkillDefinition> GetBySkillType(string skillType)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(skillType);
+        EnsureLoaded();
+        return _cache!.Values
+            .Where(s => string.Equals(s.SkillType, skillType, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+    }
+
     private void EnsureLoaded()
     {
         if (_cache is not null)
