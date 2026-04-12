@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.A2A;
+using Application.AI.Common.Interfaces.MetaHarness;
 using Application.AI.Common.Interfaces.Skills;
 using Application.AI.Common.Interfaces.Memory;
 using Application.AI.Common.Interfaces.Traces;
@@ -20,6 +21,7 @@ using Azure.AI.OpenAI;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
 using Infrastructure.AI.A2A;
+using Infrastructure.AI.MetaHarness;
 using Infrastructure.AI.Audit;
 using Infrastructure.AI.ContentSafety;
 using OpenAI;
@@ -73,6 +75,9 @@ public static class DependencyInjection
     {
         // Secret redaction — applied at all persistence boundaries (traces, snapshots, manifests)
         services.AddSingleton<ISecretRedactor, PatternSecretRedactor>();
+
+        // Snapshot builder — captures live harness config into a redacted, hashed snapshot
+        services.AddSingleton<ISnapshotBuilder, ActiveConfigSnapshotBuilder>();
 
         // Execution trace store — filesystem-backed per-run trace artifact persistence
         services.AddSingleton<IExecutionTraceStore, FileSystemExecutionTraceStore>();
