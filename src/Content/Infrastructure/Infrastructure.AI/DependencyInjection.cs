@@ -192,6 +192,9 @@ public static class DependencyInjection
         services.AddSingleton<Func<ITraceWriter, IAgentHistoryStore>>(
             _ => tw => new JsonlAgentHistoryStore(tw));
 
+        // Harness proposer — scoped because each invocation carries iteration-specific context
+        services.AddScoped<IHarnessProposer, OrchestratedHarnessProposer>();
+
         return services;
     }
 
