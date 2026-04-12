@@ -115,6 +115,32 @@ public sealed class CausalSpanAttributionProcessorTests : IDisposable
     }
 
     [Fact]
+    public void OnEnd_WhenIterationOnContext_AddsIterationTag()
+    {
+        var processor = CreateProcessor();
+        using var activity = _source.StartActivity("execute-tool")!;
+        activity.SetTag(ToolConventions.GenAiOperationName, ToolConventions.ExecuteToolOperation);
+        activity.AddBaggage(ToolConventions.HarnessIteration, "3");
+
+        processor.OnEnd(activity);
+
+        activity.GetTagItem(ToolConventions.HarnessIteration).Should().Be("3");
+    }
+
+    [Fact]
+    public void OnEnd_WhenNoIteration_DoesNotAddIterationTag()
+    {
+        var processor = CreateProcessor();
+        using var activity = _source.StartActivity("execute-tool")!;
+        activity.SetTag(ToolConventions.GenAiOperationName, ToolConventions.ExecuteToolOperation);
+        // No iteration baggage
+
+        processor.OnEnd(activity);
+
+        activity.GetTagItem(ToolConventions.HarnessIteration).Should().BeNull();
+    }
+
+    [Fact]
     public void OnEnd_InputHashComputation_IsNotPerformedWhenIsAllDataRequestedFalse()
     {
         // A listener returning PropagationData means IsAllDataRequested = false;

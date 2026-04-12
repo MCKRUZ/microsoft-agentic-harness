@@ -17,7 +17,7 @@ namespace Infrastructure.Observability.Processors;
 /// <para>Attributes added to tool spans:</para>
 /// <list type="bullet">
 ///   <item><description><c>gen_ai.tool.name</c> — bridged from <c>agent.tool.name</c></description></item>
-///   <item><description><c>tool.input_hash</c> — SHA-256 of the tool result tag (only when <c>IsAllDataRequested</c>)</description></item>
+///   <item><description><c>tool.input_hash</c> — SHA-256 of the serialized tool input arguments (only when <c>IsAllDataRequested</c>)</description></item>
 ///   <item><description><c>tool.result_category</c> — bucketed outcome from span status</description></item>
 ///   <item><description><c>gen_ai.harness.candidate_id</c> — from Activity baggage when in an eval context</description></item>
 ///   <item><description><c>gen_ai.harness.iteration</c> — from Activity baggage when in an eval context</description></item>
@@ -38,7 +38,7 @@ public sealed class CausalSpanAttributionProcessor : BaseProcessor<Activity>
     {
         // Only process execute_tool spans
         var operationName = data.GetTagItem(ToolConventions.GenAiOperationName) as string;
-        if (operationName != ToolConventions.ExecuteToolOperation)
+        if (!string.Equals(operationName, ToolConventions.ExecuteToolOperation, StringComparison.Ordinal))
             return;
 
         // Bridge agent.tool.name → gen_ai.tool.name (OTel GenAI semantic convention)
@@ -47,6 +47,8 @@ public sealed class CausalSpanAttributionProcessor : BaseProcessor<Activity>
             data.SetTag(ToolConventions.GenAiToolName, toolName);
 
         // Input hash — SHA256 of tool arguments. Only when full data is requested (performance guard).
+        // Note: PiiFilteringProcessor runs at pipeline position 1 (before this processor at position 5),
+        // so ToolCallArguments has already been scrubbed of sensitive values before we hash it.
         if (data.IsAllDataRequested)
         {
             var inputValue = data.GetTagItem(ToolConventions.ToolCallArguments) as string ?? string.Empty;
@@ -55,7 +57,11 @@ public sealed class CausalSpanAttributionProcessor : BaseProcessor<Activity>
             data.SetTag(ToolConventions.InputHash, hashHex);
         }
 
-        // Result category from span status or existing tag
+        // Result category from span status or existing tag.
+        // Span-level categories are intentionally narrower than ExecutionTraceRecord categories:
+        // spans map only to "success" or "error" via ActivityStatusCode. The "partial", "timeout",
+        // and "blocked" values are set directly on ExecutionTraceRecord by ToolDiagnosticsMiddleware,
+        // not through this processor. Unset/Unspecified status defaults to "success".
         var existingCategory = data.GetTagItem(ToolConventions.ResultCategory) as string;
         if (existingCategory is null)
         {
@@ -63,7 +69,7 @@ public sealed class CausalSpanAttributionProcessor : BaseProcessor<Activity>
             {
                 ActivityStatusCode.Ok => TraceResultCategories.Success,
                 ActivityStatusCode.Error => TraceResultCategories.Error,
-                _ => TraceResultCategories.Success // default to success for unset status
+                _ => TraceResultCategories.Success // Unset/Unspecified = success (tool completed without explicit error)
             };
             data.SetTag(ToolConventions.ResultCategory, category);
         }
