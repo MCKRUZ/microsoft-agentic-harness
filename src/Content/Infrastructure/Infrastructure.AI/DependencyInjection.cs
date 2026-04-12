@@ -79,6 +79,9 @@ public static class DependencyInjection
         // Snapshot builder — captures live harness config into a redacted, hashed snapshot
         services.AddSingleton<ISnapshotBuilder, ActiveConfigSnapshotBuilder>();
 
+        // Candidate repository — filesystem-backed persistence with atomic writes and JSONL index
+        services.AddSingleton<IHarnessCandidateRepository, FileSystemHarnessCandidateRepository>();
+
         // Execution trace store — filesystem-backed per-run trace artifact persistence
         services.AddSingleton<IExecutionTraceStore, FileSystemExecutionTraceStore>();
 
