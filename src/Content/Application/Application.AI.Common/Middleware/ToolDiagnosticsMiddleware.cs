@@ -1,4 +1,7 @@
+using Application.AI.Common.Interfaces;
+using Application.AI.Common.Interfaces.Traces;
 using Domain.Common.Extensions;
+using Domain.Common.MetaHarness;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using System.Runtime.CompilerServices;
@@ -17,19 +20,30 @@ public sealed class ToolDiagnosticsMiddleware : DelegatingChatClient
 {
     private const int MaxToolsToLog = 5;
     private const int MaxPreviewLength = 200;
+    private const int MaxPayloadSummaryLength = 500;
 
     private readonly ILogger _logger;
+    private readonly ITraceWriter? _traceWriter;
+    private readonly ISecretRedactor? _redactor;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="ToolDiagnosticsMiddleware"/> class.
     /// </summary>
     /// <param name="innerClient">The inner chat client to wrap with diagnostics.</param>
     /// <param name="logger">Logger for recording tool diagnostic events.</param>
-    public ToolDiagnosticsMiddleware(IChatClient innerClient, ILogger<ToolDiagnosticsMiddleware> logger)
+    /// <param name="traceWriter">Optional trace writer for recording tool result events.</param>
+    /// <param name="redactor">Optional secret redactor applied to payloads before tracing.</param>
+    public ToolDiagnosticsMiddleware(
+        IChatClient innerClient,
+        ILogger<ToolDiagnosticsMiddleware> logger,
+        ITraceWriter? traceWriter = null,
+        ISecretRedactor? redactor = null)
         : base(innerClient)
     {
         ArgumentNullException.ThrowIfNull(logger);
         _logger = logger;
+        _traceWriter = traceWriter;
+        _redactor = redactor;
     }
 
     /// <inheritdoc />
@@ -41,6 +55,10 @@ public sealed class ToolDiagnosticsMiddleware : DelegatingChatClient
         options = DeduplicateTools(options);
         var toolsWereConfigured = options?.Tools is { Count: > 0 };
         LogToolsInOptions(options, nameof(GetResponseAsync));
+
+        // Trace any function results being submitted to the LLM (i.e., tool calls that completed)
+        if (_traceWriter != null)
+            await AppendFunctionResultTracesAsync(messages, cancellationToken);
 
         try
         {
@@ -54,6 +72,42 @@ public sealed class ToolDiagnosticsMiddleware : DelegatingChatClient
                 "[ToolDiag] AI provider returned 404 — deployment not found. " +
                 "Verify AppConfig:AI:AgentFramework:DefaultDeployment and Endpoint in user-secrets.");
             throw;
+        }
+    }
+
+    private async Task AppendFunctionResultTracesAsync(IEnumerable<ChatMessage> messages, CancellationToken ct)
+    {
+        var functionResults = messages
+            .SelectMany(m => m.Contents)
+            .OfType<FunctionResultContent>()
+            .ToList();
+
+        foreach (var result in functionResults)
+        {
+            try
+            {
+                var rawPayload = result.Result?.ToString() ?? string.Empty;
+                var payload = _redactor?.Redact(rawPayload) ?? rawPayload;
+                if (payload.Length > MaxPayloadSummaryLength)
+                    payload = payload[..MaxPayloadSummaryLength];
+
+                var record = new ExecutionTraceRecord
+                {
+                    Ts = DateTimeOffset.UtcNow,
+                    Type = TraceRecordTypes.ToolResult,
+                    ExecutionRunId = _traceWriter!.Scope.ExecutionRunId.ToString("D"),
+                    TurnId = result.CallId ?? Guid.NewGuid().ToString("D"),
+                    ResultCategory = TraceResultCategories.Success,
+                    PayloadSummary = payload
+                };
+
+                await _traceWriter!.AppendTraceAsync(record, ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex,
+                    "[ToolDiag] Failed to append trace record for CallId={CallId}", result.CallId);
+            }
         }
     }
 
@@ -84,6 +138,9 @@ public sealed class ToolDiagnosticsMiddleware : DelegatingChatClient
     {
         options = DeduplicateTools(options);
         LogToolsInOptions(options, nameof(GetStreamingResponseAsync));
+
+        if (_traceWriter != null)
+            await AppendFunctionResultTracesAsync(messages, cancellationToken);
 
         await foreach (var chunk in base.GetStreamingResponseAsync(messages, options, cancellationToken))
         {

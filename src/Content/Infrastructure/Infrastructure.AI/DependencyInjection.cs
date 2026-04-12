@@ -1,6 +1,8 @@
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.A2A;
+using Application.AI.Common.Interfaces.Traces;
 using Infrastructure.AI.Security;
+using Infrastructure.AI.Traces;
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Agents;
 using Application.AI.Common.Interfaces.Compaction;
@@ -68,6 +70,9 @@ public static class DependencyInjection
     {
         // Secret redaction — applied at all persistence boundaries (traces, snapshots, manifests)
         services.AddSingleton<ISecretRedactor, PatternSecretRedactor>();
+
+        // Execution trace store — filesystem-backed per-run trace artifact persistence
+        services.AddSingleton<IExecutionTraceStore, FileSystemExecutionTraceStore>();
 
         // AI client registration — AzureOpenAIClient or OpenAIClient based on config
         RegisterAIClients(services, appConfig);

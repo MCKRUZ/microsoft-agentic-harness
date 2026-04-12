@@ -2,10 +2,12 @@ using Application.AI.Common.Helpers;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Context;
 using Application.AI.Common.Interfaces.Tools;
+using Application.AI.Common.Interfaces.Traces;
 using Domain.AI.Agents;
 using Domain.AI.Skills;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
+using Domain.Common.MetaHarness;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
@@ -28,6 +30,7 @@ public class AgentExecutionContextFactory
 	private readonly IToolConverter? _toolConverter;
 	private readonly IMcpToolProvider? _mcpToolProvider;
 	private readonly IContextBudgetTracker? _budgetTracker;
+	private readonly IExecutionTraceStore? _traceStore;
 
 	public AgentExecutionContextFactory(
 		ILogger<AgentExecutionContextFactory> logger,
@@ -36,7 +39,8 @@ public class AgentExecutionContextFactory
 		ILoggerFactory loggerFactory,
 		IToolConverter? toolConverter = null,
 		IMcpToolProvider? mcpToolProvider = null,
-		IContextBudgetTracker? budgetTracker = null)
+		IContextBudgetTracker? budgetTracker = null,
+		IExecutionTraceStore? traceStore = null)
 	{
 		_logger = logger;
 		_appConfig = appConfig;
@@ -45,11 +49,14 @@ public class AgentExecutionContextFactory
 		_toolConverter = toolConverter;
 		_mcpToolProvider = mcpToolProvider;
 		_budgetTracker = budgetTracker;
+		_traceStore = traceStore;
 	}
 
 	/// <summary>
 	/// Maps a skill definition and options to a runtime agent execution context.
 	/// Wires <see cref="FileAgentSkillsProvider"/> for progressive skill disclosure.
+	/// When an <see cref="IExecutionTraceStore"/> is available, starts a trace run and
+	/// stores the resulting <see cref="ITraceWriter"/> in <c>AdditionalProperties["__traceWriter"]</c>.
 	/// </summary>
 	public async Task<AgentExecutionContext> MapToAgentContextAsync(SkillDefinition skill, SkillAgentOptions options)
 	{
@@ -62,6 +69,9 @@ public class AgentExecutionContextFactory
 		var frameworkType = options.FrameworkType
 			?? _appConfig.CurrentValue.AI?.AgentFramework?.ClientType
 			?? AIAgentFrameworkClientType.AzureOpenAI;
+
+		// Resolve or create a trace scope for this execution
+		var traceScope = options.TraceScope ?? TraceScope.ForExecution(Guid.NewGuid());
 
 		// Track context budget allocations
 		if (_budgetTracker != null)
@@ -76,6 +86,28 @@ public class AgentExecutionContextFactory
 			}
 		}
 
+		var additionalProps = BuildAdditionalProperties(skill, options);
+
+		// Start a trace run when a store is wired in
+		if (_traceStore != null)
+		{
+			var metadata = new RunMetadata
+			{
+				AgentName = agentName,
+				StartedAt = DateTimeOffset.UtcNow
+			};
+			var traceWriter = await _traceStore.StartRunAsync(traceScope, metadata);
+			additionalProps[ITraceWriter.AdditionalPropertiesKey] = traceWriter;
+
+			// Set candidate baggage on the current Activity for CausalSpanAttributionProcessor
+			if (traceScope.CandidateId.HasValue)
+			{
+				System.Diagnostics.Activity.Current?.AddBaggage(
+					Domain.AI.Telemetry.Conventions.ToolConventions.HarnessCandidateId,
+					traceScope.CandidateId.Value.ToString("D"));
+			}
+		}
+
 		var context = new AgentExecutionContext
 		{
 			Name = agentName,
@@ -87,7 +119,8 @@ public class AgentExecutionContextFactory
 			Tools = tools,
 			AIContextProviders = aiContextProviders,
 			MiddlewareTypes = middlewareTypes,
-			AdditionalProperties = BuildAdditionalProperties(skill, options)
+			TraceScope = traceScope,
+			AdditionalProperties = additionalProps
 		};
 
 		_logger.LogInformation(

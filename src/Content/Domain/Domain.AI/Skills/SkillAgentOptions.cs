@@ -1,4 +1,5 @@
 using Domain.Common.Config.AI;
+using Domain.Common.MetaHarness;
 using Microsoft.Extensions.AI;
 
 namespace Domain.AI.Skills;
@@ -94,6 +95,12 @@ public class SkillAgentOptions
 	/// Additional properties for the agent definition.
 	/// </summary>
 	public IDictionary<string, object>? AdditionalProperties { get; set; }
+
+	/// <summary>
+	/// Optional trace scope for this run. When set, the factory uses this scope;
+	/// otherwise <c>TraceScope.ForExecution(Guid.NewGuid())</c> is created.
+	/// </summary>
+	public TraceScope? TraceScope { get; set; }
 
 	#endregion
 }

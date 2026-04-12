@@ -42,6 +42,15 @@ public sealed record TraceScope
         if (TaskId is not null && !CandidateId.HasValue)
             throw new InvalidOperationException("TaskId requires CandidateId.");
 
+        // Guard against path traversal: TaskId is used as a directory segment
+        if (TaskId is not null)
+        {
+            if (TaskId.Contains("..") || TaskId.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0
+                || TaskId.Contains('/') || TaskId.Contains('\\'))
+                throw new ArgumentException(
+                    $"TaskId contains invalid path characters: '{TaskId}'", nameof(TaskId));
+        }
+
         if (!OptimizationRunId.HasValue)
             return Path.Combine(traceRoot, "executions", ExecutionRunId.ToString("D").ToLowerInvariant());
 

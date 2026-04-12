@@ -27,6 +27,8 @@ public static class ToolConventions
 
     /// <summary>Gen AI operation name for tool execution spans.</summary>
     public const string ExecuteToolOperation = "execute_tool";
+    /// <summary>Gen AI span attribute containing the serialized tool call arguments (input).</summary>
+    public const string ToolCallArguments = "gen_ai.tool.call.arguments";
     /// <summary>Gen AI span attribute containing the tool call result text.</summary>
     public const string ToolCallResult = "gen_ai.tool.call.result";
     /// <summary>Gen AI span attribute for the operation name.</summary>
@@ -44,4 +46,17 @@ public static class ToolConventions
     public const string EmptyResults = "agent.tool.empty_results";
     /// <summary>Histogram: tool result size in characters.</summary>
     public const string ResultSize = "agent.tool.result_size";
+
+    // Causal attribution attributes (Meta-Harness OTel GenAI semantic conventions)
+
+    /// <summary>OTel GenAI semantic convention attribute for tool name (bridged from agent.tool.name).</summary>
+    public const string GenAiToolName = "gen_ai.tool.name";
+    /// <summary>SHA256 hex digest of serialized tool input arguments. Only set when IsAllDataRequested.</summary>
+    public const string InputHash = "tool.input_hash";
+    /// <summary>Bucketed outcome category matching ExecutionTraceRecord.result_category.</summary>
+    public const string ResultCategory = "tool.result_category";
+    /// <summary>CandidateId from TraceScope when running inside an optimization eval.</summary>
+    public const string HarnessCandidateId = "gen_ai.harness.candidate_id";
+    /// <summary>Iteration number from TraceScope when running inside an optimization eval.</summary>
+    public const string HarnessIteration = "gen_ai.harness.iteration";
 }

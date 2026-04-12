@@ -96,7 +96,13 @@ public sealed class ObservabilityTelemetryConfigurator : ITelemetryConfigurator
             _loggerFactory.CreateLogger<ToolEffectivenessProcessor>()));
         _logger.LogInformation("Tool effectiveness processor registered");
 
-        // Processor 5: Tail-based sampling (last — all metrics already recorded)
+        // Processor 5: Causal attribution — bridges agent.tool.name → gen_ai.tool.name,
+        // adds input hash and result category, reads eval context from baggage
+        builder.AddProcessor(new CausalSpanAttributionProcessor(
+            _loggerFactory.CreateLogger<CausalSpanAttributionProcessor>()));
+        _logger.LogInformation("Causal span attribution processor registered");
+
+        // Processor 6: Tail-based sampling (last — all metrics already recorded)
         if (config.Sampling.Enabled)
         {
             builder.AddProcessor(new TailBasedSamplingProcessor(

@@ -1,4 +1,5 @@
 using Domain.Common.Config.AI;
+using Domain.Common.MetaHarness;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 
@@ -67,6 +68,12 @@ public class AgentExecutionContext
 	/// Used for progressive skill disclosure, memory, and compaction.
 	/// </summary>
 	public IList<AIContextProvider>? AIContextProviders { get; set; }
+
+	/// <summary>
+	/// Trace scope for this execution run. Set by <c>AgentExecutionContextFactory</c>
+	/// when an <c>IExecutionTraceStore</c> is wired in.
+	/// </summary>
+	public TraceScope? TraceScope { get; set; }
 
 	/// <summary>
 	/// Extensible configuration properties.
