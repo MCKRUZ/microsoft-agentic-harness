@@ -1,6 +1,8 @@
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.A2A;
+using Application.AI.Common.Interfaces.Memory;
 using Application.AI.Common.Interfaces.Traces;
+using Infrastructure.AI.Memory;
 using Infrastructure.AI.Security;
 using Infrastructure.AI.Traces;
 using Application.AI.Common.Interfaces.Agent;
@@ -168,6 +170,13 @@ public static class DependencyInjection
 
         // Config discovery — directory walk with @include support
         services.AddTransient<IConfigDiscoveryService, DirectoryWalkConfigDiscovery>();
+
+        // Agent history store factory — creates a JsonlAgentHistoryStore for a given execution run.
+        // IAgentHistoryStore instances are run-scoped (one per ITraceWriter) and created by
+        // AgentExecutionContextFactory (section 14), not by the DI container directly.
+        // Register the factory delegate for use by the context factory.
+        services.AddSingleton<Func<ITraceWriter, IAgentHistoryStore>>(
+            _ => tw => new JsonlAgentHistoryStore(tw));
 
         return services;
     }
