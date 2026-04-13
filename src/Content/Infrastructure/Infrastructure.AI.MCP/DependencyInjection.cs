@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces;
 using Domain.Common.Config.AI;
+using Infrastructure.AI.MCP.Resources;
 using Infrastructure.AI.MCP.Services;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -38,6 +39,11 @@ public static class DependencyInjection
 
         // Tool provider — singleton wrapping connection manager
         services.AddSingleton<IMcpToolProvider, McpToolProvider>();
+
+        // Trace resource provider — exposes optimization run trace files at trace:// URIs.
+        // Auth-gated and feature-flagged via MetaHarnessConfig.EnableMcpTraceResources.
+        services.AddSingleton<TraceResourceProvider>();
+        services.AddSingleton<IMcpResourceProvider>(sp => sp.GetRequiredService<TraceResourceProvider>());
 
         return services;
     }

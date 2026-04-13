@@ -20,6 +20,8 @@ using Azure.AI.Agents.Persistent;
 using Azure.AI.OpenAI;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
+using Domain.Common.Config.MetaHarness;
+using Microsoft.Extensions.Options;
 using Infrastructure.AI.A2A;
 using Infrastructure.AI.MetaHarness;
 using Infrastructure.AI.Audit;
@@ -109,6 +111,13 @@ public static class DependencyInjection
         // File system tool — ITool adapter for LLM consumption, registered with keyed DI
         services.AddKeyedSingleton<ITool>(FileSystemTool.ToolName, (sp, _) =>
             new FileSystemTool(sp.GetRequiredService<IFileSystemService>()));
+
+        // Restricted search tool — sandboxed read-only shell commands for the proposer.
+        // Always registered; surfaced to the proposer only when EnableShellTool is true.
+        services.AddKeyedSingleton<ITool>(RestrictedSearchTool.ToolName, (sp, _) =>
+            new RestrictedSearchTool(
+                sp.GetRequiredService<IOptionsMonitor<MetaHarnessConfig>>(),
+                sp.GetRequiredService<ILogger<RestrictedSearchTool>>()));
 
         // Azure AI Foundry persistent agents — register administration client when configured
         if (appConfig.AI.AIFoundry.IsConfigured)
