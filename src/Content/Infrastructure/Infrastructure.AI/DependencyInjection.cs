@@ -195,6 +195,9 @@ public static class DependencyInjection
         // Harness proposer — scoped because each invocation carries iteration-specific context
         services.AddScoped<IHarnessProposer, OrchestratedHarnessProposer>();
 
+        // Harness evaluator — scoped; each evaluation creates its own SemaphoreSlim
+        services.AddScoped<IEvaluationService, AgentEvaluationService>();
+
         return services;
     }
 
