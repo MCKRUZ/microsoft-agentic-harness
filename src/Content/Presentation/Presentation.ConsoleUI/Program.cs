@@ -18,6 +18,7 @@ namespace Presentation.ConsoleUI;
 ///   <item><c>--example persistent-agent</c> — Run the persistent agent demo non-interactively</item>
 ///   <item><c>--example a2a</c> — Run the A2A agent-to-agent demo non-interactively</item>
 ///   <item><c>--example setup-secrets</c> — Run the user secrets setup wizard</item>
+///   <item><c>--example optimize</c> — Run the meta-harness optimization loop</item>
 ///   <item>(no args) — Interactive menu mode</item>
 /// </list>
 /// </remarks>
@@ -39,6 +40,7 @@ public class Program
 		services.AddTransient<PersistentAgentExample>();
 		services.AddTransient<A2AExample>();
 		services.AddTransient<SetupSecretsExample>();
+		services.AddTransient<OptimizeExample>();
 		services.AddTransient<App>();
 
 		var serviceProvider = services.BuildServiceProvider();

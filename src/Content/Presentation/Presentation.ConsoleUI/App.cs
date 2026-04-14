@@ -22,6 +22,7 @@ public class App
 	private readonly PersistentAgentExample _persistentAgentExample;
 	private readonly A2AExample _a2aExample;
 	private readonly SetupSecretsExample _setupSecretsExample;
+	private readonly OptimizeExample _optimizeExample;
 
 	public App(
 		IOptionsMonitor<AppConfig> appConfig,
@@ -32,7 +33,8 @@ public class App
 		ToolConverterExample toolConverterExample,
 		PersistentAgentExample persistentAgentExample,
 		A2AExample a2aExample,
-		SetupSecretsExample setupSecretsExample)
+		SetupSecretsExample setupSecretsExample,
+		OptimizeExample optimizeExample)
 	{
 		_appConfig = appConfig;
 		_loggerFactory = loggerFactory;
@@ -43,6 +45,7 @@ public class App
 		_persistentAgentExample = persistentAgentExample;
 		_a2aExample = a2aExample;
 		_setupSecretsExample = setupSecretsExample;
+		_optimizeExample = optimizeExample;
 	}
 
 	/// <summary>
@@ -87,6 +90,9 @@ public class App
 			case "setup-secrets":
 				await _setupSecretsExample.RunAsync();
 				break;
+			case "optimize":
+				await _optimizeExample.RunAsync();
+				break;
 			default:
 				ConsoleHelper.DisplayError($"Unknown example: {exampleName}");
 				break;
@@ -103,7 +109,8 @@ public class App
 				.HighlightStyle(Style.Parse("cornflowerblue"))
 				.AddChoiceGroup("[bold]Agents[/]",
 					"Research Agent (Standalone)",
-					"Orchestrator Agent (Multi-Agent)")
+					"Orchestrator Agent (Multi-Agent)",
+					"Meta-Harness Optimizer")
 				.AddChoiceGroup("[bold]Advanced[/]",
 					"MCP Tools Discovery",
 					"Tool Converter Demo",
@@ -124,6 +131,10 @@ public class App
 
 				case "Orchestrator Agent (Multi-Agent)":
 					await _orchestratorExample.RunAsync();
+					break;
+
+				case "Meta-Harness Optimizer":
+					await _optimizeExample.RunAsync();
 					break;
 
 				case "MCP Tools Discovery":
