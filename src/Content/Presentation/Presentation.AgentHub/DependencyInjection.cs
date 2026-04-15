@@ -1,8 +1,10 @@
 using System.Diagnostics;
 using System.Threading.RateLimiting;
+using Application.AI.Common.Interfaces;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Identity.Web;
 using OpenTelemetry;
 using OpenTelemetry.Trace;
@@ -115,6 +117,11 @@ public static class DependencyInjection
 
         services.Configure<AgentHubConfig>(
             configuration.GetSection("AppConfig:AgentHub"));
+
+        // NullMcpPromptProvider is the default when no real implementation is registered.
+        // Real implementations (e.g. from Infrastructure) override this via AddSingleton<IMcpPromptProvider, T>
+        // registered after this call, since TryAdd only sets if not already present.
+        services.TryAddSingleton<IMcpPromptProvider, NullMcpPromptProvider>();
 
         // Singleton: FileSystemConversationStore owns a SemaphoreSlim for thread-safety;
         // a scoped/transient registration would create multiple semaphore instances.

@@ -37,6 +37,15 @@ public interface IMcpToolProvider : IDisposable
     Task<Dictionary<string, IList<AITool>>> GetAllToolsAsync(CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Finds a single tool by name across all configured MCP servers.
+    /// Stops searching as soon as a match is found (early-exit).
+    /// </summary>
+    /// <param name="name">The tool name to find.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The first <see cref="AIFunction"/> whose <c>Name</c> matches, or <see langword="null"/> if not found.</returns>
+    Task<AIFunction?> GetToolByNameAsync(string name, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Checks if an MCP server is available and connected.
     /// </summary>
     /// <param name="serverName">The MCP server name.</param>

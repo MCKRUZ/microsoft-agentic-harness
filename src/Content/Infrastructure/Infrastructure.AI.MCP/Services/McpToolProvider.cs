@@ -90,6 +90,21 @@ public sealed class McpToolProvider : IMcpToolProvider
     }
 
     /// <inheritdoc />
+    public async Task<AIFunction?> GetToolByNameAsync(string name, CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        foreach (var serverName in _connectionManager.GetConfiguredServerNames())
+        {
+            var tools = await GetToolsAsync(serverName, cancellationToken);
+            var match = tools.OfType<AIFunction>().FirstOrDefault(fn => fn.Name == name);
+            if (match is not null)
+                return match;
+        }
+        return null;
+    }
+
+    /// <inheritdoc />
     public async Task<bool> IsServerAvailableAsync(string serverName, CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
