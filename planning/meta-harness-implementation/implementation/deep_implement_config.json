@@ -1,0 +1,97 @@
+{
+  "plugin_root": "C:\\Users\\kruz7\\.claude\\plugins\\cache\\piercelamb-plugins\\deep-implement\\0.2.0",
+  "sections_dir": "C:\\Users\\kruz7\\OneDrive\\Documents\\Code Repos\\MCKRUZ\\microsoft-agentic-harness\\planning\\meta-harness-implementation\\sections",
+  "target_dir": "C:\\Users\\kruz7\\OneDrive\\Documents\\Code Repos\\MCKRUZ\\microsoft-agentic-harness",
+  "state_dir": "C:\\Users\\kruz7\\OneDrive\\Documents\\Code Repos\\MCKRUZ\\microsoft-agentic-harness\\planning\\meta-harness-implementation\\implementation",
+  "git_root": "C:\\Users\\kruz7\\OneDrive\\Documents\\Code Repos\\MCKRUZ\\microsoft-agentic-harness",
+  "commit_style": "conventional",
+  "test_command": "uv run pytest",
+  "sections": [
+    "section-01-config",
+    "section-02-secret-redaction",
+    "section-03-trace-domain",
+    "section-04-trace-infrastructure",
+    "section-05-otel-spans",
+    "section-06-history-store",
+    "section-07-skill-extension",
+    "section-08-skill-provider",
+    "section-09-candidate-domain",
+    "section-10-candidate-repository",
+    "section-11-proposer",
+    "section-12-evaluator",
+    "section-13-tools",
+    "section-14-outer-loop",
+    "section-15-console-ui"
+  ],
+  "sections_state": {
+    "section-01-config": {
+      "status": "complete",
+      "commit_hash": "9d47fee"
+    },
+    "section-02-secret-redaction": {
+      "status": "complete",
+      "commit_hash": "0a897bf"
+    },
+    "section-03-trace-domain": {
+      "status": "complete",
+      "commit_hash": "d484dd1"
+    },
+    "section-04-trace-infrastructure": {
+      "status": "complete",
+      "commit_hash": "7205197"
+    },
+    "section-05-otel-spans": {
+      "status": "complete",
+      "commit_hash": "297c9a5"
+    },
+    "section-06-history-store": {
+      "status": "complete",
+      "commit_hash": "120a0bd"
+    },
+    "section-07-skill-extension": {
+      "status": "complete",
+      "commit_hash": "6c013f8"
+    },
+    "section-08-skill-provider": {
+      "status": "complete",
+      "commit_hash": "e903fb2"
+    },
+    "section-09-candidate-domain": {
+      "status": "complete",
+      "commit_hash": "f2aa978"
+    },
+    "section-10-candidate-repository": {
+      "status": "complete",
+      "commit_hash": "dbbe664"
+    },
+    "section-11-proposer": {
+      "status": "complete",
+      "commit_hash": "b101fd6"
+    },
+    "section-12-evaluator": {
+      "status": "complete",
+      "commit_hash": "0298d6a"
+    },
+    "section-13-tools": {
+      "status": "complete",
+      "commit_hash": "f9908ddf25ce92888875099149a183110ef4ffb6"
+    },
+    "section-14-outer-loop": {
+      "status": "complete",
+      "commit_hash": "c307748"
+    },
+    "section-15-console-ui": {
+      "status": "complete",
+      "commit_hash": "0e48548"
+    }
+  },
+  "pre_commit": {
+    "present": false,
+    "type": "none",
+    "config_file": null,
+    "native_hook": null,
+    "may_modify_files": false,
+    "detected_formatters": []
+  },
+  "created_at": "2026-04-11T16:53:36.712627+00:00"
+}

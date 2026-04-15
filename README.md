@@ -2,7 +2,7 @@
 
 If you've ever used [Claude Code](https://claude.ai/claude-code) and wondered *"how does this thing actually work under the hood?"* — this project is an answer to that question, built on the Microsoft stack.
 
-The Agentic Harness is a proof-of-concept that reconstructs the architecture behind modern AI coding agents: the skills system that decides what an agent knows, the tool system that decides what it can do, the context budget that decides how much it can hold in its head at once, and the orchestration loop that ties it all together. It runs on .NET 10, uses Clean Architecture, and speaks the same protocols (MCP, A2A) that the broader agent ecosystem is converging on.
+The Agentic Harness is a proof-of-concept that reconstructs the architecture behind modern AI coding agents: the skills system that decides what an agent knows, the tool system that decides what it can do, the context budget that decides how much it can hold in its head at once, the orchestration loop that ties it all together, and the meta-harness that automatically improves the agent's own configuration over time. It runs on .NET 10, uses Clean Architecture, and speaks the same protocols (MCP, A2A) that the broader agent ecosystem is converging on.
 
 It's not a chatbot wrapper. It's the plumbing that makes agents feel intelligent.
 
@@ -40,6 +40,7 @@ Three commands drive everything:
 - **ExecuteAgentTurn** handles a single turn — one round of messages in, tool calls out, results back.
 - **RunConversation** wraps the full loop — calling ExecuteAgentTurn repeatedly until the agent says it's done.
 - **RunOrchestratedTask** is where it gets interesting — an orchestrator agent decomposes a complex task into subtasks, spins up sub-agents for each one, runs their conversations in parallel, and synthesizes the results.
+- **RunHarnessOptimization** runs the meta-harness outer loop — proposing changes to skill files, evaluating them against a benchmark, and persisting the best candidates.
 
 ### Skills: Teaching Agents What They Know
 
@@ -88,6 +89,29 @@ LLM-powered agents are notoriously hard to debug. A conversation that goes sidew
 The harness instruments everything with OpenTelemetry. Every agent turn creates a span. Every tool call creates a child span. Conversation IDs, turn indices, and agent names are tagged automatically by a custom span processor that understands AI workloads — it recognizes spans from Microsoft.Extensions.AI, Semantic Kernel, and Azure.AI.OpenAI and enriches them with agentic context.
 
 Traces flow to Jaeger for visualization. Metrics flow to Prometheus. Logs flow through structured JSON logging. When something goes wrong, you don't guess — you trace the exact path the agent took, see what tools it called, and read the token counts at each step.
+
+### Meta-Harness: Self-Improving Agent Configuration
+
+Research shows that harness choice alone — what to store, retrieve, and show to the model — can cause **6x performance gaps** on identical benchmarks, bigger than the difference between model versions. The meta-harness automates what would otherwise be manual tuning: it watches how the agent fails, proposes targeted changes to the skill files that guide it, tests those changes, and keeps the best ones.
+
+The loop runs in four steps per iteration:
+
+1. **Snapshot** — capture the current state of all skill files as a baseline
+2. **Propose** — a coding agent reads recent execution traces using grep/cat tools, reasons about why failures occurred, and outputs a structured proposal: which skill files to change and how
+3. **Evaluate** — run the agent against a benchmark of eval tasks under the proposed skill files and score it by regex match against expected outputs
+4. **Record** — if the score improved beyond the threshold, promote this candidate as the new best; otherwise discard it
+
+The proposer uses a **causal trace** rather than just pass/fail results. OpenTelemetry spans are attributed back to their root causes — so the proposer knows not just that turn 7 failed, but which tool call three turns earlier set it up for failure. This is what makes the proposals targeted rather than random.
+
+Traces are stored as **grep-friendly JSONL files** in `.meta-harness/` rather than a database — because the proposer agent needs to search them with text patterns, exactly as a developer would. Secrets are stripped before any trace touches disk via `PatternSecretRedactor`.
+
+Eval tasks are simple JSON files you drop in `eval/tasks/`:
+
+```json
+{ "taskId": "task-01", "prompt": "Write a haiku about recursion.", "expectedPattern": "(?i)(recursion|itself|loop)", "maxPoints": 1.0 }
+```
+
+After a run, the winning candidate's skill files land in `.meta-harness/optimizations/{run-id}/_proposed/`. Promoting them is a single copy command.
 
 ---
 
@@ -144,7 +168,8 @@ src/
 │   │   └── Services/                   ContextBudgetTracker, TieredContextAssembler, AIToolConverter
 │   └── Application.Core/
 │       ├── Agents/Skills/              SKILL.md files per agent
-│       └── CQRS/Agents/               ExecuteAgentTurn, RunConversation, RunOrchestratedTask
+│       ├── CQRS/Agents/               ExecuteAgentTurn, RunConversation, RunOrchestratedTask
+│       └── CQRS/MetaHarness/          RunHarnessOptimization (propose→evaluate outer loop)
 │
 ├── Content/Infrastructure/
 │   ├── Infrastructure.Common/          Identity service, claim extensions
@@ -262,6 +287,8 @@ The ConsoleUI launches an interactive [Spectre.Console](https://spectreconsole.n
 
 **Go deeper:** **MCP Tools Discovery** connects to external MCP servers and pulls in remote tools at runtime. **Tool Converter Demo** shows the `ITool` to `AITool` bridge that makes keyed DI tools visible to the LLM. **Persistent Agent** creates a long-running agent on Azure AI Foundry with threads that survive across sessions. **A2A Agent-to-Agent** demonstrates the full discovery-and-delegation protocol between distributed agents.
 
+**For self-improvement:** The **Meta-Harness Optimizer** runs the propose→evaluate loop against your own skill files. Drop eval tasks in `eval/tasks/`, run `--example optimize`, and it will suggest targeted improvements to your agent's skills based on causal trace analysis.
+
 ---
 
 ## Configuration Reference
@@ -278,6 +305,7 @@ The ConsoleUI launches an interactive [Spectre.Console](https://spectreconsole.n
 | `AppConfig.Observability` | Tracing, metrics, and sampling (`EnableTracing`, `SamplingRatio`) |
 | `AppConfig.Cache` | Cache backend (`CacheType`: Memory or Redis) |
 | `AppConfig.Logging` | Log output (`LogsBasePath`, `PipeName` for named pipe streaming) |
+| `MetaHarness` | Optimization settings: `EvalTasksPath`, `SeedCandidatePath`, `MaxIterations`, `ProposerModel`, `EvaluatorModel`, `ScoreImprovementThreshold` |
 
 ---
 
