@@ -102,9 +102,9 @@ public sealed class FileSystemConversationStore : IConversationStore
     }
 
     /// <inheritdoc/>
-    public async Task<ConversationRecord> CreateAsync(string agentName, string userId, CancellationToken ct = default)
+    public async Task<ConversationRecord> CreateAsync(string agentName, string userId, string? conversationId = null, CancellationToken ct = default)
     {
-        var id = Guid.NewGuid().ToString();
+        var id = !string.IsNullOrWhiteSpace(conversationId) ? conversationId : Guid.NewGuid().ToString();
         var now = DateTimeOffset.UtcNow;
         var record = new ConversationRecord(
             Id: id,

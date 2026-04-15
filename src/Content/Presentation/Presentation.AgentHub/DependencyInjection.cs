@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.Identity.Web;
+using Presentation.AgentHub.Hubs;
 using Presentation.AgentHub.Interfaces;
 using Presentation.AgentHub.Models;
 using Presentation.AgentHub.Services;
@@ -114,6 +115,9 @@ public static class DependencyInjection
         // Singleton: FileSystemConversationStore owns a SemaphoreSlim for thread-safety;
         // a scoped/transient registration would create multiple semaphore instances.
         services.AddSingleton<IConversationStore, FileSystemConversationStore>();
+
+        // Singleton: ConversationLockRegistry must outlive hub instances (hubs are transient).
+        services.AddSingleton<ConversationLockRegistry>();
 
         // Section 5 — SignalRSpanExporter
         // services.AddSingleton<SignalRSpanExporter>();

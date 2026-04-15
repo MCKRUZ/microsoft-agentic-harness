@@ -19,8 +19,12 @@ public interface IConversationStore
     /// </summary>
     Task<IReadOnlyList<ConversationRecord>> ListAsync(string userId, CancellationToken ct = default);
 
-    /// <summary>Creates a new conversation with a generated GUID id.</summary>
-    Task<ConversationRecord> CreateAsync(string agentName, string userId, CancellationToken ct = default);
+    /// <summary>
+    /// Creates a new conversation. If <paramref name="conversationId"/> is supplied and non-empty
+    /// the record uses that value as its ID (caller-generated GUID for idempotent reconnect);
+    /// otherwise a new GUID is generated.
+    /// </summary>
+    Task<ConversationRecord> CreateAsync(string agentName, string userId, string? conversationId = null, CancellationToken ct = default);
 
     /// <summary>Appends <paramref name="message"/> to an existing conversation record.</summary>
     Task AppendMessageAsync(string conversationId, ConversationMessage message, CancellationToken ct = default);
