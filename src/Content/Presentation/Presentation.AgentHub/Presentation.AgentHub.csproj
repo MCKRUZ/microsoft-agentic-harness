@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Presentation.Common\Presentation.Common.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- OpenTelemetry — versions already in Directory.Packages.props -->
+    <PackageReference Include="OpenTelemetry" />
+    <!-- Microsoft.Identity.Web — already in Directory.Packages.props -->
+    <PackageReference Include="Microsoft.Identity.Web" />
+  </ItemGroup>
+
+</Project>

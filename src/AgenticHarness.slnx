@@ -40,9 +40,11 @@
     <Project Path="Content/Presentation/Presentation.Common/Presentation.Common.csproj" />
     <Project Path="Content/Presentation/Presentation.LoggerUI/Presentation.LoggerUI.csproj" />
     <Project Path="Content/Presentation/Presentation.ConsoleUI/Presentation.ConsoleUI.csproj" />
+    <Project Path="Content/Presentation/Presentation.AgentHub/Presentation.AgentHub.csproj" />
   </Folder>
   <Folder Name="/Tests/">
     <Project Path="Content/Tests/Domain.AI.Tests/Domain.AI.Tests.csproj" />
+    <Project Path="Content/Tests/Presentation.AgentHub.Tests/Presentation.AgentHub.Tests.csproj" />
     <Project Path="Content/Tests/Application.AI.Common.Tests/Application.AI.Common.Tests.csproj" />
     <Project Path="Content/Tests/Application.Common.Tests/Application.Common.Tests.csproj" />
     <Project Path="Content/Tests/Application.Core.Tests/Application.Core.Tests.csproj" />
