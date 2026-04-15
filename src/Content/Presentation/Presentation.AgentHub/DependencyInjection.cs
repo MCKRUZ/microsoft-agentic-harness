@@ -1,12 +1,16 @@
+using System.Diagnostics;
+using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.Identity.Web;
+using OpenTelemetry;
+using OpenTelemetry.Trace;
 using Presentation.AgentHub.Hubs;
 using Presentation.AgentHub.Interfaces;
 using Presentation.AgentHub.Models;
 using Presentation.AgentHub.Services;
-using System.Threading.RateLimiting;
+using Presentation.AgentHub.Telemetry;
 
 namespace Presentation.AgentHub;
 
@@ -119,10 +123,31 @@ public static class DependencyInjection
         // Singleton: ConversationLockRegistry must outlive hub instances (hubs are transient).
         services.AddSingleton<ConversationLockRegistry>();
 
-        // Section 5 — SignalRSpanExporter
-        // services.AddSingleton<SignalRSpanExporter>();
-        // services.AddHostedService(sp => sp.GetRequiredService<SignalRSpanExporter>());
+        // SignalRSpanExporter bridges OTel Activity pipeline → SignalR.
+        // Registered as singleton so the same instance is both the IHostedService (drain loop)
+        // and the BaseExporter<Activity> added to the OTel tracing pipeline below.
+        services.AddSingleton<SignalRSpanExporter>();
+        services.AddHostedService(sp => sp.GetRequiredService<SignalRSpanExporter>());
+
+        // Append SignalRSpanExporter to the OTel tracing pipeline AFTER GetServices() has run
+        // and Infrastructure.Observability's ITelemetryConfigurator (order 300) has already
+        // registered Jaeger / Azure Monitor exporters. Using AddOpenTelemetry().WithTracing()
+        // here appends without touching Infrastructure.Observability's DI code.
+        // AgentHubSpanExportProcessor is a file-private concrete subclass of
+        // SimpleExportProcessor<Activity> (which is abstract to prevent direct instantiation).
+        services.AddOpenTelemetry()
+            .WithTracing(b => b.AddProcessor(
+                sp => new AgentHubSpanExportProcessor(
+                    sp.GetRequiredService<SignalRSpanExporter>())));
 
         return services;
     }
 }
+
+/// <summary>
+/// Concrete <see cref="SimpleExportProcessor{T}"/> wrapping <see cref="SignalRSpanExporter"/> for
+/// registration in the OTel tracing pipeline. File-scoped to keep it an implementation detail of
+/// <see cref="DependencyInjection"/>.
+/// </summary>
+file sealed class AgentHubSpanExportProcessor(SignalRSpanExporter exporter)
+    : SimpleExportProcessor<Activity>(exporter);

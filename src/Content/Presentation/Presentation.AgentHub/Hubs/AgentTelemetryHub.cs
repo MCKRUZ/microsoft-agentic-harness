@@ -56,8 +56,8 @@ public sealed class AgentTelemetryHub : Hub
     // Group name helpers
     // -------------------------------------------------------------------------
 
-    private static string ConversationGroup(string conversationId) => $"conversation:{conversationId}";
-    private const string GlobalTracesGroup = "global-traces";
+    internal static string ConversationGroup(string conversationId) => $"conversation:{conversationId}";
+    internal const string GlobalTracesGroup = "global-traces";
     private const string GlobalTracesRole = "AgentHub.Traces.ReadAll";
 
     // -------------------------------------------------------------------------

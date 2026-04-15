@@ -13,8 +13,15 @@
   <ItemGroup>
     <!-- OpenTelemetry — versions already in Directory.Packages.props -->
     <PackageReference Include="OpenTelemetry" />
+    <PackageReference Include="OpenTelemetry.Extensions.Hosting" />
     <!-- Microsoft.Identity.Web — already in Directory.Packages.props -->
     <PackageReference Include="Microsoft.Identity.Web" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>Presentation.AgentHub.Tests</_Parameter1>
+    </AssemblyAttribute>
   </ItemGroup>
 
 </Project>
