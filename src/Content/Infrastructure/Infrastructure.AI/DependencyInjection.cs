@@ -207,6 +207,9 @@ public static class DependencyInjection
         // Harness evaluator — scoped; each evaluation creates its own SemaphoreSlim
         services.AddScoped<IEvaluationService, AgentEvaluationService>();
 
+        // Regression suite service — scoped to match evaluation lifecycle
+        services.AddScoped<IRegressionSuiteService, FileSystemRegressionSuiteService>();
+
         return services;
     }
 

@@ -94,12 +94,21 @@ Traces flow to Jaeger for visualization. Metrics flow to Prometheus. Logs flow t
 
 Research shows that harness choice alone — what to store, retrieve, and show to the model — can cause **6x performance gaps** on identical benchmarks, bigger than the difference between model versions. The meta-harness automates what would otherwise be manual tuning: it watches how the agent fails, proposes targeted changes to the skill files that guide it, tests those changes, and keeps the best ones.
 
-The loop runs in four steps per iteration:
+The loop runs in five steps per iteration:
 
 1. **Snapshot** — capture the current state of all skill files as a baseline
-2. **Propose** — a coding agent reads recent execution traces using grep/cat tools, reasons about why failures occurred, and outputs a structured proposal: which skill files to change and how
+2. **Propose** — a coding agent reads recent execution traces and the accumulated learnings log, reasons about why failures occurred, and outputs a structured proposal: which skill files to change, how, and what it observed
 3. **Evaluate** — run the agent against a benchmark of eval tasks under the proposed skill files and score it by regex match against expected outputs
-4. **Record** — if the score improved beyond the threshold, promote this candidate as the new best; otherwise discard it
+4. **Regression gate** — before accepting a new best, verify the candidate doesn't regress on tasks that prior winners already solved; if it does, the candidate is rejected and the previous best is kept
+5. **Record** — if the score improved and the regression gate passed, promote this candidate as the new best and update the regression suite; otherwise discard it
+
+Three mechanisms keep the loop efficient:
+
+**Self-maintained regression suite.** The first accepted candidate seeds a `regression_suite.json` with every task it passes. Each subsequent winner must pass at least `RegressionSuiteThreshold` (default 80%) of those pinned tasks before being promoted. Tasks that were previously failing and now pass get added to the suite automatically, so the bar continuously rises.
+
+**Persistent learnings log.** After every iteration — successful or failed — the proposer's observations are appended to a `learnings.md` file in the run directory. The next iteration receives this log as context, so the proposer doesn't re-attempt hypotheses that already failed and can build on patterns that worked.
+
+**Consecutive no-improvement early stop.** When N iterations in a row produce no new accepted best (configurable via `ConsecutiveNoImprovementLimit`, default 5), the loop exits rather than burning through remaining iterations. Failed proposer calls and regression-gated rejections both count toward this limit.
 
 The proposer uses a **causal trace** rather than just pass/fail results. OpenTelemetry spans are attributed back to their root causes — so the proposer knows not just that turn 7 failed, but which tool call three turns earlier set it up for failure. This is what makes the proposals targeted rather than random.
 
@@ -305,7 +314,7 @@ The ConsoleUI launches an interactive [Spectre.Console](https://spectreconsole.n
 | `AppConfig.Observability` | Tracing, metrics, and sampling (`EnableTracing`, `SamplingRatio`) |
 | `AppConfig.Cache` | Cache backend (`CacheType`: Memory or Redis) |
 | `AppConfig.Logging` | Log output (`LogsBasePath`, `PipeName` for named pipe streaming) |
-| `MetaHarness` | Optimization settings: `EvalTasksPath`, `SeedCandidatePath`, `MaxIterations`, `ProposerModel`, `EvaluatorModel`, `ScoreImprovementThreshold` |
+| `MetaHarness` | Optimization settings: `EvalTasksPath`, `SeedCandidatePath`, `MaxIterations`, `ProposerModel`, `EvaluatorModel`, `ScoreImprovementThreshold`, `RegressionSuiteThreshold` (0.8), `ConsecutiveNoImprovementLimit` (5) |
 
 ---
 

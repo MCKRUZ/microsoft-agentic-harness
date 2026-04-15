@@ -70,15 +70,31 @@ public sealed class OrchestratedHarnessProposer : IHarnessProposer
             ? string.Join(", ", context.PriorCandidateIds.Select(id => id.ToString("N")[..8]))
             : "(none — this is the first iteration)";
 
+        var learningsSection = string.IsNullOrWhiteSpace(context.PriorLearnings)
+            ? string.Empty
+            : $"""
+
+               ## Prior Learnings (cross-iteration memory)
+               The following was recorded from previous iterations. Use it to avoid re-attempting
+               failed approaches and to build on what worked:
+
+               {context.PriorLearnings}
+               """;
+
         return $"""
             Optimization run directory: {context.OptimizationRunDirectoryPath}
             Current iteration: {context.Iteration}
             Current candidate ID: {context.CurrentCandidate.CandidateId:N}
             Prior candidate IDs (oldest first, short form): {priorIds}
+            {learningsSection}
 
             Analyze the execution traces in the candidates/ subdirectory and propose targeted
             harness improvements. Respond with a single JSON object only (no markdown fences,
             no preamble text).
+
+            Include a "learnings" key (string) with your observations about what worked, what
+            failed, and patterns you noticed this iteration. This will be saved as cross-iteration
+            memory for future iterations.
             """;
     }
 
@@ -127,12 +143,17 @@ public sealed class OrchestratedHarnessProposer : IHarnessProposer
                 ? sp.GetString()
                 : null;
 
+            var learnings = root.TryGetProperty("learnings", out var l) && l.ValueKind == JsonValueKind.String
+                ? l.GetString()
+                : null;
+
             return new HarnessProposal
             {
                 Reasoning = reasoning,
                 ProposedSkillChanges = skillChanges,
                 ProposedConfigChanges = configChanges,
-                ProposedSystemPromptChange = promptChange
+                ProposedSystemPromptChange = promptChange,
+                Learnings = learnings,
             };
         }
     }

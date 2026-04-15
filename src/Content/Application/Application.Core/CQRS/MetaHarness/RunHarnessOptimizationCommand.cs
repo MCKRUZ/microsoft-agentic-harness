@@ -55,4 +55,10 @@ public sealed record OptimizationResult
     /// Empty string when no iterations completed successfully.
     /// </summary>
     public required string ProposedChangesPath { get; init; }
+
+    /// <summary>
+    /// When non-null, the loop exited before reaching <c>MaxIterations</c>.
+    /// Value is <c>"no_improvement"</c> when the consecutive no-improvement limit was reached.
+    /// </summary>
+    public string? EarlyStopReason { get; init; }
 }

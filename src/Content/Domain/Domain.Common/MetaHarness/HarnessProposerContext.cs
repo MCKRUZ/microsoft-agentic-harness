@@ -23,4 +23,11 @@ public sealed record HarnessProposerContext
 
     /// <summary>Zero-based iteration index within the optimization run.</summary>
     public required int Iteration { get; init; }
+
+    /// <summary>
+    /// Accumulated text content of <c>learnings.md</c> from all prior iterations.
+    /// <c>null</c> on the first iteration or when no learnings file has been written yet.
+    /// Used to prevent the proposer from re-attempting failed hypotheses.
+    /// </summary>
+    public string? PriorLearnings { get; init; }
 }

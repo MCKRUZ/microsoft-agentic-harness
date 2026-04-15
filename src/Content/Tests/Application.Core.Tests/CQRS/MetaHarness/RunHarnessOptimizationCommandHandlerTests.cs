@@ -22,6 +22,7 @@ public sealed class RunHarnessOptimizationCommandHandlerTests : IDisposable
     private readonly Mock<IEvaluationService> _evaluator;
     private readonly Mock<IHarnessCandidateRepository> _repository;
     private readonly Mock<ISnapshotBuilder> _snapshotBuilder;
+    private readonly Mock<IRegressionSuiteService> _regressionService;
     private readonly Mock<IOptionsMonitor<MetaHarnessConfig>> _configMonitor;
     private readonly Mock<ILogger<RunHarnessOptimizationCommandHandler>> _logger;
     private MetaHarnessConfig _cfg;
@@ -35,6 +36,7 @@ public sealed class RunHarnessOptimizationCommandHandlerTests : IDisposable
         _evaluator = new Mock<IEvaluationService>();
         _repository = new Mock<IHarnessCandidateRepository>();
         _snapshotBuilder = new Mock<ISnapshotBuilder>();
+        _regressionService = new Mock<IRegressionSuiteService>();
         _configMonitor = new Mock<IOptionsMonitor<MetaHarnessConfig>>();
         _logger = new Mock<ILogger<RunHarnessOptimizationCommandHandler>>();
 
@@ -45,13 +47,28 @@ public sealed class RunHarnessOptimizationCommandHandlerTests : IDisposable
             EvalTasksPath = Path.Combine(_tempDir, "eval-tasks"),
             ScoreImprovementThreshold = 0.01,
             MaxRunsToKeep = 0,
+            ConsecutiveNoImprovementLimit = 0, // disabled — not under test in this class
         };
         _configMonitor.Setup(x => x.CurrentValue).Returns(() => _cfg);
+
+        // Default regression service: empty suite, always passes, no-op promote
+        var emptySuite = new RegressionSuite { TaskIds = [], Threshold = 0.8, LastUpdatedAt = DateTimeOffset.UtcNow };
+        _regressionService
+            .Setup(x => x.LoadAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(emptySuite);
+        _regressionService
+            .Setup(x => x.Check(It.IsAny<RegressionSuite>(), It.IsAny<EvaluationResult>()))
+            .Returns(new RegressionCheckResult { Passed = true, PassRate = 1.0, FailedTaskIds = [] });
+        _regressionService
+            .Setup(x => x.PromoteAsync(
+                It.IsAny<RegressionSuite>(), It.IsAny<EvaluationResult>(),
+                It.IsAny<EvaluationResult?>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((RegressionSuite s, EvaluationResult _, EvaluationResult? _, string _, CancellationToken _) => s);
     }
 
     private RunHarnessOptimizationCommandHandler BuildHandler() =>
         new(_proposer.Object, _evaluator.Object, _repository.Object,
-            _snapshotBuilder.Object, _configMonitor.Object, _logger.Object);
+            _snapshotBuilder.Object, _regressionService.Object, _configMonitor.Object, _logger.Object);
 
     private static RunHarnessOptimizationCommand BuildCommand(
         Guid? runId = null, int? maxIterations = null) =>

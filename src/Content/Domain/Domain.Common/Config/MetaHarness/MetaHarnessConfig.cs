@@ -148,4 +148,21 @@ public class MetaHarnessConfig
     /// </summary>
     /// <value>Default: <c>true</c>.</value>
     public bool EnableMcpTraceResources { get; set; } = true;
+
+    /// <summary>
+    /// Gets or sets the minimum pass rate on regression suite tasks required to accept
+    /// a candidate as the new best. When the regression suite is empty this threshold
+    /// has no effect. Set to <c>0.0</c> to disable regression gating.
+    /// </summary>
+    /// <value>Default: <c>0.8</c> (80%).</value>
+    public double RegressionSuiteThreshold { get; set; } = 0.8;
+
+    /// <summary>
+    /// Gets or sets the maximum number of consecutive iterations without improvement
+    /// before the optimization loop exits early. An iteration counts as "no improvement"
+    /// when no new best candidate is accepted, including proposer failures, evaluation
+    /// failures, and regression-gated rejections. Set to <c>0</c> to disable.
+    /// </summary>
+    /// <value>Default: <c>5</c>.</value>
+    public int ConsecutiveNoImprovementLimit { get; set; } = 5;
 }

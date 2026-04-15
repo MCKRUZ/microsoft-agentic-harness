@@ -38,6 +38,7 @@ public sealed class RunHarnessOptimizationCommandHandler
     private readonly IEvaluationService _evaluationService;
     private readonly IHarnessCandidateRepository _candidateRepository;
     private readonly ISnapshotBuilder _snapshotBuilder;
+    private readonly IRegressionSuiteService _regressionService;
     private readonly IOptionsMonitor<MetaHarnessConfig> _config;
     private readonly ILogger<RunHarnessOptimizationCommandHandler> _logger;
 
@@ -53,6 +54,7 @@ public sealed class RunHarnessOptimizationCommandHandler
         IEvaluationService evaluationService,
         IHarnessCandidateRepository candidateRepository,
         ISnapshotBuilder snapshotBuilder,
+        IRegressionSuiteService regressionService,
         IOptionsMonitor<MetaHarnessConfig> config,
         ILogger<RunHarnessOptimizationCommandHandler> logger)
     {
@@ -60,12 +62,14 @@ public sealed class RunHarnessOptimizationCommandHandler
         ArgumentNullException.ThrowIfNull(evaluationService);
         ArgumentNullException.ThrowIfNull(candidateRepository);
         ArgumentNullException.ThrowIfNull(snapshotBuilder);
+        ArgumentNullException.ThrowIfNull(regressionService);
         ArgumentNullException.ThrowIfNull(config);
         ArgumentNullException.ThrowIfNull(logger);
         _proposer = proposer;
         _evaluationService = evaluationService;
         _candidateRepository = candidateRepository;
         _snapshotBuilder = snapshotBuilder;
+        _regressionService = regressionService;
         _config = config;
         _logger = logger;
     }
@@ -108,6 +112,14 @@ public sealed class RunHarnessOptimizationCommandHandler
         var priorCandidateIds = new List<Guid>();
         var executedIterations = 0;
 
+        // Pre-loop: load regression suite, learnings, and early-stop counter
+        var regressionSuite = await _regressionService.LoadAsync(runDir, cancellationToken);
+        var priorLearnings = await ReadLearningsFileAsync(runDir);
+        var consecutiveNoImprovement = 0;
+        var noImprovementLimit = cfg.ConsecutiveNoImprovementLimit;
+        EvaluationResult? previousBestEvalResult = null;
+        string? earlyStopReason = null;
+
         for (var i = startIteration; i <= maxIterations; i++)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -123,6 +135,7 @@ public sealed class RunHarnessOptimizationCommandHandler
                     OptimizationRunDirectoryPath = runDir,
                     PriorCandidateIds = priorCandidateIds.AsReadOnly(),
                     Iteration = i,
+                    PriorLearnings = priorLearnings,
                 };
                 proposal = await _proposer.ProposeAsync(proposerCtx, cancellationToken);
             }
@@ -145,6 +158,17 @@ public sealed class RunHarnessOptimizationCommandHandler
                     "Iteration {Iteration}: proposer parsing failure — {Message}", i, ex.Message);
                 UpdateRunManifest(runDir, i, currentBestCandidate?.CandidateId,
                     command.OptimizationRunId, manifest.StartedAt);
+                await AppendLearningsAsync(runDir, BuildFailedLearningsEntry(i, ex.Message));
+                priorLearnings = await ReadLearningsFileAsync(runDir);
+                consecutiveNoImprovement++;
+                if (noImprovementLimit > 0 && consecutiveNoImprovement >= noImprovementLimit)
+                {
+                    earlyStopReason = "no_improvement";
+                    _logger.LogInformation(
+                        "Stopping early at iteration {Iteration}: {Count} consecutive with no improvement",
+                        i, consecutiveNoImprovement);
+                    break;
+                }
                 continue;
             }
 
@@ -183,10 +207,21 @@ public sealed class RunHarnessOptimizationCommandHandler
                     "Iteration {Iteration}: evaluation exception — {Message}", i, ex.Message);
                 UpdateRunManifest(runDir, i, currentBestCandidate?.CandidateId,
                     command.OptimizationRunId, manifest.StartedAt);
+                await AppendLearningsAsync(runDir, BuildFailedLearningsEntry(i, ex.Message));
+                priorLearnings = await ReadLearningsFileAsync(runDir);
+                consecutiveNoImprovement++;
+                if (noImprovementLimit > 0 && consecutiveNoImprovement >= noImprovementLimit)
+                {
+                    earlyStopReason = "no_improvement";
+                    _logger.LogInformation(
+                        "Stopping early at iteration {Iteration}: {Count} consecutive with no improvement",
+                        i, consecutiveNoImprovement);
+                    break;
+                }
                 continue;
             }
 
-            // Step 4: Score and track best
+            // Step 4: Score, regression-gate, and track best
             var evaluated = candidate with
             {
                 BestScore = evalResult.PassRate,
@@ -196,13 +231,53 @@ public sealed class RunHarnessOptimizationCommandHandler
             await _candidateRepository.SaveAsync(evaluated, cancellationToken);
             priorCandidateIds.Add(evaluated.CandidateId);
 
+            var acceptedAsNewBest = false;
             if (IsBetter(evaluated, currentBestCandidate, cfg.ScoreImprovementThreshold))
-                currentBestCandidate = evaluated;
+            {
+                var regressionCheck = _regressionService.Check(regressionSuite, evalResult);
+                if (regressionCheck.Passed)
+                {
+                    regressionSuite = await _regressionService.PromoteAsync(
+                        regressionSuite, evalResult, previousBestEvalResult, runDir, cancellationToken);
+                    previousBestEvalResult = evalResult;
+                    currentBestCandidate = evaluated;
+                    acceptedAsNewBest = true;
+                    _logger.LogInformation(
+                        "Iteration {Iteration}: accepted as new best (pass rate: {PassRate:P2}, regression gate: {RegressionPassRate:P0})",
+                        i, evalResult.PassRate, regressionCheck.PassRate);
+                }
+                else
+                {
+                    _logger.LogWarning(
+                        "Iteration {Iteration}: IsBetter=true but regression gate FAILED " +
+                        "(pass rate: {RegressionPassRate:P0}, failed tasks: [{FailedTasks}])",
+                        i, regressionCheck.PassRate,
+                        string.Join(", ", regressionCheck.FailedTaskIds));
+                }
+            }
 
-            // Step 5: Persist run state
+            // Early-stop tracking
+            if (acceptedAsNewBest)
+                consecutiveNoImprovement = 0;
+            else
+                consecutiveNoImprovement++;
+
+            // Step 5: Persist run state and learnings
             UpdateRunManifest(runDir, i, currentBestCandidate?.CandidateId,
                 command.OptimizationRunId, manifest.StartedAt);
             currentCandidate = evaluated;
+
+            await AppendLearningsAsync(runDir, BuildLearningsEntry(i, proposal, evalResult, acceptedAsNewBest));
+            priorLearnings = await ReadLearningsFileAsync(runDir);
+
+            if (noImprovementLimit > 0 && consecutiveNoImprovement >= noImprovementLimit)
+            {
+                earlyStopReason = "no_improvement";
+                _logger.LogInformation(
+                    "Stopping early at iteration {Iteration}: {Count} consecutive with no improvement",
+                    i, consecutiveNoImprovement);
+                break;
+            }
         }
 
         var bestCandidate = await _candidateRepository.GetBestAsync(
@@ -218,6 +293,7 @@ public sealed class RunHarnessOptimizationCommandHandler
             BestScore = bestCandidate?.BestScore ?? 0.0,
             IterationCount = executedIterations,
             ProposedChangesPath = bestCandidate is not null ? proposedDir : string.Empty,
+            EarlyStopReason = earlyStopReason,
         };
     }
 
@@ -506,6 +582,49 @@ public sealed class RunHarnessOptimizationCommandHandler
     {
         var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(content));
         return Convert.ToHexStringLower(bytes);
+    }
+
+    private static async Task<string?> ReadLearningsFileAsync(string runDir)
+    {
+        var path = Path.Combine(runDir, "learnings.md");
+        if (!File.Exists(path))
+            return null;
+        var content = await File.ReadAllTextAsync(path);
+        return string.IsNullOrWhiteSpace(content) ? null : content;
+    }
+
+    private static async Task AppendLearningsAsync(string runDir, string entry)
+    {
+        var path = Path.Combine(runDir, "learnings.md");
+        await File.AppendAllTextAsync(path, entry);
+    }
+
+    private static string BuildLearningsEntry(
+        int iteration,
+        HarnessProposal proposal,
+        EvaluationResult evalResult,
+        bool acceptedAsBest)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine($"## Iteration {iteration}");
+        sb.AppendLine($"- **Status**: {(acceptedAsBest ? "ACCEPTED as new best" : "Not accepted")}");
+        sb.AppendLine($"- **Pass rate**: {evalResult.PassRate:P2}");
+        sb.AppendLine($"- **Token cost**: {evalResult.TotalTokenCost}");
+        sb.AppendLine($"- **Reasoning**: {proposal.Reasoning}");
+        if (!string.IsNullOrWhiteSpace(proposal.Learnings))
+            sb.AppendLine($"- **Proposer observations**: {proposal.Learnings}");
+        sb.AppendLine();
+        return sb.ToString();
+    }
+
+    private static string BuildFailedLearningsEntry(int iteration, string failureReason)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine($"## Iteration {iteration}");
+        sb.AppendLine("- **Status**: FAILED");
+        sb.AppendLine($"- **Failure**: {failureReason}");
+        sb.AppendLine();
+        return sb.ToString();
     }
 
     private sealed record RunManifest
