@@ -1,7 +1,8 @@
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 using Microsoft.Extensions.Options;
-using Presentation.AgentHub.Models;
+using Presentation.AgentHub.Config;
+using Presentation.AgentHub.DTOs;
 using Presentation.AgentHub.Services;
 
 namespace Presentation.AgentHub.Tests.ConversationStore;

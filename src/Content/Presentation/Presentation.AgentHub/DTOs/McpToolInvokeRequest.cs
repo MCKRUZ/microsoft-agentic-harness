@@ -1,6 +1,6 @@
 using System.Text.Json;
 
-namespace Presentation.AgentHub.Models;
+namespace Presentation.AgentHub.DTOs;
 
 /// <summary>Request body for invoking an MCP tool directly via HTTP.</summary>
 public sealed record McpToolInvokeRequest

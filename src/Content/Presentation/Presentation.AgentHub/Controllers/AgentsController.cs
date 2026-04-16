@@ -3,7 +3,8 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
 using Presentation.AgentHub.Extensions;
 using Presentation.AgentHub.Interfaces;
-using Presentation.AgentHub.Models;
+using Presentation.AgentHub.Config;
+using Presentation.AgentHub.DTOs;
 
 namespace Presentation.AgentHub.Controllers;
 

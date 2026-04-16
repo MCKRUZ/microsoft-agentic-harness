@@ -11,7 +11,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Moq;
 using Presentation.AgentHub.Hubs;
 using Presentation.AgentHub.Interfaces;
-using Presentation.AgentHub.Models;
+using Presentation.AgentHub.DTOs;
 using System.Collections.Concurrent;
 using Xunit;
 

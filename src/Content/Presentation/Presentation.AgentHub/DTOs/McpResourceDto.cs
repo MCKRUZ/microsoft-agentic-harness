@@ -1,4 +1,4 @@
-namespace Presentation.AgentHub.Models;
+namespace Presentation.AgentHub.DTOs;
 
 /// <summary>Describes a single MCP resource exposed by the server.</summary>
 public sealed record McpResourceDto

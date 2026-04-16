@@ -1,4 +1,4 @@
-using Presentation.AgentHub.Models;
+using Presentation.AgentHub.DTOs;
 
 namespace Presentation.AgentHub.Interfaces;
 

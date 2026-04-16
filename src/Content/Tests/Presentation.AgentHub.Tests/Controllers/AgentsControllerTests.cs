@@ -4,7 +4,7 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Presentation.AgentHub.Interfaces;
-using Presentation.AgentHub.Models;
+using Presentation.AgentHub.DTOs;
 using System.Net;
 using System.Net.Http.Json;
 using Xunit;

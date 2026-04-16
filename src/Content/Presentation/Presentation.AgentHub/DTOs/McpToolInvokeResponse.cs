@@ -1,6 +1,6 @@
 using System.Text.Json;
 
-namespace Presentation.AgentHub.Models;
+namespace Presentation.AgentHub.DTOs;
 
 /// <summary>Response envelope for an MCP tool invocation.</summary>
 public sealed record McpToolInvokeResponse

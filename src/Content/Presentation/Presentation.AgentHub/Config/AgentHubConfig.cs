@@ -1,4 +1,4 @@
-namespace Presentation.AgentHub.Models;
+namespace Presentation.AgentHub.Config;
 
 /// <summary>
 /// Configuration for the AgentHub presentation host.

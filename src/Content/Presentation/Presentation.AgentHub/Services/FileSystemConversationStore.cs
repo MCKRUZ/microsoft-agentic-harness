@@ -3,7 +3,8 @@ using System.Text.Json.Serialization;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Presentation.AgentHub.Interfaces;
-using Presentation.AgentHub.Models;
+using Presentation.AgentHub.Config;
+using Presentation.AgentHub.DTOs;
 
 namespace Presentation.AgentHub.Services;
 

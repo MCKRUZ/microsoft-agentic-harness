@@ -12,7 +12,7 @@ using OpenTelemetry.Trace;
 using Presentation.AgentHub.Auth;
 using Presentation.AgentHub.Hubs;
 using Presentation.AgentHub.Interfaces;
-using Presentation.AgentHub.Models;
+using Presentation.AgentHub.Config;
 using Presentation.AgentHub.Services;
 using Presentation.AgentHub.Telemetry;
 

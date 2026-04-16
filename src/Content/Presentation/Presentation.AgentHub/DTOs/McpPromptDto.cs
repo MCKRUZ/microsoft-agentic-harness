@@ -1,4 +1,4 @@
-namespace Presentation.AgentHub.Models;
+namespace Presentation.AgentHub.DTOs;
 
 /// <summary>Describes a single MCP prompt template.</summary>
 public sealed record McpPromptDto

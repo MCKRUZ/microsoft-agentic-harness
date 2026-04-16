@@ -1,4 +1,4 @@
-namespace Presentation.AgentHub.Models;
+namespace Presentation.AgentHub.Config;
 
 /// <summary>
 /// CORS sub-configuration for the AgentHub host.

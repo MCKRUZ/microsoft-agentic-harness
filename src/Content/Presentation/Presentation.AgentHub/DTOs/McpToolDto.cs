@@ -1,6 +1,6 @@
 using System.Text.Json;
 
-namespace Presentation.AgentHub.Models;
+namespace Presentation.AgentHub.DTOs;
 
 /// <summary>Describes a single MCP tool available for invocation via the HTTP API.</summary>
 public sealed record McpToolDto

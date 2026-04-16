@@ -9,7 +9,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Hosting;
-using Presentation.AgentHub.Models;
+using Presentation.AgentHub.DTOs;
 
 namespace Presentation.AgentHub.Controllers;
 

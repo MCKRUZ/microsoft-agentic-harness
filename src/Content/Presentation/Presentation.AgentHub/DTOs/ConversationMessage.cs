@@ -1,4 +1,4 @@
-namespace Presentation.AgentHub.Models;
+namespace Presentation.AgentHub.DTOs;
 
 /// <summary>A single message in a conversation. Role determines rendering behavior in the UI.</summary>
 public sealed record ConversationMessage(

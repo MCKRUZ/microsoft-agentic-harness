@@ -1,4 +1,4 @@
-namespace Presentation.AgentHub.Models;
+namespace Presentation.AgentHub.DTOs;
 
 /// <summary>Identifies the author or purpose of a conversation message.</summary>
 public enum MessageRole
