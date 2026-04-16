@@ -1,6 +1,7 @@
 import { AuthenticatedTemplate, UnauthenticatedTemplate, useMsal } from '@azure/msal-react';
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import { AppShell } from '@/components/layout/AppShell';
+import { IS_AUTH_DISABLED } from '@/lib/devAuth';
 
 function LoginView() {
   const { instance } = useMsal();
@@ -21,18 +22,28 @@ function LoginView() {
   );
 }
 
+const AppRoutes = () => (
+  <Routes>
+    <Route path="/" element={<AppShell />} />
+    <Route path="*" element={<AppShell />} />
+  </Routes>
+);
+
 export function AppRouter() {
   return (
     <BrowserRouter>
-      <AuthenticatedTemplate>
-        <Routes>
-          <Route path="/" element={<AppShell />} />
-          <Route path="*" element={<AppShell />} />
-        </Routes>
-      </AuthenticatedTemplate>
-      <UnauthenticatedTemplate>
-        <LoginView />
-      </UnauthenticatedTemplate>
+      {IS_AUTH_DISABLED ? (
+        <AppRoutes />
+      ) : (
+        <>
+          <AuthenticatedTemplate>
+            <AppRoutes />
+          </AuthenticatedTemplate>
+          <UnauthenticatedTemplate>
+            <LoginView />
+          </UnauthenticatedTemplate>
+        </>
+      )}
     </BrowserRouter>
   );
 }

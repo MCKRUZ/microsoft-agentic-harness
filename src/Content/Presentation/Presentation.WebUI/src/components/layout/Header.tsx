@@ -3,11 +3,26 @@ import { useMsal } from '@azure/msal-react';
 import { useTheme } from '@/hooks/useTheme';
 import { useAgentsQuery } from '@/features/agents/useAgentsQuery';
 import { useAppStore } from '@/stores/appStore';
+import { IS_AUTH_DISABLED } from '@/lib/devAuth';
+
+function AuthControls() {
+  const { instance, accounts } = useMsal();
+  const userName = accounts[0]?.name ?? '';
+  return (
+    <>
+      {userName && <span className="text-sm text-muted-foreground">{userName}</span>}
+      <button
+        onClick={() => { void instance.logoutRedirect(); }}
+        className="text-sm px-3 py-1 rounded border hover:bg-accent"
+      >
+        Sign out
+      </button>
+    </>
+  );
+}
 
 export function Header() {
   const { theme, toggleTheme } = useTheme();
-  const { instance, accounts } = useMsal();
-  const userName = accounts[0]?.name ?? '';
   const { data: agents } = useAgentsQuery();
   const selectedAgent = useAppStore((s) => s.selectedAgent);
   const setSelectedAgent = useAppStore((s) => s.setSelectedAgent);
@@ -36,15 +51,7 @@ export function Header() {
         >
           {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
         </button>
-        {userName && (
-          <span className="text-sm text-muted-foreground">{userName}</span>
-        )}
-        <button
-          onClick={() => { void instance.logoutRedirect(); }}
-          className="text-sm px-3 py-1 rounded border hover:bg-accent"
-        >
-          Sign out
-        </button>
+        {!IS_AUTH_DISABLED && <AuthControls />}
       </div>
     </header>
   );
