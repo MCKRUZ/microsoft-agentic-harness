@@ -8,16 +8,6 @@
     <File Path="Directory.Build.props" />
     <File Path="Directory.Packages.props" />
   </Folder>
-  <Folder Name="/Content/" />
-  <Folder Name="/Content/Domain/" />
-  <Folder Name="/Content/Infrastructure/" />
-  <Folder Name="/Content/Tests/">
-    <Project Path="Content/Tests/Domain.Common.Tests/Domain.Common.Tests.csproj" />
-    <Project Path="Content/Tests/Infrastructure.AI.MCPServer.Tests/Infrastructure.AI.MCPServer.Tests.csproj" />
-    <Project Path="Content/Tests/Infrastructure.APIAccess.Tests/Infrastructure.APIAccess.Tests.csproj" />
-    <Project Path="Content/Tests/Infrastructure.Common.Tests/Infrastructure.Common.Tests.csproj" />
-    <Project Path="Content/Tests/Infrastructure.Observability.Tests/Infrastructure.Observability.Tests.csproj" />
-  </Folder>
   <Folder Name="/Domain/">
     <Project Path="Content/Domain/Domain.Common/Domain.Common.csproj" />
     <Project Path="Content/Domain/Domain.AI/Domain.AI.csproj" />
@@ -43,13 +33,18 @@
     <Project Path="Content/Presentation/Presentation.AgentHub/Presentation.AgentHub.csproj" />
   </Folder>
   <Folder Name="/Tests/">
+    <Project Path="Content/Tests/Domain.Common.Tests/Domain.Common.Tests.csproj" />
     <Project Path="Content/Tests/Domain.AI.Tests/Domain.AI.Tests.csproj" />
-    <Project Path="Content/Tests/Presentation.AgentHub.Tests/Presentation.AgentHub.Tests.csproj" />
-    <Project Path="Content/Tests/Application.AI.Common.Tests/Application.AI.Common.Tests.csproj" />
     <Project Path="Content/Tests/Application.Common.Tests/Application.Common.Tests.csproj" />
+    <Project Path="Content/Tests/Application.AI.Common.Tests/Application.AI.Common.Tests.csproj" />
     <Project Path="Content/Tests/Application.Core.Tests/Application.Core.Tests.csproj" />
-    <Project Path="Content/Tests/Infrastructure.AI.Connectors.Tests/Infrastructure.AI.Connectors.Tests.csproj" />
+    <Project Path="Content/Tests/Infrastructure.Common.Tests/Infrastructure.Common.Tests.csproj" />
     <Project Path="Content/Tests/Infrastructure.AI.Tests/Infrastructure.AI.Tests.csproj" />
+    <Project Path="Content/Tests/Infrastructure.AI.Connectors.Tests/Infrastructure.AI.Connectors.Tests.csproj" />
     <Project Path="Content/Tests/Infrastructure.AI.MCP.Tests/Infrastructure.AI.MCP.Tests.csproj" />
+    <Project Path="Content/Tests/Infrastructure.AI.MCPServer.Tests/Infrastructure.AI.MCPServer.Tests.csproj" />
+    <Project Path="Content/Tests/Infrastructure.APIAccess.Tests/Infrastructure.APIAccess.Tests.csproj" />
+    <Project Path="Content/Tests/Infrastructure.Observability.Tests/Infrastructure.Observability.Tests.csproj" />
+    <Project Path="Content/Tests/Presentation.AgentHub.Tests/Presentation.AgentHub.Tests.csproj" />
   </Folder>
 </Solution>
