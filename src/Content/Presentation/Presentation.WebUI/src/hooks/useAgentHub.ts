@@ -3,6 +3,7 @@ import { useMsal } from '@azure/msal-react';
 import type { HubConnection } from '@microsoft/signalr';
 import { buildHubConnection } from '@/lib/signalrClient';
 import { loginRequest } from '@/lib/authConfig';
+import { IS_AUTH_DISABLED } from '@/lib/devAuth';
 import { useChatStore, type ChatMessage } from '@/stores/chatStore';
 import { useTelemetryStore } from '@/stores/telemetryStore';
 import type { SpanData } from '@/types/signalr';
@@ -29,6 +30,7 @@ export function useAgentHub(): UseAgentHubReturn {
 
     // Resolve account at call time to avoid stale closure if user re-authenticates
     const getToken = async (): Promise<string> => {
+      if (IS_AUTH_DISABLED) return '';
       const account = instance.getAllAccounts()[0];
       if (!account) throw new Error('No account available');
       const result = await instance.acquireTokenSilent({ account, scopes: loginRequest.scopes });
@@ -46,7 +48,12 @@ export function useAgentHub(): UseAgentHubReturn {
       useChatStore.getState().finalizeStream(message.content);
     });
 
-    connection.on('Error', (message: string) => {
+    connection.on('Error', (payload: unknown) => {
+      const message =
+        typeof payload === 'string' ? payload
+        : payload != null && typeof payload === 'object' && 'message' in payload && typeof (payload as Record<string, unknown>).message === 'string'
+          ? (payload as Record<string, unknown>).message as string
+          : JSON.stringify(payload);
       useChatStore.getState().setError(message);
     });
 
