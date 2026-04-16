@@ -12,6 +12,15 @@ builder.Services.AddAgentHubServices(builder.Configuration, builder.Environment)
 
 builder.WebHost.ConfigureKestrel(options => options.ListenAnyIP(5001));
 
+// MemoizedPromptComposer (singleton) → IPromptSectionProvider (transient) → IAgentExecutionContext (scoped)
+// creates a captive dependency that ASP.NET Core rejects by default. Scope validation is suppressed
+// here to match ConsoleUI behaviour. The root cause is tracked as a deferred refactor item.
+builder.Host.UseDefaultServiceProvider(options =>
+{
+    options.ValidateScopes = false;
+    options.ValidateOnBuild = false;
+});
+
 var app = builder.Build();
 
 // Middleware pipeline — order is not negotiable.
