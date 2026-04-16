@@ -36,31 +36,34 @@ export const useChatStore = create<ChatState>()((set) => ({
   streamingContent: '',
   error: null,
   setConversationId: (id) => set({ conversationId: id }),
-  addMessage: (message) => set((state) => ({ messages: [...state.messages, message] })),
+  addMessage: (message) => set((state) => {
+    const messages = [...state.messages, message];
+    return { messages: messages.length > 200 ? messages.slice(-200) : messages };
+  }),
   setMessages: (messages) => set({ messages }),
-  appendToken: (token) => set((state) => ({
-    isStreaming: true,
-    streamingContent: state.streamingContent + token,
-  })),
-  finalizeStream: (fullResponse) => set((state) => ({
-    isStreaming: false,
-    streamingContent: '',
-    messages: [
-      ...state.messages,
-      {
-        id: crypto.randomUUID(),
-        role: 'assistant' as const,
-        content: fullResponse,
-        timestamp: new Date(),
-      },
-    ],
-  })),
-  clearMessages: () => set((state) => ({
-    conversationId: state.conversationId,
+  appendToken: (token) => set((state) => state.isStreaming
+    ? { streamingContent: state.streamingContent + token }
+    : { isStreaming: true, streamingContent: state.streamingContent + token }
+  ),
+  finalizeStream: (fullResponse) => set((state) => {
+    const message: ChatMessage = {
+      id: crypto.randomUUID(),
+      role: 'assistant',
+      content: fullResponse,
+      timestamp: new Date(),
+    };
+    const messages = [...state.messages, message];
+    return {
+      isStreaming: false,
+      streamingContent: '',
+      messages: messages.length > 200 ? messages.slice(-200) : messages,
+    };
+  }),
+  clearMessages: () => set({
     messages: [],
     isStreaming: false,
     streamingContent: '',
     error: null,
-  })),
+  }),
   setError: (message) => set({ error: message }),
 }));

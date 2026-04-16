@@ -23,7 +23,6 @@ internal sealed class DevAuthHandler(
         {
             new Claim(ClaimTypes.NameIdentifier, "dev-user"),
             new Claim(ClaimTypes.Name, "Dev User"),
-            new Claim("name", "Dev User"),
         };
         var identity = new ClaimsIdentity(claims, Scheme.Name);
         var ticket = new AuthenticationTicket(new ClaimsPrincipal(identity), Scheme.Name);

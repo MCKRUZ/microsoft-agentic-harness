@@ -45,12 +45,12 @@ export function SpanNode({ node, rootDurationMs, depth = 0 }: SpanNodeProps) {
 
       {expanded && <SpanDetail span={node} />}
 
-      {node.children.map((child) => (
+      {expanded && node.children.map((child) => (
         <SpanNode
           key={child.spanId}
           node={child}
           rootDurationMs={rootDurationMs}
-          depth={(depth ?? 0) + 1}
+          depth={depth + 1}
         />
       ))}
     </div>

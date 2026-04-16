@@ -131,7 +131,8 @@ The project follows Clean Architecture with strict dependency inversion. Each la
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │                        Presentation Layer                          │
-│  ConsoleUI (Spectre.Console)  ·  LoggerUI  ·  MCP Server (WebAPI) │
+│  ConsoleUI (Spectre.Console)  ·  LoggerUI  ·  AgentHub (SignalR)  │
+│  WebUI (React + TypeScript)   ·  MCP Server (WebAPI)              │
 ├─────────────────────────────────────────────────────────────────────┤
 │                        Application Layer                           │
 │  CQRS Commands/Handlers  ·  Agent Factories  ·  Context Budget    │
@@ -192,7 +193,16 @@ src/
 └── Content/Presentation/
     ├── Presentation.Common/            DI composition root
     ├── Presentation.ConsoleUI/         Interactive menu + 6 runnable examples
-    └── Presentation.LoggerUI/          Named pipe log viewer
+    ├── Presentation.LoggerUI/          Named pipe log viewer
+    ├── Presentation.AgentHub/          SignalR hub — real-time streaming to the WebUI
+    │   └── Auth/                       DevAuthHandler (dev bypass), Azure AD integration
+    └── Presentation.WebUI/             React + TypeScript SPA
+        ├── src/features/chat/          Streaming chat panel with message history
+        ├── src/features/telemetry/     Live span tree for observability
+        ├── src/features/mcp/           MCP tool browser + direct invocation
+        ├── src/stores/                 Zustand stores (chat, telemetry, app)
+        ├── src/hooks/                  useAgentHub (SignalR), useAuth (MSAL)
+        └── src/lib/                    Axios API client, MSAL auth config, dev bypass
 ```
 
 ### Dependency Flow
@@ -216,7 +226,9 @@ Presentation.Common ----' (composition root — references all layers)
 ### Prerequisites
 
 - [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)
+- [Node.js 20+](https://nodejs.org/) (for the WebUI)
 - An Azure OpenAI resource (or OpenAI API key)
+- Optional: Azure AD app registration (for WebUI auth — see `docs/azure-ad-setup.md`)
 - Optional: [Jaeger](https://www.jaegertracing.io/) for distributed tracing
 - Optional: Azure AI Foundry project for persistent agents
 
@@ -226,6 +238,10 @@ Presentation.Common ----' (composition root — references all layers)
 git clone https://github.com/MCKRUZ/microsoft-agentic-harness.git
 cd microsoft-agentic-harness
 dotnet build src/AgenticHarness.slnx
+
+# WebUI
+cd src/Content/Presentation/Presentation.WebUI
+npm install
 ```
 
 ### Configure
@@ -268,14 +284,20 @@ dotnet user-secrets set "AppConfig:AI:AgentFramework:ApiKey" "your-api-key"
 ### Run
 
 ```bash
-# Interactive menu
+# Interactive menu (console)
 dotnet run --project src/Content/Presentation/Presentation.ConsoleUI
 
 # Run a specific example directly
 dotnet run --project src/Content/Presentation/Presentation.ConsoleUI -- --example research
 dotnet run --project src/Content/Presentation/Presentation.ConsoleUI -- --example orchestrator
 dotnet run --project src/Content/Presentation/Presentation.ConsoleUI -- --example a2a
+
+# AgentHub + WebUI (two terminals)
+dotnet run --project src/Content/Presentation/Presentation.AgentHub
+cd src/Content/Presentation/Presentation.WebUI && npm run dev
 ```
+
+For local development without Azure AD, set `Auth:Disabled=true` in `appsettings.Development.json` and `VITE_AUTH_DISABLED=true` in `Presentation.WebUI/.env.local`. See `docs/azure-ad-setup.md` for full Azure AD setup.
 
 ### Run Tests
 
@@ -329,7 +351,8 @@ The ConsoleUI launches an interactive [Spectre.Console](https://spectreconsole.n
 | **Protocols** | MCP (HTTP transport, JWT auth), A2A (agent discovery + delegation) |
 | **Observability** | OpenTelemetry, Prometheus, Jaeger, Azure Monitor |
 | **Security** | Azure Identity, JWT Bearer, CORS allowlists, sandboxed tool execution |
-| **Testing** | xUnit, Moq, coverlet |
+| **Testing** | xUnit, Moq, coverlet, Vitest, React Testing Library |
+| **WebUI** | React 19, TypeScript, Vite, Tailwind CSS, shadcn/ui, Zustand, TanStack Query, MSAL |
 
 ---
 

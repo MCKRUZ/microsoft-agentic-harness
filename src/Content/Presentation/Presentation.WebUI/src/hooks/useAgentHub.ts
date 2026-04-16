@@ -51,8 +51,7 @@ export function useAgentHub(): UseAgentHubReturn {
     });
 
     connection.on('SpanReceived', (span: SpanData) => {
-      useTelemetryStore.getState().addConversationSpan(span.conversationId ?? '', span);
-      useTelemetryStore.getState().addGlobalSpan(span);
+      useTelemetryStore.getState().addSpan(span);
     });
 
     connection.on('ConversationHistory', (messages: ChatMessage[]) => {
@@ -89,39 +88,27 @@ export function useAgentHub(): UseAgentHubReturn {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const sendMessage = async (conversationId: string, message: string): Promise<void> => {
+  const hubInvoke = (method: string, ...args: unknown[]): Promise<void> => {
     const conn = connectionRef.current;
     if (!conn) throw new Error('SignalR connection not established');
-    await conn.invoke('SendMessage', conversationId, message);
+    return conn.invoke(method, ...args) as Promise<void>;
   };
 
-  const startConversation = async (agentName: string, conversationId: string): Promise<void> => {
-    const conn = connectionRef.current;
-    if (!conn) throw new Error('SignalR connection not established');
-    await conn.invoke('StartConversation', agentName, conversationId);
-  };
+  const sendMessage = (conversationId: string, message: string): Promise<void> =>
+    hubInvoke('SendMessage', conversationId, message);
 
-  const invokeToolViaAgent = async (
+  const startConversation = (agentName: string, conversationId: string): Promise<void> =>
+    hubInvoke('StartConversation', agentName, conversationId);
+
+  const invokeToolViaAgent = (
     conversationId: string,
     toolName: string,
     args: Record<string, unknown>,
-  ): Promise<void> => {
-    const conn = connectionRef.current;
-    if (!conn) throw new Error('SignalR connection not established');
-    await conn.invoke('InvokeToolViaAgent', conversationId, toolName, args);
-  };
+  ): Promise<void> => hubInvoke('InvokeToolViaAgent', conversationId, toolName, args);
 
-  const joinGlobalTraces = async (): Promise<void> => {
-    const conn = connectionRef.current;
-    if (!conn) throw new Error('SignalR connection not established');
-    await conn.invoke('JoinGlobalTraces');
-  };
+  const joinGlobalTraces = (): Promise<void> => hubInvoke('JoinGlobalTraces');
 
-  const leaveGlobalTraces = async (): Promise<void> => {
-    const conn = connectionRef.current;
-    if (!conn) throw new Error('SignalR connection not established');
-    await conn.invoke('LeaveGlobalTraces');
-  };
+  const leaveGlobalTraces = (): Promise<void> => hubInvoke('LeaveGlobalTraces');
 
   return {
     connectionState,

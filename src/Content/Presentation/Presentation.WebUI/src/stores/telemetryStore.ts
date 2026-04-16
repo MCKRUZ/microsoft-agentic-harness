@@ -7,6 +7,7 @@ const MAX_CONVERSATION_SPANS = 200;
 interface TelemetryState {
   conversationSpans: Record<string, SpanData[]>;
   globalSpans: SpanData[];
+  addSpan: (span: SpanData) => void;
   addConversationSpan: (conversationId: string, span: SpanData) => void;
   addGlobalSpan: (span: SpanData) => void;
   clearConversation: (conversationId: string) => void;
@@ -16,6 +17,26 @@ interface TelemetryState {
 export const useTelemetryStore = create<TelemetryState>()((set) => ({
   conversationSpans: {},
   globalSpans: [],
+
+  addSpan: (span) =>
+    set((state) => {
+      const conversationId = span.conversationId ?? '';
+      const existing = state.conversationSpans[conversationId] ?? [];
+      const updatedConv = [...existing, span];
+      const updatedGlobal = [...state.globalSpans, span];
+      return {
+        conversationSpans: {
+          ...state.conversationSpans,
+          [conversationId]:
+            updatedConv.length > MAX_CONVERSATION_SPANS
+              ? updatedConv.slice(-MAX_CONVERSATION_SPANS)
+              : updatedConv,
+        },
+        globalSpans: updatedGlobal.length > MAX_GLOBAL_SPANS
+          ? updatedGlobal.slice(-MAX_GLOBAL_SPANS)
+          : updatedGlobal,
+      };
+    }),
 
   addConversationSpan: (conversationId, span) =>
     set((state) => {

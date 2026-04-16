@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect } from 'react';
 import { useChatStore } from './useChatStore';
 import { useAppStore } from '@/stores/appStore';
 import { useAgentHub } from '@/hooks/useAgentHub';
@@ -46,31 +46,13 @@ export function ChatPanel() {
   const selectedAgent = useAppStore((s) => s.selectedAgent);
   const { sendMessage, startConversation } = useAgentHub();
 
-  // Initialize conversation on first mount
   useEffect(() => {
-    if (!conversationId) {
-      const newId = crypto.randomUUID();
-      setConversationId(newId);
-      if (selectedAgent) {
-        void startConversation(selectedAgent, newId).catch(() => {
-          // Connection may not be ready on first mount; user can retry by sending a message
-        });
-      }
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // Start a new conversation when the selected agent changes
-  const isInitialMount = useRef(true);
-  useEffect(() => {
-    if (isInitialMount.current) {
-      isInitialMount.current = false;
-      return;
-    }
+    const newId = crypto.randomUUID();
+    setConversationId(newId);
     if (selectedAgent) {
-      const newId = crypto.randomUUID();
-      setConversationId(newId);
-      void startConversation(selectedAgent, newId).catch(() => {});
+      void startConversation(selectedAgent, newId).catch(() => {
+        // Connection may not be ready on first mount; user can retry by sending a message
+      });
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedAgent]);
