@@ -100,9 +100,9 @@ public sealed class AgentTelemetryHub : Hub
     /// <returns>The conversation's message history (empty for new conversations).</returns>
     public async Task<IReadOnlyList<ConversationMessage>> StartConversation(
         string agentName,
-        string conversationId,
-        CancellationToken ct = default)
+        string conversationId)
     {
+        var ct = Context.ConnectionAborted;
         var callerId = GetCallerId();
         var existingRecord = await ValidateOwnershipAsync(conversationId, callerId, ct);
 
@@ -139,8 +139,9 @@ public sealed class AgentTelemetryHub : Hub
     /// <see cref="ConversationLockRegistry"/> ensures that concurrent <c>SendMessage</c>
     /// calls on the same conversation complete in order — no interleaved token streams.
     /// </summary>
-    public async Task SendMessage(string conversationId, string userMessage, CancellationToken ct = default)
+    public async Task SendMessage(string conversationId, string userMessage)
     {
+        var ct = Context.ConnectionAborted;
         var callerId = GetCallerId();
         var record = await ValidateOwnershipAsync(conversationId, callerId, ct)
             ?? throw new HubException("Conversation not found.");
@@ -218,16 +219,17 @@ public sealed class AgentTelemetryHub : Hub
     /// Invokes a named tool through the agent pipeline by synthesising a user message.
     /// Ownership is validated via the underlying <see cref="SendMessage"/> call.
     /// </summary>
-    public async Task InvokeToolViaAgent(string conversationId, string toolName, string inputJson, CancellationToken ct = default)
+    public async Task InvokeToolViaAgent(string conversationId, string toolName, string inputJson)
     {
         // Ownership validation is delegated to SendMessage — no double-check needed here.
         var userMessage = $"Please invoke the tool '{toolName}' with the following input: {inputJson}";
-        await SendMessage(conversationId, userMessage, ct);
+        await SendMessage(conversationId, userMessage);
     }
 
     /// <summary>Adds this connection to the conversation's SignalR group.</summary>
-    public async Task JoinConversationGroup(string conversationId, CancellationToken ct = default)
+    public async Task JoinConversationGroup(string conversationId)
     {
+        var ct = Context.ConnectionAborted;
         var callerId = GetCallerId();
         _ = await ValidateOwnershipAsync(conversationId, callerId, ct)
             ?? throw new HubException("Conversation not found.");
@@ -236,8 +238,8 @@ public sealed class AgentTelemetryHub : Hub
     }
 
     /// <summary>Removes this connection from the conversation's SignalR group. No ownership check — leaving is always safe.</summary>
-    public Task LeaveConversationGroup(string conversationId, CancellationToken ct = default) =>
-        Groups.RemoveFromGroupAsync(Context.ConnectionId, ConversationGroup(conversationId), ct);
+    public Task LeaveConversationGroup(string conversationId) =>
+        Groups.RemoveFromGroupAsync(Context.ConnectionId, ConversationGroup(conversationId), Context.ConnectionAborted);
 
     // -------------------------------------------------------------------------
     // Hub methods — global trace firehose
@@ -251,18 +253,18 @@ public sealed class AgentTelemetryHub : Hub
     /// from the default tenant assignment — grant it only to internal observability users.
     /// </summary>
     /// <exception cref="HubException">Thrown if the caller lacks the required role.</exception>
-    public async Task JoinGlobalTraces(CancellationToken ct = default)
+    public async Task JoinGlobalTraces()
     {
         if (!Context.User!.IsInRole(GlobalTracesRole))
             throw new HubException($"The {GlobalTracesRole} role is required to subscribe to global traces.");
 
-        await Groups.AddToGroupAsync(Context.ConnectionId, GlobalTracesGroup, ct);
+        await Groups.AddToGroupAsync(Context.ConnectionId, GlobalTracesGroup, Context.ConnectionAborted);
         _logger.LogInformation("Connection {ConnectionId} joined global-traces.", Context.ConnectionId);
     }
 
     /// <summary>Unsubscribes this connection from the global trace firehose. No role check.</summary>
-    public Task LeaveGlobalTraces(CancellationToken ct = default) =>
-        Groups.RemoveFromGroupAsync(Context.ConnectionId, GlobalTracesGroup, ct);
+    public Task LeaveGlobalTraces() =>
+        Groups.RemoveFromGroupAsync(Context.ConnectionId, GlobalTracesGroup, Context.ConnectionAborted);
 
     // -------------------------------------------------------------------------
     // Private helpers

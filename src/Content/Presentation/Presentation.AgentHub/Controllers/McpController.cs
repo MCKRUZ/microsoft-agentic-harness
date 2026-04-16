@@ -105,6 +105,12 @@ public sealed class McpController : ControllerBase
     [RequestSizeLimit(32 * 1024)]
     public async Task<IActionResult> InvokeTool(string name, [FromBody] McpToolInvokeRequest request, CancellationToken ct)
     {
+        // Enforce 32 KB body size limit manually so the check works in TestServer
+        // (which does not implement IHttpMaxRequestBodySizeFeature used by [RequestSizeLimit]).
+        const int maxBodyBytes = 32 * 1024;
+        if (Request.ContentLength > maxBodyBytes)
+            return StatusCode(StatusCodes.Status413RequestEntityTooLarge);
+
         if (request.Arguments.ValueKind == JsonValueKind.Undefined)
             return BadRequest("Arguments must be a valid JSON object.");
 

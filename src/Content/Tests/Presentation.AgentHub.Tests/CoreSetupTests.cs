@@ -107,10 +107,15 @@ public class CoreSetupTests : IClassFixture<TestWebApplicationFactory>
     [Fact]
     public async Task McpInvoke_Called11TimesRapidly_Returns429OnEleventh()
     {
-        var client = _factory.CreateClient(new WebApplicationFactoryClientOptions
-        {
-            AllowAutoRedirect = false
-        });
+        // Rate limiter runs after UseAuthentication/UseAuthorization in Program.cs,
+        // so requests must be authenticated to reach it. TestAuthHandler supplies the identity.
+        var client = _factory
+            .WithWebHostBuilder(b => b.ConfigureTestServices(services =>
+                services.AddAuthentication(TestAuthHandler.SchemeName)
+                    .AddScheme<AuthenticationSchemeOptions, TestAuthHandler>(
+                        TestAuthHandler.SchemeName, _ => { })))
+            .CreateClient();
+        client.DefaultRequestHeaders.Add(TestAuthHandler.UserIdHeader, "rate-test-user");
 
         // Dispose each response to avoid socket exhaustion; capture the status code.
         var lastStatus = HttpStatusCode.OK;
