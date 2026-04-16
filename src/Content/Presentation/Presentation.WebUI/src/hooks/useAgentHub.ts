@@ -42,8 +42,8 @@ export function useAgentHub(): UseAgentHubReturn {
       useChatStore.getState().appendToken(token);
     });
 
-    connection.on('TurnComplete', (message: ChatMessage) => {
-      useChatStore.getState().finalizeStream(message);
+    connection.on('TurnComplete', (message: { content: string }) => {
+      useChatStore.getState().finalizeStream(message.content);
     });
 
     connection.on('Error', (message: string) => {

@@ -21,6 +21,17 @@ vi.mock('@azure/msal-react', () => ({
   }),
 }));
 
+vi.mock('@/hooks/useAgentHub', () => ({
+  useAgentHub: () => ({
+    connectionState: 'connected' as const,
+    sendMessage: vi.fn().mockResolvedValue(undefined),
+    startConversation: vi.fn().mockResolvedValue(undefined),
+    invokeToolViaAgent: vi.fn().mockResolvedValue(undefined),
+    joinGlobalTraces: vi.fn().mockResolvedValue(undefined),
+    leaveGlobalTraces: vi.fn().mockResolvedValue(undefined),
+  }),
+}));
+
 vi.mock('@/lib/authConfig', () => ({
   msalConfig: {},
   loginRequest: { scopes: [] },

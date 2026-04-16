@@ -16,4 +16,7 @@ Object.defineProperty(window, 'matchMedia', {
   })),
 });
 
+// scrollIntoView — not implemented in jsdom
+Element.prototype.scrollIntoView = vi.fn();
+
 // MSW server setup added in section 12
