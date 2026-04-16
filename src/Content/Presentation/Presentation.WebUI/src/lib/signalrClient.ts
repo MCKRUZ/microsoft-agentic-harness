@@ -1,6 +1,12 @@
-import type { HubConnection } from '@microsoft/signalr';
+import { HubConnectionBuilder, LogLevel, type HubConnection } from '@microsoft/signalr';
 
-// Full implementation added in section 09
-export function buildHubConnection(_url: string): HubConnection {
-  throw new Error('Not implemented — replaced in section 09');
+export function buildHubConnection(
+  path: string,
+  getToken: () => Promise<string>,
+): HubConnection {
+  return new HubConnectionBuilder()
+    .withUrl(path, { accessTokenFactory: getToken })
+    .withAutomaticReconnect([0, 2000, 10000, 30000])
+    .configureLogging(LogLevel.Warning)
+    .build();
 }
