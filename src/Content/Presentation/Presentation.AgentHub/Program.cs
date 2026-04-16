@@ -8,7 +8,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.GetServices(includeHealthChecksUI: true);
 
 // Register AgentHub-specific services (auth, SignalR, CORS, rate limiting, config).
-builder.Services.AddAgentHubServices(builder.Configuration);
+builder.Services.AddAgentHubServices(builder.Configuration, builder.Environment);
 
 builder.WebHost.ConfigureKestrel(options => options.ListenAnyIP(5001));
 

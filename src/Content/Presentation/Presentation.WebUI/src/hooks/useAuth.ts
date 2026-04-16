@@ -1,6 +1,7 @@
 import { useMsal } from '@azure/msal-react';
 import { InteractionRequiredAuthError, type AccountInfo } from '@azure/msal-browser';
 import { loginRequest } from '@/lib/authConfig';
+import { IS_AUTH_DISABLED, DEV_ACCOUNT } from '@/lib/devAuth';
 
 export interface UseAuthReturn {
   account: AccountInfo | null;
@@ -9,7 +10,7 @@ export interface UseAuthReturn {
   signOut: () => void;
 }
 
-export function useAuth(): UseAuthReturn {
+function useMsalAuth(): UseAuthReturn {
   const { instance, accounts } = useMsal();
   const account = accounts[0] ?? null;
 
@@ -27,9 +28,23 @@ export function useAuth(): UseAuthReturn {
     }
   };
 
-  const signOut = (): void => {
-    void instance.logoutRedirect();
+  return {
+    account,
+    isAuthenticated: account !== null,
+    acquireToken,
+    signOut: () => { void instance.logoutRedirect(); },
   };
-
-  return { account, isAuthenticated: account !== null, acquireToken, signOut };
 }
+
+function useDevAuth(): UseAuthReturn {
+  return {
+    account: DEV_ACCOUNT,
+    isAuthenticated: true,
+    acquireToken: () => Promise.resolve('dev-token'),
+    signOut: () => {},
+  };
+}
+
+// Resolved once at module load — IS_AUTH_DISABLED is a build-time constant,
+// so the chosen hook is always the same across all renders (no conditional hook violation).
+export const useAuth = IS_AUTH_DISABLED ? useDevAuth : useMsalAuth;

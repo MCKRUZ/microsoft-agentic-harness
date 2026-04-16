@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Threading.RateLimiting;
 using Application.AI.Common.Interfaces;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.RateLimiting;
@@ -8,6 +9,7 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Identity.Web;
 using OpenTelemetry;
 using OpenTelemetry.Trace;
+using Presentation.AgentHub.Auth;
 using Presentation.AgentHub.Hubs;
 using Presentation.AgentHub.Interfaces;
 using Presentation.AgentHub.Models;
@@ -29,36 +31,52 @@ public static class DependencyInjection
     /// <param name="services">The service collection to extend.</param>
     /// <param name="configuration">The application configuration root.</param>
     /// <returns>The service collection for chaining.</returns>
+    /// <param name="environment">The host environment — used to guard the dev auth bypass.</param>
     public static IServiceCollection AddAgentHubServices(
         this IServiceCollection services,
-        IConfiguration configuration)
+        IConfiguration configuration,
+        IWebHostEnvironment environment)
     {
         services.AddControllers();
 
-        services.AddMicrosoftIdentityWebApiAuthentication(configuration);
+        var authDisabled = environment.IsDevelopment()
+            && configuration.GetValue<bool>("Auth:Disabled");
 
-        // SignalR WebSocket upgrades cannot carry an Authorization header.
-        // The client sends the bearer token as the `access_token` query parameter.
-        // Chain onto the existing OnMessageReceived delegate (set by Microsoft.Identity.Web)
-        // rather than replacing the entire Events object, which would discard other
-        // handlers such as OnTokenValidated and OnAuthenticationFailed.
-        services.PostConfigure<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme, options =>
+        if (authDisabled)
         {
-            options.Events ??= new JwtBearerEvents();
-            var existingOnMessageReceived = options.Events.OnMessageReceived;
-            options.Events.OnMessageReceived = async context =>
-            {
-                if (existingOnMessageReceived != null)
-                    await existingOnMessageReceived(context);
+            // Dev bypass: auto-authenticates every request as a synthetic "dev user".
+            // Double-guarded: only active when IsDevelopment() AND Auth:Disabled=true.
+            services.AddAuthentication(DevAuthHandler.SchemeName)
+                    .AddScheme<AuthenticationSchemeOptions, DevAuthHandler>(
+                        DevAuthHandler.SchemeName, _ => { });
+        }
+        else
+        {
+            services.AddMicrosoftIdentityWebApiAuthentication(configuration);
 
-                var accessToken = context.Request.Query["access_token"];
-                var path = context.HttpContext.Request.Path;
-                if (!string.IsNullOrEmpty(accessToken) && path.StartsWithSegments("/hubs"))
+            // SignalR WebSocket upgrades cannot carry an Authorization header.
+            // The client sends the bearer token as the `access_token` query parameter.
+            // Chain onto the existing OnMessageReceived delegate (set by Microsoft.Identity.Web)
+            // rather than replacing the entire Events object, which would discard other
+            // handlers such as OnTokenValidated and OnAuthenticationFailed.
+            services.PostConfigure<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme, options =>
+            {
+                options.Events ??= new JwtBearerEvents();
+                var existingOnMessageReceived = options.Events.OnMessageReceived;
+                options.Events.OnMessageReceived = async context =>
                 {
-                    context.Token = accessToken;
-                }
-            };
-        });
+                    if (existingOnMessageReceived != null)
+                        await existingOnMessageReceived(context);
+
+                    var accessToken = context.Request.Query["access_token"];
+                    var path = context.HttpContext.Request.Path;
+                    if (!string.IsNullOrEmpty(accessToken) && path.StartsWithSegments("/hubs"))
+                    {
+                        context.Token = accessToken;
+                    }
+                };
+            });
+        }
 
         services.AddAuthorization();
 

@@ -1,6 +1,7 @@
 import axios from 'axios';
 import { InteractionRequiredAuthError, type IPublicClientApplication } from '@azure/msal-browser';
 import { loginRequest } from './authConfig';
+import { IS_AUTH_DISABLED } from './devAuth';
 
 let _msalInstance: IPublicClientApplication | null = null;
 let _redirecting = false;
@@ -14,6 +15,7 @@ export const apiClient = axios.create({
 });
 
 apiClient.interceptors.request.use(async (config) => {
+  if (IS_AUTH_DISABLED) return config;
   if (!_msalInstance) return config;
 
   const account = _msalInstance.getAllAccounts()[0];
