@@ -13,6 +13,10 @@ vi.mock('@/lib/authConfig', () => ({
   loginRequest: { scopes: ['api://test-api/access_as_user'] },
 }));
 
+vi.mock('@/lib/devAuth', () => ({
+  IS_AUTH_DISABLED: false,
+}));
+
 const mockAccount = {
   username: 'test@example.com',
   homeAccountId: '1',

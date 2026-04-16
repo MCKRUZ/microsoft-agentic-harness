@@ -5,6 +5,11 @@ import App from '@/app/App';
 // Use vi.hoisted so the object is available inside the vi.mock factory
 const mocks = vi.hoisted(() => ({ showAuthenticated: { value: true } }));
 
+vi.mock('@/lib/devAuth', () => ({
+  IS_AUTH_DISABLED: false,
+  DEV_ACCOUNT: null,
+}));
+
 vi.mock('@azure/msal-react', () => ({
   MsalProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
   AuthenticatedTemplate: ({ children }: { children: React.ReactNode }) =>
@@ -13,6 +18,8 @@ vi.mock('@azure/msal-react', () => ({
     !mocks.showAuthenticated.value ? <>{children}</> : null,
   useMsal: () => ({
     instance: {
+      getAllAccounts: vi.fn().mockReturnValue([{ name: 'Test User', username: 'test@test.com' }]),
+      acquireTokenSilent: vi.fn().mockResolvedValue({ accessToken: 'test-token' }),
       logoutRedirect: vi.fn().mockResolvedValue(undefined),
       loginRedirect: vi.fn().mockResolvedValue(undefined),
     },
