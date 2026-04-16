@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeAll, afterEach, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('@/lib/authConfig', () => ({
   loginRequest: { scopes: ['api://test-api/access_as_user'] },
@@ -6,7 +6,7 @@ vi.mock('@/lib/authConfig', () => ({
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
-import { setupServer } from 'msw/node';
+import { server } from '@/test/handlers';
 import { renderWithProviders } from '@/test/utils';
 import { ToolsBrowser } from '@/features/mcp/ToolsBrowser';
 import { ToolInvoker } from '@/features/mcp/ToolInvoker';
@@ -25,24 +25,7 @@ vi.mock('@/hooks/useAgentHub', () => ({
   }),
 }));
 
-const sampleTools = [
-  { name: 'get-time', description: 'Gets current time', inputSchema: { type: 'object', properties: {} } },
-  { name: 'calculate', description: 'Performs calculation', inputSchema: { type: 'object', properties: {} } },
-];
-
-const server = setupServer(
-  http.get('http://localhost/api/mcp/tools', () => HttpResponse.json(sampleTools)),
-  http.post('http://localhost/api/mcp/tools/:name/invoke', () =>
-    HttpResponse.json({ result: 'tool executed successfully' }),
-  ),
-);
-
-beforeAll(() => server.listen({ onUnhandledRequest: 'bypass' }));
-afterEach(() => {
-  server.resetHandlers();
-  mockInvokeToolViaAgent.mockClear();
-});
-afterAll(() => server.close());
+const sampleTool = { name: 'get-time', description: 'Gets current time', inputSchema: { type: 'object', properties: {} } };
 
 describe('ToolsBrowser', () => {
   it('renders tool names from MSW mock', async () => {
@@ -61,9 +44,8 @@ describe('ToolsBrowser', () => {
 });
 
 describe('ToolInvoker', () => {
-  const sampleTool = sampleTools[0]!;
-
   beforeEach(() => {
+    vi.clearAllMocks();
     useChatStore.setState({ conversationId: 'test-conv-123' });
   });
 

@@ -19,4 +19,8 @@ Object.defineProperty(window, 'matchMedia', {
 // scrollIntoView — not implemented in jsdom
 Element.prototype.scrollIntoView = vi.fn();
 
-// MSW server setup added in section 12
+import { server } from './handlers';
+
+beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
+afterEach(() => server.resetHandlers());
+afterAll(() => server.close());
