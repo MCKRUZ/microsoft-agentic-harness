@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { useChatStore } from './useChatStore';
 import { useAppStore } from '@/stores/appStore';
 import { useAgentHub } from '@/hooks/useAgentHub';
@@ -46,6 +46,7 @@ export function ChatPanel() {
   const selectedAgent = useAppStore((s) => s.selectedAgent);
   const { sendMessage, startConversation } = useAgentHub();
 
+  // Initialize conversation on first mount
   useEffect(() => {
     if (!conversationId) {
       const newId = crypto.randomUUID();
@@ -58,6 +59,21 @@ export function ChatPanel() {
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Start a new conversation when the selected agent changes
+  const isInitialMount = useRef(true);
+  useEffect(() => {
+    if (isInitialMount.current) {
+      isInitialMount.current = false;
+      return;
+    }
+    if (selectedAgent) {
+      const newId = crypto.randomUUID();
+      setConversationId(newId);
+      void startConversation(selectedAgent, newId).catch(() => {});
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedAgent]);
 
   return (
     <div className="flex flex-col h-full">
