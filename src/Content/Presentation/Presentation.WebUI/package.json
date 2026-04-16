@@ -5,12 +5,14 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "dev:all": "concurrently -n \"API,UI\" -c \"cyan,magenta\" \"dotnet run --project ../Presentation.AgentHub\" \"vite\"",
+    "build": "tsc --noEmit && vite build",
     "lint": "eslint .",
+    "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "preview": "vite preview"
+    "test:ui": "vitest --ui"
   },
   "dependencies": {
     "@azure/msal-browser": "^5.6.3",
