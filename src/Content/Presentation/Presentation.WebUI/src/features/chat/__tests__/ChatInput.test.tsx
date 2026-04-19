@@ -21,7 +21,7 @@ describe('ChatInput', () => {
     renderInput();
     await user.type(screen.getByPlaceholderText(/type a message/i), 'hello world');
     await user.click(screen.getByRole('button', { name: /send/i }));
-    expect(mockSendMessage).toHaveBeenCalledWith('test-conv', 'hello world');
+    expect(mockSendMessage).toHaveBeenCalledWith('test-conv', expect.any(String), 'hello world');
   });
 
   it('is disabled while isStreaming is true', () => {
@@ -46,10 +46,10 @@ describe('ChatInput', () => {
     expect(mockSendMessage).not.toHaveBeenCalled();
   });
 
-  it('rejects messages over 4000 characters', async () => {
+  it('rejects messages over 40000 characters', async () => {
     renderInput();
     fireEvent.change(screen.getByPlaceholderText(/type a message/i), {
-      target: { value: 'a'.repeat(4001) },
+      target: { value: 'a'.repeat(40_001) },
     });
     fireEvent.click(screen.getByRole('button', { name: /send/i }));
     expect(await screen.findByText(/message too long/i)).toBeInTheDocument();

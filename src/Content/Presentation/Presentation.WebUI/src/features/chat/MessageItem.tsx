@@ -1,5 +1,8 @@
-import { useState } from 'react';
-import type { ReactNode } from 'react';
+import { useState, type KeyboardEvent } from 'react';
+import { Pencil, RotateCcw, Check, X } from 'lucide-react';
+import { Markdown } from './Markdown';
+import { Textarea } from '@/components/ui/textarea';
+import { Button } from '@/components/ui/button';
 import type { ChatMessage, ToolCallSummary } from './useChatStore';
 
 function ToolCallChip({ toolCall }: { toolCall: ToolCallSummary }) {
@@ -22,47 +25,56 @@ function ToolCallChip({ toolCall }: { toolCall: ToolCallSummary }) {
   );
 }
 
-// Security: content is rendered via React JSX which auto-escapes all strings.
-// If a markdown renderer is added in future, sanitize with DOMPurify first.
-function parseContent(content: string): ReactNode {
-  const parts: ReactNode[] = [];
-  const codeRegex = /```[\w]*\n([\s\S]*?)```/g;
-  let lastIndex = 0;
-  let match: RegExpExecArray | null;
-
-  while ((match = codeRegex.exec(content)) !== null) {
-    const before = content.slice(lastIndex, match.index);
-    if (before) {
-      parts.push(<p key={`text-${lastIndex}`} className="whitespace-pre-wrap">{before}</p>);
-    }
-    const codeContent = match[1] ?? '';
-    const matchStart = match.index;
-    parts.push(
-      <pre key={`code-${matchStart}`} className="bg-muted rounded p-2 my-1 overflow-auto text-sm">
-        <code>{codeContent}</code>
-      </pre>,
-    );
-    lastIndex = match.index + (match[0]?.length ?? 0);
-  }
-
-  const remaining = content.slice(lastIndex);
-  if (remaining || parts.length === 0) {
-    parts.push(<p key={`text-end-${lastIndex}`} className="whitespace-pre-wrap">{remaining}</p>);
-  }
-
-  return <>{parts}</>;
-}
-
 interface MessageItemProps {
   message: ChatMessage;
   isStreaming?: boolean;
+  onRetry?: (assistantMessageId: string) => void;
+  onEdit?: (userMessageId: string, newContent: string) => void;
+  disabled?: boolean;
 }
 
-export function MessageItem({ message, isStreaming = false }: MessageItemProps) {
+export function MessageItem({
+  message,
+  isStreaming = false,
+  onRetry,
+  onEdit,
+  disabled = false,
+}: MessageItemProps) {
   const isUser = message.role === 'user';
+  const [isEditing, setIsEditing] = useState(false);
+  const [draft, setDraft] = useState(message.content);
+
+  const canRetry = !isUser && !isStreaming && onRetry != null && !disabled;
+  const canEdit = isUser && !isStreaming && onEdit != null && !disabled;
+
+  const handleSaveEdit = (): void => {
+    const trimmed = draft.trim();
+    if (!trimmed || trimmed === message.content) {
+      setIsEditing(false);
+      setDraft(message.content);
+      return;
+    }
+    onEdit?.(message.id, trimmed);
+    setIsEditing(false);
+  };
+
+  const handleCancelEdit = (): void => {
+    setIsEditing(false);
+    setDraft(message.content);
+  };
+
+  const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>): void => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSaveEdit();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      handleCancelEdit();
+    }
+  };
 
   return (
-    <div className={`flex ${isUser ? 'justify-end' : 'justify-start'} px-3 py-1`}>
+    <div className={`group flex ${isUser ? 'justify-end' : 'justify-start'} px-3 py-1`}>
       <div
         className={
           isUser
@@ -70,7 +82,30 @@ export function MessageItem({ message, isStreaming = false }: MessageItemProps) 
             : 'mr-auto bg-muted rounded-lg p-3 max-w-[80%]'
         }
       >
-        {parseContent(message.content)}
+        {isEditing ? (
+          <div className="flex flex-col gap-2 min-w-[240px]">
+            <Textarea
+              value={draft}
+              onChange={(e) => { setDraft(e.target.value); }}
+              onKeyDown={handleKeyDown}
+              rows={3}
+              aria-label="Edit message"
+              autoFocus
+            />
+            <div className="flex justify-end gap-2">
+              <Button type="button" variant="ghost" size="sm" onClick={handleCancelEdit}>
+                <X size={14} className="mr-1" /> Cancel
+              </Button>
+              <Button type="button" size="sm" onClick={handleSaveEdit}>
+                <Check size={14} className="mr-1" /> Save
+              </Button>
+            </div>
+          </div>
+        ) : isUser ? (
+          <p className="whitespace-pre-wrap">{message.content}</p>
+        ) : (
+          <Markdown content={message.content} />
+        )}
         {isStreaming && (
           <span
             className="inline-block w-1.5 h-4 bg-current animate-pulse ml-0.5 align-middle"
@@ -80,6 +115,32 @@ export function MessageItem({ message, isStreaming = false }: MessageItemProps) 
         {(message.toolCalls ?? []).map((tc, i) => (
           <ToolCallChip key={i} toolCall={tc} />
         ))}
+        {!isEditing && (canRetry || canEdit) && (
+          <div className="flex gap-1 mt-2 opacity-0 group-hover:opacity-100 transition-opacity">
+            {canRetry && (
+              <button
+                type="button"
+                onClick={() => onRetry?.(message.id)}
+                aria-label="Retry response"
+                title="Retry"
+                className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded hover:bg-muted-foreground/20"
+              >
+                <RotateCcw size={12} /> Retry
+              </button>
+            )}
+            {canEdit && (
+              <button
+                type="button"
+                onClick={() => { setDraft(message.content); setIsEditing(true); }}
+                aria-label="Edit message"
+                title="Edit"
+                className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded hover:bg-primary-foreground/20"
+              >
+                <Pencil size={12} /> Edit
+              </button>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

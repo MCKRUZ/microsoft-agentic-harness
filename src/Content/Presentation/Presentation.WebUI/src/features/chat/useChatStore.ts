@@ -23,8 +23,10 @@ interface ChatState {
   setConversationId: (id: string) => void;
   addMessage: (message: ChatMessage) => void;
   setMessages: (messages: ChatMessage[]) => void;
+  truncateAfter: (keepCount: number) => void;
+  startStreaming: () => void;
   appendToken: (token: string) => void;
-  finalizeStream: (fullResponse: string) => void;
+  finalizeStream: (fullResponse: string, assistantMessageId?: string) => void;
   clearMessages: () => void;
   setError: (message: string | null) => void;
 }
@@ -41,13 +43,17 @@ export const useChatStore = create<ChatState>()((set) => ({
     return { messages: messages.length > 200 ? messages.slice(-200) : messages };
   }),
   setMessages: (messages) => set({ messages }),
+  truncateAfter: (keepCount) => set((state) => ({
+    messages: state.messages.slice(0, Math.max(0, keepCount)),
+  })),
+  startStreaming: () => set({ isStreaming: true, streamingContent: '' }),
   appendToken: (token) => set((state) => state.isStreaming
     ? { streamingContent: state.streamingContent + token }
     : { isStreaming: true, streamingContent: state.streamingContent + token }
   ),
-  finalizeStream: (fullResponse) => set((state) => {
+  finalizeStream: (fullResponse, assistantMessageId) => set((state) => {
     const message: ChatMessage = {
-      id: crypto.randomUUID(),
+      id: assistantMessageId ?? crypto.randomUUID(),
       role: 'assistant',
       content: fullResponse,
       timestamp: new Date(),
@@ -65,5 +71,9 @@ export const useChatStore = create<ChatState>()((set) => ({
     streamingContent: '',
     error: null,
   }),
-  setError: (message) => set({ error: message }),
+  setError: (message) => set((state) => ({
+    error: message,
+    isStreaming: message != null ? false : state.isStreaming,
+    streamingContent: message != null ? '' : state.streamingContent,
+  })),
 }));

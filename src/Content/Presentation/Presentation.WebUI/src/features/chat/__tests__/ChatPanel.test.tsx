@@ -2,21 +2,24 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { vi, describe, it, expect, beforeEach } from 'vitest';
 import { useChatStore } from '../useChatStore';
+import { useAppStore } from '@/stores/appStore';
 import { ChatPanel } from '../ChatPanel';
+
+const mockSendMessage = vi.fn().mockResolvedValue(undefined);
+const mockStartConversation = vi.fn().mockResolvedValue(undefined);
 
 vi.mock('@/hooks/useAgentHub', () => ({
   useAgentHub: () => ({
     connectionState: 'connected',
-    sendMessage: vi.fn().mockResolvedValue(undefined),
-    startConversation: vi.fn().mockResolvedValue(undefined),
+    sendMessage: mockSendMessage,
+    startConversation: mockStartConversation,
     invokeToolViaAgent: vi.fn().mockResolvedValue(undefined),
+    retryFromMessage: vi.fn().mockResolvedValue(undefined),
+    editAndResubmit: vi.fn().mockResolvedValue(undefined),
     joinGlobalTraces: vi.fn().mockResolvedValue(undefined),
     leaveGlobalTraces: vi.fn().mockResolvedValue(undefined),
   }),
 }));
-
-// appStore default (selectedAgent: null) is fine — no agent selected means
-// startConversation is skipped on mount.
 
 function renderPanel() {
   return render(<ChatPanel />);
@@ -30,6 +33,47 @@ describe('ChatPanel', () => {
       isStreaming: false,
       streamingContent: '',
       error: null,
+    });
+    useAppStore.setState({ selectedAgent: null });
+    mockSendMessage.mockReset().mockResolvedValue(undefined);
+    mockStartConversation.mockReset().mockResolvedValue(undefined);
+  });
+
+  // --- StartConversation race (regression guard) ---
+
+  describe('ChatInput gating', () => {
+    it('disables Send until startConversation resolves (prevents "Conversation not found")', async () => {
+      let resolveStart!: () => void;
+      const startPromise = new Promise<void>((resolve) => { resolveStart = resolve; });
+      mockStartConversation.mockReturnValueOnce(startPromise);
+      useAppStore.setState({ selectedAgent: 'test-agent' });
+
+      renderPanel();
+
+      const sendButton = await screen.findByRole('button', { name: /send/i });
+      expect(sendButton).toBeDisabled();
+
+      resolveStart();
+      await waitFor(() => { expect(sendButton).not.toBeDisabled(); });
+    });
+
+    it('does not invoke sendMessage when user clicks Send before startConversation resolves', async () => {
+      const user = userEvent.setup();
+      let resolveStart!: () => void;
+      const startPromise = new Promise<void>((resolve) => { resolveStart = resolve; });
+      mockStartConversation.mockReturnValueOnce(startPromise);
+      useAppStore.setState({ selectedAgent: 'test-agent' });
+
+      renderPanel();
+
+      const textarea = await screen.findByPlaceholderText(/type a message/i);
+      await user.type(textarea, 'hello');
+      await user.click(screen.getByRole('button', { name: /send/i }));
+
+      expect(mockSendMessage).not.toHaveBeenCalled();
+
+      resolveStart();
+      await waitFor(() => { expect(screen.getByRole('button', { name: /send/i })).not.toBeDisabled(); });
     });
   });
 
