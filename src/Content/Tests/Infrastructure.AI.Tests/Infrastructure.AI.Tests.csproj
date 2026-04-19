@@ -6,6 +6,7 @@
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
     <RootNamespace>Infrastructure.AI.Tests</RootNamespace>
+    <AssemblyName>Infrastructure.AI.Tests</AssemblyName>
     <UserSecretsId>agentic-harness-console-ui</UserSecretsId>
   </PropertyGroup>
 

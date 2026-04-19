@@ -55,3 +55,8 @@ logs/
 ## AgentHub runtime artifacts
 src/Content/Presentation/Presentation.AgentHub/conversations/
 src/Content/Presentation/Presentation.AgentHub/traces/
+coverage-final/
+coverage-out*/
+infra-cov*/
+parse_coverage.py
+coverage-run*.log

@@ -8,6 +8,11 @@ using Xunit;
 
 namespace Application.AI.Common.Tests.Services.Context;
 
+/// <summary>
+/// Tests for <see cref="TieredContextAssembler"/> covering all three tiers of progressive
+/// disclosure, budget enforcement, truncation, file resolution across resource collections,
+/// formatted prompt generation, and edge cases.
+/// </summary>
 public class TieredContextAssemblerTests
 {
     private readonly Mock<IContextBudgetTracker> _budgetTracker;
@@ -197,6 +202,322 @@ public class TieredContextAssemblerTests
         var act = async () => await _assembler.AssembleContextAsync(null!);
 
         await act.Should().ThrowAsync<ArgumentNullException>();
+    }
+
+    // --- Tier2 truncation ---
+
+    [Fact]
+    public async Task AssembleContext_Tier2ExceedsBudget_TruncatesContent()
+    {
+        var longContent = new string('y', 80000); // Way more than 8000 default token budget
+        var skill = CreateSkillWithTier2File("big-domain.md", longContent);
+
+        var result = await _assembler.AssembleContextAsync(skill);
+
+        result.Tier2.Files.Should().HaveCount(1);
+        result.Tier2.Files[0].IsTruncated.Should().BeTrue();
+        result.Tier2.Files[0].OriginalTokenCount.Should().NotBeNull();
+        result.Tier2.TotalTokens.Should().BeLessThanOrEqualTo(result.Tier2.MaxTokens);
+        result.Tier2.TruncatedFiles.Should().HaveCount(1);
+    }
+
+    [Fact]
+    public async Task AssembleContext_Tier2MultipleFiles_SecondSkippedWhenBudgetExhausted()
+    {
+        var largeContent = new string('z', 80000); // Fills entire budget
+        var skill = new SkillDefinition
+        {
+            Id = "test-skill",
+            Name = "Test Skill",
+            ContextLoading = new ContextLoading
+            {
+                Tier2 = new ContextTierConfig
+                {
+                    Files = ["file1.md", "file2.md"]
+                }
+            },
+            Templates =
+            {
+                new SkillResource { FileName = "file1.md", Content = largeContent },
+                new SkillResource { FileName = "file2.md", Content = "Small content" }
+            }
+        };
+
+        var result = await _assembler.AssembleContextAsync(skill);
+
+        // First file truncated, second skipped entirely
+        result.Tier2.TruncatedFiles.Should().HaveCountGreaterThanOrEqualTo(1);
+    }
+
+    // --- Tier1 multiple files budget exhaustion ---
+
+    [Fact]
+    public async Task AssembleContext_Tier1MultipleFiles_StopsWhenBudgetExhausted()
+    {
+        var largeContent = new string('a', 50000); // Fills entire budget
+        var skill = new SkillDefinition
+        {
+            Id = "test-skill",
+            Name = "Test Skill",
+            ContextLoading = new ContextLoading
+            {
+                Tier1 = new ContextTierConfig
+                {
+                    Files = ["file1.md", "file2.md"]
+                }
+            },
+            Templates =
+            {
+                new SkillResource { FileName = "file1.md", Content = largeContent },
+                new SkillResource { FileName = "file2.md", Content = "Should be skipped" }
+            }
+        };
+
+        var result = await _assembler.AssembleContextAsync(skill);
+
+        // Budget exhausted after truncating first file, second should be skipped
+        result.Tier1.Files.Should().HaveCount(1);
+    }
+
+    // --- FindResource resolution across resource types ---
+
+    [Fact]
+    public async Task AssembleContext_FindsFileInReferences()
+    {
+        var skill = new SkillDefinition
+        {
+            Id = "test-skill",
+            Name = "Test Skill",
+            ContextLoading = new ContextLoading
+            {
+                Tier1 = new ContextTierConfig { Files = ["ref-doc.md"] }
+            },
+            References = { new SkillResource { FileName = "ref-doc.md", Content = "Reference content" } }
+        };
+
+        var result = await _assembler.AssembleContextAsync(skill);
+
+        result.Tier1.Files.Should().HaveCount(1);
+        result.Tier1.Files[0].Content.Should().Be("Reference content");
+    }
+
+    [Fact]
+    public async Task AssembleContext_FindsFileInAssets()
+    {
+        var skill = new SkillDefinition
+        {
+            Id = "test-skill",
+            Name = "Test Skill",
+            ContextLoading = new ContextLoading
+            {
+                Tier1 = new ContextTierConfig { Files = ["schema.json"] }
+            },
+            Assets = { new SkillResource { FileName = "schema.json", Content = "{\"type\":\"object\"}" } }
+        };
+
+        var result = await _assembler.AssembleContextAsync(skill);
+
+        result.Tier1.Files.Should().HaveCount(1);
+        result.Tier1.Files[0].Content.Should().Contain("object");
+    }
+
+    [Fact]
+    public async Task AssembleContext_FileNotFoundInAnyResourceType_SkipsFile()
+    {
+        var skill = new SkillDefinition
+        {
+            Id = "test-skill",
+            Name = "Test Skill",
+            ContextLoading = new ContextLoading
+            {
+                Tier1 = new ContextTierConfig { Files = ["nonexistent.md"] }
+            }
+            // No templates, references, or assets
+        };
+
+        var result = await _assembler.AssembleContextAsync(skill);
+
+        result.Tier1.Files.Should().BeEmpty();
+    }
+
+    // --- FindResource by relative path ---
+
+    [Fact]
+    public async Task AssembleContext_FindsFileByRelativePath()
+    {
+        var skill = new SkillDefinition
+        {
+            Id = "test-skill",
+            Name = "Test Skill",
+            ContextLoading = new ContextLoading
+            {
+                Tier1 = new ContextTierConfig { Files = ["templates/overview.md"] }
+            },
+            Templates =
+            {
+                new SkillResource
+                {
+                    FileName = "overview.md",
+                    RelativePath = "templates/overview.md",
+                    Content = "Overview from relative path"
+                }
+            }
+        };
+
+        var result = await _assembler.AssembleContextAsync(skill);
+
+        result.Tier1.Files.Should().HaveCount(1);
+        result.Tier1.Files[0].Content.Should().Be("Overview from relative path");
+    }
+
+    // --- Tier3 edge cases ---
+
+    [Fact]
+    public async Task AssembleContext_Tier3NoLookupPaths_ReturnsEmptyPaths()
+    {
+        var skill = new SkillDefinition
+        {
+            Id = "test-skill",
+            Name = "Test Skill",
+            ContextLoading = new ContextLoading
+            {
+                Tier3 = new ContextTierConfig { FallbackPrompt = "Use tools." }
+            }
+        };
+
+        var result = await _assembler.AssembleContextAsync(skill);
+
+        result.Tier3.AllowedLookupPaths.Should().BeEmpty();
+        result.Tier3.FallbackPrompt.Should().Be("Use tools.");
+    }
+
+    [Fact]
+    public async Task AssembleContext_Tier3NullConfig_ReturnsEmptyTier3()
+    {
+        var skill = new SkillDefinition
+        {
+            Id = "test-skill",
+            Name = "Test Skill",
+            ContextLoading = new ContextLoading
+            {
+                Tier1 = new ContextTierConfig { Files = ["org.md"] }
+            },
+            Templates = { new SkillResource { FileName = "org.md", Content = "Content" } }
+        };
+
+        var result = await _assembler.AssembleContextAsync(skill);
+
+        result.Tier3.AllowedLookupPaths.Should().BeEmpty();
+        result.Tier3.FallbackPrompt.Should().BeNull();
+    }
+
+    // --- Formatted prompt details ---
+
+    [Fact]
+    public async Task AssembleContext_FormattedPrompt_IncludesFileNames()
+    {
+        var skill = CreateSkillWithTier1File("strategy.md", "Strategy doc content.");
+
+        var result = await _assembler.AssembleContextAsync(skill);
+
+        result.FormattedPromptSection.Should().Contain("### strategy.md");
+    }
+
+    [Fact]
+    public async Task AssembleContext_Tier3OnlyLookupPaths_IncludesPathsInPrompt()
+    {
+        var skill = new SkillDefinition
+        {
+            Id = "test-skill",
+            Name = "Test Skill",
+            ContextLoading = new ContextLoading
+            {
+                Tier3 = new ContextTierConfig
+                {
+                    LookupPaths = ["data/specs/"]
+                }
+            }
+        };
+
+        var result = await _assembler.AssembleContextAsync(skill);
+
+        result.FormattedPromptSection.Should().Contain("data/specs/");
+        result.FormattedPromptSection.Should().Contain("Available lookup paths");
+    }
+
+    // --- Custom max tokens ---
+
+    [Fact]
+    public async Task AssembleContext_CustomTier1MaxTokens_RespectsCustomBudget()
+    {
+        var content = new string('x', 400); // ~100 tokens
+        var skill = new SkillDefinition
+        {
+            Id = "test-skill",
+            Name = "Test Skill",
+            ContextLoading = new ContextLoading
+            {
+                Tier1 = new ContextTierConfig
+                {
+                    Files = ["small.md"],
+                    MaxTokens = 50 // Very small budget
+                }
+            },
+            Templates = { new SkillResource { FileName = "small.md", Content = content } }
+        };
+
+        var result = await _assembler.AssembleContextAsync(skill);
+
+        result.Tier1.MaxTokens.Should().Be(50);
+        result.Tier1.Files[0].IsTruncated.Should().BeTrue();
+    }
+
+    // --- Empty content file ---
+
+    [Fact]
+    public async Task AssembleContext_EmptyContentFile_SkipsFile()
+    {
+        var skill = new SkillDefinition
+        {
+            Id = "test-skill",
+            Name = "Test Skill",
+            ContextLoading = new ContextLoading
+            {
+                Tier1 = new ContextTierConfig { Files = ["empty.md"] }
+            },
+            Templates = { new SkillResource { FileName = "empty.md", Content = "" } }
+        };
+
+        var result = await _assembler.AssembleContextAsync(skill);
+
+        result.Tier1.Files.Should().BeEmpty();
+    }
+
+    // --- Total tokens calculation ---
+
+    [Fact]
+    public async Task AssembleContext_TotalTokens_SumsTier1AndTier2()
+    {
+        var skill = new SkillDefinition
+        {
+            Id = "test-skill",
+            Name = "Test Skill",
+            ContextLoading = new ContextLoading
+            {
+                Tier1 = new ContextTierConfig { Files = ["org.md"] },
+                Tier2 = new ContextTierConfig { Files = ["domain.md"] }
+            },
+            Templates =
+            {
+                new SkillResource { FileName = "org.md", Content = "Org content here." },
+                new SkillResource { FileName = "domain.md", Content = "Domain content here." }
+            }
+        };
+
+        var result = await _assembler.AssembleContextAsync(skill);
+
+        result.TotalTokens.Should().Be(result.Tier1.TotalTokens + result.Tier2.TotalTokens);
+        result.TotalTokens.Should().BeGreaterThan(0);
     }
 
     private static SkillDefinition CreateSkillWithTier1File(string fileName, string content)

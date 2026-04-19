@@ -8,16 +8,9 @@ namespace Application.Common.Logging;
 /// and pushes them to an <see cref="InMemoryRingBufferLoggerProvider"/> for retention
 /// in a fixed-size circular buffer.
 /// </summary>
-/// <remarks>
-/// Entries are available via the provider's <see cref="InMemoryRingBufferLoggerProvider.GetEntries"/>
-/// method for diagnostics endpoints, health checks, and debugging UIs. When the buffer
-/// is full, the oldest entries are silently discarded.
-/// </remarks>
-public sealed class InMemoryRingBufferLogger : ILogger
+public sealed class InMemoryRingBufferLogger : BaseLogger
 {
-    private readonly string _category;
     private readonly InMemoryRingBufferLoggerProvider _provider;
-    private readonly IExternalScopeProvider? _scopeProvider;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="InMemoryRingBufferLogger"/> class.
@@ -29,21 +22,13 @@ public sealed class InMemoryRingBufferLogger : ILogger
         string category,
         InMemoryRingBufferLoggerProvider provider,
         IExternalScopeProvider? scopeProvider)
+        : base(category, scopeProvider)
     {
-        _category = category;
         _provider = provider;
-        _scopeProvider = scopeProvider;
     }
 
     /// <inheritdoc />
-    public IDisposable? BeginScope<TState>(TState state) where TState : notnull =>
-        _scopeProvider?.Push(state);
-
-    /// <inheritdoc />
-    public bool IsEnabled(LogLevel logLevel) => logLevel != LogLevel.None;
-
-    /// <inheritdoc />
-    public void Log<TState>(
+    public override void Log<TState>(
         LogLevel logLevel,
         EventId eventId,
         TState state,

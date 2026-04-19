@@ -5,7 +5,7 @@ POC for a Microsoft Agent Framework agent with a full agentic harness — skills
 
 ## Stack
 - C# .NET 10, Clean Architecture, CQRS/MediatR, FluentValidation, AutoMapper
-- Microsoft.Agents.AI, Semantic Kernel, Azure.AI.OpenAI
+- Microsoft.Agents.AI, Microsoft.Extensions.AI, Azure.AI.OpenAI
 - MCP (Model Context Protocol) server/client — HTTP transport with JWT auth
 - OpenTelemetry (Jaeger + Azure Monitor), Prometheus
 - xUnit, Moq, coverlet

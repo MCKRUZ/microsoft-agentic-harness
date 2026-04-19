@@ -50,5 +50,6 @@
     <Project Path="Content/Tests/Infrastructure.APIAccess.Tests/Infrastructure.APIAccess.Tests.csproj" />
     <Project Path="Content/Tests/Infrastructure.Observability.Tests/Infrastructure.Observability.Tests.csproj" />
     <Project Path="Content/Tests/Presentation.AgentHub.Tests/Presentation.AgentHub.Tests.csproj" />
+    <Project Path="Content/Tests/Presentation.Common.Tests/Presentation.Common.Tests.csproj" />
   </Folder>
 </Solution>

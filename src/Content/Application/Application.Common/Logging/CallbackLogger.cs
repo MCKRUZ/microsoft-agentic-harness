@@ -8,15 +8,9 @@ namespace Application.Common.Logging;
 /// and passes them to a user-supplied callback delegate. Designed for SDK consumers
 /// who want to handle log entries without implementing <see cref="ILoggerProvider"/>.
 /// </summary>
-/// <remarks>
-/// The callback is invoked synchronously on the logging thread. Keep callback
-/// implementations fast and non-blocking to avoid degrading application performance.
-/// </remarks>
-public sealed class CallbackLogger : ILogger
+public sealed class CallbackLogger : BaseLogger
 {
-    private readonly string _category;
     private readonly Action<LogEntry> _callback;
-    private readonly IExternalScopeProvider? _scopeProvider;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="CallbackLogger"/> class.
@@ -28,21 +22,13 @@ public sealed class CallbackLogger : ILogger
         string category,
         Action<LogEntry> callback,
         IExternalScopeProvider? scopeProvider)
+        : base(category, scopeProvider)
     {
-        _category = category;
         _callback = callback;
-        _scopeProvider = scopeProvider;
     }
 
     /// <inheritdoc />
-    public IDisposable? BeginScope<TState>(TState state) where TState : notnull =>
-        _scopeProvider?.Push(state);
-
-    /// <inheritdoc />
-    public bool IsEnabled(LogLevel logLevel) => logLevel != LogLevel.None;
-
-    /// <inheritdoc />
-    public void Log<TState>(
+    public override void Log<TState>(
         LogLevel logLevel,
         EventId eventId,
         TState state,

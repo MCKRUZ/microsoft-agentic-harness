@@ -6,17 +6,9 @@ namespace Application.Common.Logging;
 /// An <see cref="ILogger"/> implementation that formats log entries as JSON objects
 /// and queues them to a <see cref="StructuredJsonLoggerProvider"/> for JSONL file output.
 /// </summary>
-/// <remarks>
-/// Each log entry becomes a single JSON object on one line (NDJSON/JSONL format),
-/// including all scope properties from <see cref="ExecutionScopeProvider"/>. This enables
-/// post-hoc querying of execution sessions — filtering by executor, step, operation, or level
-/// without parsing human-readable log formats.
-/// </remarks>
-public sealed class StructuredJsonLogger : ILogger
+public sealed class StructuredJsonLogger : BaseLogger
 {
-    private readonly string _category;
     private readonly StructuredJsonLoggerProvider _provider;
-    private readonly IExternalScopeProvider? _scopeProvider;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="StructuredJsonLogger"/> class.
@@ -28,22 +20,17 @@ public sealed class StructuredJsonLogger : ILogger
         string category,
         StructuredJsonLoggerProvider provider,
         IExternalScopeProvider? scopeProvider)
+        : base(category, scopeProvider)
     {
-        _category = category;
         _provider = provider;
-        _scopeProvider = scopeProvider;
     }
 
     /// <inheritdoc />
-    public IDisposable? BeginScope<TState>(TState state) where TState : notnull =>
-        _scopeProvider?.Push(state);
-
-    /// <inheritdoc />
-    public bool IsEnabled(LogLevel logLevel) =>
+    public override bool IsEnabled(LogLevel logLevel) =>
         logLevel != LogLevel.None && _provider.IsRunActive;
 
     /// <inheritdoc />
-    public void Log<TState>(
+    public override void Log<TState>(
         LogLevel logLevel,
         EventId eventId,
         TState state,
