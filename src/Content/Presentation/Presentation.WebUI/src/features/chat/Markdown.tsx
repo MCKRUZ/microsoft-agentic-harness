@@ -3,6 +3,7 @@ import remarkGfm from 'remark-gfm';
 import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
 import rehypeHighlight from 'rehype-highlight';
 import 'highlight.js/styles/github-dark.css';
+import { CodeBlock } from './CodeBlock';
 
 const sanitizeSchema = {
   ...defaultSchema,
@@ -33,9 +34,7 @@ export function Markdown({ content }: MarkdownProps) {
               {children}
             </a>
           ),
-          pre: ({ children }) => (
-            <pre className="rounded my-2 overflow-auto text-sm">{children}</pre>
-          ),
+          pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
           code: ({ className, children }) => {
             const isBlock = /language-/.test(className ?? '');
             if (isBlock) {
