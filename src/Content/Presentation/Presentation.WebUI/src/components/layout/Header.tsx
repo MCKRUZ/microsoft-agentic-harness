@@ -1,9 +1,7 @@
-import { Moon, Sun, Monitor, Menu } from 'lucide-react';
+import { Moon, Sun, Monitor } from 'lucide-react';
 import { useMsal } from '@azure/msal-react';
 import { useTheme } from '@/hooks/useTheme';
 import type { ThemePreference } from '@/components/theme/ThemeProvider';
-import { useAgentsQuery } from '@/features/agents/useAgentsQuery';
-import { useAppStore } from '@/stores/appStore';
 import { IS_AUTH_DISABLED } from '@/lib/devAuth';
 
 const THEME_CYCLE: Record<ThemePreference, ThemePreference> = {
@@ -30,17 +28,6 @@ function AuthControls() {
 
 export function Header() {
   const { preference, setTheme } = useTheme();
-  const { data: agents } = useAgentsQuery();
-  const selectedAgent = useAppStore((s) => s.selectedAgent);
-  const setSelectedAgent = useAppStore((s) => s.setSelectedAgent);
-  const setActiveConversationId = useAppStore((s) => s.setActiveConversationId);
-  const setSidebarOpen = useAppStore((s) => s.setSidebarOpen);
-
-  const handleAgentChange = (next: string): void => {
-    if (!next || next === selectedAgent) return;
-    setSelectedAgent(next);
-    setActiveConversationId(null);
-  };
 
   const cycleTheme = (): void => { setTheme(THEME_CYCLE[preference]); };
   const themeIcon = preference === 'light'
@@ -51,29 +38,9 @@ export function Header() {
   const themeLabel = `Theme: ${preference} (click to change)`;
 
   return (
-    <header className="flex items-center justify-between px-4 h-16 border-b shrink-0">
-      <div className="flex items-center gap-4">
-        <button
-          type="button"
-          onClick={() => { setSidebarOpen(true); }}
-          aria-label="Open conversations"
-          title="Conversations"
-          className="p-2 rounded hover:bg-accent"
-        >
-          <Menu size={16} />
-        </button>
-        <span className="font-semibold text-lg">AgentHub</span>
-        <select
-          value={selectedAgent ?? ''}
-          onChange={(e) => { handleAgentChange(e.target.value); }}
-          aria-label="Select agent"
-          className="text-sm border rounded px-2 py-1 bg-background"
-        >
-          <option value="" disabled>No agent selected</option>
-          {agents?.map((agent) => (
-            <option key={agent.id} value={agent.id}>{agent.name}</option>
-          ))}
-        </select>
+    <header className="flex items-center justify-between px-4 h-[50px] min-h-[50px] border-b shrink-0 bg-background">
+      <div className="flex items-center gap-3">
+        <span className="font-semibold text-base">AgentHub</span>
       </div>
       <div className="flex items-center gap-2">
         <button

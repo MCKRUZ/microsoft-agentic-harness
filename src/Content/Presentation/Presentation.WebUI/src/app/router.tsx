@@ -1,6 +1,6 @@
 import { AuthenticatedTemplate, UnauthenticatedTemplate, useMsal } from '@azure/msal-react';
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
-import { AppShell } from '@/components/layout/AppShell';
+import { Dashboard } from '@/components/layout/Dashboard';
 import { IS_AUTH_DISABLED } from '@/lib/devAuth';
 
 function LoginView() {
@@ -24,8 +24,8 @@ function LoginView() {
 
 const AppRoutes = () => (
   <Routes>
-    <Route path="/" element={<AppShell />} />
-    <Route path="*" element={<AppShell />} />
+    <Route path="/" element={<Dashboard />} />
+    <Route path="*" element={<Dashboard />} />
   </Routes>
 );
 
