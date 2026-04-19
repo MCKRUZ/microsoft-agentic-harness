@@ -1,5 +1,5 @@
 import { useState, type KeyboardEvent } from 'react';
-import { Pencil, RotateCcw, Check, X } from 'lucide-react';
+import { Pencil, RotateCcw, Check, X, Copy } from 'lucide-react';
 import { Markdown } from './Markdown';
 import { Textarea } from '@/components/ui/textarea';
 import { Button } from '@/components/ui/button';
@@ -46,6 +46,18 @@ export function MessageItem({
 
   const canRetry = !isUser && !isStreaming && onRetry != null && !disabled;
   const canEdit = isUser && !isStreaming && onEdit != null && !disabled;
+  const canCopy = !isStreaming && !disabled && message.content.length > 0;
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async (): Promise<void> => {
+    try {
+      await navigator.clipboard.writeText(message.content);
+      setCopied(true);
+      window.setTimeout(() => { setCopied(false); }, 1500);
+    } catch {
+      /* clipboard unavailable — silent. */
+    }
+  };
 
   const handleSaveEdit = (): void => {
     const trimmed = draft.trim();
@@ -115,17 +127,28 @@ export function MessageItem({
         {(message.toolCalls ?? []).map((tc, i) => (
           <ToolCallChip key={i} toolCall={tc} />
         ))}
-        {!isEditing && (canRetry || canEdit) && (
+        {!isEditing && (canRetry || canEdit || canCopy) && (
           <div className="flex gap-1 mt-2 opacity-0 group-hover:opacity-100 transition-opacity">
+            {canCopy && (
+              <button
+                type="button"
+                onClick={() => { void handleCopy(); }}
+                aria-label={copied ? 'Copied' : 'Copy message'}
+                title={copied ? 'Copied' : 'Copy'}
+                className={`inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded ${isUser ? 'hover:bg-primary-foreground/20' : 'hover:bg-muted-foreground/20'}`}
+              >
+                {copied ? <Check size={12} /> : <Copy size={12} />} {copied ? 'Copied' : 'Copy'}
+              </button>
+            )}
             {canRetry && (
               <button
                 type="button"
                 onClick={() => onRetry?.(message.id)}
                 aria-label="Retry response"
-                title="Retry"
+                title="Regenerate"
                 className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded hover:bg-muted-foreground/20"
               >
-                <RotateCcw size={12} /> Retry
+                <RotateCcw size={12} /> Regenerate
               </button>
             )}
             {canEdit && (
