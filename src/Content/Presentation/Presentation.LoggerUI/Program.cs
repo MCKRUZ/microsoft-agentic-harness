@@ -37,7 +37,24 @@ namespace Presentation.LoggerUI;
 /// </remarks>
 public class Program
 {
-	private const string DefaultPipeName = "AgenticHarnessLogs";
+	private static readonly string[] DefaultPipeNames =
+	{
+		"AgenticHarnessLogs.ConsoleUI",
+		"AgenticHarnessLogs.AgentHub"
+	};
+
+	// Palette cycled per pipe index so each source tag gets a stable color.
+	private static readonly string[] SourceColors =
+	{
+		"deepskyblue1",
+		"lightgoldenrod1",
+		"palegreen1",
+		"lightpink1",
+		"plum2"
+	};
+
+	// Serializes writes from multiple reader tasks so log lines don't interleave.
+	private static readonly object _outputLock = new();
 
 	// Log level configurations with colors and icons
 	private static readonly Dictionary<string, LogLevelConfig> LogLevels = new(StringComparer.OrdinalIgnoreCase)
@@ -71,18 +88,27 @@ public class Program
 		var options = ParseArguments(args);
 		_parseJson = options.ParseJson;
 
-		try { Console.Title = $"Log Viewer - {options.PipeName}"; } catch { }
+		var title = options.PipeNames.Count == 1
+			? $"Log Viewer - {options.PipeNames[0]}"
+			: $"Log Viewer - {options.PipeNames.Count} sources";
+
+		try { Console.Title = title; } catch { }
 		try { Console.Clear(); } catch { /* non-interactive console */ }
 		try { Console.OutputEncoding = System.Text.Encoding.UTF8; } catch { }
 
 		// Start keyboard listener for hotkeys
 		var cts = new CancellationTokenSource();
-		var keyListenerTask = Task.Run(() => KeyboardListener(options.PipeName, cts));
+		var keyListenerTask = Task.Run(() => KeyboardListener(options.PipeNames, cts));
 
 		// Print header
-		PrintHeader(options.PipeName);
+		PrintHeader(options.PipeNames);
 
-		await RunLogViewerAsync(options.PipeName, cts);
+		// One reader task per pipe; each reconnects independently.
+		var readerTasks = options.PipeNames
+			.Select((name, idx) => RunLogViewerAsync(name, BuildSourceTag(name, idx), cts))
+			.ToArray();
+
+		await Task.WhenAll(readerTasks);
 
 		// Cleanup
 		cts.Cancel();
@@ -91,9 +117,21 @@ public class Program
 	}
 
 	/// <summary>
-	/// Main loop for receiving and displaying logs.
+	/// Builds the per-source tag (e.g. "[ConsoleUI]") with a stable color from the palette.
 	/// </summary>
-	private static async Task RunLogViewerAsync(string pipeName, CancellationTokenSource cts)
+	private static string BuildSourceTag(string pipeName, int index)
+	{
+		// Use everything after the last '.' as the short tag; fall back to full name.
+		var dot = pipeName.LastIndexOf('.');
+		var label = (dot >= 0 && dot < pipeName.Length - 1) ? pipeName.Substring(dot + 1) : pipeName;
+		var color = SourceColors[index % SourceColors.Length];
+		return $"[{color}][[{label}]][/]";
+	}
+
+	/// <summary>
+	/// Reader loop for a single named pipe; reconnects on disconnect.
+	/// </summary>
+	private static async Task RunLogViewerAsync(string pipeName, string sourceTag, CancellationTokenSource cts)
 	{
 		while (!cts.IsCancellationRequested)
 		{
@@ -101,39 +139,41 @@ public class Program
 			{
 				await using var pipeClient = new NamedPipeClientStream(".", pipeName, PipeDirection.In);
 
-				WriteStatusLine($"[yellow]Waiting for log server...[/]");
-				await pipeClient.ConnectAsync();
-				WriteStatusLine($"[green]Connected![/]");
+				WriteStatusLine($"{sourceTag} [yellow]Waiting for log server ({pipeName})...[/]");
+				await pipeClient.ConnectAsync(cts.Token);
+				WriteStatusLine($"{sourceTag} [green]Connected![/]");
 
 				_sessionStart = DateTime.UtcNow;
 
 				using var reader = new StreamReader(pipeClient);
 
 				string? line;
-				while ((line = await reader.ReadLineAsync()) != null && !cts.IsCancellationRequested)
+				while ((line = await reader.ReadLineAsync(cts.Token)) != null && !cts.IsCancellationRequested)
 				{
-					ProcessLogLine(line);
+					ProcessLogLine(line, sourceTag);
 				}
 
-				WriteStatusLine($"[yellow]Server disconnected. Reconnecting...[/]");
+				WriteStatusLine($"{sourceTag} [yellow]Server disconnected. Reconnecting...[/]");
 			}
+			catch (OperationCanceledException) { break; }
 			catch (IOException)
 			{
-				WriteStatusLine($"[yellow]Connection lost. Reconnecting...[/]");
+				WriteStatusLine($"{sourceTag} [yellow]Connection lost. Reconnecting...[/]");
 			}
 			catch (Exception ex)
 			{
-				WriteStatusLine($"[red]Error: {ex.Message}[/]");
+				WriteStatusLine($"{sourceTag} [red]Error: {ex.Message}[/]");
 			}
 
-			await Task.Delay(500, cts.Token);
+			try { await Task.Delay(500, cts.Token); }
+			catch (OperationCanceledException) { break; }
 		}
 	}
 
 	/// <summary>
-	/// Processes and displays a single log line.
+	/// Processes and displays a single log line tagged with its source.
 	/// </summary>
-	private static void ProcessLogLine(string line)
+	private static void ProcessLogLine(string line, string sourceTag)
 	{
 		if (string.IsNullOrWhiteSpace(line))
 			return;
@@ -141,14 +181,17 @@ public class Program
 		try
 		{
 			var logEntry = ParseLogEntry(line);
-			DisplayLogEntry(logEntry);
+			DisplayLogEntry(logEntry, sourceTag);
 		}
 		catch
 		{
 			// Display failure (malformed markup, unprintable chars, etc.) must never
 			// kill the read loop — fall back to a safe raw write.
-			try { Console.WriteLine(line); }
-			catch { /* swallow — last-ditch fallback */ }
+			lock (_outputLock)
+			{
+				try { Console.WriteLine(line); }
+				catch { /* swallow — last-ditch fallback */ }
+			}
 		}
 	}
 
@@ -313,9 +356,9 @@ public class Program
 	}
 
 	/// <summary>
-	/// Displays a log entry with formatting and colors.
+	/// Displays a log entry with formatting, colors, and a source tag.
 	/// </summary>
-	private static void DisplayLogEntry(LogEntry entry)
+	private static void DisplayLogEntry(LogEntry entry, string sourceTag)
 	{
 		var config = GetLogLevelConfig(entry.Level);
 		var color = config.Color;
@@ -342,25 +385,26 @@ public class Program
 			iconPart = $"[{color}]\u2716[/] ";
 		}
 
-		// Print formatted log line
-		AnsiConsole.MarkupLine($"{timestamp} {levelBadge} {iconPart}{message}");
-
-		// If structured log and has exception, show it in a panel
-		if (entry.IsStructured && entry.HasException)
+		// Lock so concurrent reader tasks don't interleave a line with an exception panel.
+		lock (_outputLock)
 		{
-			try
+			AnsiConsole.MarkupLine($"{timestamp} {sourceTag} {levelBadge} {iconPart}{message}");
+
+			if (entry.IsStructured && entry.HasException)
 			{
-				var panel = new Panel(entry.Raw)
-					.BorderColor(Color.Red)
-					.Header("[red]Exception[/]")
-					.RoundedBorder()
-					.Collapse();
-				AnsiConsole.Write(panel);
-			}
-			catch
-			{
-				// Panel creation failed, just show raw
-				AnsiConsole.MarkupLine($"[red]{EscapeMarkup(entry.Raw)}[/]");
+				try
+				{
+					var panel = new Panel(entry.Raw)
+						.BorderColor(Color.Red)
+						.Header("[red]Exception[/]")
+						.RoundedBorder()
+						.Collapse();
+					AnsiConsole.Write(panel);
+				}
+				catch
+				{
+					AnsiConsole.MarkupLine($"[red]{EscapeMarkup(entry.Raw)}[/]");
+				}
 			}
 		}
 	}
@@ -583,30 +627,36 @@ public class Program
 	}
 
 	/// <summary>
-	/// Writes a status message to the status line.
+	/// Writes a status message as a regular output line (multi-pipe mode can't share a status row).
 	/// </summary>
 	private static void WriteStatusLine(string message)
 	{
-		try
+		lock (_outputLock)
 		{
-			Console.SetCursorPosition(0, 1);
-			Console.Write(new string(' ', Console.WindowWidth));
-			Console.SetCursorPosition(0, 1);
-			AnsiConsole.Markup($"\u25cf {message}");
+			try { AnsiConsole.MarkupLine($"\u25cf {message}"); }
+			catch { /* Ignore console errors */ }
 		}
-		catch { /* Ignore console errors */ }
 	}
 
 	/// <summary>
-	/// Prints the initial header banner.
+	/// Prints the initial header banner listing all monitored pipes.
 	/// </summary>
-	private static void PrintHeader(string pipeName)
+	private static void PrintHeader(IReadOnlyList<string> pipeNames)
 	{
-		var rule = new Rule($"[bold cornflowerblue]Log Viewer[/] - [cyan]{pipeName}[/]");
+		var heading = pipeNames.Count == 1
+			? $"[bold cornflowerblue]Log Viewer[/] - [cyan]{pipeNames[0]}[/]"
+			: $"[bold cornflowerblue]Log Viewer[/] - [cyan]{pipeNames.Count} sources[/]";
+
+		var rule = new Rule(heading);
 		rule.RuleStyle("grey");
 		AnsiConsole.Write(rule);
 
 		AnsiConsole.WriteLine();
+		for (int i = 0; i < pipeNames.Count; i++)
+		{
+			var tag = BuildSourceTag(pipeNames[i], i);
+			AnsiConsole.MarkupLine($"  {tag} [grey]{pipeNames[i]}[/]");
+		}
 		AnsiConsole.MarkupLine("[grey]Press C to clear, Ctrl+C to exit[/]");
 		AnsiConsole.WriteLine();
 	}
@@ -614,7 +664,7 @@ public class Program
 	/// <summary>
 	/// Listens for keyboard input.
 	/// </summary>
-	private static void KeyboardListener(string pipeName, CancellationTokenSource cts)
+	private static void KeyboardListener(IReadOnlyList<string> pipeNames, CancellationTokenSource cts)
 	{
 		while (!cts.IsCancellationRequested)
 		{
@@ -624,7 +674,7 @@ public class Program
 			if (key.Key == ConsoleKey.C)
 			{
 				Console.Clear();
-				PrintHeader(pipeName);
+				PrintHeader(pipeNames);
 			}
 			else if (key.Modifiers == ConsoleModifiers.Control && key.Key == ConsoleKey.C)
 			{
@@ -635,11 +685,13 @@ public class Program
 	}
 
 	/// <summary>
-	/// Parses command line arguments.
+	/// Parses command line arguments. Collects one or more pipe names from positional args
+	/// or repeated --pipe flags; defaults to <see cref="DefaultPipeNames"/> if none supplied.
 	/// </summary>
 	private static LoggerOptions ParseArguments(string[] args)
 	{
-		var options = new LoggerOptions();
+		var pipes = new List<string>();
+		var parseJson = true;
 
 		for (int i = 0; i < args.Length; i++)
 		{
@@ -648,20 +700,26 @@ public class Program
 				case "--pipe":
 				case "-p":
 					if (i + 1 < args.Length)
-						options.PipeName = args[++i];
+						pipes.Add(args[++i]);
 					break;
 				case "--no-json":
-					options.ParseJson = false;
+					parseJson = false;
 					break;
 				default:
-					// Treat as pipe name if it doesn't start with --
 					if (!args[i].StartsWith("--"))
-						options.PipeName = args[i];
+						pipes.Add(args[i]);
 					break;
 			}
 		}
 
-		return options;
+		if (pipes.Count == 0)
+			pipes.AddRange(DefaultPipeNames);
+
+		return new LoggerOptions
+		{
+			PipeNames = pipes,
+			ParseJson = parseJson
+		};
 	}
 
 	/// <summary>
@@ -688,7 +746,7 @@ public class Program
 	/// </summary>
 	private class LoggerOptions
 	{
-		public string PipeName { get; set; } = DefaultPipeName;
+		public List<string> PipeNames { get; set; } = new();
 		public bool ParseJson { get; set; } = true;
 	}
 }
