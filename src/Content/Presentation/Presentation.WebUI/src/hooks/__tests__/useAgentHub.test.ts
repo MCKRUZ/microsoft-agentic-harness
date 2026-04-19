@@ -101,7 +101,8 @@ describe('useAgentHub', () => {
     const { unmount } = renderHook(() => useAgentHub());
     await waitFor(() => expect(mocks.connectionStop).not.toHaveBeenCalled());
     unmount();
-    expect(mocks.connectionStop).toHaveBeenCalled();
+    // Cleanup waits for start() to settle before calling stop(), so the call is async.
+    await waitFor(() => { expect(mocks.connectionStop).toHaveBeenCalled(); });
   });
 
   it('sets chatStore error when connection.start() rejects', async () => {
@@ -145,11 +146,18 @@ describe('useAgentHub', () => {
   describe('TokenReceived event', () => {
     it('appends tokens and sets isStreaming', async () => {
       await mountConnected();
-      act(() => { getHandler('TokenReceived')('hello '); });
-      act(() => { getHandler('TokenReceived')('world'); });
+      act(() => { getHandler('TokenReceived')({ conversationId: 'c1', token: 'hello ', isComplete: false }); });
+      act(() => { getHandler('TokenReceived')({ conversationId: 'c1', token: 'world', isComplete: false }); });
       const state = useChatStore.getState();
       expect(state.streamingContent).toBe('hello world');
       expect(state.isStreaming).toBe(true);
+    });
+
+    it('ignores the isComplete marker chunk', async () => {
+      await mountConnected();
+      act(() => { getHandler('TokenReceived')({ conversationId: 'c1', token: 'hi', isComplete: false }); });
+      act(() => { getHandler('TokenReceived')({ conversationId: 'c1', token: 'hi', isComplete: true }); });
+      expect(useChatStore.getState().streamingContent).toBe('hi');
     });
   });
 
@@ -158,8 +166,8 @@ describe('useAgentHub', () => {
   describe('TurnComplete event', () => {
     it('finalizes stream and adds an assistant message', async () => {
       await mountConnected();
-      act(() => { getHandler('TokenReceived')('partial'); });
-      act(() => { getHandler('TurnComplete')({ content: 'full response' }); });
+      act(() => { getHandler('TokenReceived')({ conversationId: 'c1', token: 'partial', isComplete: false }); });
+      act(() => { getHandler('TurnComplete')({ conversationId: 'c1', turnNumber: 2, fullResponse: 'full response' }); });
       const state = useChatStore.getState();
       expect(state.isStreaming).toBe(false);
       expect(state.streamingContent).toBe('');

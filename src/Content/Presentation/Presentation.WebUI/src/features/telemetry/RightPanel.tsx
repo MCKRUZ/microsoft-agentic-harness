@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useTelemetryStore } from '@/stores/telemetryStore';
 import { useChatStore } from '@/stores/chatStore';
+import { useHubActionsStore } from '@/stores/hubActionsStore';
 import { TracesPanel } from './TracesPanel';
 import { ToolsBrowser } from '@/features/mcp/ToolsBrowser';
 import { ResourcesList } from '@/features/mcp/ResourcesList';
@@ -18,12 +19,34 @@ type TabValue = (typeof TABS)[number]['value'];
 
 export function RightPanel() {
   const [activeTab, setActiveTab] = useState<TabValue>('my-traces');
+  const [globalTracesError, setGlobalTracesError] = useState<string | null>(null);
 
   const activeConversationId = useChatStore((s) => s.conversationId);
   const conversationSpans = useTelemetryStore((s) => s.conversationSpans);
   const globalSpans = useTelemetryStore((s) => s.globalSpans);
   const clearConversation = useTelemetryStore((s) => s.clearConversation);
   const clearAll = useTelemetryStore((s) => s.clearAll);
+  const joinGlobalTraces = useHubActionsStore((s) => s.joinGlobalTraces);
+  const leaveGlobalTraces = useHubActionsStore((s) => s.leaveGlobalTraces);
+
+  useEffect(() => {
+    if (activeTab !== 'all-traces' || !joinGlobalTraces) return;
+    setGlobalTracesError(null);
+    let cancelled = false;
+    void joinGlobalTraces().catch((err: unknown) => {
+      if (cancelled) return;
+      const raw = err instanceof Error ? err.message : String(err);
+      setGlobalTracesError(
+        raw.includes('AgentHub.Traces.ReadAll')
+          ? 'Requires the AgentHub.Traces.ReadAll role.'
+          : raw,
+      );
+    });
+    return () => {
+      cancelled = true;
+      if (leaveGlobalTraces) void leaveGlobalTraces().catch(() => undefined);
+    };
+  }, [activeTab, joinGlobalTraces, leaveGlobalTraces]);
 
   const mySpans = (activeConversationId ? (conversationSpans[activeConversationId] ?? []) : []);
 
@@ -54,7 +77,14 @@ export function RightPanel() {
           />
         )}
         {activeTab === 'all-traces' && (
-          <TracesPanel spans={globalSpans} onClear={clearAll} />
+          <>
+            {globalTracesError && (
+              <div className="px-3 py-2 bg-destructive/10 text-destructive text-sm border-b">
+                {globalTracesError}
+              </div>
+            )}
+            <TracesPanel spans={globalSpans} onClear={clearAll} />
+          </>
         )}
         {activeTab === 'tools' && <ToolsBrowser />}
         {activeTab === 'resources' && <ResourcesList />}

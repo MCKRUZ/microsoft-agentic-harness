@@ -4,10 +4,19 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <SpaRoot>..\Presentation.WebUI\</SpaRoot>
+    <SpaProxyServerUrl>http://localhost:5173</SpaProxyServerUrl>
+    <SpaProxyLaunchCommand>npm run dev</SpaProxyLaunchCommand>
+    <!-- Shares the ConsoleUI secrets store so Endpoint/ApiKey/ClientType values
+         configured for the console host also apply here without duplication. -->
+    <UserSecretsId>agentic-harness-console-ui</UserSecretsId>
   </PropertyGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\Presentation.Common\Presentation.Common.csproj" />
+    <ProjectReference Include="..\Presentation.WebUI\Presentation.WebUI.esproj">
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+    </ProjectReference>
   </ItemGroup>
 
   <ItemGroup>
@@ -16,6 +25,17 @@
     <PackageReference Include="OpenTelemetry.Extensions.Hosting" />
     <!-- Microsoft.Identity.Web — already in Directory.Packages.props -->
     <PackageReference Include="Microsoft.Identity.Web" />
+    <!-- SPA Proxy launches the Vite dev server automatically when AgentHub starts -->
+    <PackageReference Include="Microsoft.AspNetCore.SpaProxy" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="..\..\..\..\skills\**\*" Link="skills\%(RecursiveDir)%(Filename)%(Extension)">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\..\..\..\agents\**\*" Link="agents\%(RecursiveDir)%(Filename)%(Extension)">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
   </ItemGroup>
 
   <ItemGroup>

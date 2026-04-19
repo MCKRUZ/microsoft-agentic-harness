@@ -84,4 +84,10 @@ public class AIConfig
     /// Controls where SKILL.md files are loaded from.
     /// </summary>
     public SkillsConfig Skills { get; set; } = new();
+
+    /// <summary>
+    /// Gets or sets the filesystem agent manifest discovery configuration.
+    /// Controls where AGENT.md files are loaded from.
+    /// </summary>
+    public AgentsConfig Agents { get; set; } = new();
 }

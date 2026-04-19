@@ -1,16 +1,30 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
 
+export type ThemePreference = 'light' | 'dark' | 'system';
+export type ResolvedTheme = 'light' | 'dark';
+
 interface ThemeContextValue {
-  theme: 'light' | 'dark';
+  theme: ResolvedTheme;
+  preference: ThemePreference;
+  resolvedTheme: ResolvedTheme;
+  setTheme: (pref: ThemePreference) => void;
   toggleTheme: () => void;
 }
 
 export const ThemeContext = createContext<ThemeContextValue | undefined>(undefined);
 
-function getInitialTheme(): 'light' | 'dark' {
-  const stored = localStorage.getItem('theme');
-  if (stored === 'light' || stored === 'dark') return stored;
+const STORAGE_KEY = 'theme';
+
+function getSystemTheme(): ResolvedTheme {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return 'light';
   return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+}
+
+function getInitialPreference(): ThemePreference {
+  if (typeof localStorage === 'undefined') return 'system';
+  const stored = localStorage.getItem(STORAGE_KEY);
+  if (stored === 'light' || stored === 'dark' || stored === 'system') return stored;
+  return 'system';
 }
 
 interface ThemeProviderProps {
@@ -18,17 +32,33 @@ interface ThemeProviderProps {
 }
 
 export function ThemeProvider({ children }: ThemeProviderProps) {
-  const [theme, setTheme] = useState<'light' | 'dark'>(getInitialTheme);
+  const [preference, setPreference] = useState<ThemePreference>(getInitialPreference);
+  const [systemTheme, setSystemTheme] = useState<ResolvedTheme>(getSystemTheme);
 
   useEffect(() => {
-    document.documentElement.dataset['theme'] = theme;
-    localStorage.setItem('theme', theme);
-  }, [theme]);
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+    const mql = window.matchMedia('(prefers-color-scheme: dark)');
+    const onChange = (e: MediaQueryListEvent): void => {
+      setSystemTheme(e.matches ? 'dark' : 'light');
+    };
+    mql.addEventListener('change', onChange);
+    return () => { mql.removeEventListener('change', onChange); };
+  }, []);
 
-  const toggleTheme = () => setTheme((t) => (t === 'light' ? 'dark' : 'light'));
+  const resolvedTheme: ResolvedTheme = preference === 'system' ? systemTheme : preference;
+
+  useEffect(() => {
+    document.documentElement.dataset['theme'] = resolvedTheme;
+    localStorage.setItem(STORAGE_KEY, preference);
+  }, [resolvedTheme, preference]);
+
+  const setTheme = (pref: ThemePreference): void => { setPreference(pref); };
+  const toggleTheme = (): void => { setPreference(resolvedTheme === 'light' ? 'dark' : 'light'); };
 
   return (
-    <ThemeContext.Provider value={{ theme, toggleTheme }}>
+    <ThemeContext.Provider
+      value={{ theme: resolvedTheme, preference, resolvedTheme, setTheme, toggleTheme }}
+    >
       {children}
     </ThemeContext.Provider>
   );

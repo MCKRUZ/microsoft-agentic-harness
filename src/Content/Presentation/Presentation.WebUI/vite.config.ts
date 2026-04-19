@@ -10,8 +10,8 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      '/api': { target: 'http://localhost:5001', changeOrigin: true },
-      '/hubs': { target: 'http://localhost:5001', ws: true, changeOrigin: true },
+      '/api': { target: 'http://localhost:50772', changeOrigin: true },
+      '/hubs': { target: 'http://localhost:50772', ws: true, changeOrigin: true },
     },
   },
 })

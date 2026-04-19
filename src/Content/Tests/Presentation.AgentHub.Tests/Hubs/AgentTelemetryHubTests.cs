@@ -167,7 +167,7 @@ public sealed class AgentTelemetryHubTests : IClassFixture<TestWebApplicationFac
         try
         {
             await Assert.ThrowsAsync<HubException>(() =>
-                connection.InvokeAsync("SendMessage", otherConv.Id, "Hello"));
+                connection.InvokeAsync("SendMessage", otherConv.Id, Guid.NewGuid(), "Hello"));
         }
         finally
         {
@@ -231,7 +231,7 @@ public sealed class AgentTelemetryHubTests : IClassFixture<TestWebApplicationFac
         var record = await _store.CreateAsync("test-agent", "test-user", conversationId: conversationId);
         for (var i = 0; i < 25; i++)
             await _store.AppendMessageAsync(record.Id,
-                new ConversationMessage(MessageRole.User, $"msg-{i}", DateTimeOffset.UtcNow));
+                new ConversationMessage(Guid.NewGuid(), MessageRole.User, $"msg-{i}", DateTimeOffset.UtcNow));
 
         var connection = CreateConnection("test-user");
         await connection.StartAsync();
@@ -275,7 +275,7 @@ public sealed class AgentTelemetryHubTests : IClassFixture<TestWebApplicationFac
         {
             var conversationId = Guid.NewGuid().ToString();
             await connection.InvokeAsync("StartConversation", "test-agent", conversationId);
-            await connection.InvokeAsync("SendMessage", conversationId, "Hello");
+            await connection.InvokeAsync("SendMessage", conversationId, Guid.NewGuid(), "Hello");
             await turnCompleteTcs.Task.WaitAsync(TimeSpan.FromSeconds(15));
 
             tokensReceived.Should().NotBeEmpty(
@@ -310,7 +310,7 @@ public sealed class AgentTelemetryHubTests : IClassFixture<TestWebApplicationFac
         {
             var conversationId = Guid.NewGuid().ToString();
             await connection.InvokeAsync("StartConversation", "test-agent", conversationId);
-            await connection.InvokeAsync("SendMessage", conversationId, "Trigger error");
+            await connection.InvokeAsync("SendMessage", conversationId, Guid.NewGuid(), "Trigger error");
             var errorPayload = await errorTcs.Task.WaitAsync(TimeSpan.FromSeconds(15));
 
             errorPayload.Should().NotContain("Internal implementation detail",
@@ -344,7 +344,7 @@ public sealed class AgentTelemetryHubTests : IClassFixture<TestWebApplicationFac
         {
             var conversationId = Guid.NewGuid().ToString();
             await connection.InvokeAsync("StartConversation", "test-agent", conversationId);
-            await connection.InvokeAsync("SendMessage", conversationId, "Trigger error");
+            await connection.InvokeAsync("SendMessage", conversationId, Guid.NewGuid(), "Trigger error");
             await errorTcs.Task.WaitAsync(TimeSpan.FromSeconds(15));
 
             var record = await _store.GetAsync(conversationId);
@@ -385,8 +385,8 @@ public sealed class AgentTelemetryHubTests : IClassFixture<TestWebApplicationFac
             await connection.InvokeAsync("StartConversation", "test-agent", conversationId);
 
             // Both invocations on the same conversationId; the semaphore serialises them.
-            var task1 = connection.InvokeAsync("SendMessage", conversationId, "First message");
-            var task2 = connection.InvokeAsync("SendMessage", conversationId, "Second message");
+            var task1 = connection.InvokeAsync("SendMessage", conversationId, Guid.NewGuid(), "First message");
+            var task2 = connection.InvokeAsync("SendMessage", conversationId, Guid.NewGuid(), "Second message");
             await Task.WhenAll(task1, task2);
 
             _factory.MockMediator.Verify(

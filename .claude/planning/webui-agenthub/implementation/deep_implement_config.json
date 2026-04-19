@@ -1,0 +1,87 @@
+{
+  "plugin_root": "C:\\Users\\kruz7\\.claude\\plugins\\cache\\piercelamb-plugins\\deep-implement\\0.2.0",
+  "sections_dir": "C:\\Users\\kruz7\\OneDrive\\Documents\\Code Repos\\MCKRUZ\\microsoft-agentic-harness\\.claude\\planning\\webui-agenthub\\sections",
+  "target_dir": "C:\\Users\\kruz7\\OneDrive\\Documents\\Code Repos\\MCKRUZ\\microsoft-agentic-harness",
+  "state_dir": "C:\\Users\\kruz7\\OneDrive\\Documents\\Code Repos\\MCKRUZ\\microsoft-agentic-harness\\.claude\\planning\\webui-agenthub\\implementation",
+  "git_root": "C:\\Users\\kruz7\\OneDrive\\Documents\\Code Repos\\MCKRUZ\\microsoft-agentic-harness",
+  "commit_style": "conventional",
+  "test_command": "uv run pytest",
+  "sections": [
+    "section-01-scaffolding",
+    "section-02-agenthub-core",
+    "section-03-conversation-store",
+    "section-04-signalr-hub",
+    "section-05-otel-bridge",
+    "section-06-mcp-api",
+    "section-07-agenthub-tests",
+    "section-08-webui-shell",
+    "section-09-msal-auth",
+    "section-10-chat-feature",
+    "section-11-telemetry-mcp-panel",
+    "section-12-webui-tests",
+    "section-13-integration"
+  ],
+  "sections_state": {
+    "section-01-scaffolding": {
+      "status": "complete",
+      "commit_hash": "9c32b52"
+    },
+    "section-02-agenthub-core": {
+      "status": "complete",
+      "commit_hash": "e44d2fe"
+    },
+    "section-03-conversation-store": {
+      "status": "complete",
+      "commit_hash": "a6fdb9e"
+    },
+    "section-04-signalr-hub": {
+      "status": "complete",
+      "commit_hash": "1051ff9"
+    },
+    "section-05-otel-bridge": {
+      "status": "complete",
+      "commit_hash": "f0620b9"
+    },
+    "section-06-mcp-api": {
+      "status": "complete",
+      "commit_hash": "175eb0e"
+    },
+    "section-07-agenthub-tests": {
+      "status": "complete",
+      "commit_hash": "df39436"
+    },
+    "section-08-webui-shell": {
+      "status": "complete",
+      "commit_hash": "0ecb79d"
+    },
+    "section-09-msal-auth": {
+      "status": "complete",
+      "commit_hash": "ffb9b1d"
+    },
+    "section-10-chat-feature": {
+      "status": "complete",
+      "commit_hash": "7baa872"
+    },
+    "section-11-telemetry-mcp-panel": {
+      "status": "complete",
+      "commit_hash": "470338d"
+    },
+    "section-12-webui-tests": {
+      "status": "complete",
+      "commit_hash": "18beb70"
+    },
+    "section-13-integration": {
+      "status": "complete",
+      "commit_hash": "264ac48"
+    }
+  },
+  "pre_commit": {
+    "present": false,
+    "type": "none",
+    "config_file": null,
+    "native_hook": null,
+    "may_modify_files": false,
+    "detected_formatters": []
+  },
+  "created_at": "2026-04-15T11:35:06.145339+00:00"
+}

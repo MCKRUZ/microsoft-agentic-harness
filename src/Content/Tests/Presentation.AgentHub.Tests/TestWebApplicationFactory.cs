@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
@@ -56,6 +57,17 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
         // Development environment loads appsettings.Development.json, which includes
         // http://localhost:5173 in AllowedOrigins — required by the CORS integration tests.
         builder.UseEnvironment("Development");
+
+        // Disable the NamedPipe log sink in tests. The live sink spawns a background
+        // thread waiting for a LoggerUI pipe connection that never arrives; its
+        // disposal also races the host shutdown.
+        builder.ConfigureAppConfiguration((_, config) =>
+        {
+            config.AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["AppConfig:Logging:PipeName"] = string.Empty,
+            });
+        });
 
         builder.ConfigureTestServices(services =>
         {

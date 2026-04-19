@@ -74,8 +74,13 @@ public class AgentFactory : IAgentFactory
 
         if (!_chatClientFactory.IsAvailable(clientType))
         {
+            var available = _chatClientFactory.GetAvailableProviders()
+                .Where(p => p.Value).Select(p => p.Key.ToString()).ToList();
+            var availableStr = available.Count == 0 ? "none" : string.Join(", ", available);
             throw new InvalidOperationException(
-                $"The {clientType} provider is not configured. Check AppConfig.AI.AgentFramework settings.");
+                $"The '{clientType}' AI provider is not configured. Available providers: [{availableStr}]. " +
+                "Set AppConfig.AI.AgentFramework (ClientType, Endpoint, ApiKey, DefaultDeployment) via appsettings.json, " +
+                "user-secrets, or environment variables. For Azure AI Foundry with Claude/Anthropic, use ClientType=Anthropic.");
         }
 
         var deploymentOrAgentId = clientType == AIAgentFrameworkClientType.PersistentAgents

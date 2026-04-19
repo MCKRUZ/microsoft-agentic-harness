@@ -13,7 +13,7 @@ import { setupServer } from 'msw/node';
 
 export const handlers = [
   http.get('http://localhost/api/agents', () =>
-    HttpResponse.json([{ name: 'research-agent', description: 'A research agent' }]),
+    HttpResponse.json([{ id: 'research-agent', name: 'research-agent', description: 'A research agent' }]),
   ),
 
   http.get('http://localhost/api/mcp/tools', () =>

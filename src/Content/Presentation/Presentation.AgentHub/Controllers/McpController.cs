@@ -53,9 +53,15 @@ public sealed class McpController : ControllerBase
             {
                 Name = fn.Name,
                 Description = fn.Description,
-                Schema = fn.JsonSchema,
+                InputSchema = fn.JsonSchema,
             })
             .ToList();
+
+        _logger.LogInformation(
+            "MCP tools listed. Count={Count} Names={Names}",
+            dtos.Count,
+            string.Join(",", dtos.Select(d => d.Name)));
+
         return Ok(dtos);
     }
 
@@ -74,6 +80,12 @@ public sealed class McpController : ControllerBase
                 MimeType = r.MimeType,
             })
             .ToList();
+
+        _logger.LogInformation(
+            "MCP resources listed. Count={Count} Uris={Uris}",
+            dtos.Count,
+            string.Join(",", dtos.Select(d => d.Uri)));
+
         return Ok(dtos);
     }
 
@@ -93,6 +105,12 @@ public sealed class McpController : ControllerBase
                 Arguments = p.Arguments,
             })
             .ToList();
+
+        _logger.LogInformation(
+            "MCP prompts listed. Count={Count} Names={Names}",
+            dtos.Count,
+            string.Join(",", dtos.Select(d => d.Name)));
+
         return Ok(dtos);
     }
 

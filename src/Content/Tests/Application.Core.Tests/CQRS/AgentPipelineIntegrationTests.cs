@@ -48,6 +48,12 @@ public class AgentPipelineIntegrationTests
         // Agent factory — mock returns testable agents
         services.AddSingleton(factoryMock.Object);
 
+        // Agent metadata registry — no manifests configured; TryGet returns null so the
+        // handler falls back to using AgentName as the skill id (matches the mock above).
+        var registryMock = new Mock<IAgentMetadataRegistry>();
+        registryMock.Setup(r => r.TryGet(It.IsAny<string>())).Returns((Domain.AI.Agents.AgentDefinition?)null);
+        services.AddSingleton(registryMock.Object);
+
         return services.BuildServiceProvider();
     }
 

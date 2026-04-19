@@ -14,12 +14,20 @@ namespace Application.Core.Tests.CQRS;
 public class ExecuteAgentTurnCommandHandlerTests
 {
     private readonly Mock<IAgentFactory> _agentFactory = new();
+    private readonly Mock<IAgentMetadataRegistry> _agentRegistry = new();
     private readonly ExecuteAgentTurnCommandHandler _handler;
 
     public ExecuteAgentTurnCommandHandlerTests()
     {
+        // Default: registry knows nothing, so the handler falls back to treating
+        // AgentName as a skill id — matches legacy behaviour these tests rely on.
+        _agentRegistry
+            .Setup(r => r.TryGet(It.IsAny<string>()))
+            .Returns((Domain.AI.Agents.AgentDefinition?)null);
+
         _handler = new ExecuteAgentTurnCommandHandler(
             _agentFactory.Object,
+            _agentRegistry.Object,
             NullLogger<ExecuteAgentTurnCommandHandler>.Instance);
     }
 

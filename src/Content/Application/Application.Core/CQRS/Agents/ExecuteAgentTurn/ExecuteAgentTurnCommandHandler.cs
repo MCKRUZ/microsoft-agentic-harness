@@ -14,13 +14,16 @@ namespace Application.Core.CQRS.Agents.ExecuteAgentTurn;
 public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCommand, AgentTurnResult>
 {
 	private readonly IAgentFactory _agentFactory;
+	private readonly IAgentMetadataRegistry _agentRegistry;
 	private readonly ILogger<ExecuteAgentTurnCommandHandler> _logger;
 
 	public ExecuteAgentTurnCommandHandler(
 		IAgentFactory agentFactory,
+		IAgentMetadataRegistry agentRegistry,
 		ILogger<ExecuteAgentTurnCommandHandler> logger)
 	{
 		_agentFactory = agentFactory;
+		_agentRegistry = agentRegistry;
 		_logger = logger;
 	}
 
@@ -31,8 +34,14 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 
 		try
 		{
+			// AgentName from the hub is an agent id — resolve the declared skill id from the
+			// AGENT.md manifest. If the manifest has no `skill:` entry or the id isn't in the
+			// registry, fall back to treating AgentName as a skill id directly so callers
+			// which still pass skill ids (tests, tools) keep working.
+			var skillId = _agentRegistry.TryGet(request.AgentName)?.Skill ?? request.AgentName;
+
 			var agent = await _agentFactory.CreateAgentFromSkillAsync(
-				request.AgentName,
+				skillId,
 				new SkillAgentOptions { AdditionalContext = request.SystemPromptOverride },
 				cancellationToken);
 

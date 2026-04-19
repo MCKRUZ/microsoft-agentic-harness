@@ -76,6 +76,7 @@
     <PackageVersion Include="Microsoft.Extensions.Caching.StackExchangeRedis" Version="9.0.4" />
     <PackageVersion Include="Microsoft.Extensions.Configuration.AzureAppConfiguration" Version="8.1.0" />
     <PackageVersion Include="Microsoft.Extensions.Configuration.UserSecrets" Version="10.0.5" />
+    <PackageVersion Include="Microsoft.AspNetCore.SpaProxy" Version="10.0.0" />
     <PackageVersion Include="Microsoft.Identity.Web" Version="3.8.4" />
     <PackageVersion Include="OpenTelemetry.Extensions.Hosting" Version="1.12.0" />
     <PackageVersion Include="OpenTelemetry.Instrumentation.AspNetCore" Version="1.11.1" />
@@ -84,6 +85,11 @@
 
     <!-- Presentation.ConsoleUI / Presentation.LoggerUI -->
     <PackageVersion Include="Spectre.Console" Version="0.54.1-alpha.0.31" />
+
+    <!-- Structured file logging (Presentation.AgentHub) -->
+    <PackageVersion Include="Serilog.AspNetCore" Version="9.0.0" />
+    <PackageVersion Include="Serilog.Sinks.File" Version="6.0.0" />
+    <PackageVersion Include="Serilog.Formatting.Compact" Version="3.0.0" />
 
     <!-- Testing -->
     <PackageVersion Include="Microsoft.AspNetCore.SignalR.Client" Version="10.0.5" />

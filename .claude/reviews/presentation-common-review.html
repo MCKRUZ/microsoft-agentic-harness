@@ -1,0 +1,1046 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Session Review — Presentation.Common Composition Root</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --bg-card: #161b22;
+    --bg-code: #1c2128;
+    --border: #30363d;
+    --border-accent: #58a6ff;
+    --text: #c9d1d9;
+    --text-muted: #8b949e;
+    --text-heading: #f0f6fc;
+    --accent: #58a6ff;
+    --accent-green: #3fb950;
+    --accent-red: #f85149;
+    --accent-orange: #d29922;
+    --accent-purple: #bc8cff;
+    --accent-cyan: #39d353;
+    --accent-pink: #f778ba;
+    --radius: 8px;
+    --shadow: 0 2px 8px rgba(0,0,0,0.3);
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+    padding: 0;
+  }
+
+  .hero {
+    background: linear-gradient(135deg, #0d1117 0%, #161b22 50%, #1a1f2e 100%);
+    border-bottom: 1px solid var(--border);
+    padding: 3rem 2rem 2.5rem;
+    text-align: center;
+  }
+
+  .hero h1 {
+    font-size: 2rem;
+    color: var(--text-heading);
+    font-weight: 700;
+    margin-bottom: 0.5rem;
+    letter-spacing: -0.02em;
+  }
+
+  .hero .subtitle {
+    font-size: 1.1rem;
+    color: var(--text-muted);
+    max-width: 640px;
+    margin: 0 auto;
+  }
+
+  .hero .meta {
+    margin-top: 1.2rem;
+    display: flex;
+    gap: 1.5rem;
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+
+  .hero .meta-item {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+  }
+
+  .hero .meta-item strong {
+    color: var(--accent);
+  }
+
+  .container {
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 2rem 1.5rem;
+  }
+
+  section {
+    margin-bottom: 2.5rem;
+  }
+
+  h2 {
+    font-size: 1.4rem;
+    color: var(--text-heading);
+    margin-bottom: 1rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  h2 .icon {
+    font-size: 1.2rem;
+    width: 28px;
+    height: 28px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 6px;
+    font-weight: 700;
+  }
+
+  h3 {
+    font-size: 1.1rem;
+    color: var(--accent);
+    margin: 1.2rem 0 0.6rem;
+  }
+
+  p { margin-bottom: 0.8rem; }
+
+  .card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.25rem 1.5rem;
+    margin-bottom: 1rem;
+    box-shadow: var(--shadow);
+  }
+
+  .card-accent {
+    border-left: 3px solid var(--accent);
+  }
+
+  .card-green { border-left-color: var(--accent-green); }
+  .card-red { border-left-color: var(--accent-red); }
+  .card-orange { border-left-color: var(--accent-orange); }
+  .card-purple { border-left-color: var(--accent-purple); }
+
+  pre {
+    background: var(--bg-code);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 1rem 1.25rem;
+    overflow-x: auto;
+    font-family: 'JetBrains Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+    font-size: 0.82rem;
+    line-height: 1.5;
+    color: var(--text);
+    margin: 0.8rem 0 1rem;
+  }
+
+  code {
+    font-family: 'JetBrains Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+    font-size: 0.85em;
+    background: var(--bg-code);
+    padding: 0.15em 0.4em;
+    border-radius: 4px;
+    color: var(--accent);
+  }
+
+  .tag {
+    display: inline-block;
+    padding: 0.15em 0.6em;
+    border-radius: 12px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .tag-critical { background: rgba(248,81,73,0.15); color: var(--accent-red); border: 1px solid rgba(248,81,73,0.3); }
+  .tag-high { background: rgba(210,153,34,0.15); color: var(--accent-orange); border: 1px solid rgba(210,153,34,0.3); }
+  .tag-done { background: rgba(63,185,80,0.15); color: var(--accent-green); border: 1px solid rgba(63,185,80,0.3); }
+  .tag-phase { background: rgba(88,166,255,0.15); color: var(--accent); border: 1px solid rgba(88,166,255,0.3); }
+  .tag-deleted { background: rgba(139,148,158,0.15); color: var(--text-muted); border: 1px solid rgba(139,148,158,0.3); }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 0.8rem 0 1rem;
+    font-size: 0.88rem;
+  }
+
+  th {
+    text-align: left;
+    padding: 0.6rem 0.8rem;
+    background: var(--bg-code);
+    color: var(--text-heading);
+    font-weight: 600;
+    border-bottom: 2px solid var(--border);
+  }
+
+  td {
+    padding: 0.5rem 0.8rem;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+
+  tr:hover td {
+    background: rgba(88,166,255,0.04);
+  }
+
+  .stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 1rem;
+    margin: 1rem 0;
+  }
+
+  .stat-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1rem 1.25rem;
+    text-align: center;
+  }
+
+  .stat-card .number {
+    font-size: 2rem;
+    font-weight: 700;
+    color: var(--accent);
+    line-height: 1.2;
+  }
+
+  .stat-card .label {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-top: 0.25rem;
+  }
+
+  .flow-diagram {
+    background: var(--bg-code);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.5rem;
+    font-family: 'JetBrains Mono', 'Cascadia Code', monospace;
+    font-size: 0.78rem;
+    line-height: 1.6;
+    overflow-x: auto;
+    white-space: pre;
+    color: var(--text);
+  }
+
+  .flow-diagram .hl-blue { color: var(--accent); }
+  .flow-diagram .hl-green { color: var(--accent-green); }
+  .flow-diagram .hl-orange { color: var(--accent-orange); }
+  .flow-diagram .hl-purple { color: var(--accent-purple); }
+  .flow-diagram .hl-pink { color: var(--accent-pink); }
+  .flow-diagram .hl-muted { color: var(--text-muted); }
+
+  .connection-line {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.4rem 0;
+    font-size: 0.88rem;
+  }
+
+  .connection-line .arrow {
+    color: var(--accent);
+    font-weight: 700;
+    flex-shrink: 0;
+  }
+
+  .connection-line .file {
+    color: var(--accent-purple);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.82rem;
+  }
+
+  .connection-line .desc {
+    color: var(--text-muted);
+    font-size: 0.82rem;
+  }
+
+  ul {
+    margin: 0.5rem 0 1rem 1.5rem;
+  }
+
+  li {
+    margin-bottom: 0.4rem;
+  }
+
+  .timeline {
+    position: relative;
+    padding-left: 2rem;
+  }
+
+  .timeline::before {
+    content: '';
+    position: absolute;
+    left: 8px;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background: var(--border);
+  }
+
+  .timeline-item {
+    position: relative;
+    margin-bottom: 1.5rem;
+  }
+
+  .timeline-item::before {
+    content: '';
+    position: absolute;
+    left: -2rem;
+    top: 0.5rem;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--accent);
+    border: 2px solid var(--bg);
+    z-index: 1;
+  }
+
+  .timeline-item.done::before { background: var(--accent-green); }
+  .timeline-item.fix::before { background: var(--accent-red); }
+
+  .footer {
+    text-align: center;
+    padding: 2rem;
+    color: var(--text-muted);
+    font-size: 0.8rem;
+    border-top: 1px solid var(--border);
+    margin-top: 2rem;
+  }
+
+  .two-col {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+  }
+
+  @media (max-width: 700px) {
+    .two-col { grid-template-columns: 1fr; }
+    .hero h1 { font-size: 1.5rem; }
+    .stats-grid { grid-template-columns: repeat(2, 1fr); }
+  }
+
+  .separator {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 2rem 0;
+  }
+</style>
+</head>
+<body>
+
+<div class="hero">
+  <h1>Presentation.Common &mdash; Composition Root</h1>
+  <p class="subtitle">
+    Eliminating the god object, building the composition root, and wiring
+    every layer of the agentic harness into a single <code>GetServices()</code> call.
+  </p>
+  <div class="meta">
+    <span class="meta-item"><strong>Project:</strong> Microsoft Agentic Harness</span>
+    <span class="meta-item"><strong>Date:</strong> April 7, 2026</span>
+    <span class="meta-item"><strong>Phases:</strong> A (Refactor) + B (Build)</span>
+    <span class="meta-item"><strong>Files:</strong> 28+ modified/created</span>
+  </div>
+</div>
+
+<div class="container">
+
+<!-- ============================================================ -->
+<!-- STORY ARC -->
+<!-- ============================================================ -->
+<section>
+  <h2><span class="icon" style="background:rgba(88,166,255,0.15);color:var(--accent);">1</span> The Story</h2>
+
+  <div class="card card-accent">
+    <h3>The Problem: AppConfig as God Object</h3>
+    <p>
+      Every <code>DependencyInjection.cs</code> across the entire solution accepted
+      <code>AppConfig</code> as a parameter &mdash; a root object containing <em>all</em>
+      configuration for every layer. Services that only needed logging config received
+      the full Azure, AI, HTTP, and cache configuration trees. Runtime consumers injected
+      <code>IOptionsMonitor&lt;AppConfig&gt;</code> when they only read a single subsection.
+    </p>
+    <p>
+      This created invisible coupling: any change to any config section potentially affected
+      every service in the solution. It also made testing harder &mdash; tests had to construct
+      the entire <code>AppConfig</code> graph just to test one component.
+    </p>
+  </div>
+
+  <div class="card card-green">
+    <h3>The Solution: Two-Phase Surgery</h3>
+    <p>
+      <span class="tag tag-phase">Phase A</span> <strong>Narrow the parameters.</strong>
+      Every DI method was refactored to accept only the config subsection it actually needs
+      &mdash; or nothing at all, resolving from <code>IOptionsMonitor&lt;T&gt;</code> at runtime.
+      Nine runtime consumers were changed from <code>IOptionsMonitor&lt;AppConfig&gt;</code> to
+      their specific config type.
+    </p>
+    <p>
+      <span class="tag tag-phase">Phase B</span> <strong>Build the composition root.</strong>
+      A new <code>Presentation.Common</code> project became the single place that knows about
+      <code>AppConfig</code> as a whole. It binds all config sections, registers all layers,
+      and builds the OTel pipeline &mdash; so no other project needs to see the god object.
+    </p>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<!-- SESSION STATS -->
+<!-- ============================================================ -->
+<section>
+  <h2><span class="icon" style="background:rgba(63,185,80,0.15);color:var(--accent-green);">2</span> Session at a Glance</h2>
+
+  <div class="stats-grid">
+    <div class="stat-card">
+      <div class="number">18</div>
+      <div class="label">DI Files Modified</div>
+    </div>
+    <div class="stat-card">
+      <div class="number">10</div>
+      <div class="label">New Source Files</div>
+    </div>
+    <div class="stat-card">
+      <div class="number">9</div>
+      <div class="label">Runtime Consumers Narrowed</div>
+    </div>
+    <div class="stat-card">
+      <div class="number">7</div>
+      <div class="label">New Config Classes</div>
+    </div>
+    <div class="stat-card">
+      <div class="number">5</div>
+      <div class="label">Deferred Items Resolved</div>
+    </div>
+    <div class="stat-card">
+      <div class="number">6</div>
+      <div class="label">Code Review Fixes</div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<!-- PHASE A DETAIL -->
+<!-- ============================================================ -->
+<section>
+  <h2><span class="icon" style="background:rgba(210,153,34,0.15);color:var(--accent-orange);">A</span> Phase A &mdash; AppConfig DI Refactoring</h2>
+
+  <h3>DI Method Signature Changes</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Layer / Method</th>
+        <th>Before</th>
+        <th>After</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>Application.Common</code></td>
+        <td><code>AppConfig</code></td>
+        <td><code>LoggingConfig?</code></td>
+      </tr>
+      <tr>
+        <td><code>Application.AI.Common</code></td>
+        <td><code>AppConfig</code></td>
+        <td>No parameter (parameterless)</td>
+      </tr>
+      <tr>
+        <td><code>Infrastructure.Common</code></td>
+        <td><code>AppConfig</code></td>
+        <td>No parameter (resolves <code>HttpConfig</code> at runtime)</td>
+      </tr>
+      <tr>
+        <td><code>Infrastructure.AI</code></td>
+        <td><code>AppConfig</code></td>
+        <td><code>IEnumerable&lt;string&gt; allowedBasePaths</code></td>
+      </tr>
+      <tr>
+        <td><code>Infrastructure.AI.Connectors</code></td>
+        <td><code>AppConfig</code></td>
+        <td>No parameter (resolves <code>ConnectorsConfig</code> at runtime)</td>
+      </tr>
+      <tr>
+        <td><code>Infrastructure.AI.MCP</code></td>
+        <td><code>AppConfig</code></td>
+        <td>No parameter (resolves <code>McpConfig</code> at runtime)</td>
+      </tr>
+      <tr>
+        <td><code>Infrastructure.APIAccess</code></td>
+        <td><code>AppConfig</code></td>
+        <td>No parameter</td>
+      </tr>
+      <tr>
+        <td><code>Infrastructure.Observability</code></td>
+        <td><code>AppConfig</code></td>
+        <td>No parameter</td>
+      </tr>
+      <tr>
+        <td><code>Presentation.Common</code></td>
+        <td>N/A (new)</td>
+        <td><code>HttpConfig</code></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>Runtime Consumer Narrowing</h3>
+  <p>Nine services changed from <code>IOptionsMonitor&lt;AppConfig&gt;</code> to their specific config type:</p>
+  <table>
+    <thead>
+      <tr><th>Consumer</th><th>Now Injects</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Logging providers (File, Structured JSON, Pipe, Ring Buffer)</td><td><code>IOptionsMonitor&lt;LoggingConfig&gt;</code></td></tr>
+      <tr><td>Agent execution services</td><td><code>IOptionsMonitor&lt;AgentConfig&gt;</code></td></tr>
+      <tr><td>Infrastructure middleware</td><td><code>IOptionsMonitor&lt;InfrastructureConfig&gt;</code></td></tr>
+      <tr><td>HTTP pipeline services</td><td><code>IOptionsMonitor&lt;HttpConfig&gt;</code></td></tr>
+    </tbody>
+  </table>
+
+  <h3>New Domain.Common Config Classes</h3>
+  <div class="card card-purple">
+    <ul>
+      <li><strong>AzureConfig hierarchy</strong> (7 files) &mdash; <code>AzureConfig</code>, <code>ApplicationInsightsConfig</code>, <code>AzureDatabaseConfig</code>, <code>AzureADB2CConfig</code>, <code>KeyVaultConfig</code>, <code>GraphApiConfig</code>, <code>EntraCredentialConfig</code></li>
+      <li><strong>CacheConfig</strong> + <code>RedisClientConfig</code> + <code>CacheType</code> enum</li>
+      <li><strong>GlobalErrorHandlerOptions</strong> &mdash; moved to <code>Domain.Common/Middleware/</code></li>
+      <li><strong>CommonConfig</strong> gained <code>ApplicationName</code> and <code>ApplicationVersion</code></li>
+      <li><strong>ObservabilityConfig</strong> gained <code>WebTelemetryProjects</code> and <code>EnableSensitiveTelemetry</code></li>
+    </ul>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<!-- PHASE B DETAIL -->
+<!-- ============================================================ -->
+<section>
+  <h2><span class="icon" style="background:rgba(188,140,255,0.15);color:var(--accent-purple);">B</span> Phase B &mdash; Presentation.Common Composition Root</h2>
+
+  <h3>New Project: 10 Source Files</h3>
+  <table>
+    <thead>
+      <tr><th>File</th><th>Purpose</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>DependencyInjection.cs</code></td>
+        <td>Web service registration facade &mdash; Kestrel, API versioning, Swagger, rate limiter, CORS</td>
+      </tr>
+      <tr>
+        <td><code>Extensions/IServiceCollectionExtensions.cs</code></td>
+        <td>Master orchestrator: <code>RegisterConfigSections</code>, <code>GetServices</code>, <code>BuildGlobalSolutionServices</code>, <code>AddCacheConfiguration</code>, <code>AddGlobalProjectDependencies</code>, <code>AddAuthDependencies</code></td>
+      </tr>
+      <tr>
+        <td><code>Extensions/HealthCheckServiceCollectionExtensions.cs</code></td>
+        <td>Conditional health checks for SQL, Blob, Key Vault, Redis, App Insights</td>
+      </tr>
+      <tr>
+        <td><code>Extensions/OpenTelemetryServiceCollectionExtensions.cs</code></td>
+        <td>OTel pipeline with web/desktop detection and <code>ITelemetryConfigurator</code> extensibility</td>
+      </tr>
+      <tr>
+        <td><code>Extensions/IApplicationBuilderExtensions.cs</code></td>
+        <td>Middleware pipeline wiring + <code>UseGlobalErrorHandler</code> with exception-to-status mapping</td>
+      </tr>
+      <tr>
+        <td><code>Extensions/IEndpointRouteBuilderExtensions.cs</code></td>
+        <td>Health check UI endpoint with optional auth filter</td>
+      </tr>
+      <tr>
+        <td><code>Filters/ExceptionContextExtensions.cs</code></td>
+        <td>MVC filter standardized error responses (<code>ReplaceResponse</code>)</td>
+      </tr>
+      <tr>
+        <td><code>Helpers/AppConfigHelper.cs</code></td>
+        <td>Multi-source config loading: appsettings + user secrets + env vars + Key Vault + App Config</td>
+      </tr>
+      <tr>
+        <td><code>Helpers/ConfigurationHelper.cs</code></td>
+        <td>Kestrel URL resolution + cross-project config propagation</td>
+      </tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ============================================================ -->
+<!-- ARCHITECTURE DIAGRAM -->
+<!-- ============================================================ -->
+<section>
+  <h2><span class="icon" style="background:rgba(57,211,83,0.15);color:var(--accent-cyan);">3</span> Architecture &mdash; The New Config Flow</h2>
+
+  <div class="flow-diagram"><span class="hl-muted">                          CONFIGURATION SOURCES</span>
+<span class="hl-muted">  ┌─────────────┐  ┌──────────────┐  ┌─────────────┐  ┌───────────┐  ┌──────────┐</span>
+<span class="hl-blue">  │ appsettings │  │ appsettings. │  │    User     │  │   Env     │  │  Azure   │</span>
+<span class="hl-blue">  │    .json    │  │  {Env}.json  │  │  Secrets    │  │   Vars    │  │ KV + App │</span>
+<span class="hl-muted">  └──────┬──────┘  └──────┬───────┘  └──────┬──────┘  └─────┬─────┘  └────┬─────┘</span>
+<span class="hl-muted">         └──────────┬─────┴──────────┬──────┴────────┬──────┘             │</span>
+<span class="hl-muted">                    ▼                               ▼                    │</span>
+<span class="hl-green">          ┌─────────────────────────────────────────────────────────────────┐</span>
+<span class="hl-green">          │              AppConfigHelper.LoadAppConfig()                    │</span>
+<span class="hl-green">          │              Presentation.Common/Helpers/                       │</span>
+<span class="hl-green">          └───────────────────────────┬───────────────────────────────────┘</span>
+<span class="hl-muted">                                      │ IConfiguration</span>
+<span class="hl-muted">                                      ▼</span>
+<span class="hl-orange">          ┌──────────────────────────────────────────────────────────────┐</span>
+<span class="hl-orange">          │          RegisterConfigSections(IConfiguration)              │</span>
+<span class="hl-orange">          │          IServiceCollectionExtensions.cs                     │</span>
+<span class="hl-orange">          │                                                              │</span>
+<span class="hl-orange">          │   Binds 11 config classes as IOptions&lt;T&gt;:                    │</span>
+<span class="hl-orange">          │   AppConfig, CommonConfig, LoggingConfig, AgentConfig,       │</span>
+<span class="hl-orange">          │   HttpConfig, InfrastructureConfig, ConnectorsConfig,         │</span>
+<span class="hl-orange">          │   ObservabilityConfig, AIConfig, AzureConfig, CacheConfig    │</span>
+<span class="hl-orange">          └───────────────────────────┬──────────────────────────────────┘</span>
+<span class="hl-muted">                                      │</span>
+<span class="hl-muted">                                      ▼</span>
+<span class="hl-purple">          ┌──────────────────────────────────────────────────────────────┐</span>
+<span class="hl-purple">          │            BuildGlobalSolutionServices(AppConfig)             │</span>
+<span class="hl-purple">          │                                                              │</span>
+<span class="hl-purple">          │   1. AddOptions + ProblemDetails + HttpContextAccessor        │</span>
+<span class="hl-purple">          │   2. AddCacheConfiguration(CacheConfig)                      │</span>
+<span class="hl-purple">          │   3. AddCustomHealthChecks(AppConfig)                        │</span>
+<span class="hl-purple">          │   4. AddGlobalProjectDependencies(AppConfig)   ◄── ALL LAYERS│</span>
+<span class="hl-purple">          │   5. AddOpenTelemetry(AppConfig)               ◄── MUST BE   │</span>
+<span class="hl-purple">          │                                                  LAST        │</span>
+<span class="hl-purple">          └───────────────────────────┬──────────────────────────────────┘</span>
+<span class="hl-muted">                                      │</span>
+<span class="hl-muted">                      ┌───────────────┴───────────────┐</span>
+<span class="hl-muted">                      ▼                               ▼</span>
+<span class="hl-green">  ┌──────────────────────────────┐  ┌──────────────────────────────────┐</span>
+<span class="hl-green">  │   LAYER DI METHODS           │  │    OTel PIPELINE                 │</span>
+<span class="hl-green">  │                              │  │                                  │</span>
+<span class="hl-green">  │  App.Common(LoggingConfig)   │  │  ITelemetryConfigurator          │</span>
+<span class="hl-green">  │  App.AI()                    │  │    ├─ AppTelemetryConfigurator   │</span>
+<span class="hl-green">  │  Infra.Common()              │  │    │  (Order 100 - App.Common)   │</span>
+<span class="hl-green">  │  Infra.AI(allowedPaths)      │  │    ├─ AiTelemetryConfigurator    │</span>
+<span class="hl-green">  │  Infra.Connectors()          │  │    │  (Order 200 - App.AI)       │</span>
+<span class="hl-green">  │  Infra.MCP()                 │  │    └─ ObservabilityConfigurator  │</span>
+<span class="hl-green">  │  Infra.APIAccess()           │  │       (Order 300 - Infra.Obs)   │</span>
+<span class="hl-green">  │  Infra.Observability()       │  │                                  │</span>
+<span class="hl-green">  └──────────────────────────────┘  └──────────────────────────────────┘</span>
+<span class="hl-muted">         Registers ITelemetryConfigurator ─────────► Consumed by OTel</span></div>
+
+  <div class="card" style="margin-top:1rem;">
+    <h3 style="margin-top:0;">Why order matters</h3>
+    <p>
+      Each project's <code>DependencyInjection.cs</code> registers its <code>ITelemetryConfigurator</code>
+      as a singleton. The OTel pipeline in <code>OpenTelemetryServiceCollectionExtensions</code> resolves
+      <em>all</em> configurators from DI and applies them in <code>Order</code> sequence. If OTel were
+      registered before the project dependencies, the configurators would not exist yet.
+    </p>
+    <p>
+      The <code>IDeferredTracerProviderBuilder</code> / <code>IDeferredMeterProviderBuilder</code> pattern
+      avoids the <code>BuildServiceProvider()</code> anti-pattern &mdash; configurators are resolved from
+      the real <code>IServiceProvider</code> at pipeline-build time, not from a throwaway intermediate provider.
+    </p>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<!-- CROSS-FILE CONNECTION MAP -->
+<!-- ============================================================ -->
+<section>
+  <h2><span class="icon" style="background:rgba(247,120,186,0.15);color:var(--accent-pink);">4</span> Cross-File Connection Map</h2>
+
+  <div class="card">
+    <h3 style="margin-top:0;">Entry Point Chain</h3>
+    <div class="connection-line">
+      <span class="file">Program.cs</span>
+      <span class="arrow">&rarr;</span>
+      <span class="file">IServiceCollectionExtensions.GetServices()</span>
+      <span class="desc">&mdash; single call does everything</span>
+    </div>
+    <div class="connection-line">
+      <span class="arrow" style="margin-left:1rem;">&darr;</span>
+    </div>
+    <div class="connection-line">
+      <span class="file" style="margin-left:1rem;">AppConfigHelper.LoadAppConfig()</span>
+      <span class="arrow">&rarr;</span>
+      <span class="desc">Builds IConfiguration from 6 sources</span>
+    </div>
+    <div class="connection-line">
+      <span class="arrow" style="margin-left:1rem;">&darr;</span>
+    </div>
+    <div class="connection-line">
+      <span class="file" style="margin-left:1rem;">RegisterConfigSections()</span>
+      <span class="arrow">&rarr;</span>
+      <span class="desc">Binds 11 IOptions&lt;T&gt; sections</span>
+    </div>
+    <div class="connection-line">
+      <span class="arrow" style="margin-left:1rem;">&darr;</span>
+    </div>
+    <div class="connection-line">
+      <span class="file" style="margin-left:1rem;">BuildGlobalSolutionServices()</span>
+      <span class="arrow">&rarr;</span>
+      <span class="desc">Cache + HealthChecks + All Layers + OTel</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0;">Middleware Pipeline Chain</h3>
+    <div class="connection-line">
+      <span class="file">Program.cs</span>
+      <span class="arrow">&rarr;</span>
+      <span class="file">IApplicationBuilderExtensions.UseAllMiddleware()</span>
+    </div>
+    <div class="connection-line">
+      <span class="arrow" style="margin-left:1rem;">&darr;</span>
+      <span class="desc">Ordered: DynamicCors &rarr; SecurityAudit &rarr; SecurityHeaders &rarr; GlobalException</span>
+    </div>
+    <div class="connection-line">
+      <span class="file" style="margin-left:1rem;">Infrastructure.Common/Middleware/</span>
+      <span class="arrow">&rarr;</span>
+      <span class="desc">Implementations live in Infrastructure</span>
+    </div>
+    <div class="connection-line">
+      <span class="file" style="margin-left:1rem;">Domain.Common/Middleware/GlobalErrorHandlerOptions</span>
+      <span class="arrow">&rarr;</span>
+      <span class="desc">Config lives in Domain</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0;">OTel Configurator Discovery</h3>
+    <div class="connection-line">
+      <span class="file">Application.Common/DI</span>
+      <span class="arrow">&rarr;</span>
+      <span class="desc">registers <code>AppTelemetryConfigurator</code> (Order 100)</span>
+    </div>
+    <div class="connection-line">
+      <span class="file">Application.AI.Common/DI</span>
+      <span class="arrow">&rarr;</span>
+      <span class="desc">registers <code>AiTelemetryConfigurator</code> (Order 200)</span>
+    </div>
+    <div class="connection-line">
+      <span class="file">Infrastructure.Observability/DI</span>
+      <span class="arrow">&rarr;</span>
+      <span class="desc">registers <code>ObservabilityTelemetryConfigurator</code> (Order 300)</span>
+    </div>
+    <div class="connection-line">
+      <span class="arrow">&darr;</span>
+      <span class="desc">All discovered by <code>sp.GetServices&lt;ITelemetryConfigurator&gt;()</code> in OTel pipeline</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0;">Config Dependency Graph</h3>
+    <div class="connection-line">
+      <span class="file">Application.Common/DI</span>
+      <span class="arrow">&larr;</span>
+      <span class="desc"><code>LoggingConfig</code> (optional, passed at registration)</span>
+    </div>
+    <div class="connection-line">
+      <span class="file">Infrastructure.Common/DI</span>
+      <span class="arrow">&larr;</span>
+      <span class="desc"><code>HttpConfig</code> (resolved at runtime via <code>IOptionsMonitor</code>)</span>
+    </div>
+    <div class="connection-line">
+      <span class="file">Infrastructure.AI/DI</span>
+      <span class="arrow">&larr;</span>
+      <span class="desc"><code>IEnumerable&lt;string&gt;</code> allowed paths (extracted by caller)</span>
+    </div>
+    <div class="connection-line">
+      <span class="file">Presentation.Common/DI</span>
+      <span class="arrow">&larr;</span>
+      <span class="desc"><code>HttpConfig</code> (passed at registration for CORS, Swagger)</span>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<!-- CODE REVIEW FINDINGS -->
+<!-- ============================================================ -->
+<section>
+  <h2><span class="icon" style="background:rgba(248,81,73,0.15);color:var(--accent-red);">5</span> Code Review Findings &amp; Fixes</h2>
+
+  <div class="card card-red">
+    <h3 style="margin-top:0;"><span class="tag tag-critical">CRITICAL</span> Sensitive Telemetry Hardcoded</h3>
+    <p><strong>Finding:</strong> The <code>EnableOTelDiagnosticsSensitive</code> AppContext switch was hardcoded to <code>true</code>,
+    meaning all GenAI prompt and completion content would be recorded in traces regardless of environment.</p>
+    <p><strong>Fix:</strong> Made it config-driven via <code>appConfig.Observability.EnableSensitiveTelemetry</code>,
+    defaulting to <code>false</code>. Production requires explicit opt-in.</p>
+    <pre>// Before (DANGEROUS)
+AppContext.SetSwitch("...EnableOTelDiagnosticsSensitive", true);
+
+// After (config-driven, default false)
+AppContext.SetSwitch("...EnableOTelDiagnosticsSensitive",
+    appConfig.Observability.EnableSensitiveTelemetry);</pre>
+  </div>
+
+  <div class="card card-red">
+    <h3 style="margin-top:0;"><span class="tag tag-critical">CRITICAL</span> Missing Secret Storage Warnings</h3>
+    <p><strong>Finding:</strong> <code>RedisClientConfig.Secret</code> and <code>EntraCredentialConfig.ClientSecret</code>
+    had no XML doc warnings about secret storage requirements.</p>
+    <p><strong>Fix:</strong> Added explicit warnings: "This value must NEVER be stored in appsettings.json or any file
+    committed to source control. Use User Secrets (development) or Azure Key Vault (production)."</p>
+  </div>
+
+  <div class="card card-orange">
+    <h3 style="margin-top:0;"><span class="tag tag-high">HIGH</span> BuildServiceProvider() Anti-Pattern</h3>
+    <p><strong>Finding:</strong> Original OTel registration called <code>services.BuildServiceProvider()</code> to resolve
+    <code>ITelemetryConfigurator</code> instances, creating a throwaway DI container and duplicate singletons.</p>
+    <p><strong>Fix:</strong> Used <code>IDeferredTracerProviderBuilder</code> and <code>IDeferredMeterProviderBuilder</code>
+    to defer configurator resolution to the real <code>IServiceProvider</code> at pipeline-build time.</p>
+  </div>
+
+  <div class="card card-orange">
+    <h3 style="margin-top:0;"><span class="tag tag-high">HIGH</span> File Size Violation</h3>
+    <p><strong>Finding:</strong> <code>IServiceCollectionExtensions.cs</code> exceeded line limits when health checks were inline.</p>
+    <p><strong>Fix:</strong> Extracted <code>HealthCheckServiceCollectionExtensions.cs</code> as a dedicated file with
+    <code>AddCustomHealthChecks</code>, <code>AddAzureHealthChecks</code>, <code>AddCacheHealthChecks</code>,
+    and <code>AddHealthCheckPublishers</code> methods.</p>
+  </div>
+
+  <div class="card card-orange">
+    <h3 style="margin-top:0;"><span class="tag tag-high">HIGH</span> Path Validation Missing</h3>
+    <p><strong>Finding:</strong> <code>PropagateAppConfigChanges</code> did not validate file paths, risking path traversal.</p>
+    <p><strong>Fix:</strong> Added <code>File.Exists</code> check for source, <code>ArgumentNullException.ThrowIfNull</code>
+    for both parameters, and <code>FileNotFoundException</code> when source is missing.</p>
+  </div>
+
+  <div class="card card-orange">
+    <h3 style="margin-top:0;"><span class="tag tag-high">HIGH</span> AzureConfig One-File-Per-Class</h3>
+    <p><strong>Finding:</strong> All 7 Azure config classes were in a single <code>AzureConfig.cs</code> file.</p>
+    <p><strong>Fix:</strong> Split into 7 individual files: <code>AzureConfig.cs</code>, <code>ApplicationInsightsConfig.cs</code>,
+    <code>AzureDatabaseConfig.cs</code>, <code>AzureADB2CConfig.cs</code>, <code>KeyVaultConfig.cs</code>,
+    <code>GraphApiConfig.cs</code>, <code>EntraCredentialConfig.cs</code>.</p>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<!-- DEFERRED ITEMS -->
+<!-- ============================================================ -->
+<section>
+  <h2><span class="icon" style="background:rgba(63,185,80,0.15);color:var(--accent-green);">6</span> Deferred Backlog Resolution</h2>
+
+  <table>
+    <thead>
+      <tr><th>Deferred Item</th><th>Target</th><th>Status</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>ExceptionContextExtensions</code></td>
+        <td>Presentation.Common/Filters/</td>
+        <td><span class="tag tag-done">DONE</span></td>
+      </tr>
+      <tr>
+        <td><code>ConfigurationHelper.GetKestrelUrl</code></td>
+        <td>Presentation.Common/Helpers/</td>
+        <td><span class="tag tag-done">DONE</span></td>
+      </tr>
+      <tr>
+        <td><code>OpenTelemetryServiceCollectionExtensions</code></td>
+        <td>Presentation.Common/Extensions/</td>
+        <td><span class="tag tag-done">DONE</span></td>
+      </tr>
+      <tr>
+        <td><code>GlobalErrorHandlerOptions</code></td>
+        <td>Domain.Common/Middleware/</td>
+        <td><span class="tag tag-done">DONE</span></td>
+      </tr>
+      <tr>
+        <td>WebSocket logger wiring</td>
+        <td>N/A</td>
+        <td><span class="tag tag-deleted">DELETED</span> &mdash; no code exists</td>
+      </tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ============================================================ -->
+<!-- KEY ARCHITECTURE DECISIONS -->
+<!-- ============================================================ -->
+<section>
+  <h2><span class="icon" style="background:rgba(88,166,255,0.15);color:var(--accent);">7</span> Key Architecture Decisions</h2>
+
+  <div class="two-col">
+    <div class="card card-accent">
+      <h3 style="margin-top:0;">1. Centralized Config Binding</h3>
+      <p>
+        <code>RegisterConfigSections</code> binds <em>all</em> 11 config classes
+        as <code>IOptions&lt;T&gt;</code> in one place. No other project calls
+        <code>services.Configure&lt;T&gt;</code>. This guarantees every subsection
+        is available for runtime resolution, and there is exactly one place to add new sections.
+      </p>
+    </div>
+    <div class="card card-accent">
+      <h3 style="margin-top:0;">2. Narrow or Nothing</h3>
+      <p>
+        DI methods either take <em>nothing</em> (resolving config at runtime from
+        <code>IOptionsMonitor&lt;T&gt;</code>) or their <em>specific</em> config subsection
+        when they need it at registration time. The root <code>AppConfig</code> object
+        is only referenced inside <code>Presentation.Common</code>.
+      </p>
+    </div>
+    <div class="card card-accent">
+      <h3 style="margin-top:0;">3. ITelemetryConfigurator Extensibility</h3>
+      <p>
+        Each project registers its own <code>ITelemetryConfigurator</code> with an
+        <code>Order</code> property. The OTel pipeline discovers all of them from DI
+        and applies them in sequence. Adding a new telemetry source means implementing
+        one interface &mdash; no changes to the pipeline code.
+      </p>
+    </div>
+    <div class="card card-accent">
+      <h3 style="margin-top:0;">4. Registration Order = Execution Order</h3>
+      <p>
+        Project dependencies are registered <em>before</em> OTel so configurators
+        exist when the pipeline is built. MediatR behaviors are registered in execution
+        order (outermost first). This ordering is documented in XML comments and enforced
+        by the composition root.
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<!-- FILE INVENTORY -->
+<!-- ============================================================ -->
+<section>
+  <h2><span class="icon" style="background:rgba(139,148,158,0.15);color:var(--text-muted);">8</span> Complete File Inventory</h2>
+
+  <h3>Phase B &mdash; New Files (Presentation.Common)</h3>
+  <table>
+    <thead>
+      <tr><th>Path</th><th>Lines</th><th>Role</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>DependencyInjection.cs</code></td><td>~59</td><td>Web service facade</td></tr>
+      <tr><td><code>Extensions/IServiceCollectionExtensions.cs</code></td><td>~302</td><td>Master orchestrator</td></tr>
+      <tr><td><code>Extensions/HealthCheckServiceCollectionExtensions.cs</code></td><td>~123</td><td>Health check registration</td></tr>
+      <tr><td><code>Extensions/OpenTelemetryServiceCollectionExtensions.cs</code></td><td>~257</td><td>OTel pipeline builder</td></tr>
+      <tr><td><code>Extensions/IApplicationBuilderExtensions.cs</code></td><td>~277</td><td>Middleware + error handler</td></tr>
+      <tr><td><code>Extensions/IEndpointRouteBuilderExtensions.cs</code></td><td>~56</td><td>Health check endpoint</td></tr>
+      <tr><td><code>Filters/ExceptionContextExtensions.cs</code></td><td>~92</td><td>MVC filter helpers</td></tr>
+      <tr><td><code>Helpers/AppConfigHelper.cs</code></td><td>~232</td><td>Config loading</td></tr>
+      <tr><td><code>Helpers/ConfigurationHelper.cs</code></td><td>~159</td><td>Kestrel + propagation</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Phase A &mdash; Modified DI Files</h3>
+  <table>
+    <thead>
+      <tr><th>Project</th><th>Change</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>Application.Common/DependencyInjection.cs</code></td><td>AppConfig &rarr; LoggingConfig?</td></tr>
+      <tr><td><code>Application.AI.Common/DependencyInjection.cs</code></td><td>AppConfig &rarr; parameterless</td></tr>
+      <tr><td><code>Infrastructure.Common/DependencyInjection.cs</code></td><td>AppConfig &rarr; parameterless (runtime IOptionsMonitor)</td></tr>
+      <tr><td><code>Infrastructure.AI/DependencyInjection.cs</code></td><td>AppConfig &rarr; IEnumerable&lt;string&gt;</td></tr>
+      <tr><td><code>Infrastructure.AI.Connectors/DependencyInjection.cs</code></td><td>AppConfig &rarr; parameterless</td></tr>
+      <tr><td><code>Infrastructure.AI.MCP/DependencyInjection.cs</code></td><td>AppConfig &rarr; parameterless</td></tr>
+      <tr><td><code>Infrastructure.APIAccess/DependencyInjection.cs</code></td><td>AppConfig &rarr; parameterless</td></tr>
+      <tr><td><code>Infrastructure.Observability/DependencyInjection.cs</code></td><td>AppConfig &rarr; parameterless</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Phase A &mdash; New Domain Config Classes</h3>
+  <table>
+    <thead><tr><th>Path</th><th>Purpose</th></tr></thead>
+    <tbody>
+      <tr><td><code>Config/Azure/AzureConfig.cs</code></td><td>Root Azure config</td></tr>
+      <tr><td><code>Config/Azure/ApplicationInsightsConfig.cs</code></td><td>App Insights connection string</td></tr>
+      <tr><td><code>Config/Azure/AzureDatabaseConfig.cs</code></td><td>SQL + Blob Storage</td></tr>
+      <tr><td><code>Config/Azure/AzureADB2CConfig.cs</code></td><td>AD B2C auth</td></tr>
+      <tr><td><code>Config/Azure/KeyVaultConfig.cs</code></td><td>Key Vault URI</td></tr>
+      <tr><td><code>Config/Azure/GraphApiConfig.cs</code></td><td>Graph API settings</td></tr>
+      <tr><td><code>Config/Azure/EntraCredentialConfig.cs</code></td><td>Entra ID credentials</td></tr>
+      <tr><td><code>Config/Cache/CacheConfig.cs</code></td><td>Cache type + Redis client config</td></tr>
+      <tr><td><code>Middleware/GlobalErrorHandlerOptions.cs</code></td><td>Error handler customization</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ============================================================ -->
+<!-- BEFORE / AFTER -->
+<!-- ============================================================ -->
+<section>
+  <h2><span class="icon" style="background:rgba(210,153,34,0.15);color:var(--accent-orange);">9</span> Before &amp; After</h2>
+
+  <div class="two-col">
+    <div class="card card-red">
+      <h3 style="margin-top:0; color:var(--accent-red);">Before This Session</h3>
+      <ul>
+        <li>Every DI method received the full <code>AppConfig</code> object</li>
+        <li>Runtime consumers injected <code>IOptionsMonitor&lt;AppConfig&gt;</code></li>
+        <li>No composition root &mdash; each app project wired DI manually</li>
+        <li>OTel pipeline built via <code>BuildServiceProvider()</code> anti-pattern</li>
+        <li>Sensitive telemetry hardcoded to <code>true</code></li>
+        <li>Azure config classes crammed into one file</li>
+        <li>No health check registration, no Kestrel URL resolution</li>
+        <li>5 deferred items sitting in backlog</li>
+      </ul>
+    </div>
+    <div class="card card-green">
+      <h3 style="margin-top:0; color:var(--accent-green);">After This Session</h3>
+      <ul>
+        <li>DI methods accept only their specific config or nothing</li>
+        <li>Runtime consumers inject <code>IOptionsMonitor&lt;SpecificConfig&gt;</code></li>
+        <li>Single <code>GetServices()</code> call wires the entire application</li>
+        <li>OTel uses deferred builders &mdash; no intermediate service provider</li>
+        <li>Sensitive telemetry is config-driven, defaults to <code>false</code></li>
+        <li>One class per file, 7 Azure config files</li>
+        <li>Health checks, Kestrel URL, middleware pipeline all wired</li>
+        <li>5 deferred items resolved (4 done, 1 deleted)</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<!-- MINIMAL PROGRAM.CS -->
+<!-- ============================================================ -->
+<section>
+  <h2><span class="icon" style="background:rgba(88,166,255,0.15);color:var(--accent);">10</span> What Program.cs Looks Like Now</h2>
+
+  <pre><span style="color:var(--text-muted);">// The entire composition root reduces to this:</span>
+
+<span style="color:var(--accent-purple);">var</span> builder = WebApplication.CreateBuilder(args);
+
+<span style="color:var(--text-muted);">// One call registers everything: config, caching, health checks,</span>
+<span style="color:var(--text-muted);">// all layer dependencies, and the OTel pipeline.</span>
+builder.Services.GetServices();
+
+<span style="color:var(--text-muted);">// Web-specific registrations (Kestrel, versioning, Swagger, CORS)</span>
+builder.Services.AddPresentationCommonDependencies(httpConfig);
+
+<span style="color:var(--text-muted);">// Auth (optional — skips B2C when not configured)</span>
+builder.Services.AddAuthDependencies(azureConfig);
+
+<span style="color:var(--accent-purple);">var</span> app = builder.Build();
+
+<span style="color:var(--text-muted);">// Middleware in correct order</span>
+app.UseAllMiddleware();
+app.UseAuthentication();
+app.UseAuthorization();
+
+<span style="color:var(--text-muted);">// Health check UI</span>
+app.AddHealthCheckEndpoint(<span style="color:var(--accent-green);">"/api"</span>);
+
+app.MapControllers();
+app.Run();</pre>
+</section>
+
+</div>
+
+<div class="footer">
+  Session Review &mdash; Presentation.Common Composition Root<br>
+  Microsoft Agentic Harness &bull; Generated April 7, 2026
+</div>
+
+</body>
+</html>

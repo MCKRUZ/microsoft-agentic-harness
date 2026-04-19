@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Session Review — Exceptions Foundation | 2026-04-03</title>
+<style>
+  :root {
+    --bg: #0d1117; --surface: #161b22; --border: #30363d;
+    --text: #e6edf3; --text-muted: #8b949e; --accent: #58a6ff;
+    --green: #3fb950; --red: #f85149; --yellow: #d29922; --purple: #bc8cff;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; background: var(--bg); color: var(--text); line-height: 1.6; padding: 2rem; max-width: 960px; margin: 0 auto; }
+  h1 { font-size: 1.8rem; margin-bottom: 0.5rem; }
+  h2 { font-size: 1.3rem; color: var(--accent); margin: 2rem 0 1rem; border-bottom: 1px solid var(--border); padding-bottom: 0.5rem; }
+  h3 { font-size: 1.1rem; color: var(--purple); margin: 1.5rem 0 0.5rem; }
+  .meta { color: var(--text-muted); font-size: 0.9rem; margin-bottom: 2rem; }
+  .meta span { margin-right: 1.5rem; }
+  .stat-bar { display: flex; gap: 1rem; flex-wrap: wrap; margin: 1rem 0; }
+  .stat { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 1rem 1.5rem; flex: 1; min-width: 120px; }
+  .stat-value { font-size: 1.8rem; font-weight: 700; color: var(--accent); }
+  .stat-label { font-size: 0.8rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; }
+  .chapter { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 1.5rem; margin: 1rem 0; }
+  .chapter-title { font-size: 1.1rem; font-weight: 600; margin-bottom: 0.75rem; }
+  .file-list { list-style: none; margin: 0.5rem 0; }
+  .file-list li { padding: 0.25rem 0; font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace; font-size: 0.85rem; color: var(--green); }
+  .file-list li.modified { color: var(--yellow); }
+  .file-list li.new::before { content: '+ '; color: var(--green); font-weight: 700; }
+  .file-list li.modified::before { content: '~ '; color: var(--yellow); font-weight: 700; }
+  p { margin: 0.5rem 0; }
+  .diff-block { background: #0d1117; border: 1px solid var(--border); border-radius: 6px; padding: 1rem; margin: 0.75rem 0; font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace; font-size: 0.82rem; overflow-x: auto; }
+  .diff-add { color: var(--green); }
+  .diff-remove { color: var(--red); }
+  .diff-context { color: var(--text-muted); }
+  .connection-map { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 1.5rem; margin: 1rem 0; }
+  .connection { display: flex; align-items: center; gap: 0.5rem; padding: 0.3rem 0; font-size: 0.85rem; }
+  .connection .arrow { color: var(--accent); }
+  .tag { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 4px; font-size: 0.75rem; font-weight: 600; }
+  .tag-pattern { background: #1f2d3d; color: var(--accent); }
+  .tag-fix { background: #2d1f1f; color: var(--red); }
+  .tag-new { background: #1f2d1f; color: var(--green); }
+  .decision { background: var(--surface); border-left: 3px solid var(--purple); padding: 1rem 1.5rem; margin: 0.75rem 0; border-radius: 0 6px 6px 0; }
+  .decision-title { font-weight: 600; color: var(--purple); margin-bottom: 0.25rem; }
+  .footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--border); color: var(--text-muted); font-size: 0.8rem; text-align: center; }
+</style>
+</head>
+<body>
+
+<h1>Exceptions Foundation</h1>
+<div class="meta">
+  <span>2026-04-03</span>
+  <span>Deep Review</span>
+  <span>Project: microsoft-agentic-harness</span>
+</div>
+
+<div class="stat-bar">
+  <div class="stat"><div class="stat-value">15</div><div class="stat-label">Files Created</div></div>
+  <div class="stat"><div class="stat-value">1,365</div><div class="stat-label">Lines of Code</div></div>
+  <div class="stat"><div class="stat-value">13</div><div class="stat-label">Exception Types</div></div>
+  <div class="stat"><div class="stat-value">0</div><div class="stat-label">Build Warnings</div></div>
+</div>
+
+<h2>The Story</h2>
+
+<p>This session laid the first concrete foundation of the Microsoft Agentic Harness &mdash; a template project for building AI agent applications on Microsoft Agent Framework. Starting from an empty repo with only planning documents, we built the complete exception hierarchy for the Application.Common layer.</p>
+
+<p>The work drew from two source codebases: the <strong>ApplicationTemplate</strong> (the C# Clean Architecture reference implementation) provided 7 enterprise exception types, and <strong>Claude Code's leaked source</strong> (TypeScript) revealed 6 additional exception patterns unique to agentic systems. The session followed a deliberate design-then-implement cadence: analyze, propose, get user approval, implement, review, fix.</p>
+
+<h2>Chapter 1: Scaffolding</h2>
+<div class="chapter">
+  <div class="chapter-title">Project Structure &amp; Build Infrastructure</div>
+  <p>Created the initial directory structure following Clean Architecture conventions from the ApplicationTemplate. The <code>src/Content/Application/Application.Common/</code> path mirrors the reference exactly.</p>
+  <ul class="file-list">
+    <li class="new">src/Content/Application/Application.Common/Application.Common.csproj</li>
+  </ul>
+  <p>The .csproj targets <code>net10.0</code>, enables nullable reference types, and sets <code>RootNamespace</code> to <code>Application.Common</code>. FluentValidation is the sole dependency &mdash; pinned to <code>11.11.0</code> (originally wildcarded to <code>11.*</code>, fixed in the review pass).</p>
+</div>
+
+<h2>Chapter 2: Enterprise Exception Types (from ApplicationTemplate)</h2>
+<div class="chapter">
+  <div class="chapter-title">7 exceptions ported from C# reference implementation</div>
+  <p>Each of the ApplicationTemplate's 7 exception types was analyzed for structural issues, then ported with a uniform constructor pattern and full XML documentation. The originals had inconsistencies: some had inner exception constructors, some didn't; one used <code>int?</code> for keys; another had <code>[JsonConstructor]</code> on ambiguous overloads.</p>
+  <ul class="file-list">
+    <li class="new">Exceptions/ExceptionTypes/BadRequestException.cs <span class="tag tag-pattern">HTTP 400</span></li>
+    <li class="new">Exceptions/ExceptionTypes/ValidationException.cs <span class="tag tag-pattern">FluentValidation</span></li>
+    <li class="new">Exceptions/ExceptionTypes/EntityNotFoundException.cs <span class="tag tag-pattern">HTTP 404</span></li>
+    <li class="new">Exceptions/ExceptionTypes/ConfigurationNotFoundException.cs <span class="tag tag-pattern">Config</span></li>
+    <li class="new">Exceptions/ExceptionTypes/ForbiddenAccessException.cs <span class="tag tag-pattern">HTTP 403</span></li>
+    <li class="new">Exceptions/ExceptionTypes/DatabaseInteractionException.cs <span class="tag tag-pattern">Data Access</span></li>
+    <li class="new">Exceptions/ExceptionTypes/NoContentException.cs <span class="tag tag-pattern">HTTP 204</span></li>
+  </ul>
+
+  <div class="decision">
+    <div class="decision-title">Decision: Port all 7, not just what the harness needs today</div>
+    <p>Initially proposed skipping DatabaseInteractionException and ForbiddenAccessException since the harness POC has no database or auth. The user corrected this: <em>"this is meant to be a template of sorts &mdash; there are going to be a lot of things that may not make sense right away, but would be good for future behavior."</em> All 7 were ported.</p>
+  </div>
+
+  <div class="decision">
+    <div class="decision-title">Decision: Keep full XML documentation</div>
+    <p>Initially proposed trimming XML docs for conciseness. The user pushed back: templates are picked up by people who didn't write them. XML docs power IntelliSense, show correct usage patterns, and explain when to use one exception vs another. Docs stayed comprehensive.</p>
+  </div>
+</div>
+
+<h2>Chapter 3: Agentic Exception Types (from Claude Code patterns)</h2>
+<div class="chapter">
+  <div class="chapter-title">6 new exceptions designed for agentic systems</div>
+  <p>These exceptions address failure modes unique to AI agent applications &mdash; none existed in the ApplicationTemplate because it wasn't agent-focused yet. Each was designed by studying Claude Code's error handling patterns and translating them to C# idioms.</p>
+  <ul class="file-list">
+    <li class="new">Exceptions/ExceptionTypes/ToolExecutionException.cs <span class="tag tag-new">Agent</span></li>
+    <li class="new">Exceptions/ExceptionTypes/SkillNotFoundException.cs <span class="tag tag-new">Agent</span></li>
+    <li class="new">Exceptions/ExceptionTypes/AgentExecutionException.cs <span class="tag tag-new">Agent</span></li>
+    <li class="new">Exceptions/ExceptionTypes/McpConnectionException.cs <span class="tag tag-new">Agent</span></li>
+    <li class="new">Exceptions/ExceptionTypes/ContentSafetyException.cs <span class="tag tag-new">Agent</span></li>
+    <li class="new">Exceptions/ExceptionTypes/ContextBudgetExceededException.cs <span class="tag tag-new">Agent</span></li>
+  </ul>
+  <p>Each carries domain-specific properties (e.g., <code>ToolName</code>, <code>ServerName</code>, <code>TokenLimit</code>) that enable the agent orchestration loop to make informed recovery decisions rather than just logging generic error strings.</p>
+</div>
+
+<h2>Chapter 4: Code Review &amp; Fixes</h2>
+<div class="chapter">
+  <div class="chapter-title">Automated review caught 11 issues; all resolved</div>
+
+  <h3>HIGH fixes</h3>
+
+  <p><strong>H2: Bool sentinel hack in ConfigurationNotFoundException</strong></p>
+  <div class="diff-block">
+    <div class="diff-remove">- public ConfigurationNotFoundException(string section, bool sectionMissing)</div>
+    <div class="diff-add">+ public static ConfigurationNotFoundException ForSection(string section)</div>
+    <div class="diff-add">+     =&gt; new(...) { Section = section };</div>
+  </div>
+  <p>The <code>bool sectionMissing</code> parameter existed only to disambiguate from <code>(string message)</code>. Replaced with a static factory method &mdash; cleaner API, impossible to misuse.</p>
+
+  <p><strong>H3: Mutable Errors dictionary in ValidationException</strong></p>
+  <div class="diff-block">
+    <div class="diff-remove">- public IDictionary&lt;string, string[]&gt; Errors { get; }</div>
+    <div class="diff-add">+ public IReadOnlyDictionary&lt;string, string[]&gt; Errors { get; }</div>
+  </div>
+  <p>Violated the project's immutability-first rule. All constructors now produce <code>ReadOnlyDictionary</code> instances.</p>
+
+  <h3>MEDIUM fixes</h3>
+
+  <p><strong>M1:</strong> Added XML warning on <code>NoContentException</code> that <code>Result&lt;T&gt;</code> is preferred over exception-based flow control.</p>
+
+  <p><strong>M2:</strong> Pinned FluentValidation from <code>11.*</code> to <code>11.11.0</code>.</p>
+
+  <p><strong>M3:</strong> Changed <code>ContextBudgetExceededException</code> token properties from <code>int</code> to <code>long</code> for compatibility with Semantic Kernel's token counting.</p>
+
+  <p><strong>M4:</strong> Added <code>ArgumentException.ThrowIfNullOrWhiteSpace</code> guards on all type-specific constructors across all 13 exceptions. <code>ContextBudgetExceededException</code> also got <code>ArgumentOutOfRangeException.ThrowIfNegative</code> on token values.</p>
+
+  <p><strong>M5:</strong> Added <code>sealed</code> to all 13 exception classes &mdash; these are leaf types in the hierarchy.</p>
+
+  <h3>LOW fix</h3>
+
+  <p><strong>L2:</strong> Created <code>ApplicationExceptionBase</code> abstract class so global exception handlers can <code>catch (ApplicationExceptionBase)</code> instead of listing every type. All 13 exceptions now inherit from it instead of <code>System.Exception</code>.</p>
+</div>
+
+<h2>File Connection Map</h2>
+<div class="connection-map">
+  <div class="connection"><code>ApplicationExceptionBase.cs</code> <span class="arrow">&larr;</span> <em>inherited by all 13 exception types</em></div>
+  <div class="connection"><code>Application.Common.csproj</code> <span class="arrow">&rarr;</span> <em>FluentValidation 11.11.0</em> <span class="arrow">&rarr;</span> <code>ValidationException.cs</code></div>
+  <div class="connection"><code>EntityNotFoundException.cs</code> <span class="arrow">&harr;</span> <code>NoContentException.cs</code> <em>(XML docs cross-reference semantic distinction)</em></div>
+  <div class="connection"><code>ToolExecutionException.cs</code> <span class="arrow">&harr;</span> <code>AgentExecutionException.cs</code> <em>(XML docs cross-reference: tool vs agent scope)</em></div>
+</div>
+
+<h2>Uniform Pattern Established</h2>
+<div class="chapter">
+  <p>Every exception in this hierarchy now follows the same contract:</p>
+  <div class="diff-block">
+    <div class="diff-context">public sealed class XException : ApplicationExceptionBase</div>
+    <div class="diff-context">{</div>
+    <div class="diff-context">    // Domain-specific properties (if any)</div>
+    <div class="diff-context">    public string? PropertyName { get; }</div>
+    <div class="diff-context"></div>
+    <div class="diff-context">    // 1. Parameterless — sensible default message</div>
+    <div class="diff-context">    public XException() : base("Default.") { }</div>
+    <div class="diff-context"></div>
+    <div class="diff-context">    // 2. Custom message</div>
+    <div class="diff-context">    public XException(string message) : base(message) { }</div>
+    <div class="diff-context"></div>
+    <div class="diff-context">    // 3. Wrap with inner exception</div>
+    <div class="diff-context">    public XException(string message, Exception inner) : base(message, inner) { }</div>
+    <div class="diff-context"></div>
+    <div class="diff-context">    // 4. Type-specific (with argument guards)</div>
+    <div class="diff-context">    public XException(string name, string? detail, Exception? inner = null)</div>
+    <div class="diff-context">        : base(FormatMessage(name, detail), inner)</div>
+    <div class="diff-context">    {</div>
+    <div class="diff-context">        ArgumentException.ThrowIfNullOrWhiteSpace(name);</div>
+    <div class="diff-context">        PropertyName = name;</div>
+    <div class="diff-context">    }</div>
+    <div class="diff-context">}</div>
+  </div>
+</div>
+
+<h2>Decisions &amp; Rules Established</h2>
+<div class="chapter">
+  <div class="decision">
+    <div class="decision-title">Rule: Never write code without user approval</div>
+    <p>Saved as project memory. Every change must be presented with rationale before implementation.</p>
+  </div>
+  <div class="decision">
+    <div class="decision-title">Rule: Build for the future (template mindset)</div>
+    <p>Include components that future consumers will need, not just what the harness uses today.</p>
+  </div>
+  <div class="decision">
+    <div class="decision-title">Rule: Full XML documentation on all public types</div>
+    <p>This is a template. Docs are teaching material, not bloat.</p>
+  </div>
+  <div class="decision">
+    <div class="decision-title">Rule: Post-change review cadence</div>
+    <p><code>/code-review</code> + <code>/review-changes</code> per folder. <code>/simplify</code> per layer.</p>
+  </div>
+</div>
+
+<div class="footer">
+  Generated by claude-code-reviewer | Deep Review | 2026-04-03
+</div>
+
+</body>
+</html>

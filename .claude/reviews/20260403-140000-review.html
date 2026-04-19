@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Quick Review — OpenTelemetry Infrastructure | 2026-04-03</title>
+<style>
+  :root{--bg:#0d1117;--surface:#161b22;--border:#30363d;--text:#e6edf3;--muted:#8b949e;--accent:#58a6ff;--green:#3fb950;--red:#f85149;--yellow:#d29922;--purple:#bc8cff}
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;background:var(--bg);color:var(--text);line-height:1.6;padding:2rem;max-width:960px;margin:0 auto}
+  h1{font-size:1.6rem;margin-bottom:.5rem} h2{font-size:1.2rem;color:var(--accent);margin:1.5rem 0 .75rem;border-bottom:1px solid var(--border);padding-bottom:.4rem}
+  .meta{color:var(--muted);font-size:.85rem;margin-bottom:1.5rem} .meta span{margin-right:1.5rem}
+  .stat-bar{display:flex;gap:.75rem;flex-wrap:wrap;margin:1rem 0} .stat{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:.75rem 1.25rem;flex:1;min-width:90px} .stat-value{font-size:1.5rem;font-weight:700;color:var(--accent)} .stat-label{font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+  .chapter{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.25rem;margin:.75rem 0}
+  .file-list{list-style:none;margin:.4rem 0} .file-list li{padding:.15rem 0;font-family:'SF Mono',Monaco,monospace;font-size:.8rem;color:var(--green)} .file-list li.new::before{content:'+ ';font-weight:700}
+  p{margin:.4rem 0;font-size:.9rem}
+  table{width:100%;border-collapse:collapse;margin:.5rem 0} th,td{text-align:left;padding:.3rem .5rem;border-bottom:1px solid var(--border);font-size:.82rem} th{color:var(--muted);font-weight:600}
+  .footer{margin-top:2rem;padding-top:.75rem;border-top:1px solid var(--border);color:var(--muted);font-size:.75rem;text-align:center}
+</style>
+</head>
+<body>
+
+<h1>OpenTelemetry Infrastructure</h1>
+<div class="meta">
+  <span>2026-04-03</span>
+  <span>Quick Review</span>
+  <span>microsoft-agentic-harness</span>
+</div>
+
+<div class="stat-bar">
+  <div class="stat"><div class="stat-value">73</div><div class="stat-label">Total Files</div></div>
+  <div class="stat"><div class="stat-value">5,155</div><div class="stat-label">Total Lines</div></div>
+  <div class="stat"><div class="stat-value">13</div><div class="stat-label">New OTel Files</div></div>
+  <div class="stat"><div class="stat-value">0</div><div class="stat-label">Warnings</div></div>
+</div>
+
+<h2>What Changed</h2>
+<div class="chapter">
+  <p>Built the complete OpenTelemetry observability layer for the agentic harness. Replaced 3 dead instrument files from the ApplicationTemplate (which created <code>ActivitySource</code> instances with glob names that never matched anything) with proper subscription constants + a real harness instrument.</p>
+  <p>Designed 6 agentic metric classes covering tokens, tools, MCP, safety, context budget, and orchestration. Added 2 span processors (agent framework enrichment + conversation context propagation) and a telemetry configurator for pipeline registration.</p>
+</div>
+
+<h2>Files Created (13)</h2>
+<div class="chapter">
+  <ul class="file-list">
+    <li class="new">OpenTelemetry/Conventions/AgenticSemanticConventions.cs — centralized attribute + metric name constants</li>
+    <li class="new">OpenTelemetry/Instruments/TelemetrySourceNames.cs — subscription patterns (replaces 3 dead files)</li>
+    <li class="new">OpenTelemetry/Instruments/AgenticHarnessInstrument.cs — ActivitySource + Meter for harness</li>
+    <li class="new">OpenTelemetry/Metrics/TokenUsageMetrics.cs — input/output/total tokens + budget</li>
+    <li class="new">OpenTelemetry/Metrics/ToolExecutionMetrics.cs — duration, invocations, errors</li>
+    <li class="new">OpenTelemetry/Metrics/McpServerMetrics.cs — request latency + count</li>
+    <li class="new">OpenTelemetry/Metrics/ContentSafetyMetrics.cs — evaluations, blocks, severity</li>
+    <li class="new">OpenTelemetry/Metrics/ContextBudgetMetrics.cs — compaction events</li>
+    <li class="new">OpenTelemetry/Metrics/OrchestrationMetrics.cs — conversation duration, turns, spawns</li>
+    <li class="new">OpenTelemetry/Processors/AgentFrameworkSpanProcessor.cs — tool result enrichment</li>
+    <li class="new">OpenTelemetry/Processors/ConversationSpanProcessor.cs — baggage-to-tag propagation</li>
+    <li class="new">OpenTelemetry/AgenticHarnessTelemetryConfigurator.cs — pipeline registration</li>
+    <li class="new">Interfaces/Telemetry/ITelemetryConfigurator.cs — extensibility contract</li>
+  </ul>
+</div>
+
+<h2>Key Design Decisions</h2>
+<div class="chapter">
+  <table>
+    <tr><th>Decision</th><th>Rationale</th></tr>
+    <tr><td>Removed 3 instrument holder files</td><td>They created <code>ActivitySource("*glob*")</code> which is dead code — SDKs own their sources</td></tr>
+    <tr><td>All 6 metrics classes are static</td><td>Instruments are singletons from a static Meter — no DI needed, no duplicate risk</td></tr>
+    <tr><td>All metric names use convention constants</td><td>Single source of truth in <code>AgenticSemanticConventions</code></td></tr>
+    <tr><td>OTel registration extensions deferred</td><td>Belongs in Infrastructure (references exporters) — tracked in deferred items</td></tr>
+    <tr><td>Tool result truncation at 4096 chars</td><td>Prevents span payloads exceeding Jaeger's 64KB limit</td></tr>
+    <tr><td>Exact source name centralized</td><td><code>TelemetrySourceNames.AgentFrameworkExact</code> — one update when SDK drops "Experimental"</td></tr>
+  </table>
+</div>
+
+<h2>Review Findings Fixed</h2>
+<div class="chapter">
+  <table>
+    <tr><th>Pass</th><th>Findings</th><th>Fixed</th></tr>
+    <tr><td>Code Review</td><td>1 HIGH (instance metrics), 4 MED, 3 LOW</td><td>All metrics static, constants everywhere, truncation, version constant</td></tr>
+    <tr><td>Simplify (3 agents)</td><td>2 WARN (inconsistency, inline source name), 3 suggestions</td><td>TokenUsageMetrics static, source name centralized, baggage loop, case-sensitivity comment</td></tr>
+  </table>
+</div>
+
+<h2>Cumulative Project State</h2>
+<div class="chapter">
+  <p><strong>73 source files | 5,155 lines | 2 projects | 3 commits + pending</strong></p>
+  <p>Application.Common now has: Exceptions (14), Logging (15), MediatRBehaviors (10), OpenTelemetry (13), Models (5), Interfaces (14), Attributes (1) = 72 files. Domain.Common has 3 files.</p>
+</div>
+
+<div class="footer">
+  Generated by claude-code-reviewer | Quick Review | 2026-04-03
+</div>
+
+</body>
+</html>

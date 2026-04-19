@@ -1,8 +1,12 @@
+using Application.AI.Common.Interfaces;
+using Domain.AI.Agents;
 using FluentAssertions;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Presentation.AgentHub.Controllers;
 using Presentation.AgentHub.Interfaces;
 using Presentation.AgentHub.DTOs;
 using System.Net;
@@ -30,16 +34,77 @@ public sealed class AgentsControllerTests : IClassFixture<TestWebApplicationFact
     }
 
     /// <summary>Creates an HTTP client authenticated as <paramref name="userId"/> via the test auth handler.</summary>
-    private HttpClient CreateClientAs(string userId)
+    private HttpClient CreateClientAs(string userId, IAgentMetadataRegistry? agentRegistry = null)
     {
         var client = _factory
             .WithWebHostBuilder(b => b.ConfigureTestServices(services =>
+            {
                 services.AddAuthentication(TestAuthHandler.SchemeName)
                     .AddScheme<AuthenticationSchemeOptions, TestAuthHandler>(
-                        TestAuthHandler.SchemeName, _ => { })))
+                        TestAuthHandler.SchemeName, _ => { });
+
+                if (agentRegistry is not null)
+                {
+                    services.RemoveAll<IAgentMetadataRegistry>();
+                    services.AddSingleton(agentRegistry);
+                }
+            }))
             .CreateClient();
         client.DefaultRequestHeaders.Add(TestAuthHandler.UserIdHeader, userId);
         return client;
+    }
+
+    /// <summary>
+    /// GET /api/agents maps every <see cref="AgentDefinition"/> from the registry into
+    /// an <see cref="AgentSummary"/> with the display name and description.
+    /// </summary>
+    [Fact]
+    public async Task GetAgents_WithRegistryEntries_ReturnsAgentSummariesFromRegistry()
+    {
+        var registry = new StubAgentRegistry(
+            new AgentDefinition { Id = "a1", Name = "Agent One", Description = "first agent" },
+            new AgentDefinition { Id = "a2", Name = "Agent Two", Description = "second agent" });
+
+        using var client = CreateClientAs("list-user", registry);
+
+        var response = await client.GetAsync("/api/agents");
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var agents = await response.Content.ReadFromJsonAsync<List<AgentSummary>>();
+        agents.Should().BeEquivalentTo(new[]
+        {
+            new AgentSummary("a1", "Agent One", "first agent"),
+            new AgentSummary("a2", "Agent Two", "second agent"),
+        });
+    }
+
+    /// <summary>
+    /// GET /api/agents returns the single synthetic fallback when the registry has no
+    /// discovered agents — the dev-mode safety net documented on the controller.
+    /// </summary>
+    [Fact]
+    public async Task GetAgents_WithEmptyRegistry_ReturnsFallbackAgent()
+    {
+        using var client = CreateClientAs("fallback-user", new StubAgentRegistry());
+
+        var response = await client.GetAsync("/api/agents");
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var agents = await response.Content.ReadFromJsonAsync<List<AgentSummary>>();
+        agents.Should().ContainSingle().Which.Should().Be(AgentsController.FallbackAgent);
+    }
+
+    private sealed class StubAgentRegistry : IAgentMetadataRegistry
+    {
+        private readonly IReadOnlyList<AgentDefinition> _definitions;
+
+        public StubAgentRegistry(params AgentDefinition[] definitions) => _definitions = definitions;
+
+        public IReadOnlyList<AgentDefinition> GetAll() => _definitions;
+        public AgentDefinition? TryGet(string agentId) => _definitions.FirstOrDefault(d => d.Id == agentId);
+        public IReadOnlyList<AgentDefinition> GetByCategory(string category) => [];
+        public IReadOnlyList<AgentDefinition> GetByTags(IEnumerable<string> tags) => [];
+        public IReadOnlyList<string> SearchedPaths => [];
     }
 
     /// <summary>

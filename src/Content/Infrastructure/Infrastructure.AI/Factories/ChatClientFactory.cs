@@ -58,6 +58,40 @@ public sealed class ChatClientFactory : IChatClientFactory, IDisposable
             SizeLimit = 100,
             CompactionPercentage = 0.25
         });
+
+        LogProviderConfigurationStatus();
+    }
+
+    private void LogProviderConfigurationStatus()
+    {
+        var framework = _appConfig.CurrentValue.AI.AgentFramework;
+        var configured = IsAvailable(framework.ClientType);
+
+        if (configured)
+        {
+            _logger?.LogInformation(
+                "AI provider '{ClientType}' is available (Endpoint={EndpointSet}, ApiKey={ApiKeySet}, Deployment={Deployment}).",
+                framework.ClientType,
+                !string.IsNullOrWhiteSpace(framework.Endpoint),
+                !string.IsNullOrWhiteSpace(framework.ApiKey),
+                framework.DefaultDeployment);
+            return;
+        }
+
+        var missing = new List<string>();
+        if (string.IsNullOrWhiteSpace(framework.ApiKey)) missing.Add("ApiKey");
+        if (string.IsNullOrWhiteSpace(framework.Endpoint)
+            && framework.ClientType is not AIAgentFrameworkClientType.OpenAI
+            and not AIAgentFrameworkClientType.PersistentAgents) missing.Add("Endpoint");
+        if (framework.ClientType == AIAgentFrameworkClientType.PersistentAgents && _adminClient is null)
+            missing.Add("PersistentAgentsAdministrationClient (AIFoundry.ProjectEndpoint)");
+
+        _logger?.LogWarning(
+            "AI provider '{ClientType}' is NOT available. Missing: [{Missing}]. " +
+            "Configure AppConfig:AI:AgentFramework via user-secrets, environment variables, or appsettings.{{Environment}}.json. " +
+            "Agent requests will fail with InvalidOperationException until this is resolved.",
+            framework.ClientType,
+            missing.Count == 0 ? "credentials" : string.Join(", ", missing));
     }
 
     /// <inheritdoc />

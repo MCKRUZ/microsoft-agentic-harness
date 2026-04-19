@@ -31,6 +31,10 @@
     <Project Path="Content/Presentation/Presentation.LoggerUI/Presentation.LoggerUI.csproj" />
     <Project Path="Content/Presentation/Presentation.ConsoleUI/Presentation.ConsoleUI.csproj" />
     <Project Path="Content/Presentation/Presentation.AgentHub/Presentation.AgentHub.csproj" />
+    <Project Path="Content/Presentation/Presentation.WebUI/Presentation.WebUI.esproj">
+      <Build />
+      <Deploy Solution="Release|*" />
+    </Project>
   </Folder>
   <Folder Name="/Tests/">
     <Project Path="Content/Tests/Domain.Common.Tests/Domain.Common.Tests.csproj" />

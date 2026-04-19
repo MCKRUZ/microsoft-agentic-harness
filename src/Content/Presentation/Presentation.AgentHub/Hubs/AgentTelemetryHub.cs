@@ -53,6 +53,12 @@ public sealed class AgentTelemetryHub : Hub
     /// <summary>Emitted when an agent turn fails. Payload is sanitized — no exception details.</summary>
     public const string EventError = "Error";
 
+    /// <summary>
+    /// Emitted after a retry/edit truncates the server-side history. Clients should drop any
+    /// local messages beyond <c>keepCount</c> before appending subsequent tokens.
+    /// </summary>
+    public const string EventHistoryTruncated = "HistoryTruncated";
+
     // -------------------------------------------------------------------------
     // Group name helpers
     // -------------------------------------------------------------------------
@@ -139,8 +145,12 @@ public sealed class AgentTelemetryHub : Hub
     /// Turn serialization: per-conversation <see cref="SemaphoreSlim"/> from
     /// <see cref="ConversationLockRegistry"/> ensures that concurrent <c>SendMessage</c>
     /// calls on the same conversation complete in order — no interleaved token streams.
+    ///
+    /// <paramref name="userMessageId"/> is supplied by the client so that optimistic-UI user
+    /// messages share the same id as the server record; this is the id that retry/edit
+    /// operations reference.
     /// </summary>
-    public async Task SendMessage(string conversationId, string userMessage)
+    public async Task SendMessage(string conversationId, Guid userMessageId, string userMessage)
     {
         var ct = Context.ConnectionAborted;
         var callerId = GetCallerId();
@@ -151,69 +161,158 @@ public sealed class AgentTelemetryHub : Hub
         await semaphore.WaitAsync(ct);
         try
         {
-            // Append user message to the store.
-            var userMsg = new ConversationMessage(MessageRole.User, userMessage, DateTimeOffset.UtcNow);
+            var userMsg = new ConversationMessage(
+                userMessageId == Guid.Empty ? Guid.NewGuid() : userMessageId,
+                MessageRole.User, userMessage, DateTimeOffset.UtcNow);
             await _conversationStore.AppendMessageAsync(conversationId, userMsg, ct);
 
-            // Tag current activity so the OTel bridge (section 05) can route spans
-            // to the correct conversation group.
-            Activity.Current?.SetTag("agent.conversation_id", conversationId);
-
-            // Retrieve truncated history for dispatch.
-            var history = await _conversationStore.GetHistoryForDispatch(
-                conversationId, _config.MaxHistoryMessages, ct) ?? [];
-
-            var updatedRecord = await _conversationStore.GetAsync(conversationId, ct);
-            var turnNumber = updatedRecord?.Messages.Count ?? 0;
-
-            var command = new ExecuteAgentTurnCommand
-            {
-                // Use the agent name stored when the conversation was created so that
-                // each conversation is bound to the agent the user originally selected.
-                AgentName = record.AgentName,
-                UserMessage = userMessage,
-                ConversationHistory = ToMeaiHistory(history),
-                ConversationId = conversationId,
-                TurnNumber = turnNumber,
-            };
-
-            AgentTurnResult result;
-            try
-            {
-                result = await _mediator.Send(command, ct);
-            }
-            catch (Exception ex)
-            {
-                await HandleTurnErrorAsync(conversationId, ex, ct);
-                return;
-            }
-
-            if (!result.Success)
-            {
-                await HandleTurnErrorAsync(conversationId,
-                    new InvalidOperationException(result.Error ?? "Agent returned a failure result."), ct);
-                return;
-            }
-
-            // TODO: Replace simulated 50-char chunking with real IAsyncEnumerable<string> streaming
-            // when ExecuteAgentTurnCommand supports it. Current implementation chunks the completed
-            // response after the fact, which provides the streaming UX without true streaming semantics.
-            await StreamResponseAsync(conversationId, result.Response, ct);
-
-            // Append assistant response to the store.
-            var assistantMsg = new ConversationMessage(MessageRole.Assistant, result.Response, DateTimeOffset.UtcNow);
-            await _conversationStore.AppendMessageAsync(conversationId, assistantMsg, ct);
-
-            var finalRecord = await _conversationStore.GetAsync(conversationId, ct);
-            var finalTurnNumber = finalRecord?.Messages.Count ?? turnNumber + 1;
-
-            await Clients.Caller.SendAsync(EventTurnComplete,
-                new { conversationId, turnNumber = finalTurnNumber, fullResponse = result.Response }, ct);
+            await DispatchTurnAsync(conversationId, record.AgentName, userMessage, ct);
         }
         finally
         {
             semaphore.Release();
         }
+    }
+
+    /// <summary>
+    /// Drops the message identified by <paramref name="assistantMessageId"/> and everything
+    /// after it, then re-dispatches the preceding user message to the agent pipeline.
+    /// Used by the UI's "retry" action on an assistant message.
+    /// </summary>
+    public async Task RetryFromMessage(string conversationId, Guid assistantMessageId)
+    {
+        var ct = Context.ConnectionAborted;
+        var callerId = GetCallerId();
+        var record = await ValidateOwnershipAsync(conversationId, callerId, ct)
+            ?? throw new HubException("Conversation not found.");
+
+        var semaphore = _lockRegistry.GetOrCreate(conversationId);
+        await semaphore.WaitAsync(ct);
+        try
+        {
+            var truncated = await _conversationStore.TruncateFromMessageAsync(conversationId, assistantMessageId, ct)
+                ?? throw new HubException("Conversation not found.");
+
+            // After truncation the last remaining message must be a user message — that's the
+            // one we re-dispatch. If somehow it isn't, surface the protocol error to the caller.
+            var last = truncated.Messages.LastOrDefault();
+            if (last is null || last.Role != MessageRole.User)
+                throw new HubException("Cannot retry: no preceding user message found.");
+
+            await Clients.Caller.SendAsync(EventHistoryTruncated,
+                new { conversationId, keepCount = truncated.Messages.Count }, ct);
+
+            await DispatchTurnAsync(conversationId, record.AgentName, last.Content, ct);
+        }
+        finally
+        {
+            semaphore.Release();
+        }
+    }
+
+    /// <summary>
+    /// Drops the user message identified by <paramref name="userMessageId"/> and everything
+    /// after it, appends a new user message with <paramref name="newUserMessageId"/> and
+    /// <paramref name="newContent"/>, then dispatches to the agent pipeline.
+    /// Used by the UI's "edit" action on a user message.
+    /// </summary>
+    public async Task EditAndResubmit(
+        string conversationId,
+        Guid userMessageId,
+        Guid newUserMessageId,
+        string newContent)
+    {
+        var ct = Context.ConnectionAborted;
+        var callerId = GetCallerId();
+        var record = await ValidateOwnershipAsync(conversationId, callerId, ct)
+            ?? throw new HubException("Conversation not found.");
+
+        var semaphore = _lockRegistry.GetOrCreate(conversationId);
+        await semaphore.WaitAsync(ct);
+        try
+        {
+            var truncated = await _conversationStore.TruncateFromMessageAsync(conversationId, userMessageId, ct)
+                ?? throw new HubException("Conversation not found.");
+
+            await Clients.Caller.SendAsync(EventHistoryTruncated,
+                new { conversationId, keepCount = truncated.Messages.Count }, ct);
+
+            var newUserMsg = new ConversationMessage(
+                newUserMessageId == Guid.Empty ? Guid.NewGuid() : newUserMessageId,
+                MessageRole.User, newContent, DateTimeOffset.UtcNow);
+            await _conversationStore.AppendMessageAsync(conversationId, newUserMsg, ct);
+
+            await DispatchTurnAsync(conversationId, record.AgentName, newContent, ct);
+        }
+        finally
+        {
+            semaphore.Release();
+        }
+    }
+
+    /// <summary>
+    /// Runs a single agent turn for <paramref name="conversationId"/>: reads truncated history,
+    /// invokes the mediator, streams the result, and appends the assistant response.
+    /// The per-conversation semaphore MUST be held by the caller.
+    /// </summary>
+    private async Task DispatchTurnAsync(string conversationId, string agentName, string userMessage, CancellationToken ct)
+    {
+        Activity.Current?.SetTag("agent.conversation_id", conversationId);
+        Activity.Current?.AddBaggage("agent.conversation_id", conversationId);
+
+        var history = await _conversationStore.GetHistoryForDispatch(
+            conversationId, _config.MaxHistoryMessages, ct) ?? [];
+
+        var updatedRecord = await _conversationStore.GetAsync(conversationId, ct);
+        var turnNumber = updatedRecord?.Messages.Count ?? 0;
+
+        var command = new ExecuteAgentTurnCommand
+        {
+            AgentName = agentName,
+            UserMessage = userMessage,
+            ConversationHistory = ToMeaiHistory(history),
+            ConversationId = conversationId,
+            TurnNumber = turnNumber,
+        };
+
+        AgentTurnResult result;
+        try
+        {
+            result = await _mediator.Send(command, ct);
+        }
+        catch (Exception ex)
+        {
+            await HandleTurnErrorAsync(conversationId, ex, ct);
+            return;
+        }
+
+        if (!result.Success)
+        {
+            await HandleTurnErrorAsync(conversationId,
+                new InvalidOperationException(result.Error ?? "Agent returned a failure result."), ct);
+            return;
+        }
+
+        // TODO: Replace simulated 50-char chunking with real IAsyncEnumerable<string> streaming
+        // when ExecuteAgentTurnCommand supports it.
+        await StreamResponseAsync(conversationId, result.Response, ct);
+
+        var assistantMessageId = Guid.NewGuid();
+        var assistantMsg = new ConversationMessage(
+            assistantMessageId, MessageRole.Assistant, result.Response, DateTimeOffset.UtcNow);
+        await _conversationStore.AppendMessageAsync(conversationId, assistantMsg, ct);
+
+        var finalRecord = await _conversationStore.GetAsync(conversationId, ct);
+        var finalTurnNumber = finalRecord?.Messages.Count ?? turnNumber + 1;
+
+        await Clients.Caller.SendAsync(EventTurnComplete,
+            new
+            {
+                conversationId,
+                turnNumber = finalTurnNumber,
+                fullResponse = result.Response,
+                assistantMessageId,
+            }, ct);
     }
 
     /// <summary>
@@ -224,7 +323,7 @@ public sealed class AgentTelemetryHub : Hub
     {
         // Ownership validation is delegated to SendMessage — no double-check needed here.
         var userMessage = $"Please invoke the tool '{toolName}' with the following input: {inputJson}";
-        await SendMessage(conversationId, userMessage);
+        await SendMessage(conversationId, Guid.NewGuid(), userMessage);
     }
 
     /// <summary>Adds this connection to the conversation's SignalR group.</summary>
@@ -333,6 +432,7 @@ public sealed class AgentTelemetryHub : Hub
         try
         {
             var errorMsg = new ConversationMessage(
+                Guid.NewGuid(),
                 MessageRole.Assistant,
                 "[Error] The agent encountered an error.",
                 DateTimeOffset.UtcNow);

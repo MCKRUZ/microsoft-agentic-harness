@@ -114,11 +114,14 @@ public sealed class SkillMetadataRegistry : ISkillMetadataRegistry
             return new Dictionary<string, SkillDefinition>(StringComparer.OrdinalIgnoreCase);
         }
 
-        // Resolve relative paths to absolute; skip non-existent
+        // Resolve relative paths against AppContext.BaseDirectory (the bin folder)
+        // so they match where csproj Content Include copies skills/agents at build time.
+        // Avoids coupling configured paths to the process CWD, which differs between
+        // `dotnet run` (project dir) and a published deployment (publish dir).
         var resolvedPaths = new List<string>();
         foreach (var p in paths)
         {
-            var abs = Path.IsPathRooted(p) ? p : Path.GetFullPath(p);
+            var abs = Path.IsPathRooted(p) ? p : Path.GetFullPath(p, AppContext.BaseDirectory);
             if (Directory.Exists(abs))
                 resolvedPaths.Add(abs);
             else

@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.VisualStudio.JavaScript.Sdk">
+  <PropertyGroup>
+    <StartupCommand>npm run dev</StartupCommand>
+    <StartupUrl>http://localhost:5173</StartupUrl>
+    <JavaScriptTestFramework>Vitest</JavaScriptTestFramework>
+    <DeployOnBuild>false</DeployOnBuild>
+  </PropertyGroup>
+</Project>

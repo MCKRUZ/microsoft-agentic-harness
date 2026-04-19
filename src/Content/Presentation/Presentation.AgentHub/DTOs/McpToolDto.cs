@@ -11,6 +11,6 @@ public sealed record McpToolDto
     /// <summary>Human-readable description of what the tool does.</summary>
     public required string Description { get; init; }
 
-    /// <summary>JSON Schema describing the tool's input parameters.</summary>
-    public JsonElement Schema { get; init; }
+    /// <summary>JSON Schema describing the tool's input parameters. Serialized as <c>inputSchema</c> (MCP spec).</summary>
+    public JsonElement InputSchema { get; init; }
 }

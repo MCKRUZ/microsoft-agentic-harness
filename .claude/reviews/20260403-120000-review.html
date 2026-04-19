@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Session Review — Logging Infrastructure + Exceptions | 2026-04-03</title>
+<style>
+  :root { --bg:#0d1117;--surface:#161b22;--border:#30363d;--text:#e6edf3;--muted:#8b949e;--accent:#58a6ff;--green:#3fb950;--red:#f85149;--yellow:#d29922;--purple:#bc8cff;--orange:#d2a8ff; }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;background:var(--bg);color:var(--text);line-height:1.6;padding:2rem;max-width:1000px;margin:0 auto}
+  h1{font-size:1.8rem;margin-bottom:.5rem} h2{font-size:1.3rem;color:var(--accent);margin:2rem 0 1rem;border-bottom:1px solid var(--border);padding-bottom:.5rem} h3{font-size:1.05rem;color:var(--purple);margin:1.2rem 0 .5rem}
+  .meta{color:var(--muted);font-size:.9rem;margin-bottom:2rem} .meta span{margin-right:1.5rem}
+  .stat-bar{display:flex;gap:1rem;flex-wrap:wrap;margin:1rem 0} .stat{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1rem 1.5rem;flex:1;min-width:100px} .stat-value{font-size:1.8rem;font-weight:700;color:var(--accent)} .stat-label{font-size:.75rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+  .chapter{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.5rem;margin:1rem 0}
+  .file-list{list-style:none;margin:.5rem 0} .file-list li{padding:.2rem 0;font-family:'SF Mono',Monaco,'Cascadia Code',monospace;font-size:.82rem;color:var(--green)} .file-list li.mod{color:var(--yellow)} .file-list li.del{color:var(--red)} .file-list li.new::before{content:'+ ';color:var(--green);font-weight:700} .file-list li.mod::before{content:'~ ';color:var(--yellow);font-weight:700} .file-list li.del::before{content:'- ';color:var(--red);font-weight:700}
+  p{margin:.5rem 0}
+  .diff{background:#0d1117;border:1px solid var(--border);border-radius:6px;padding:1rem;margin:.75rem 0;font-family:'SF Mono',Monaco,'Cascadia Code',monospace;font-size:.8rem;overflow-x:auto;white-space:pre} .da{color:var(--green)} .dr{color:var(--red)} .dc{color:var(--muted)}
+  .decision{background:var(--surface);border-left:3px solid var(--purple);padding:1rem 1.5rem;margin:.75rem 0;border-radius:0 6px 6px 0} .decision-title{font-weight:600;color:var(--purple);margin-bottom:.25rem}
+  .tag{display:inline-block;padding:.1rem .4rem;border-radius:4px;font-size:.7rem;font-weight:600;margin-left:.3rem} .tag-new{background:#1f2d1f;color:var(--green)} .tag-port{background:#1f2d3d;color:var(--accent)} .tag-fix{background:#2d1f1f;color:var(--red)} .tag-perf{background:#2d2d1f;color:var(--yellow)}
+  table{width:100%;border-collapse:collapse;margin:.75rem 0} th,td{text-align:left;padding:.4rem .6rem;border-bottom:1px solid var(--border);font-size:.85rem} th{color:var(--muted);font-weight:600}
+  .conn{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.5rem;margin:1rem 0} .conn-row{display:flex;align-items:center;gap:.5rem;padding:.2rem 0;font-size:.82rem} .arrow{color:var(--accent)}
+  .footer{margin-top:3rem;padding-top:1rem;border-top:1px solid var(--border);color:var(--muted);font-size:.8rem;text-align:center}
+</style>
+</head>
+<body>
+
+<h1>Full Session: Exceptions + Logging Infrastructure</h1>
+<div class="meta">
+  <span>2026-04-03</span>
+  <span>Deep Review</span>
+  <span>microsoft-agentic-harness</span>
+</div>
+
+<div class="stat-bar">
+  <div class="stat"><div class="stat-value">33</div><div class="stat-label">Source Files</div></div>
+  <div class="stat"><div class="stat-value">3,329</div><div class="stat-label">Lines of Code</div></div>
+  <div class="stat"><div class="stat-value">2</div><div class="stat-label">Projects</div></div>
+  <div class="stat"><div class="stat-value">3</div><div class="stat-label">Review Passes</div></div>
+  <div class="stat"><div class="stat-value">0</div><div class="stat-label">Build Warnings</div></div>
+</div>
+
+<h2>The Story</h2>
+<p>This session established the first two concrete layers of the Microsoft Agentic Harness template &mdash; starting from an empty repo and building up to a production-quality exception hierarchy and logging infrastructure. The work was driven by two source codebases (ApplicationTemplate for C# patterns, Claude Code for agentic patterns) and went through three review-fix cycles that caught and resolved 25+ issues before any code was committed.</p>
+
+<h2>Chapter 1: Project Rules &amp; Memory</h2>
+<div class="chapter">
+  <p>Before any code was written, five project rules were established:</p>
+  <ul>
+    <li><strong>User approval required</strong> &mdash; never write code without explicit go-ahead</li>
+    <li><strong>Template mindset</strong> &mdash; build for future consumers, not just the harness</li>
+    <li><strong>XML docs required</strong> &mdash; full documentation on all public types</li>
+    <li><strong>Post-change review cadence</strong> &mdash; /code-review + /review-changes per folder, /simplify per layer</li>
+    <li><strong>File placement rule</strong> &mdash; always consider project + folder placement via Clean Architecture litmus test</li>
+  </ul>
+  <ul class="file-list">
+    <li class="new">.claude/rules/review-cadence.md</li>
+    <li class="mod">.claude/rules/clean-architecture.md <span class="tag tag-new">File Placement Rule added</span></li>
+  </ul>
+</div>
+
+<h2>Chapter 2: Exception Hierarchy (13 types)</h2>
+<div class="chapter">
+  <h3>Design Phase</h3>
+  <p>Analyzed all 7 exception types from ApplicationTemplate. User corrected two initial assumptions: (1) port everything even if the harness doesn't use it yet (template mindset), and (2) keep full XML docs (teaching material, not bloat). Then designed 6 new agentic exception types based on Claude Code's error handling patterns.</p>
+
+  <h3>Implementation</h3>
+  <ul class="file-list">
+    <li class="new">Exceptions/ApplicationExceptionBase.cs <span class="tag tag-new">Abstract base</span></li>
+    <li class="new">Exceptions/ExceptionTypes/BadRequestException.cs <span class="tag tag-port">HTTP 400</span></li>
+    <li class="new">Exceptions/ExceptionTypes/ValidationException.cs <span class="tag tag-port">FluentValidation</span></li>
+    <li class="new">Exceptions/ExceptionTypes/EntityNotFoundException.cs <span class="tag tag-port">HTTP 404</span></li>
+    <li class="new">Exceptions/ExceptionTypes/ConfigurationNotFoundException.cs <span class="tag tag-port">Config</span></li>
+    <li class="new">Exceptions/ExceptionTypes/ForbiddenAccessException.cs <span class="tag tag-port">HTTP 403</span></li>
+    <li class="new">Exceptions/ExceptionTypes/DatabaseInteractionException.cs <span class="tag tag-port">Data Access</span></li>
+    <li class="new">Exceptions/ExceptionTypes/NoContentException.cs <span class="tag tag-port">HTTP 204</span></li>
+    <li class="new">Exceptions/ExceptionTypes/ToolExecutionException.cs <span class="tag tag-new">Agentic</span></li>
+    <li class="new">Exceptions/ExceptionTypes/SkillNotFoundException.cs <span class="tag tag-new">Agentic</span></li>
+    <li class="new">Exceptions/ExceptionTypes/AgentExecutionException.cs <span class="tag tag-new">Agentic</span></li>
+    <li class="new">Exceptions/ExceptionTypes/McpConnectionException.cs <span class="tag tag-new">Agentic</span></li>
+    <li class="new">Exceptions/ExceptionTypes/ContentSafetyException.cs <span class="tag tag-new">Agentic</span></li>
+    <li class="new">Exceptions/ExceptionTypes/ContextBudgetExceededException.cs <span class="tag tag-new">Agentic</span></li>
+  </ul>
+
+  <h3>Review Pass 1: Code Review</h3>
+  <p>Found 3 HIGH, 5 MEDIUM, 3 LOW issues. All fixed:</p>
+  <table>
+    <tr><th>Issue</th><th>Fix</th></tr>
+    <tr><td>Bool sentinel in ConfigurationNotFoundException</td><td>Static factory <code>ForSection()</code></td></tr>
+    <tr><td>Mutable <code>IDictionary</code> in ValidationException</td><td><code>IReadOnlyDictionary</code> + <code>.AsReadOnly()</code></td></tr>
+    <tr><td>No argument guards on type-specific constructors</td><td><code>ThrowIfNullOrWhiteSpace</code> on all</td></tr>
+    <tr><td>No <code>sealed</code> keyword</td><td>Added to all 13</td></tr>
+    <tr><td>No shared base class</td><td>Created <code>ApplicationExceptionBase</code></td></tr>
+    <tr><td><code>int</code> token counts</td><td>Changed to <code>long</code></td></tr>
+    <tr><td>Wildcard FluentValidation version</td><td>Pinned to 11.11.0</td></tr>
+    <tr><td>NoContentException as flow control</td><td>XML warning recommending <code>Result&lt;T&gt;</code></td></tr>
+  </table>
+</div>
+
+<h2>Chapter 3: Domain.Common Foundation</h2>
+<div class="chapter">
+  <p>Created as a stub to hold <code>AppConfig</code> &mdash; needed by the logging providers. Designed with expansion in mind (AI, Database, Observability sections to be added later).</p>
+  <ul class="file-list">
+    <li class="new">Domain.Common/Domain.Common.csproj <span class="tag tag-new">Zero dependencies</span></li>
+    <li class="new">Domain.Common/Config/AppConfig.cs <span class="tag tag-new">CommonConfig + LoggingConfig</span></li>
+  </ul>
+  <div class="decision">
+    <div class="decision-title">Decision: Mutable setters documented as trade-off</div>
+    <p>AppConfig classes use <code>{ get; set; }</code> because <code>IOptionsMonitor&lt;T&gt;</code> requires it for binding. Documented explicitly with a code comment explaining the exception to the immutability-first rule.</p>
+  </div>
+</div>
+
+<h2>Chapter 4: Logging Infrastructure (16 files)</h2>
+<div class="chapter">
+  <h3>Design Phase</h3>
+  <p>Analyzed ApplicationTemplate's 7 logging files. User asked "what else should be in here?" &mdash; an architect agent identified 7 additional infrastructure components for agentic systems. User also established the rule that the Logging/ folder is for implementations only, with POCOs in Models/ and DI wiring in Extensions/.</p>
+
+  <h3>Ported from ApplicationTemplate (6 files, cleaned up)</h3>
+  <ul class="file-list">
+    <li class="new">Logging/LoggingHelper.cs <span class="tag tag-port">Extended with 5 agentic methods</span></li>
+    <li class="new">Logging/ColorfulConsoleFormatter.cs <span class="tag tag-port">ConsoleFormatter</span></li>
+    <li class="new">Logging/FileLogger.cs <span class="tag tag-port">ILogger</span></li>
+    <li class="new">Logging/FileLoggerProvider.cs <span class="tag tag-port">ILoggerProvider</span></li>
+    <li class="new">Logging/NamedPipeLogger.cs <span class="tag tag-port">ILogger</span></li>
+    <li class="new">Logging/NamedPipeLoggerProvider.cs <span class="tag tag-port">ILoggerProvider</span></li>
+  </ul>
+
+  <h3>New Agentic Components (10 files)</h3>
+  <ul class="file-list">
+    <li class="new">Logging/AgentLogScope.cs <span class="tag tag-new">Scope record</span></li>
+    <li class="new">Logging/AgentScopeProvider.cs <span class="tag tag-new">IExternalScopeProvider</span></li>
+    <li class="new">Logging/AgentConsoleFormatter.cs <span class="tag tag-new">Agent-aware console</span></li>
+    <li class="new">Logging/StructuredJsonLogger.cs <span class="tag tag-new">JSONL ILogger</span></li>
+    <li class="new">Logging/StructuredJsonLoggerProvider.cs <span class="tag tag-new">JSONL ILoggerProvider</span></li>
+    <li class="new">Logging/InMemoryRingBufferLogger.cs <span class="tag tag-new">Diagnostics ILogger</span></li>
+    <li class="new">Logging/InMemoryRingBufferLoggerProvider.cs <span class="tag tag-new">Ring buffer ILoggerProvider</span></li>
+    <li class="new">Logging/CallbackLogger.cs <span class="tag tag-new">SDK callback ILogger</span></li>
+    <li class="new">Logging/CallbackLoggerProvider.cs <span class="tag tag-new">SDK callback ILoggerProvider</span></li>
+  </ul>
+
+  <h3>Models (extracted POCOs)</h3>
+  <ul class="file-list">
+    <li class="new">Models/RunManifest.cs + TimingBreakdown</li>
+    <li class="new">Models/AgentRunManifest.cs + AgentParticipant + ToolInvocationSummary</li>
+    <li class="new">Models/LogEntry.cs <span class="tag tag-new">With static factory</span></li>
+    <li class="del">Models/FileLoggerOptions.cs <span class="tag tag-fix">Deleted &mdash; dead code</span></li>
+  </ul>
+
+  <h3>Review Pass 2: Code Review</h3>
+  <table>
+    <tr><th>Severity</th><th>Issue</th><th>Fix</th></tr>
+    <tr><td style="color:var(--red)">HIGH</td><td>AgentScopeProvider always returned null</td><td>Fixed accumulator variable reference</td></tr>
+    <tr><td style="color:var(--red)">HIGH</td><td>Path traversal via runId/phase</td><td>Canonicalize + containment check</td></tr>
+    <tr><td style="color:var(--red)">HIGH</td><td>Ring buffer int overflow</td><td>Unsigned arithmetic</td></tr>
+    <tr><td style="color:var(--red)">HIGH</td><td>FileLogger/NamedPipeLogger no scope propagation</td><td>Added IExternalScopeProvider parameter</td></tr>
+    <tr><td style="color:var(--red)">HIGH</td><td>JsonSerializerOptions per-call allocation</td><td>Static readonly field</td></tr>
+    <tr><td style="color:var(--yellow)">MED</td><td>Wildcard package versions 10.*-*</td><td>Pinned to 10.0.5</td></tr>
+    <tr><td style="color:var(--yellow)">MED</td><td>Mutable AppConfig classes</td><td>Documented trade-off</td></tr>
+    <tr><td style="color:var(--yellow)">MED</td><td>Non-deterministic GetHashCode for colors</td><td>FNV-1a hash</td></tr>
+    <tr><td style="color:var(--yellow)">MED</td><td>Log count over-reports on queue-full</td><td>Conditional increment</td></tr>
+    <tr><td style="color:var(--yellow)">MED</td><td>Callback exceptions crash caller</td><td>try/catch guard</td></tr>
+  </table>
+
+  <h3>Review Pass 3: Simplify (3 parallel agents)</h3>
+  <table>
+    <tr><th>Agent</th><th>Key Findings Fixed</th></tr>
+    <tr><td>Reuse</td><td><code>LogEntry.CreateFromScope()</code> factory eliminates duplicated construction in CallbackLogger + InMemoryRingBufferLogger. <code>AgentLogScope.ToProperties()</code> replaces manual field expansion in StructuredJsonLogger. LogEntry gets missing <code>ParentAgentId</code> + <code>ConversationId</code> fields.</td></tr>
+    <tr><td>Quality</td><td>Removed WHAT comments from both formatters. Removed dual scope provider from ColorfulConsoleFormatter. Deleted dead FileLoggerOptions model.</td></tr>
+    <tr><td>Efficiency</td><td>ThreadStatic ScopeAccumulator eliminates per-call heap allocation. Direct field merge eliminates intermediate record allocations. Singleton <code>ImmutableDictionary.Empty</code> for LogEntry.ScopeProperties. Removed AutoFlush (batch on empty queue). Truncate-before-regex in SanitizeForLog. Cached GetAgentDisplayName.</td></tr>
+  </table>
+
+  <div class="decision">
+    <div class="decision-title">Deferred: Base class extractions</div>
+    <p>Three agents independently identified the shared run lifecycle pattern (FileLoggerProvider + StructuredJsonLoggerProvider) and logger boilerplate (5 loggers). These are real duplication but extracting base classes is an architectural change that deserves its own focused pass. Noted for next session.</p>
+  </div>
+</div>
+
+<h2>File Connection Map</h2>
+<div class="conn">
+  <div class="conn-row"><code>Domain.Common/Config/AppConfig.cs</code> <span class="arrow">&larr;</span> <em>referenced by FileLoggerProvider, StructuredJsonLoggerProvider, NamedPipeLoggerProvider, InMemoryRingBufferLoggerProvider</em></div>
+  <div class="conn-row"><code>ApplicationExceptionBase.cs</code> <span class="arrow">&larr;</span> <em>inherited by all 13 exception types</em></div>
+  <div class="conn-row"><code>AgentLogScope.cs</code> <span class="arrow">&rarr;</span> <code>AgentScopeProvider.cs</code> <span class="arrow">&rarr;</span> <em>consumed by all scope-aware loggers + formatters</em></div>
+  <div class="conn-row"><code>LogEntry.cs</code> <span class="arrow">&larr;</span> <em>created by CallbackLogger + InMemoryRingBufferLogger via <code>CreateFromScope()</code></em></div>
+  <div class="conn-row"><code>LoggingHelper.cs</code> <span class="arrow">&larr;</span> <em>consumed by all loggers + formatters (formatting, colors, sanitization)</em></div>
+  <div class="conn-row"><code>RunManifest.cs</code> <span class="arrow">&larr;</span> <code>FileLoggerProvider.CompleteRun()</code></div>
+  <div class="conn-row"><code>AgentRunManifest.cs</code> <span class="arrow">&larr;</span> <em>designed for AgentFileLoggerProvider (future)</em></div>
+</div>
+
+<h2>Architecture Snapshot</h2>
+<div class="chapter">
+<div class="diff"><span class="dc">src/
+├── Content/
+│   ├── Domain/
+│   │   └── Domain.Common/          (1 file)
+│   │       └── Config/AppConfig.cs
+│   └── Application/
+│       └── Application.Common/     (32 files)
+│           ├── Exceptions/         (14 files: base + 13 types)
+│           ├── Logging/            (15 files: helpers + formatters + providers)
+│           └── Models/             (3 files: manifests + LogEntry)</span></div>
+</div>
+
+<h2>Rules Established This Session</h2>
+<div class="chapter">
+  <table>
+    <tr><th>Rule</th><th>Location</th></tr>
+    <tr><td>Never write code without user approval</td><td>memory/feedback_user_approval_required.md</td></tr>
+    <tr><td>Build for future consumers (template mindset)</td><td>memory/feedback_template_mindset.md</td></tr>
+    <tr><td>Full XML documentation on all public types</td><td>memory/feedback_xml_docs_required.md</td></tr>
+    <tr><td>Post-change review cadence</td><td>.claude/rules/review-cadence.md</td></tr>
+    <tr><td>File placement via Clean Architecture litmus test</td><td>.claude/rules/clean-architecture.md</td></tr>
+  </table>
+</div>
+
+<div class="footer">
+  Generated by claude-code-reviewer | Deep Review | 2026-04-03<br>
+  3 review passes &bull; 25+ issues found and fixed &bull; 0 warnings at final build
+</div>
+
+</body>
+</html>

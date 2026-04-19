@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Session Review — MediatR Pipeline Behaviors | 2026-04-03</title>
+<style>
+  :root{--bg:#0d1117;--surface:#161b22;--border:#30363d;--text:#e6edf3;--muted:#8b949e;--accent:#58a6ff;--green:#3fb950;--red:#f85149;--yellow:#d29922;--purple:#bc8cff}
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;background:var(--bg);color:var(--text);line-height:1.6;padding:2rem;max-width:1000px;margin:0 auto}
+  h1{font-size:1.8rem;margin-bottom:.5rem} h2{font-size:1.3rem;color:var(--accent);margin:2rem 0 1rem;border-bottom:1px solid var(--border);padding-bottom:.5rem} h3{font-size:1.05rem;color:var(--purple);margin:1.2rem 0 .5rem}
+  .meta{color:var(--muted);font-size:.9rem;margin-bottom:2rem} .meta span{margin-right:1.5rem}
+  .stat-bar{display:flex;gap:1rem;flex-wrap:wrap;margin:1rem 0} .stat{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1rem 1.5rem;flex:1;min-width:100px} .stat-value{font-size:1.8rem;font-weight:700;color:var(--accent)} .stat-label{font-size:.75rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+  .chapter{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.5rem;margin:1rem 0}
+  .file-list{list-style:none;margin:.5rem 0} .file-list li{padding:.2rem 0;font-family:'SF Mono',Monaco,'Cascadia Code',monospace;font-size:.82rem;color:var(--green)} .file-list li.mod{color:var(--yellow)} .file-list li.new::before{content:'+ ';color:var(--green);font-weight:700} .file-list li.mod::before{content:'~ ';color:var(--yellow);font-weight:700}
+  p{margin:.5rem 0}
+  .decision{background:var(--surface);border-left:3px solid var(--purple);padding:1rem 1.5rem;margin:.75rem 0;border-radius:0 6px 6px 0} .decision-title{font-weight:600;color:var(--purple);margin-bottom:.25rem}
+  .tag{display:inline-block;padding:.1rem .4rem;border-radius:4px;font-size:.7rem;font-weight:600;margin-left:.3rem} .tag-new{background:#1f2d1f;color:var(--green)} .tag-rework{background:#2d2d1f;color:var(--yellow)} .tag-removed{background:#2d1f1f;color:var(--red)} .tag-fix{background:#1f1f2d;color:var(--purple)}
+  table{width:100%;border-collapse:collapse;margin:.75rem 0} th,td{text-align:left;padding:.4rem .6rem;border-bottom:1px solid var(--border);font-size:.85rem} th{color:var(--muted);font-weight:600}
+  .conn{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.5rem;margin:1rem 0} .conn-row{display:flex;align-items:center;gap:.5rem;padding:.2rem 0;font-size:.82rem} .arrow{color:var(--accent)}
+  .diff{background:#0d1117;border:1px solid var(--border);border-radius:6px;padding:1rem;margin:.75rem 0;font-family:'SF Mono',Monaco,'Cascadia Code',monospace;font-size:.8rem;overflow-x:auto;white-space:pre} .da{color:var(--green)} .dr{color:var(--red)} .dc{color:var(--muted)}
+  .footer{margin-top:3rem;padding-top:1rem;border-top:1px solid var(--border);color:var(--muted);font-size:.8rem;text-align:center}
+</style>
+</head>
+<body>
+
+<h1>MediatR Pipeline Behaviors</h1>
+<div class="meta">
+  <span>2026-04-03</span>
+  <span>Deep Review</span>
+  <span>microsoft-agentic-harness</span>
+</div>
+
+<div class="stat-bar">
+  <div class="stat"><div class="stat-value">60</div><div class="stat-label">Total Source Files</div></div>
+  <div class="stat"><div class="stat-value">4,602</div><div class="stat-label">Total Lines</div></div>
+  <div class="stat"><div class="stat-value">27</div><div class="stat-label">New Files This Pass</div></div>
+  <div class="stat"><div class="stat-value">9</div><div class="stat-label">Pipeline Behaviors</div></div>
+  <div class="stat"><div class="stat-value">0</div><div class="stat-label">Build Warnings</div></div>
+</div>
+
+<h2>The Story</h2>
+<p>This pass designed and built the MediatR pipeline from scratch &mdash; deliberately NOT copying the ApplicationTemplate's 6 behaviors verbatim. Instead, each behavior was critically assessed: 2 were removed (redundant), 2 were merged (unified caching), 2 were reworked (Result&lt;T&gt; integration), and 5 new agentic behaviors were designed. The result is a 9-behavior pipeline purpose-built for an agent orchestration template.</p>
+
+<h2>Chapter 1: Critical Assessment of Reference Behaviors</h2>
+<div class="chapter">
+  <p>Two architecture agents analyzed each of the ApplicationTemplate's 6 behaviors against modern .NET 10 capabilities and agentic requirements. Key verdicts:</p>
+  <table>
+    <tr><th>Original Behavior</th><th>Verdict</th><th>Reason</th></tr>
+    <tr><td>UnhandledExceptionBehavior</td><td style="color:var(--red)">REMOVED</td><td>Redundant with OTel Activity spans + IExceptionHandler. Catch-and-rethrow anti-pattern.</td></tr>
+    <tr><td>RequestPerformanceBehavior</td><td style="color:var(--red)">REPLACED</td><td>Stopwatch replaced by OTel ActivitySource. Eliminates IUser/IIdentityService coupling.</td></tr>
+    <tr><td>RequestValidationBehavior</td><td style="color:var(--yellow)">REWORKED</td><td>Returns Result&lt;T&gt; failures instead of throwing. Debug logging instead of Warning.</td></tr>
+    <tr><td>MemoryCachingBehavior</td><td style="color:var(--red)">MERGED</td><td>HybridCache (.NET 8+) unifies L1+L2. Separate ICacheableQuery + ICacheInvalidation follows CQRS.</td></tr>
+    <tr><td>HybridMemoryCachingBehavior</td><td style="color:var(--red)">MERGED</td><td>Had double-cache bug + wrong clear ordering. Merged into unified CachingBehavior.</td></tr>
+    <tr><td>AuthorizationBehavior</td><td style="color:var(--yellow)">REWORKED</td><td>Cached reflection, pre-split role/policy arrays, Result&lt;T&gt; support, parallel role checks.</td></tr>
+  </table>
+
+  <div class="decision">
+    <div class="decision-title">Key Design Decision: Result&lt;T&gt; Over Exceptions</div>
+    <p>Project convention says "Commands return Result&lt;T&gt;, never throw for expected failures." Validation errors, auth denials, and content blocks are expected in an agentic system &mdash; agents probe tool boundaries constantly. All behaviors now return <code>Result&lt;T&gt;</code> failures when <code>TResponse</code> supports it, with exception fallback for non-Result handlers.</p>
+  </div>
+</div>
+
+<h2>Chapter 2: Domain Foundation &mdash; Result&lt;T&gt;</h2>
+<div class="chapter">
+  <ul class="file-list">
+    <li class="new">Domain.Common/Result.cs <span class="tag tag-new">Result + Result&lt;T&gt; + ResultFailureType</span></li>
+    <li class="mod">Domain.Common/Config/AppConfig.cs <span class="tag tag-rework">+AgentConfig section</span></li>
+  </ul>
+  <p><code>Result</code> is intentionally a class (not record) because it uses inheritance and value equality is not meaningful for result envelopes. <code>Result&lt;T&gt;</code> is sealed. Implicit conversion from <code>T</code> guards against null. Factory methods: <code>Success</code>, <code>Fail</code>, <code>ValidationFailure</code>, <code>Unauthorized</code>, <code>Forbidden</code>, <code>ContentBlocked</code>.</p>
+</div>
+
+<h2>Chapter 3: Supporting Types</h2>
+<div class="chapter">
+  <h3>Marker Interfaces (7) &mdash; Interfaces/MediatR/</h3>
+  <ul class="file-list">
+    <li class="new">ICacheableQuery&lt;T&gt; <span class="tag tag-new">Cache key + HybridCacheEntryOptions</span></li>
+    <li class="new">ICacheInvalidation <span class="tag tag-new">IReadOnlyList&lt;string&gt; keys to invalidate</span></li>
+    <li class="new">IAgentScopedRequest <span class="tag tag-new">AgentId + ConversationId + TurnNumber</span></li>
+    <li class="new">IHasTimeout <span class="tag tag-new">Custom timeout per request</span></li>
+    <li class="new">IAuditable <span class="tag tag-new">AuditAction + optional metadata</span></li>
+    <li class="new">IToolRequest <span class="tag tag-new">ToolName for permission checks</span></li>
+    <li class="new">IContentScreenable <span class="tag tag-new">ContentToScreen + ScreeningTarget</span></li>
+  </ul>
+
+  <h3>Service Interfaces (4) &mdash; Interfaces/Agent/</h3>
+  <ul class="file-list">
+    <li class="new">IAgentExecutionContext <span class="tag tag-new">Scoped ambient agent identity</span></li>
+    <li class="new">IToolPermissionService <span class="tag tag-new">Per-agent tool ACLs</span></li>
+    <li class="new">ITextContentSafetyService <span class="tag tag-new">Text screening</span></li>
+    <li class="new">IAuditSink <span class="tag tag-new">Audit storage abstraction</span></li>
+  </ul>
+
+  <h3>Security Interfaces (2) + Attribute + Models</h3>
+  <ul class="file-list">
+    <li class="new">IUser, IIdentityService <span class="tag tag-new">Auth contracts</span></li>
+    <li class="new">AuthorizeAttribute <span class="tag tag-new">Roles + Policy, AllowMultiple</span></li>
+    <li class="new">AuditEntry + AuditOutcome <span class="tag tag-new">Compliance model</span></li>
+    <li class="new">ContentSafetyResult + ContentScreeningTarget <span class="tag tag-new">Safety model</span></li>
+  </ul>
+</div>
+
+<h2>Chapter 4: The 9 Pipeline Behaviors</h2>
+<div class="chapter">
+<div class="diff"><span class="dc">Pipeline Execution Order:
+1. RequestTracingBehavior          &mdash; OTel Activity span (outermost)
+2. TimeoutBehavior                 &mdash; WaitAsync with configurable timeout
+3. AgentContextPropagationBehavior &mdash; AgentLogScope + IAgentExecutionContext
+4. AuditTrailBehavior              &mdash; Compliance logging via IAuditSink
+5. AuthorizationBehavior           &mdash; Cached reflection, role/policy checks
+6. ToolPermissionBehavior          &mdash; Agent-level tool ACLs
+7. RequestValidationBehavior       &mdash; FluentValidation &rarr; Result&lt;T&gt; or throw
+8. ContentSafetyBehavior           &mdash; Input screening via ITextContentSafetyService
+9. CachingBehavior                 &mdash; Unified HybridCache (L1+L2)
+&rarr; Handler executes</span></div>
+
+  <ul class="file-list">
+    <li class="new">MediatRBehaviors/RequestTracingBehavior.cs <span class="tag tag-new">Replaces Unhandled + Performance</span></li>
+    <li class="new">MediatRBehaviors/TimeoutBehavior.cs <span class="tag tag-new">Uses .WaitAsync()</span></li>
+    <li class="new">MediatRBehaviors/AgentContextPropagationBehavior.cs <span class="tag tag-new">Leverages existing AgentLogScope</span></li>
+    <li class="new">MediatRBehaviors/AuditTrailBehavior.cs <span class="tag tag-new">Safe recording + Result inspection</span></li>
+    <li class="new">MediatRBehaviors/AuthorizationBehavior.cs <span class="tag tag-rework">Cached attrs, Result&lt;T&gt;, parallel roles</span></li>
+    <li class="new">MediatRBehaviors/ToolPermissionBehavior.cs <span class="tag tag-new">Agent tool ACLs</span></li>
+    <li class="new">MediatRBehaviors/RequestValidationBehavior.cs <span class="tag tag-rework">Result&lt;T&gt;, reduced LINQ allocs</span></li>
+    <li class="new">MediatRBehaviors/ContentSafetyBehavior.cs <span class="tag tag-new">Result&lt;T&gt; + exception fallback</span></li>
+    <li class="new">MediatRBehaviors/CachingBehavior.cs <span class="tag tag-new">Unified HybridCache, CQRS-proper</span></li>
+    <li class="new">MediatRBehaviors/ResultHelper.cs <span class="tag tag-new">Cached reflection for Result factories</span></li>
+  </ul>
+</div>
+
+<h2>Chapter 5: Review &amp; Fix Cycles</h2>
+<div class="chapter">
+  <h3>Code Review (5 HIGH, 7 MEDIUM)</h3>
+  <table>
+    <tr><th>Issue</th><th>Fix</th></tr>
+    <tr><td>TimeoutBehavior CTS not propagated to next()</td><td>Replaced with <code>.WaitAsync(timeout)</code></td></tr>
+    <tr><td>AuthorizationBehavior always throws, never Result</td><td>Added <code>ResultHelper.TryCreateFailure</code> paths</td></tr>
+    <tr><td>ContentSafety + ToolPermission same gap</td><td>Same fix via shared <code>ResultHelper</code></td></tr>
+    <tr><td>CachingBehavior double-enumerates keys</td><td>Changed interface to <code>IReadOnlyList&lt;string&gt;</code></td></tr>
+    <tr><td>AuditTrailBehavior sink failures corrupt outcome</td><td><code>RecordSafelyAsync</code> with try/catch</td></tr>
+    <tr><td>Result&lt;T&gt; implicit allows null</td><td><code>ArgumentNullException.ThrowIfNull</code> guard</td></tr>
+    <tr><td>IIdentityService tuple return</td><td>Changed to <code>Result&lt;string&gt;</code></td></tr>
+    <tr><td>ContentSafetyException validates after base call</td><td>Static <code>FormatMessage</code> helper</td></tr>
+    <tr><td>Cache null-forgiving operator</td><td>Explicit null check with <code>InvalidOperationException</code></td></tr>
+    <tr><td>IUser stale doc reference</td><td>Removed reference to deleted behavior</td></tr>
+  </table>
+
+  <h3>Simplify (3 parallel agents)</h3>
+  <table>
+    <tr><th>Agent</th><th>Key Fixes</th></tr>
+    <tr><td>Reuse</td><td>Noted duplicated try-ResultHelper-or-throw pattern &mdash; deferred to future <code>CreateFailureOrThrow</code> helper</td></tr>
+    <tr><td>Quality</td><td>AuditTrailBehavior now inspects <code>Result { IsSuccess: false }</code> for non-exception denials. TimeoutBehavior preserves stack trace as inner exception.</td></tr>
+    <tr><td>Efficiency</td><td><strong>Critical:</strong> ResultHelper caches MethodInfo in ConcurrentDictionary. AuthorizationBehavior pre-splits role/policy attrs at cache time. RequestValidationBehavior uses foreach loops instead of LINQ on happy path. Single-role fast path avoids Task.WhenAll.</td></tr>
+  </table>
+</div>
+
+<h2>File Connection Map</h2>
+<div class="conn">
+  <div class="conn-row"><code>Result.cs</code> <span class="arrow">&rarr;</span> <code>ResultHelper.cs</code> <span class="arrow">&rarr;</span> <em>used by AuthorizationBehavior, ToolPermissionBehavior, ContentSafetyBehavior, RequestValidationBehavior</em></div>
+  <div class="conn-row"><code>IAgentScopedRequest</code> <span class="arrow">&rarr;</span> <code>AgentContextPropagationBehavior</code> <span class="arrow">&rarr;</span> <code>AgentLogScope</code> (from Logging/)</div>
+  <div class="conn-row"><code>IAuditable</code> <span class="arrow">&rarr;</span> <code>AuditTrailBehavior</code> <span class="arrow">&rarr;</span> <code>IAuditSink</code> + <code>AuditEntry</code></div>
+  <div class="conn-row"><code>IToolRequest</code> <span class="arrow">&rarr;</span> <code>ToolPermissionBehavior</code> <span class="arrow">&rarr;</span> <code>IToolPermissionService</code></div>
+  <div class="conn-row"><code>IContentScreenable</code> <span class="arrow">&rarr;</span> <code>ContentSafetyBehavior</code> <span class="arrow">&rarr;</span> <code>ITextContentSafetyService</code></div>
+  <div class="conn-row"><code>ICacheableQuery</code> / <code>ICacheInvalidation</code> <span class="arrow">&rarr;</span> <code>CachingBehavior</code> <span class="arrow">&rarr;</span> <code>HybridCache</code></div>
+  <div class="conn-row"><code>AuthorizeAttribute</code> <span class="arrow">&rarr;</span> <code>AuthorizationBehavior</code> <span class="arrow">&rarr;</span> <code>IUser</code> + <code>IIdentityService</code></div>
+  <div class="conn-row"><code>AppConfig.AgentConfig</code> <span class="arrow">&rarr;</span> <code>TimeoutBehavior</code></div>
+</div>
+
+<h2>Cumulative Architecture</h2>
+<div class="chapter">
+<div class="diff"><span class="dc">src/Content/
+  Domain/Domain.Common/              (3 files: AppConfig, Result, ResultFailureType)
+  Application/Application.Common/    (57 files)
+    Attributes/SecurityAttributes/   (1: AuthorizeAttribute)
+    Exceptions/                      (14: base + 13 types)
+    Interfaces/
+      Agent/                         (4: IAgentExecutionContext, IToolPermissionService, ITextContentSafetyService, IAuditSink)
+      MediatR/                       (7: marker interfaces)
+      Security/                      (2: IUser, IIdentityService)
+    Logging/                         (15: helpers + formatters + providers)
+    MediatRBehaviors/                (10: 9 behaviors + ResultHelper)
+    Models/                          (5: RunManifest, AgentRunManifest, LogEntry, AuditEntry, ContentSafetyResult)</span></div>
+</div>
+
+<div class="footer">
+  Generated by claude-code-reviewer | Deep Review | 2026-04-03<br>
+  2 review passes (code-review + simplify) | 12 HIGH + 7 MEDIUM issues fixed | 0 warnings
+</div>
+
+</body>
+</html>

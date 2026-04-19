@@ -1,0 +1,839 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Session Review: Application.Common/Extensions | 2026-04-05</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --surface-raised: #1c2129;
+    --border: #30363d;
+    --text: #e6edf3;
+    --text-muted: #8b949e;
+    --accent: #58a6ff;
+    --accent-subtle: #1f3a5f;
+    --green: #3fb950;
+    --green-subtle: #1a3a2a;
+    --yellow: #d29922;
+    --yellow-subtle: #3d2e00;
+    --red: #f85149;
+    --red-subtle: #3d1418;
+    --purple: #bc8cff;
+    --purple-subtle: #2a1f3d;
+    --orange: #f0883e;
+    --code-bg: #0d1117;
+    --font-mono: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', Consolas, monospace;
+    --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Noto Sans, Helvetica, Arial, sans-serif;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: var(--font-sans);
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+    padding: 2rem;
+    max-width: 1100px;
+    margin: 0 auto;
+  }
+
+  header {
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 1.5rem;
+    margin-bottom: 2rem;
+  }
+
+  header h1 {
+    font-size: 1.75rem;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 0.25rem;
+  }
+
+  header .subtitle {
+    color: var(--text-muted);
+    font-size: 0.9rem;
+  }
+
+  header .meta {
+    display: flex;
+    gap: 1.5rem;
+    margin-top: 0.75rem;
+    flex-wrap: wrap;
+  }
+
+  header .meta span {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    background: var(--surface);
+    padding: 0.25rem 0.75rem;
+    border-radius: 2rem;
+    border: 1px solid var(--border);
+  }
+
+  h2 {
+    font-size: 1.3rem;
+    font-weight: 600;
+    color: var(--accent);
+    margin-bottom: 1rem;
+    margin-top: 2.5rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--border);
+  }
+
+  h3 {
+    font-size: 1.05rem;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 0.5rem;
+    margin-top: 1.25rem;
+  }
+
+  p { margin-bottom: 0.75rem; color: var(--text); }
+
+  .summary-box {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 1.25rem 1.5rem;
+    margin-bottom: 1.5rem;
+  }
+
+  .summary-box p { margin-bottom: 0.5rem; }
+
+  .beat-label {
+    display: inline-block;
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 0.15rem 0.5rem;
+    border-radius: 3px;
+    margin-bottom: 0.5rem;
+  }
+
+  .beat-port { background: var(--green-subtle); color: var(--green); border: 1px solid var(--green); }
+  .beat-adapt { background: var(--yellow-subtle); color: var(--yellow); border: 1px solid var(--yellow); }
+  .beat-new { background: var(--purple-subtle); color: var(--purple); border: 1px solid var(--purple); }
+  .beat-fix { background: var(--red-subtle); color: var(--red); border: 1px solid var(--red); }
+  .beat-skip { background: var(--surface); color: var(--text-muted); border: 1px solid var(--border); }
+
+  .file-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 1.25rem 1.5rem;
+    margin-bottom: 1rem;
+  }
+
+  .file-card .file-path {
+    font-family: var(--font-mono);
+    font-size: 0.85rem;
+    color: var(--accent);
+    margin-bottom: 0.5rem;
+    word-break: break-all;
+  }
+
+  .file-card .intent {
+    font-size: 0.9rem;
+    color: var(--text);
+    margin-bottom: 0.75rem;
+  }
+
+  .file-card .decisions {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+  }
+
+  .file-card .decisions ul {
+    padding-left: 1.25rem;
+    margin-top: 0.25rem;
+  }
+
+  .file-card .decisions li {
+    margin-bottom: 0.25rem;
+  }
+
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 1rem 1.25rem;
+    overflow-x: auto;
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    line-height: 1.5;
+    margin: 0.75rem 0;
+  }
+
+  code {
+    font-family: var(--font-mono);
+    font-size: 0.85em;
+  }
+
+  .inline-code {
+    background: var(--surface-raised);
+    padding: 0.15rem 0.4rem;
+    border-radius: 3px;
+    font-family: var(--font-mono);
+    font-size: 0.85em;
+    color: var(--orange);
+  }
+
+  .connection-graph {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 1.5rem;
+    margin: 1rem 0;
+  }
+
+  .connection-graph .edge {
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    padding: 0.2rem 0;
+  }
+
+  .connection-graph .edge .arrow { color: var(--accent); }
+  .connection-graph .edge .node { color: var(--text); }
+  .connection-graph .edge .label { color: var(--yellow); font-style: italic; }
+
+  .simplification-item {
+    background: var(--surface);
+    border-left: 3px solid var(--yellow);
+    padding: 0.75rem 1rem;
+    margin-bottom: 0.75rem;
+    border-radius: 0 6px 6px 0;
+  }
+
+  .simplification-item .target {
+    font-family: var(--font-mono);
+    font-size: 0.85rem;
+    color: var(--accent);
+    margin-bottom: 0.25rem;
+  }
+
+  .simplification-item .fix-desc {
+    font-size: 0.85rem;
+    color: var(--text);
+  }
+
+  .simplification-item .category {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .skipped-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+    margin-top: 0.5rem;
+  }
+
+  .skipped-table th {
+    text-align: left;
+    padding: 0.5rem 0.75rem;
+    border-bottom: 2px solid var(--border);
+    color: var(--text-muted);
+    font-weight: 600;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .skipped-table td {
+    padding: 0.5rem 0.75rem;
+    border-bottom: 1px solid var(--border);
+    color: var(--text);
+  }
+
+  .stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 0.75rem;
+    margin: 1rem 0;
+  }
+
+  .stat-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 1rem;
+    text-align: center;
+  }
+
+  .stat-card .stat-value {
+    font-size: 1.75rem;
+    font-weight: 700;
+    color: var(--accent);
+  }
+
+  .stat-card .stat-label {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-top: 0.25rem;
+  }
+
+  .timeline {
+    position: relative;
+    padding-left: 2rem;
+    margin: 1rem 0;
+  }
+
+  .timeline::before {
+    content: '';
+    position: absolute;
+    left: 0.5rem;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background: var(--border);
+  }
+
+  .timeline-item {
+    position: relative;
+    margin-bottom: 1.25rem;
+  }
+
+  .timeline-item::before {
+    content: '';
+    position: absolute;
+    left: -1.65rem;
+    top: 0.5rem;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--accent);
+    border: 2px solid var(--bg);
+  }
+
+  .timeline-item .time-label {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    margin-bottom: 0.15rem;
+  }
+
+  .timeline-item .time-desc {
+    font-size: 0.85rem;
+    color: var(--text);
+  }
+
+  footer {
+    margin-top: 3rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--border);
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    text-align: center;
+  }
+
+  /* Syntax highlighting classes */
+  .kw { color: #ff7b72; }
+  .ty { color: #79c0ff; }
+  .str { color: #a5d6ff; }
+  .cm { color: #8b949e; font-style: italic; }
+  .fn { color: #d2a8ff; }
+  .num { color: #79c0ff; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Application.Common/Extensions</h1>
+  <div class="subtitle">Session Review &mdash; Extension methods for the agentic harness Application layer</div>
+  <div class="meta">
+    <span>2026-04-05</span>
+    <span>9 files created</span>
+    <span>3 skipped (deferred)</span>
+    <span>8 simplification fixes</span>
+    <span>0 warnings, 0 errors</span>
+  </div>
+</header>
+
+<!-- ============================================================ -->
+<h2>Session Summary</h2>
+
+<div class="summary-box">
+  <p>
+    This session implemented the <strong>Extensions folder</strong> in <code>Application.Common</code> &mdash; the utility
+    layer that every handler, behavior, and service in the harness depends on. Nine reference files from the
+    ApplicationTemplate were assessed; six were ported or adapted, two were designed from scratch for agentic
+    scenarios, and three were deferred to other layers.
+  </p>
+  <p>
+    The implementation followed a three-beat cadence: <strong>direct ports</strong> for battle-tested utilities,
+    <strong>adapted extensions</strong> that replaced HTTP-centric patterns with agent-centric ones, and
+    <strong>new designs</strong> for Result&lt;T&gt; composition and agent context convenience. A post-implementation
+    simplification pass applied 8 targeted fixes across 7 files, improving caching, immutability, correctness,
+    and code deduplication.
+  </p>
+</div>
+
+<div class="stats-grid">
+  <div class="stat-card">
+    <div class="stat-value">9</div>
+    <div class="stat-label">Files Created</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-value">3</div>
+    <div class="stat-label">Direct Ports</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-value">4</div>
+    <div class="stat-label">Adapted</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-value">2</div>
+    <div class="stat-label">New Designs</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-value">8</div>
+    <div class="stat-label">Simplification Fixes</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-value">0</div>
+    <div class="stat-label">Build Warnings</div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<h2>Session Timeline</h2>
+
+<div class="timeline">
+  <div class="timeline-item">
+    <div class="time-label">Assessment</div>
+    <div class="time-desc">Read all 9 reference extension files. Categorized each as port / adapt / skip / design-new based on harness needs and layer placement rules.</div>
+  </div>
+  <div class="timeline-item">
+    <div class="time-label">Beat 1 &mdash; Direct Ports</div>
+    <div class="time-desc">StringExtensions, EnumExtensions, ObjectExtensions. Ported with trimmed XML docs and zero-alloc patterns.</div>
+  </div>
+  <div class="timeline-item">
+    <div class="time-label">Beat 2 &mdash; Adapted Extensions</div>
+    <div class="time-desc">FileLoggerOptions prerequisite, then ILoggingBuilderExtensions (6 providers), ILoggerExtensions (agent-focused redesign), IServiceCollectionExtensions (logging config only).</div>
+  </div>
+  <div class="timeline-item">
+    <div class="time-label">Beat 3 &mdash; New Designs</div>
+    <div class="time-desc">ResultExtensions (fluent Result&lt;T&gt; chaining with FailureType preservation), AgentContextExtensions (IAgentExecutionContext convenience).</div>
+  </div>
+  <div class="timeline-item">
+    <div class="time-label">Build Fix</div>
+    <div class="time-desc">Removed AddDebug() call that required an unresolvable package reference.</div>
+  </div>
+  <div class="timeline-item">
+    <div class="time-label">Code Review</div>
+    <div class="time-desc">Passed with 0 CRITICAL / 0 HIGH findings.</div>
+  </div>
+  <div class="timeline-item">
+    <div class="time-label">Simplification Pass</div>
+    <div class="time-desc">3 parallel review agents found 8 fixes. Applied: caching, immutability, missing enum case, formatter integration bug, constants extraction, generic helper.</div>
+  </div>
+  <div class="timeline-item">
+    <div class="time-label">Final Build</div>
+    <div class="time-desc">0 warnings, 0 errors. Clean.</div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<h2>Beat 1: Direct Ports</h2>
+
+<div class="file-card">
+  <span class="beat-label beat-port">Port</span>
+  <div class="file-path">Extensions/StringExtensions.cs</div>
+  <div class="intent">General-purpose string truncation with zero-alloc <code class="inline-code">AsSpan</code>.</div>
+  <div class="decisions">
+    <strong>Key decisions:</strong>
+    <ul>
+      <li>Single method: <code class="inline-code">Truncate(maxLength)</code> &mdash; appends "..." when truncated</li>
+      <li>Uses <code class="inline-code">string.Concat(value.AsSpan(0, maxLength), "...")</code> to avoid allocating a substring</li>
+      <li>Null/empty guard returns value as-is (no exception for null &mdash; matches reference behavior)</li>
+    </ul>
+  </div>
+  <pre><span class="kw">public static</span> <span class="ty">string</span> <span class="fn">Truncate</span>(<span class="kw">this</span> <span class="ty">string</span> value, <span class="ty">int</span> maxLength)
+{
+    <span class="kw">if</span> (<span class="ty">string</span>.IsNullOrEmpty(value)) <span class="kw">return</span> value;
+    <span class="kw">return</span> value.Length &gt; maxLength
+        ? <span class="ty">string</span>.Concat(value.AsSpan(<span class="num">0</span>, maxLength), <span class="str">"..."</span>)
+        : value;
+}</pre>
+</div>
+
+<div class="file-card">
+  <span class="beat-label beat-port">Port</span>
+  <span class="beat-label beat-fix">+ Simplification</span>
+  <div class="file-path">Extensions/EnumExtensions.cs</div>
+  <div class="intent">Reads <code class="inline-code">[Description]</code> attribute from enum members. Post-simplification: added <code class="inline-code">ConcurrentDictionary</code> reflection cache.</div>
+  <div class="decisions">
+    <strong>Key decisions:</strong>
+    <ul>
+      <li>Returns <code class="inline-code">string.Empty</code> (not null) when no attribute is present &mdash; safe for string interpolation</li>
+      <li>Cache key is the <code class="inline-code">Enum</code> value itself, using the same <code class="inline-code">ConcurrentDictionary</code> pattern as ReflectionHelper and ResultHelper</li>
+      <li>Static lambda (<code class="inline-code">static v =&gt;</code>) avoids closure allocation in the factory delegate</li>
+    </ul>
+  </div>
+  <pre><span class="kw">private static readonly</span> <span class="ty">ConcurrentDictionary</span>&lt;<span class="ty">Enum</span>, <span class="ty">string</span>&gt; DescriptionCache = <span class="kw">new</span>();
+
+<span class="kw">public static</span> <span class="ty">string</span> <span class="fn">ToDescriptionString</span>(<span class="kw">this</span> <span class="ty">Enum</span> value) =&gt;
+    DescriptionCache.GetOrAdd(value, <span class="kw">static</span> v =&gt;
+    {
+        <span class="kw">var</span> field = v.GetType().GetField(v.ToString());
+        <span class="kw">if</span> (field <span class="kw">is null</span>) <span class="kw">return</span> <span class="ty">string</span>.Empty;
+        <span class="kw">var</span> attribute = field.GetCustomAttribute&lt;<span class="ty">DescriptionAttribute</span>&gt;();
+        <span class="kw">return</span> attribute?.Description ?? <span class="ty">string</span>.Empty;
+    });</pre>
+</div>
+
+<div class="file-card">
+  <span class="beat-label beat-port">Port</span>
+  <span class="beat-label beat-fix">+ Simplification</span>
+  <div class="file-path">Extensions/ObjectExtensions.cs</div>
+  <div class="intent">FluentValidation on any object with DI-friendly validator injection. Post-simplification: return type changed to <code class="inline-code">IReadOnlyList&lt;string&gt;</code>.</div>
+  <div class="decisions">
+    <strong>Key decisions:</strong>
+    <ul>
+      <li>Validators are passed as parameters (not resolved from static state) for testability</li>
+      <li>Two overloads: multi-validator <code class="inline-code">IEnumerable&lt;IValidator&lt;T&gt;&gt;</code> and single-validator convenience</li>
+      <li>Returns tuple <code class="inline-code">(bool IsValid, IReadOnlyList&lt;string&gt; Errors)</code> &mdash; the IReadOnlyList enforces immutability at the API boundary</li>
+      <li>Null object returns <code class="inline-code">(false, ["Object cannot be null"])</code> rather than throwing</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<h2>Beat 2: Adapted Extensions</h2>
+
+<div class="file-card">
+  <span class="beat-label beat-adapt">Prerequisite</span>
+  <span class="beat-label beat-fix">+ Simplification</span>
+  <div class="file-path">Logging/FileLoggerOptions.cs</div>
+  <div class="intent">POCO for file-based logging config. Intentionally mutable &mdash; <code class="inline-code">CurrentRunId</code> changes per agent run.</div>
+  <div class="decisions">
+    <strong>Key decisions:</strong>
+    <ul>
+      <li>Not a record &mdash; intentional mutable class. Comment documents the mutability contract: "mutate-once-at-startup for LogsBasePath, mutate-per-run for CurrentRunId"</li>
+      <li>Registered as singleton, shared between FileLoggerProvider and StructuredJsonLoggerProvider</li>
+      <li>Null defaults &mdash; when null, file-based loggers silently skip writing</li>
+    </ul>
+  </div>
+</div>
+
+<div class="file-card">
+  <span class="beat-label beat-adapt">Adapt</span>
+  <span class="beat-label beat-fix">+ Simplification</span>
+  <div class="file-path">Extensions/ILoggingBuilderExtensions.cs</div>
+  <div class="intent">Registration extensions for all 6 agentic logging providers. Post-simplification: extracted <code class="inline-code">RegisterConcreteProvider&lt;T&gt;</code> generic helper.</div>
+  <div class="decisions">
+    <strong>Key decisions:</strong>
+    <ul>
+      <li><strong>6 providers</strong>: NamedPipe, FileLogger, StructuredJson, InMemoryRingBuffer, Callback, AgentConsoleFormatter</li>
+      <li><code class="inline-code">TryAddEnumerable</code> prevents duplicate registrations when multiple composition roots call ConfigureLogging</li>
+      <li><code class="inline-code">RegisterConcreteProvider&lt;T&gt;</code> resolves the singleton from the <code class="inline-code">ILoggerProvider</code> enumeration &mdash; same instance for both the logging pipeline and direct injection (lifecycle management)</li>
+      <li>Callback provider accepts <code class="inline-code">Action&lt;LogEntry&gt;</code> for SDK consumers embedding the harness</li>
+      <li>AgentConsoleFormatter uses stable colors per agent for visual differentiation</li>
+    </ul>
+  </div>
+  <pre><span class="cm">// Extracted helper eliminates 3x copy-paste registration pattern</span>
+<span class="kw">private static void</span> <span class="fn">RegisterConcreteProvider</span>&lt;<span class="ty">T</span>&gt;(<span class="ty">IServiceCollection</span> services)
+    <span class="kw">where</span> <span class="ty">T</span> : <span class="kw">class</span>, <span class="ty">ILoggerProvider</span>
+{
+    services.AddSingleton(sp =&gt;
+        sp.GetServices&lt;<span class="ty">ILoggerProvider</span>&gt;().OfType&lt;<span class="ty">T</span>&gt;().First());
+}</pre>
+</div>
+
+<div class="file-card">
+  <span class="beat-label beat-adapt">Adapt</span>
+  <span class="beat-label beat-fix">+ Simplification</span>
+  <div class="file-path">Extensions/ILoggerExtensions.cs</div>
+  <div class="intent">Complete redesign for agent context. Replaced HTTP-centric methods (LogRequestInfo, LogResponseInfo) with agent-focused structured logging.</div>
+  <div class="decisions">
+    <strong>Key decisions:</strong>
+    <ul>
+      <li><strong>6 methods</strong>: LogToolExecution, LogAgentTurn, LogContentSafetyEvent, LogPerformance, LogAgentEvent, LogErrorWithContext, LogMcpOperation</li>
+      <li>Transport-agnostic &mdash; no <code class="inline-code">HttpContext</code> dependency. HTTP logging deferred to Presentation layer.</li>
+      <li>All methods include trace correlation via <code class="inline-code">Activity.Current</code> (OpenTelemetry distributed tracing)</li>
+      <li>Auto-elevates to Warning: tool failures, blocked content, slow operations (&gt;5s threshold)</li>
+      <li>Uses <code class="inline-code">StringExtensions.Truncate</code> for log field length limits (cross-file dependency)</li>
+      <li><strong>Simplification:</strong> Extracted constants (<code class="inline-code">MaxLogFieldLength</code>, <code class="inline-code">NoValue</code>, <code class="inline-code">NoTrace</code>, <code class="inline-code">SlowOperationThreshold</code>) and <code class="inline-code">GetTraceId()</code> helper</li>
+    </ul>
+  </div>
+  <pre><span class="kw">private const int</span> MaxLogFieldLength = <span class="num">200</span>;
+<span class="kw">private const string</span> NoValue = <span class="str">"N/A"</span>;
+<span class="kw">private const string</span> NoTrace = <span class="str">"no-trace"</span>;
+<span class="kw">private static readonly</span> <span class="ty">TimeSpan</span> SlowOperationThreshold = <span class="ty">TimeSpan</span>.FromSeconds(<span class="num">5</span>);
+
+<span class="kw">private static</span> <span class="ty">string</span> <span class="fn">GetTraceId</span>() =&gt;
+    <span class="ty">Activity</span>.Current?.Id ?? NoTrace;</pre>
+</div>
+
+<div class="file-card">
+  <span class="beat-label beat-adapt">Adapt</span>
+  <div class="file-path">Extensions/IServiceCollectionExtensions.cs</div>
+  <div class="intent">Logging pipeline configuration &mdash; wires all providers based on AppConfig.Logging. Stripped Graph and OTel exporters (deferred to Infrastructure).</div>
+  <div class="decisions">
+    <strong>Key decisions:</strong>
+    <ul>
+      <li>ClearProviders() first &mdash; full control over the logging pipeline</li>
+      <li>AgentConsoleFormatter and InMemoryRingBuffer are always enabled; others are conditional on config</li>
+      <li>Includes fallback SimpleConsole for environments without ANSI support</li>
+      <li>OTel exporter registration explicitly deferred to Infrastructure layer (documented in XML remarks)</li>
+      <li><strong>Build fix:</strong> Removed <code class="inline-code">AddDebug()</code> call that required Microsoft.Extensions.Logging.Debug package not in the csproj</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<h2>Beat 3: New Designs</h2>
+
+<div class="file-card">
+  <span class="beat-label beat-new">New Design</span>
+  <span class="beat-label beat-fix">+ Simplification</span>
+  <div class="file-path">Extensions/ResultExtensions.cs</div>
+  <div class="intent">Fluent composition for Result&lt;T&gt; &mdash; functional-style Map/Bind/Ensure/OnSuccess/OnFailure with async variants and FailureType preservation.</div>
+  <div class="decisions">
+    <strong>Key decisions:</strong>
+    <ul>
+      <li><strong>10 methods</strong>: Map, Bind, Ensure, OnSuccess, OnFailure, MapAsync, BindAsync, ThenMap, ThenBind (+ private PropagateFailure)</li>
+      <li><code class="inline-code">PropagateFailure</code> preserves the <code class="inline-code">ResultFailureType</code> across type changes &mdash; a Validation failure stays Validation even when mapped to a different T</li>
+      <li><code class="inline-code">ThenMap</code> / <code class="inline-code">ThenBind</code> chain onto <code class="inline-code">Task&lt;Result&lt;T&gt;&gt;</code> for fluent async pipelines without intermediate await</li>
+      <li>All async methods use <code class="inline-code">ConfigureAwait(false)</code> for library-safe execution</li>
+      <li><strong>Simplification fix:</strong> Added missing <code class="inline-code">ResultFailureType.NotFound</code> case in PropagateFailure &mdash; was silently downgrading to General</li>
+    </ul>
+  </div>
+  <pre><span class="kw">private static</span> <span class="ty">Result</span>&lt;<span class="ty">TOut</span>&gt; <span class="fn">PropagateFailure</span>&lt;<span class="ty">T</span>, <span class="ty">TOut</span>&gt;(<span class="ty">Result</span>&lt;<span class="ty">T</span>&gt; source)
+{
+    <span class="kw">return</span> source.FailureType <span class="kw">switch</span>
+    {
+        <span class="ty">ResultFailureType</span>.Validation    =&gt; <span class="ty">Result</span>&lt;<span class="ty">TOut</span>&gt;.ValidationFailure(errors),
+        <span class="ty">ResultFailureType</span>.Unauthorized  =&gt; <span class="ty">Result</span>&lt;<span class="ty">TOut</span>&gt;.Unauthorized(JoinErrors(errors)),
+        <span class="ty">ResultFailureType</span>.Forbidden     =&gt; <span class="ty">Result</span>&lt;<span class="ty">TOut</span>&gt;.Forbidden(JoinErrors(errors)),
+        <span class="ty">ResultFailureType</span>.ContentBlocked=&gt; <span class="ty">Result</span>&lt;<span class="ty">TOut</span>&gt;.ContentBlocked(JoinErrors(errors)),
+        <span class="ty">ResultFailureType</span>.NotFound       =&gt; <span class="ty">Result</span>&lt;<span class="ty">TOut</span>&gt;.Fail(errors.ToArray()),
+        _                                 =&gt; <span class="ty">Result</span>&lt;<span class="ty">TOut</span>&gt;.Fail(errors.ToArray())
+    };
+}</pre>
+</div>
+
+<div class="file-card">
+  <span class="beat-label beat-new">New Design</span>
+  <span class="beat-label beat-fix">+ Simplification</span>
+  <div class="file-path">Extensions/AgentContextExtensions.cs</div>
+  <div class="intent">Convenience extensions for IAgentExecutionContext &mdash; IsActive, GetDisplayIdentifier, ToAgentLogScope, ToTelemetryTags.</div>
+  <div class="decisions">
+    <strong>Key decisions:</strong>
+    <ul>
+      <li><code class="inline-code">IsActive()</code> &mdash; null check on AgentId as the sentinel for "inside an agent execution"</li>
+      <li><code class="inline-code">GetDisplayIdentifier()</code> returns <code class="inline-code">"agentId@turn-3"</code> format for log output</li>
+      <li><code class="inline-code">ToTelemetryTags()</code> uses <code class="inline-code">AgenticSemanticConventions</code> keys &mdash; same keys as the OTel pipeline processors</li>
+      <li><strong>Simplification fix 1:</strong> Replaced <code class="inline-code">ToLogScope</code> (raw KVPs) with <code class="inline-code">ToAgentLogScope</code> returning <code class="inline-code">AgentLogScope</code> record so formatters can recognize the scope type</li>
+      <li><strong>Simplification fix 2:</strong> Static <code class="inline-code">EmptyTags</code> dictionary avoids allocating new empty dictionaries on every call outside agent context</li>
+    </ul>
+  </div>
+  <pre><span class="kw">private static readonly</span> <span class="ty">IReadOnlyDictionary</span>&lt;<span class="ty">string</span>, <span class="ty">object</span>&gt; EmptyTags =
+    <span class="kw">new</span> <span class="ty">Dictionary</span>&lt;<span class="ty">string</span>, <span class="ty">object</span>&gt;().AsReadOnly();
+
+<span class="kw">public static</span> <span class="ty">AgentLogScope</span>? <span class="fn">ToAgentLogScope</span>(<span class="kw">this</span> <span class="ty">IAgentExecutionContext</span> context) =&gt;
+    context.AgentId <span class="kw">is not null</span>
+        ? <span class="kw">new</span> <span class="ty">AgentLogScope</span>(
+            AgentId: context.AgentId,
+            ConversationId: context.ConversationId,
+            TurnNumber: context.TurnNumber)
+        : <span class="kw">null</span>;</pre>
+</div>
+
+<!-- ============================================================ -->
+<h2>Cross-File Connection Graph</h2>
+
+<div class="connection-graph">
+  <p style="color: var(--text-muted); font-size: 0.8rem; margin-bottom: 0.75rem;">
+    Arrows show compile-time or runtime dependencies between files created this session.
+    External dependencies (types from other folders) shown in parentheses.
+  </p>
+
+  <div class="edge">
+    <span class="node">ILoggerExtensions</span>
+    <span class="arrow"> ----uses---&gt; </span>
+    <span class="node">StringExtensions</span>
+    <span class="label"> .Truncate() for log field limits</span>
+  </div>
+
+  <div class="edge">
+    <span class="node">IServiceCollectionExtensions</span>
+    <span class="arrow"> ----calls--&gt; </span>
+    <span class="node">ILoggingBuilderExtensions</span>
+    <span class="label"> .AddAgentConsoleFormatter(), .AddNamedPipe(), etc.</span>
+  </div>
+
+  <div class="edge">
+    <span class="node">ILoggingBuilderExtensions</span>
+    <span class="arrow"> ----uses---&gt; </span>
+    <span class="node">FileLoggerOptions</span>
+    <span class="label"> indirectly via FileLoggerProvider DI</span>
+  </div>
+
+  <div class="edge">
+    <span class="node">AgentContextExtensions</span>
+    <span class="arrow"> ----uses---&gt; </span>
+    <span class="node">(AgentLogScope)</span>
+    <span class="label"> Logging/AgentLogScope.cs &mdash; formatter-recognized scope type</span>
+  </div>
+
+  <div class="edge">
+    <span class="node">AgentContextExtensions</span>
+    <span class="arrow"> ----uses---&gt; </span>
+    <span class="node">(AgenticSemanticConventions)</span>
+    <span class="label"> OpenTelemetry/Conventions/ &mdash; shared tag keys</span>
+  </div>
+
+  <div class="edge">
+    <span class="node">AgentContextExtensions</span>
+    <span class="arrow"> ----uses---&gt; </span>
+    <span class="node">(IAgentExecutionContext)</span>
+    <span class="label"> Interfaces/Agent/ &mdash; agent identity + turn state</span>
+  </div>
+
+  <div class="edge">
+    <span class="node">ResultExtensions</span>
+    <span class="arrow"> ----uses---&gt; </span>
+    <span class="node">(Result&lt;T&gt;)</span>
+    <span class="label"> Domain.Common &mdash; the core result monad</span>
+  </div>
+
+  <div class="edge">
+    <span class="node">ObjectExtensions</span>
+    <span class="arrow"> ----uses---&gt; </span>
+    <span class="node">(FluentValidation)</span>
+    <span class="label"> external package &mdash; IValidator&lt;T&gt;</span>
+  </div>
+
+  <div class="edge">
+    <span class="node">IServiceCollectionExtensions</span>
+    <span class="arrow"> ----uses---&gt; </span>
+    <span class="node">(AppConfig)</span>
+    <span class="label"> Domain.Common.Config &mdash; logging settings</span>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<h2>Simplification Fixes Applied</h2>
+
+<p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 1rem;">
+  3 parallel review agents identified 8 fixes across 7 files. All applied in a single pass.
+</p>
+
+<div class="simplification-item">
+  <div class="category">Performance / Caching</div>
+  <div class="target">EnumExtensions.cs</div>
+  <div class="fix-desc">Added <code class="inline-code">ConcurrentDictionary&lt;Enum, string&gt;</code> reflection cache. Avoids repeated <code class="inline-code">GetField</code> / <code class="inline-code">GetCustomAttribute</code> calls on hot paths. Follows the same caching pattern used by ReflectionHelper and ResultHelper.</div>
+</div>
+
+<div class="simplification-item">
+  <div class="category">Correctness / Bug Fix</div>
+  <div class="target">ResultExtensions.cs &mdash; PropagateFailure</div>
+  <div class="fix-desc">Added missing <code class="inline-code">ResultFailureType.NotFound</code> case. Without it, NotFound failures were silently falling through to the default General case, losing semantic meaning in HTTP response mapping.</div>
+</div>
+
+<div class="simplification-item">
+  <div class="category">Correctness / Integration</div>
+  <div class="target">AgentContextExtensions.cs &mdash; ToAgentLogScope</div>
+  <div class="fix-desc">Replaced <code class="inline-code">ToLogScope</code> (raw <code class="inline-code">KeyValuePair[]</code>) with <code class="inline-code">ToAgentLogScope</code> returning <code class="inline-code">AgentLogScope</code> record. The <code class="inline-code">AgentScopeProvider</code> and console formatter use <code class="inline-code">is AgentLogScope</code> pattern matching &mdash; raw KVPs would have been invisible to them.</div>
+</div>
+
+<div class="simplification-item">
+  <div class="category">Allocation / Memory</div>
+  <div class="target">AgentContextExtensions.cs &mdash; EmptyTags</div>
+  <div class="fix-desc">Made <code class="inline-code">EmptyTags</code> a static readonly field instead of allocating <code class="inline-code">new Dictionary&lt;string, object&gt;()</code> on every call outside agent context.</div>
+</div>
+
+<div class="simplification-item">
+  <div class="category">Readability / Constants</div>
+  <div class="target">ILoggerExtensions.cs</div>
+  <div class="fix-desc">Extracted magic values into named constants: <code class="inline-code">MaxLogFieldLength = 200</code>, <code class="inline-code">NoValue = "N/A"</code>, <code class="inline-code">NoTrace = "no-trace"</code>, <code class="inline-code">SlowOperationThreshold = 5s</code>. Extracted <code class="inline-code">GetTraceId()</code> helper to eliminate 4x copy-paste of <code class="inline-code">Activity.Current?.Id ?? "no-trace"</code>.</div>
+</div>
+
+<div class="simplification-item">
+  <div class="category">Immutability</div>
+  <div class="target">ObjectExtensions.cs</div>
+  <div class="fix-desc">Changed return type from <code class="inline-code">List&lt;string&gt;</code> to <code class="inline-code">IReadOnlyList&lt;string&gt;</code> &mdash; callers should not mutate validation errors.</div>
+</div>
+
+<div class="simplification-item">
+  <div class="category">Deduplication / DRY</div>
+  <div class="target">ILoggingBuilderExtensions.cs</div>
+  <div class="fix-desc">Extracted <code class="inline-code">RegisterConcreteProvider&lt;T&gt;</code> generic helper. Eliminates 3 copy-paste blocks that each resolved the concrete provider from the <code class="inline-code">ILoggerProvider</code> enumeration.</div>
+</div>
+
+<div class="simplification-item">
+  <div class="category">Documentation</div>
+  <div class="target">FileLoggerOptions.cs</div>
+  <div class="fix-desc">Added comment explaining intentional mutability: "mutate-once-at-startup for LogsBasePath, mutate-per-run for CurrentRunId." Prevents future reviewers from reflexively converting to a record.</div>
+</div>
+
+<!-- ============================================================ -->
+<h2>Skipped &amp; Deferred</h2>
+
+<p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 0.75rem;">
+  Three reference extension files were assessed and intentionally skipped. All added to the deferred backlog with rationale.
+</p>
+
+<table class="skipped-table">
+  <thead>
+    <tr>
+      <th>Reference File</th>
+      <th>Reason Skipped</th>
+      <th>Deferred To</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code class="inline-code">ExceptionContextExtensions</code></td>
+      <td>Depends on <code class="inline-code">HttpContext</code> &mdash; transport-specific concern</td>
+      <td>Presentation layer</td>
+    </tr>
+    <tr>
+      <td><code class="inline-code">AttributeRegistryExtensions</code></td>
+      <td>Depends on <code class="inline-code">AttributeRegistry</code> which has not been ported yet</td>
+      <td>After AttributeRegistry port</td>
+    </tr>
+    <tr>
+      <td><code class="inline-code">OpenTelemetryServiceCollectionExtensions</code></td>
+      <td>References concrete OTel exporter packages &mdash; Infrastructure concern</td>
+      <td>Infrastructure.Common layer (already deferred from prior session)</td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- ============================================================ -->
+<h2>Design Patterns Observed</h2>
+
+<div class="summary-box">
+  <h3>Cached Reflection</h3>
+  <p>EnumExtensions uses <code class="inline-code">ConcurrentDictionary&lt;Enum, string&gt;</code> with a static lambda factory. This is the third instance of the cached reflection pattern in the codebase (after ReflectionHelper and ResultHelper), establishing it as a project convention.</p>
+
+  <h3>Immutable Return Types</h3>
+  <p>ObjectExtensions returns <code class="inline-code">IReadOnlyList&lt;string&gt;</code>, AgentContextExtensions returns <code class="inline-code">IReadOnlyDictionary&lt;string, object&gt;</code>, and ResultExtensions preserves the immutable <code class="inline-code">Result&lt;T&gt;</code> throughout chains. Mutable types are only used internally.</p>
+
+  <h3>Null Object Pattern</h3>
+  <p>Several extensions use null-object returns instead of throwing: <code class="inline-code">EmptyTags</code> static dictionary, <code class="inline-code">"no-agent"</code> display identifier, <code class="inline-code">"N/A"</code> log placeholders. This keeps logging and telemetry paths allocation-light and exception-free.</p>
+
+  <h3>Layer Boundary Discipline</h3>
+  <p>All 9 files compile with only <code class="inline-code">Microsoft.Extensions.*</code> and Domain references &mdash; passing the Application layer litmus test. HTTP, OTel exporters, and transport concerns were deliberately excluded even when the reference implementation included them.</p>
+</div>
+
+<!-- ============================================================ -->
+
+<footer>
+  Generated by Claude Code session review &bull; 2026-04-05 &bull; Microsoft Agentic Harness &bull; Application.Common/Extensions
+</footer>
+
+</body>
+</html>

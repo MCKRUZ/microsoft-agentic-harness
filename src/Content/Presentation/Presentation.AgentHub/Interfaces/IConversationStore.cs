@@ -41,4 +41,15 @@ public interface IConversationStore
         string conversationId,
         int maxMessages,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// Truncates the conversation so that the message with <paramref name="messageId"/> and
+    /// every message after it are removed. No-op if the conversation or message does not exist.
+    /// Used by retry/edit flows to drop the superseded tail before re-dispatching to the agent.
+    /// </summary>
+    /// <returns>The truncated conversation record, or <c>null</c> if it did not exist.</returns>
+    Task<ConversationRecord?> TruncateFromMessageAsync(
+        string conversationId,
+        Guid messageId,
+        CancellationToken ct = default);
 }

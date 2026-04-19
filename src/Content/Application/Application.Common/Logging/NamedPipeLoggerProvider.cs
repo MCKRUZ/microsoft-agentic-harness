@@ -93,20 +93,30 @@ public sealed class NamedPipeLoggerProvider : ILoggerProvider
             }
             catch (IOException)
             {
-                // Client disconnected — loop will recreate the pipe
+                // Client disconnected; loop back and wait for a new client.
+            }
+            catch (Exception)
+            {
+                // Swallow to keep the logging thread alive; cannot log here without recursion.
             }
             finally
             {
-                writer?.Dispose();
-                pipe?.Dispose();
+                // StreamWriter.Dispose flushes and can throw on a broken pipe — guard it.
+                try { writer?.Dispose(); } catch { }
+                try { pipe?.Dispose(); } catch { }
             }
         }
     }
 
+    private bool _disposed;
+
     /// <inheritdoc />
     public void Dispose()
     {
-        _cts.Cancel();
+        if (_disposed) return;
+        _disposed = true;
+
+        try { _cts.Cancel(); } catch (ObjectDisposedException) { }
         _backgroundThread.Join(TimeSpan.FromSeconds(2));
         _cts.Dispose();
         _messageQueue.Dispose();

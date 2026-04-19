@@ -69,6 +69,18 @@ public sealed class SignalRSpanExporter : BaseExporter<Activity>, IHostedService
             var data = MapToSpanData(activity);
             var wasFull = _channel.Reader.Count >= ChannelCapacity;
             _channel.Writer.TryWrite(data);
+
+            _logger.LogInformation(
+                "otel.span {SpanName} trace={TraceId} span={SpanId} conv={ConversationId} duration={DurationMs}ms status={Status} kind={Kind} source={SourceName}",
+                data.Name,
+                data.TraceId,
+                data.SpanId,
+                data.ConversationId ?? "-",
+                data.DurationMs,
+                data.Status,
+                data.Kind,
+                data.SourceName);
+
             if (wasFull)
             {
                 _logger.LogWarning(
@@ -90,7 +102,11 @@ public sealed class SignalRSpanExporter : BaseExporter<Activity>, IHostedService
             ? null
             : activity.ParentSpanId.ToHexString();
 
-        var conversationId = activity.GetTagItem("agent.conversation_id") as string;
+        // Fallback to baggage: descendant activities inherit baggage from the root
+        // hub span, so tool/skill spans also carry the conversation id even though
+        // tags are per-activity only.
+        var conversationId = activity.GetTagItem("agent.conversation_id") as string
+            ?? activity.GetBaggageItem("agent.conversation_id");
 
         var status = activity.Status switch
         {

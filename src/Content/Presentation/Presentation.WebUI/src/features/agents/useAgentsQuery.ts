@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { apiClient } from '@/lib/apiClient';
 
 const AgentSchema = z.object({
+  id: z.string(),
   name: z.string(),
   description: z.string().optional(),
 });

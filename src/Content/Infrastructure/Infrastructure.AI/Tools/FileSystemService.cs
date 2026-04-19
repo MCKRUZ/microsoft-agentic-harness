@@ -33,6 +33,7 @@ public sealed class FileSystemService : IFileSystemService
         ".vs", ".vscode", ".idea",
         ".claude", ".worktrees",
         "packages", "publish",
+        "logs",
     };
 
     private readonly ILogger<FileSystemService> _logger;

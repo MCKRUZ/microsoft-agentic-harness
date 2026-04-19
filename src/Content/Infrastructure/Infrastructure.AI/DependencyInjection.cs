@@ -140,6 +140,10 @@ public static class DependencyInjection
         services.AddSingleton<SkillMetadataParser>();
         services.AddSingleton<ISkillMetadataRegistry, SkillMetadataRegistry>();
 
+        // Agent metadata registry — filesystem discovery of AGENT.md manifests
+        services.AddSingleton<AgentMetadataParser>();
+        services.AddSingleton<IAgentMetadataRegistry, AgentMetadataRegistry>();
+
         // Skill content provider — default filesystem implementation for normal agent runs
         // CandidateSkillContentProvider is NOT registered here; the evaluator constructs it
         // directly with a HarnessCandidate snapshot for candidate-isolated evaluation.
@@ -239,6 +243,7 @@ public static class DependencyInjection
                 break;
 
             case AIAgentFrameworkClientType.AzureAIInference:
+            case AIAgentFrameworkClientType.Anthropic:
                 // No DI registration needed — ChatClientFactory creates the client
                 // directly with a custom endpoint and caches it internally.
                 break;

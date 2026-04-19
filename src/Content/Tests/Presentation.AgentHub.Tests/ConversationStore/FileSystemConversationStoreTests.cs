@@ -69,7 +69,7 @@ public sealed class FileSystemConversationStoreTests : IDisposable
     public async Task AppendMessageAsync_UpdatesFileAtomically()
     {
         var record = await _store.CreateAsync("agent", "user1");
-        var message = new ConversationMessage(MessageRole.User, "hello", DateTimeOffset.UtcNow);
+        var message = new ConversationMessage(Guid.NewGuid(), MessageRole.User, "hello", DateTimeOffset.UtcNow);
 
         await _store.AppendMessageAsync(record.Id, message);
 
@@ -122,7 +122,7 @@ public sealed class FileSystemConversationStoreTests : IDisposable
         var tasks = Enumerable.Range(0, messageCount)
             .Select(i => _store.AppendMessageAsync(
                 record.Id,
-                new ConversationMessage(MessageRole.User, $"message-{i}", DateTimeOffset.UtcNow)));
+                new ConversationMessage(Guid.NewGuid(), MessageRole.User, $"message-{i}", DateTimeOffset.UtcNow)));
 
         await Task.WhenAll(tasks);
 
@@ -148,7 +148,7 @@ public sealed class FileSystemConversationStoreTests : IDisposable
 
         for (var i = 0; i < 15; i++)
             await _store.AppendMessageAsync(record.Id,
-                new ConversationMessage(MessageRole.User, $"msg-{i}", DateTimeOffset.UtcNow));
+                new ConversationMessage(Guid.NewGuid(), MessageRole.User, $"msg-{i}", DateTimeOffset.UtcNow));
 
         var history = await _store.GetHistoryForDispatch(record.Id, maxMessages: 5);
 
@@ -163,7 +163,7 @@ public sealed class FileSystemConversationStoreTests : IDisposable
 
         for (var i = 0; i < 30; i++)
             await _store.AppendMessageAsync(record.Id,
-                new ConversationMessage(MessageRole.User, $"msg-{i}", DateTimeOffset.UtcNow));
+                new ConversationMessage(Guid.NewGuid(), MessageRole.User, $"msg-{i}", DateTimeOffset.UtcNow));
 
         var history = await _store.GetHistoryForDispatch(record.Id, maxMessages: 10);
 

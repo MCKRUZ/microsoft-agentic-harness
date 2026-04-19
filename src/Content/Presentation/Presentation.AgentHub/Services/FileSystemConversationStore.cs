@@ -61,7 +61,18 @@ public sealed class FileSystemConversationStore : IConversationStore
                 return null;
 
             var json = await File.ReadAllTextAsync(path, ct);
-            return JsonSerializer.Deserialize<ConversationRecord>(json, _jsonOptions);
+            var record = JsonSerializer.Deserialize<ConversationRecord>(json, _jsonOptions);
+            if (record is null) return null;
+
+            // Migrate legacy records whose messages predate the Id column by backfilling
+            // a Guid per message and persisting the result. Subsequent loads will skip this path.
+            var migrated = MigrateMissingIds(record);
+            if (migrated is not null)
+            {
+                await WriteAtomicLockedAsync(path, migrated, ct);
+                return migrated;
+            }
+            return record;
         }
         finally
         {
@@ -85,8 +96,18 @@ public sealed class FileSystemConversationStore : IConversationStore
                 {
                     var json = await File.ReadAllTextAsync(file, ct);
                     var record = JsonSerializer.Deserialize<ConversationRecord>(json, _jsonOptions);
-                    if (record?.UserId == userId)
+                    if (record is null || record.UserId != userId)
+                        continue;
+                    var migrated = MigrateMissingIds(record);
+                    if (migrated is not null)
+                    {
+                        await WriteAtomicLockedAsync(file, migrated, ct);
+                        results.Add(migrated);
+                    }
+                    else
+                    {
                         results.Add(record);
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -137,10 +158,16 @@ public sealed class FileSystemConversationStore : IConversationStore
             var existing = JsonSerializer.Deserialize<ConversationRecord>(json, _jsonOptions)
                 ?? throw new InvalidOperationException($"Conversation '{conversationId}' could not be deserialized.");
 
+            var derivedTitle = existing.Title
+                ?? (message.Role == MessageRole.User
+                    ? ConversationRecordTitleDerivation.Derive(message.Content)
+                    : null);
+
             var updated = existing with
             {
                 Messages = [..existing.Messages, message],
                 UpdatedAt = DateTimeOffset.UtcNow,
+                Title = derivedTitle,
             };
 
             await WriteAtomicLockedAsync(path, updated, ct);
@@ -169,6 +196,42 @@ public sealed class FileSystemConversationStore : IConversationStore
     }
 
     /// <inheritdoc/>
+    public async Task<ConversationRecord?> TruncateFromMessageAsync(
+        string conversationId,
+        Guid messageId,
+        CancellationToken ct = default)
+    {
+        var path = ResolveAndValidatePath(conversationId);
+
+        await _lock.WaitAsync(ct);
+        try
+        {
+            if (!File.Exists(path))
+                return null;
+
+            var json = await File.ReadAllTextAsync(path, ct);
+            var existing = JsonSerializer.Deserialize<ConversationRecord>(json, _jsonOptions);
+            if (existing is null) return null;
+
+            var idx = IndexOfMessage(existing.Messages, messageId);
+            if (idx < 0) return existing;
+
+            var truncated = existing with
+            {
+                Messages = [..existing.Messages.Take(idx)],
+                UpdatedAt = DateTimeOffset.UtcNow,
+            };
+
+            await WriteAtomicLockedAsync(path, truncated, ct);
+            return truncated;
+        }
+        finally
+        {
+            _lock.Release();
+        }
+    }
+
+    /// <inheritdoc/>
     public async Task<IReadOnlyList<ConversationMessage>?> GetHistoryForDispatch(
         string conversationId,
         int maxMessages,
@@ -188,6 +251,31 @@ public sealed class FileSystemConversationStore : IConversationStore
     // -------------------------------------------------------------------------
     // Private helpers
     // -------------------------------------------------------------------------
+
+    /// <summary>
+    /// Returns a migrated copy of <paramref name="record"/> if any message had an empty Id;
+    /// returns <c>null</c> when no migration was needed (caller should use the original).
+    /// </summary>
+    private static ConversationRecord? MigrateMissingIds(ConversationRecord record)
+    {
+        if (record.Messages.Count == 0 || !record.Messages.Any(m => m.Id == Guid.Empty))
+            return null;
+
+        var migratedMessages = record.Messages
+            .Select(m => m.Id == Guid.Empty ? m with { Id = Guid.NewGuid() } : m)
+            .ToList();
+
+        return record with { Messages = migratedMessages };
+    }
+
+    private static int IndexOfMessage(IReadOnlyList<ConversationMessage> messages, Guid messageId)
+    {
+        for (var i = 0; i < messages.Count; i++)
+        {
+            if (messages[i].Id == messageId) return i;
+        }
+        return -1;
+    }
 
     private string ResolveAndValidatePath(string conversationId)
     {

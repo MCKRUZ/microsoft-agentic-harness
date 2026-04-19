@@ -44,3 +44,14 @@ coverage/
 ## Temp
 *.tmp
 *.log
+*.ndjson
+logs/
+
+## Claude Code local state
+.claude/settings.local.json
+.claude/worktrees/
+.claude/.session-manifest.json
+
+## AgentHub runtime artifacts
+src/Content/Presentation/Presentation.AgentHub/conversations/
+src/Content/Presentation/Presentation.AgentHub/traces/

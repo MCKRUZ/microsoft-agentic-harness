@@ -1,9 +1,8 @@
+using Application.AI.Common.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.Extensions.Options;
 using Presentation.AgentHub.Extensions;
 using Presentation.AgentHub.Interfaces;
-using Presentation.AgentHub.Config;
 using Presentation.AgentHub.DTOs;
 
 namespace Presentation.AgentHub.Controllers;
@@ -19,30 +18,50 @@ namespace Presentation.AgentHub.Controllers;
 [Authorize]
 public sealed class AgentsController : ControllerBase
 {
+    /// <summary>
+    /// Synthetic agent returned by <see cref="GetAgents"/> when no <c>AGENT.md</c> manifests
+    /// are discovered. Kept as a dev-mode fallback so the UI is never blank — the warning
+    /// log on misconfiguration is the signal that real manifests are missing.
+    /// </summary>
+    internal static readonly AgentSummary FallbackAgent = new("default", "Default", "No agents configured");
+
     private readonly IConversationStore _store;
-    private readonly AgentHubConfig _config;
+    private readonly IAgentMetadataRegistry _agentRegistry;
     private readonly ILogger<AgentsController> _logger;
 
     /// <summary>Initialises the controller with its dependencies.</summary>
     public AgentsController(
         IConversationStore store,
-        IOptions<AgentHubConfig> config,
+        IAgentMetadataRegistry agentRegistry,
         ILogger<AgentsController> logger)
     {
         _store = store;
-        _config = config.Value;
+        _agentRegistry = agentRegistry;
         _logger = logger;
     }
 
-    /// <summary>Returns the list of configured agents.</summary>
+    /// <summary>Returns every agent discovered from the configured <c>AGENT.md</c> paths.</summary>
     /// <remarks>
-    /// TODO: Enumerate the full agent registry once the agent framework exposes it.
-    /// For now returns a single summary derived from <see cref="AgentHubConfig.DefaultAgentName"/>.
+    /// When discovery yields zero agents the controller logs a warning and returns a single
+    /// synthetic <see cref="FallbackAgent"/> so the UI is never blank in dev. Production
+    /// deployments should see the warning as a configuration smell, not a normal state.
     /// </remarks>
     [HttpGet("agents")]
     public IActionResult GetAgents()
     {
-        var agents = new[] { new AgentSummary(_config.DefaultAgentName, "Default agent") };
+        var definitions = _agentRegistry.GetAll();
+
+        if (definitions.Count == 0)
+        {
+            _logger.LogWarning(
+                "No agents discovered in AppConfig.AI.Agents paths {Paths}; returning dev-mode fallback",
+                _agentRegistry.SearchedPaths);
+            return Ok(new[] { FallbackAgent });
+        }
+
+        var agents = definitions
+            .Select(d => new AgentSummary(d.Id, d.Name, d.Description))
+            .ToArray();
         return Ok(agents);
     }
 

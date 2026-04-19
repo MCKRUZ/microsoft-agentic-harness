@@ -4,13 +4,15 @@ using Presentation.Common.Extensions;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Register all shared layers (Application, Infrastructure, OTel, HealthChecks UI).
+// All logging is routed through the M.E.L. provider pipeline configured in
+// Application.Common.ConfigureLogging: NamedPipeLoggerProvider streams to
+// Presentation.LoggerUI, FileLoggerProvider + StructuredJsonLoggerProvider
+// persist human-readable and ndjson output, and the execution-aware console
+// formatter preserves the dev experience.
 builder.Services.GetServices(includeHealthChecksUI: true);
 
 // Register AgentHub-specific services (auth, SignalR, CORS, rate limiting, config).
 builder.Services.AddAgentHubServices(builder.Configuration, builder.Environment);
-
-builder.WebHost.ConfigureKestrel(options => options.ListenAnyIP(5001));
 
 // MemoizedPromptComposer (singleton) → IPromptSectionProvider (transient) → IAgentExecutionContext (scoped)
 // creates a captive dependency that ASP.NET Core rejects by default. Scope validation is suppressed
