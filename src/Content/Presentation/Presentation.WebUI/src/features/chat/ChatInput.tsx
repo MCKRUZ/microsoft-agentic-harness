@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, type KeyboardEvent, type ChangeEvent } from 'react';
+import { useMemo, useRef, useState, type KeyboardEvent, type ChangeEvent, type DragEvent } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
@@ -67,6 +67,8 @@ export function ChatInput({ conversationId, sendMessage, disabled = false }: Cha
   const startStreaming = useChatStore((s) => s.startStreaming);
   const [attachment, setAttachment] = useState<Attachment | null>(null);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const [isDragOver, setIsDragOver] = useState(false);
+  const dragCounterRef = useRef(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const [trigger, setTrigger] = useState<TriggerState | null>(null);
@@ -145,10 +147,7 @@ export function ChatInput({ conversationId, sendMessage, disabled = false }: Cha
     fileInputRef.current?.click();
   };
 
-  const handleFileChange = (e: ChangeEvent<HTMLInputElement>): void => {
-    const file = e.target.files?.[0];
-    e.target.value = '';
-    if (!file) return;
+  const readFile = (file: File): void => {
     if (file.size > MAX_ATTACHMENT_BYTES) {
       setAttachmentError(`File too large (max ${(MAX_ATTACHMENT_BYTES / 1024).toFixed(0)}KB).`);
       return;
@@ -161,6 +160,44 @@ export function ChatInput({ conversationId, sendMessage, disabled = false }: Cha
       setAttachmentError(null);
     };
     reader.readAsText(file);
+  };
+
+  const handleFileChange = (e: ChangeEvent<HTMLInputElement>): void => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    readFile(file);
+  };
+
+  const handleDragEnter = (e: DragEvent<HTMLFormElement>): void => {
+    if (disabled || isStreaming) return;
+    e.preventDefault();
+    dragCounterRef.current += 1;
+    if (e.dataTransfer.types.includes('Files')) setIsDragOver(true);
+  };
+
+  const handleDragOver = (e: DragEvent<HTMLFormElement>): void => {
+    if (disabled || isStreaming) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  };
+
+  const handleDragLeave = (e: DragEvent<HTMLFormElement>): void => {
+    e.preventDefault();
+    dragCounterRef.current -= 1;
+    if (dragCounterRef.current <= 0) {
+      dragCounterRef.current = 0;
+      setIsDragOver(false);
+    }
+  };
+
+  const handleDrop = (e: DragEvent<HTMLFormElement>): void => {
+    e.preventDefault();
+    dragCounterRef.current = 0;
+    setIsDragOver(false);
+    if (disabled || isStreaming) return;
+    const file = e.dataTransfer.files?.[0];
+    if (file) readFile(file);
   };
 
   const clearAttachment = (): void => {
@@ -224,7 +261,11 @@ export function ChatInput({ conversationId, sendMessage, disabled = false }: Cha
   return (
     <form
       onSubmit={(e) => { void form.handleSubmit(onSubmit)(e); }}
-      className="p-3 border-t flex flex-col gap-2 shrink-0 relative"
+      onDragEnter={handleDragEnter}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+      className={`p-3 border-t flex flex-col gap-2 shrink-0 relative ${isDragOver ? 'ring-2 ring-primary ring-inset bg-primary/5' : ''}`}
     >
       {attachment && (
         <div className="flex items-center gap-2 text-xs px-2 py-1 border rounded bg-muted/50 self-start max-w-full">
