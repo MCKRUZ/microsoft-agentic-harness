@@ -1,4 +1,4 @@
-import { useRef, useState, type KeyboardEvent, type ChangeEvent } from 'react';
+import { useMemo, useRef, useState, type KeyboardEvent, type ChangeEvent } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
@@ -6,6 +6,8 @@ import { Paperclip, X } from 'lucide-react';
 import { useChatStore } from './useChatStore';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
+import { MentionPicker, type MentionItem } from './MentionPicker';
+import { usePromptsQuery, useToolsQuery } from '@/features/mcp/useMcpQuery';
 
 const MAX_ATTACHMENT_BYTES = 500 * 1024;
 const MAX_MESSAGE_CHARS = 40_000;
@@ -29,9 +31,34 @@ interface ChatInputProps {
   disabled?: boolean;
 }
 
+type TriggerChar = '@' | '/';
+
+interface TriggerState {
+  char: TriggerChar;
+  start: number;
+  filter: string;
+}
+
 function composeMessage(message: string, attachment: Attachment | null): string {
   if (!attachment) return message;
   return `[Attached: ${attachment.name}]\n\`\`\`\n${attachment.content}\n\`\`\`\n\n${message}`;
+}
+
+/**
+ * Detect an active @/ picker trigger at the cursor. A trigger is valid when the char is
+ * preceded by start-of-text or whitespace and everything up to the cursor is non-whitespace.
+ */
+function detectTrigger(value: string, caret: number): TriggerState | null {
+  for (let i = caret - 1; i >= 0; i--) {
+    const ch = value[i];
+    if (ch === '@' || ch === '/') {
+      const prev = i === 0 ? ' ' : value[i - 1];
+      if (!/\s/.test(prev) && i !== 0) return null;
+      return { char: ch, start: i, filter: value.slice(i + 1, caret) };
+    }
+    if (/\s/.test(ch)) return null;
+  }
+  return null;
 }
 
 export function ChatInput({ conversationId, sendMessage, disabled = false }: ChatInputProps) {
@@ -41,6 +68,13 @@ export function ChatInput({ conversationId, sendMessage, disabled = false }: Cha
   const [attachment, setAttachment] = useState<Attachment | null>(null);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const [trigger, setTrigger] = useState<TriggerState | null>(null);
+  const [pickerIndex, setPickerIndex] = useState(0);
+  const dismissedStartRef = useRef<number | null>(null);
+
+  const promptsQuery = usePromptsQuery();
+  const toolsQuery = useToolsQuery();
 
   const form = useForm<FormData>({
     resolver: zodResolver(schema),
@@ -48,6 +82,63 @@ export function ChatInput({ conversationId, sendMessage, disabled = false }: Cha
   });
 
   const watchedMessage = form.watch('message');
+  const { ref: registerRef, ...registerRest } = form.register('message');
+
+  const pickerSource: MentionItem[] = useMemo(() => {
+    if (!trigger) return [];
+    if (trigger.char === '@') {
+      return (promptsQuery.data ?? []).map((p) => ({ name: p.name, description: p.description }));
+    }
+    return (toolsQuery.data ?? []).map((t) => ({ name: t.name, description: t.description }));
+  }, [trigger, promptsQuery.data, toolsQuery.data]);
+
+  const filteredItems = useMemo(() => {
+    if (!trigger) return [];
+    const f = trigger.filter.toLowerCase();
+    if (!f) return pickerSource;
+    return pickerSource.filter((i) => i.name.toLowerCase().includes(f));
+  }, [trigger, pickerSource]);
+
+  const pickerLoading =
+    trigger?.char === '@' ? promptsQuery.isLoading : trigger?.char === '/' ? toolsQuery.isLoading : false;
+
+  const updateTrigger = (value: string, caret: number): void => {
+    const next = detectTrigger(value, caret);
+    if (next && dismissedStartRef.current === next.start) {
+      setTrigger(null);
+      return;
+    }
+    if (!next) dismissedStartRef.current = null;
+    setTrigger(next);
+    setPickerIndex(0);
+  };
+
+  const handleChange = (e: ChangeEvent<HTMLTextAreaElement>): void => {
+    void registerRest.onChange(e);
+    updateTrigger(e.target.value, e.target.selectionStart ?? e.target.value.length);
+  };
+
+  const handleSelectionUpdate = (): void => {
+    const el = textareaRef.current;
+    if (!el) return;
+    updateTrigger(el.value, el.selectionStart ?? el.value.length);
+  };
+
+  const applyMention = (item: MentionItem): void => {
+    const el = textareaRef.current;
+    if (!el || !trigger) return;
+    const before = el.value.slice(0, trigger.start);
+    const after = el.value.slice(el.selectionStart ?? el.value.length);
+    const insertion = `${trigger.char}${item.name} `;
+    const nextValue = `${before}${insertion}${after}`;
+    form.setValue('message', nextValue, { shouldValidate: true, shouldDirty: true });
+    setTrigger(null);
+    const nextCaret = before.length + insertion.length;
+    requestAnimationFrame(() => {
+      el.focus();
+      el.setSelectionRange(nextCaret, nextCaret);
+    });
+  };
 
   const handleAttachClick = (): void => {
     setAttachmentError(null);
@@ -56,7 +147,6 @@ export function ChatInput({ conversationId, sendMessage, disabled = false }: Cha
 
   const handleFileChange = (e: ChangeEvent<HTMLInputElement>): void => {
     const file = e.target.files?.[0];
-    // Always reset the value so selecting the same file twice still fires change.
     e.target.value = '';
     if (!file) return;
     if (file.size > MAX_ATTACHMENT_BYTES) {
@@ -91,6 +181,7 @@ export function ChatInput({ conversationId, sendMessage, disabled = false }: Cha
     startStreaming();
     form.reset();
     clearAttachment();
+    setTrigger(null);
     try {
       await sendMessage(conversationId, userMessageId, composed);
     } catch (err) {
@@ -99,16 +190,41 @@ export function ChatInput({ conversationId, sendMessage, disabled = false }: Cha
   };
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>): void => {
+    if (trigger && filteredItems.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setPickerIndex((i) => (i + 1) % filteredItems.length);
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setPickerIndex((i) => (i - 1 + filteredItems.length) % filteredItems.length);
+        return;
+      }
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault();
+        applyMention(filteredItems[pickerIndex]);
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        dismissedStartRef.current = trigger.start;
+        setTrigger(null);
+        return;
+      }
+    }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       void form.handleSubmit(onSubmit)();
     }
   };
 
+  const showPicker = trigger !== null;
+
   return (
     <form
       onSubmit={(e) => { void form.handleSubmit(onSubmit)(e); }}
-      className="p-3 border-t flex flex-col gap-2 shrink-0"
+      className="p-3 border-t flex flex-col gap-2 shrink-0 relative"
     >
       {attachment && (
         <div className="flex items-center gap-2 text-xs px-2 py-1 border rounded bg-muted/50 self-start max-w-full">
@@ -126,13 +242,32 @@ export function ChatInput({ conversationId, sendMessage, disabled = false }: Cha
         </div>
       )}
       {attachmentError && <p className="text-xs text-destructive">{attachmentError}</p>}
-      <Textarea
-        {...form.register('message')}
-        disabled={isStreaming || disabled}
-        onKeyDown={handleKeyDown}
-        placeholder="Type a message... (Enter to send, Shift+Enter for newline)"
-        rows={3}
-      />
+      <div className="relative">
+        {showPicker && trigger && (
+          <MentionPicker
+            items={filteredItems}
+            activeIndex={pickerIndex}
+            onSelect={applyMention}
+            onHover={setPickerIndex}
+            trigger={trigger.char}
+            loading={pickerLoading}
+          />
+        )}
+        <Textarea
+          {...registerRest}
+          ref={(el) => {
+            registerRef(el);
+            textareaRef.current = el;
+          }}
+          onChange={handleChange}
+          onKeyUp={handleSelectionUpdate}
+          onClick={handleSelectionUpdate}
+          disabled={isStreaming || disabled}
+          onKeyDown={handleKeyDown}
+          placeholder="Type a message... (@ for prompts, / for tools, Shift+Enter for newline)"
+          rows={3}
+        />
+      </div>
       {form.formState.errors.message && (
         <p className="text-sm text-destructive">{form.formState.errors.message.message}</p>
       )}

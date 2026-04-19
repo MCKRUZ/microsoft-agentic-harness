@@ -1,9 +1,10 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { vi, describe, it, expect, beforeEach } from 'vitest';
 import { useChatStore } from '../useChatStore';
 import { useAppStore } from '@/stores/appStore';
 import { ChatPanel } from '../ChatPanel';
+import { renderWithProviders } from '@/test/utils';
 
 const mockSendMessage = vi.fn().mockResolvedValue(undefined);
 const mockStartConversation = vi.fn().mockResolvedValue(undefined);
@@ -22,7 +23,7 @@ vi.mock('@/hooks/useAgentHub', () => ({
 }));
 
 function renderPanel() {
-  return render(<ChatPanel />);
+  return renderWithProviders(<ChatPanel />);
 }
 
 describe('ChatPanel', () => {

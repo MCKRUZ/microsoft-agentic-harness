@@ -1,13 +1,31 @@
-import { render, screen, fireEvent } from '@testing-library/react';
+import { screen, fireEvent, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { vi, describe, it, expect, beforeEach } from 'vitest';
 import { useChatStore } from '../useChatStore';
 import { ChatInput } from '../ChatInput';
+import { renderWithProviders } from '@/test/utils';
+
+vi.mock('@/features/mcp/useMcpQuery', () => ({
+  usePromptsQuery: () => ({
+    data: [
+      { name: 'summarize', description: 'Summarize text' },
+      { name: 'translate', description: 'Translate text' },
+    ],
+    isLoading: false,
+  }),
+  useToolsQuery: () => ({
+    data: [
+      { name: 'search', description: 'Web search' },
+      { name: 'calculator', description: 'Math' },
+    ],
+    isLoading: false,
+  }),
+}));
 
 const mockSendMessage = vi.fn().mockResolvedValue(undefined);
 
 function renderInput() {
-  return render(<ChatInput conversationId="test-conv" sendMessage={mockSendMessage} />);
+  return renderWithProviders(<ChatInput conversationId="test-conv" sendMessage={mockSendMessage} />);
 }
 
 describe('ChatInput', () => {
@@ -54,5 +72,53 @@ describe('ChatInput', () => {
     fireEvent.click(screen.getByRole('button', { name: /send/i }));
     expect(await screen.findByText(/message too long/i)).toBeInTheDocument();
     expect(mockSendMessage).not.toHaveBeenCalled();
+  });
+
+  it('shows prompt picker when user types @', async () => {
+    const user = userEvent.setup();
+    renderInput();
+    await user.type(screen.getByPlaceholderText(/type a message/i), '@');
+    expect(await screen.findByRole('listbox', { name: /prompts/i })).toBeInTheDocument();
+    expect(screen.getByText('summarize')).toBeInTheDocument();
+    expect(screen.getByText('translate')).toBeInTheDocument();
+  });
+
+  it('shows tool picker when user types /', async () => {
+    const user = userEvent.setup();
+    renderInput();
+    await user.type(screen.getByPlaceholderText(/type a message/i), '/');
+    expect(await screen.findByRole('listbox', { name: /tools/i })).toBeInTheDocument();
+    expect(screen.getByText('search')).toBeInTheDocument();
+    expect(screen.getByText('calculator')).toBeInTheDocument();
+  });
+
+  it('filters picker items as user types after @', async () => {
+    const user = userEvent.setup();
+    renderInput();
+    await user.type(screen.getByPlaceholderText(/type a message/i), '@tra');
+    await waitFor(() => {
+      expect(screen.getByText('translate')).toBeInTheDocument();
+      expect(screen.queryByText('summarize')).not.toBeInTheDocument();
+    });
+  });
+
+  it('inserts selection on Enter and closes picker', async () => {
+    const user = userEvent.setup();
+    renderInput();
+    const input = screen.getByPlaceholderText(/type a message/i);
+    await user.type(input, '@sum');
+    await user.keyboard('{Enter}');
+    expect(input).toHaveValue('@summarize ');
+    expect(screen.queryByRole('listbox', { name: /prompts/i })).not.toBeInTheDocument();
+  });
+
+  it('closes picker on Escape without inserting', async () => {
+    const user = userEvent.setup();
+    renderInput();
+    const input = screen.getByPlaceholderText(/type a message/i);
+    await user.type(input, '@sum');
+    await user.keyboard('{Escape}');
+    expect(input).toHaveValue('@sum');
+    expect(screen.queryByRole('listbox', { name: /prompts/i })).not.toBeInTheDocument();
   });
 });
