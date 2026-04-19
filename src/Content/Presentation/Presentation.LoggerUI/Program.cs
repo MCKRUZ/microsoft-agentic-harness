@@ -71,9 +71,9 @@ public class Program
 		var options = ParseArguments(args);
 		_parseJson = options.ParseJson;
 
-		Console.Title = $"Log Viewer - {options.PipeName}";
-		Console.Clear();
-		Console.OutputEncoding = System.Text.Encoding.UTF8;
+		try { Console.Title = $"Log Viewer - {options.PipeName}"; } catch { }
+		try { Console.Clear(); } catch { /* non-interactive console */ }
+		try { Console.OutputEncoding = System.Text.Encoding.UTF8; } catch { }
 
 		// Start keyboard listener for hotkeys
 		var cts = new CancellationTokenSource();
@@ -138,8 +138,18 @@ public class Program
 		if (string.IsNullOrWhiteSpace(line))
 			return;
 
-		var logEntry = ParseLogEntry(line);
-		DisplayLogEntry(logEntry);
+		try
+		{
+			var logEntry = ParseLogEntry(line);
+			DisplayLogEntry(logEntry);
+		}
+		catch
+		{
+			// Display failure (malformed markup, unprintable chars, etc.) must never
+			// kill the read loop — fall back to a safe raw write.
+			try { Console.WriteLine(line); }
+			catch { /* swallow — last-ditch fallback */ }
+		}
 	}
 
 	/// <summary>
@@ -219,32 +229,33 @@ public class Program
 		// Format: "timestamp [level] message"
 		// Example: "2026-01-14 10:00:00 [info] Loading context for phase 0..."
 
-		// Extract timestamp
-		var timestampMatch = Regex.Match(line, @"^(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?)");
+		// Extract timestamp — supports ISO date-time and HH:mm:ss[.fff] pipe format
+		var timestampMatch = Regex.Match(line, @"^(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?|\d{2}:\d{2}:\d{2}(?:\.\d+)?)");
 		if (timestampMatch.Success && DateTime.TryParse(timestampMatch.Groups[1].Value, out var ts))
 		{
 			entry.Timestamp = ts;
 		}
 
-		// Extract log level from brackets [level]
+		// Extract log level — accepts [level], bare token after timestamp (INFO/WARN/DBG/TRCE/ERR/FAIL/CRIT),
+		// or full names from structured formatters.
 		var levelMatch = Regex.Match(line, @"\[(trce|dbug|info|warn|error|fail|crit|fatal|trace|debug|information|warning|critical)\]", RegexOptions.IgnoreCase);
+		if (!levelMatch.Success)
+		{
+			levelMatch = Regex.Match(line, @"\b(TRCE|DBG|INFO|WARN|ERR|FAIL|CRIT|FATAL)\b");
+		}
 		if (levelMatch.Success)
 		{
 			entry.Level = levelMatch.Groups[1].Value.ToLower();
 		}
 
-		// Extract message content after timestamp and [level]
-		// Pattern: "timestamp [level] message"
+		// Extract message content after timestamp and level marker
 		var messageMatch = Regex.Match(line, @"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?\s+\[[^\]]+\]\s+(.*)");
-		if (messageMatch.Success)
+		if (!messageMatch.Success)
 		{
-			entry.Message = messageMatch.Groups[1].Value;
+			// Pipe format: "HH:mm:ss.fff LEVEL [Category] message"
+			messageMatch = Regex.Match(line, @"^\d{2}:\d{2}:\d{2}(?:\.\d+)?\s+\S+\s+\[[^\]]+\]\s+(.*)");
 		}
-		else
-		{
-			// Fallback: use the whole line
-			entry.Message = line;
-		}
+		entry.Message = messageMatch.Success ? messageMatch.Groups[1].Value : line;
 
 		return entry;
 	}
@@ -595,9 +606,9 @@ public class Program
 		rule.RuleStyle("grey");
 		AnsiConsole.Write(rule);
 
-		Console.WriteLine();
-		Console.WriteLine("[grey]Press C to clear, Ctrl+C to exit[/]");
-		Console.WriteLine();
+		AnsiConsole.WriteLine();
+		AnsiConsole.MarkupLine("[grey]Press C to clear, Ctrl+C to exit[/]");
+		AnsiConsole.WriteLine();
 	}
 
 	/// <summary>
@@ -607,7 +618,9 @@ public class Program
 	{
 		while (!cts.IsCancellationRequested)
 		{
-			var key = Console.ReadKey(true);
+			ConsoleKeyInfo key;
+			try { key = Console.ReadKey(true); }
+			catch { return; /* no console / redirected — keyboard listener disabled */ }
 			if (key.Key == ConsoleKey.C)
 			{
 				Console.Clear();
