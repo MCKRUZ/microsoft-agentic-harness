@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.IO.Pipes;
+using System.Text;
 using Domain.Common.Config;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -61,6 +62,8 @@ public sealed class NamedPipeLoggerProvider : ILoggerProvider
     internal void WriteMessage(string message) =>
         _messageQueue.TryAdd(message);
 
+    private static readonly UTF8Encoding PipeEncoding = new(encoderShouldEmitUTF8Identifier: false);
+
     private void ProcessMessageQueue()
     {
         var pipeName = _config.CurrentValue.PipeName;
@@ -69,6 +72,7 @@ public sealed class NamedPipeLoggerProvider : ILoggerProvider
         {
             NamedPipeServerStream? pipe = null;
             StreamWriter? writer = null;
+            string? pendingMessage = null;
 
             try
             {
@@ -80,11 +84,32 @@ public sealed class NamedPipeLoggerProvider : ILoggerProvider
                     PipeOptions.Asynchronous);
 
                 pipe.WaitForConnectionAsync(_cts.Token).Wait(_cts.Token);
-                writer = new StreamWriter(pipe) { AutoFlush = true };
-
-                foreach (var message in _messageQueue.GetConsumingEnumerable(_cts.Token))
+                writer = new StreamWriter(pipe, PipeEncoding)
                 {
-                    writer.WriteLine(message);
+                    AutoFlush = true,
+                    NewLine = "\n"
+                };
+
+                while (!_cts.Token.IsCancellationRequested)
+                {
+                    var message = _messageQueue.Take(_cts.Token);
+                    pendingMessage = message;
+
+                    try
+                    {
+                        writer.WriteLine(message);
+                        pendingMessage = null;
+                    }
+                    catch (IOException)
+                    {
+                        // Broken pipe: preserve the unsent message so the next client sees it.
+                        break;
+                    }
+                    catch (ObjectDisposedException)
+                    {
+                        // Pipe closed mid-write.
+                        break;
+                    }
                 }
             }
             catch (OperationCanceledException)
@@ -93,17 +118,21 @@ public sealed class NamedPipeLoggerProvider : ILoggerProvider
             }
             catch (IOException)
             {
-                // Client disconnected; loop back and wait for a new client.
+                // Client disconnect during connect/setup; loop back.
             }
             catch (Exception)
             {
-                // Swallow to keep the logging thread alive; cannot log here without recursion.
+                // Swallow to keep the thread alive; cannot log from the logger without recursion.
             }
             finally
             {
                 // StreamWriter.Dispose flushes and can throw on a broken pipe — guard it.
                 try { writer?.Dispose(); } catch { }
                 try { pipe?.Dispose(); } catch { }
+
+                // Requeue any message that was dequeued but never made it onto the wire.
+                if (pendingMessage is not null && !_cts.Token.IsCancellationRequested)
+                    _messageQueue.TryAdd(pendingMessage);
             }
         }
     }
