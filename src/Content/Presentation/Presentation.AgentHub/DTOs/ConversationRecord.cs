@@ -8,6 +8,8 @@ namespace Presentation.AgentHub.DTOs;
 /// <see cref="Title"/> is auto-derived from the first user message (truncated to
 /// <c>ConversationRecordTitleDerivation.MaxLength</c> characters) when the first
 /// message is appended. Absent on new records and on records predating this field.
+/// <see cref="Settings"/> is optional; records predating the field deserialize with
+/// <c>null</c> and the store treats a null value as "use skill/provider defaults".
 /// </remarks>
 public sealed record ConversationRecord(
     string Id,
@@ -16,7 +18,8 @@ public sealed record ConversationRecord(
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
     IReadOnlyList<ConversationMessage> Messages,
-    string? Title = null);
+    string? Title = null,
+    ConversationSettings? Settings = null);
 
 /// <summary>Title derivation rules — shared between store and any future rename logic.</summary>
 public static class ConversationRecordTitleDerivation

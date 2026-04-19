@@ -42,7 +42,12 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 
 			var agent = await _agentFactory.CreateAgentFromSkillAsync(
 				skillId,
-				new SkillAgentOptions { AdditionalContext = request.SystemPromptOverride },
+				new SkillAgentOptions
+				{
+					AdditionalContext = request.SystemPromptOverride,
+					DeploymentName = request.DeploymentOverride,
+					Temperature = request.Temperature,
+				},
 				cancellationToken);
 
 			// Build conversation messages

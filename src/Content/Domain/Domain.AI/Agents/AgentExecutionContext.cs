@@ -76,6 +76,11 @@ public class AgentExecutionContext
 	public TraceScope? TraceScope { get; set; }
 
 	/// <summary>
+	/// Sampling temperature for the underlying chat client. Null preserves provider defaults.
+	/// </summary>
+	public float? Temperature { get; set; }
+
+	/// <summary>
 	/// Extensible configuration properties.
 	/// </summary>
 	public Dictionary<string, object>? AdditionalProperties { get; set; }

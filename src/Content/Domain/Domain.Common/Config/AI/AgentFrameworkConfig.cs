@@ -26,6 +26,13 @@ public class AgentFrameworkConfig
     public string DefaultDeployment { get; set; } = "default";
 
     /// <summary>
+    /// Gets or sets the authoritative list of deployment/model names a caller may request
+    /// as a per-conversation override. When empty, consumers should treat
+    /// <c>[<see cref="DefaultDeployment"/>]</c> as the single available option.
+    /// </summary>
+    public List<string> AvailableDeployments { get; set; } = [];
+
+    /// <summary>
     /// Gets or sets the default AI framework client type.
     /// Determines which provider is used when no override is specified per-skill or per-agent.
     /// </summary>

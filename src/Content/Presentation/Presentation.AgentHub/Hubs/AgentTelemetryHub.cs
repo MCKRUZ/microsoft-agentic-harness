@@ -139,6 +139,29 @@ public sealed class AgentTelemetryHub : Hub
     }
 
     /// <summary>
+    /// Replaces the per-conversation agent settings (deployment, temperature, system prompt
+    /// override). Validates ownership before writing. Throws <see cref="HubException"/> when
+    /// the conversation is missing or owned by another user.
+    /// </summary>
+    public async Task SetConversationSettings(string conversationId, ConversationSettings settings)
+    {
+        var ct = Context.ConnectionAborted;
+        var callerId = GetCallerId();
+        _ = await ValidateOwnershipAsync(conversationId, callerId, ct)
+            ?? throw new HubException("Conversation not found.");
+
+        var updated = await _conversationStore.UpdateSettingsAsync(conversationId, settings, ct)
+            ?? throw new HubException("Conversation not found.");
+
+        _logger.LogInformation(
+            "Updated conversation {ConversationId} settings (deployment={Deployment}, temperature={Temperature}, promptOverride={HasPrompt}).",
+            updated.Id,
+            settings.DeploymentName ?? "(default)",
+            settings.Temperature?.ToString("0.##") ?? "(default)",
+            !string.IsNullOrEmpty(settings.SystemPromptOverride));
+    }
+
+    /// <summary>
     /// Sends a user message, dispatches it to the agent pipeline, and streams the response
     /// back as <c>TokenReceived</c> events followed by a <c>TurnComplete</c> event.
     ///
@@ -273,6 +296,9 @@ public sealed class AgentTelemetryHub : Hub
             ConversationHistory = ToMeaiHistory(history),
             ConversationId = conversationId,
             TurnNumber = turnNumber,
+            DeploymentOverride = updatedRecord?.Settings?.DeploymentName,
+            Temperature = updatedRecord?.Settings?.Temperature,
+            SystemPromptOverride = updatedRecord?.Settings?.SystemPromptOverride,
         };
 
         AgentTurnResult result;

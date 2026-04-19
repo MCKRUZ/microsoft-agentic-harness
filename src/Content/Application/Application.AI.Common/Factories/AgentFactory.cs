@@ -127,7 +127,8 @@ public class AgentFactory : IAgentFactory
             ChatOptions = new ChatOptions
             {
                 Instructions = agentContext.Instruction,
-                Tools = agentContext.Tools
+                Tools = agentContext.Tools,
+                Temperature = agentContext.Temperature
             },
             AIContextProviders = agentContext.AIContextProviders?.Count > 0
                 ? agentContext.AIContextProviders
@@ -176,6 +177,7 @@ public class AgentFactory : IAgentFactory
             Tools = agentContext.Tools,
             AIContextProviders = agentContext.AIContextProviders,
             MiddlewareTypes = agentContext.MiddlewareTypes,
+            Temperature = agentContext.Temperature,
             AdditionalProperties = agentContext.AdditionalProperties,
             AgentId = agentId,
             AIAgentFrameworkType = AIAgentFrameworkClientType.PersistentAgents

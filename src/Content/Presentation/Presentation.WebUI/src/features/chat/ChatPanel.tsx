@@ -1,13 +1,21 @@
 import { useEffect, useState } from 'react';
+import { Settings } from 'lucide-react';
 import { useChatStore } from './useChatStore';
 import { useAppStore } from '@/stores/appStore';
 import { useHubActionsStore } from '@/stores/hubActionsStore';
-import { useAgentHub } from '@/hooks/useAgentHub';
+import { useConversationSettingsStore } from '@/stores/conversationSettingsStore';
+import { useAgentHub, type ConversationSettingsInput } from '@/hooks/useAgentHub';
 import { MessageList } from './MessageList';
 import { TypingIndicator } from './TypingIndicator';
 import { ChatInput } from './ChatInput';
+import { ConversationSettingsDrawer } from './ConversationSettingsDrawer';
 
-function ConversationHeader() {
+interface ConversationHeaderProps {
+  onOpenSettings: () => void;
+  canOpenSettings: boolean;
+}
+
+function ConversationHeader({ onOpenSettings, canOpenSettings }: ConversationHeaderProps) {
   const conversationId = useChatStore((s) => s.conversationId);
   const clearMessages = useChatStore((s) => s.clearMessages);
 
@@ -16,13 +24,25 @@ function ConversationHeader() {
       <span className="text-sm text-muted-foreground font-mono truncate max-w-[200px]">
         {conversationId ? `${conversationId.slice(0, 8)}\u2026` : 'No conversation'}
       </span>
-      <button
-        type="button"
-        onClick={clearMessages}
-        className="text-xs text-muted-foreground hover:text-foreground shrink-0 ml-2"
-      >
-        Clear
-      </button>
+      <div className="flex items-center gap-2 shrink-0">
+        <button
+          type="button"
+          onClick={onOpenSettings}
+          disabled={!canOpenSettings}
+          aria-label="Conversation settings"
+          title="Conversation settings"
+          className="inline-flex items-center justify-center h-7 w-7 rounded text-muted-foreground hover:bg-muted disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          <Settings size={14} />
+        </button>
+        <button
+          type="button"
+          onClick={clearMessages}
+          className="text-xs text-muted-foreground hover:text-foreground"
+        >
+          Clear
+        </button>
+      </div>
     </div>
   );
 }
@@ -51,11 +71,23 @@ export function ChatPanel() {
     startConversation,
     retryFromMessage,
     editAndResubmit,
+    setConversationSettings,
     joinGlobalTraces,
     leaveGlobalTraces,
     connectionState,
   } = useAgentHub();
   const [conversationReady, setConversationReady] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const currentSettings = useConversationSettingsStore((s) =>
+    s.getSettings(activeConversationId),
+  );
+  const saveLocalSettings = useConversationSettingsStore((s) => s.setSettings);
+
+  const handleSaveSettings = async (next: ConversationSettingsInput): Promise<void> => {
+    if (!activeConversationId) return;
+    await setConversationSettings(activeConversationId, next);
+    saveLocalSettings(activeConversationId, next);
+  };
 
   const handleRetry = (assistantMessageId: string): void => {
     if (!activeConversationId) return;
@@ -115,7 +147,10 @@ export function ChatPanel() {
 
   return (
     <div className="flex flex-col h-full">
-      <ConversationHeader />
+      <ConversationHeader
+        onOpenSettings={() => { setSettingsOpen(true); }}
+        canOpenSettings={conversationReady && activeConversationId !== null}
+      />
       <ErrorBanner />
       <div className="flex-1 overflow-hidden min-h-0">
         <MessageList
@@ -132,6 +167,12 @@ export function ChatPanel() {
           disabled={!conversationReady}
         />
       )}
+      <ConversationSettingsDrawer
+        open={settingsOpen}
+        onClose={() => { setSettingsOpen(false); }}
+        initial={currentSettings}
+        onSave={handleSaveSettings}
+      />
     </div>
   );
 }

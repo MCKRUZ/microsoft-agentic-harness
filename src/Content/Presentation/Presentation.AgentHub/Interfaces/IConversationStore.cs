@@ -52,4 +52,14 @@ public interface IConversationStore
         string conversationId,
         Guid messageId,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// Replaces the <see cref="ConversationRecord.Settings"/> for the specified conversation.
+    /// Returns the updated record, or <c>null</c> if the conversation does not exist.
+    /// Caller is responsible for ownership validation before invocation.
+    /// </summary>
+    Task<ConversationRecord?> UpdateSettingsAsync(
+        string conversationId,
+        ConversationSettings settings,
+        CancellationToken ct = default);
 }

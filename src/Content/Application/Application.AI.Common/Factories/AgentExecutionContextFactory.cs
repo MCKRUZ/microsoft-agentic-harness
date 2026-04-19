@@ -128,6 +128,7 @@ public class AgentExecutionContextFactory
 			AIContextProviders = aiContextProviders,
 			MiddlewareTypes = middlewareTypes,
 			TraceScope = traceScope,
+			Temperature = options.Temperature,
 			AdditionalProperties = additionalProps
 		};
 

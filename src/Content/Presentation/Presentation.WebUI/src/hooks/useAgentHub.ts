@@ -10,6 +10,12 @@ import type { SpanData } from '@/types/signalr';
 
 export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
 
+export interface ConversationSettingsInput {
+  deploymentName: string | null;
+  temperature: number | null;
+  systemPromptOverride: string | null;
+}
+
 export interface UseAgentHubReturn {
   connectionState: ConnectionState;
   sendMessage: (conversationId: string, userMessageId: string, message: string) => Promise<void>;
@@ -17,6 +23,7 @@ export interface UseAgentHubReturn {
   invokeToolViaAgent: (conversationId: string, toolName: string, args: Record<string, unknown>) => Promise<void>;
   retryFromMessage: (conversationId: string, assistantMessageId: string) => Promise<void>;
   editAndResubmit: (conversationId: string, userMessageId: string, newContent: string) => Promise<void>;
+  setConversationSettings: (conversationId: string, settings: ConversationSettingsInput) => Promise<void>;
   joinGlobalTraces: () => Promise<void>;
   leaveGlobalTraces: () => Promise<void>;
 }
@@ -134,6 +141,11 @@ export function useAgentHub(): UseAgentHubReturn {
   ): Promise<void> =>
     hubInvoke('EditAndResubmit', conversationId, userMessageId, crypto.randomUUID(), newContent);
 
+  const setConversationSettings = (
+    conversationId: string,
+    settings: ConversationSettingsInput,
+  ): Promise<void> => hubInvoke('SetConversationSettings', conversationId, settings);
+
   const joinGlobalTraces = (): Promise<void> => hubInvoke('JoinGlobalTraces');
 
   const leaveGlobalTraces = (): Promise<void> => hubInvoke('LeaveGlobalTraces');
@@ -145,6 +157,7 @@ export function useAgentHub(): UseAgentHubReturn {
     invokeToolViaAgent,
     retryFromMessage,
     editAndResubmit,
+    setConversationSettings,
     joinGlobalTraces,
     leaveGlobalTraces,
   };

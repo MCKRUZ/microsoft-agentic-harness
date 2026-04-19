@@ -35,9 +35,20 @@ public record ExecuteAgentTurnCommand : IRequest<AgentTurnResult>, IAgentScopedR
 	public IReadOnlyList<ChatMessage> ConversationHistory { get; init; } = [];
 
 	/// <summary>
-	/// Optional system prompt override.
+	/// Optional system prompt override appended to the skill's base instructions.
 	/// </summary>
 	public string? SystemPromptOverride { get; init; }
+
+	/// <summary>
+	/// Optional deployment/model override — takes precedence over the skill's
+	/// declared deployment and <c>AppConfig.AI.AgentFramework.DefaultDeployment</c>.
+	/// </summary>
+	public string? DeploymentOverride { get; init; }
+
+	/// <summary>
+	/// Optional sampling temperature. Null preserves provider defaults.
+	/// </summary>
+	public float? Temperature { get; init; }
 
 	// IAgentScopedRequest
 	public string AgentId => AgentName;

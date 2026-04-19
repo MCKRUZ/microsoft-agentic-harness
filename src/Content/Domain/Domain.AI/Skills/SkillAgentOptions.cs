@@ -82,6 +82,12 @@ public class SkillAgentOptions
 	public string? AdditionalContext { get; set; }
 
 	/// <summary>
+	/// Override the sampling temperature for the underlying chat client.
+	/// When null, the provider default is used.
+	/// </summary>
+	public float? Temperature { get; set; }
+
+	/// <summary>
 	/// Additional tools for the agent.
 	/// </summary>
 	public IList<AITool>? AdditionalTools { get; set; }

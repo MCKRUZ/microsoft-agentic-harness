@@ -232,6 +232,39 @@ public sealed class FileSystemConversationStore : IConversationStore
     }
 
     /// <inheritdoc/>
+    public async Task<ConversationRecord?> UpdateSettingsAsync(
+        string conversationId,
+        ConversationSettings settings,
+        CancellationToken ct = default)
+    {
+        var path = ResolveAndValidatePath(conversationId);
+
+        await _lock.WaitAsync(ct);
+        try
+        {
+            if (!File.Exists(path))
+                return null;
+
+            var json = await File.ReadAllTextAsync(path, ct);
+            var existing = JsonSerializer.Deserialize<ConversationRecord>(json, _jsonOptions);
+            if (existing is null) return null;
+
+            var updated = existing with
+            {
+                Settings = settings,
+                UpdatedAt = DateTimeOffset.UtcNow,
+            };
+
+            await WriteAtomicLockedAsync(path, updated, ct);
+            return updated;
+        }
+        finally
+        {
+            _lock.Release();
+        }
+    }
+
+    /// <inheritdoc/>
     public async Task<IReadOnlyList<ConversationMessage>?> GetHistoryForDispatch(
         string conversationId,
         int maxMessages,
