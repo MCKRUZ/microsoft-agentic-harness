@@ -1,4 +1,24 @@
 <Solution>
+  <Folder Name="/Dashboards/">
+    <File Path="../Dashboards/docker-compose.yml" />
+    <File Path="../Dashboards/prometheus.yml" />
+    <File Path="../Dashboards/StartAllDashboards.bat" />
+    <File Path="../Dashboards/StopAllDashboards.bat" />
+    <File Path="../Dashboards/DashboardLogs.bat" />
+    <File Path="../Dashboards/mission-control.html" />
+    <File Path="../Dashboards/agent-intelligence.html" />
+    <File Path="../Dashboards/tool-operations.html" />
+    <File Path="../Dashboards/safety-compliance.html" />
+    <File Path="../Dashboards/cost-analytics.html" />
+    <Folder Name="/Dashboards/Grafana Dashboards/">
+      <File Path="../Dashboards/Grafana Dashboards/agentFramework.json" />
+      <File Path="../Dashboards/Grafana Dashboards/tokenUsage.json" />
+      <File Path="../Dashboards/Grafana Dashboards/toolExecution.json" />
+      <File Path="../Dashboards/Grafana Dashboards/contentSafety.json" />
+      <File Path="../Dashboards/Grafana Dashboards/missionControl.json" />
+      <File Path="../Dashboards/Grafana Dashboards/costAnalytics.json" />
+    </Folder>
+  </Folder>
   <Folder Name="/Solution Items/">
     <File Path="../README.md" />
     <File Path="../CLAUDE.md" />

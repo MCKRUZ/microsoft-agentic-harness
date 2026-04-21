@@ -118,11 +118,8 @@
 }
 
 #root {
-  width: 1126px;
-  max-width: 100%;
-  margin: 0 auto;
+  width: 100%;
   text-align: center;
-  border-inline: 1px solid var(--border);
   min-height: 100svh;
   display: flex;
   flex-direction: column;
@@ -218,6 +215,9 @@ code {
   --radius-2xl: calc(var(--radius) * 1.8);
   --radius-3xl: calc(var(--radius) * 2.2);
   --radius-4xl: calc(var(--radius) * 2.6);
+
+  --animate-typing-pulse: typing-pulse 1.4s ease-in-out infinite;
+  --animate-cursor-blink: cursor-blink 1s ease-in-out infinite;
 }
 
 [data-theme="dark"], .dark {
@@ -256,8 +256,44 @@ code {
 
 @layer base {
   * {
-    @apply border-border outline-ring/50;}
+    @apply border-border outline-ring/50;
+  }
   body {
-    @apply bg-background text-foreground;}
+    @apply bg-background text-foreground;
+  }
   html {
-    @apply font-sans;}}
+    @apply font-sans;
+  }
+}
+
+/* Chat animations */
+@keyframes typing-pulse {
+  0%, 100% {
+    opacity: 0.4;
+    transform: scale(0.8);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes cursor-blink {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+
+/* Collapsible chevron rotation for tool cards */
+[data-state="closed"] .lucide-chevron-down {
+  transform: rotate(-90deg);
+}
+[data-state="open"] .lucide-chevron-down {
+  transform: rotate(0deg);
+}
+.lucide-chevron-down {
+  transition: transform 200ms ease;
+}

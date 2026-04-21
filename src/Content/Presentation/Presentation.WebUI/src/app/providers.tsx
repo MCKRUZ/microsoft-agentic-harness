@@ -5,6 +5,8 @@ import { msalInstance } from '@/lib/authConfig';
 import { IS_AUTH_DISABLED } from '@/lib/devAuth';
 import { queryClient } from '@/lib/queryClient';
 import { ThemeProvider } from '@/components/theme/ThemeProvider';
+import { TooltipProvider } from '@/components/ui/tooltip';
+import { AgentHubProvider } from '@/hooks/useAgentHub';
 
 interface ProvidersProps {
   children: ReactNode;
@@ -14,7 +16,11 @@ export function Providers({ children }: ProvidersProps) {
   const inner = (
     <QueryClientProvider client={queryClient}>
       <ThemeProvider>
-        {children}
+        <TooltipProvider>
+          <AgentHubProvider>
+            {children}
+          </AgentHubProvider>
+        </TooltipProvider>
       </ThemeProvider>
     </QueryClientProvider>
   );

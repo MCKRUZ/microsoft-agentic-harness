@@ -1,14 +1,20 @@
-import { useRef, useState, useEffect } from 'react';
+import { useContext, createContext, useRef, useState, useEffect, type ReactNode } from 'react';
 import { useMsal } from '@azure/msal-react';
 import type { HubConnection } from '@microsoft/signalr';
 import { buildHubConnection } from '@/lib/signalrClient';
 import { loginRequest } from '@/lib/authConfig';
 import { IS_AUTH_DISABLED } from '@/lib/devAuth';
 import { useChatStore, type ChatMessage } from '@/stores/chatStore';
-import { useTelemetryStore } from '@/stores/telemetryStore';
-import type { SpanData } from '@/types/signalr';
 
 export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
+
+export interface ServerConversationMessage {
+  id: string;
+  role: string;
+  content: string;
+  timestamp: string;
+  toolCalls?: { toolName: string; input: Record<string, unknown>; output: unknown }[] | null;
+}
 
 export interface ConversationSettingsInput {
   deploymentName: string | null;
@@ -19,16 +25,16 @@ export interface ConversationSettingsInput {
 export interface UseAgentHubReturn {
   connectionState: ConnectionState;
   sendMessage: (conversationId: string, userMessageId: string, message: string) => Promise<void>;
-  startConversation: (agentName: string, conversationId: string) => Promise<void>;
+  startConversation: (agentName: string, conversationId: string) => Promise<ServerConversationMessage[]>;
   invokeToolViaAgent: (conversationId: string, toolName: string, args: Record<string, unknown>) => Promise<void>;
   retryFromMessage: (conversationId: string, assistantMessageId: string) => Promise<void>;
   editAndResubmit: (conversationId: string, userMessageId: string, newContent: string) => Promise<void>;
   setConversationSettings: (conversationId: string, settings: ConversationSettingsInput) => Promise<void>;
-  joinGlobalTraces: () => Promise<void>;
-  leaveGlobalTraces: () => Promise<void>;
 }
 
-export function useAgentHub(): UseAgentHubReturn {
+const AgentHubContext = createContext<UseAgentHubReturn | null>(null);
+
+export function AgentHubProvider({ children }: { children: ReactNode }) {
   const { instance } = useMsal();
   const [connectionState, setConnectionState] = useState<ConnectionState>('disconnected');
   const connectionRef = useRef<HubConnection | null>(null);
@@ -37,7 +43,6 @@ export function useAgentHub(): UseAgentHubReturn {
   useEffect(() => {
     stoppedRef.current = false;
 
-    // Resolve account at call time to avoid stale closure if user re-authenticates
     const getToken = async (): Promise<string> => {
       if (IS_AUTH_DISABLED) return '';
       const account = instance.getAllAccounts()[0];
@@ -71,22 +76,11 @@ export function useAgentHub(): UseAgentHubReturn {
       useChatStore.getState().setError(message);
     });
 
-    connection.on('SpanReceived', (span: SpanData) => {
-      useTelemetryStore.getState().addSpan(span);
-    });
-
-    connection.on('ConversationHistory', (messages: ChatMessage[]) => {
-      useChatStore.getState().setMessages(messages);
-    });
-
     connection.onreconnecting(() => { setConnectionState('reconnecting'); });
     connection.onreconnected(() => { setConnectionState('connected'); });
     connection.onclose(() => { setConnectionState('disconnected'); });
 
     setConnectionState('connecting');
-    // Track start() so cleanup can wait for it to settle before calling stop().
-    // Calling stop() mid-negotiate (e.g. React StrictMode's synchronous remount)
-    // triggers a "stopped during negotiation" warning from the SignalR client.
     const startPromise = connection.start()
       .then(() => {
         if (!stoppedRef.current) setConnectionState('connected');
@@ -105,60 +99,39 @@ export function useAgentHub(): UseAgentHubReturn {
       connection.off('TurnComplete');
       connection.off('HistoryTruncated');
       connection.off('Error');
-      connection.off('SpanReceived');
-      connection.off('ConversationHistory');
       void startPromise.finally(() => connection.stop());
       connectionRef.current = null;
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const hubInvoke = (method: string, ...args: unknown[]): Promise<void> => {
+  const hubInvoke = <T = void>(method: string, ...args: unknown[]): Promise<T> => {
     const conn = connectionRef.current;
-    if (!conn) throw new Error('SignalR connection not established');
-    return conn.invoke(method, ...args) as Promise<void>;
+    if (!conn) return Promise.reject(new Error('SignalR connection not established'));
+    return conn.invoke(method, ...args) as Promise<T>;
   };
 
-  const sendMessage = (conversationId: string, userMessageId: string, message: string): Promise<void> =>
-    hubInvoke('SendMessage', conversationId, userMessageId, message);
-
-  const startConversation = (agentName: string, conversationId: string): Promise<void> =>
-    hubInvoke('StartConversation', agentName, conversationId);
-
-  const invokeToolViaAgent = (
-    conversationId: string,
-    toolName: string,
-    args: Record<string, unknown>,
-  ): Promise<void> => hubInvoke('InvokeToolViaAgent', conversationId, toolName, args);
-
-  const retryFromMessage = (conversationId: string, assistantMessageId: string): Promise<void> =>
-    hubInvoke('RetryFromMessage', conversationId, assistantMessageId);
-
-  const editAndResubmit = (
-    conversationId: string,
-    userMessageId: string,
-    newContent: string,
-  ): Promise<void> =>
-    hubInvoke('EditAndResubmit', conversationId, userMessageId, crypto.randomUUID(), newContent);
-
-  const setConversationSettings = (
-    conversationId: string,
-    settings: ConversationSettingsInput,
-  ): Promise<void> => hubInvoke('SetConversationSettings', conversationId, settings);
-
-  const joinGlobalTraces = (): Promise<void> => hubInvoke('JoinGlobalTraces');
-
-  const leaveGlobalTraces = (): Promise<void> => hubInvoke('LeaveGlobalTraces');
-
-  return {
+  const value: UseAgentHubReturn = {
     connectionState,
-    sendMessage,
-    startConversation,
-    invokeToolViaAgent,
-    retryFromMessage,
-    editAndResubmit,
-    setConversationSettings,
-    joinGlobalTraces,
-    leaveGlobalTraces,
+    sendMessage: (conversationId, userMessageId, message) =>
+      hubInvoke('SendMessage', conversationId, userMessageId, message),
+    startConversation: (agentName, conversationId) =>
+      hubInvoke<ServerConversationMessage[]>('StartConversation', agentName, conversationId),
+    invokeToolViaAgent: (conversationId, toolName, args) =>
+      hubInvoke('InvokeToolViaAgent', conversationId, toolName, JSON.stringify(args)),
+    retryFromMessage: (conversationId, assistantMessageId) =>
+      hubInvoke('RetryFromMessage', conversationId, assistantMessageId),
+    editAndResubmit: (conversationId, userMessageId, newContent) =>
+      hubInvoke('EditAndResubmit', conversationId, userMessageId, crypto.randomUUID(), newContent),
+    setConversationSettings: (conversationId, settings) =>
+      hubInvoke('SetConversationSettings', conversationId, settings),
   };
+
+  return <AgentHubContext value={value}>{children}</AgentHubContext>;
+}
+
+export function useAgentHub(): UseAgentHubReturn {
+  const ctx = useContext(AgentHubContext);
+  if (!ctx) throw new Error('useAgentHub must be used within AgentHubProvider');
+  return ctx;
 }

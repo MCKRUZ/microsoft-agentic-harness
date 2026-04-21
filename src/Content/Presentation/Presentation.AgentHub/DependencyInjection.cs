@@ -80,7 +80,16 @@ public static class DependencyInjection
 
         services.AddAuthorization();
 
-        services.AddSignalR();
+        services.AddSignalR(options =>
+            {
+                if (environment.IsDevelopment())
+                    options.EnableDetailedErrors = true;
+            })
+            .AddJsonProtocol(options =>
+            {
+                options.PayloadSerializerOptions.Converters.Add(
+                    new System.Text.Json.Serialization.JsonStringEnumConverter());
+            });
 
         services.AddRateLimiter(options =>
         {

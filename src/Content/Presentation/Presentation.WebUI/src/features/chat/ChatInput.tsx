@@ -2,10 +2,12 @@ import { useMemo, useRef, useState, type KeyboardEvent, type ChangeEvent, type D
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
-import { Paperclip, X } from 'lucide-react';
+import { Paperclip, Send, X } from 'lucide-react';
+import { cn } from '@/lib/utils';
 import { useChatStore } from './useChatStore';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { MentionPicker, type MentionItem } from './MentionPicker';
 import { usePromptsQuery, useToolsQuery } from '@/features/mcp/useMcpQuery';
 
@@ -257,6 +259,7 @@ export function ChatInput({ conversationId, sendMessage, disabled = false }: Cha
   };
 
   const showPicker = trigger !== null;
+  const canSend = watchedMessage.trim().length > 0 && !isStreaming && !disabled;
 
   return (
     <form
@@ -265,24 +268,31 @@ export function ChatInput({ conversationId, sendMessage, disabled = false }: Cha
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
-      className={`p-3 border-t flex flex-col gap-2 shrink-0 relative ${isDragOver ? 'ring-2 ring-primary ring-inset bg-primary/5' : ''}`}
+      className={cn(
+        'px-4 py-3 md:px-6 border-t border-border/50 shrink-0 relative',
+        'bg-background/80 backdrop-blur-sm',
+        isDragOver && 'ring-2 ring-primary ring-inset bg-primary/5',
+      )}
     >
+      {/* Attachment preview */}
       {attachment && (
-        <div className="flex items-center gap-2 text-xs px-2 py-1 border rounded bg-muted/50 self-start max-w-full">
+        <div className="flex items-center gap-2 text-xs px-3 py-1.5 mb-2 border border-border/50 rounded-lg bg-muted/30 self-start max-w-full">
           <Paperclip size={12} className="shrink-0 text-muted-foreground" />
-          <span className="truncate">{attachment.name}</span>
+          <span className="truncate font-medium">{attachment.name}</span>
           <span className="text-muted-foreground shrink-0">({(attachment.size / 1024).toFixed(1)}KB)</span>
           <button
             type="button"
             onClick={clearAttachment}
             aria-label={`Remove attachment ${attachment.name}`}
-            className="text-muted-foreground hover:text-destructive shrink-0"
+            className="text-muted-foreground hover:text-destructive shrink-0 ml-1"
           >
             <X size={12} />
           </button>
         </div>
       )}
-      {attachmentError && <p className="text-xs text-destructive">{attachmentError}</p>}
+      {attachmentError && <p className="text-xs text-destructive mb-2">{attachmentError}</p>}
+
+      {/* Input area */}
       <div className="relative">
         {showPicker && trigger && (
           <MentionPicker
@@ -294,51 +304,104 @@ export function ChatInput({ conversationId, sendMessage, disabled = false }: Cha
             loading={pickerLoading}
           />
         )}
-        <Textarea
-          {...registerRest}
-          ref={(el) => {
-            registerRef(el);
-            textareaRef.current = el;
-          }}
-          onChange={handleChange}
-          onKeyUp={handleSelectionUpdate}
-          onClick={handleSelectionUpdate}
-          disabled={isStreaming || disabled}
-          onKeyDown={handleKeyDown}
-          placeholder="Type a message... (@ for prompts, / for tools, Shift+Enter for newline)"
-          rows={3}
-        />
-      </div>
-      {form.formState.errors.message && (
-        <p className="text-sm text-destructive">{form.formState.errors.message.message}</p>
-      )}
-      <div className="flex justify-between items-center">
-        <div className="flex items-center gap-2">
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept={ACCEPTED_EXTENSIONS}
-            onChange={handleFileChange}
-            className="hidden"
-            aria-hidden="true"
-            tabIndex={-1}
-          />
-          <button
-            type="button"
-            onClick={handleAttachClick}
+        <div
+          className={cn(
+            'flex items-end gap-2 rounded-xl border border-border/60 bg-card/50',
+            'shadow-sm transition-all duration-150',
+            'focus-within:border-ring/50 focus-within:shadow-md',
+            (isStreaming || disabled) && 'opacity-60',
+          )}
+        >
+          {/* Attach button */}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={handleAttachClick}
+                disabled={isStreaming || disabled}
+                aria-label="Attach file"
+                className={cn(
+                  'flex items-center justify-center h-9 w-9 ml-2 mb-1.5 rounded-lg',
+                  'text-muted-foreground hover:text-foreground hover:bg-muted/60',
+                  'disabled:opacity-40 disabled:cursor-not-allowed transition-colors',
+                )}
+              >
+                <Paperclip className="h-4 w-4" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="top" className="text-xs">Attach a text file</TooltipContent>
+          </Tooltip>
+
+          {/* Textarea */}
+          <Textarea
+            {...registerRest}
+            ref={(el) => {
+              registerRef(el);
+              textareaRef.current = el;
+            }}
+            onChange={handleChange}
+            onKeyUp={handleSelectionUpdate}
+            onClick={handleSelectionUpdate}
             disabled={isStreaming || disabled}
-            title="Attach a text file"
-            aria-label="Attach file"
-            className="inline-flex items-center justify-center h-8 w-8 rounded text-muted-foreground hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            <Paperclip className="h-4 w-4" />
-          </button>
-          <span className="text-xs text-muted-foreground">{watchedMessage.length}/{MAX_MESSAGE_CHARS.toLocaleString()}</span>
+            onKeyDown={handleKeyDown}
+            placeholder="Message the agent... (@ prompts, / tools)"
+            rows={1}
+            className={cn(
+              'flex-1 resize-none border-0 bg-transparent shadow-none',
+              'focus-visible:ring-0 focus-visible:ring-offset-0',
+              'min-h-[42px] max-h-[200px] py-2.5 px-0 text-sm',
+              'placeholder:text-muted-foreground/60',
+            )}
+          />
+
+          {/* Send button */}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                type="submit"
+                size="icon"
+                disabled={!canSend}
+                className={cn(
+                  'h-9 w-9 mr-2 mb-1.5 rounded-lg shrink-0 transition-all',
+                  canSend
+                    ? 'bg-primary text-primary-foreground hover:bg-primary/90 shadow-sm'
+                    : 'bg-muted text-muted-foreground',
+                )}
+              >
+                <Send size={16} />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="top" className="text-xs">
+              Send message (Enter)
+            </TooltipContent>
+          </Tooltip>
         </div>
-        <Button type="submit" disabled={isStreaming || disabled}>
-          Send
-        </Button>
       </div>
+
+      {/* Footer info */}
+      <div className="flex items-center justify-between mt-1.5 px-1">
+        <span className="text-[11px] text-muted-foreground/60">
+          Shift+Enter for new line
+        </span>
+        <span className="text-[11px] text-muted-foreground/60">
+          {watchedMessage.length > 0 && `${watchedMessage.length.toLocaleString()}/${MAX_MESSAGE_CHARS.toLocaleString()}`}
+        </span>
+      </div>
+
+      {/* Hidden file input */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept={ACCEPTED_EXTENSIONS}
+        onChange={handleFileChange}
+        className="hidden"
+        aria-hidden="true"
+        tabIndex={-1}
+      />
+
+      {form.formState.errors.message && (
+        <p className="text-xs text-destructive mt-1">{form.formState.errors.message.message}</p>
+      )}
     </form>
   );
 }

@@ -1,27 +1,86 @@
 import { useState, type KeyboardEvent } from 'react';
-import { Pencil, RotateCcw, Check, X, Copy } from 'lucide-react';
+import { Pencil, RotateCcw, Check, X, Copy, Bot, User, ChevronDown } from 'lucide-react';
+import { cn } from '@/lib/utils';
 import { Markdown } from './Markdown';
 import { Textarea } from '@/components/ui/textarea';
 import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { JsonViewer } from '@/components/ui/json-viewer';
 import type { ChatMessage, ToolCallSummary } from './useChatStore';
 
-function ToolCallChip({ toolCall }: { toolCall: ToolCallSummary }) {
-  const [expanded, setExpanded] = useState(false);
+function ToolCallCard({ toolCall }: { toolCall: ToolCallSummary }) {
+  const hasOutput = toolCall.output !== undefined && toolCall.output !== null;
+  const statusVariant = hasOutput ? 'secondary' as const : 'outline' as const;
+  const statusText = hasOutput ? 'completed' : 'pending';
+
   return (
-    <div className="mt-1">
-      <button
-        type="button"
-        onClick={() => { setExpanded(!expanded); }}
-        className="text-xs bg-muted-foreground/20 rounded px-2 py-0.5 hover:bg-muted-foreground/30"
-      >
-        {toolCall.toolName}
-      </button>
-      {expanded && (
-        <pre className="text-xs mt-1 p-2 bg-muted rounded overflow-auto max-h-40">
-          {JSON.stringify({ input: toolCall.input, output: toolCall.output }, null, 2)}
-        </pre>
-      )}
-    </div>
+    <Collapsible>
+      <div className="rounded-lg border border-border/50 bg-card/50 overflow-hidden mt-2">
+        <CollapsibleTrigger asChild>
+          <button
+            type="button"
+            className="flex items-center gap-2 w-full px-3 py-2 text-left text-xs hover:bg-muted/50 transition-colors"
+          >
+            <ChevronDown
+              size={12}
+              className="text-muted-foreground transition-transform [[data-state=closed]_&]:rotate-[-90deg]"
+            />
+            <span className="font-mono font-medium text-foreground/90">{toolCall.toolName}</span>
+            <Badge variant={statusVariant} className="ml-auto text-[10px] px-1.5 py-0">
+              {statusText}
+            </Badge>
+          </button>
+        </CollapsibleTrigger>
+        <CollapsibleContent>
+          <div className="border-t border-border/50 px-3 py-2 space-y-2">
+            {toolCall.input && Object.keys(toolCall.input).length > 0 && (
+              <div>
+                <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Input</span>
+                <JsonViewer data={toolCall.input} maxInitialDepth={1} className="mt-1" />
+              </div>
+            )}
+            {hasOutput && (
+              <div>
+                <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Output</span>
+                <JsonViewer data={toolCall.output} maxInitialDepth={1} className="mt-1" />
+              </div>
+            )}
+          </div>
+        </CollapsibleContent>
+      </div>
+    </Collapsible>
+  );
+}
+
+interface ActionButtonProps {
+  onClick: () => void;
+  icon: React.ReactNode;
+  label: string;
+}
+
+function ActionButton({ onClick, icon, label }: ActionButtonProps) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          onClick={onClick}
+          aria-label={label}
+          className={cn(
+            'inline-flex items-center justify-center h-7 w-7 rounded-md',
+            'text-muted-foreground hover:text-foreground hover:bg-muted/80',
+            'transition-all duration-150',
+          )}
+        >
+          {icon}
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" className="text-xs">
+        {label}
+      </TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -85,82 +144,114 @@ export function MessageItem({
     }
   };
 
+  const hasActions = canRetry || canEdit || canCopy;
+
   return (
-    <div className={`group flex ${isUser ? 'justify-end' : 'justify-start'} px-3 py-1`}>
+    <div
+      className={cn(
+        'group flex gap-3 px-4 py-4 md:px-6',
+        isUser ? 'flex-row-reverse' : 'flex-row',
+      )}
+    >
+      {/* Avatar */}
       <div
-        className={
+        className={cn(
+          'flex-shrink-0 flex items-center justify-center w-8 h-8 rounded-full mt-0.5',
           isUser
-            ? 'ml-auto bg-primary text-primary-foreground rounded-lg p-3 max-w-[80%]'
-            : 'mr-auto bg-muted rounded-lg p-3 max-w-[80%]'
-        }
+            ? 'bg-primary text-primary-foreground'
+            : 'bg-muted border border-border/50 text-muted-foreground',
+        )}
       >
-        {isEditing ? (
-          <div className="flex flex-col gap-2 min-w-[240px]">
-            <Textarea
-              value={draft}
-              onChange={(e) => { setDraft(e.target.value); }}
-              onKeyDown={handleKeyDown}
-              rows={3}
-              aria-label="Edit message"
-              autoFocus
-            />
-            <div className="flex justify-end gap-2">
-              <Button type="button" variant="ghost" size="sm" onClick={handleCancelEdit}>
-                <X size={14} className="mr-1" /> Cancel
-              </Button>
-              <Button type="button" size="sm" onClick={handleSaveEdit}>
-                <Check size={14} className="mr-1" /> Save
-              </Button>
+        {isUser ? <User size={14} /> : <Bot size={14} />}
+      </div>
+
+      {/* Content */}
+      <div className={cn('flex flex-col min-w-0', isUser ? 'items-end' : 'items-start', 'max-w-[85%] md:max-w-[75%]')}>
+        {/* Role label */}
+        <span className="text-[11px] font-medium text-muted-foreground mb-1 px-1">
+          {isUser ? 'You' : 'Assistant'}
+        </span>
+
+        {/* Message bubble */}
+        <div
+          className={cn(
+            'rounded-2xl px-4 py-3 text-sm leading-relaxed',
+            isUser
+              ? 'bg-primary text-primary-foreground rounded-tr-sm'
+              : 'bg-card border border-border/50 text-card-foreground rounded-tl-sm',
+          )}
+        >
+          {isEditing ? (
+            <div className="flex flex-col gap-2 min-w-[280px]">
+              <Textarea
+                value={draft}
+                onChange={(e) => { setDraft(e.target.value); }}
+                onKeyDown={handleKeyDown}
+                rows={3}
+                aria-label="Edit message"
+                autoFocus
+                className="bg-background/50 border-border/50"
+              />
+              <div className="flex justify-end gap-2">
+                <Button type="button" variant="ghost" size="sm" onClick={handleCancelEdit}>
+                  <X size={14} className="mr-1" /> Cancel
+                </Button>
+                <Button type="button" size="sm" onClick={handleSaveEdit}>
+                  <Check size={14} className="mr-1" /> Save
+                </Button>
+              </div>
             </div>
+          ) : isUser ? (
+            <p className="whitespace-pre-wrap">{message.content}</p>
+          ) : (
+            <Markdown content={message.content} />
+          )}
+
+          {isStreaming && (
+            <span
+              className="inline-block w-0.5 h-4 bg-current animate-[cursor-blink_1s_ease-in-out_infinite] ml-0.5 align-middle rounded-full"
+              aria-hidden
+            />
+          )}
+        </div>
+
+        {/* Tool calls — outside the bubble for cleaner layout */}
+        {!isUser && (message.toolCalls ?? []).length > 0 && (
+          <div className="w-full mt-1 space-y-1">
+            {(message.toolCalls ?? []).map((tc, i) => (
+              <ToolCallCard key={i} toolCall={tc} />
+            ))}
           </div>
-        ) : isUser ? (
-          <p className="whitespace-pre-wrap">{message.content}</p>
-        ) : (
-          <Markdown content={message.content} />
         )}
-        {isStreaming && (
-          <span
-            className="inline-block w-1.5 h-4 bg-current animate-pulse ml-0.5 align-middle"
-            aria-hidden
-          />
-        )}
-        {(message.toolCalls ?? []).map((tc, i) => (
-          <ToolCallChip key={i} toolCall={tc} />
-        ))}
-        {!isEditing && (canRetry || canEdit || canCopy) && (
-          <div className="flex gap-1 mt-2 opacity-0 group-hover:opacity-100 transition-opacity">
+
+        {/* Action buttons — show on hover */}
+        {!isEditing && hasActions && (
+          <div
+            className={cn(
+              'flex items-center gap-0.5 mt-1 px-1',
+              'opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity duration-150',
+            )}
+          >
             {canCopy && (
-              <button
-                type="button"
+              <ActionButton
                 onClick={() => { void handleCopy(); }}
-                aria-label={copied ? 'Copied' : 'Copy message'}
-                title={copied ? 'Copied' : 'Copy'}
-                className={`inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded ${isUser ? 'hover:bg-primary-foreground/20' : 'hover:bg-muted-foreground/20'}`}
-              >
-                {copied ? <Check size={12} /> : <Copy size={12} />} {copied ? 'Copied' : 'Copy'}
-              </button>
+                icon={copied ? <Check size={14} className="text-emerald-400" /> : <Copy size={14} />}
+                label={copied ? 'Copied' : 'Copy message'}
+              />
             )}
             {canRetry && (
-              <button
-                type="button"
+              <ActionButton
                 onClick={() => onRetry?.(message.id)}
-                aria-label="Retry response"
-                title="Regenerate"
-                className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded hover:bg-muted-foreground/20"
-              >
-                <RotateCcw size={12} /> Regenerate
-              </button>
+                icon={<RotateCcw size={14} />}
+                label="Regenerate response"
+              />
             )}
             {canEdit && (
-              <button
-                type="button"
+              <ActionButton
                 onClick={() => { setDraft(message.content); setIsEditing(true); }}
-                aria-label="Edit message"
-                title="Edit"
-                className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded hover:bg-primary-foreground/20"
-              >
-                <Pencil size={12} /> Edit
-              </button>
+                icon={<Pencil size={14} />}
+                label="Edit message"
+              />
             )}
           </div>
         )}

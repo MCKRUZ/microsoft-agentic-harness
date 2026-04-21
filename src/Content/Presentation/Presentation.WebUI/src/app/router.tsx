@@ -1,6 +1,11 @@
 import { AuthenticatedTemplate, UnauthenticatedTemplate, useMsal } from '@azure/msal-react';
-import { BrowserRouter, Routes, Route } from 'react-router-dom';
-import { Dashboard } from '@/components/layout/Dashboard';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { DashboardLayout } from '@/components/layout/DashboardLayout';
+import { ChatView } from '@/views/ChatView';
+import { AgentsView } from '@/views/AgentsView';
+import { ToolsView } from '@/views/ToolsView';
+import { ResourcesView } from '@/views/ResourcesView';
+import { PromptsView } from '@/views/PromptsView';
 import { IS_AUTH_DISABLED } from '@/lib/devAuth';
 
 function LoginView() {
@@ -24,8 +29,15 @@ function LoginView() {
 
 const AppRoutes = () => (
   <Routes>
-    <Route path="/" element={<Dashboard />} />
-    <Route path="*" element={<Dashboard />} />
+    <Route element={<DashboardLayout />}>
+      <Route index element={<Navigate to="/chat" replace />} />
+      <Route path="chat" element={<ChatView />} />
+      <Route path="agents" element={<AgentsView />} />
+      <Route path="tools" element={<ToolsView />} />
+      <Route path="resources" element={<ResourcesView />} />
+      <Route path="prompts" element={<PromptsView />} />
+      <Route path="*" element={<Navigate to="/chat" replace />} />
+    </Route>
   </Routes>
 );
 

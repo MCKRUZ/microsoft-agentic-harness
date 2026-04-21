@@ -34,8 +34,6 @@ vi.mock('@/hooks/useAgentHub', () => ({
     sendMessage: vi.fn().mockResolvedValue(undefined),
     startConversation: vi.fn().mockResolvedValue(undefined),
     invokeToolViaAgent: vi.fn().mockResolvedValue(undefined),
-    joinGlobalTraces: vi.fn().mockResolvedValue(undefined),
-    leaveGlobalTraces: vi.fn().mockResolvedValue(undefined),
   }),
 }));
 

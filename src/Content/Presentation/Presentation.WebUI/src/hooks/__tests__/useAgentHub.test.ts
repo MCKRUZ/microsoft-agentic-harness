@@ -2,7 +2,6 @@ import { renderHook, act, waitFor } from '@testing-library/react';
 import { vi, describe, it, expect, beforeEach } from 'vitest';
 import { useAgentHub } from '../useAgentHub';
 import { useChatStore } from '@/stores/chatStore';
-import { useTelemetryStore } from '@/stores/telemetryStore';
 
 const mocks = vi.hoisted(() => ({
   connectionStart: vi.fn(),
@@ -79,7 +78,6 @@ describe('useAgentHub', () => {
       streamingContent: '',
       error: null,
     });
-    useTelemetryStore.setState({ conversationSpans: {}, globalSpans: [] });
   });
 
   // --- connection lifecycle ---
@@ -194,28 +192,4 @@ describe('useAgentHub', () => {
     });
   });
 
-  // --- SpanReceived event ---
-
-  describe('SpanReceived event', () => {
-    it('adds span to telemetry store', async () => {
-      await mountConnected();
-      const span = {
-        name: 'TestOp',
-        traceId: 'trace-1',
-        spanId: 'span-1',
-        parentSpanId: null,
-        conversationId: 'conv-1',
-        startTime: new Date().toISOString(),
-        durationMs: 42,
-        status: 'ok' as const,
-        kind: 'internal',
-        sourceName: 'test',
-        tags: {},
-      };
-      act(() => { getHandler('SpanReceived')(span); });
-      const state = useTelemetryStore.getState();
-      expect(state.globalSpans).toHaveLength(1);
-      expect(state.globalSpans[0]?.spanId).toBe('span-1');
-    });
-  });
 });

@@ -1,0 +1,18 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # Application metrics exposed by the OTel Collector Prometheus exporter
+  - job_name: "agentic-harness"
+    static_configs:
+      - targets: ["otel-collector:8889"]
+    metrics_path: /metrics
+    scrape_interval: 10s
+
+  # OTel Collector internal health metrics
+  - job_name: "otel-collector-internal"
+    static_configs:
+      - targets: ["otel-collector:8888"]
+    metrics_path: /metrics
+    scrape_interval: 30s

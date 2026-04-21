@@ -1,6 +1,6 @@
 # OpenTelemetry Collector Configuration for Agentic Harness
 # Deployment: Local development (Windows)
-# Version: 0.115.0
+# Version: 0.123.0
 #
 # Architecture Flow:
 #   Application (SDK) → Collector (OTLP/gRPC :4317) → Backends (Azure Monitor, Jaeger, Prometheus)
@@ -42,7 +42,7 @@ processors:
         value: ${env:DEPLOYMENT_ENVIRONMENT}
         action: upsert
       - key: collector.version
-        value: 0.115.0
+        value: 0.123.0
         action: insert
       - key: org.name
         value: AgenticHarness
@@ -110,12 +110,9 @@ processors:
           spans_per_second: 100
 
 exporters:
-  # Azure Monitor exporter
+  # Azure Monitor exporter (enable by setting APPLICATIONINSIGHTS_CONNECTION_STRING)
   azuremonitor:
     connection_string: "${env:APPLICATIONINSIGHTS_CONNECTION_STRING}"
-    instrumentation_scope_logs_enabled: true
-    max_batch_size: 1024
-    max_batch_interval: 10s
 
   # OTLP exporter - Jaeger
   otlp/jaeger:
@@ -165,9 +162,9 @@ service:
         - tail_sampling
         - batch
       exporters:
-        - azuremonitor
         - otlp/jaeger
         - debug
+        # - azuremonitor  # enable when APPLICATIONINSIGHTS_CONNECTION_STRING is set
 
     metrics:
       receivers: [otlp]
@@ -177,9 +174,9 @@ service:
         - attributes
         - batch
       exporters:
-        - azuremonitor
         - prometheus
         - debug
+        # - azuremonitor  # enable when APPLICATIONINSIGHTS_CONNECTION_STRING is set
 
   telemetry:
     logs:

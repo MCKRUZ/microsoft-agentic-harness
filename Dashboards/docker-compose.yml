@@ -1,0 +1,93 @@
+# Prometheus + Grafana for Agentic Harness Dashboards
+# Prerequisite: OTel Collector must be running (scripts/otel-collector)
+# Usage: docker-compose up -d
+# Stop:  docker-compose down
+
+services:
+  prometheus:
+    image: prom/prometheus:v3.2.1
+    container_name: agentic-harness-prometheus
+
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+
+    ports:
+      - "9090:9090"
+
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=7d"
+      - "--web.enable-lifecycle"
+
+    restart: unless-stopped
+
+    networks:
+      - agentic-harness-otel
+
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "--quiet", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+        reservations:
+          cpus: "0.25"
+          memory: 256M
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    container_name: agentic-harness-grafana
+
+    volumes:
+      - ./provisioning:/etc/grafana/provisioning:ro
+      - "./Grafana Dashboards:/var/lib/grafana/dashboards:ro"
+      - grafana-data:/var/lib/grafana
+
+    ports:
+      - "3000:3000"
+
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/var/lib/grafana/dashboards/agentFramework.json
+
+    restart: unless-stopped
+
+    networks:
+      - agentic-harness-otel
+
+    depends_on:
+      prometheus:
+        condition: service_healthy
+
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "--quiet", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+        reservations:
+          cpus: "0.25"
+          memory: 256M
+
+volumes:
+  prometheus-data:
+  grafana-data:
+
+networks:
+  agentic-harness-otel:
+    external: true

@@ -1,8 +1,10 @@
 using Application.Common.Interfaces.Telemetry;
 using Domain.Common.Config;
+using Domain.Common.Config.Observability;
 using Domain.Common.Telemetry;
 using Microsoft.Extensions.DependencyInjection;
 using OpenTelemetry;
+using OpenTelemetry.Exporter;
 using OpenTelemetry.Instrumentation.AspNetCore;
 using OpenTelemetry.Instrumentation.Http;
 using OpenTelemetry.Metrics;
@@ -66,7 +68,7 @@ public static class OpenTelemetryServiceCollectionExtensions
             .Contains(entryAssemblyName, StringComparer.OrdinalIgnoreCase);
 
         if (isWebProject)
-            services.AddWebTelemetry();
+            services.AddWebTelemetry(appConfig);
         else
             services.AddDesktopTelemetry();
 
@@ -83,7 +85,7 @@ public static class OpenTelemetryServiceCollectionExtensions
     /// to defer configurator resolution until the real <see cref="IServiceProvider"/> is built,
     /// avoiding the <c>BuildServiceProvider()</c> anti-pattern that creates duplicate singletons.
     /// </remarks>
-    private static IServiceCollection AddWebTelemetry(this IServiceCollection services)
+    private static IServiceCollection AddWebTelemetry(this IServiceCollection services, AppConfig appConfig)
     {
         services.Configure<AspNetCoreTraceInstrumentationOptions>(options =>
         {
@@ -108,8 +110,8 @@ public static class OpenTelemetryServiceCollectionExtensions
         services.AddOpenTelemetry()
             .WithTracing(builder =>
             {
-                // Base instrumentation can be configured immediately
-                ConfigureTracerProviderBuilder(builder);
+                // Base instrumentation + exporters configured pre-build
+                ConfigureTracerProviderBuilder(builder, appConfig);
 
                 // Defer configurator resolution to the real service provider
                 ((IDeferredTracerProviderBuilder)builder).Configure((sp, deferredBuilder) =>
@@ -123,8 +125,8 @@ public static class OpenTelemetryServiceCollectionExtensions
             })
             .WithMetrics(builder =>
             {
-                // Base instrumentation can be configured immediately
-                ConfigureMeterProviderBuilder(builder);
+                // Base instrumentation + exporters configured pre-build
+                ConfigureMeterProviderBuilder(builder, appConfig);
 
                 // Defer configurator resolution to the real service provider
                 ((IDeferredMeterProviderBuilder)builder).Configure((sp, deferredBuilder) =>
@@ -194,13 +196,21 @@ public static class OpenTelemetryServiceCollectionExtensions
     /// The <see cref="ResourceBuilder"/> is resolved from DI via
     /// <see cref="TracerProviderBuilderExtensions.ConfigureResource"/>.
     /// </summary>
-    private static void ConfigureTracerProviderBuilder(TracerProviderBuilder builder)
+    private static void ConfigureTracerProviderBuilder(TracerProviderBuilder builder, AppConfig appConfig)
     {
         builder
             .AddSource(AppInstrument.Source.Name)
             .SetSampler(new AlwaysOnSampler())
             .AddAspNetCoreInstrumentation()
             .AddHttpClientInstrumentation();
+
+        // OTLP exporter must be registered pre-build (AddOtlpExporter calls ConfigureServices)
+        var otlpConfig = appConfig.Observability.Exporters.Otlp;
+        if (otlpConfig.Enabled)
+        {
+            builder.AddOtlpExporter("otlp-traces", options =>
+                ConfigureOtlpOptions(options, otlpConfig));
+        }
 
         // Resolve the ResourceBuilder singleton at provider-build time
         ((IDeferredTracerProviderBuilder)builder).Configure((sp, b) =>
@@ -212,7 +222,7 @@ public static class OpenTelemetryServiceCollectionExtensions
     /// hosting/Kestrel meters, runtime instrumentation, and Prometheus export.
     /// The <see cref="ResourceBuilder"/> is resolved from DI via deferred configuration.
     /// </summary>
-    private static void ConfigureMeterProviderBuilder(MeterProviderBuilder builder)
+    private static void ConfigureMeterProviderBuilder(MeterProviderBuilder builder, AppConfig appConfig)
     {
         builder
             .AddMeter(AppInstrument.Meter.Name)
@@ -224,9 +234,30 @@ public static class OpenTelemetryServiceCollectionExtensions
             .AddRuntimeInstrumentation()
             .AddPrometheusExporter();
 
+        // OTLP exporter must be registered pre-build (AddOtlpExporter calls ConfigureServices)
+        var otlpConfig = appConfig.Observability.Exporters.Otlp;
+        if (otlpConfig.Enabled)
+        {
+            builder.AddOtlpExporter("otlp-metrics", options =>
+                ConfigureOtlpOptions(options, otlpConfig));
+        }
+
         // Resolve the ResourceBuilder singleton at provider-build time
         ((IDeferredMeterProviderBuilder)builder).Configure((sp, b) =>
             b.SetResourceBuilder(sp.GetRequiredService<ResourceBuilder>()));
+    }
+
+    private static void ConfigureOtlpOptions(OtlpExporterOptions options, OtlpExporterConfig config)
+    {
+        options.Endpoint = new Uri(config.Endpoint);
+        options.Protocol = OtlpExportProtocol.Grpc;
+        options.TimeoutMilliseconds = (int)config.Timeout.TotalMilliseconds;
+
+        if (config.Headers.Count > 0)
+        {
+            options.Headers = string.Join(",",
+                config.Headers.Select(h => $"{h.Key}={h.Value}"));
+        }
     }
 
     /// <summary>

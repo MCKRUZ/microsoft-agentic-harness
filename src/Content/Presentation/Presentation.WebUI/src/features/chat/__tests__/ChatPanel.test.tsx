@@ -17,8 +17,6 @@ vi.mock('@/hooks/useAgentHub', () => ({
     invokeToolViaAgent: vi.fn().mockResolvedValue(undefined),
     retryFromMessage: vi.fn().mockResolvedValue(undefined),
     editAndResubmit: vi.fn().mockResolvedValue(undefined),
-    joinGlobalTraces: vi.fn().mockResolvedValue(undefined),
-    leaveGlobalTraces: vi.fn().mockResolvedValue(undefined),
   }),
 }));
 

@@ -1,10 +1,8 @@
 using Application.Common.Interfaces.Telemetry;
 using Azure.Monitor.OpenTelemetry.Exporter;
-using Domain.Common.Config.Observability;
 using Infrastructure.Observability.Processors;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using OpenTelemetry.Exporter;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Trace;
 
@@ -112,14 +110,7 @@ public sealed class ObservabilityTelemetryConfigurator : ITelemetryConfigurator
                 config.Sampling.DefaultSamplingPercentage);
         }
 
-        // Exporters: OTLP (Jaeger/Tempo)
-        if (config.Exporters.Otlp.Enabled)
-        {
-            builder.AddOtlpExporter("otlp-traces", options =>
-                ConfigureOtlpOptions(options, config.Exporters.Otlp));
-            _logger.LogInformation("OTLP trace exporter registered: {Endpoint}",
-                config.Exporters.Otlp.Endpoint);
-        }
+        // OTLP exporter is registered in OpenTelemetryServiceCollectionExtensions (pre-build phase)
 
         // Exporters: Azure Monitor
         if (config.Exporters.AzureMonitor.Enabled
@@ -138,14 +129,7 @@ public sealed class ObservabilityTelemetryConfigurator : ITelemetryConfigurator
     {
         var config = _appConfig.CurrentValue.Observability;
 
-        // Exporters: OTLP metrics
-        if (config.Exporters.Otlp.Enabled)
-        {
-            builder.AddOtlpExporter("otlp-metrics", options =>
-                ConfigureOtlpOptions(options, config.Exporters.Otlp));
-            _logger.LogInformation("OTLP metrics exporter registered: {Endpoint}",
-                config.Exporters.Otlp.Endpoint);
-        }
+        // OTLP exporter is registered in OpenTelemetryServiceCollectionExtensions (pre-build phase)
 
         // Exporters: Azure Monitor metrics
         if (config.Exporters.AzureMonitor.Enabled
@@ -162,16 +146,4 @@ public sealed class ObservabilityTelemetryConfigurator : ITelemetryConfigurator
         // so it's wired in Presentation. Config is read from AppConfig.Observability.Exporters.Prometheus.
     }
 
-    private static void ConfigureOtlpOptions(OtlpExporterOptions options, OtlpExporterConfig config)
-    {
-        options.Endpoint = new Uri(config.Endpoint);
-        options.Protocol = OtlpExportProtocol.Grpc;
-        options.TimeoutMilliseconds = (int)config.Timeout.TotalMilliseconds;
-
-        if (config.Headers.Count > 0)
-        {
-            options.Headers = string.Join(",",
-                config.Headers.Select(h => $"{h.Key}={h.Value}"));
-        }
-    }
 }
