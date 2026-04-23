@@ -1,7 +1,11 @@
+using Application.AI.Common.Interfaces;
 using Application.Common.Interfaces.Telemetry;
+using Domain.Common.Config;
 using Infrastructure.Observability.Exporters;
 using Infrastructure.Observability.Processors;
+using Infrastructure.Observability.Services;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 
 namespace Infrastructure.Observability;
 
@@ -35,6 +39,24 @@ public static class DependencyInjection
     {
         // Observability pipeline configurator — adds processors and exporters at Order 300
         services.AddSingleton<ITelemetryConfigurator, ObservabilityTelemetryConfigurator>();
+
+        // Budget tracking service — cost spend state machine with ObservableGauge callbacks
+        services.AddSingleton<IBudgetTrackingService>(sp =>
+        {
+            var config = sp.GetRequiredService<IOptionsMonitor<AppConfig>>();
+            if (!config.CurrentValue.Observability.BudgetTracking.Enabled)
+                return new NullBudgetTrackingService();
+            return new BudgetTrackingService(
+                sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<BudgetTrackingService>>(),
+                config);
+        });
+
+        // Agent config info service — ObservableGauge reporting agent configs as metric labels
+        services.AddSingleton<AgentConfigInfoService>();
+        services.AddSingleton<IAgentConfigReporter>(sp => sp.GetRequiredService<AgentConfigInfoService>());
+
+        // Session health service — ObservableGauge reporting per-agent health score
+        services.AddSingleton<ISessionHealthTracker, SessionHealthService>();
 
         return services;
     }

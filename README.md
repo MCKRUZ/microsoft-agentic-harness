@@ -21,6 +21,12 @@ This harness solves those problems with real engineering, not abstractions on to
 
 ---
 
+## Learn How It Works
+
+**[Inside the Agentic Harness — Interactive Course](documentation/agentic-harness-course/index.html)** — A visual, scroll-based course that teaches how the harness works through animated diagrams, plain-English code translations, and interactive quizzes. No coding background required. Open `documentation/agentic-harness-course/index.html` in your browser.
+
+---
+
 ## How It Works
 
 ### The Orchestration Loop

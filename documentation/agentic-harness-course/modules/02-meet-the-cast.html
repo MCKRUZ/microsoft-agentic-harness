@@ -1,0 +1,547 @@
+<section class="module" id="module-2">
+
+  <!-- ============================================================
+       SCREEN 1: THE CAST LINEUP — Architecture Diagram (Hero Visual)
+       ============================================================ -->
+  <div class="screen">
+    <div class="module-number">02</div>
+    <h2 class="module-title">Meet the Cast</h2>
+    <p class="module-subtitle">In the last module, you watched a message travel through the whole system. Now let's zoom in and meet each of the characters who made that journey happen.</p>
+
+    <div class="callout callout-info">
+      <div class="callout-icon">&#127916;</div>
+      <div class="callout-content">
+        <strong class="callout-title">The Film Crew Metaphor</strong>
+        <p>Think of this system like a film production. The <strong>Director</strong> assembles the team, the <strong>Script Supervisor</strong> knows what everyone should say, the <strong>Props Department</strong> provides physical tools, and the <strong>Producer</strong> keeps everyone on schedule.</p>
+      </div>
+    </div>
+
+    <!-- Hero Visual: Clean Architecture Diagram -->
+    <div class="arch-diagram">
+
+      <!-- Presentation Layer -->
+      <div class="arch-zone" style="border-left: 4px solid var(--color-actor-1); background: linear-gradient(90deg, rgba(217,79,48,0.06) 0%, transparent 100%);">
+        <h4 class="arch-zone-label" style="color: var(--color-actor-1);">Presentation Layer &mdash; The Stage</h4>
+        <p style="font-size: var(--text-sm); color: var(--color-text-secondary); margin: 0 0 var(--space-4) 0;">Where the audience (users) interact with the show.</p>
+        <div style="display: flex; flex-wrap: wrap; gap: var(--space-3);">
+          <div class="arch-component" data-desc="The web-based frontend where users type messages and see agent responses in real time." onclick="showArchDesc(this)">
+            <div class="arch-icon" style="background: var(--color-actor-1); color: white;">W</div>
+            <span><span class="term" data-definition="A Web UI is the visual interface you see in your browser — buttons, text fields, chat windows. It's how you interact with the system without writing any code.">WebUI</span></span>
+          </div>
+          <div class="arch-component" data-desc="The console-based interface — a text-only terminal for developers who prefer typing commands directly." onclick="showArchDesc(this)">
+            <div class="arch-icon" style="background: var(--color-actor-1); color: white;">C</div>
+            <span><span class="term" data-definition="A Console UI is a text-based interface that runs in a terminal window. No graphics, just typing — like texting vs. using a visual app.">ConsoleUI</span></span>
+          </div>
+          <div class="arch-component" data-desc="The real-time communication hub that connects browsers to the backend using SignalR — like a live switchboard operator." onclick="showArchDesc(this)">
+            <div class="arch-icon" style="background: var(--color-actor-2); color: white;">H</div>
+            <span><span class="term" data-definition="AgentHub is the real-time communication server that relays messages between your browser and the AI agent. It uses SignalR (like a persistent phone line) instead of one-off web requests.">AgentHub</span></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Application Layer -->
+      <div class="arch-zone" style="border-left: 4px solid var(--color-actor-3); background: linear-gradient(90deg, rgba(123,109,170,0.06) 0%, transparent 100%);">
+        <h4 class="arch-zone-label" style="color: var(--color-actor-3);">Application Layer &mdash; The Producer</h4>
+        <p style="font-size: var(--text-sm); color: var(--color-text-secondary); margin: 0 0 var(--space-4) 0;">Orchestrates everything but doesn't do the physical work itself.</p>
+        <div style="display: flex; flex-wrap: wrap; gap: var(--space-3);">
+          <div class="arch-component" data-desc="Assembles a fully-equipped agent from its manifest, tools, skills, and LLM connection — like a director casting and prepping the crew." onclick="showArchDesc(this)">
+            <div class="arch-icon" style="background: var(--color-actor-3); color: white;">AF</div>
+            <span><span class="term" data-definition="A factory is a piece of code whose only job is building other objects. Like a car factory — you tell it 'build a sedan' and it assembles all the parts for you.">AgentFactory</span></span>
+          </div>
+          <div class="arch-component" data-desc="The pipeline system that routes every command through safety checks, logging, and validation before it reaches the handler — the Producer keeping everyone on schedule." onclick="showArchDesc(this)">
+            <div class="arch-icon" style="background: var(--color-actor-3); color: white;">M</div>
+            <span><span class="term" data-definition="MediatR is a library that acts like a message dispatcher. Instead of components calling each other directly, they send messages through MediatR, which routes them to the right handler — like a mail sorting facility.">MediatR Pipeline</span></span>
+          </div>
+          <div class="arch-component" data-desc="Checks every user message and AI response for harmful content before it goes further — like a content review board on a film set." onclick="showArchDesc(this)">
+            <div class="arch-icon" style="background: var(--color-actor-3); color: white;">CS</div>
+            <span><span class="term" data-definition="Content Safety is a middleware layer that scans messages for harmful, unsafe, or inappropriate content — like a content moderator reviewing posts before they go live.">ContentSafety</span></span>
+          </div>
+          <div class="arch-component" data-desc="The handler that executes a single turn of conversation — receives a command, talks to the LLM, dispatches tool calls, and returns the result." onclick="showArchDesc(this)">
+            <div class="arch-icon" style="background: var(--color-actor-3); color: white;">H</div>
+            <span><span class="term" data-definition="A handler is the code that actually does the work for a specific command. When MediatR receives a 'run this agent turn' message, it hands it to the matching handler.">ExecuteAgentTurnHandler</span></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Domain Layer -->
+      <div class="arch-zone" style="border-left: 4px solid var(--color-actor-4); background: linear-gradient(90deg, rgba(212,168,67,0.06) 0%, transparent 100%);">
+        <h4 class="arch-zone-label" style="color: var(--color-actor-4);">Domain Layer &mdash; The Script</h4>
+        <p style="font-size: var(--text-sm); color: var(--color-text-secondary); margin: 0 0 var(--space-4) 0;">The blueprints and definitions that describe what everything <em>is</em> &mdash; no behavior, just shapes.</p>
+        <div style="display: flex; flex-wrap: wrap; gap: var(--space-3);">
+          <div class="arch-component" data-desc="The blueprint for an agent — its name, system prompt, skills, subagents, and config. Think of it as a character sheet in a tabletop game." onclick="showArchDesc(this)">
+            <div class="arch-icon" style="background: var(--color-actor-4); color: white;">AM</div>
+            <span><span class="term" data-definition="A manifest is a declaration file that describes what something is and what it needs — like a packing list for a trip. The AgentManifest lists an agent's name, skills, tools, and configuration.">AgentManifest</span></span>
+          </div>
+          <div class="arch-component" data-desc="Defines a skill the agent can use — its name, description, category, and tags. Like a page in an actor's portfolio listing their abilities." onclick="showArchDesc(this)">
+            <div class="arch-icon" style="background: var(--color-actor-4); color: white;">SD</div>
+            <span><span class="term" data-definition="A skill definition describes one capability an agent has access to — its name, category, and what it does. Skills are loaded progressively: the agent sees a summary first and loads full details only when needed.">SkillDefinition</span></span>
+          </div>
+          <div class="arch-component" data-desc="Defines the telemetry conventions — standard names and tags for all the metrics and traces the system emits." onclick="showArchDesc(this)">
+            <div class="arch-icon" style="background: var(--color-actor-4); color: white;">TC</div>
+            <span><span class="term" data-definition="Telemetry conventions are agreed-upon names and labels for measurements. Like how all weather stations report temperature in the same units, these conventions ensure all system metrics use consistent naming.">TelemetryConventions</span></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Infrastructure Layer -->
+      <div class="arch-zone" style="border-left: 4px solid var(--color-actor-5); background: linear-gradient(90deg, rgba(45,139,85,0.06) 0%, transparent 100%);">
+        <h4 class="arch-zone-label" style="color: var(--color-actor-5);">Infrastructure Layer &mdash; The Props Department</h4>
+        <p style="font-size: var(--text-sm); color: var(--color-text-secondary); margin: 0 0 var(--space-4) 0;">The physical stuff &mdash; connections to LLMs, file systems, databases, and external services.</p>
+        <div style="display: flex; flex-wrap: wrap; gap: var(--space-3);">
+          <div class="arch-component" data-desc="Connects to AI models (Azure OpenAI, Anthropic, etc.) and sends/receives messages. The actual phone line to the LLM." onclick="showArchDesc(this)">
+            <div class="arch-icon" style="background: var(--color-actor-5); color: white;">LLM</div>
+            <span><span class="term" data-definition="A Large Language Model (LLM) is an AI that understands and generates human language — like ChatGPT or Claude. The harness connects to one (or more) of these to power the agent's intelligence.">LLM Provider</span></span>
+          </div>
+          <div class="arch-component" data-desc="The MCP server and client that let this agent expose its own tools to other systems and consume tools from external MCP servers." onclick="showArchDesc(this)">
+            <div class="arch-icon" style="background: var(--color-actor-5); color: white;">MCP</div>
+            <span><span class="term" data-definition="Model Context Protocol (MCP) is an open standard that lets AI agents discover and use tools from other servers — like a universal adapter that lets any agent talk to any tool provider.">MCP Server</span></span>
+          </div>
+          <div class="arch-component" data-desc="Reads and writes files on the local filesystem, with permission guards that restrict which directories the agent can access." onclick="showArchDesc(this)">
+            <div class="arch-icon" style="background: var(--color-actor-5); color: white;">FS</div>
+            <span>FileSystemService</span>
+          </div>
+          <div class="arch-component" data-desc="Saves and loads conversation state so the agent remembers previous messages across turns — like a production's continuity notes." onclick="showArchDesc(this)">
+            <div class="arch-icon" style="background: var(--color-actor-5); color: white;">ST</div>
+            <span><span class="term" data-definition="State management is how the system remembers things between interactions. Without it, every message would be like talking to someone with amnesia — no memory of what just happened.">State Management</span></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="arch-description" id="arch-desc">Click any component to learn what it does</div>
+    </div>
+
+    <div class="callout callout-accent">
+      <div class="callout-icon">&#128161;</div>
+      <div class="callout-content">
+        <strong class="callout-title">Why This Matters for You</strong>
+        <p><span class="term" data-definition="Clean Architecture is a way of organizing code into layers where inner layers (Domain) never depend on outer layers (Infrastructure). It means you can swap out external services without rewriting your business logic.">Clean Architecture</span> means each actor has exactly one job and doesn't peek at anyone else's work. When you tell an AI coding assistant "add a new tool," knowing which layer it belongs in is the difference between a smooth change and fighting the entire codebase.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       SCREEN 2: GROUP CHAT — How Actors Collaborate
+       ============================================================ -->
+  <div class="screen">
+    <h2>How Actors Collaborate</h2>
+    <p>When you ask the agent to read a file, a whole cast of characters springs into action. Watch them talk to each other in real time.</p>
+
+    <div class="chat-window" id="chat-module2">
+      <div class="chat-messages">
+
+        <div class="chat-message" data-msg="0" data-sender="user" style="display:none">
+          <div class="chat-avatar" style="background: var(--color-actor-1)">U</div>
+          <div class="chat-bubble">
+            <span class="chat-sender" style="color: var(--color-actor-1)">User</span>
+            <p>Read the README.md file</p>
+          </div>
+        </div>
+
+        <div class="chat-message" data-msg="1" data-sender="agenthub" style="display:none">
+          <div class="chat-avatar" style="background: var(--color-actor-2)">AH</div>
+          <div class="chat-bubble">
+            <span class="chat-sender" style="color: var(--color-actor-2)">AgentHub</span>
+            <p>New <span class="term" data-definition="ExecuteAgentTurn is a command object that represents one turn of conversation. It carries the user's message and context, and gets routed through the pipeline to the handler that processes it.">ExecuteAgentTurn</span> command</p>
+          </div>
+        </div>
+
+        <div class="chat-message" data-msg="2" data-sender="pipeline" style="display:none">
+          <div class="chat-avatar" style="background: var(--color-actor-3)">M</div>
+          <div class="chat-bubble">
+            <span class="chat-sender" style="color: var(--color-actor-3)">MediatR</span>
+            <p>Routing to pipeline behaviors first...</p>
+          </div>
+        </div>
+
+        <div class="chat-message" data-msg="3" data-sender="pipeline" style="display:none">
+          <div class="chat-avatar" style="background: var(--color-actor-3)">CS</div>
+          <div class="chat-bubble">
+            <span class="chat-sender" style="color: var(--color-actor-3)">ContentSafety</span>
+            <p>Is this request safe? ...checking... All clear!</p>
+          </div>
+        </div>
+
+        <div class="chat-message" data-msg="4" data-sender="pipeline" style="display:none">
+          <div class="chat-avatar" style="background: var(--color-actor-3)">M</div>
+          <div class="chat-bubble">
+            <span class="chat-sender" style="color: var(--color-actor-3)">MediatR</span>
+            <p>Safety passed. Forwarding to <span class="term" data-definition="A command handler is the function that actually processes a command. Each command type has exactly one handler — like how each type of mail (package, letter, certified) gets handled differently at the post office.">handler</span>...</p>
+          </div>
+        </div>
+
+        <div class="chat-message" data-msg="5" data-sender="pipeline" style="display:none">
+          <div class="chat-avatar" style="background: var(--color-actor-3)">EH</div>
+          <div class="chat-bubble">
+            <span class="chat-sender" style="color: var(--color-actor-3)">ExecuteAgentTurnHandler</span>
+            <p>Got the command. Sending user message to the LLM...</p>
+          </div>
+        </div>
+
+        <div class="chat-message" data-msg="6" data-sender="llm" style="display:none">
+          <div class="chat-avatar" style="background: var(--color-actor-4)">AI</div>
+          <div class="chat-bubble">
+            <span class="chat-sender" style="color: var(--color-actor-4)">LLM</span>
+            <p>The user wants to read a file. I need the <code>file_system</code> tool.</p>
+          </div>
+        </div>
+
+        <div class="chat-message" data-msg="7" data-sender="pipeline" style="display:none">
+          <div class="chat-avatar" style="background: var(--color-actor-3)">EH</div>
+          <div class="chat-bubble">
+            <span class="chat-sender" style="color: var(--color-actor-3)">Handler</span>
+            <p>LLM requested a tool call. Checking <span class="term" data-definition="Tool permissions control which tools an agent is allowed to use and with what restrictions. Like how a film crew member needs specific clearance to access certain props or locations.">permissions</span>...</p>
+          </div>
+        </div>
+
+        <div class="chat-message" data-msg="8" data-sender="tools" style="display:none">
+          <div class="chat-avatar" style="background: var(--color-actor-5)">TP</div>
+          <div class="chat-bubble">
+            <span class="chat-sender" style="color: var(--color-actor-5)">ToolPermission</span>
+            <p>file_system tool is allowed. Restricted to /allowed/paths only.</p>
+          </div>
+        </div>
+
+        <div class="chat-message" data-msg="9" data-sender="tools" style="display:none">
+          <div class="chat-avatar" style="background: var(--color-actor-5)">FS</div>
+          <div class="chat-bubble">
+            <span class="chat-sender" style="color: var(--color-actor-5)">FileSystemService</span>
+            <p>Reading /project/README.md ... done! Here is the content.</p>
+          </div>
+        </div>
+
+        <div class="chat-message" data-msg="10" data-sender="pipeline" style="display:none">
+          <div class="chat-avatar" style="background: var(--color-actor-3)">EH</div>
+          <div class="chat-bubble">
+            <span class="chat-sender" style="color: var(--color-actor-3)">Handler</span>
+            <p>Tool returned results. Sending them back to the LLM for analysis...</p>
+          </div>
+        </div>
+
+        <div class="chat-message" data-msg="11" data-sender="llm" style="display:none">
+          <div class="chat-avatar" style="background: var(--color-actor-4)">AI</div>
+          <div class="chat-bubble">
+            <span class="chat-sender" style="color: var(--color-actor-4)">LLM</span>
+            <p>Got the file content. Composing a summary for the user...</p>
+          </div>
+        </div>
+
+        <div class="chat-message" data-msg="12" data-sender="pipeline" style="display:none">
+          <div class="chat-avatar" style="background: var(--color-actor-3)">EH</div>
+          <div class="chat-bubble">
+            <span class="chat-sender" style="color: var(--color-actor-3)">Handler</span>
+            <p>Here is the LLM's analysis of your README file.</p>
+          </div>
+        </div>
+
+      </div>
+
+      <div class="chat-typing" style="display:none">
+        <div class="chat-avatar" id="chat-module2-typing-avatar">?</div>
+        <div class="chat-typing-dots">
+          <span class="typing-dot"></span>
+          <span class="typing-dot"></span>
+          <span class="typing-dot"></span>
+        </div>
+      </div>
+
+      <div class="chat-controls">
+        <button class="btn chat-next-btn">Next Message</button>
+        <button class="btn chat-all-btn">Play All</button>
+        <button class="btn chat-reset-btn">Replay</button>
+        <span class="chat-progress"></span>
+      </div>
+    </div>
+
+    <p style="font-size: var(--text-sm); color: var(--color-text-secondary); margin-top: var(--space-4);">Notice how the LLM doesn't touch the file system directly. It <em>asks</em> for a tool, and the handler checks permissions before executing it. Every actor stays in its lane.</p>
+  </div>
+
+  <!-- ============================================================
+       SCREEN 3: DOMAIN LAYER — Code Translations
+       ============================================================ -->
+  <div class="screen">
+    <h2>The Domain Layer: Blueprints</h2>
+    <p>The <span class="term" data-definition="The Domain layer is the innermost layer in Clean Architecture. It contains only data definitions and business rules — no connections to databases, APIs, or UIs. It's the 'what' without the 'how.'">Domain layer</span> defines <em>what things are</em> without knowing how they work. Here are two of its most important blueprints.</p>
+
+    <!-- AgentManifest Translation -->
+    <h3 style="margin-top: var(--space-6);">AgentManifest &mdash; The Character Sheet</h3>
+    <div class="translation-block animate-in">
+      <div class="translation-code">
+        <span class="translation-label">CODE</span>
+        <pre><code>
+<span class="code-line"><span class="code-keyword">public sealed record</span> <span class="code-function">AgentManifest</span></span>
+<span class="code-line">{</span>
+<span class="code-line">    <span class="code-keyword">public required</span> <span class="code-keyword">string</span> <span class="code-property">Name</span> { <span class="code-keyword">get</span>; <span class="code-keyword">init</span>; }</span>
+<span class="code-line">    <span class="code-keyword">public</span> <span class="code-keyword">string</span>? <span class="code-property">Description</span> { <span class="code-keyword">get</span>; <span class="code-keyword">init</span>; }</span>
+<span class="code-line">    <span class="code-keyword">public</span> <span class="code-keyword">string</span>? <span class="code-property">SystemPrompt</span> { <span class="code-keyword">get</span>; <span class="code-keyword">init</span>; }</span>
+<span class="code-line">    <span class="code-keyword">public</span> IReadOnlyList&lt;SkillReference&gt; <span class="code-property">Skills</span> { <span class="code-keyword">get</span>; <span class="code-keyword">init</span>; } = [];</span>
+<span class="code-line">    <span class="code-keyword">public</span> IReadOnlyList&lt;SubagentDefinition&gt; <span class="code-property">Subagents</span> { <span class="code-keyword">get</span>; <span class="code-keyword">init</span>; } = [];</span>
+<span class="code-line">    <span class="code-keyword">public</span> AgentConfig <span class="code-property">Config</span> { <span class="code-keyword">get</span>; <span class="code-keyword">init</span>; } = <span class="code-keyword">new</span>();</span>
+<span class="code-line">}</span>
+        </code></pre>
+      </div>
+      <div class="translation-english">
+        <span class="translation-label">PLAIN ENGLISH</span>
+        <div class="translation-lines">
+          <p class="tl">This is an <span class="term" data-definition="A record in C# is a special type that holds data and is immutable — once created, its values cannot be changed. Like a printed form: you fill it out once, and if you need changes, you create a new copy.">immutable data shape</span> called AgentManifest.</p>
+          <p class="tl">Opening the definition...</p>
+          <p class="tl">Every agent <strong>must</strong> have a name &mdash; this is required, no default.</p>
+          <p class="tl">An optional text description of what this agent does.</p>
+          <p class="tl">An optional <span class="term" data-definition="A system prompt is the hidden set of instructions given to an AI before the conversation starts. It defines the agent's personality, rules, and capabilities — like a director's notes to an actor before filming.">system prompt</span> &mdash; the agent's personality and instructions.</p>
+          <p class="tl">A list of skills this agent can use (starts empty). This list is read-only &mdash; nobody can tamper with it later.</p>
+          <p class="tl">A list of <span class="term" data-definition="A subagent is a smaller, specialized agent that a main agent can delegate tasks to — like a lead actor handing off stunts to a stunt double.">subagents</span> this agent can delegate to (also read-only, starts empty).</p>
+          <p class="tl">Configuration settings with sensible defaults.</p>
+          <p class="tl">End of the blueprint.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- SkillDefinition Translation -->
+    <h3 style="margin-top: var(--space-8);">SkillDefinition Level 1 &mdash; The Index Card</h3>
+    <p>Skills use <span class="term" data-definition="Progressive disclosure means showing only a summary at first, then revealing more detail when needed. Like a book index: you scan chapter titles first, then dive into the one you want. This saves the agent's limited context window.">progressive disclosure</span> &mdash; the agent sees a quick summary first, and only loads full details when needed.</p>
+
+    <div class="translation-block animate-in">
+      <div class="translation-code">
+        <span class="translation-label">CODE</span>
+        <pre><code>
+<span class="code-line"><span class="code-keyword">public class</span> <span class="code-function">SkillDefinition</span></span>
+<span class="code-line">{</span>
+<span class="code-line">    <span class="code-comment">#region Level 1: Index Card (Metadata &mdash; Always Loaded)</span></span>
+<span class="code-line"></span>
+<span class="code-line">    <span class="code-keyword">public</span> <span class="code-keyword">string</span> <span class="code-property">Id</span> { <span class="code-keyword">get</span>; <span class="code-keyword">set</span>; } = <span class="code-keyword">string</span>.Empty;</span>
+<span class="code-line">    <span class="code-keyword">public</span> <span class="code-keyword">string</span> <span class="code-property">Name</span> { <span class="code-keyword">get</span>; <span class="code-keyword">set</span>; } = <span class="code-keyword">string</span>.Empty;</span>
+<span class="code-line">    <span class="code-keyword">public</span> <span class="code-keyword">string</span> <span class="code-property">Description</span> { <span class="code-keyword">get</span>; <span class="code-keyword">set</span>; } = <span class="code-keyword">string</span>.Empty;</span>
+<span class="code-line">    <span class="code-keyword">public</span> <span class="code-keyword">string</span> <span class="code-property">Category</span> { <span class="code-keyword">get</span>; <span class="code-keyword">set</span>; } = <span class="code-keyword">string</span>.Empty;</span>
+<span class="code-line">    <span class="code-keyword">public</span> IList&lt;<span class="code-keyword">string</span>&gt; <span class="code-property">Tags</span> { <span class="code-keyword">get</span>; <span class="code-keyword">set</span>; } = <span class="code-keyword">new</span> List&lt;<span class="code-keyword">string</span>&gt;();</span>
+<span class="code-line"></span>
+<span class="code-line">    <span class="code-comment">#endregion</span></span>
+        </code></pre>
+      </div>
+      <div class="translation-english">
+        <span class="translation-label">PLAIN ENGLISH</span>
+        <div class="translation-lines">
+          <p class="tl">A <span class="term" data-definition="A class in programming is a blueprint for creating objects. It defines what data the object holds (properties) and what it can do (methods). Like a cookie cutter that stamps out cookies of the same shape.">class</span> describing one skill an agent can use.</p>
+          <p class="tl">Opening the definition...</p>
+          <p class="tl">This section is the "index card" &mdash; lightweight metadata that's always loaded into memory.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">A unique identifier so the system can find this skill quickly.</p>
+          <p class="tl">A human-readable name (e.g., "Code Review").</p>
+          <p class="tl">A short sentence explaining what this skill does.</p>
+          <p class="tl">Which group it belongs to (e.g., "Development", "Analysis").</p>
+          <p class="tl">Searchable keywords &mdash; like hashtags for the skill.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">End of Level 1. Deeper levels with full instructions load only on demand.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       SCREEN 4: APPLICATION LAYER — AgentFactory Code Translation
+       ============================================================ -->
+  <div class="screen">
+    <h2>The Application Layer: The Director</h2>
+    <p>The <span class="term" data-definition="The Application layer sits between the Domain (blueprints) and Infrastructure (real services). It contains the business logic — the rules and orchestration that decide what happens, without caring about the specific technologies used to do it.">Application layer</span> is where the action happens. It reads the Domain blueprints, calls Infrastructure services, and orchestrates everything. The AgentFactory is the director who assembles the full cast.</p>
+
+    <div class="translation-block animate-in">
+      <div class="translation-code">
+        <span class="translation-label">CODE</span>
+        <pre><code>
+<span class="code-line"><span class="code-keyword">public</span> AIAgent <span class="code-function">CreateAgent</span>(AgentDefinition definition)</span>
+<span class="code-line">{</span>
+<span class="code-line">    Guard.Against.Null(definition, <span class="code-keyword">nameof</span>(definition));</span>
+<span class="code-line"></span>
+<span class="code-line">    <span class="code-keyword">var</span> chatClient = <span class="code-function">BuildChatClientPipeline</span>(definition);</span>
+<span class="code-line">    <span class="code-keyword">var</span> agent = <span class="code-function">CreateBaseAgent</span>(chatClient, definition);</span>
+<span class="code-line"></span>
+<span class="code-line">    _logger.<span class="code-function">LogInformation</span>(</span>
+<span class="code-line">        <span class="code-string">"Created agent {AgentName} with {ToolCount} tools, model {Model}"</span>,</span>
+<span class="code-line">        definition.Name, definition.Tools?.Count ?? 0, definition.ModelDeployment);</span>
+<span class="code-line"></span>
+<span class="code-line">    <span class="code-keyword">return</span> agent;</span>
+<span class="code-line">}</span>
+        </code></pre>
+      </div>
+      <div class="translation-english">
+        <span class="translation-label">PLAIN ENGLISH</span>
+        <div class="translation-lines">
+          <p class="tl">A <span class="term" data-definition="A method (or function) is a named block of code that performs a specific task. You 'call' it by name, pass it inputs, and it returns a result. Like pressing a button on a machine that does one thing.">method</span> called CreateAgent that takes an agent definition and returns a fully-assembled AI agent.</p>
+          <p class="tl">Opening the method...</p>
+          <p class="tl">Safety check: if someone passes in nothing, stop immediately with a clear error rather than crashing mysteriously later.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Build the communication pipeline to the <span class="term" data-definition="A chat client is the software component that sends messages to and receives responses from an LLM. The 'pipeline' part means messages pass through multiple processing steps (logging, safety, retry logic) on the way.">LLM</span> based on the agent's config.</p>
+          <p class="tl">Create the base agent object, wiring together the chat client and the agent's definition (tools, skills, system prompt).</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Write a <span class="term" data-definition="Structured logging is writing log messages with named placeholders (like {AgentName}) instead of raw strings. This makes logs searchable and filterable — you can find all logs for a specific agent by name instead of searching through plain text.">structured log</span> entry recording what was just built &mdash;</p>
+          <p class="tl">including the agent's name, how many tools it has, and which AI model it uses.</p>
+          <p class="tl">If no tools are defined, report 0 rather than crashing.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Hand back the fully assembled agent, ready to receive messages.</p>
+          <p class="tl">End of the method.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="callout callout-info">
+      <div class="callout-icon">&#128269;</div>
+      <div class="callout-content">
+        <strong class="callout-title">Why Application, Not Infrastructure?</strong>
+        <p>The AgentFactory decides <em>what</em> to assemble and in what order. It uses <span class="term" data-definition="An interface is a contract that says 'I promise to have these methods' without specifying how they work. The Application layer talks to interfaces, and Infrastructure provides the actual implementations — so you can swap providers without changing the orchestration logic.">interfaces</span> to talk to Infrastructure, so it never knows whether the LLM is Azure OpenAI, Anthropic, or a local model. That swappability is the whole point of Clean Architecture.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       SCREEN 5: Infrastructure & Presentation + Quiz
+       ============================================================ -->
+  <div class="screen">
+    <h2>Infrastructure &amp; Presentation</h2>
+    <p>Two outer layers remain. <span class="term" data-definition="The Infrastructure layer contains all the 'real world' implementations — database connections, API clients, file system access, LLM provider integrations. It implements the interfaces defined in the Application layer.">Infrastructure</span> does the heavy lifting with real services. <span class="term" data-definition="The Presentation layer is the outermost layer — the part users actually see and interact with. It could be a web app, a console app, an API endpoint, or all three at once.">Presentation</span> is the front door.</p>
+
+    <div class="pattern-cards">
+      <div class="pattern-card" style="border-top: 3px solid var(--color-actor-5)">
+        <div class="pattern-icon" style="background: var(--color-actor-5)">&#9889;</div>
+        <h4 class="pattern-title">LLM Providers</h4>
+        <p class="pattern-desc">Connects to Azure OpenAI, Anthropic, or local models. Swappable &mdash; change providers without touching the agent logic.</p>
+      </div>
+      <div class="pattern-card" style="border-top: 3px solid var(--color-actor-5)">
+        <div class="pattern-icon" style="background: var(--color-actor-5)">&#128268;</div>
+        <h4 class="pattern-title">MCP Integration</h4>
+        <p class="pattern-desc">Expose tools as an MCP server for other agents, and consume external MCP servers for more capabilities.</p>
+      </div>
+      <div class="pattern-card" style="border-top: 3px solid var(--color-actor-5)">
+        <div class="pattern-icon" style="background: var(--color-actor-5)">&#128190;</div>
+        <h4 class="pattern-title">State &amp; Storage</h4>
+        <p class="pattern-desc">Saves conversations, agent state, and tool results. Keeps the agent's memory intact across turns.</p>
+      </div>
+      <div class="pattern-card" style="border-top: 3px solid var(--color-actor-1)">
+        <div class="pattern-icon" style="background: var(--color-actor-1)">&#127912;</div>
+        <h4 class="pattern-title">WebUI &amp; ConsoleUI</h4>
+        <p class="pattern-desc">Two ways in: a browser-based chat interface or a developer's terminal. Same agent, different doorways.</p>
+      </div>
+      <div class="pattern-card" style="border-top: 3px solid var(--color-actor-2)">
+        <div class="pattern-icon" style="background: var(--color-actor-2)">&#128225;</div>
+        <h4 class="pattern-title">AgentHub (SignalR)</h4>
+        <p class="pattern-desc">Real-time communication hub using <span class="term" data-definition="SignalR is a Microsoft library that enables real-time, two-way communication between a server and connected clients. Instead of the browser repeatedly asking 'any news?', SignalR keeps a persistent connection open — like a phone call instead of texting.">SignalR</span>. Pushes agent responses to the browser the instant they're ready.</p>
+      </div>
+      <div class="pattern-card" style="border-top: 3px solid var(--color-actor-3)">
+        <div class="pattern-icon" style="background: var(--color-actor-3)">&#128200;</div>
+        <h4 class="pattern-title">Observability</h4>
+        <p class="pattern-desc">Every request is traced end-to-end with <span class="term" data-definition="OpenTelemetry is an open-source framework for collecting traces, metrics, and logs from your application. Think of it as installing security cameras throughout a building — you can replay exactly what happened during any request.">OpenTelemetry</span>. If something breaks, you can replay the entire journey.</p>
+      </div>
+    </div>
+
+    <!-- Quiz -->
+    <h3 style="margin-top: var(--space-10);">Check Your Understanding</h3>
+    <div class="quiz-container" id="quiz-module2">
+
+      <!-- Q1 -->
+      <div class="quiz-question-block"
+           data-correct="option-a"
+           data-explanation-right="Exactly. The AgentManifest is a data shape with no behavior and no dependencies on external services — that is the textbook definition of a Domain model."
+           data-explanation-wrong="Not quite. The Domain layer holds pure data definitions — blueprints that describe what things are. AgentManifest has no behavior, no database calls, no API connections. That makes it Domain.">
+        <h3 class="quiz-question">1. Which layer owns the AgentManifest?</h3>
+        <div class="quiz-options">
+          <button class="quiz-option" data-value="option-a" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>Domain &mdash; it's a pure data blueprint</span>
+          </button>
+          <button class="quiz-option" data-value="option-b" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>Application &mdash; it orchestrates agent creation</span>
+          </button>
+          <button class="quiz-option" data-value="option-c" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>Infrastructure &mdash; it connects to external config</span>
+          </button>
+        </div>
+        <div class="quiz-feedback"></div>
+      </div>
+
+      <!-- Q2: Scenario -->
+      <div class="quiz-question-block"
+           data-correct="option-b"
+           data-explanation-right="Exactly. LLM providers live in Infrastructure because they are external service integrations. The Application layer talks to them through interfaces, so swapping providers is a one-file change in Infrastructure — no other layers affected."
+           data-explanation-wrong="Think about which layer handles connections to external services. The Application layer only knows about interfaces (contracts), not specific providers. The actual Azure/Anthropic/local model connection code lives in Infrastructure.">
+        <h3 class="quiz-question">2. You want to add support for a new LLM provider (say, Google Gemini). Which layer do you modify?</h3>
+        <div class="quiz-options">
+          <button class="quiz-option" data-value="option-a" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>Domain &mdash; add a new model definition</span>
+          </button>
+          <button class="quiz-option" data-value="option-b" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>Infrastructure &mdash; implement the provider integration</span>
+          </button>
+          <button class="quiz-option" data-value="option-c" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>Presentation &mdash; update the UI to show the new option</span>
+          </button>
+        </div>
+        <div class="quiz-feedback"></div>
+      </div>
+
+      <!-- Q3: Architecture Decision -->
+      <div class="quiz-question-block"
+           data-correct="option-c"
+           data-explanation-right="Exactly. The factory decides what to assemble using interfaces — it never touches real services directly. That decision-making logic is Application territory. Infrastructure provides the implementations those interfaces point to."
+           data-explanation-wrong="The key question is: does AgentFactory connect to real services, or does it orchestrate through interfaces? It calls BuildChatClientPipeline and CreateBaseAgent using abstractions — it never knows if the LLM is Azure, Anthropic, or local. That makes it Application-layer orchestration.">
+        <h3 class="quiz-question">3. Why does the AgentFactory live in Application, not Infrastructure?</h3>
+        <div class="quiz-options">
+          <button class="quiz-option" data-value="option-a" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>Because it's a simple data class with no logic</span>
+          </button>
+          <button class="quiz-option" data-value="option-b" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>Because it directly calls Azure OpenAI APIs</span>
+          </button>
+          <button class="quiz-option" data-value="option-c" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>Because it orchestrates assembly through interfaces, without knowing which concrete services are behind them</span>
+          </button>
+        </div>
+        <div class="quiz-feedback"></div>
+      </div>
+
+      <!-- Q4: Drag-and-Drop -->
+      <div class="quiz-question-block" style="border: none; box-shadow: none; background: transparent; padding: 0;">
+        <h3 class="quiz-question">4. Match each actor to the layer it belongs in:</h3>
+        <div class="dnd-container">
+          <div class="dnd-chips">
+            <div class="dnd-chip" draggable="true" data-answer="domain">AgentManifest</div>
+            <div class="dnd-chip" draggable="true" data-answer="application">MediatR Pipeline</div>
+            <div class="dnd-chip" draggable="true" data-answer="infrastructure">FileSystemService</div>
+            <div class="dnd-chip" draggable="true" data-answer="presentation">AgentHub</div>
+          </div>
+          <div class="dnd-zones">
+            <div class="dnd-zone" data-correct="domain">
+              <p class="dnd-zone-label">Domain &mdash; Pure blueprints, no behavior</p>
+              <div class="dnd-zone-target">Drop here</div>
+            </div>
+            <div class="dnd-zone" data-correct="application">
+              <p class="dnd-zone-label">Application &mdash; Orchestration and business rules</p>
+              <div class="dnd-zone-target">Drop here</div>
+            </div>
+            <div class="dnd-zone" data-correct="infrastructure">
+              <p class="dnd-zone-label">Infrastructure &mdash; Real services and external connections</p>
+              <div class="dnd-zone-target">Drop here</div>
+            </div>
+            <div class="dnd-zone" data-correct="presentation">
+              <p class="dnd-zone-label">Presentation &mdash; User-facing interfaces</p>
+              <div class="dnd-zone-target">Drop here</div>
+            </div>
+          </div>
+          <button class="btn" onclick="checkDnD(this)">Check Matches</button>
+          <button class="btn" onclick="resetDnD(this)">Reset</button>
+        </div>
+      </div>
+
+      <button class="quiz-check-btn" onclick="checkQuiz('quiz-module2')">Check Answers</button>
+      <button class="quiz-reset-btn" onclick="resetQuiz('quiz-module2')">Try Again</button>
+    </div>
+
+    <!-- Module Transition -->
+    <p style="margin-top: var(--space-10); font-size: var(--text-lg); color: var(--color-text-secondary); text-align: center; font-style: italic;">Now that you know who's who, let's watch them in action &mdash; follow a real conversation from the first message to the final answer.</p>
+  </div>
+
+</section>

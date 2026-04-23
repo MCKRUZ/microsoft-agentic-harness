@@ -1,4 +1,7 @@
+using System.Diagnostics;
+using Application.AI.Common.OpenTelemetry.Metrics;
 using Application.Core.CQRS.Agents.ExecuteAgentTurn;
+using Domain.AI.Telemetry.Conventions;
 using MediatR;
 using Microsoft.Extensions.Logging;
 
@@ -26,6 +29,7 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 		_logger.LogInformation("Starting conversation with {AgentName}, {MessageCount} messages, max {MaxTurns} turns",
 			request.AgentName, request.UserMessages.Count, request.MaxTurns);
 
+		var sw = Stopwatch.StartNew();
 		var turns = new List<TurnSummary>();
 		var totalToolInvocations = 0;
 		AgentTurnResult? lastResult = null;
@@ -98,8 +102,15 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 			}
 		}
 
+		sw.Stop();
 		_logger.LogInformation("Conversation completed: {TurnCount} turns, {ToolCount} tool invocations",
 			turns.Count, totalToolInvocations);
+
+		var agentTag = new KeyValuePair<string, object?>(AgentConventions.Name, request.AgentName);
+		OrchestrationMetrics.ConversationDuration.Record(sw.Elapsed.TotalMilliseconds, agentTag);
+		OrchestrationMetrics.TurnsPerConversation.Record(turns.Count, agentTag);
+		if (totalToolInvocations > 0)
+			OrchestrationMetrics.ToolCalls.Add(totalToolInvocations, agentTag);
 
 		return new ConversationResult
 		{

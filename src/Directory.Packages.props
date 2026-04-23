@@ -36,6 +36,10 @@
     <PackageVersion Include="Ardalis.GuardClauses" Version="5.0.0" />
     <PackageVersion Include="Microsoft.Extensions.Http" Version="10.0.5" />
 
+    <!-- Infrastructure.AI.RAG -->
+    <PackageVersion Include="Azure.Search.Documents" Version="11.7.0" />
+    <PackageVersion Include="Microsoft.Data.Sqlite" Version="10.0.5" />
+
     <!-- Infrastructure.AI -->
     <PackageVersion Include="Anthropic.SDK" Version="5.10.0" />
     <PackageVersion Include="Azure.AI.Inference" Version="1.0.0-beta.5" />

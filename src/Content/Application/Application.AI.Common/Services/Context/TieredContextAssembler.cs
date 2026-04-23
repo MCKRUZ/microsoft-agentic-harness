@@ -2,7 +2,9 @@ using System.Text;
 using Application.AI.Common.Helpers;
 using Application.AI.Common.Interfaces.Context;
 using Application.AI.Common.Models.Context;
+using Application.AI.Common.OpenTelemetry.Metrics;
 using Domain.AI.Skills;
+using Domain.AI.Telemetry.Conventions;
 using Microsoft.Extensions.Logging;
 
 namespace Application.AI.Common.Services.Context;
@@ -64,6 +66,14 @@ public sealed class TieredContextAssembler : ITieredContextAssembler
         _logger.LogInformation(
             "Assembled context for skill {SkillId}: Tier1={Tier1Tokens}, Tier2={Tier2Tokens}, Total={TotalTokens}",
             skill.Id, tier1.TotalTokens, tier2.TotalTokens, totalTokens);
+
+        var combinedMax = tier1.MaxTokens + tier2.MaxTokens;
+        if (combinedMax > 0)
+        {
+            var utilization = (double)totalTokens / combinedMax;
+            ContextBudgetMetrics.BudgetUtilization.Record(utilization,
+                new KeyValuePair<string, object?>(AgentConventions.Name, agentName));
+        }
 
         var result = new AssembledContext(tier1, tier2, tier3, totalTokens, formattedPrompt);
         return Task.FromResult(result);
@@ -128,6 +138,14 @@ public sealed class TieredContextAssembler : ITieredContextAssembler
         }
 
         _budgetTracker.RecordAllocation(agentName, "tier1_context", totalTokens);
+
+        ContextBudgetMetrics.SkillsLoadedTokens.Record(totalTokens,
+            new KeyValuePair<string, object?>(AgentConventions.Name, agentName),
+            new KeyValuePair<string, object?>(ContextConventions.SkillsTier, "1"));
+        ContextSourceMetrics.SourceTokens.Record(totalTokens,
+            new KeyValuePair<string, object?>(ContextConventions.SourceType, ContextConventions.SourceTypeValues.Skills),
+            new KeyValuePair<string, object?>(AgentConventions.Name, agentName));
+
         return new Tier1LoadedContext(files, totalTokens, maxTokens);
     }
 
@@ -188,6 +206,14 @@ public sealed class TieredContextAssembler : ITieredContextAssembler
         }
 
         _budgetTracker.RecordAllocation(agentName, "tier2_context", totalTokens);
+
+        ContextBudgetMetrics.SkillsLoadedTokens.Record(totalTokens,
+            new KeyValuePair<string, object?>(AgentConventions.Name, agentName),
+            new KeyValuePair<string, object?>(ContextConventions.SkillsTier, "2"));
+        ContextSourceMetrics.SourceTokens.Record(totalTokens,
+            new KeyValuePair<string, object?>(ContextConventions.SourceType, ContextConventions.SourceTypeValues.Skills),
+            new KeyValuePair<string, object?>(AgentConventions.Name, agentName));
+
         return new Tier2LoadedContext(files, totalTokens, maxTokens, truncatedFiles);
     }
 

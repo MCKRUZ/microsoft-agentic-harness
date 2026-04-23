@@ -1,3 +1,4 @@
+using Application.AI.Common.Interfaces;
 using Application.Common.Interfaces.Telemetry;
 using Azure.Monitor.OpenTelemetry.Exporter;
 using Infrastructure.Observability.Processors;
@@ -35,6 +36,7 @@ public sealed class ObservabilityTelemetryConfigurator : ITelemetryConfigurator
     private readonly ILogger<ObservabilityTelemetryConfigurator> _logger;
     private readonly IOptionsMonitor<Domain.Common.Config.AppConfig> _appConfig;
     private readonly ILoggerFactory _loggerFactory;
+    private readonly IBudgetTrackingService _budgetTracker;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="ObservabilityTelemetryConfigurator"/> class.
@@ -42,14 +44,17 @@ public sealed class ObservabilityTelemetryConfigurator : ITelemetryConfigurator
     /// <param name="logger">The logger instance.</param>
     /// <param name="appConfig">The application configuration.</param>
     /// <param name="loggerFactory">The logger factory for creating processor loggers.</param>
+    /// <param name="budgetTracker">The budget tracking service for cost aggregation.</param>
     public ObservabilityTelemetryConfigurator(
         ILogger<ObservabilityTelemetryConfigurator> logger,
         IOptionsMonitor<Domain.Common.Config.AppConfig> appConfig,
-        ILoggerFactory loggerFactory)
+        ILoggerFactory loggerFactory,
+        IBudgetTrackingService budgetTracker)
     {
         _logger = logger;
         _appConfig = appConfig;
         _loggerFactory = loggerFactory;
+        _budgetTracker = budgetTracker;
     }
 
     /// <inheritdoc />
@@ -86,7 +91,8 @@ public sealed class ObservabilityTelemetryConfigurator : ITelemetryConfigurator
         // even for spans that get sampled out
         builder.AddProcessor(new LlmTokenTrackingProcessor(
             _loggerFactory.CreateLogger<LlmTokenTrackingProcessor>(),
-            optionsSnapshot));
+            optionsSnapshot,
+            _budgetTracker));
         _logger.LogInformation("LLM token tracking processor registered");
 
         // Processor 4: Tool effectiveness — BEFORE sampling for same reason
@@ -94,13 +100,18 @@ public sealed class ObservabilityTelemetryConfigurator : ITelemetryConfigurator
             _loggerFactory.CreateLogger<ToolEffectivenessProcessor>()));
         _logger.LogInformation("Tool effectiveness processor registered");
 
-        // Processor 5: Causal attribution — bridges agent.tool.name → gen_ai.tool.name,
+        // Processor 5: Tool usefulness scoring — composite 0-1 score per tool call
+        builder.AddProcessor(new ToolUsefulnessProcessor(
+            _loggerFactory.CreateLogger<ToolUsefulnessProcessor>()));
+        _logger.LogInformation("Tool usefulness processor registered");
+
+        // Processor 6: Causal attribution — bridges agent.tool.name → gen_ai.tool.name,
         // adds input hash and result category, reads eval context from baggage
         builder.AddProcessor(new CausalSpanAttributionProcessor(
             _loggerFactory.CreateLogger<CausalSpanAttributionProcessor>()));
         _logger.LogInformation("Causal span attribution processor registered");
 
-        // Processor 6: Tail-based sampling (last — all metrics already recorded)
+        // Processor 7: Tail-based sampling (last — all metrics already recorded)
         if (config.Sampling.Enabled)
         {
             builder.AddProcessor(new TailBasedSamplingProcessor(

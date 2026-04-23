@@ -59,7 +59,8 @@ public static class DependencyInjection
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(AuditTrailBehavior<,>))
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(ContentSafetyBehavior<,>))
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(ToolPermissionBehavior<,>))
-            .AddTransient(typeof(IPipelineBehavior<,>), typeof(HookBehavior<,>));
+            .AddTransient(typeof(IPipelineBehavior<,>), typeof(HookBehavior<,>))
+            .AddTransient(typeof(IPipelineBehavior<,>), typeof(RetrievalAuditBehavior<,>));
 
         // Scoped agent execution context — carries agent identity through the pipeline
         services.AddScoped<IAgentExecutionContext, AgentExecutionContext>();

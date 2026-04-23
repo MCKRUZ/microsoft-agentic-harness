@@ -12,8 +12,9 @@ namespace Domain.Common.Config.Observability;
 /// ├── Sampling     — Tail-based sampling policies (keep errors, slow, agent spans)
 /// ├── PiiFiltering — Attribute scrubbing rules (delete, hash)
 /// ├── RateLimiting — Span throughput throttling
-/// ├── Exporters    — Multi-backend export targets (OTLP, Azure Monitor, Prometheus)
-/// └── LlmPricing   — Per-model token pricing for cost estimation
+/// ├── Exporters       — Multi-backend export targets (OTLP, Azure Monitor, Prometheus)
+/// ├── LlmPricing      — Per-model token pricing for cost estimation
+/// └── BudgetTracking  — Cost budget thresholds and alerting state machine
 /// </code>
 /// </para>
 /// <para>
@@ -47,6 +48,11 @@ public class ObservabilityConfig
     /// Gets or sets the LLM token pricing configuration for cost estimation.
     /// </summary>
     public LlmPricingConfig LlmPricing { get; set; } = new();
+
+    /// <summary>
+    /// Gets or sets the cost budget tracking configuration for automated alerting.
+    /// </summary>
+    public BudgetTrackingConfig BudgetTracking { get; set; } = new();
 
     /// <summary>
     /// Gets or sets whether sensitive telemetry data (e.g., GenAI prompt/completion content)

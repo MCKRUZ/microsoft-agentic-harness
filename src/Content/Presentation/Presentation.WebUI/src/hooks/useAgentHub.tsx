@@ -38,10 +38,9 @@ export function AgentHubProvider({ children }: { children: ReactNode }) {
   const { instance } = useMsal();
   const [connectionState, setConnectionState] = useState<ConnectionState>('disconnected');
   const connectionRef = useRef<HubConnection | null>(null);
-  const stoppedRef = useRef(false);
 
   useEffect(() => {
-    stoppedRef.current = false;
+    let active = true;
 
     const getToken = async (): Promise<string> => {
       if (IS_AUTH_DISABLED) return '';
@@ -76,31 +75,41 @@ export function AgentHubProvider({ children }: { children: ReactNode }) {
       useChatStore.getState().setError(message);
     });
 
-    connection.onreconnecting(() => { setConnectionState('reconnecting'); });
-    connection.onreconnected(() => { setConnectionState('connected'); });
-    connection.onclose(() => { setConnectionState('disconnected'); });
+    connection.onreconnecting(() => { if (active) setConnectionState('reconnecting'); });
+    connection.onreconnected(() => { if (active) setConnectionState('connected'); });
+    connection.onclose(() => { if (active) setConnectionState('disconnected'); });
 
     setConnectionState('connecting');
-    const startPromise = connection.start()
-      .then(() => {
-        if (!stoppedRef.current) setConnectionState('connected');
+    connection.start()
+      .then(async () => {
+        if (!active) return;
+        setConnectionState('connected');
+
+        try {
+          const res = await fetch('/api/config/auth');
+          if (res.ok) {
+            const { authDisabled: serverAuthDisabled } = await res.json();
+            if (serverAuthDisabled !== IS_AUTH_DISABLED) {
+              console.warn(
+                `[AgentHub] Auth mismatch — client: auth ${IS_AUTH_DISABLED ? 'disabled' : 'enabled'}, ` +
+                `server: auth ${serverAuthDisabled ? 'disabled' : 'enabled'}. ` +
+                'Connection may fail. Check VITE_AZURE_SPA_CLIENT_ID and server Auth:Disabled config.',
+              );
+            }
+          }
+        } catch { /* server endpoint unavailable — non-fatal */ }
       })
       .catch((err: unknown) => {
-        if (!stoppedRef.current) {
-          setConnectionState('disconnected');
-          const message = err instanceof Error ? err.message : 'SignalR connection failed';
-          useChatStore.getState().setError(message);
-        }
+        if (!active) return;
+        setConnectionState('disconnected');
+        const message = err instanceof Error ? err.message : 'SignalR connection failed';
+        useChatStore.getState().setError(message);
       });
 
     return () => {
-      stoppedRef.current = true;
-      connection.off('TokenReceived');
-      connection.off('TurnComplete');
-      connection.off('HistoryTruncated');
-      connection.off('Error');
-      void startPromise.finally(() => connection.stop());
+      active = false;
       connectionRef.current = null;
+      void connection.stop();
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

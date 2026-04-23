@@ -1,0 +1,545 @@
+<section class="module" id="module-5">
+  <div class="module-number">05</div>
+
+  <!-- ============================================================
+       SCREEN 1: How Tools Get to the Agent (Flow Animation)
+       ============================================================ -->
+  <div class="screen" id="screen-5-1">
+    <h2>How Tools Get to the Agent</h2>
+    <p>
+      Skills tell the agent what it <em>knows</em>. Tools are what it can actually <em>do</em>.
+      Think of the harness like a Swiss Army knife with a safety lock &mdash; each blade is sharp and useful,
+      but there is a mechanism that prevents you from opening the dangerous ones without explicit permission.
+    </p>
+    <p>
+      Watch each step below to see how a tool travels from a
+      <span class="term" data-definition="A skill declaration is a structured list inside a SKILL.md file that tells the harness which tools the agent is allowed to use for that skill. It acts like a permission slip.">skill declaration</span>
+      all the way into the agent&rsquo;s hands.
+    </p>
+
+    <div class="flow-animation" data-steps='[
+      {"highlight":"flow-actor-1","label":"The Skill declares tool names the agent needs (e.g. web_search, file_system)"},
+      {"highlight":"flow-actor-2","label":"AgentExecutionContextFactory reads the list and starts resolving each tool name","packet":true,"from":"actor-1","to":"actor-2"},
+      {"highlight":"flow-actor-3","label":"Factory asks the MCP provider first: do you have a tool with this name?","packet":true,"from":"actor-2","to":"actor-3"},
+      {"highlight":"flow-actor-3","label":"MCP checks its connected external servers for a matching tool"},
+      {"highlight":"flow-actor-4","label":"If MCP has no match, the Factory falls back to Keyed DI and looks up the tool by its string key","packet":true,"from":"actor-2","to":"actor-4"},
+      {"highlight":"flow-actor-4","label":"Keyed DI finds the locally registered ITool implementation"},
+      {"highlight":"flow-actor-5","label":"The resolved ITool is converted into an AITool the LLM can understand","packet":true,"from":"actor-4","to":"actor-5"},
+      {"highlight":"flow-actor-6","label":"The agent receives a final list of AITools it is allowed to call this turn","packet":true,"from":"actor-5","to":"actor-6"}
+    ]'>
+      <div class="flow-actors">
+        <div class="flow-actor" id="flow-actor-1">
+          <div class="flow-actor-icon" style="background: var(--color-actor-1)">SK</div>
+          <span>Skill</span>
+        </div>
+        <div class="flow-actor" id="flow-actor-2">
+          <div class="flow-actor-icon" style="background: var(--color-actor-2)">FA</div>
+          <span>Factory</span>
+        </div>
+        <div class="flow-actor" id="flow-actor-3">
+          <div class="flow-actor-icon" style="background: var(--color-actor-3)">MC</div>
+          <span>MCP</span>
+        </div>
+        <div class="flow-actor" id="flow-actor-4">
+          <div class="flow-actor-icon" style="background: var(--color-actor-4)">DI</div>
+          <span>Keyed DI</span>
+        </div>
+        <div class="flow-actor" id="flow-actor-5">
+          <div class="flow-actor-icon" style="background: var(--color-actor-5)">AT</div>
+          <span>AITool</span>
+        </div>
+        <div class="flow-actor" id="flow-actor-6">
+          <div class="flow-actor-icon" style="background: var(--color-actor-6)">AG</div>
+          <span>Agent</span>
+        </div>
+      </div>
+
+      <div class="flow-packet" id="flow-packet"></div>
+
+      <div class="flow-step-label" id="flow-label">Click &ldquo;Next Step&rdquo; to trace the tool resolution chain</div>
+
+      <div class="flow-controls">
+        <button class="btn flow-next-btn">Next Step</button>
+        <button class="btn flow-reset-btn">Restart</button>
+        <span class="flow-progress"></span>
+      </div>
+    </div>
+
+    <div class="callout callout-accent">
+      <div class="callout-icon">&#x1F4A1;</div>
+      <div class="callout-content">
+        <strong class="callout-title">Why MCP First?</strong>
+        <p>
+          External tools from <span class="term" data-definition="MCP (Model Context Protocol) is a standard way for AI agents to discover and call tools hosted on remote servers. Think of it as a universal adapter that lets you snap new blades into the Swiss Army knife without rebuilding it.">MCP</span> servers can be updated, added, or removed without recompiling the harness.
+          Checking MCP first means the newest capabilities always win.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       SCREEN 2: The Tool Resolution Chain (Code Translation)
+       ============================================================ -->
+  <div class="screen" id="screen-5-2">
+    <h2>The Tool Resolution Chain</h2>
+    <p>
+      Here is the real C# method that decides where each tool comes from.
+      The pattern is: try <span class="term" data-definition="MCP stands for Model Context Protocol. It is an open standard that lets AI agents discover and use tools on remote servers over HTTP, like a plug-and-play USB port for agent capabilities.">MCP</span> first, fall back to
+      <span class="term" data-definition="Keyed Dependency Injection is a technique where each tool is registered in the app with a unique string name (like &quot;file_system&quot; or &quot;web_search&quot;). The harness can then look up any tool by that name at runtime, like finding a book on a shelf by its label.">keyed DI</span>,
+      then try a <span class="term" data-definition="A fallback tool is a backup that activates when the preferred tool cannot be found. Like having a spare tire in your trunk &mdash; you hope you never need it, but it keeps you moving.">fallback</span> tool if one is declared.
+    </p>
+
+    <div class="translation-block animate-in">
+      <div class="translation-code">
+        <span class="translation-label">CODE</span>
+        <pre><code>
+<span class="code-line"><span class="code-keyword">private async</span> Task&lt;IEnumerable&lt;<span class="code-type">AITool</span>&gt;?&gt; <span class="code-function">ProvisionToolAsync</span>(<span class="code-type">ToolDeclaration</span> declaration)</span>
+<span class="code-line">{</span>
+<span class="code-line">    <span class="code-comment">// Try MCP first</span></span>
+<span class="code-line">    <span class="code-keyword">if</span> (_mcpToolProvider != <span class="code-keyword">null</span>)</span>
+<span class="code-line">    {</span>
+<span class="code-line">        <span class="code-keyword">try</span></span>
+<span class="code-line">        {</span>
+<span class="code-line">            <span class="code-keyword">var</span> mcpTools = <span class="code-keyword">await</span> _mcpToolProvider.<span class="code-function">GetToolsAsync</span>(declaration.Name);</span>
+<span class="code-line">            <span class="code-keyword">if</span> (mcpTools?.Count &gt; 0)</span>
+<span class="code-line">            {</span>
+<span class="code-line">                _logger.<span class="code-function">LogDebug</span>(<span class="code-string">"Resolved tool {ToolName} from MCP server"</span>, declaration.Name);</span>
+<span class="code-line">                <span class="code-keyword">return</span> mcpTools;</span>
+<span class="code-line">            }</span>
+<span class="code-line">        }</span>
+<span class="code-line">        <span class="code-keyword">catch</span> (Exception ex)</span>
+<span class="code-line">        {</span>
+<span class="code-line">            _logger.<span class="code-function">LogDebug</span>(ex, <span class="code-string">"MCP resolution failed for {ToolName}, trying keyed DI"</span>, declaration.Name);</span>
+<span class="code-line">        }</span>
+<span class="code-line">    }</span>
+<span class="code-line"></span>
+<span class="code-line">    <span class="code-comment">// Fallback to keyed DI</span></span>
+<span class="code-line">    <span class="code-keyword">var</span> resolved = <span class="code-function">ResolveToolByName</span>(declaration.Name);</span>
+<span class="code-line">    <span class="code-keyword">if</span> (resolved != <span class="code-keyword">null</span>)</span>
+<span class="code-line">        <span class="code-keyword">return</span> resolved;</span>
+<span class="code-line"></span>
+<span class="code-line">    <span class="code-comment">// Try fallback tool</span></span>
+<span class="code-line">    <span class="code-keyword">if</span> (declaration.HasFallback &amp;&amp; !declaration.FallbackIsManual)</span>
+<span class="code-line">    {</span>
+<span class="code-line">        resolved = <span class="code-function">ResolveToolByName</span>(declaration.Fallback!);</span>
+<span class="code-line">        <span class="code-keyword">if</span> (resolved != <span class="code-keyword">null</span>)</span>
+<span class="code-line">        {</span>
+<span class="code-line">            _logger.<span class="code-function">LogInformation</span>(<span class="code-string">"Using fallback tool {Fallback} for {ToolName}"</span>,</span>
+<span class="code-line">                declaration.Fallback, declaration.Name);</span>
+<span class="code-line">            <span class="code-keyword">return</span> resolved;</span>
+<span class="code-line">        }</span>
+<span class="code-line">    }</span>
+<span class="code-line"></span>
+<span class="code-line">    <span class="code-keyword">if</span> (!declaration.Optional)</span>
+<span class="code-line">        _logger.<span class="code-function">LogWarning</span>(<span class="code-string">"Required tool {ToolName} could not be resolved"</span>, declaration.Name);</span>
+<span class="code-line"></span>
+<span class="code-line">    <span class="code-keyword">return null</span>;</span>
+<span class="code-line">}</span>
+        </code></pre>
+      </div>
+      <div class="translation-english">
+        <span class="translation-label">PLAIN ENGLISH</span>
+        <div class="translation-lines">
+          <p class="tl">This method takes a tool declaration (a name + options) and tries to find a real, working tool for it.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">First, check: is there an MCP server connected?</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">If yes, ask the MCP server: &ldquo;Do you have a tool called this?&rdquo;</p>
+          <p class="tl">Ask the server for tools matching this name and wait for the answer.</p>
+          <p class="tl">If the server returned at least one tool...</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Log that we found it on MCP (for debugging later).</p>
+          <p class="tl">Hand back the MCP tools. Done &mdash; we found what we needed.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">If the MCP call crashed, log the error but keep going &mdash; do not give up.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">MCP did not have it. Try looking it up locally by its string key.</p>
+          <p class="tl">Found it locally? Great &mdash; hand it back.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Still nothing. If the declaration has a backup tool name, try that name instead.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Look up the backup tool locally.</p>
+          <p class="tl">Found the backup?</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Log that we are using the backup so humans can see what happened.</p>
+          <p class="tl">Hand back the backup tool.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">If this tool was required (not optional), log a warning &mdash; something is misconfigured.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Return nothing. The agent will not have this tool available.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       SCREEN 3: The Sandbox &mdash; FileSystemService (Code Translation)
+       ============================================================ -->
+  <div class="screen" id="screen-5-3">
+    <h2>The Sandbox &mdash; Keeping Tools on a Leash</h2>
+    <p>
+      Giving an AI agent unrestricted access to your file system is a terrible idea.
+      The harness puts a <span class="term" data-definition="A sandbox is a restricted environment that limits what code can do. Like a playpen for a toddler &mdash; they can move around freely inside it, but they cannot reach the stove.">sandbox</span> around dangerous tools
+      so they can only operate inside
+      <span class="term" data-definition="Allowed base paths are specific folders on disk that the harness permits the agent to read or write. Any path outside these folders is rejected, no matter what the agent asks for.">allowed base paths</span>.
+    </p>
+
+    <div class="pattern-cards">
+      <div class="pattern-card" style="border-top: 3px solid var(--color-actor-1)">
+        <div class="pattern-icon" style="background: var(--color-actor-1)">&#x1F6AB;</div>
+        <h4 class="pattern-title">Deny Gates</h4>
+        <p class="pattern-desc">Absolute blocks on dangerous paths like <code>.git/</code> and <code>.ssh/</code>. No override, no appeal.</p>
+      </div>
+      <div class="pattern-card" style="border-top: 3px solid var(--color-actor-2)">
+        <div class="pattern-icon" style="background: var(--color-actor-2)">&#x2753;</div>
+        <h4 class="pattern-title">Ask Rules</h4>
+        <p class="pattern-desc">Operations that pause and ask the human for confirmation before proceeding. Like a popup that says &ldquo;Are you sure?&rdquo;</p>
+      </div>
+      <div class="pattern-card" style="border-top: 3px solid var(--color-actor-3)">
+        <div class="pattern-icon" style="background: var(--color-actor-3)">&#x2705;</div>
+        <h4 class="pattern-title">Allow Rules</h4>
+        <p class="pattern-desc">Pre-approved operations inside safe directories. The agent can work freely within the fence.</p>
+      </div>
+    </div>
+
+    <div class="translation-block animate-in">
+      <div class="translation-code">
+        <span class="translation-label">CODE</span>
+        <pre><code>
+<span class="code-line"><span class="code-keyword">public class</span> <span class="code-type">ToolPermissionBehavior</span>&lt;TRequest, TResponse&gt;</span>
+<span class="code-line">    : <span class="code-type">IPipelineBehavior</span>&lt;TRequest, TResponse&gt;</span>
+<span class="code-line">    <span class="code-keyword">where</span> TRequest : <span class="code-type">IToolRequest</span></span>
+<span class="code-line">{</span>
+<span class="code-line">    <span class="code-comment">// 3-phase permission resolution:</span></span>
+<span class="code-line">    <span class="code-comment">// Phase 1: Deny gates &mdash; absolute blocks (e.g., .git/, .ssh/)</span></span>
+<span class="code-line">    <span class="code-comment">// Phase 2: Ask rules &mdash; requires user confirmation</span></span>
+<span class="code-line">    <span class="code-comment">// Phase 3: Allow rules &mdash; permitted operations</span></span>
+<span class="code-line">}</span>
+        </code></pre>
+      </div>
+      <div class="translation-english">
+        <span class="translation-label">PLAIN ENGLISH</span>
+        <div class="translation-lines">
+          <p class="tl">This is a permission gatekeeper that runs before every tool request.</p>
+          <p class="tl">It plugs into the <span class="term" data-definition="A pipeline behavior is middleware that intercepts every request flowing through the system. Like a security checkpoint at an airport &mdash; every passenger (request) must pass through it.">pipeline</span> so no tool request can skip it.</p>
+          <p class="tl">It only applies to requests that involve tools.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">It checks permissions in three phases, from strictest to most lenient:</p>
+          <p class="tl">Phase 1: Is this path absolutely forbidden? If yes, reject immediately.</p>
+          <p class="tl">Phase 2: Is this path sensitive? If yes, pause and ask the human.</p>
+          <p class="tl">Phase 3: Is this path inside a safe zone? If yes, allow it.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="callout callout-info">
+      <div class="callout-icon">&#x1F512;</div>
+      <div class="callout-content">
+        <strong class="callout-title">Defense in Depth</strong>
+        <p>
+          This 3-phase pattern &mdash; deny, then ask, then allow &mdash; is a classic security strategy called
+          <span class="term" data-definition="Defense in depth means having multiple layers of protection so that if one layer fails, the next one catches the problem. Like a castle with a moat, a wall, and guards inside.">defense in depth</span>.
+          Even if one check has a bug, the others still protect you.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       SCREEN 4: MCP — Plugging Into the World (Group Chat)
+       ============================================================ -->
+  <div class="screen" id="screen-5-4">
+    <h2>MCP &mdash; Plugging Into the World</h2>
+    <p>
+      <span class="term" data-definition="The Model Context Protocol is an open standard that lets AI agents discover and call tools on remote servers using HTTP. It is like a universal adapter that lets you snap new blades into the Swiss Army knife from other manufacturers.">MCP</span>
+      is the universal adapter for agent tools.
+      Instead of hardcoding every capability, the agent can discover tools on remote servers at runtime &mdash;
+      like plugging a USB device into your laptop and having it just work.
+    </p>
+    <p>
+      Watch the conversation below to see how an
+      <span class="term" data-definition="An MCP client is the part of the harness that connects to external MCP servers, discovers their tools, and translates them into AITools the agent can use. It speaks the MCP protocol on behalf of the agent.">MCP client</span>
+      discovers and invokes a tool on a remote
+      <span class="term" data-definition="An MCP server is an external service that exposes tools, prompts, and resources over HTTP using the Model Context Protocol. Any team can run one, and any agent that speaks MCP can use it.">MCP server</span>.
+    </p>
+
+    <div class="chat-window" id="chat-module5">
+      <div class="chat-messages">
+
+        <div class="chat-message" data-msg="0" data-sender="mcp-client" style="display:none">
+          <div class="chat-avatar" style="background: var(--color-actor-2)">MC</div>
+          <div class="chat-bubble">
+            <span class="chat-sender" style="color: var(--color-actor-2)">MCP Client</span>
+            <p>Hey External Server &mdash; what tools do you have available? Send me your tool list.</p>
+          </div>
+        </div>
+
+        <div class="chat-message" data-msg="1" data-sender="external-server" style="display:none">
+          <div class="chat-avatar" style="background: var(--color-actor-3)">ES</div>
+          <div class="chat-bubble">
+            <span class="chat-sender" style="color: var(--color-actor-3)">External Server</span>
+            <p>I have three tools: <code>web_search</code>, <code>code_analysis</code>, and <code>image_gen</code>. Here are their schemas so your agent knows what parameters each one accepts.</p>
+          </div>
+        </div>
+
+        <div class="chat-message" data-msg="2" data-sender="mcp-client" style="display:none">
+          <div class="chat-avatar" style="background: var(--color-actor-2)">MC</div>
+          <div class="chat-bubble">
+            <span class="chat-sender" style="color: var(--color-actor-2)">MCP Client</span>
+            <p>Got it. Converting all 3 into <span class="term" data-definition="AITool is the standard format the LLM understands. Every tool &mdash; whether from MCP, keyed DI, or anywhere else &mdash; must be converted into an AITool before the agent can use it.">AITool</span> format and handing them to the Agent Factory.</p>
+          </div>
+        </div>
+
+        <div class="chat-message" data-msg="3" data-sender="agent" style="display:none">
+          <div class="chat-avatar" style="background: var(--color-actor-6)">AG</div>
+          <div class="chat-bubble">
+            <span class="chat-sender" style="color: var(--color-actor-6)">Agent</span>
+            <p>I need to search the web. Calling <code>web_search</code> with query: <em>&ldquo;latest .NET 10 features&rdquo;</em></p>
+          </div>
+        </div>
+
+        <div class="chat-message" data-msg="4" data-sender="mcp-client" style="display:none">
+          <div class="chat-avatar" style="background: var(--color-actor-2)">MC</div>
+          <div class="chat-bubble">
+            <span class="chat-sender" style="color: var(--color-actor-2)">MCP Client</span>
+            <p>Forwarding that call to the External Server over <span class="term" data-definition="HTTP transport is the communication method MCP uses to send and receive messages between the client and server. It is the same protocol your web browser uses to load web pages.">HTTP transport</span> with <span class="term" data-definition="JWT (JSON Web Token) is a compact, signed token used for authentication. Like a stamped wristband at a concert &mdash; it proves you paid to get in and cannot be faked.">JWT</span> authentication...</p>
+          </div>
+        </div>
+
+        <div class="chat-message" data-msg="5" data-sender="external-server" style="display:none">
+          <div class="chat-avatar" style="background: var(--color-actor-3)">ES</div>
+          <div class="chat-bubble">
+            <span class="chat-sender" style="color: var(--color-actor-3)">External Server</span>
+            <p>Executed <code>web_search</code>. Here are the results: 5 articles about .NET 10 performance improvements, AOT compilation, and new AI SDK features.</p>
+          </div>
+        </div>
+
+        <div class="chat-message" data-msg="6" data-sender="mcp-client" style="display:none">
+          <div class="chat-avatar" style="background: var(--color-actor-2)">MC</div>
+          <div class="chat-bubble">
+            <span class="chat-sender" style="color: var(--color-actor-2)">MCP Client</span>
+            <p>Passing those results back to you, Agent. The tool returned successfully.</p>
+          </div>
+        </div>
+
+      </div>
+
+      <div class="chat-typing" style="display:none">
+        <div class="chat-avatar" id="chat-module5-typing-avatar">?</div>
+        <div class="chat-typing-dots">
+          <span class="typing-dot"></span>
+          <span class="typing-dot"></span>
+          <span class="typing-dot"></span>
+        </div>
+      </div>
+
+      <div class="chat-controls">
+        <button class="btn chat-next-btn">Next Message</button>
+        <button class="btn chat-all-btn">Play All</button>
+        <button class="btn chat-reset-btn">Replay</button>
+        <span class="chat-progress"></span>
+      </div>
+    </div>
+
+    <div class="step-cards">
+      <div class="step-card">
+        <div class="step-num">1</div>
+        <div class="step-body">
+          <strong>Discovery</strong>
+          <p>The MCP client asks the server what tools it has &mdash; like browsing a menu before ordering.</p>
+        </div>
+      </div>
+      <div class="step-card">
+        <div class="step-num">2</div>
+        <div class="step-body">
+          <strong>Conversion</strong>
+          <p>External tools are translated into the AITool format so the agent treats them identically to local tools.</p>
+        </div>
+      </div>
+      <div class="step-card">
+        <div class="step-num">3</div>
+        <div class="step-body">
+          <strong>Invocation</strong>
+          <p>When the agent picks a tool, the MCP client forwards the call over HTTP and returns the result.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       SCREEN 5: A2A — Agents Talking to Agents + Quiz
+       ============================================================ -->
+  <div class="screen" id="screen-5-5">
+    <h2>A2A &mdash; When Tools Are Not Enough</h2>
+    <p>
+      MCP lets an agent borrow <em>tools</em> from other servers. But what if the task is too complex for a single tool call?
+      <span class="term" data-definition="A2A (Agent-to-Agent) is a protocol that lets one AI agent delegate entire tasks to another specialized agent, rather than just calling individual tools. Like hiring a contractor instead of borrowing a hammer.">A2A</span>
+      goes further &mdash; instead of borrowing a tool, the agent delegates an entire task to another agent.
+    </p>
+
+    <div class="translation-block animate-in">
+      <div class="translation-code">
+        <span class="translation-label">CODE</span>
+        <pre><code>
+<span class="code-line"><span class="code-keyword">public sealed record</span> <span class="code-type">AgentCard</span></span>
+<span class="code-line">{</span>
+<span class="code-line">    <span class="code-keyword">public required</span> <span class="code-type">string</span> Name { <span class="code-keyword">get</span>; <span class="code-keyword">init</span>; }</span>
+<span class="code-line">    <span class="code-keyword">public</span> <span class="code-type">string</span>? Description { <span class="code-keyword">get</span>; <span class="code-keyword">init</span>; }</span>
+<span class="code-line">    <span class="code-keyword">public</span> <span class="code-type">string</span>? Url { <span class="code-keyword">get</span>; <span class="code-keyword">init</span>; }</span>
+<span class="code-line">    <span class="code-keyword">public</span> IReadOnlyList&lt;<span class="code-type">string</span>&gt; Capabilities { <span class="code-keyword">get</span>; <span class="code-keyword">init</span>; } = [];</span>
+<span class="code-line">    <span class="code-keyword">public</span> IReadOnlyList&lt;<span class="code-type">string</span>&gt; InputModes { <span class="code-keyword">get</span>; <span class="code-keyword">init</span>; } = [];</span>
+<span class="code-line">    <span class="code-keyword">public</span> IReadOnlyList&lt;<span class="code-type">string</span>&gt; OutputModes { <span class="code-keyword">get</span>; <span class="code-keyword">init</span>; } = [];</span>
+<span class="code-line">}</span>
+        </code></pre>
+      </div>
+      <div class="translation-english">
+        <span class="translation-label">PLAIN ENGLISH</span>
+        <div class="translation-lines">
+          <p class="tl">An <span class="term" data-definition="An AgentCard is a business card for an AI agent. It advertises the agent&rsquo;s name, what it can do, and how to reach it, so other agents can find and delegate tasks to it.">AgentCard</span> is a business card that an agent publishes so others can find it.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Every agent card must have a name &mdash; this is how other agents address it.</p>
+          <p class="tl">An optional human-readable description of what this agent specializes in.</p>
+          <p class="tl">The URL where this agent can be reached over the network.</p>
+          <p class="tl">A list of what this agent can do (e.g., &ldquo;code-review&rdquo;, &ldquo;translation&rdquo;).</p>
+          <p class="tl">What kinds of input it accepts (e.g., &ldquo;text&rdquo;, &ldquo;image&rdquo;).</p>
+          <p class="tl">What kinds of output it produces (e.g., &ldquo;text&rdquo;, &ldquo;structured-data&rdquo;).</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="pattern-cards">
+      <div class="pattern-card" style="border-top: 3px solid var(--color-actor-4)">
+        <div class="pattern-icon" style="background: var(--color-actor-4)">&#x1F527;</div>
+        <h4 class="pattern-title">Keyed DI</h4>
+        <p class="pattern-desc">Local tools baked into the harness. Fast, always available, but you must recompile to add new ones.</p>
+      </div>
+      <div class="pattern-card" style="border-top: 3px solid var(--color-actor-3)">
+        <div class="pattern-icon" style="background: var(--color-actor-3)">&#x1F50C;</div>
+        <h4 class="pattern-title">MCP</h4>
+        <p class="pattern-desc">Borrow individual tools from external servers at runtime. Plug-and-play &mdash; no rebuild needed.</p>
+      </div>
+      <div class="pattern-card" style="border-top: 3px solid var(--color-actor-6)">
+        <div class="pattern-icon" style="background: var(--color-actor-6)">&#x1F91D;</div>
+        <h4 class="pattern-title">A2A</h4>
+        <p class="pattern-desc">Delegate entire tasks to another specialized agent. Like hiring a subcontractor for a whole job.</p>
+      </div>
+    </div>
+
+    <!-- Quiz -->
+    <h3>Check Your Understanding</h3>
+
+    <div class="quiz-container" id="quiz-module5">
+
+      <!-- Question 1 -->
+      <div class="quiz-question-block"
+           data-correct="option-1b"
+           data-explanation-right="Exactly. MCP tools can be updated or added on remote servers without touching the harness code. By checking MCP first, the agent always gets the most current version of a tool."
+           data-explanation-wrong="Not quite. Think about what happens when a tool exists in both places &mdash; which version would be more up-to-date: the one baked into the compiled code, or the one on a remote server that can be updated independently?">
+        <h3 class="quiz-question">Why does the harness try MCP before keyed DI when resolving tools?</h3>
+        <div class="quiz-options">
+          <button class="quiz-option" data-value="option-1a" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>MCP tools are faster to execute than local tools</span>
+          </button>
+          <button class="quiz-option" data-value="option-1b" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>External tools can be updated without recompiling, so they represent the newest capabilities</span>
+          </button>
+          <button class="quiz-option" data-value="option-1c" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>Keyed DI is deprecated and being phased out</span>
+          </button>
+        </div>
+        <div class="quiz-feedback"></div>
+      </div>
+
+      <!-- Question 2 -->
+      <div class="quiz-question-block"
+           data-correct="option-2b"
+           data-explanation-right="Exactly. Tools must be registered with a string key in the DI container (like AddKeyedSingleton) AND declared in the skill file. If the skill does not list the tool name, the Factory never tries to resolve it."
+           data-explanation-wrong="Not quite. The agent only receives tools that its current skill declares. Even if a tool is registered in the DI container, the agent cannot see it unless the skill declaration includes its name.">
+        <h3 class="quiz-question">You add a new tool class to the harness but the agent cannot see it. What did you most likely forget?</h3>
+        <div class="quiz-options">
+          <button class="quiz-option" data-value="option-2a" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>You forgot to restart the MCP server</span>
+          </button>
+          <button class="quiz-option" data-value="option-2b" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>You forgot to register it with a keyed DI string name and declare it in the skill file</span>
+          </button>
+          <button class="quiz-option" data-value="option-2c" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>You forgot to convert it to JSON format</span>
+          </button>
+        </div>
+        <div class="quiz-feedback"></div>
+      </div>
+
+      <!-- Question 3 -->
+      <div class="quiz-question-block"
+           data-correct="option-3c"
+           data-explanation-right="Exactly. The sandbox restricts file operations to specific pre-approved directories. The agent can read and write freely inside those folders, but any attempt to access a path outside them is blocked."
+           data-explanation-wrong="Not quite. Sandboxing is not about speed or network access. Think about what &ldquo;allowed base paths&rdquo; means &mdash; the agent has a fence around which folders it can touch.">
+        <h3 class="quiz-question">What does &ldquo;sandboxed&rdquo; mean for the FileSystemService?</h3>
+        <div class="quiz-options">
+          <button class="quiz-option" data-value="option-3a" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>File operations run in a separate process for performance</span>
+          </button>
+          <button class="quiz-option" data-value="option-3b" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>The agent can only access files that are under 10 MB in size</span>
+          </button>
+          <button class="quiz-option" data-value="option-3c" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>File operations are restricted to pre-approved directories &mdash; anything outside them is blocked</span>
+          </button>
+        </div>
+        <div class="quiz-feedback"></div>
+      </div>
+
+      <!-- Question 4 -->
+      <div class="quiz-question-block"
+           data-correct="option-4a"
+           data-explanation-right="Exactly. MCP borrows individual tools from external servers. A2A delegates whole tasks to another agent. Keyed DI registers tools locally with string keys. Each solves a different scale of the problem."
+           data-explanation-wrong="Not quite. Think about the difference between borrowing a single tool (MCP), hiring a specialist for an entire job (A2A), and keeping tools in your own toolbox (keyed DI).">
+        <h3 class="quiz-question">Match the right description: MCP = borrow remote tools, A2A = delegate entire tasks, Keyed DI = local tool lookup by name. Which statement is correct?</h3>
+        <div class="quiz-options">
+          <button class="quiz-option" data-value="option-4a" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>MCP gets individual tools from servers, A2A hands off whole jobs to other agents, Keyed DI looks up local tools by string key</span>
+          </button>
+          <button class="quiz-option" data-value="option-4b" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>A2A gets individual tools from servers, MCP hands off whole jobs to other agents, Keyed DI stores tools in a database</span>
+          </button>
+          <button class="quiz-option" data-value="option-4c" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>Keyed DI gets tools from remote servers, MCP registers tools locally, A2A converts tools to AITool format</span>
+          </button>
+        </div>
+        <div class="quiz-feedback"></div>
+      </div>
+
+      <button class="quiz-check-btn" onclick="checkQuiz('quiz-module5')">Check Answers</button>
+      <button class="quiz-reset-btn" onclick="resetQuiz('quiz-module5')">Try Again</button>
+    </div>
+
+    <!-- Transition -->
+    <div class="module-transition" style="margin-top: var(--space-12); padding: var(--space-6); border-left: 3px solid var(--color-accent); background: var(--color-surface);">
+      <p>
+        Tools give agents their hands. But how do you know if those hands are doing the right thing?
+        Next: seeing inside the black box &mdash; and making sure nothing goes wrong.
+      </p>
+    </div>
+
+  </div>
+
+</section>

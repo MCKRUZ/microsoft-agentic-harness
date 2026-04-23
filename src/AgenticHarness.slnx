@@ -45,6 +45,7 @@
     <Project Path="Content/Infrastructure/Infrastructure.Observability/Infrastructure.Observability.csproj" />
     <Project Path="Content/Infrastructure/Infrastructure.AI.MCP/Infrastructure.AI.MCP.csproj" />
     <Project Path="Content/Infrastructure/Infrastructure.AI.MCPServer/Infrastructure.AI.MCPServer.csproj" />
+    <Project Path="Content/Infrastructure/Infrastructure.AI.RAG/Infrastructure.AI.RAG.csproj" />
   </Folder>
   <Folder Name="/Presentation/">
     <Project Path="Content/Presentation/Presentation.Common/Presentation.Common.csproj" />

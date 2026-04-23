@@ -1,9 +1,9 @@
-# OpenTelemetry Collector + Jaeger for Agentic Harness
+# OpenTelemetry Collector + Tempo for Agentic Harness
 # Usage: docker-compose up -d
 # Stop: docker-compose down
+# Traces viewable in Grafana (Dashboards stack) via Tempo datasource
 
 services:
-  # OpenTelemetry Collector - central telemetry processing hub
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.123.0
     container_name: agentic-harness-otel-collector
@@ -23,13 +23,17 @@ services:
 
     environment:
       - APPLICATIONINSIGHTS_CONNECTION_STRING=${APPLICATIONINSIGHTS_CONNECTION_STRING:-}
-      - JAEGER_ENDPOINT=jaeger:4317
+      - TEMPO_ENDPOINT=tempo:4317
       - DEPLOYMENT_ENVIRONMENT=${DEPLOYMENT_ENVIRONMENT:-development}
 
     restart: unless-stopped
 
     networks:
       - otel-network
+
+    depends_on:
+      tempo:
+        condition: service_healthy
 
     healthcheck:
       test: ["CMD", "wget", "--spider", "--quiet", "http://localhost:13133/health"]
@@ -47,21 +51,17 @@ services:
           cpus: '0.5'
           memory: 512M
 
-  # Jaeger - distributed tracing UI for local development
-  jaeger:
-    image: jaegertracing/all-in-one:latest
-    container_name: agentic-harness-jaeger
+  tempo:
+    image: grafana/tempo:2.7.2
+    container_name: agentic-harness-tempo
+    command: ["-config.file=/etc/tempo/tempo.yaml"]
+
+    volumes:
+      - ./tempo.yaml:/etc/tempo/tempo.yaml:ro
+      - tempo-data:/var/tempo
 
     ports:
-      - "16686:16686"  # Jaeger UI - http://localhost:16686
-      - "14250:14250"  # Jaeger gRPC collector
-      - "14268:14268"  # Jaeger HTTP collector
-      - "9411:9411"    # Zipkin compatible endpoint
-
-    environment:
-      - COLLECTOR_OTLP_ENABLED=true
-      - SPAN_STORAGE_TYPE=memory
-      - QUERY_BASE_PATH=/jaeger
+      - "3200:3200"   # Tempo HTTP API (query frontend)
 
     restart: unless-stopped
 
@@ -69,11 +69,11 @@ services:
       - otel-network
 
     healthcheck:
-      test: ["CMD", "wget", "--spider", "--quiet", "http://localhost:14269"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
+      test: ["CMD", "wget", "--spider", "--quiet", "http://localhost:3200/ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
 
     deploy:
       resources:
@@ -83,6 +83,9 @@ services:
         reservations:
           cpus: '0.25'
           memory: 256M
+
+volumes:
+  tempo-data:
 
 networks:
   otel-network:

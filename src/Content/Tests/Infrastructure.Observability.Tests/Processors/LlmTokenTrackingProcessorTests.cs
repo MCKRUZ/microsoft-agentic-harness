@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Application.AI.Common.Interfaces;
 using Domain.AI.Telemetry.Conventions;
 using Domain.Common.Config;
 using Domain.Common.Config.Observability;
@@ -6,6 +7,7 @@ using FluentAssertions;
 using Infrastructure.Observability.Processors;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using Moq;
 using Xunit;
 
 namespace Infrastructure.Observability.Tests.Processors;
@@ -41,7 +43,8 @@ public sealed class LlmTokenTrackingProcessorTests : IDisposable
         var options = Options.Create(appConfig);
         return new LlmTokenTrackingProcessor(
             NullLogger<LlmTokenTrackingProcessor>.Instance,
-            options);
+            options,
+            Mock.Of<IBudgetTrackingService>());
     }
 
     [Fact]

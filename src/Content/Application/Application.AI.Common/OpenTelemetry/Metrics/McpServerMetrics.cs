@@ -17,7 +17,7 @@ public static class McpServerMetrics
 {
     /// <summary>Per-operation latency. Tags: mcp.server.name, mcp.server.operation, mcp.server.status.</summary>
     public static Histogram<double> RequestDuration { get; } =
-        AppInstrument.Meter.CreateHistogram<double>(McpConventions.RequestDuration, "ms", "MCP server request latency");
+        AppInstrument.Meter.CreateHistogram<double>(McpConventions.RequestDuration, "{ms}", "MCP server request latency");
 
     /// <summary>Request count. Tags: mcp.server.name, mcp.server.operation, mcp.server.status.</summary>
     public static Counter<long> Requests { get; } =

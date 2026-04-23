@@ -59,8 +59,14 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 			// Execute via AIAgent.RunAsync (MS Agent Framework API)
 			var response = await agent.RunAsync(messages, cancellationToken: cancellationToken);
 
-			// Extract response content
-			var responseText = ExtractContent(response);
+			// Extract response content and tool invocations
+			var (responseText, toolsInvoked) = ExtractContentAndTools(response);
+
+			if (toolsInvoked.Count > 0)
+			{
+				_logger.LogInformation("Agent {AgentName} turn {TurnNumber} invoked {ToolCount} tools: {Tools}",
+					request.AgentName, request.TurnNumber, toolsInvoked.Count, string.Join(", ", toolsInvoked));
+			}
 
 			// Build updated history (add user message + assistant response)
 			var updatedHistory = new List<ChatMessage>(messages)
@@ -75,7 +81,8 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 			{
 				Success = true,
 				Response = responseText,
-				UpdatedHistory = updatedHistory
+				UpdatedHistory = updatedHistory,
+				ToolsInvoked = toolsInvoked
 			};
 		}
 		catch (Exception ex)
@@ -93,31 +100,37 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 	}
 
 	/// <summary>
-	/// Extracts text content from the agent RunAsync response.
+	/// Extracts text content and tool invocation names from the agent RunAsync response.
 	/// </summary>
-	private static string ExtractContent(object? response)
+	private static (string Text, IReadOnlyList<string> ToolsInvoked) ExtractContentAndTools(object? response)
 	{
 		if (response is null)
-			return string.Empty;
+			return (string.Empty, []);
 
 		if (response is string str)
-			return str;
+			return (str, []);
 
-		// Handle ChatResponse from the framework
 		if (response is ChatResponse chatResponse)
 		{
 			var textParts = chatResponse.Messages
 				.Where(m => m.Role == ChatRole.Assistant)
 				.SelectMany(m => m.Contents.OfType<TextContent>())
 				.Select(tc => tc.Text);
-			return string.Join("\n", textParts);
+
+			var toolNames = chatResponse.Messages
+				.SelectMany(m => m.Contents.OfType<FunctionCallContent>())
+				.Select(fc => fc.Name)
+				.Where(n => !string.IsNullOrEmpty(n))
+				.Distinct(StringComparer.OrdinalIgnoreCase)
+				.ToList();
+
+			return (string.Join("\n", textParts), toolNames);
 		}
 
-		// Fallback: try Content property via reflection
 		var contentProp = response.GetType().GetProperty("Content");
 		if (contentProp != null)
-			return contentProp.GetValue(response)?.ToString() ?? string.Empty;
+			return (contentProp.GetValue(response)?.ToString() ?? string.Empty, []);
 
-		return response.ToString() ?? string.Empty;
+		return (response.ToString() ?? string.Empty, []);
 	}
 }

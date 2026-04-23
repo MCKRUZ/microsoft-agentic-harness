@@ -84,6 +84,9 @@ public static class DependencyInjection
             {
                 if (environment.IsDevelopment())
                     options.EnableDetailedErrors = true;
+
+                options.ClientTimeoutInterval = TimeSpan.FromSeconds(120);
+                options.KeepAliveInterval = TimeSpan.FromSeconds(30);
             })
             .AddJsonProtocol(options =>
             {

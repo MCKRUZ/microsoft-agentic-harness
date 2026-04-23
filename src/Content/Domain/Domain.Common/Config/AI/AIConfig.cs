@@ -5,6 +5,7 @@ using Domain.Common.Config.AI.Hooks;
 using Domain.Common.Config.AI.MCP;
 using Domain.Common.Config.AI.Orchestration;
 using Domain.Common.Config.AI.Permissions;
+using Domain.Common.Config.AI.RAG;
 
 namespace Domain.Common.Config.AI;
 
@@ -25,7 +26,8 @@ namespace Domain.Common.Config.AI;
 /// ├── ContextManagement — Compaction, tool result storage, and budget tracking
 /// ├── Permissions       — Permission system for tool and file access approvals
 /// ├── Hooks             — Lifecycle hook execution configuration
-/// └── Orchestration     — Subagent management and streaming execution
+/// ├── Orchestration     — Subagent management and streaming execution
+/// └── Rag               — RAG pipeline: ingestion, retrieval, reranking, model tiering
 /// </code>
 /// </para>
 /// </remarks>
@@ -90,4 +92,10 @@ public class AIConfig
     /// Controls where AGENT.md files are loaded from.
     /// </summary>
     public AgentsConfig Agents { get; set; } = new();
+
+    /// <summary>
+    /// Gets or sets the RAG pipeline configuration for document ingestion,
+    /// retrieval, reranking, query transformation, and model tiering.
+    /// </summary>
+    public RagConfig Rag { get; set; } = new();
 }

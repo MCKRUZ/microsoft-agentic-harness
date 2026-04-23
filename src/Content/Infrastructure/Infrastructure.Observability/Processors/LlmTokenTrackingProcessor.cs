@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Application.AI.Common.Interfaces;
 using Application.AI.Common.OpenTelemetry.Metrics;
 using Domain.AI.Telemetry.Conventions;
 using Domain.Common.Config.Observability;
@@ -33,6 +34,7 @@ namespace Infrastructure.Observability.Processors;
 public sealed class LlmTokenTrackingProcessor : BaseProcessor<Activity>
 {
     private readonly ILogger<LlmTokenTrackingProcessor> _logger;
+    private readonly IBudgetTrackingService _budgetTracker;
     private readonly Dictionary<string, ModelPricingEntry> _pricingLookup;
     private readonly string _defaultModel;
 
@@ -41,9 +43,11 @@ public sealed class LlmTokenTrackingProcessor : BaseProcessor<Activity>
     /// </summary>
     public LlmTokenTrackingProcessor(
         ILogger<LlmTokenTrackingProcessor> logger,
-        IOptions<Domain.Common.Config.AppConfig> appConfig)
+        IOptions<Domain.Common.Config.AppConfig> appConfig,
+        IBudgetTrackingService budgetTracker)
     {
         _logger = logger;
+        _budgetTracker = budgetTracker;
         var config = appConfig.Value.Observability.LlmPricing;
         _defaultModel = config.DefaultModel;
 
@@ -94,6 +98,7 @@ public sealed class LlmTokenTrackingProcessor : BaseProcessor<Activity>
             {
                 LlmUsageMetrics.EstimatedCost.Add(cost, tags);
                 LlmUsageMetrics.CostPerTurn.Record(cost, new TagList { { AgentConventions.Name, agentName } });
+                _budgetTracker.RecordSpend(cost, agentName);
             }
 
             // Cache savings = what cache-read tokens would have cost at full input price
@@ -116,6 +121,27 @@ public sealed class LlmTokenTrackingProcessor : BaseProcessor<Activity>
         // Per-turn metrics
         var totalTokens = inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens;
         LlmUsageMetrics.TokensPerTurn.Record(totalTokens, new TagList { { AgentConventions.Name, agentName } });
+
+        // Agent-level token breakdowns (supplements gen_ai.client.token.usage with agent context)
+        TokenUsageMetrics.InputTokens.Record(inputTokens, tags);
+        TokenUsageMetrics.OutputTokens.Record(outputTokens, tags);
+        TokenUsageMetrics.TotalTokens.Record(totalTokens, tags);
+
+        // Per-user token and cost tracking (user_id propagated via baggage from the hub)
+        var userId = data.GetBaggageItem(UserConventions.UserId);
+        if (!string.IsNullOrEmpty(userId))
+        {
+            var userTag = new KeyValuePair<string, object?>(UserConventions.UserId, userId);
+            var userAgentTag = new KeyValuePair<string, object?>(AgentConventions.Name, agentName);
+            UserActivityMetrics.TokensConsumed.Add(totalTokens, userTag, userAgentTag);
+
+            if (_pricingLookup.TryGetValue(model, out var userPricing))
+            {
+                var userCost = ComputeCost(inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, userPricing);
+                if (userCost > 0)
+                    UserActivityMetrics.CostAccrued.Add(userCost, userTag, userAgentTag);
+            }
+        }
     }
 
     private static double ComputeCost(

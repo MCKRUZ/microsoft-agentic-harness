@@ -1,6 +1,8 @@
 using Application.AI.Common.Interfaces;
+using Application.AI.Common.OpenTelemetry.Metrics;
 using Application.Core.CQRS.Agents.RunConversation;
 using Domain.AI.Skills;
+using Domain.AI.Telemetry.Conventions;
 using MediatR;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
@@ -86,6 +88,10 @@ public class RunOrchestratedTaskCommandHandler : IRequestHandler<RunOrchestrated
 				}
 
 				await ReportProgress(request, "delegation", agentName, $"Working on: {subtask}");
+
+				OrchestrationMetrics.SubagentSpawns.Add(1,
+					new KeyValuePair<string, object?>(AgentConventions.Name, agentName),
+					new KeyValuePair<string, object?>(AgentConventions.ParentName, request.OrchestratorName));
 
 				// Each sub-agent dispatch needs its own DI scope so that the scoped
 				// AgentExecutionContext is a fresh instance — not the one already bound

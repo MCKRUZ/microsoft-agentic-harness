@@ -1,4 +1,8 @@
+using System.Diagnostics;
+using System.Diagnostics.Metrics;
 using Application.AI.Common.Interfaces;
+using Application.AI.Common.OpenTelemetry.Metrics;
+using Domain.AI.Telemetry.Conventions;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 
@@ -38,10 +42,21 @@ public sealed class McpToolProvider : IMcpToolProvider
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
+        var sw = Stopwatch.StartNew();
         try
         {
             var client = await _connectionManager.GetClientAsync(serverName, cancellationToken);
             var tools = await client.ListToolsAsync(cancellationToken: cancellationToken);
+            sw.Stop();
+
+            var successTags = new TagList
+            {
+                { McpConventions.ServerName, serverName },
+                { McpConventions.Operation, "list_tools" },
+                { McpConventions.Status, McpConventions.StatusValues.Available }
+            };
+            McpServerMetrics.RequestDuration.Record(sw.Elapsed.TotalMilliseconds, successTags);
+            McpServerMetrics.Requests.Add(1, successTags);
 
             _logger.LogDebug(
                 "Retrieved {ToolCount} tools from MCP server '{ServerName}'",
@@ -52,6 +67,16 @@ public sealed class McpToolProvider : IMcpToolProvider
         }
         catch (Exception ex)
         {
+            sw.Stop();
+            var errorTags = new TagList
+            {
+                { McpConventions.ServerName, serverName },
+                { McpConventions.Operation, "list_tools" },
+                { McpConventions.Status, McpConventions.StatusValues.Error }
+            };
+            McpServerMetrics.RequestDuration.Record(sw.Elapsed.TotalMilliseconds, errorTags);
+            McpServerMetrics.Requests.Add(1, errorTags);
+
             _logger.LogWarning(ex,
                 "Failed to get tools from MCP server '{ServerName}' — skipping",
                 serverName);

@@ -20,4 +20,20 @@ public static class ContextConventions
     public const string BudgetRemaining = "agent.context.budget_remaining";
     /// <summary>Budget utilization ratio (0-1, used/limit).</summary>
     public const string BudgetUtilization = "agent.context.budget_utilization";
+
+    /// <summary>Token count broken down by context source type. Tags: agent.context.source_type, agent.name.</summary>
+    public const string SourceTokens = "agent.context.source_tokens";
+    /// <summary>Context source type dimension label.</summary>
+    public const string SourceType = "agent.context.source_type";
+
+    public static class SourceTypeValues
+    {
+        public const string SystemPrompt = "system_prompt";
+        public const string Skills = "skills";
+        public const string ToolsSchema = "tools_schema";
+        public const string Hooks = "hooks";
+        public const string UserMessage = "user_message";
+        public const string ToolResult = "tool_result";
+        public const string AssistantResponse = "assistant_response";
+    }
 }

@@ -1,0 +1,405 @@
+<section class="module" id="module-3">
+  <div class="module-number">03</div>
+
+  <!-- ============================================================
+       SCREEN 1 — The Loop Visualized (Flow Animation)
+       ============================================================ -->
+  <div class="screen" id="screen-3-1">
+    <h2 class="screen-title">The Conversation Loop</h2>
+    <p class="screen-subtitle">You know that moment when an AI assistant pauses, calls a tool, gets results, and then keeps going? That is not one step &mdash; it is an entire loop running behind the scenes, and every iteration goes through a gauntlet of checks.</p>
+
+    <p>Think of it like a chess game with a coach. The agent (the player) studies the board and picks a move. The coach (the <span class="term" data-definition="The harness is the surrounding system that manages the agent &mdash; it handles the conversation loop, validates moves, dispatches tools, and decides when to stop. Think of it as the referee plus the game clock.">harness</span>) checks the move is legal. Then the opponent (reality, via a <span class="term" data-definition="A tool call is when the AI asks the system to do something in the real world &mdash; read a file, search the web, run a calculation. The AI cannot do these things itself; it asks, and the harness executes.">tool call</span>) responds. The game continues until checkmate &mdash; or the clock runs out.</p>
+
+    <div class="flow-animation" data-steps='[
+      {"highlight":"flow-actor-1","label":"User sends a message: Read my project files and summarize them"},
+      {"highlight":"flow-actor-2","label":"Pipeline checks: Is the message valid? Is it safe?","packet":true,"from":"actor-1","to":"actor-2"},
+      {"highlight":"flow-actor-3","label":"Handler receives the validated request","packet":true,"from":"actor-2","to":"actor-3"},
+      {"highlight":"flow-actor-4","label":"Turn 1: LLM thinks and says: I need the file_system tool","packet":true,"from":"actor-3","to":"actor-4"},
+      {"highlight":"flow-actor-5","label":"Tool System executes file_system and returns file contents","packet":true,"from":"actor-4","to":"actor-5"},
+      {"highlight":"flow-actor-4","label":"Turn 2: LLM receives file contents and says: I also need web_search","packet":true,"from":"actor-5","to":"actor-4"},
+      {"highlight":"flow-actor-5","label":"Tool System executes web_search and returns results","packet":true,"from":"actor-4","to":"actor-5"},
+      {"highlight":"flow-actor-4","label":"Turn 3: LLM has both results and says: Here is my summary","packet":true,"from":"actor-5","to":"actor-4"},
+      {"highlight":"flow-actor-3","label":"No more tool calls detected &mdash; IsComplete = true, loop ends","packet":true,"from":"actor-4","to":"actor-3"}
+    ]'>
+      <div class="flow-actors">
+        <div class="flow-actor" id="flow-actor-1">
+          <div class="flow-actor-icon" style="background: var(--color-actor-1)">U</div>
+          <span>User</span>
+        </div>
+        <div class="flow-actor" id="flow-actor-2">
+          <div class="flow-actor-icon" style="background: var(--color-actor-2)">P</div>
+          <span>Pipeline</span>
+        </div>
+        <div class="flow-actor" id="flow-actor-3">
+          <div class="flow-actor-icon" style="background: var(--color-actor-3)">H</div>
+          <span>Handler</span>
+        </div>
+        <div class="flow-actor" id="flow-actor-4">
+          <div class="flow-actor-icon" style="background: var(--color-actor-4)">L</div>
+          <span>LLM</span>
+        </div>
+        <div class="flow-actor" id="flow-actor-5">
+          <div class="flow-actor-icon" style="background: var(--color-actor-5)">T</div>
+          <span>Tool System</span>
+        </div>
+      </div>
+
+      <div class="flow-packet" id="flow-packet"></div>
+
+      <div class="flow-step-label" id="flow-label">Click &ldquo;Next Step&rdquo; to watch 3 turns of a real conversation</div>
+
+      <div class="flow-controls">
+        <button class="btn flow-next-btn">Next Step</button>
+        <button class="btn flow-reset-btn">Restart</button>
+        <span class="flow-progress"></span>
+      </div>
+    </div>
+
+    <div class="callout callout-accent">
+      <div class="callout-icon">&#x1F4A1;</div>
+      <div class="callout-content">
+        <strong class="callout-title">The Loop Secret</strong>
+        <p>The conversation is not one big API call. It is a <em>loop</em> &mdash; each turn goes through validation, safety, and the LLM, then checks: &ldquo;Did the AI ask for a tool, or is it done?&rdquo; Tool call means keep looping. No tool call means we are finished.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       SCREEN 2 — The CQRS Pipeline (Numbered Step Cards)
+       ============================================================ -->
+  <div class="screen" id="screen-3-2">
+    <h2 class="screen-title">The Gauntlet: 6 Pipeline Behaviors</h2>
+    <p>Before the <span class="term" data-definition="The handler is the code that actually does the work for a command. Every request passes through the pipeline first, and only if it survives all the checks does it reach the handler. Think of it as the player who finally gets to make the move.">handler</span> ever touches your message, it must survive a gauntlet of six checkpoints. These are called <span class="term" data-definition="A pipeline behavior is a checkpoint that every request must pass through before reaching the handler. They run in a fixed order, like security checkpoints at an airport &mdash; skip one, and you do not get through.">pipeline behaviors</span>, and they run in this exact order every single time.</p>
+
+    <div class="step-cards">
+      <div class="step-card" style="border-left-color: var(--color-actor-1)">
+        <div class="step-num" style="background: var(--color-actor-1)">1</div>
+        <div class="step-body">
+          <strong>Validation</strong>
+          <p>Checks that your request has all required fields and nothing looks malformed. Catches bad data before it wastes anyone&rsquo;s time.</p>
+        </div>
+      </div>
+      <div class="step-card" style="border-left-color: var(--color-actor-2)">
+        <div class="step-num" style="background: var(--color-actor-2)">2</div>
+        <div class="step-body">
+          <strong>Caching</strong>
+          <p>Checks if this exact request was already answered recently. If so, returns the cached result instantly &mdash; no need to bother the <span class="term" data-definition="A Large Language Model (LLM) is the AI brain &mdash; models like GPT-4 or Claude that read your message and generate a response. They are expensive to call, which is why caching matters.">LLM</span>.</p>
+        </div>
+      </div>
+      <div class="step-card" style="border-left-color: var(--color-actor-3)">
+        <div class="step-num" style="background: var(--color-actor-3)">3</div>
+        <div class="step-body">
+          <strong>Content Safety</strong>
+          <p>Scans the message for harmful, toxic, or policy-violating content. Blocks dangerous requests before they ever reach the AI.</p>
+        </div>
+      </div>
+      <div class="step-card" style="border-left-color: var(--color-actor-4)">
+        <div class="step-num" style="background: var(--color-actor-4)">4</div>
+        <div class="step-body">
+          <strong>Tool Permission</strong>
+          <p>Verifies this agent is actually allowed to use the tools it might call. An agent cannot access the file system if it was not granted that permission.</p>
+        </div>
+      </div>
+      <div class="step-card" style="border-left-color: var(--color-actor-5)">
+        <div class="step-num" style="background: var(--color-actor-5)">5</div>
+        <div class="step-body">
+          <strong>Performance Logging</strong>
+          <p>Starts a timer and records <span class="term" data-definition="Telemetry is the automatic collection of performance data &mdash; how long things took, what succeeded, what failed. It is like a flight recorder for your software, so you can diagnose problems after the fact.">telemetry</span> so you can see exactly how long each step takes. Essential for diagnosing slow responses.</p>
+        </div>
+      </div>
+      <div class="step-card" style="border-left-color: var(--color-accent)">
+        <div class="step-num" style="background: var(--color-accent)">6</div>
+        <div class="step-body">
+          <strong>Handler (The Actual Work)</strong>
+          <p>Finally! The request reaches the handler, which calls the LLM, processes tool calls, and returns the result. Everything before this was just making sure we are safe to proceed.</p>
+        </div>
+      </div>
+    </div>
+
+    <p>This pattern is called <span class="term" data-definition="CQRS stands for Command Query Responsibility Segregation. In plain terms, it means separating actions that change data (commands) from actions that just read data (queries). In this codebase, every agent turn is a command that flows through the pipeline.">CQRS</span> with <span class="term" data-definition="MediatR is a library that acts like a postal service inside the code. You send a command (a letter), and MediatR figures out which handler (recipient) should process it &mdash; passing it through all the pipeline behaviors (checkpoints) along the way.">MediatR</span>. Every request is a &ldquo;command&rdquo; that gets routed through behaviors before reaching a handler. The order matters &mdash; validation first, because there is no point checking content safety on a malformed request.</p>
+  </div>
+
+  <!-- ============================================================
+       SCREEN 3 — ExecuteAgentTurn (Code Translation)
+       ============================================================ -->
+  <div class="screen" id="screen-3-3">
+    <h2 class="screen-title">ExecuteAgentTurn &mdash; One Round</h2>
+    <p>This is the single most important piece of code in the harness. It handles one <span class="term" data-definition="A turn is one round of the conversation loop: the LLM receives messages, thinks, and produces a response. That response might include tool calls (meaning another turn is needed) or a final answer (meaning the loop ends).">turn</span> &mdash; send messages to the LLM, check if it asked for tools, and report back whether we are done.</p>
+
+    <div class="translation-block animate-in">
+      <div class="translation-code">
+        <span class="translation-label">CODE</span>
+        <pre><code>
+<span class="code-line"><span class="code-keyword">public async</span> Task&lt;AgentTurnResult&gt; <span class="code-function">Handle</span>(ExecuteAgentTurnCommand request, CancellationToken cancellationToken)</span>
+<span class="code-line">{</span>
+<span class="code-line">    <span class="code-keyword">using var</span> turnActivity = AgentActivitySource.<span class="code-function">StartTurn</span>(</span>
+<span class="code-line">        request.Context.AgentName, request.TurnIndex);</span>
+<span class="code-line"></span>
+<span class="code-line">    _logger.<span class="code-function">LogDebug</span>(<span class="code-string">"Executing turn {TurnIndex} for agent {AgentName}"</span>,</span>
+<span class="code-line">        request.TurnIndex, request.Context.AgentName);</span>
+<span class="code-line"></span>
+<span class="code-line">    <span class="code-keyword">try</span></span>
+<span class="code-line">    {</span>
+<span class="code-line">        <span class="code-keyword">var</span> response = <span class="code-keyword">await</span> request.Agent.<span class="code-function">InvokeAsync</span>(</span>
+<span class="code-line">            request.Messages, request.Context.AgentOptions, cancellationToken);</span>
+<span class="code-line"></span>
+<span class="code-line">        <span class="code-keyword">var</span> updatedMessages = request.Messages.<span class="code-function">ToList</span>();</span>
+<span class="code-line">        updatedMessages.<span class="code-function">Add</span>(response);</span>
+<span class="code-line"></span>
+<span class="code-line">        <span class="code-keyword">var</span> hasToolCalls = response.Contents.<span class="code-function">OfType</span>&lt;FunctionCallContent&gt;().<span class="code-function">Any</span>();</span>
+<span class="code-line">        <span class="code-keyword">var</span> isComplete = !hasToolCalls;</span>
+<span class="code-line"></span>
+<span class="code-line">        OrchestrationMetrics.ToolCalls.<span class="code-function">Add</span>(</span>
+<span class="code-line">            hasToolCalls ? response.Contents.<span class="code-function">OfType</span>&lt;FunctionCallContent&gt;().<span class="code-function">Count</span>() : 0,</span>
+<span class="code-line">            <span class="code-keyword">new</span> KeyValuePair&lt;<span class="code-keyword">string</span>, <span class="code-keyword">object</span>?&gt;(<span class="code-string">"agent.name"</span>, request.Context.AgentName));</span>
+<span class="code-line"></span>
+<span class="code-line">        <span class="code-keyword">return new</span> <span class="code-function">AgentTurnResult</span>(updatedMessages, isComplete, request.TurnIndex);</span>
+<span class="code-line">    }</span>
+<span class="code-line">    <span class="code-keyword">catch</span> (Exception ex)</span>
+<span class="code-line">    {</span>
+<span class="code-line">        _logger.<span class="code-function">LogError</span>(ex, <span class="code-string">"Turn {TurnIndex} failed for {AgentName}"</span>,</span>
+<span class="code-line">            request.TurnIndex, request.Context.AgentName);</span>
+<span class="code-line">        <span class="code-keyword">throw new</span> <span class="code-function">AgentExecutionException</span>(request.Context.AgentName, request.TurnIndex, ex);</span>
+<span class="code-line">    }</span>
+<span class="code-line">}</span>
+        </code></pre>
+      </div>
+      <div class="translation-english">
+        <span class="translation-label">PLAIN ENGLISH</span>
+        <div class="translation-lines">
+          <p class="tl">This function handles one turn. It receives the command and a way to cancel if needed.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Start a tracing <span class="term" data-definition="A span (also called an activity in .NET) is a timed record of one operation. Spans nest inside each other to show exactly how long each step took, like a stopwatch with sub-laps. Engineers use these to find bottlenecks.">span</span> so we can measure how long this turn takes.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Write a log entry: &ldquo;Starting turn #X for agent Y.&rdquo;</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Now try the real work:</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Send all the messages so far to the LLM and wait for its response. The <span class="term" data-definition="A cancellation token is a signal that lets the system say stop in the middle of a long operation. If the user closes the browser or the request times out, this token fires and the code stops gracefully instead of wasting resources.">cancellation token</span> lets us bail out if the user disconnects.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Take the existing message history, copy it, and append the new response from the LLM to the end.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Check: did the LLM ask to use any tools? Look for <span class="term" data-definition="FunctionCallContent is a special object in the LLM response that says: I want to call this tool with these arguments. It is how the AI requests actions &mdash; like raising its hand and saying I need the file_system tool, please.">FunctionCallContent</span> objects in the response.</p>
+          <p class="tl">If there are NO tool calls, the turn is complete. If there ARE tool calls, we need another turn.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Record metrics: how many tool calls were made this turn, tagged with the agent name. This feeds the performance dashboards.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Return the result: updated messages, whether we are done, and which turn number this was.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">If anything goes wrong, log the error with details about which turn and which agent failed.</p>
+          <p class="tl">Then wrap it in a custom exception so the calling code knows exactly what broke and where.</p>
+          <p class="tl">&nbsp;</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       SCREEN 4 — RunConversation (Code Translation)
+       ============================================================ -->
+  <div class="screen" id="screen-3-4">
+    <h2 class="screen-title">RunConversation &mdash; The Full Loop</h2>
+    <p>The previous screen showed one turn. This is the loop that chains turns together &mdash; keep going until the agent finishes or we hit the <span class="term" data-definition="MaxTurns is a safety limit on how many rounds the conversation loop can run. Without it, an agent that keeps calling tools could loop forever, burning through tokens and money. It is the chess clock that forces the game to end.">turn limit</span>.</p>
+
+    <div class="translation-block animate-in">
+      <div class="translation-code">
+        <span class="translation-label">CODE</span>
+        <pre><code>
+<span class="code-line"><span class="code-keyword">while</span> (turnCount &lt; request.MaxTurns)</span>
+<span class="code-line">{</span>
+<span class="code-line">    turnCount++;</span>
+<span class="code-line">    <span class="code-keyword">var</span> turnResult = <span class="code-keyword">await</span> _mediator.<span class="code-function">Send</span>(</span>
+<span class="code-line">        <span class="code-keyword">new</span> <span class="code-function">ExecuteAgentTurnCommand</span>(agent, messages, context, turnCount),</span>
+<span class="code-line">        cancellationToken);</span>
+<span class="code-line"></span>
+<span class="code-line">    messages = turnResult.UpdatedMessages;</span>
+<span class="code-line"></span>
+<span class="code-line">    <span class="code-keyword">if</span> (turnResult.IsComplete)</span>
+<span class="code-line">    {</span>
+<span class="code-line">        _logger.<span class="code-function">LogInformation</span>(<span class="code-string">"Conversation completed after {TurnCount} turns"</span>, turnCount);</span>
+<span class="code-line">        <span class="code-keyword">break</span>;</span>
+<span class="code-line">    }</span>
+<span class="code-line">}</span>
+        </code></pre>
+      </div>
+      <div class="translation-english">
+        <span class="translation-label">PLAIN ENGLISH</span>
+        <div class="translation-lines">
+          <p class="tl">Keep looping as long as we have not hit the maximum number of turns.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Bump the turn counter and send an ExecuteAgentTurn command through MediatR. This triggers the entire pipeline &mdash; validation, safety, permission checks &mdash; before reaching the handler we saw on the previous screen.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Update our message history with whatever the LLM said (and any tool results).</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Did the LLM finish without asking for any tools?</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Yes &mdash; log that we are done and how many turns it took.</p>
+          <p class="tl">Break out of the loop. The conversation is over.</p>
+          <p class="tl">&nbsp;</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="callout callout-info">
+      <div class="callout-icon">&#x1F4A1;</div>
+      <div class="callout-content">
+        <strong class="callout-title">Two Ways the Loop Ends</strong>
+        <p>Either the LLM decides it is done (IsComplete = true, no tool calls) or the turn counter hits MaxTurns and the <span class="term" data-definition="A while loop is a block of code that keeps running over and over as long as a condition is true. Here, it keeps executing turns as long as there are turns remaining. When the condition becomes false, the loop stops.">while loop</span> simply stops. This is a safety net &mdash; without MaxTurns, a confused agent could loop forever.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       SCREEN 5 — RunOrchestratedTask + Quiz
+       ============================================================ -->
+  <div class="screen" id="screen-3-5">
+    <h2 class="screen-title">Going Multi-Agent: The Orchestrator</h2>
+    <p>One agent running a conversation loop is powerful. But what if the task is too big for one agent? The <span class="term" data-definition="An orchestrator is a special agent that does not do the work itself &mdash; it breaks a big task into smaller pieces and assigns each piece to a specialist sub-agent. Think of it as a project manager who delegates to the right people.">orchestrator</span> breaks it into subtasks, hands each one to a specialist <span class="term" data-definition="A sub-agent is an agent that works under the orchestrator. Each sub-agent gets its own conversation loop and handles one piece of the bigger task. They run independently and report results back.">sub-agent</span>, and runs them all at once.</p>
+
+    <div class="translation-block animate-in">
+      <div class="translation-code">
+        <span class="translation-label">CODE</span>
+        <pre><code>
+<span class="code-line"><span class="code-comment">// Phase 1: Create orchestrator and get task decomposition</span></span>
+<span class="code-line"><span class="code-keyword">var</span> agentCatalog = <span class="code-function">BuildAgentCatalog</span>(request.AvailableAgents);</span>
+<span class="code-line"></span>
+<span class="code-line"><span class="code-keyword">var</span> orchestratorContext = <span class="code-keyword">await</span> _contextFactory.<span class="code-function">CreateAsync</span>(</span>
+<span class="code-line">    request.OrchestratorName, cancellationToken);</span>
+<span class="code-line"><span class="code-keyword">var</span> orchestrator = _agentFactory.<span class="code-function">CreateAgent</span>(orchestratorContext.Definition);</span>
+<span class="code-line"></span>
+<span class="code-line"><span class="code-comment">// Phase 2: Decompose and delegate</span></span>
+<span class="code-line"><span class="code-keyword">var</span> decomposition = <span class="code-keyword">await</span> <span class="code-function">GetTaskDecomposition</span>(</span>
+<span class="code-line">    orchestrator, request.Task, agentCatalog, cancellationToken);</span>
+<span class="code-line"></span>
+<span class="code-line"><span class="code-comment">// Phase 3: Run sub-agent conversations in parallel</span></span>
+<span class="code-line"><span class="code-keyword">var</span> subtaskResults = <span class="code-keyword">await</span> <span class="code-function">Task.WhenAll</span>(</span>
+<span class="code-line">    decomposition.Subtasks.<span class="code-function">Select</span>(subtask =&gt;</span>
+<span class="code-line">        <span class="code-function">RunSubagentConversation</span>(subtask, cancellationToken)));</span>
+        </code></pre>
+      </div>
+      <div class="translation-english">
+        <span class="translation-label">PLAIN ENGLISH</span>
+        <div class="translation-lines">
+          <p class="tl">Phase 1: Build a catalog of all available agents so the orchestrator knows who can do what.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Set up the orchestrator agent &mdash; load its configuration and context.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Create the orchestrator agent from its definition (using the same factory pattern from Module 2).</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Phase 2: Ask the orchestrator to analyze the task and break it into smaller subtasks, deciding which agent should handle each one.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Phase 3: Run ALL the sub-agent conversations at the same time using <span class="term" data-definition="Task.WhenAll is a C# feature that runs multiple operations simultaneously and waits for all of them to finish. Instead of doing tasks one-by-one (which is slow), it does them in parallel &mdash; like a team working on different parts of a project at the same time.">Task.WhenAll</span>.</p>
+          <p class="tl">For each subtask, spin up a full conversation loop (just like RunConversation) and run them all in parallel.</p>
+          <p class="tl">&nbsp;</p>
+        </div>
+      </div>
+    </div>
+
+    <h3 style="margin-top: var(--space-12); margin-bottom: var(--space-6);">Test Your Understanding</h3>
+
+    <div class="quiz-container" id="quiz-module3">
+
+      <!-- Question 1 -->
+      <div class="quiz-question-block"
+           data-correct="option-1b"
+           data-explanation-right="Exactly. The loop checks if the LLM response contains any FunctionCallContent objects. Tool calls mean keep going; no tool calls means the agent is done."
+           data-explanation-wrong="Not quite. The loop does not care about message length or timing. It looks at one specific thing in the response: did the LLM ask to call a tool? If yes, keep looping. If no, stop.">
+        <h3 class="quiz-question">1. What determines whether the conversation loop keeps going or stops?</h3>
+        <div class="quiz-options">
+          <button class="quiz-option" data-value="option-1a" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>The length of the LLM response &mdash; short answers mean it is done</span>
+          </button>
+          <button class="quiz-option" data-value="option-1b" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>Whether the LLM response contains tool calls (FunctionCallContent)</span>
+          </button>
+          <button class="quiz-option" data-value="option-1c" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>A timer that runs for a fixed number of seconds per turn</span>
+          </button>
+        </div>
+        <div class="quiz-feedback"></div>
+      </div>
+
+      <!-- Question 2 -->
+      <div class="quiz-question-block"
+           data-correct="option-2c"
+           data-explanation-right="Exactly. MaxTurns is the safety limit that prevents infinite loops. If the agent keeps requesting tools but never finishes, MaxTurns is what you increase (or the agent needs better instructions to converge on an answer)."
+           data-explanation-wrong="Not quite. The scenario describes an agent that keeps calling tools but never produces a final answer. The safety mechanism that stops this is MaxTurns &mdash; the configurable cap on how many turns the loop can run.">
+        <h3 class="quiz-question">2. Scenario: Your agent makes 15 tool calls but never finishes answering. What config would you check first?</h3>
+        <div class="quiz-options">
+          <button class="quiz-option" data-value="option-2a" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>The content safety filter &mdash; it might be blocking responses</span>
+          </button>
+          <button class="quiz-option" data-value="option-2b" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>The caching behavior &mdash; cached results might be stale</span>
+          </button>
+          <button class="quiz-option" data-value="option-2c" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>MaxTurns &mdash; the loop might be hitting its turn limit before the agent finishes</span>
+          </button>
+        </div>
+        <div class="quiz-feedback"></div>
+      </div>
+
+      <!-- Question 3 -->
+      <div class="quiz-question-block"
+           data-correct="option-3a"
+           data-explanation-right="Exactly. Validation runs first because there is no point checking content safety or tool permissions on a request that is missing required fields or has malformed data. Catch the obvious problems cheaply before doing expensive checks."
+           data-explanation-wrong="Not quite. The pipeline runs in a very specific order: Validation first, then Caching, Content Safety, Tool Permission, Performance Logging, and finally the Handler. Validation is first because it is the cheapest check &mdash; why waste time on safety analysis if the request is malformed?">
+        <h3 class="quiz-question">3. Which pipeline behavior runs first, and why does the order matter?</h3>
+        <div class="quiz-options">
+          <button class="quiz-option" data-value="option-3a" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>Validation &mdash; no point running expensive safety checks on a malformed request</span>
+          </button>
+          <button class="quiz-option" data-value="option-3b" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>Content Safety &mdash; dangerous requests should be caught before anything else</span>
+          </button>
+          <button class="quiz-option" data-value="option-3c" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>Performance Logging &mdash; you need to time everything from the very start</span>
+          </button>
+        </div>
+        <div class="quiz-feedback"></div>
+      </div>
+
+      <!-- Question 4 -->
+      <div class="quiz-question-block"
+           data-correct="option-4b"
+           data-explanation-right="Exactly. RunConversation is one agent running turns in a loop. RunOrchestratedTask adds a layer on top: an orchestrator agent that breaks the task into pieces and assigns each piece to a sub-agent, where each sub-agent gets its own RunConversation loop running in parallel."
+           data-explanation-wrong="Not quite. Both involve conversation loops, but the key difference is scope. RunConversation handles one agent looping through turns. RunOrchestratedTask has an orchestrator that decomposes a task and spins up multiple RunConversation loops (one per sub-agent) running simultaneously.">
+        <h3 class="quiz-question">4. What is the key difference between RunConversation and RunOrchestratedTask?</h3>
+        <div class="quiz-options">
+          <button class="quiz-option" data-value="option-4a" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>RunConversation uses the pipeline; RunOrchestratedTask skips it for speed</span>
+          </button>
+          <button class="quiz-option" data-value="option-4b" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>RunConversation is one agent looping; RunOrchestratedTask decomposes a task across multiple agents running in parallel</span>
+          </button>
+          <button class="quiz-option" data-value="option-4c" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>RunConversation is for chat; RunOrchestratedTask is for batch processing files</span>
+          </button>
+        </div>
+        <div class="quiz-feedback"></div>
+      </div>
+
+      <button class="quiz-check-btn" onclick="checkQuiz('quiz-module3')">Check Answers</button>
+      <button class="quiz-reset-btn" onclick="resetQuiz('quiz-module3')">Try Again</button>
+    </div>
+
+    <div class="module-transition" style="margin-top: var(--space-12); padding: var(--space-8); background: var(--color-surface-warm); border-radius: var(--radius-md); border-left: 3px solid var(--color-accent);">
+      <p>The agent knows what to do because of its <strong>skills</strong>. Next, we will explore how skills work &mdash; and the clever trick that keeps the agent from drowning in information.</p>
+    </div>
+  </div>
+
+</section>

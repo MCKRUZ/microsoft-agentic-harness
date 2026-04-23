@@ -1,0 +1,539 @@
+<section class="module" id="module-4">
+
+  <!-- ═══════════════════════════════════════════════════════════════
+       SCREEN 1 — The Context Window Problem
+       ═══════════════════════════════════════════════════════════════ -->
+  <div class="screen">
+    <div class="module-number">04</div>
+    <h1>Skills — What Agents Know</h1>
+
+    <p>An <span class="term" data-definition="A large language model (LLM) is the AI engine behind agents — it reads text, reasons about it, and generates a response. Think of it as a very well-read assistant that communicates by reading and writing.">LLM</span> has a finite memory called a <span class="term" data-definition="The context window is the total amount of text an AI can 'see' at once during a conversation — like a desk that can only hold so many papers before things fall off the edges.">context window</span>. Dump everything into it and the agent drowns. Load too little and it doesn't know how to help.</p>
+
+    <p>Think of the context window as a <strong>glass jar</strong>. Every piece of information the agent needs is a colored section that takes up space. When the jar overflows, older information gets pushed out and the agent forgets.</p>
+
+    <!-- Glass Jar Visual — CSS bar chart representing token allocation -->
+    <div class="context-jar" style="max-width: 400px; margin: var(--space-8) auto; position: relative;">
+      <div style="border: 3px solid var(--color-border); border-radius: 12px 12px 4px 4px; overflow: hidden; background: var(--color-surface); box-shadow: var(--shadow-md);">
+        <!-- Jar label -->
+        <div style="text-align: center; padding: var(--space-2) 0; font-size: var(--text-xs); text-transform: uppercase; letter-spacing: 0.1em; color: var(--color-text-muted); border-bottom: 1px solid var(--color-border-light);">Context Window — 128k tokens</div>
+        <!-- Token sections (bottom-up fill) -->
+        <div style="display: flex; flex-direction: column-reverse; min-height: 280px;">
+          <div style="background: #E74C3C; padding: var(--space-3) var(--space-4); color: white; font-size: var(--text-sm); font-weight: 600; flex: 2;">
+            System Prompt <span style="float: right; opacity: 0.8;">~2,000</span>
+          </div>
+          <div style="background: #3498DB; padding: var(--space-3) var(--space-4); color: white; font-size: var(--text-sm); font-weight: 600; flex: 3;">
+            Skills <span style="float: right; opacity: 0.8;">~5,000</span>
+          </div>
+          <div style="background: #2ECC71; padding: var(--space-3) var(--space-4); color: white; font-size: var(--text-sm); font-weight: 600; flex: 2;">
+            Tool Schemas <span style="float: right; opacity: 0.8;">~3,000</span>
+          </div>
+          <div style="background: #F39C12; padding: var(--space-3) var(--space-4); color: white; font-size: var(--text-sm); font-weight: 600; flex: 8;">
+            Conversation <span style="float: right; opacity: 0.8;">grows over time</span>
+          </div>
+          <div style="background: var(--color-surface); padding: var(--space-3) var(--space-4); color: var(--color-text-muted); font-size: var(--text-sm); font-style: italic; flex: 5; border-bottom: 2px dashed var(--color-border-light);">
+            Remaining space...
+          </div>
+        </div>
+      </div>
+      <!-- Jar base -->
+      <div style="width: 70%; margin: 0 auto; height: 8px; background: var(--color-border); border-radius: 0 0 8px 8px;"></div>
+    </div>
+
+    <p>The <span class="term" data-definition="The ContextBudgetTracker is a component that watches how many tokens have been used across all categories (skills, tools, conversation) and raises warnings when space is running low — like a fuel gauge for the agent's memory.">ContextBudgetTracker</span> is the person watching the jar. It tracks how many <span class="term" data-definition="A token is a small chunk of text (roughly 3/4 of a word) that the AI processes. Every word you send and every word the AI reads costs tokens — and tokens cost money.">tokens</span> each section uses and raises a warning when the jar is almost full.</p>
+
+    <div class="callout callout-accent">
+      <div class="callout-icon">💡</div>
+      <div class="callout-content">
+        <strong class="callout-title">Key Insight</strong>
+        <p>Progressive disclosure is one of the most powerful ideas in software — and in life. A good GPS doesn't show you the entire route at once; it gives you the next turn. The skills system works the same way — give the agent a table of contents first, and only load the full chapter when it's needed.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════════
+       SCREEN 2 — Three Tiers: Progressive Disclosure
+       ═══════════════════════════════════════════════════════════════ -->
+  <div class="screen">
+    <h2>The Spy Briefcase — Three Compartments</h2>
+
+    <p>Imagine a spy's briefcase with three compartments. Each one holds a different level of detail about a mission. You never open Compartment 3 during planning — that would overwhelm you.</p>
+
+    <!-- Three-tier cards with the spy briefcase metaphor -->
+    <div class="pattern-cards" style="grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));">
+      <div class="pattern-card" style="border-top: 3px solid #3498DB;">
+        <div class="pattern-icon" style="background: #3498DB;">1</div>
+        <h4 class="pattern-title">Index Card</h4>
+        <p class="pattern-desc">The label on the outside. Name, description, and tags — just enough to know what this skill is about. Always loaded. ~100 tokens.</p>
+      </div>
+      <div class="pattern-card" style="border-top: 3px solid #F39C12;">
+        <div class="pattern-icon" style="background: #F39C12;">2</div>
+        <h4 class="pattern-title">Folder</h4>
+        <p class="pattern-desc">The full mission briefing. Detailed instructions and which tools to use — loaded only when the agent activates this skill. ~5,000 tokens.</p>
+      </div>
+      <div class="pattern-card" style="border-top: 3px solid #E74C3C;">
+        <div class="pattern-icon" style="background: #E74C3C;">3</div>
+        <h4 class="pattern-title">Filing Cabinet</h4>
+        <p class="pattern-desc">Reference materials, templates, and scripts. Never loaded into the context window — the agent reads these from disk only when actively working. Unbounded size.</p>
+      </div>
+    </div>
+
+    <p>In the code, these three compartments are defined in a single <span class="term" data-definition="A class is a blueprint that defines the shape of data and what you can do with it — like a form template with labeled fields to fill in.">class</span> called <code>SkillDefinition</code>. Each tier is marked with a region comment so developers know which level it belongs to.</p>
+
+    <!-- Code↔English: SkillDefinition 3 tiers -->
+    <div class="translation-block animate-in">
+      <div class="translation-code">
+        <span class="translation-label">CODE</span>
+        <pre><code>
+<span class="code-line"><span class="code-keyword">public class</span> <span class="code-function">SkillDefinition</span></span>
+<span class="code-line">{</span>
+<span class="code-line">    <span class="code-comment">#region Level 1: Index Card (Metadata — Always Loaded)</span></span>
+<span class="code-line">    <span class="code-keyword">public</span> <span class="code-type">string</span> Id { <span class="code-keyword">get</span>; <span class="code-keyword">set</span>; }</span>
+<span class="code-line">    <span class="code-keyword">public</span> <span class="code-type">string</span> Name { <span class="code-keyword">get</span>; <span class="code-keyword">set</span>; }</span>
+<span class="code-line">    <span class="code-keyword">public</span> <span class="code-type">string</span> Description { <span class="code-keyword">get</span>; <span class="code-keyword">set</span>; }</span>
+<span class="code-line">    <span class="code-keyword">public</span> IList&lt;<span class="code-type">string</span>&gt; Tags { <span class="code-keyword">get</span>; <span class="code-keyword">set</span>; }</span>
+<span class="code-line">    <span class="code-comment">#endregion</span></span>
+<span class="code-line"></span>
+<span class="code-line">    <span class="code-comment">#region Level 2: Folder (Instructions — On Demand)</span></span>
+<span class="code-line">    <span class="code-keyword">public</span> <span class="code-type">string</span> Instructions { <span class="code-keyword">get</span>; <span class="code-keyword">set</span>; }</span>
+<span class="code-line">    <span class="code-keyword">public</span> IList&lt;<span class="code-type">ToolDeclaration</span>&gt; ToolDeclarations { <span class="code-keyword">get</span>; <span class="code-keyword">set</span>; }</span>
+<span class="code-line">    <span class="code-keyword">public</span> IList&lt;<span class="code-type">string</span>&gt; AllowedTools { <span class="code-keyword">get</span>; <span class="code-keyword">set</span>; }</span>
+<span class="code-line">    <span class="code-comment">#endregion</span></span>
+<span class="code-line"></span>
+<span class="code-line">    <span class="code-comment">#region Level 3: Filing Cabinet (Resources — On Demand)</span></span>
+<span class="code-line">    <span class="code-keyword">public</span> IList&lt;<span class="code-type">SkillResource</span>&gt; Templates { <span class="code-keyword">get</span>; <span class="code-keyword">set</span>; }</span>
+<span class="code-line">    <span class="code-keyword">public</span> IList&lt;<span class="code-type">SkillResource</span>&gt; References { <span class="code-keyword">get</span>; <span class="code-keyword">set</span>; }</span>
+<span class="code-line">    <span class="code-keyword">public</span> IList&lt;<span class="code-type">SkillResource</span>&gt; Scripts { <span class="code-keyword">get</span>; <span class="code-keyword">set</span>; }</span>
+<span class="code-line">    <span class="code-comment">#endregion</span></span>
+<span class="code-line">}</span>
+        </code></pre>
+      </div>
+      <div class="translation-english">
+        <span class="translation-label">PLAIN ENGLISH</span>
+        <div class="translation-lines">
+          <p class="tl">Define a blueprint called "SkillDefinition"...</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl"><strong style="color: #3498DB;">Compartment 1 — the label on the briefcase.</strong></p>
+          <p class="tl">A unique identifier for this skill.</p>
+          <p class="tl">A human-readable name (e.g., "orchestrator").</p>
+          <p class="tl">A short sentence explaining what this skill does.</p>
+          <p class="tl">Searchable keywords so the agent can find relevant skills quickly.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl"><strong style="color: #F39C12;">Compartment 2 — the full mission briefing.</strong></p>
+          <p class="tl">The detailed instructions the agent follows when this skill is active.</p>
+          <p class="tl">Which tools this skill declares (schemas sent to the AI).</p>
+          <p class="tl">A list of tool names this skill is allowed to use.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl"><strong style="color: #E74C3C;">Compartment 3 — the filing cabinet in the back room.</strong></p>
+          <p class="tl">Reusable document templates the agent can fill in.</p>
+          <p class="tl">Background reading material loaded from files on disk.</p>
+          <p class="tl">Automation scripts the agent can run when needed.</p>
+          <p class="tl">&nbsp;</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════════
+       SCREEN 3 — SKILL.md: How Skills Are Written
+       ═══════════════════════════════════════════════════════════════ -->
+  <div class="screen">
+    <h2>SKILL.md — A Skill's Mission File</h2>
+
+    <p>Each skill is written as a <span class="term" data-definition="Markdown is a simple text formatting language that uses symbols like # for headings, ** for bold, and - for bullet points. It's human-readable even before it's rendered — which makes it perfect for files that both humans and AI need to read.">Markdown</span> file with a special header section. The header uses <span class="term" data-definition="YAML is a human-friendly format for structured data, using indentation and colons instead of brackets. Think of it as a clean, readable way to write configuration — like filling out a form with labeled fields.">YAML</span> <span class="term" data-definition="Frontmatter is a block of structured data at the very top of a file, wrapped between --- lines. It acts like a shipping label — structured info about the content that follows.">frontmatter</span> (the structured bit between the <code>---</code> lines), and the body contains the actual instructions.</p>
+
+    <!-- Code↔English: SKILL.md -->
+    <div class="translation-block animate-in">
+      <div class="translation-code">
+        <span class="translation-label">CODE</span>
+        <pre><code>
+<span class="code-line"><span class="code-comment">---</span></span>
+<span class="code-line"><span class="code-property">name</span>: <span class="code-string">orchestrator</span></span>
+<span class="code-line"><span class="code-property">description</span>: <span class="code-string">Decomposes complex tasks into subtasks and delegates to specialized sub-agents</span></span>
+<span class="code-line"><span class="code-property">allowed-tools</span>: <span class="code-string">file_system web_search</span></span>
+<span class="code-line"><span class="code-comment">---</span></span>
+<span class="code-line"></span>
+<span class="code-line"><span class="code-comment"># Your Role</span></span>
+<span class="code-line"></span>
+<span class="code-line">You are a task orchestrator. When given a complex task:</span>
+<span class="code-line">1. Break it into independent subtasks</span>
+<span class="code-line">2. Assign each subtask to the most appropriate agent</span>
+<span class="code-line">3. Synthesize results into a coherent answer</span>
+<span class="code-line"></span>
+<span class="code-line"><span class="code-comment">## Task Decomposition Format</span></span>
+<span class="code-line">- Each subtask must have: description, assigned agent, expected output</span>
+<span class="code-line">- Prefer parallel subtasks over sequential when possible</span>
+<span class="code-line"></span>
+<span class="code-line"><span class="code-comment">## Guidelines</span></span>
+<span class="code-line">- Never execute subtasks yourself — always delegate</span>
+<span class="code-line">- If a subtask fails, retry with a different agent or approach</span>
+        </code></pre>
+      </div>
+      <div class="translation-english">
+        <span class="translation-label">PLAIN ENGLISH</span>
+        <div class="translation-lines">
+          <p class="tl">Start of the structured header (frontmatter).</p>
+          <p class="tl"><strong>Tier 1 data:</strong> The skill's name — its ID badge.</p>
+          <p class="tl"><strong>Tier 1 data:</strong> A one-line summary of what this skill does.</p>
+          <p class="tl"><strong>Tier 2 link:</strong> Which tools this skill is allowed to call.</p>
+          <p class="tl">End of the structured header.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl"><strong>Tier 2 starts here</strong> — the full instructions for the agent.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">The agent's job description in plain language.</p>
+          <p class="tl">Step 1: Decompose the problem.</p>
+          <p class="tl">Step 2: Hand off each piece to a specialist.</p>
+          <p class="tl">Step 3: Combine the results into one answer.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Section heading for output format rules.</p>
+          <p class="tl">Each sub-task needs a clear description, owner, and expected result.</p>
+          <p class="tl">Run tasks in parallel when they don't depend on each other.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Section heading for behavioral guidelines.</p>
+          <p class="tl">This agent is a manager — it coordinates, never does the work itself.</p>
+          <p class="tl">If something fails, don't give up — try a different approach.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════════
+       SCREEN 4 — The Budget Tracker + TieredContextAssembler
+       ═══════════════════════════════════════════════════════════════ -->
+  <div class="screen">
+    <h2>The Budget Tracker — Loading the Right Compartment</h2>
+
+    <p>The <code>TieredContextAssembler</code> is the component that actually opens the briefcase. It decides which compartment to load based on what the <span class="term" data-definition="A budget in this context is a limit on how many tokens can be used for a particular purpose. Just like a financial budget, once you spend your allocation, you have to stop or make room by removing something else.">budget</span> allows.</p>
+
+    <!-- Code↔English: TieredContextAssembler -->
+    <div class="translation-block animate-in">
+      <div class="translation-code">
+        <span class="translation-label">CODE</span>
+        <pre><code>
+<span class="code-line"><span class="code-keyword">public sealed class</span> <span class="code-function">TieredContextAssembler</span></span>
+<span class="code-line">{</span>
+<span class="code-line">    <span class="code-keyword">private const int</span> DefaultTier1MaxTokens = <span class="code-string">3000</span>;</span>
+<span class="code-line">    <span class="code-keyword">private const int</span> DefaultTier2MaxTokens = <span class="code-string">8000</span>;</span>
+<span class="code-line"></span>
+<span class="code-line">    <span class="code-keyword">public async</span> Task&lt;TieredContextResult&gt; <span class="code-function">AssembleAsync</span>(</span>
+<span class="code-line">        SkillDefinition skill, TierLoadingOptions? options,</span>
+<span class="code-line">        CancellationToken cancellationToken)</span>
+<span class="code-line">    {</span>
+<span class="code-line">        <span class="code-keyword">var</span> result = <span class="code-keyword">new</span> TieredContextResult { SkillId = skill.Id };</span>
+<span class="code-line"></span>
+<span class="code-line">        <span class="code-comment">// Tier 1: Always loaded — lightweight metadata</span></span>
+<span class="code-line">        <span class="code-keyword">var</span> tier1Content = BuildTier1Content(skill);</span>
+<span class="code-line">        <span class="code-keyword">var</span> tier1Tokens = TokenEstimationHelper.EstimateTokens(tier1Content);</span>
+<span class="code-line">        _budgetTracker.RecordAllocation(<span class="code-string">"skill-tier1"</span>, skill.Id, tier1Tokens);</span>
+<span class="code-line"></span>
+<span class="code-line">        <span class="code-comment">// Tier 2: On-demand — full instructions</span></span>
+<span class="code-line">        <span class="code-keyword">if</span> (options?.LoadTier2 == <span class="code-keyword">true</span>)</span>
+<span class="code-line">        {</span>
+<span class="code-line">            <span class="code-keyword">var</span> tier2Content = BuildTier2Content(skill);</span>
+<span class="code-line">            <span class="code-keyword">var</span> tier2Tokens = TokenEstimationHelper.EstimateTokens(tier2Content);</span>
+<span class="code-line">            _budgetTracker.RecordAllocation(<span class="code-string">"skill-tier2"</span>, skill.Id, tier2Tokens);</span>
+<span class="code-line">        }</span>
+<span class="code-line"></span>
+<span class="code-line">        <span class="code-comment">// Tier 3: Never loaded into context</span></span>
+<span class="code-line">        result.Tier3ResourcePaths = skill.References</span>
+<span class="code-line">            .Concat(skill.Templates)</span>
+<span class="code-line">            .Select(r =&gt; r.Path).ToList();</span>
+        </code></pre>
+      </div>
+      <div class="translation-english">
+        <span class="translation-label">PLAIN ENGLISH</span>
+        <div class="translation-lines">
+          <p class="tl">Define the Assembler — it builds context from skill tiers.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Tier 1 has a budget cap of 3,000 tokens (the index cards).</p>
+          <p class="tl">Tier 2 has a budget cap of 8,000 tokens (the full briefings).</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">The main method — "assemble context for this skill."</p>
+          <p class="tl">It takes the skill definition and optional loading preferences.</p>
+          <p class="tl">It can be cancelled if the operation takes too long.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Create an empty result container tagged with the skill's ID.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl"><strong style="color: #3498DB;">Always open Compartment 1.</strong></p>
+          <p class="tl">Build the index card content (name, description, tags).</p>
+          <p class="tl">Estimate how many tokens it will cost.</p>
+          <p class="tl">Tell the budget tracker: "I just used X tokens for this skill's index card."</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl"><strong style="color: #F39C12;">Only open Compartment 2 if asked.</strong></p>
+          <p class="tl">Check: "Did the caller request the full instructions?"</p>
+          <p class="tl">If yes, open the folder...</p>
+          <p class="tl">Build the full instruction content.</p>
+          <p class="tl">Estimate the token cost of the instructions.</p>
+          <p class="tl">Tell the budget tracker about this bigger allocation.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl"><strong style="color: #E74C3C;">Compartment 3 never enters the jar.</strong></p>
+          <p class="tl">Just collect the file paths to templates and references...</p>
+          <p class="tl">...so the agent can read them from disk later if it needs them.</p>
+          <p class="tl">Store the paths — not the content — in the result.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Group Chat: Budget negotiation -->
+    <h3 style="margin-top: var(--space-10);">Behind the Scenes: The Budget Negotiation</h3>
+    <p>Here's what happens inside the system when the agent activates a skill. Three components "talk" to each other to decide what fits in the jar.</p>
+
+    <div class="chat-window" id="chat-module4">
+      <div class="chat-messages">
+        <div class="chat-message" data-msg="0" data-sender="budget" style="display:none">
+          <div class="chat-avatar" style="background: #E74C3C;">B</div>
+          <div class="chat-bubble">
+            <span class="chat-sender" style="color: #E74C3C;">ContextBudgetTracker</span>
+            <p>Current status: 12,000 tokens remaining out of 128,000. System prompt and Tier 1 index cards for all 6 skills are already loaded.</p>
+          </div>
+        </div>
+
+        <div class="chat-message" data-msg="1" data-sender="loader" style="display:none">
+          <div class="chat-avatar" style="background: #2ECC71;">L</div>
+          <div class="chat-bubble">
+            <span class="chat-sender" style="color: #2ECC71;">SkillLoader</span>
+            <p>The agent just matched the user request to the "research-agent" skill. Requesting Tier 2 load.</p>
+          </div>
+        </div>
+
+        <div class="chat-message" data-msg="2" data-sender="assembler" style="display:none">
+          <div class="chat-avatar" style="background: #3498DB;">A</div>
+          <div class="chat-bubble">
+            <span class="chat-sender" style="color: #3498DB;">TieredContextAssembler</span>
+            <p>Estimating Tier 2 for research-agent... 4,800 tokens. That includes full instructions and 3 tool declarations.</p>
+          </div>
+        </div>
+
+        <div class="chat-message" data-msg="3" data-sender="budget" style="display:none">
+          <div class="chat-avatar" style="background: #E74C3C;">B</div>
+          <div class="chat-bubble">
+            <span class="chat-sender" style="color: #E74C3C;">ContextBudgetTracker</span>
+            <p>4,800 fits within the 12,000 remaining. Approved. Recording allocation under "skill-tier2 / research-agent".</p>
+          </div>
+        </div>
+
+        <div class="chat-message" data-msg="4" data-sender="assembler" style="display:none">
+          <div class="chat-avatar" style="background: #3498DB;">A</div>
+          <div class="chat-bubble">
+            <span class="chat-sender" style="color: #3498DB;">TieredContextAssembler</span>
+            <p>Tier 2 loaded. Tier 3 resources (2 templates, 1 reference doc) are stored as file paths only — not loaded into context.</p>
+          </div>
+        </div>
+
+        <div class="chat-message" data-msg="5" data-sender="budget" style="display:none">
+          <div class="chat-avatar" style="background: #E74C3C;">B</div>
+          <div class="chat-bubble">
+            <span class="chat-sender" style="color: #E74C3C;">ContextBudgetTracker</span>
+            <p>Updated: 7,200 tokens remaining. Warning threshold is 3,000. We still have room, but the conversation is growing fast.</p>
+          </div>
+        </div>
+
+        <div class="chat-message" data-msg="6" data-sender="loader" style="display:none">
+          <div class="chat-avatar" style="background: #2ECC71;">L</div>
+          <div class="chat-bubble">
+            <span class="chat-sender" style="color: #2ECC71;">SkillLoader</span>
+            <p>Ten turns later... the user is still going. Conversation history now uses 5,000 tokens.</p>
+          </div>
+        </div>
+
+        <div class="chat-message" data-msg="7" data-sender="budget" style="display:none">
+          <div class="chat-avatar" style="background: #E74C3C;">B</div>
+          <div class="chat-bubble">
+            <span class="chat-sender" style="color: #E74C3C;">ContextBudgetTracker</span>
+            <p>WARNING: Only 2,100 tokens remain. Below the 3,000 threshold. Requesting compaction.</p>
+          </div>
+        </div>
+
+        <div class="chat-message" data-msg="8" data-sender="assembler" style="display:none">
+          <div class="chat-avatar" style="background: #3498DB;">A</div>
+          <div class="chat-bubble">
+            <span class="chat-sender" style="color: #3498DB;">TieredContextAssembler</span>
+            <p>Compaction needed. Summarizing older conversation messages to free up space. This is like writing "meeting notes" instead of keeping the full transcript.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="chat-typing" style="display:none">
+        <div class="chat-avatar" style="background: var(--color-text-muted);">?</div>
+        <div class="chat-typing-dots">
+          <span class="typing-dot"></span>
+          <span class="typing-dot"></span>
+          <span class="typing-dot"></span>
+        </div>
+      </div>
+
+      <div class="chat-controls">
+        <button class="btn chat-next-btn">Next Message</button>
+        <button class="btn chat-all-btn">Play All</button>
+        <button class="btn chat-reset-btn">Replay</button>
+        <span class="chat-progress"></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════════
+       SCREEN 5 — Compaction + Quiz
+       ═══════════════════════════════════════════════════════════════ -->
+  <div class="screen">
+    <h2>Compaction — When Memory Gets Full</h2>
+
+    <p>When the budget tracker fires a warning, the system needs to make room. <span class="term" data-definition="Compaction is the process of summarizing or removing older content from the context window to free up space for new information. Think of it as archiving old emails to make room in your inbox.">Compaction</span> summarizes older messages into shorter versions — like replacing a 30-minute meeting recording with a half-page of notes.</p>
+
+    <!-- Compaction flow -->
+    <div class="flow-steps" style="margin: var(--space-8) 0;">
+      <div class="flow-step">
+        <div class="flow-step-num">1</div>
+        <p>Budget tracker detects tokens below threshold</p>
+      </div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-step">
+        <div class="flow-step-num">2</div>
+        <p>A <span class="term" data-definition="A boundary message is a marker inserted into the conversation that says 'everything before this point has been summarized.' It records how many tokens were saved and what strategy was used.">boundary message</span> is created</p>
+      </div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-step">
+        <div class="flow-step-num">3</div>
+        <p>Old messages are replaced with a summary</p>
+      </div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-step">
+        <div class="flow-step-num">4</div>
+        <p>Freed tokens become available for new content</p>
+      </div>
+    </div>
+
+    <p>The <code>CompactionBoundaryMessage</code> records what happened — how many tokens were saved, what <span class="term" data-definition="A compaction strategy is the approach used to summarize old content. Different strategies work better in different situations — some summarize aggressively, others preserve key decisions and only trim the fluff.">strategy</span> was used, and a summary of the compacted content. This creates an audit trail so nothing is silently lost.</p>
+
+    <!-- Compaction visual: before/after -->
+    <div style="display: grid; grid-template-columns: 1fr auto 1fr; gap: var(--space-4); align-items: center; margin: var(--space-8) 0;">
+      <div style="background: var(--color-surface); border-radius: var(--radius-md); padding: var(--space-4); box-shadow: var(--shadow-sm); text-align: center;">
+        <div style="font-size: var(--text-xs); text-transform: uppercase; letter-spacing: 0.1em; color: var(--color-text-muted); margin-bottom: var(--space-2);">Before</div>
+        <div style="font-size: var(--text-2xl); font-weight: 700; color: #E74C3C;">18,500</div>
+        <div style="font-size: var(--text-sm); color: var(--color-text-secondary);">tokens used</div>
+      </div>
+      <div style="font-size: var(--text-2xl); color: var(--color-accent);">&rarr;</div>
+      <div style="background: var(--color-surface); border-radius: var(--radius-md); padding: var(--space-4); box-shadow: var(--shadow-sm); text-align: center;">
+        <div style="font-size: var(--text-xs); text-transform: uppercase; letter-spacing: 0.1em; color: var(--color-text-muted); margin-bottom: var(--space-2);">After</div>
+        <div style="font-size: var(--text-2xl); font-weight: 700; color: #2ECC71;">11,200</div>
+        <div style="font-size: var(--text-sm); color: var(--color-text-secondary);">tokens used</div>
+        <div style="font-size: var(--text-xs); color: var(--color-accent); margin-top: var(--space-1);">7,300 tokens saved</div>
+      </div>
+    </div>
+
+    <!-- QUIZ -->
+    <h3 style="margin-top: var(--space-10);">Check Your Understanding</h3>
+
+    <div class="quiz-container" id="quiz-module4">
+
+      <!-- Q1: Why not load everything? -->
+      <div class="quiz-question-block"
+           data-correct="option-1b"
+           data-explanation-right="Exactly — loading everything wastes tokens (which cost money) and actually makes the agent worse by drowning useful information in noise. The three-tier system ensures the agent only sees what it needs right now."
+           data-explanation-wrong="Not quite. The agent CAN access all skill content eventually — but loading everything at once wastes limited context space and drowns the signal in noise. Think about why a GPS shows you the next turn instead of the entire route.">
+        <h3 class="quiz-question">1. Why doesn't the agent load all skills at Tier 3 immediately?</h3>
+        <div class="quiz-options">
+          <button class="quiz-option" data-value="option-1a" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>The Tier 3 files are encrypted and take time to decrypt</span>
+          </button>
+          <button class="quiz-option" data-value="option-1b" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>Loading everything would overflow the context window, waste tokens, and actually make the agent perform worse</span>
+          </button>
+          <button class="quiz-option" data-value="option-1c" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>Tier 3 files are stored on a remote server and the network is too slow</span>
+          </button>
+        </div>
+        <div class="quiz-feedback"></div>
+      </div>
+
+      <!-- Q2: Agent forgetting instructions scenario -->
+      <div class="quiz-question-block"
+           data-correct="option-2b"
+           data-explanation-right="Exactly — when conversation history grows too large, it pushes earlier content (including skill instructions) out of the context window. This is the exact scenario compaction is designed to prevent. The budget tracker should have triggered a summary earlier."
+           data-explanation-wrong="Not quite. This is a classic context overflow symptom. As the conversation grows, older content — including the skill instructions loaded earlier — gets pushed out of the context window. The fix involves compaction: summarizing old messages to free up room for the instructions to stay visible.">
+        <h3 class="quiz-question">2. Your agent keeps forgetting its instructions mid-conversation. What is most likely happening?</h3>
+        <div class="quiz-options">
+          <button class="quiz-option" data-value="option-2a" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>The SKILL.md file has a bug and the instructions are not being parsed correctly</span>
+          </button>
+          <button class="quiz-option" data-value="option-2b" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>The conversation history has grown so large that it is pushing skill instructions out of the context window</span>
+          </button>
+          <button class="quiz-option" data-value="option-2c" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>The AI model has a memory leak and needs to be restarted</span>
+          </button>
+        </div>
+        <div class="quiz-feedback"></div>
+      </div>
+
+      <!-- Q3: What triggers compaction? -->
+      <div class="quiz-question-block"
+           data-correct="option-3c"
+           data-explanation-right="Exactly — the ContextBudgetTracker continuously monitors token usage. When remaining tokens drop below a configured threshold (like 3,000), it triggers compaction to make room. It is a proactive system, not a reactive crash recovery."
+           data-explanation-wrong="Not quite. Compaction is triggered by the ContextBudgetTracker when token usage crosses a warning threshold. It is not a user action or an error recovery — it is a planned, automatic response to the context window filling up. The budget tracker watches the numbers and acts before things get critical.">
+        <h3 class="quiz-question">3. What triggers the compaction process?</h3>
+        <div class="quiz-options">
+          <button class="quiz-option" data-value="option-3a" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>The user clicks a "compact memory" button in the UI</span>
+          </button>
+          <button class="quiz-option" data-value="option-3b" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>The AI model crashes and the system restarts with a summary</span>
+          </button>
+          <button class="quiz-option" data-value="option-3c" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>The ContextBudgetTracker detects that remaining tokens have dropped below a configured threshold</span>
+          </button>
+        </div>
+        <div class="quiz-feedback"></div>
+      </div>
+
+      <!-- Q4: Drag-and-drop tier matching -->
+      <div class="quiz-question-block" style="border: none; padding: 0;">
+        <h3 class="quiz-question">4. Match each tier to its description:</h3>
+
+        <div class="dnd-container">
+          <div class="dnd-chips">
+            <div class="dnd-chip" draggable="true" data-answer="tier-1">Tier 1: Index Card</div>
+            <div class="dnd-chip" draggable="true" data-answer="tier-2">Tier 2: Folder</div>
+            <div class="dnd-chip" draggable="true" data-answer="tier-3">Tier 3: Filing Cabinet</div>
+          </div>
+          <div class="dnd-zones">
+            <div class="dnd-zone" data-correct="tier-1">
+              <p class="dnd-zone-label">Always loaded. Name, description, and tags. Costs ~100 tokens.</p>
+              <div class="dnd-zone-target">Drop here</div>
+            </div>
+            <div class="dnd-zone" data-correct="tier-2">
+              <p class="dnd-zone-label">Loaded on demand. Full instructions and tool declarations. Costs ~5,000 tokens.</p>
+              <div class="dnd-zone-target">Drop here</div>
+            </div>
+            <div class="dnd-zone" data-correct="tier-3">
+              <p class="dnd-zone-label">Never loaded into context. Templates and references read from disk. Unbounded size.</p>
+              <div class="dnd-zone-target">Drop here</div>
+            </div>
+          </div>
+          <button class="btn" onclick="checkDnD(this)">Check Matches</button>
+          <button class="btn" onclick="resetDnD(this)">Reset</button>
+        </div>
+      </div>
+
+      <button class="quiz-check-btn" onclick="checkQuiz('quiz-module4')">Check Answers</button>
+      <button class="quiz-reset-btn" onclick="resetQuiz('quiz-module4')">Try Again</button>
+    </div>
+
+    <!-- Transition to next module -->
+    <div class="callout callout-info" style="margin-top: var(--space-10);">
+      <div class="callout-icon">&#10145;</div>
+      <div class="callout-content">
+        <p>Now you know what agents know. Next up: what they can actually <em>do</em> — and the safety rails that keep them from going too far.</p>
+      </div>
+    </div>
+  </div>
+
+</section>

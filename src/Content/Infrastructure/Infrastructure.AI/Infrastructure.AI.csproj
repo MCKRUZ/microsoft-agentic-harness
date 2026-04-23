@@ -23,6 +23,7 @@
     <ProjectReference Include="..\..\Application\Application.AI.Common\Application.AI.Common.csproj" />
     <ProjectReference Include="..\..\Application\Application.Core\Application.Core.csproj" />
     <ProjectReference Include="..\..\Domain\Domain.Common\Domain.Common.csproj" />
+    <ProjectReference Include="..\Infrastructure.AI.RAG\Infrastructure.AI.RAG.csproj" />
   </ItemGroup>
 
 </Project>

@@ -4,8 +4,10 @@ using Application.AI.Common.Interfaces.Context;
 using Application.AI.Common.Interfaces.Skills;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Interfaces.Traces;
+using Application.AI.Common.OpenTelemetry.Metrics;
 using Domain.AI.Agents;
 using Domain.AI.Skills;
+using Domain.AI.Telemetry.Conventions;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
 using Domain.Common.MetaHarness;
@@ -33,6 +35,7 @@ public class AgentExecutionContextFactory
 	private readonly IContextBudgetTracker? _budgetTracker;
 	private readonly IExecutionTraceStore? _traceStore;
 	private readonly ISkillContentProvider? _skillContentProvider;
+	private readonly IAgentConfigReporter? _agentConfigReporter;
 
 	public AgentExecutionContextFactory(
 		ILogger<AgentExecutionContextFactory> logger,
@@ -43,7 +46,8 @@ public class AgentExecutionContextFactory
 		IMcpToolProvider? mcpToolProvider = null,
 		IContextBudgetTracker? budgetTracker = null,
 		IExecutionTraceStore? traceStore = null,
-		ISkillContentProvider? skillContentProvider = null)
+		ISkillContentProvider? skillContentProvider = null,
+		IAgentConfigReporter? agentConfigReporter = null)
 	{
 		_logger = logger;
 		_appConfig = appConfig;
@@ -54,6 +58,7 @@ public class AgentExecutionContextFactory
 		_budgetTracker = budgetTracker;
 		_traceStore = traceStore;
 		_skillContentProvider = skillContentProvider;
+		_agentConfigReporter = agentConfigReporter;
 	}
 
 	/// <summary>
@@ -83,10 +88,22 @@ public class AgentExecutionContextFactory
 			var instructionTokens = TokenEstimationHelper.EstimateTokens(instruction);
 			_budgetTracker.RecordAllocation(agentName, "system_prompt", instructionTokens);
 
+			ContextBudgetMetrics.SystemPromptTokens.Record(instructionTokens,
+				new KeyValuePair<string, object?>(AgentConventions.Name, agentName));
+			ContextSourceMetrics.SourceTokens.Record(instructionTokens,
+				new KeyValuePair<string, object?>(ContextConventions.SourceType, ContextConventions.SourceTypeValues.SystemPrompt),
+				new KeyValuePair<string, object?>(AgentConventions.Name, agentName));
+
 			if (tools?.Count > 0)
 			{
 				var toolTokens = tools.Count * 50; // ~50 tokens per tool schema
 				_budgetTracker.RecordAllocation(agentName, "tool_schemas", toolTokens);
+
+				ContextBudgetMetrics.ToolsSchemaTokens.Record(toolTokens,
+					new KeyValuePair<string, object?>(AgentConventions.Name, agentName));
+				ContextSourceMetrics.SourceTokens.Record(toolTokens,
+					new KeyValuePair<string, object?>(ContextConventions.SourceType, ContextConventions.SourceTypeValues.ToolsSchema),
+					new KeyValuePair<string, object?>(AgentConventions.Name, agentName));
 			}
 		}
 
@@ -131,6 +148,14 @@ public class AgentExecutionContextFactory
 			Temperature = options.Temperature,
 			AdditionalProperties = additionalProps
 		};
+
+		_agentConfigReporter?.RegisterAgent(
+			agentName,
+			deploymentName,
+			(options.Temperature ?? 0.7).ToString("0.##"),
+			tools?.Count ?? 0,
+			aiContextProviders?.Count ?? 0,
+			_mcpToolProvider != null ? 1 : 0);
 
 		_logger.LogInformation(
 			"Mapped skill {SkillId} to agent context {AgentName} with {ToolCount} tools and {ProviderCount} context providers",

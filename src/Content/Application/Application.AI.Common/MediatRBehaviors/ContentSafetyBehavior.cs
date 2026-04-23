@@ -1,7 +1,9 @@
 using Application.AI.Common.Exceptions;
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.MediatR;
+using Application.AI.Common.OpenTelemetry.Metrics;
 using Domain.AI.Models;
+using Domain.AI.Telemetry.Conventions;
 using Domain.Common;
 using Domain.Common.Helpers;
 using MediatR;
@@ -49,8 +51,19 @@ public sealed class ContentSafetyBehavior<TRequest, TResponse>
         if (screenable.ScreeningTarget is ContentScreeningTarget.Input or ContentScreeningTarget.Both)
         {
             var result = await _safetyService.ScreenAsync(screenable.ContentToScreen, cancellationToken);
+
+            ContentSafetyMetrics.Evaluations.Add(1,
+                new KeyValuePair<string, object?>(SafetyConventions.Phase, SafetyConventions.PhaseValues.Prompt),
+                new KeyValuePair<string, object?>(SafetyConventions.Filter, "pipeline_behavior"),
+                new KeyValuePair<string, object?>(SafetyConventions.Outcome, result.IsBlocked ? SafetyConventions.OutcomeValues.Block : SafetyConventions.OutcomeValues.Pass));
+
             if (result.IsBlocked)
             {
+                ContentSafetyMetrics.Blocks.Add(1,
+                    new KeyValuePair<string, object?>(SafetyConventions.Phase, SafetyConventions.PhaseValues.Prompt),
+                    new KeyValuePair<string, object?>(SafetyConventions.Filter, "pipeline_behavior"),
+                    new KeyValuePair<string, object?>(SafetyConventions.Category, result.Category ?? "unknown"));
+
                 var reason = result.BlockReason ?? "Content blocked by safety policy.";
                 if (ResultHelper.TryCreateFailure<TResponse>(nameof(Result.ContentBlocked), reason, out var blockedResult))
                     return blockedResult;

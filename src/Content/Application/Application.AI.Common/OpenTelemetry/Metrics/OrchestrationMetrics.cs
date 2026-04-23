@@ -15,7 +15,7 @@ public static class OrchestrationMetrics
 {
     /// <summary>End-to-end conversation duration. Tags: agent.name.</summary>
     public static Histogram<double> ConversationDuration { get; } =
-        AppInstrument.Meter.CreateHistogram<double>(OrchestrationConventions.ConversationDuration, "ms", "Conversation duration");
+        AppInstrument.Meter.CreateHistogram<double>(OrchestrationConventions.ConversationDuration, "{ms}", "Conversation duration");
 
     /// <summary>Turn count distribution per conversation. Tags: agent.name.</summary>
     public static Histogram<int> TurnsPerConversation { get; } =

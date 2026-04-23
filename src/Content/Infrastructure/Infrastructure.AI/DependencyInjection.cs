@@ -14,6 +14,7 @@ using Application.AI.Common.Interfaces.Config;
 using Application.AI.Common.Interfaces.Hooks;
 using Application.AI.Common.Interfaces.Permissions;
 using Application.AI.Common.Interfaces.Prompts;
+using Application.AI.Common.Interfaces.RAG;
 using Application.AI.Common.Interfaces.Tools;
 using Application.Common.Factories;
 using Azure.AI.Agents.Persistent;
@@ -42,6 +43,7 @@ using Infrastructure.AI.Prompts.Sections;
 using Infrastructure.AI.StateManagement;
 using Infrastructure.AI.StateManagement.Checkpoints;
 using Infrastructure.AI.Tools;
+using MediatR;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
@@ -118,6 +120,14 @@ public static class DependencyInjection
             new RestrictedSearchTool(
                 sp.GetRequiredService<IOptionsMonitor<MetaHarnessConfig>>(),
                 sp.GetRequiredService<ILogger<RestrictedSearchTool>>()));
+
+        // Document search tool — RAG pipeline search for LLM consumption
+        services.AddKeyedSingleton<ITool>(DocumentSearchTool.ToolName, (sp, _) =>
+            new DocumentSearchTool(sp.GetRequiredService<IRagOrchestrator>()));
+
+        // Document ingest tool — RAG pipeline ingestion for LLM consumption
+        services.AddKeyedSingleton<ITool>(DocumentIngestTool.ToolName, (sp, _) =>
+            new DocumentIngestTool(sp.GetRequiredService<IMediator>()));
 
         // Azure AI Foundry persistent agents — register administration client when configured
         if (appConfig.AI.AIFoundry.IsConfigured)

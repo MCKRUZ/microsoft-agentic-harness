@@ -46,6 +46,8 @@ public static class ToolConventions
     public const string EmptyResults = "agent.tool.empty_results";
     /// <summary>Histogram: tool result size in characters.</summary>
     public const string ResultSize = "agent.tool.result_size";
+    /// <summary>Histogram: composite tool usefulness score (0-1). Tags: agent.tool.name, agent.name.</summary>
+    public const string UsefulnessScore = "agent.tool.usefulness_score";
 
     // Causal attribution attributes (Meta-Harness OTel GenAI semantic conventions)
 

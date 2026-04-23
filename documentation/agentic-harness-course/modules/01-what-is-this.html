@@ -1,0 +1,380 @@
+<section class="module" id="module-1">
+  <div class="module-number">01</div>
+
+  <!-- ============================================================ -->
+  <!-- SCREEN 1: The Elevator Pitch                                  -->
+  <!-- ============================================================ -->
+  <div class="screen">
+    <h2 class="screen-title">What is this thing?</h2>
+    <p class="screen-lead">
+      You&apos;ve probably chatted with an <span class="term" data-definition="AI = Artificial Intelligence. Software that can respond to language, recognize patterns, or make decisions the way a person might. When people say AI today they usually mean large language models like ChatGPT or Claude.">AI</span> assistant. You type a question, it thinks, it answers. Simple, right? Under the hood there&apos;s a whole orchestration system making that work &mdash; and most people have no idea it exists.
+    </p>
+
+    <div class="callout callout-accent">
+      <div class="callout-icon">&#x1F5FC;</div>
+      <div class="callout-content">
+        <strong class="callout-title">The Air Traffic Control Tower</strong>
+        <p>
+          An <span class="term" data-definition="An agentic harness is the supporting software around an AI model that gives it tools, memory, safety checks, and a conversation loop. The harness turns a chatty model into something that can actually get work done.">agentic harness</span> is the control tower for <span class="term" data-definition="An AI agent is a language model plus the ability to take actions: call tools, read files, talk to other systems. Not just a chatbot — it can do things, not just say things.">AI agents</span>. It doesn&apos;t fly the planes. But nothing lands, takes off, or avoids crashing without it coordinating the whole operation.
+        </p>
+      </div>
+    </div>
+
+    <div class="pattern-cards">
+      <div class="pattern-card" style="border-top: 3px solid var(--color-actor-1)">
+        <div class="pattern-icon" style="background: var(--color-actor-1)">&#x1F4AC;</div>
+        <h4 class="pattern-title">A Chatbot</h4>
+        <p class="pattern-desc">
+          User types a message. <span class="term" data-definition="A Large Language Model — the AI brain like GPT-4 or Claude. It reads text and predicts what text should come next. Powerful, but by itself it can only talk.">LLM</span> predicts a reply. That&apos;s it.
+        </p>
+      </div>
+      <div class="pattern-card" style="border-top: 3px solid var(--color-actor-2)">
+        <div class="pattern-icon" style="background: var(--color-actor-2)">&#x1F3D7;&#xFE0F;</div>
+        <h4 class="pattern-title">An Agent</h4>
+        <p class="pattern-desc">
+          Model + tools + skills + safety rails + a conversation loop. Can read files, call services, hand off to other agents.
+        </p>
+      </div>
+      <div class="pattern-card" style="border-top: 3px solid var(--color-actor-3)">
+        <div class="pattern-icon" style="background: var(--color-actor-3)">&#x1F9F0;</div>
+        <h4 class="pattern-title">The Harness</h4>
+        <p class="pattern-desc">
+          The invisible scaffolding that ties all of the above together. This repo is that scaffolding, built as a reusable template.
+        </p>
+      </div>
+    </div>
+
+    <p class="screen-note">
+      Why should you care? When your agent goes off the rails, knowing what the harness does helps you diagnose <em>where</em> things broke &mdash; not just that something did.
+    </p>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- SCREEN 2: What Happens When You Send a Message                -->
+  <!-- ============================================================ -->
+  <div class="screen">
+    <h2 class="screen-title">What happens when you send a message?</h2>
+    <p class="screen-lead">
+      You hit <strong>Send</strong>. Your message takes a journey through five actors before a reply comes back. Step through the flow below.
+    </p>
+
+    <div class="flow-animation" data-steps='[
+      {"highlight":"flow-actor-1","label":"You type a message in the web chat UI and hit Send."},
+      {"highlight":"flow-actor-2","label":"AgentHub receives the message over a live SignalR connection.","packet":true,"from":"actor-1","to":"actor-2"},
+      {"highlight":"flow-actor-3","label":"The MediatR pipeline validates the request and runs content-safety checks.","packet":true,"from":"actor-2","to":"actor-3"},
+      {"highlight":"flow-actor-4","label":"The handler sends the conversation to the LLM (Azure OpenAI).","packet":true,"from":"actor-3","to":"actor-4"},
+      {"highlight":"flow-actor-4","label":"The LLM decides it needs a tool and asks the harness to call one."},
+      {"highlight":"flow-actor-5","label":"The Tool System runs the requested tool inside a safe sandbox.","packet":true,"from":"actor-4","to":"actor-5"},
+      {"highlight":"flow-actor-4","label":"The tool result flows back to the LLM as fresh context.","packet":true,"from":"actor-5","to":"actor-4"},
+      {"highlight":"flow-actor-2","label":"The LLM writes a final reply; AgentHub streams it back through SignalR.","packet":true,"from":"actor-4","to":"actor-2"},
+      {"highlight":"flow-actor-1","label":"Words appear on your screen, one token at a time. Journey complete."}
+    ]'>
+      <div class="flow-actors">
+        <div class="flow-actor" id="flow-actor-1" style="--actor-color: var(--color-actor-1)">
+          <div class="flow-actor-icon" style="background: var(--color-actor-1)">&#x1F464;</div>
+          <span>You</span>
+        </div>
+        <div class="flow-actor" id="flow-actor-2" style="--actor-color: var(--color-actor-2)">
+          <div class="flow-actor-icon" style="background: var(--color-actor-2)">&#x1F4E1;</div>
+          <span>AgentHub</span>
+        </div>
+        <div class="flow-actor" id="flow-actor-3" style="--actor-color: var(--color-actor-3)">
+          <div class="flow-actor-icon" style="background: var(--color-actor-3)">&#x1F6E1;&#xFE0F;</div>
+          <span>Pipeline</span>
+        </div>
+        <div class="flow-actor" id="flow-actor-4" style="--actor-color: var(--color-actor-4)">
+          <div class="flow-actor-icon" style="background: var(--color-actor-4)">&#x1F9E0;</div>
+          <span>LLM</span>
+        </div>
+        <div class="flow-actor" id="flow-actor-5" style="--actor-color: var(--color-actor-5)">
+          <div class="flow-actor-icon" style="background: var(--color-actor-5)">&#x1F527;</div>
+          <span>Tools</span>
+        </div>
+      </div>
+
+      <div class="flow-packet" id="flow-packet"></div>
+      <div class="flow-step-label" id="flow-label">Click &ldquo;Next Step&rdquo; to begin the journey.</div>
+
+      <div class="flow-controls">
+        <button class="btn flow-next-btn">Next Step</button>
+        <button class="btn flow-reset-btn">Restart</button>
+        <span class="flow-progress"></span>
+      </div>
+    </div>
+
+    <div class="icon-rows">
+      <div class="icon-row">
+        <div class="icon-circle" style="background: var(--color-actor-2)">&#x1F4E1;</div>
+        <div>
+          <strong><span class="term" data-definition="SignalR is a Microsoft library that keeps an always-open connection between a browser and a server so messages can flow both ways in real time — like a phone line that stays open, not a letter you post.">SignalR</span> &middot; The radio</strong>
+          <p>Keeps a live two-way connection open so tokens stream to you as the LLM produces them.</p>
+        </div>
+      </div>
+      <div class="icon-row">
+        <div class="icon-circle" style="background: var(--color-actor-3)">&#x1F6E1;&#xFE0F;</div>
+        <div>
+          <strong>The <span class="term" data-definition="MediatR is a .NET library for sending commands through a pipeline of steps. Each request passes through validators, logging, and safety checks before reaching the handler that does the real work.">MediatR</span> <span class="term" data-definition="A pipeline is a chain of steps a request passes through in order — like a conveyor belt in a factory. Each step can inspect, change, or reject the request before the next one sees it.">pipeline</span></strong>
+          <p>Every command passes through validation and content-safety checks before a handler touches it.</p>
+        </div>
+      </div>
+      <div class="icon-row">
+        <div class="icon-circle" style="background: var(--color-actor-4)">&#x1F9E0;</div>
+        <div>
+          <strong>The LLM &middot; Azure OpenAI</strong>
+          <p>The brain. Reads the conversation, writes the reply, and asks to use tools when it needs real-world data.</p>
+        </div>
+      </div>
+      <div class="icon-row">
+        <div class="icon-circle" style="background: var(--color-actor-5)">&#x1F527;</div>
+        <div>
+          <strong>The Tool System</strong>
+          <p>Real code that runs when the LLM asks &mdash; reading files, calling <span class="term" data-definition="An API (Application Programming Interface) is the menu of things one program can ask another program to do. When your weather app checks the forecast, it calls a weather API.">APIs</span>, searching the web.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- SCREEN 3: It's Not Just a Chatbot                             -->
+  <!-- ============================================================ -->
+  <div class="screen">
+    <h2 class="screen-title">It&apos;s not just a chatbot</h2>
+    <p class="screen-lead">
+      Anyone can glue a text box to an API call. A real harness earns its name by handling five hard problems that a raw API call ignores.
+    </p>
+
+    <div class="pattern-cards">
+      <div class="pattern-card" style="border-top: 3px solid var(--color-actor-1)">
+        <div class="pattern-icon" style="background: var(--color-actor-1)">&#x1F510;</div>
+        <h4 class="pattern-title">Sandboxed Tools</h4>
+        <p class="pattern-desc">
+          Tools run inside a <span class="term" data-definition="A sandbox is a walled-off playground where code can do its thing without touching the rest of the system. If it misbehaves, the damage stays inside the sandbox.">sandbox</span>. The file tool can only see allowed folders &mdash; it physically cannot read your password vault.
+        </p>
+      </div>
+      <div class="pattern-card" style="border-top: 3px solid var(--color-actor-2)">
+        <div class="pattern-icon" style="background: var(--color-actor-2)">&#x1F4DA;</div>
+        <h4 class="pattern-title">Progressive Skills</h4>
+        <p class="pattern-desc">
+          Skills load in three tiers &mdash; a title card, a folder, a full filing cabinet &mdash; so only what&apos;s needed fills the model&apos;s attention.
+        </p>
+      </div>
+      <div class="pattern-card" style="border-top: 3px solid var(--color-actor-3)">
+        <div class="pattern-icon" style="background: var(--color-actor-3)">&#x1F46F;</div>
+        <h4 class="pattern-title">Multi-Agent</h4>
+        <p class="pattern-desc">
+          One agent can delegate to another: a planner spawns a coder, a coder calls a reviewer. Each has its own skills and tools.
+        </p>
+      </div>
+      <div class="pattern-card" style="border-top: 3px solid var(--color-actor-4)">
+        <div class="pattern-icon" style="background: var(--color-actor-4)">&#x1F4CA;</div>
+        <h4 class="pattern-title">Context Budget</h4>
+        <p class="pattern-desc">
+          Every agent has a <span class="term" data-definition="A token is a chunk of text the model charges for — roughly three-quarters of a word. &ldquo;Hello world&rdquo; is about 2 tokens. Every request has a token budget, and running over gets expensive fast.">token</span> budget. The harness trims old messages before the <span class="term" data-definition="The context window is how much text a model can read at once — its short-term memory. Anything that falls outside the window is forgotten for this turn.">context window</span> overflows.
+        </p>
+      </div>
+      <div class="pattern-card" style="border-top: 3px solid var(--color-actor-5)">
+        <div class="pattern-icon" style="background: var(--color-actor-5)">&#x1F50D;</div>
+        <h4 class="pattern-title">Full Observability</h4>
+        <p class="pattern-desc">
+          Every turn, every tool call, every token is traced. When something breaks, you see <em>exactly</em> where.
+        </p>
+      </div>
+    </div>
+
+    <h3 class="subsection-title">The conversation loop, in plain English</h3>
+    <p class="screen-note">
+      Every one of those capabilities hangs off one short piece of code &mdash; the outer loop that runs a conversation turn by turn.
+    </p>
+
+    <div class="translation-block animate-in">
+      <div class="translation-code">
+        <span class="translation-label">CODE</span>
+<pre><code><span class="code-line"><span class="code-keyword">public async</span> <span class="code-function">Task</span>&lt;ConversationResult&gt; <span class="code-function">Handle</span>(RunConversationCommand request, CancellationToken cancellationToken)</span>
+<span class="code-line">{</span>
+<span class="code-line">    _logger.<span class="code-function">LogInformation</span>(<span class="code-string">"Starting conversation with {AgentName}, {MessageCount} messages, max {MaxTurns} turns"</span>,</span>
+<span class="code-line">        request.AgentName, request.UserMessages.Count, request.MaxTurns);</span>
+<span class="code-line">&nbsp;</span>
+<span class="code-line">    <span class="code-keyword">var</span> sw = Stopwatch.<span class="code-function">StartNew</span>();</span>
+<span class="code-line">    <span class="code-keyword">var</span> turns = <span class="code-keyword">new</span> List&lt;TurnSummary&gt;();</span>
+<span class="code-line">    <span class="code-keyword">var</span> totalToolInvocations = 0;</span>
+<span class="code-line">    AgentTurnResult? lastResult = <span class="code-keyword">null</span>;</span>
+<span class="code-line">&nbsp;</span>
+<span class="code-line">    <span class="code-keyword">foreach</span> (<span class="code-keyword">var</span> (userMessage, index) <span class="code-keyword">in</span> request.UserMessages.<span class="code-function">Select</span>((m, i) =&gt; (m, i)))</span>
+<span class="code-line">    {</span>
+<span class="code-line">        <span class="code-keyword">if</span> (index &gt;= request.MaxTurns)</span>
+<span class="code-line">        {</span>
+<span class="code-line">            _logger.<span class="code-function">LogWarning</span>(<span class="code-string">"Max turns ({MaxTurns}) reached for {AgentName}"</span>, request.MaxTurns, request.AgentName);</span>
+<span class="code-line">            <span class="code-keyword">break</span>;</span>
+<span class="code-line">        }</span>
+<span class="code-line">&nbsp;</span>
+<span class="code-line">        <span class="code-keyword">var</span> turnCommand = <span class="code-keyword">new</span> ExecuteAgentTurnCommand</span>
+<span class="code-line">        {</span>
+<span class="code-line">            AgentName = request.AgentName,</span>
+<span class="code-line">            UserMessage = userMessage,</span>
+<span class="code-line">            ConversationHistory = lastResult?.UpdatedHistory ?? [],</span>
+<span class="code-line">            ConversationId = request.ConversationId,</span>
+<span class="code-line">            TurnNumber = index + 1</span>
+<span class="code-line">        };</span>
+<span class="code-line">&nbsp;</span>
+<span class="code-line">        lastResult = <span class="code-keyword">await</span> _mediator.<span class="code-function">Send</span>(turnCommand, cancellationToken);</span>
+<span class="code-line">    }</span>
+</code></pre>
+      </div>
+      <div class="translation-english">
+        <span class="translation-label">PLAIN ENGLISH</span>
+        <div class="translation-lines">
+          <p class="tl">This function handles one whole conversation from start to finish.</p>
+          <p class="tl">First, leave a log note saying which agent is running and how many messages we plan to process.</p>
+          <p class="tl">Start a stopwatch so we can report how long the conversation takes.</p>
+          <p class="tl">Prepare an empty list for the turn-by-turn summary and a counter for tool uses.</p>
+          <p class="tl">Loop through the user&apos;s messages one at a time, numbering them as we go.</p>
+          <p class="tl">If we&apos;ve hit the max-turns safety limit, log a warning and stop &mdash; runaway agents are expensive.</p>
+          <p class="tl">Build an &ldquo;execute one turn&rdquo; command with this message and the history so far.</p>
+          <p class="tl">Send the command through <span class="term" data-definition="CQRS = Command Query Responsibility Segregation. A code pattern where writes (commands) and reads (queries) travel through separate lanes, each with its own handler. Keeps the code organized and testable.">CQRS</span> / MediatR &mdash; validation and content-safety behaviors run automatically first.</p>
+          <p class="tl">Remember this turn&apos;s result so the next turn has context, and loop back for the next message.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="callout callout-info">
+      <div class="callout-icon">&#x1F4A1;</div>
+      <div class="callout-content">
+        <strong class="callout-title">Key Insight</strong>
+        <p>
+          The harness isn&apos;t one giant &ldquo;do everything&rdquo; function. It&apos;s a short outer loop that delegates each turn to a pipeline of small, focused steps. Engineers call this <em>separation of concerns</em> &mdash; and it&apos;s why the system stays understandable as it grows.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- SCREEN 4: Tech Stack + Quiz                                   -->
+  <!-- ============================================================ -->
+  <div class="screen">
+    <h2 class="screen-title">The tech stack at a glance</h2>
+    <p class="screen-lead">
+      Five technologies do most of the heavy lifting. You don&apos;t need to know them inside-out &mdash; just recognize the names when they come up.
+    </p>
+
+    <div class="icon-rows">
+      <div class="icon-row">
+        <div class="icon-circle" style="background: var(--color-actor-4)">&#x1F537;</div>
+        <div>
+          <strong>C# / .NET 10</strong>
+          <p>The programming language and runtime. Microsoft&apos;s equivalent of Java &mdash; strongly typed, fast, and enterprise-friendly.</p>
+        </div>
+      </div>
+      <div class="icon-row">
+        <div class="icon-circle" style="background: var(--color-actor-2)">&#x2601;&#xFE0F;</div>
+        <div>
+          <strong>Microsoft.Agents.AI + Azure OpenAI</strong>
+          <p>The agent framework and the cloud-hosted LLM it talks to. Microsoft&apos;s stack for building agent-flavored apps.</p>
+        </div>
+      </div>
+      <div class="icon-row">
+        <div class="icon-circle" style="background: var(--color-actor-3)">&#x1F501;</div>
+        <div>
+          <strong>MediatR + FluentValidation</strong>
+          <p>The request pipeline and the rule engine. Every command gets validated before a handler ever touches it.</p>
+        </div>
+      </div>
+      <div class="icon-row">
+        <div class="icon-circle" style="background: var(--color-actor-5)">&#x1F517;</div>
+        <div>
+          <strong><span class="term" data-definition="MCP = Model Context Protocol. An open standard for plugging external tools into any AI agent. Think USB for AI: one shape of plug, any brand of tool.">MCP</span> (Model Context Protocol)</strong>
+          <p>The universal plug for external tools. This harness can both expose tools to other agents and consume tools from other MCP servers.</p>
+        </div>
+      </div>
+      <div class="icon-row">
+        <div class="icon-circle" style="background: var(--color-actor-1)">&#x1F4CA;</div>
+        <div>
+          <strong>OpenTelemetry + Prometheus + Grafana</strong>
+          <p>The observability layer &mdash; traces, metrics, dashboards. How you see what the agent actually did.</p>
+        </div>
+      </div>
+    </div>
+
+    <h3 class="subsection-title">Quick check: do you get it?</h3>
+
+    <div class="quiz-container" id="quiz-module1">
+      <div class="quiz-question-block"
+           data-correct="option-b"
+           data-explanation-right="Exactly. A raw API call just forwards your text to the model. The harness adds orchestration — validation, content safety, tool dispatch, context trimming, and a conversation loop — which is what makes the difference between a chatbot and an agent."
+           data-explanation-wrong="Not quite. The harness does more than just &ldquo;call an API nicer.&rdquo; Its real value is what happens around the API call — validation, safety, tool execution, looping turns together.">
+        <h3 class="quiz-question">1. What does the harness do that a raw API call to a language model doesn&apos;t?</h3>
+        <div class="quiz-options">
+          <button class="quiz-option" data-value="option-a" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>Makes the model smarter by fine-tuning it on your data.</span>
+          </button>
+          <button class="quiz-option" data-value="option-b" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>Adds the orchestration around the model &mdash; validation, safety, tools, looping turns, and tracing.</span>
+          </button>
+          <button class="quiz-option" data-value="option-c" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>Replaces the language model with a hand-written rules engine.</span>
+          </button>
+        </div>
+        <div class="quiz-feedback"></div>
+      </div>
+
+      <div class="quiz-question-block"
+           data-correct="option-c"
+           data-explanation-right="Right. An LLM can be tricked into asking for the wrong file. The sandbox means the tool itself refuses out-of-bounds paths — so even a compromised or confused model can&apos;t reach your secrets."
+           data-explanation-wrong="Think about it from a security angle. If an attacker could convince the model to ask for &ldquo;~/.ssh/id_rsa&rdquo;, what stops the file tool from happily handing it over?">
+        <h3 class="quiz-question">2. Why is sandboxed tool execution important?</h3>
+        <div class="quiz-options">
+          <button class="quiz-option" data-value="option-a" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>It makes tool calls run faster by using a smaller CPU.</span>
+          </button>
+          <button class="quiz-option" data-value="option-b" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>It prevents the LLM from sending too many requests per minute.</span>
+          </button>
+          <button class="quiz-option" data-value="option-c" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>It limits what tools can touch, so a confused or manipulated model can&apos;t read or delete things it shouldn&apos;t.</span>
+          </button>
+        </div>
+        <div class="quiz-feedback"></div>
+      </div>
+
+      <div class="quiz-question-block"
+           data-correct="option-b"
+           data-explanation-right="Exactly. Token blow-ups almost always come from the context assembler packing too much history, skill content, or tool schemas into each turn. That&apos;s the component whose job is budget — so that&apos;s where you look first."
+           data-explanation-wrong="Close, but the LLM itself doesn&apos;t decide how much context to send &mdash; it just reads what it&apos;s given. The component in charge of choosing what goes into each prompt is where budget problems live.">
+        <h3 class="quiz-question">3. Scenario: your agent keeps eating through tokens and your bill is climbing. Which component would you investigate first?</h3>
+        <div class="quiz-options">
+          <button class="quiz-option" data-value="option-a" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>The LLM itself &mdash; it&apos;s probably being too verbose.</span>
+          </button>
+          <button class="quiz-option" data-value="option-b" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>The context budget manager / tiered context assembler &mdash; that&apos;s what decides what goes into every prompt.</span>
+          </button>
+          <button class="quiz-option" data-value="option-c" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>SignalR &mdash; the streaming connection is duplicating messages.</span>
+          </button>
+        </div>
+        <div class="quiz-feedback"></div>
+      </div>
+
+      <button class="quiz-check-btn" onclick="checkQuiz('quiz-module1')">Check Answers</button>
+      <button class="quiz-reset-btn" onclick="resetQuiz('quiz-module1')">Try Again</button>
+    </div>
+
+    <div class="callout callout-info" style="margin-top: var(--space-8)">
+      <div class="callout-icon">&#x27A1;&#xFE0F;</div>
+      <div class="callout-content">
+        <strong class="callout-title">Up next: Module 2 &mdash; Meet the Cast</strong>
+        <p>
+          Now that you&apos;ve seen the full journey, let&apos;s zoom in and meet each of these actors face to face.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>

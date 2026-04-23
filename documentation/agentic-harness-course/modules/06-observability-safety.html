@@ -1,0 +1,601 @@
+<section class="module" id="module-6">
+
+  <!-- ═══════════════════════════════════════════════════════════════
+       SCREEN 1 — The Observability Stack (Pattern Cards)
+       ═══════════════════════════════════════════════════════════════ -->
+  <div class="screen" id="screen-6-1">
+    <div class="module-number">06</div>
+
+    <h1 class="animate-in">Seeing Inside &amp; Staying Safe</h1>
+
+    <p class="subtitle animate-in">
+      AI agents are black boxes by default. A conversation goes sideways and you have no idea why &mdash; was it the prompt? A bad tool result? A context overflow? The harness solves this by instrumenting <em>everything</em> with <span class="term" data-definition="OpenTelemetry is an open-source standard for collecting traces, metrics, and logs from software. Think of it as a universal adapter that lets any monitoring dashboard plug into your application.">OpenTelemetry</span>, so you can trace any conversation turn-by-turn, tool call by tool call.
+    </p>
+
+    <p class="animate-in">
+      Think of a hospital monitoring room. Every patient (agent conversation) has vital signs on a screen &mdash; heart rate is <span class="term" data-definition="Token usage measures how many words/pieces the AI model consumed and produced. Each token costs money and counts against context limits, so tracking usage is like tracking fuel consumption.">token usage</span>, blood pressure is response latency, temperature is error rate. When something spikes, alarms fire.
+    </p>
+
+    <h2 class="animate-in">The Three Pillars of Observability</h2>
+
+    <p class="animate-in">
+      Every production monitoring system rests on three pillars. The harness implements all three out of the box.
+    </p>
+
+    <div class="pattern-cards animate-in">
+      <div class="pattern-card" style="border-top: 3px solid #2A7B9B">
+        <div class="pattern-icon" style="background: #2A7B9B">&#128270;</div>
+        <h4 class="pattern-title">Traces (<span class="term" data-definition="Jaeger is an open-source tool for viewing distributed traces. It shows you a timeline of every operation in a request, like a flight recorder for your software.">Jaeger</span>)</h4>
+        <p class="pattern-desc">Follow one conversation from start to finish. Every turn, every tool call, every LLM request becomes a <span class="term" data-definition="A span is a single named operation within a trace &mdash; like one leg of a relay race. It records when the operation started, how long it took, and what happened. Spans nest inside each other to show parent-child relationships.">span</span> on a timeline &mdash; like a flight recorder for your agent.</p>
+      </div>
+      <div class="pattern-card" style="border-top: 3px solid #1F9E8F">
+        <div class="pattern-icon" style="background: #1F9E8F">&#128202;</div>
+        <h4 class="pattern-title">Metrics (<span class="term" data-definition="Prometheus is an open-source system that collects and stores numeric measurements over time. It lets you ask questions like &lsquo;what was the average response time in the last hour?&rsquo;">Prometheus</span>)</h4>
+        <p class="pattern-desc">Aggregate numbers over time: average tokens per turn, tool call frequency, error rates. Metrics answer &ldquo;how is the system doing <em>overall</em>?&rdquo; rather than &ldquo;what happened in <em>this one</em> conversation?&rdquo;</p>
+      </div>
+      <div class="pattern-card" style="border-top: 3px solid #4ABDAC">
+        <div class="pattern-icon" style="background: #4ABDAC">&#128221;</div>
+        <h4 class="pattern-title">Logs (Structured <span class="term" data-definition="JSON (JavaScript Object Notation) is a standard format for structured data. Instead of free-form text, every piece of information has a labeled field &mdash; like a form with named boxes instead of a blank sheet of paper.">JSON</span>)</h4>
+        <p class="pattern-desc">Detailed event-level records with structured fields. When a trace shows <em>where</em> something went wrong, logs tell you <em>exactly what</em> happened &mdash; the error message, the input that caused it, the stack of calls that led there.</p>
+      </div>
+    </div>
+
+    <h3 class="animate-in">Custom LLM <span class="term" data-definition="A span processor is code that runs every time a new span (operation record) is created or finished. It can add extra information to the span before it gets exported to your monitoring dashboard.">Span Processor</span></h3>
+
+    <p class="animate-in">
+      The harness adds a custom span processor that enriches every <span class="term" data-definition="A trace is the complete record of a single request flowing through a system, from start to finish. It contains multiple spans (individual operations) arranged in a timeline, showing exactly what happened and in what order.">trace</span> with agentic context &mdash; agent name, turn index, tool calls, and token counts. This means when you open Jaeger, you see the agent&rsquo;s perspective, not just raw HTTP calls.
+    </p>
+
+    <div class="translation-block animate-in">
+      <div class="translation-code">
+        <span class="translation-label">CODE</span>
+        <pre><code>
+<span class="code-line"><span class="code-keyword">public static class</span> <span class="code-function">OrchestrationMetrics</span></span>
+<span class="code-line">{</span>
+<span class="code-line">    <span class="code-keyword">public static</span> <span class="code-function">Histogram</span>&lt;<span class="code-keyword">double</span>&gt; ConversationDuration { <span class="code-keyword">get</span>; } =</span>
+<span class="code-line">        AppInstrument.Meter.<span class="code-function">CreateHistogram</span>&lt;<span class="code-keyword">double</span>&gt;(</span>
+<span class="code-line">            OrchestrationConventions.ConversationDuration, <span class="code-string">"ms"</span>);</span>
+<span class="code-line"></span>
+<span class="code-line">    <span class="code-keyword">public static</span> <span class="code-function">Histogram</span>&lt;<span class="code-keyword">int</span>&gt; TurnsPerConversation { <span class="code-keyword">get</span>; } =</span>
+<span class="code-line">        AppInstrument.Meter.<span class="code-function">CreateHistogram</span>&lt;<span class="code-keyword">int</span>&gt;(</span>
+<span class="code-line">            OrchestrationConventions.TurnsPerConversation, <span class="code-string">"{turn}"</span>);</span>
+<span class="code-line"></span>
+<span class="code-line">    <span class="code-keyword">public static</span> <span class="code-function">Counter</span>&lt;<span class="code-keyword">long</span>&gt; SubagentSpawns { <span class="code-keyword">get</span>; } =</span>
+<span class="code-line">        AppInstrument.Meter.<span class="code-function">CreateCounter</span>&lt;<span class="code-keyword">long</span>&gt;(</span>
+<span class="code-line">            OrchestrationConventions.SubagentSpawns, <span class="code-string">"{spawn}"</span>);</span>
+<span class="code-line">}</span>
+        </code></pre>
+      </div>
+      <div class="translation-english">
+        <span class="translation-label">PLAIN ENGLISH</span>
+        <div class="translation-lines">
+          <p class="tl">Create a class that holds all the measurement instruments for orchestration.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">A <span class="term" data-definition="A histogram records the distribution of values &mdash; not just the average, but how spread out they are. For response times, it shows how many were fast, how many were slow, and everything in between.">histogram</span> that records how long each conversation lasted, measured in milliseconds.</p>
+          <p class="tl">It pulls its name from a constants file so every metric uses consistent naming.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Another histogram tracking how many back-and-forth turns each conversation needed.</p>
+          <p class="tl">If a conversation takes 20 turns, that might signal a confused agent or unclear instructions.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">A <span class="term" data-definition="A counter is the simplest metric type &mdash; it only goes up. Every time the event happens, the counter increments by one. It answers questions like &lsquo;how many times has X happened since we started?&rsquo;">counter</span> that increments every time the orchestrator spawns a sub-agent.</p>
+          <p class="tl">This lets you monitor how heavily the system relies on delegation.</p>
+          <p class="tl">&nbsp;</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════════
+       SCREEN 2 — Content Safety & Permissions (Flow Animation)
+       ═══════════════════════════════════════════════════════════════ -->
+  <div class="screen" id="screen-6-2">
+    <h2 class="animate-in">Content Safety: The Bouncer at the Door</h2>
+
+    <p class="animate-in">
+      Before any message reaches the agent, it passes through a <span class="term" data-definition="Content safety is an automated screening system that checks text for harmful, dangerous, or policy-violating content before processing it. It acts like a bouncer that checks everyone at the door.">content safety</span> gate. Think of a nightclub bouncer &mdash; every person (message) gets checked at the door. If something looks wrong, they never get inside. The agent never even knows the message existed.
+    </p>
+
+    <p class="animate-in">
+      Watch both scenarios play out: a flagged message that gets blocked, then a clean message that sails through.
+    </p>
+
+    <div class="flow-animation animate-in" data-steps='[
+      {"highlight":"flow-actor-1","label":"User sends a message to the agent"},
+      {"highlight":"flow-actor-2","label":"MediatR pipeline starts processing the request","packet":true,"from":"actor-1","to":"actor-2"},
+      {"highlight":"flow-actor-3","label":"ContentSafetyBehavior screens the input text","packet":true,"from":"actor-2","to":"actor-3"},
+      {"highlight":"flow-actor-3","label":"FLAGGED: potential prompt injection detected"},
+      {"highlight":"flow-actor-3","label":"Pipeline halts. Agent never sees the message. Violation metric incremented."},
+      {"highlight":"flow-actor-1","label":"Now a clean message arrives from the user"},
+      {"highlight":"flow-actor-3","label":"ContentSafetyBehavior screens it and approves","packet":true,"from":"actor-1","to":"actor-3"},
+      {"highlight":"flow-actor-4","label":"Message reaches the agent handler. Conversation continues normally.","packet":true,"from":"actor-3","to":"actor-4"}
+    ]'>
+      <div class="flow-actors">
+        <div class="flow-actor" id="flow-actor-1">
+          <div class="flow-actor-icon" style="background: var(--color-actor-1)">U</div>
+          <span>User</span>
+        </div>
+        <div class="flow-actor" id="flow-actor-2">
+          <div class="flow-actor-icon" style="background: var(--color-actor-2)">P</div>
+          <span><span class="term" data-definition="MediatR is a library that sends commands through a pipeline of behaviors (like middleware). Each behavior can inspect, modify, or block the command before it reaches the handler &mdash; like a series of checkpoints on a highway.">Pipeline</span></span>
+        </div>
+        <div class="flow-actor" id="flow-actor-3">
+          <div class="flow-actor-icon" style="background: var(--color-actor-3)">S</div>
+          <span>Safety</span>
+        </div>
+        <div class="flow-actor" id="flow-actor-4">
+          <div class="flow-actor-icon" style="background: var(--color-actor-4)">A</div>
+          <span>Agent</span>
+        </div>
+      </div>
+
+      <div class="flow-packet" id="flow-packet"></div>
+
+      <div class="flow-step-label" id="flow-label">Click "Next Step" to see content safety in action</div>
+
+      <div class="flow-controls">
+        <button class="btn flow-next-btn">Next Step</button>
+        <button class="btn flow-reset-btn">Restart</button>
+        <span class="flow-progress"></span>
+      </div>
+    </div>
+
+    <h3 class="animate-in">The Code Behind the Bouncer</h3>
+
+    <p class="animate-in">
+      <code>ContentSafetyBehavior</code> is a <span class="term" data-definition="A pipeline behavior is a piece of code that wraps around a command handler, running before and/or after it. Think of it as a checkpoint on an assembly line that can inspect, modify, or reject items before they reach the next station.">pipeline behavior</span> &mdash; it sits in the MediatR pipeline and inspects every command that implements <code>IContentScreenable</code>.
+    </p>
+
+    <div class="translation-block animate-in">
+      <div class="translation-code">
+        <span class="translation-label">CODE</span>
+        <pre><code>
+<span class="code-line"><span class="code-keyword">public class</span> <span class="code-function">ContentSafetyBehavior</span>&lt;TRequest, TResponse&gt;</span>
+<span class="code-line">    : <span class="code-function">IPipelineBehavior</span>&lt;TRequest, TResponse&gt;</span>
+<span class="code-line">    <span class="code-keyword">where</span> TRequest : <span class="code-function">IContentScreenable</span></span>
+<span class="code-line">{</span>
+<span class="code-line">    <span class="code-keyword">public async</span> Task&lt;TResponse&gt; <span class="code-function">Handle</span>(</span>
+<span class="code-line">        TRequest request, <span class="code-function">RequestHandlerDelegate</span>&lt;TResponse&gt; next,</span>
+<span class="code-line">        CancellationToken cancellationToken)</span>
+<span class="code-line">    {</span>
+<span class="code-line">        <span class="code-keyword">var</span> content = request.<span class="code-function">GetContentToScreen</span>();</span>
+<span class="code-line"></span>
+<span class="code-line">        <span class="code-keyword">if</span> (!<span class="code-keyword">string</span>.<span class="code-function">IsNullOrWhiteSpace</span>(content))</span>
+<span class="code-line">        {</span>
+<span class="code-line">            <span class="code-keyword">var</span> safetyResult = <span class="code-keyword">await</span> _contentSafetyService.<span class="code-function">ScreenContentAsync</span>(</span>
+<span class="code-line">                content, cancellationToken);</span>
+<span class="code-line"></span>
+<span class="code-line">            <span class="code-keyword">if</span> (!safetyResult.IsSafe)</span>
+<span class="code-line">            {</span>
+<span class="code-line">                _logger.<span class="code-function">LogWarning</span>(</span>
+<span class="code-line">                    <span class="code-string">"Content safety violation detected: {Categories}"</span>,</span>
+<span class="code-line">                    <span class="code-keyword">string</span>.<span class="code-function">Join</span>(<span class="code-string">", "</span>, safetyResult.FlaggedCategories));</span>
+<span class="code-line"></span>
+<span class="code-line">                ContentSafetyMetrics.Violations.<span class="code-function">Add</span>(1);</span>
+<span class="code-line">                <span class="code-keyword">throw new</span> <span class="code-function">ContentSafetyException</span>(safetyResult);</span>
+<span class="code-line">            }</span>
+<span class="code-line">        }</span>
+<span class="code-line"></span>
+<span class="code-line">        <span class="code-keyword">return await</span> <span class="code-function">next</span>();</span>
+<span class="code-line">    }</span>
+<span class="code-line">}</span>
+        </code></pre>
+      </div>
+      <div class="translation-english">
+        <span class="translation-label">PLAIN ENGLISH</span>
+        <div class="translation-lines">
+          <p class="tl">This is a safety checkpoint that wraps around any command containing user content.</p>
+          <p class="tl">It plugs into the MediatR pipeline so it runs automatically, no manual wiring needed.</p>
+          <p class="tl">It only applies to commands that have opted in by implementing the screening interface.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">This method runs every time a matching command comes through the pipeline.</p>
+          <p class="tl">The <code>next</code> parameter is the rest of the pipeline &mdash; calling it means &ldquo;let the message through.&rdquo;</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Pull out the text content that needs to be screened from the incoming request.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">If there is actual content to check (not blank)...</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Send the content to the safety service and wait for the verdict.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">If the verdict says the content is NOT safe...</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Log a warning with the specific categories that were flagged (hate, violence, etc.).</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Increment the violations metric so Prometheus tracks how often this happens.</p>
+          <p class="tl">Throw an exception &mdash; this STOPS the pipeline. The agent never sees the message.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">If we got here, the content passed safety checks. Call <code>next()</code> to let the message continue.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">&nbsp;</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════════
+       SCREEN 3 — The Permission System (Code Translation)
+       ═══════════════════════════════════════════════════════════════ -->
+  <div class="screen" id="screen-6-3">
+    <h2 class="animate-in">The Permission System: Three Layers of Defense</h2>
+
+    <p class="animate-in">
+      Content safety catches harmful <em>content</em>. But what about harmful <em>actions</em>? An agent with access to a file deletion tool needs guardrails beyond &ldquo;is this text safe?&rdquo; The permission system controls <em>what tools an agent is allowed to use</em>, using a 3-phase resolution: Deny first, then Ask, then Allow.
+    </p>
+
+    <div class="step-cards animate-in">
+      <div class="step-card">
+        <div class="step-num">1</div>
+        <div class="step-body">
+          <strong><span class="term" data-definition="A safety gate is an absolute deny rule that cannot be overridden or bypassed, even by admin configuration. If a path matches a safety gate, the operation is blocked &mdash; period. Think of it as a locked steel door, not a velvet rope.">Safety Gates</span> (Deny)</strong>
+          <p>Absolute blocks that cannot be bypassed. If a tool operation matches a safety gate, it is denied immediately &mdash; no exceptions, no overrides.</p>
+        </div>
+      </div>
+      <div class="step-card">
+        <div class="step-num">2</div>
+        <div class="step-body">
+          <strong>Ask Rules</strong>
+          <p>Operations that require human confirmation before proceeding. The agent pauses and asks the user &ldquo;Should I do this?&rdquo; before taking action.</p>
+        </div>
+      </div>
+      <div class="step-card">
+        <div class="step-num">3</div>
+        <div class="step-body">
+          <strong>Allow Rules</strong>
+          <p>Pre-approved operations that can proceed without interruption. Only checked after safety gates and ask rules have had their say.</p>
+        </div>
+      </div>
+    </div>
+
+    <p class="animate-in">
+      The order matters. Deny rules always win. This is a security pattern called &ldquo;default deny&rdquo; &mdash; nothing gets through unless it is explicitly allowed, and certain things can <em>never</em> get through.
+    </p>
+
+    <div class="translation-block animate-in">
+      <div class="translation-code">
+        <span class="translation-label">CODE</span>
+        <pre><code>
+<span class="code-line"><span class="code-keyword">public sealed record</span> <span class="code-function">SafetyGate</span>(<span class="code-keyword">string</span> PathPattern, <span class="code-keyword">string</span> Description)</span>
+<span class="code-line">{</span>
+<span class="code-line">    <span class="code-keyword">public bool</span> IsBypassImmune =&gt; <span class="code-keyword">true</span>;</span>
+<span class="code-line">}</span>
+<span class="code-line"></span>
+<span class="code-line"><span class="code-keyword">public sealed record</span> <span class="code-function">ToolPermissionRule</span></span>
+<span class="code-line">{</span>
+<span class="code-line">    <span class="code-keyword">public required string</span> ToolName { <span class="code-keyword">get</span>; <span class="code-keyword">init</span>; }</span>
+<span class="code-line">    <span class="code-keyword">public string</span>? OperationPattern { <span class="code-keyword">get</span>; <span class="code-keyword">init</span>; }</span>
+<span class="code-line">    <span class="code-keyword">public required</span> <span class="code-function">PermissionBehaviorType</span> Behavior { <span class="code-keyword">get</span>; <span class="code-keyword">init</span>; }</span>
+<span class="code-line">    <span class="code-keyword">public required</span> <span class="code-function">PermissionRuleSource</span> Source { <span class="code-keyword">get</span>; <span class="code-keyword">init</span>; }</span>
+<span class="code-line">    <span class="code-keyword">public int</span> Priority { <span class="code-keyword">get</span>; <span class="code-keyword">init</span>; }</span>
+<span class="code-line">}</span>
+        </code></pre>
+      </div>
+      <div class="translation-english">
+        <span class="translation-label">PLAIN ENGLISH</span>
+        <div class="translation-lines">
+          <p class="tl">A SafetyGate is a hard block on a specific file/path pattern. You describe what it blocks and why.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl"><span class="term" data-definition="Bypass-immune means this rule cannot be overridden by any other configuration, admin setting, or special permission. It is always enforced, no matter what.">Bypass-immune</span> is always true &mdash; no one and nothing can override a safety gate. Ever.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">A ToolPermissionRule is a configurable rule for a specific tool.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Which tool does this rule apply to? (e.g., &ldquo;file_system&rdquo;, &ldquo;web_search&rdquo;)</p>
+          <p class="tl">An optional pattern to match specific operations (e.g., &ldquo;delete*&rdquo; for delete operations only).</p>
+          <p class="tl">What should happen: Allow, Ask (prompt user), or Deny?</p>
+          <p class="tl">Where did this rule come from: the agent manifest, user settings, or a safety gate?</p>
+          <p class="tl">Higher priority rules win when two rules conflict for the same tool and operation.</p>
+          <p class="tl">&nbsp;</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="callout callout-info animate-in">
+      <div class="callout-icon">&#128275;</div>
+      <div class="callout-content">
+        <strong class="callout-title">Why &ldquo;Bypass-Immune&rdquo; Matters</strong>
+        <p>In most permission systems, an admin can override any rule. Safety gates break that pattern intentionally. Even if an agent&rsquo;s configuration says &ldquo;allow all file operations,&rdquo; a safety gate on <code>/etc/passwd</code> still blocks it. This is defense-in-depth &mdash; layers of protection where no single layer&rsquo;s failure compromises the whole system.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════════
+       SCREEN 4 — Meta-Harness: The Agent That Improves Itself
+       ═══════════════════════════════════════════════════════════════ -->
+  <div class="screen" id="screen-6-4">
+    <h2 class="animate-in">The Meta-Harness: An Agent That Optimizes Other Agents</h2>
+
+    <div class="callout callout-accent animate-in">
+      <div class="callout-icon">&#128161;</div>
+      <div class="callout-content">
+        <strong class="callout-title">The Big Reveal</strong>
+        <p>The <span class="term" data-definition="A meta-harness is a second agent that monitors and improves the primary agent. It reads the primary agent&rsquo;s performance traces, proposes changes to its skill files, tests those changes against benchmarks, and keeps only the improvements. It is an agent that optimizes other agents.">meta-harness</span> is an agent that optimizes other agents. Let that sink in.</p>
+      </div>
+    </div>
+
+    <p class="animate-in">
+      Remember how skills (Module 4) are instruction files that shape agent behavior? The meta-harness reads the primary agent&rsquo;s <span class="term" data-definition="A causal trace connects an agent&rsquo;s actions to their outcomes. Instead of just recording what happened, it records why &mdash; which skill instruction led to which tool call, and whether the result was good or bad.">causal traces</span>, finds patterns in what worked and what did not, and proposes improvements to those skill files automatically.
+    </p>
+
+    <p class="animate-in">
+      It is a four-phase optimization loop &mdash; like a coach reviewing game tape and updating the playbook.
+    </p>
+
+    <div class="step-cards animate-in">
+      <div class="step-card">
+        <div class="step-num">1</div>
+        <div class="step-body">
+          <strong>Gather History</strong>
+          <p>Pull recent trace data showing how the agent performed across many conversations.</p>
+        </div>
+      </div>
+      <div class="step-card">
+        <div class="step-num">2</div>
+        <div class="step-body">
+          <strong><span class="term" data-definition="The proposer is the component of the meta-harness that reads trace history and generates suggested changes to the agent&rsquo;s skill files. It is itself powered by an LLM, so it can reason about patterns in the traces.">Proposer</span> Suggests Changes</strong>
+          <p>A second agent reads the traces and proposes specific edits to skill files to improve performance.</p>
+        </div>
+      </div>
+      <div class="step-card">
+        <div class="step-num">3</div>
+        <div class="step-body">
+          <strong><span class="term" data-definition="The evaluator runs the proposed skill changes against a set of benchmark tasks and scores the results. It answers the question: did this change actually make the agent better, or just different?">Evaluator</span> Tests Changes</strong>
+          <p>Run the proposed changes against <span class="term" data-definition="Benchmark tasks are a fixed set of test scenarios with known-good outcomes. Running the agent against benchmarks produces a score, letting you objectively compare &lsquo;before&rsquo; and &lsquo;after&rsquo; performance.">benchmark</span> tasks and score the results objectively.</p>
+        </div>
+      </div>
+      <div class="step-card">
+        <div class="step-num">4</div>
+        <div class="step-body">
+          <strong>Keep or Discard</strong>
+          <p>If the score improves beyond a threshold, keep the change. Otherwise, discard it. No regressions allowed.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="translation-block animate-in">
+      <div class="translation-code">
+        <span class="translation-label">CODE</span>
+        <pre><code>
+<span class="code-line"><span class="code-comment">// Phase 1: Create orchestrator and get task decomposition</span></span>
+<span class="code-line"><span class="code-keyword">var</span> history = <span class="code-keyword">await</span> _historyStore.<span class="code-function">GetRecentTracesAsync</span>(config.TraceWindowSize);</span>
+<span class="code-line"></span>
+<span class="code-line"><span class="code-comment">// Phase 2: Proposer reads traces and suggests improvements</span></span>
+<span class="code-line"><span class="code-keyword">var</span> proposal = <span class="code-keyword">await</span> _proposer.<span class="code-function">ProposeAsync</span>(</span>
+<span class="code-line">    currentSkillContent, history, cancellationToken);</span>
+<span class="code-line"></span>
+<span class="code-line"><span class="code-comment">// Phase 3: Evaluate proposed changes against benchmark tasks</span></span>
+<span class="code-line"><span class="code-keyword">var</span> evalResult = <span class="code-keyword">await</span> _evaluator.<span class="code-function">EvaluateAsync</span>(</span>
+<span class="code-line">    proposal.CandidateSkill, config.EvalTasks, cancellationToken);</span>
+<span class="code-line"></span>
+<span class="code-line"><span class="code-comment">// Phase 4: Keep if improved, discard if not</span></span>
+<span class="code-line"><span class="code-keyword">if</span> (evalResult.Score &gt; currentBestScore + config.ScoreImprovementThreshold)</span>
+<span class="code-line">{</span>
+<span class="code-line">    <span class="code-keyword">await</span> _candidateRepo.<span class="code-function">SaveAsync</span>(proposal.Candidate);</span>
+<span class="code-line">    _logger.<span class="code-function">LogInformation</span>(<span class="code-string">"New best candidate: score {Score} (was {Previous})"</span>,</span>
+<span class="code-line">        evalResult.Score, currentBestScore);</span>
+<span class="code-line">}</span>
+        </code></pre>
+      </div>
+      <div class="translation-english">
+        <span class="translation-label">PLAIN ENGLISH</span>
+        <div class="translation-lines">
+          <p class="tl">Step 1: Pull the last N traces from the history store &mdash; the &ldquo;game tape&rdquo; of recent conversations.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Step 2: Give the proposer agent the current skill file and the trace history.</p>
+          <p class="tl">It analyzes patterns and returns a proposed new version of the skill file.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Step 3: Run the proposed skill file through the evaluator.</p>
+          <p class="tl">The evaluator tests it against benchmark tasks and returns a numeric score.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Step 4: Only keep the proposal if the score beats the current best by a meaningful margin.</p>
+          <p class="tl">The threshold prevents &ldquo;noise&rdquo; improvements that are within the margin of error.</p>
+          <p class="tl">Save the winning candidate and log how much better it scored.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">&nbsp;</p>
+        </div>
+      </div>
+    </div>
+
+    <p class="animate-in">
+      The <span class="term" data-definition="A regression suite is a set of tests that verify nothing got worse when you made a change. If the agent used to handle 50 tasks correctly and now only handles 48, that is a regression &mdash; and the change gets discarded.">regression suite</span> is the key safeguard here. The meta-harness never ships a change that makes the agent worse &mdash; it only keeps strict improvements. This is how autonomous agents can evolve without human babysitting.
+    </p>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════════
+       SCREEN 5 — The Full Picture + Final Quiz
+       ═══════════════════════════════════════════════════════════════ -->
+  <div class="screen" id="screen-6-5">
+    <h2 class="animate-in">The Full Picture</h2>
+
+    <p class="animate-in">
+      You have now seen every layer of the harness. A user message enters the system and passes through content safety, gets routed to an agent, which loads its skills, picks its tools, calls the <span class="term" data-definition="An LLM (Large Language Model) is the AI brain at the center of the agent. It reads the conversation context, decides what to do next, and generates text responses. GPT-4 and Claude are examples of LLMs.">LLM</span>, executes tool calls, and returns a response &mdash; all while traces, metrics, and logs record every step. And above it all, the meta-harness watches, learns, and improves.
+    </p>
+
+    <p class="animate-in">
+      That is the Microsoft Agentic Harness. Not just an agent &mdash; a complete system for building, running, monitoring, and continuously improving AI agents.
+    </p>
+
+    <h2 class="animate-in">Final Quiz: Test Your Understanding</h2>
+
+    <p class="animate-in">
+      Five questions covering concepts from across the course. These are scenario-based &mdash; there is no &ldquo;scroll up and find the answer.&rdquo; You need to <em>think</em> about what you learned.
+    </p>
+
+    <div class="quiz-container" id="quiz-module6">
+
+      <!-- Question 1 -->
+      <div class="quiz-question-block"
+           data-correct="option-1b"
+           data-explanation-right="Exactly. Traces show you the timeline of that specific conversation &mdash; each turn, each tool call, each LLM request &mdash; so you can find the bottleneck. Metrics tell you aggregate trends, but traces tell you what happened in THIS conversation."
+           data-explanation-wrong="Not quite. Think about which observability tool shows you the timeline of a single specific request, versus which ones show you aggregate trends or event-level detail.">
+        <h3 class="quiz-question">Scenario: A user reports their agent conversation was painfully slow &mdash; each response took 30+ seconds. Which observability tool do you check first to find the bottleneck?</h3>
+        <div class="quiz-options">
+          <button class="quiz-option" data-value="option-1a" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>Prometheus metrics &mdash; check the average response time dashboard</span>
+          </button>
+          <button class="quiz-option" data-value="option-1b" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>Jaeger traces &mdash; find that conversation and inspect the span timeline</span>
+          </button>
+          <button class="quiz-option" data-value="option-1c" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>Structured logs &mdash; search for error messages during that time window</span>
+          </button>
+          <button class="quiz-option" data-value="option-1d" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>The agent manifest &mdash; check if the model configuration is wrong</span>
+          </button>
+        </div>
+        <div class="quiz-feedback"></div>
+      </div>
+
+      <!-- Question 2 -->
+      <div class="quiz-question-block"
+           data-correct="option-2c"
+           data-explanation-right="Exactly. The ContentSafetyBehavior throws an exception, which halts the pipeline. The agent handler never executes, so the agent never even knows the message existed. The violation is also logged and the metric counter incremented for monitoring."
+           data-explanation-wrong="Not quite. Look back at the ContentSafetyBehavior code &mdash; what happens when IsSafe is false? Does the pipeline continue, or does it stop?">
+        <h3 class="quiz-question">What happens when ContentSafetyBehavior flags a message as unsafe?</h3>
+        <div class="quiz-options">
+          <button class="quiz-option" data-value="option-2a" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>The message is sanitized (harmful parts removed) and forwarded to the agent</span>
+          </button>
+          <button class="quiz-option" data-value="option-2b" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>The agent receives the message with a warning label attached</span>
+          </button>
+          <button class="quiz-option" data-value="option-2c" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>The pipeline throws an exception &mdash; the agent never sees the message at all</span>
+          </button>
+          <button class="quiz-option" data-value="option-2d" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>The message is queued for human review before the agent can process it</span>
+          </button>
+        </div>
+        <div class="quiz-feedback"></div>
+      </div>
+
+      <!-- Question 3 -->
+      <div class="quiz-question-block"
+           data-correct="option-3b"
+           data-explanation-right="Exactly. Safety gates are bypass-immune because they protect against catastrophic actions where NO override should be possible. An admin misconfiguring permissions should not be able to accidentally allow an agent to delete system files. This is defense-in-depth &mdash; even if every other layer fails, safety gates hold."
+           data-explanation-wrong="Not quite. Think about WHY you would want a rule that even administrators cannot override. What kind of scenarios would require that level of protection?">
+        <h3 class="quiz-question">Why are safety gates &ldquo;bypass-immune&rdquo; while regular permission rules are not?</h3>
+        <div class="quiz-options">
+          <button class="quiz-option" data-value="option-3a" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>Performance &mdash; bypass-immune rules are faster to evaluate since they skip the full resolution chain</span>
+          </button>
+          <button class="quiz-option" data-value="option-3b" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>Safety &mdash; they protect against catastrophic actions that no configuration or admin should ever be able to allow</span>
+          </button>
+          <button class="quiz-option" data-value="option-3c" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>Simplicity &mdash; it reduces the number of rules the system needs to evaluate</span>
+          </button>
+        </div>
+        <div class="quiz-feedback"></div>
+      </div>
+
+      <!-- Question 4 -->
+      <div class="quiz-question-block"
+           data-correct="option-4a"
+           data-explanation-right="Exactly. The meta-harness compares the new score against the current best score plus an improvement threshold. The threshold prevents noise &mdash; a change that scores 0.1% better might just be random variation, not a real improvement. Only clear, measurable improvements get kept."
+           data-explanation-wrong="Not quite. Look at the Phase 4 code &mdash; what two values are compared, and what role does the ScoreImprovementThreshold play?">
+        <h3 class="quiz-question">How does the meta-harness decide whether a proposed skill change is actually better?</h3>
+        <div class="quiz-options">
+          <button class="quiz-option" data-value="option-4a" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>It runs benchmark tasks with the proposed change and only keeps it if the score exceeds the current best by a meaningful threshold</span>
+          </button>
+          <button class="quiz-option" data-value="option-4b" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>It asks a human reviewer to approve or reject each proposed change</span>
+          </button>
+          <button class="quiz-option" data-value="option-4c" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>It deploys the change to production and monitors error rates for 24 hours</span>
+          </button>
+          <button class="quiz-option" data-value="option-4d" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div>
+            <span>It compares the text of the old and new skill files to see which is more detailed</span>
+          </button>
+        </div>
+        <div class="quiz-feedback"></div>
+      </div>
+
+      <!-- Question 5: Drag-and-Drop -->
+      <div class="quiz-question-block"
+           data-correct="dnd"
+           data-explanation-right="You nailed the full pipeline. From user input through safety, routing, skills, tools, the LLM, and back out again &mdash; you now understand the complete journey of a message through the agentic harness."
+           data-explanation-wrong="Almost there. Think about what needs to happen before the agent can act (safety, routing, context loading) versus what happens during the agent turn (LLM calls, tool execution).">
+        <h3 class="quiz-question">Trace a message through all 6 modules &mdash; drag these pipeline steps into the correct order from first to last:</h3>
+        <div class="dnd-container">
+          <div class="dnd-chips">
+            <div class="dnd-chip" draggable="true" data-answer="step-3">Agent loads skills into context</div>
+            <div class="dnd-chip" draggable="true" data-answer="step-6">Response returned to user</div>
+            <div class="dnd-chip" draggable="true" data-answer="step-1">ContentSafetyBehavior screens input</div>
+            <div class="dnd-chip" draggable="true" data-answer="step-4">LLM generates response with tool calls</div>
+            <div class="dnd-chip" draggable="true" data-answer="step-2">Orchestrator routes to correct agent</div>
+            <div class="dnd-chip" draggable="true" data-answer="step-5">Tool execution engine runs requested tools</div>
+          </div>
+          <div class="dnd-zones">
+            <div class="dnd-zone" data-correct="step-1">
+              <p class="dnd-zone-label">Step 1: First checkpoint</p>
+              <div class="dnd-zone-target">Drop here</div>
+            </div>
+            <div class="dnd-zone" data-correct="step-2">
+              <p class="dnd-zone-label">Step 2: Message routing</p>
+              <div class="dnd-zone-target">Drop here</div>
+            </div>
+            <div class="dnd-zone" data-correct="step-3">
+              <p class="dnd-zone-label">Step 3: Context preparation</p>
+              <div class="dnd-zone-target">Drop here</div>
+            </div>
+            <div class="dnd-zone" data-correct="step-4">
+              <p class="dnd-zone-label">Step 4: AI reasoning</p>
+              <div class="dnd-zone-target">Drop here</div>
+            </div>
+            <div class="dnd-zone" data-correct="step-5">
+              <p class="dnd-zone-label">Step 5: Action execution</p>
+              <div class="dnd-zone-target">Drop here</div>
+            </div>
+            <div class="dnd-zone" data-correct="step-6">
+              <p class="dnd-zone-label">Step 6: Delivery</p>
+              <div class="dnd-zone-target">Drop here</div>
+            </div>
+          </div>
+          <button class="btn" onclick="checkDnD()">Check Order</button>
+          <button class="btn" onclick="resetDnD()">Reset</button>
+        </div>
+        <div class="quiz-feedback"></div>
+      </div>
+
+      <button class="quiz-check-btn" onclick="checkQuiz('quiz-module6')">Check Answers</button>
+      <button class="quiz-reset-btn" onclick="resetQuiz('quiz-module6')">Try Again</button>
+    </div>
+
+    <!-- Wrap-up -->
+    <div class="animate-in" style="margin-top: var(--space-12); padding: var(--space-8); background: linear-gradient(135deg, var(--color-accent-light), var(--color-surface)); border-radius: var(--radius-md); border-left: 4px solid var(--color-accent); text-align: center;">
+      <h2 style="margin-top: 0;">You Made It.</h2>
+      <p>
+        You now understand the complete Microsoft Agentic Harness &mdash; from the <span class="term" data-definition="Clean Architecture is a software design approach that organizes code into layers (Domain, Application, Infrastructure, Presentation) so that business logic stays independent of frameworks, databases, and UI details.">Clean Architecture</span> foundation, through the cast of components, the conversation loop, skills, tools, observability, content safety, permissions, and the self-improving meta-harness.
+      </p>
+      <p>
+        You are no longer a passenger. You can read the codebase, trace a message end-to-end, understand why architectural decisions were made, and have an informed conversation with any engineer on the team. That is not a small thing.
+      </p>
+      <p style="font-weight: 600; color: var(--color-accent);">
+        Now go explore the actual code. Open the solution in your editor. Find the files you learned about. Set a breakpoint in <code>ContentSafetyBehavior</code> and watch a message flow through it. The harness is yours to explore.
+      </p>
+    </div>
+  </div>
+
+</section>

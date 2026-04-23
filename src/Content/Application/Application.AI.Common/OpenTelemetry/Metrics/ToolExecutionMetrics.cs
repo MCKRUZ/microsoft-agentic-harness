@@ -12,7 +12,7 @@ public static class ToolExecutionMetrics
 {
     /// <summary>Execution duration per tool. Tags: agent.tool.name, agent.tool.source, agent.tool.status.</summary>
     public static Histogram<double> Duration { get; } =
-        AppInstrument.Meter.CreateHistogram<double>(ToolConventions.Duration, "ms", "Tool execution duration");
+        AppInstrument.Meter.CreateHistogram<double>(ToolConventions.Duration, "{ms}", "Tool execution duration");
 
     /// <summary>Total invocations per tool. Tags: agent.tool.name, agent.tool.source, agent.tool.status.</summary>
     public static Counter<long> Invocations { get; } =

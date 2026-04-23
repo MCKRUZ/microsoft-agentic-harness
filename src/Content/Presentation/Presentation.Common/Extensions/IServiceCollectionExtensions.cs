@@ -12,6 +12,7 @@ using Domain.Common.Config.Infrastructure;
 using Domain.Common.Config.Observability;
 using Infrastructure.AI;
 using Infrastructure.AI.Connectors;
+using Infrastructure.AI.RAG;
 using Infrastructure.AI.MCP;
 using Infrastructure.APIAccess;
 using Infrastructure.Common;
@@ -238,6 +239,8 @@ public static class IServiceCollectionExtensions
 
         // Infrastructure layer
         services.AddInfrastructureCommonDependencies();
+        // RAG must register before Infrastructure.AI — tool registrations depend on IRagOrchestrator
+        services.AddRagDependencies(appConfig);
         services.AddInfrastructureAIDependencies(appConfig);
         services.AddAIConnectors();
         services.AddMcpClientDependencies();

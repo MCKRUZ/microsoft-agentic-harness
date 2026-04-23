@@ -1,5 +1,9 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
+using Application.AI.Common.Interfaces;
+using Application.AI.Common.OpenTelemetry.Metrics;
 using Application.Core.CQRS.Agents.ExecuteAgentTurn;
+using Domain.AI.Telemetry.Conventions;
 using MediatR;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.SignalR;
@@ -68,12 +72,21 @@ public sealed class AgentTelemetryHub : Hub
     private const string GlobalTracesRole = "AgentHub.Traces.ReadAll";
 
     // -------------------------------------------------------------------------
+    // Connection-scoped conversation tracking (for lifecycle metrics on disconnect)
+    // -------------------------------------------------------------------------
+
+    private sealed record ActiveConversationInfo(string ConversationId, string AgentName, string UserId, DateTimeOffset StartedAt, int TurnCount);
+
+    private static readonly ConcurrentDictionary<string, ActiveConversationInfo> _connectionConversations = new();
+
+    // -------------------------------------------------------------------------
     // Dependencies
     // -------------------------------------------------------------------------
 
     private readonly IMediator _mediator;
     private readonly IConversationStore _conversationStore;
     private readonly ConversationLockRegistry _lockRegistry;
+    private readonly ISessionHealthTracker _healthTracker;
     private readonly ILogger<AgentTelemetryHub> _logger;
     private readonly AgentHubConfig _config;
 
@@ -82,14 +95,39 @@ public sealed class AgentTelemetryHub : Hub
         IMediator mediator,
         IConversationStore conversationStore,
         ConversationLockRegistry lockRegistry,
+        ISessionHealthTracker healthTracker,
         IOptions<AgentHubConfig> config,
         ILogger<AgentTelemetryHub> logger)
     {
         _mediator = mediator;
         _conversationStore = conversationStore;
         _lockRegistry = lockRegistry;
+        _healthTracker = healthTracker;
         _config = config.Value;
         _logger = logger;
+    }
+
+    /// <inheritdoc />
+    public override Task OnConnectedAsync()
+    {
+        SessionMetrics.ActiveSessions.Add(1);
+        return base.OnConnectedAsync();
+    }
+
+    /// <inheritdoc />
+    public override Task OnDisconnectedAsync(Exception? exception)
+    {
+        SessionMetrics.ActiveSessions.Add(-1);
+
+        if (_connectionConversations.TryRemove(Context.ConnectionId, out var info) && info.TurnCount > 0)
+        {
+            var agentTag = new KeyValuePair<string, object?>(AgentConventions.Name, info.AgentName);
+            var elapsed = DateTimeOffset.UtcNow - info.StartedAt;
+            OrchestrationMetrics.ConversationDuration.Record(elapsed.TotalMilliseconds, agentTag);
+            OrchestrationMetrics.TurnsPerConversation.Record(info.TurnCount, agentTag);
+        }
+
+        return base.OnDisconnectedAsync(exception);
     }
 
     // -------------------------------------------------------------------------
@@ -131,6 +169,12 @@ public sealed class AgentTelemetryHub : Hub
         }
 
         await Groups.AddToGroupAsync(Context.ConnectionId, ConversationGroup(record.Id), ct);
+
+        _connectionConversations[Context.ConnectionId] = new ActiveConversationInfo(
+            record.Id, record.AgentName, callerId, record.CreatedAt, record.Messages.Count / 2);
+
+        UserActivityMetrics.SessionsStarted.Add(1,
+            new KeyValuePair<string, object?>(UserConventions.UserId, callerId));
 
         var history = await _conversationStore.GetHistoryForDispatch(
             record.Id, _config.MaxHistoryMessages, ct) ?? [];
@@ -280,8 +324,12 @@ public sealed class AgentTelemetryHub : Hub
     /// </summary>
     private async Task DispatchTurnAsync(string conversationId, string agentName, string userMessage, CancellationToken ct)
     {
+        var callerId = GetCallerId();
         Activity.Current?.SetTag("agent.conversation_id", conversationId);
+        Activity.Current?.SetTag(AgentConventions.Name, agentName);
+        Activity.Current?.SetTag(UserConventions.UserId, callerId);
         Activity.Current?.AddBaggage("agent.conversation_id", conversationId);
+        Activity.Current?.AddBaggage(UserConventions.UserId, callerId);
 
         var history = await _conversationStore.GetHistoryForDispatch(
             conversationId, _config.MaxHistoryMessages, ct) ?? [];
@@ -308,16 +356,31 @@ public sealed class AgentTelemetryHub : Hub
         }
         catch (Exception ex)
         {
+            _healthTracker.RecordError(agentName);
             await HandleTurnErrorAsync(conversationId, ex, ct);
             return;
         }
 
         if (!result.Success)
         {
+            _healthTracker.RecordError(agentName);
             await HandleTurnErrorAsync(conversationId,
                 new InvalidOperationException(result.Error ?? "Agent returned a failure result."), ct);
             return;
         }
+
+        var agentTag = new KeyValuePair<string, object?>(AgentConventions.Name, agentName);
+        if (result.ToolsInvoked.Count > 0)
+            OrchestrationMetrics.ToolCalls.Add(result.ToolsInvoked.Count, agentTag);
+
+        _healthTracker.RecordSuccess(agentName);
+
+        var userTag = new KeyValuePair<string, object?>(UserConventions.UserId, callerId);
+        var userAgentTag = new KeyValuePair<string, object?>(AgentConventions.Name, agentName);
+        UserActivityMetrics.Turns.Add(1, userTag, userAgentTag);
+
+        if (_connectionConversations.TryGetValue(Context.ConnectionId, out var convInfo))
+            _connectionConversations[Context.ConnectionId] = convInfo with { TurnCount = convInfo.TurnCount + 1 };
 
         // TODO: Replace simulated 50-char chunking with real IAsyncEnumerable<string> streaming
         // when ExecuteAgentTurnCommand supports it.

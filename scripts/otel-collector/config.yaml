@@ -64,6 +64,18 @@ processors:
       - key: enduser.id
         action: hash
 
+  # Filter out framework-emitted gen_ai.client.* metrics — our agent.tokens.*
+  # metrics are a superset and these cause "collected before with the same name
+  # and label values" errors in the Prometheus exporter when multiple SDK scopes
+  # emit identical metric+label combinations, poisoning the entire scrape.
+  filter/dedup_genai:
+    metrics:
+      exclude:
+        match_type: strict
+        metric_names:
+          - gen_ai.client.token.usage
+          - gen_ai.client.operation.duration
+
   # Batch processor - reduces network calls, improves throughput
   batch:
     timeout: 10s
@@ -114,9 +126,9 @@ exporters:
   azuremonitor:
     connection_string: "${env:APPLICATIONINSIGHTS_CONNECTION_STRING}"
 
-  # OTLP exporter - Jaeger
-  otlp/jaeger:
-    endpoint: "${env:JAEGER_ENDPOINT:-localhost:4317}"
+  # OTLP exporter - Tempo (trace storage + query)
+  otlp/tempo:
+    endpoint: "${env:TEMPO_ENDPOINT:-localhost:4317}"
     tls:
       insecure: true
     timeout: 30s
@@ -162,7 +174,7 @@ service:
         - tail_sampling
         - batch
       exporters:
-        - otlp/jaeger
+        - otlp/tempo
         - debug
         # - azuremonitor  # enable when APPLICATIONINSIGHTS_CONNECTION_STRING is set
 
@@ -172,6 +184,7 @@ service:
         - memory_limiter
         - resourcedetection
         - attributes
+        - filter/dedup_genai
         - batch
       exporters:
         - prometheus

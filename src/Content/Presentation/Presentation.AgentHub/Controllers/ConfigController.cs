@@ -7,7 +7,7 @@ namespace Presentation.AgentHub.Controllers;
 
 /// <summary>
 /// Read-only configuration endpoints consumed by the WebUI to populate settings surfaces
-/// (deployment pickers, etc.). All endpoints require authentication; no secrets are ever
+/// (deployment pickers, etc.). Most endpoints require authentication; no secrets are ever
 /// surfaced — only the authoritative list of allowed values.
 /// </summary>
 [ApiController]
@@ -16,12 +16,28 @@ namespace Presentation.AgentHub.Controllers;
 public sealed class ConfigController : ControllerBase
 {
     private readonly IOptionsMonitor<AppConfig> _appConfig;
+    private readonly bool _authDisabled;
 
     /// <summary>Initialises the controller with its dependencies.</summary>
-    public ConfigController(IOptionsMonitor<AppConfig> appConfig)
+    public ConfigController(
+        IOptionsMonitor<AppConfig> appConfig,
+        IConfiguration configuration,
+        IHostEnvironment environment)
     {
         _appConfig = appConfig;
+        _authDisabled = environment.IsDevelopment()
+            && configuration.GetValue<bool>("Auth:Disabled");
     }
+
+    /// <summary>
+    /// Returns the server's authentication mode so the WebUI can detect client/server
+    /// auth mismatches at connection time rather than failing silently.
+    /// Anonymous: must be callable before authentication is established.
+    /// </summary>
+    [AllowAnonymous]
+    [HttpGet("auth")]
+    public ActionResult GetAuthMode() =>
+        Ok(new { authDisabled = _authDisabled });
 
     /// <summary>
     /// Returns the authoritative list of deployment/model names a caller may request as a

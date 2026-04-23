@@ -33,19 +33,19 @@ public static class LlmUsageMetrics
 
     /// <summary>Estimated cost in USD per LLM call. Tags: model, agent.</summary>
     public static Counter<double> EstimatedCost { get; } =
-        AppInstrument.Meter.CreateCounter<double>(TokenConventions.CostEstimated, "USD", "Estimated cost per LLM call");
+        AppInstrument.Meter.CreateCounter<double>(TokenConventions.CostEstimated, "{USD}", "Estimated cost per LLM call");
 
     /// <summary>Estimated cache savings in USD per LLM call. Tags: model, agent.</summary>
     public static Counter<double> CacheSavings { get; } =
-        AppInstrument.Meter.CreateCounter<double>(TokenConventions.CostCacheSavings, "USD", "Estimated cost savings from cache hits");
+        AppInstrument.Meter.CreateCounter<double>(TokenConventions.CostCacheSavings, "{USD}", "Estimated cost savings from cache hits");
 
     /// <summary>Cache hit rate per LLM call (0-1 ratio). Tags: model.</summary>
     public static Histogram<double> CacheHitRate { get; } =
-        AppInstrument.Meter.CreateHistogram<double>(TokenConventions.CacheHitRate, "ratio", "Cache hit rate per LLM call");
+        AppInstrument.Meter.CreateHistogram<double>(TokenConventions.CacheHitRate, "{ratio}", "Cache hit rate per LLM call");
 
     /// <summary>Estimated cost per conversation turn. Tags: agent.</summary>
     public static Histogram<double> CostPerTurn { get; } =
-        AppInstrument.Meter.CreateHistogram<double>(TokenConventions.CostPerTurn, "USD", "Estimated cost per conversation turn");
+        AppInstrument.Meter.CreateHistogram<double>(TokenConventions.CostPerTurn, "{USD}", "Estimated cost per conversation turn");
 
     /// <summary>Total tokens per conversation turn. Tags: agent.</summary>
     public static Histogram<long> TokensPerTurn { get; } =

@@ -35,5 +35,5 @@ public static class ContextBudgetMetrics
 
     /// <summary>Budget utilization ratio (0-1). Tags: agent.name.</summary>
     public static Histogram<double> BudgetUtilization { get; } =
-        AppInstrument.Meter.CreateHistogram<double>(ContextConventions.BudgetUtilization, "ratio", "Context budget utilization ratio");
+        AppInstrument.Meter.CreateHistogram<double>(ContextConventions.BudgetUtilization, "{ratio}", "Context budget utilization ratio");
 }

@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces.MediatR;
 using Application.Common.Interfaces.MediatR;
+using Domain.AI.Models;
 using MediatR;
 using Microsoft.Extensions.AI;
 
@@ -13,8 +14,13 @@ namespace Application.Core.CQRS.Agents.ExecuteAgentTurn;
 /// Uses a 5-minute timeout to accommodate multi-step tool call chains.
 /// The default 30s MediatR timeout is too short for agentic workloads.
 /// </remarks>
-public record ExecuteAgentTurnCommand : IRequest<AgentTurnResult>, IAgentScopedRequest, IHasTimeout
+public record ExecuteAgentTurnCommand : IRequest<AgentTurnResult>, IAgentScopedRequest, IHasTimeout, IContentScreenable
 {
+	/// <inheritdoc />
+	public string ContentToScreen => UserMessage;
+
+	/// <inheritdoc />
+	public ContentScreeningTarget ScreeningTarget => ContentScreeningTarget.Input;
 	/// <inheritdoc/>
 	public TimeSpan? Timeout => TimeSpan.FromMinutes(5);
 
