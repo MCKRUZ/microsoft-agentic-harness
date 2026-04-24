@@ -4,6 +4,7 @@ import { usePromQuery } from '@/hooks/usePromQuery';
 import { metricCatalog } from '@/config/metricCatalog';
 import { fetchSessions } from '@/api/sessions';
 import { useTimeRangeStore } from '@/stores/timeRangeStore';
+import { useMemo } from 'react';
 import { KpiCard } from '@/components/panels/KpiCard';
 import { PanelCard } from '@/components/panels/PanelCard';
 import { PanelGrid } from '@/components/panels/PanelGrid';
@@ -20,7 +21,11 @@ function latestValue(data: ReturnType<typeof usePromQuery>['data']): number {
 
 export default function SessionsPage() {
   const navigate = useNavigate();
-  const { start, end } = useTimeRangeStore((s) => s.getRange());
+  const preset = useTimeRangeStore((s) => s.preset);
+  const customStart = useTimeRangeStore((s) => s.customStart);
+  const customEnd = useTimeRangeStore((s) => s.customEnd);
+  const getRange = useTimeRangeStore((s) => s.getRange);
+  const { start, end } = useMemo(() => getRange(), [preset, customStart, customEnd, getRange]);
 
   const sessionsTotal = usePromQuery(metricCatalog['sessions_total']!.query);
   const sessionsActive = usePromQuery(metricCatalog['sessions_active']!.query);
