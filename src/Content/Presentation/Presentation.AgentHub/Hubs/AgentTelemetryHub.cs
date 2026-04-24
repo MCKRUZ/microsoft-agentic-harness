@@ -75,7 +75,10 @@ public sealed class AgentTelemetryHub : Hub
     // Connection-scoped conversation tracking (for lifecycle metrics on disconnect)
     // -------------------------------------------------------------------------
 
-    private sealed record ActiveConversationInfo(string ConversationId, string AgentName, string UserId, DateTimeOffset StartedAt, int TurnCount);
+    private sealed record ActiveConversationInfo(
+        string ConversationId, string AgentName, string UserId, DateTimeOffset StartedAt, int TurnCount,
+        Guid ObservabilitySessionId, int TotalInputTokens = 0, int TotalOutputTokens = 0,
+        int TotalCacheRead = 0, int TotalCacheWrite = 0, decimal TotalCostUsd = 0m, int ToolCallCount = 0);
 
     private static readonly ConcurrentDictionary<string, ActiveConversationInfo> _connectionConversations = new();
 
@@ -87,6 +90,7 @@ public sealed class AgentTelemetryHub : Hub
     private readonly IConversationStore _conversationStore;
     private readonly ConversationLockRegistry _lockRegistry;
     private readonly ISessionHealthTracker _healthTracker;
+    private readonly IObservabilityStore _observabilityStore;
     private readonly ILogger<AgentTelemetryHub> _logger;
     private readonly AgentHubConfig _config;
 
@@ -96,6 +100,7 @@ public sealed class AgentTelemetryHub : Hub
         IConversationStore conversationStore,
         ConversationLockRegistry lockRegistry,
         ISessionHealthTracker healthTracker,
+        IObservabilityStore observabilityStore,
         IOptions<AgentHubConfig> config,
         ILogger<AgentTelemetryHub> logger)
     {
@@ -103,6 +108,7 @@ public sealed class AgentTelemetryHub : Hub
         _conversationStore = conversationStore;
         _lockRegistry = lockRegistry;
         _healthTracker = healthTracker;
+        _observabilityStore = observabilityStore;
         _config = config.Value;
         _logger = logger;
     }
@@ -115,19 +121,26 @@ public sealed class AgentTelemetryHub : Hub
     }
 
     /// <inheritdoc />
-    public override Task OnDisconnectedAsync(Exception? exception)
+    public override async Task OnDisconnectedAsync(Exception? exception)
     {
         SessionMetrics.ActiveSessions.Add(-1);
 
-        if (_connectionConversations.TryRemove(Context.ConnectionId, out var info) && info.TurnCount > 0)
+        if (_connectionConversations.TryRemove(Context.ConnectionId, out var info))
         {
-            var agentTag = new KeyValuePair<string, object?>(AgentConventions.Name, info.AgentName);
-            var elapsed = DateTimeOffset.UtcNow - info.StartedAt;
-            OrchestrationMetrics.ConversationDuration.Record(elapsed.TotalMilliseconds, agentTag);
-            OrchestrationMetrics.TurnsPerConversation.Record(info.TurnCount, agentTag);
+            if (info.TurnCount > 0)
+            {
+                var agentTag = new KeyValuePair<string, object?>(AgentConventions.Name, info.AgentName);
+                var elapsed = DateTimeOffset.UtcNow - info.StartedAt;
+                OrchestrationMetrics.ConversationDuration.Record(elapsed.TotalMilliseconds, agentTag);
+                OrchestrationMetrics.TurnsPerConversation.Record(info.TurnCount, agentTag);
+            }
+
+            var status = exception is null ? "completed" : "errored";
+            await _observabilityStore.EndSessionAsync(
+                info.ObservabilitySessionId, status, exception?.Message);
         }
 
-        return base.OnDisconnectedAsync(exception);
+        await base.OnDisconnectedAsync(exception);
     }
 
     // -------------------------------------------------------------------------
@@ -170,8 +183,12 @@ public sealed class AgentTelemetryHub : Hub
 
         await Groups.AddToGroupAsync(Context.ConnectionId, ConversationGroup(record.Id), ct);
 
+        var obsSessionId = await _observabilityStore.StartSessionAsync(
+            record.Id, record.AgentName, model: null, ct);
+
         _connectionConversations[Context.ConnectionId] = new ActiveConversationInfo(
-            record.Id, record.AgentName, callerId, record.CreatedAt, record.Messages.Count / 2);
+            record.Id, record.AgentName, callerId, record.CreatedAt, record.Messages.Count / 2,
+            obsSessionId);
 
         UserActivityMetrics.SessionsStarted.Add(1,
             new KeyValuePair<string, object?>(UserConventions.UserId, callerId));
@@ -337,6 +354,10 @@ public sealed class AgentTelemetryHub : Hub
         var updatedRecord = await _conversationStore.GetAsync(conversationId, ct);
         var turnNumber = updatedRecord?.Messages.Count ?? 0;
 
+        var obsSessionId = _connectionConversations.TryGetValue(Context.ConnectionId, out var ci)
+            ? ci.ObservabilitySessionId
+            : Guid.Empty;
+
         var command = new ExecuteAgentTurnCommand
         {
             AgentName = agentName,
@@ -347,6 +368,7 @@ public sealed class AgentTelemetryHub : Hub
             DeploymentOverride = updatedRecord?.Settings?.DeploymentName,
             Temperature = updatedRecord?.Settings?.Temperature,
             SystemPromptOverride = updatedRecord?.Settings?.SystemPromptOverride,
+            ObservabilitySessionId = obsSessionId,
         };
 
         AgentTurnResult result;
@@ -380,7 +402,30 @@ public sealed class AgentTelemetryHub : Hub
         UserActivityMetrics.Turns.Add(1, userTag, userAgentTag);
 
         if (_connectionConversations.TryGetValue(Context.ConnectionId, out var convInfo))
-            _connectionConversations[Context.ConnectionId] = convInfo with { TurnCount = convInfo.TurnCount + 1 };
+        {
+            var updated = convInfo with
+            {
+                TurnCount = convInfo.TurnCount + 1,
+                ToolCallCount = convInfo.ToolCallCount + result.ToolsInvoked.Count,
+                TotalInputTokens = convInfo.TotalInputTokens + result.InputTokens,
+                TotalOutputTokens = convInfo.TotalOutputTokens + result.OutputTokens,
+                TotalCacheRead = convInfo.TotalCacheRead + result.CacheRead,
+                TotalCacheWrite = convInfo.TotalCacheWrite + result.CacheWrite,
+                TotalCostUsd = convInfo.TotalCostUsd + result.CostUsd,
+            };
+            _connectionConversations[Context.ConnectionId] = updated;
+
+            _ = _observabilityStore.UpdateSessionMetricsAsync(
+                updated.ObservabilitySessionId,
+                updated.TurnCount, updated.ToolCallCount, subagentCount: 0,
+                updated.TotalInputTokens, updated.TotalOutputTokens,
+                updated.TotalCacheRead, updated.TotalCacheWrite,
+                updated.TotalCostUsd,
+                updated.TotalInputTokens > 0
+                    ? (decimal)updated.TotalCacheRead / updated.TotalInputTokens
+                    : 0m,
+                result.Model, ct);
+        }
 
         // TODO: Replace simulated 50-char chunking with real IAsyncEnumerable<string> streaming
         // when ExecuteAgentTurnCommand supports it.
