@@ -36,6 +36,9 @@
     <PackageVersion Include="Ardalis.GuardClauses" Version="5.0.0" />
     <PackageVersion Include="Microsoft.Extensions.Http" Version="10.0.5" />
 
+    <!-- Infrastructure.AI.KnowledgeGraph -->
+    <PackageVersion Include="Neo4j.Driver" Version="5.28.0" />
+
     <!-- Infrastructure.AI.RAG -->
     <PackageVersion Include="Azure.Search.Documents" Version="11.7.0" />
     <PackageVersion Include="Microsoft.Data.Sqlite" Version="10.0.5" />
@@ -63,6 +66,7 @@
     <PackageVersion Include="Swashbuckle.AspNetCore.SwaggerGen" Version="10.1.0" />
 
     <!-- Infrastructure.Observability -->
+    <PackageVersion Include="Npgsql" Version="9.0.3" />
     <PackageVersion Include="Azure.Monitor.OpenTelemetry.Exporter" Version="1.4.0" />
     <PackageVersion Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.12.0" />
     <PackageVersion Include="OpenTelemetry.Exporter.Prometheus.AspNetCore" Version="1.11.2-beta.1" />

@@ -55,6 +55,14 @@ public class ObservabilityConfig
     public BudgetTrackingConfig BudgetTracking { get; set; } = new();
 
     /// <summary>
+    /// Gets or sets the PostgreSQL connection string for persisting observability data
+    /// (sessions, messages, tool executions, audit log) for Grafana dashboard queries.
+    /// When null or empty, persistence is disabled and <c>NullObservabilityStore</c> is used.
+    /// </summary>
+    /// <value>Default: <c>null</c> (persistence disabled).</value>
+    public string? PostgresConnectionString { get; set; }
+
+    /// <summary>
     /// Gets or sets whether sensitive telemetry data (e.g., GenAI prompt/completion content)
     /// is recorded in traces. Controls the <c>Microsoft.SemanticKernel.Experimental.GenAI.EnableOTelDiagnosticsSensitive</c>
     /// AppContext switch. When <c>false</c>, only non-sensitive GenAI metadata (model, token counts)

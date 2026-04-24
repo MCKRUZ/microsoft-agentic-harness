@@ -1,4 +1,5 @@
 using Application.AI.Common.Exceptions;
+using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.MediatR;
 using Application.AI.Common.OpenTelemetry.Metrics;
@@ -30,13 +31,17 @@ public sealed class ContentSafetyBehavior<TRequest, TResponse>
     : IPipelineBehavior<TRequest, TResponse> where TRequest : notnull
 {
     private readonly ITextContentSafetyService _safetyService;
+    private readonly IObservabilityStore _observabilityStore;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="ContentSafetyBehavior{TRequest, TResponse}"/> class.
     /// </summary>
-    public ContentSafetyBehavior(ITextContentSafetyService safetyService)
+    public ContentSafetyBehavior(
+        ITextContentSafetyService safetyService,
+        IObservabilityStore observabilityStore)
     {
         _safetyService = safetyService;
+        _observabilityStore = observabilityStore;
     }
 
     /// <inheritdoc />
@@ -56,6 +61,18 @@ public sealed class ContentSafetyBehavior<TRequest, TResponse>
                 new KeyValuePair<string, object?>(SafetyConventions.Phase, SafetyConventions.PhaseValues.Prompt),
                 new KeyValuePair<string, object?>(SafetyConventions.Filter, "pipeline_behavior"),
                 new KeyValuePair<string, object?>(SafetyConventions.Outcome, result.IsBlocked ? SafetyConventions.OutcomeValues.Block : SafetyConventions.OutcomeValues.Pass));
+
+            if (request is IHasObservabilitySession obs && obs.ObservabilitySessionId != Guid.Empty)
+            {
+                await _observabilityStore.RecordSafetyEventAsync(
+                    obs.ObservabilitySessionId,
+                    "prompt",
+                    result.IsBlocked ? "block" : "pass",
+                    result.Category,
+                    null,
+                    "pipeline_behavior",
+                    cancellationToken);
+            }
 
             if (result.IsBlocked)
             {

@@ -4,6 +4,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <RootNamespace>Domain.Common</RootNamespace>
+    <Configurations>Debug;Release;Debug-AgentHub-All;Debug-AgentHub-WebUI;Debug-AgentHub-Dashboard</Configurations>
   </PropertyGroup>
 
   <ItemGroup>

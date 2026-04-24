@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <RootNamespace>Infrastructure.AI.KnowledgeGraph.Tests</RootNamespace>
+    <Configurations>Debug;Release;Debug-AgentHub-All;Debug-AgentHub-WebUI;Debug-AgentHub-Dashboard</Configurations>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" />
+    <PackageReference Include="FluentAssertions" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="Moq" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../Infrastructure/Infrastructure.AI.KnowledgeGraph/Infrastructure.AI.KnowledgeGraph.csproj" />
+    <ProjectReference Include="../../Infrastructure/Infrastructure.AI.RAG/Infrastructure.AI.RAG.csproj" />
+  </ItemGroup>
+
+</Project>

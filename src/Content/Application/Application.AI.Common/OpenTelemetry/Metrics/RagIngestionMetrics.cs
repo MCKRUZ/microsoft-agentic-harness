@@ -25,6 +25,11 @@ public static class RagIngestionMetrics
 		AppInstrument.Meter.CreateHistogram<double>(
 			RagConventions.IngestionDuration, "{ms}", "Ingestion pipeline duration");
 
+	/// <summary>Total documents ingested. Tags: rag.retrieval.strategy.</summary>
+	public static Counter<long> Documents { get; } =
+		AppInstrument.Meter.CreateCounter<long>(
+			RagConventions.IngestionDocuments, "{document}", "Total documents ingested");
+
 	/// <summary>Ingestion errors.</summary>
 	public static Counter<long> Errors { get; } =
 		AppInstrument.Meter.CreateCounter<long>(

@@ -1,7 +1,25 @@
 # Project: Microsoft Agentic Harness
 
 ## Purpose
-POC for a Microsoft Agent Framework agent with a full agentic harness — skills, MCP, and tools system — modeled after Claude Code's architecture. Built on the ApplicationTemplate Clean Architecture pattern.
+Production-grade template for a Microsoft Agent Framework agent with a full agentic harness — skills, MCP, tools, RAG, and knowledge graph systems — modeled after Claude Code's architecture. Built on the ApplicationTemplate Clean Architecture pattern. Designed for enterprise consumers to clone and extend.
+
+## RAG & Knowledge Architecture
+The harness includes a full RAG pipeline (`Infrastructure.AI.RAG`) and a planned knowledge graph layer inspired by [Cognee](https://github.com/topoteretes/cognee).
+
+### Current RAG Capabilities (Implemented)
+- **Ingestion**: 3 chunking strategies (structure-aware, fixed-size, semantic), contextual enrichment (Anthropic pattern), RAPTOR hierarchical summarization
+- **Retrieval**: Hybrid dense+sparse via Reciprocal Rank Fusion, query transformation (RAG Fusion, HyDE), query classification/routing
+- **Quality**: CRAG evaluation with refinement loops, configurable accept/refine/reject thresholds
+- **Assembly**: Token budget enforcement, pointer expansion (sibling/parent), citation tracking
+- **Reranking**: Azure Semantic, Cross-Encoder, NoOp (strategy-keyed DI)
+- **Stores**: Azure AI Search + FAISS (vector), Azure AI Search + SQLite FTS5 (BM25)
+
+### Knowledge Graph Enhancements (Planned — from Cognee analysis)
+1. **Production Graph Backend** — Replace the teaching-stub `ManagedCodeGraphRagService` with a real graph database (Neo4j/Kuzu/PostgreSQL). Entity extraction with ontology validation, temporal event support, community detection (Leiden algorithm)
+2. **Feedback-Weighted Search** — Track retrieval quality scores on graph nodes/edges. Re-rank future retrievals by blending semantic relevance with historical feedback weights. Configurable learning rate (`feedback_alpha`)
+3. **Cross-Session Knowledge Persistence** — `Remember()`/`Recall()`/`Forget()`/`Improve()` operations. Session-local fast cache with background sync to permanent graph. Agents learn across conversations
+4. **Entity-Level Provenance** — Stamp every extracted node/edge with source pipeline, task, and timestamp. Audit trail for knowledge lineage beyond document-level citations
+5. **Multi-Tenant Knowledge Isolation** — Agent scope boundaries (user → dataset → owner) with permission-checked dataset access. Enables multiple agents/users against shared knowledge infrastructure
 
 ## Stack
 - C# .NET 10, Clean Architecture, CQRS/MediatR, FluentValidation, AutoMapper

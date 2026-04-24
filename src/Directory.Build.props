@@ -1,4 +1,12 @@
 <Project>
+	<!-- Custom Debug-* configurations inherit all Debug behavior for every project -->
+	<PropertyGroup Condition="$(Configuration.StartsWith('Debug'))">
+		<DebugSymbols>true</DebugSymbols>
+		<DebugType>full</DebugType>
+		<Optimize>false</Optimize>
+		<DefineConstants>$(DefineConstants);DEBUG;TRACE</DefineConstants>
+	</PropertyGroup>
+
 	<PropertyGroup>
 		<TargetFramework>net10.0</TargetFramework>
 		<TreatWarningsAsErrors>false</TreatWarningsAsErrors>

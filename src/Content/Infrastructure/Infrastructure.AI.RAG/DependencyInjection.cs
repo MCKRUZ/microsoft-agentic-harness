@@ -4,6 +4,7 @@ using Azure.Search.Documents;
 using Domain.Common.Config;
 using Infrastructure.AI.RAG.Assembly;
 using Infrastructure.AI.RAG.Evaluation;
+using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Infrastructure.AI.RAG.GraphRag;
 using Infrastructure.AI.RAG.Ingestion;
 using Infrastructure.AI.RAG.Orchestration;
@@ -196,7 +197,24 @@ public static class DependencyInjection
 	/// </summary>
 	private static void AddRagGraphRag(IServiceCollection services, AppConfig appConfig)
 	{
-		services.AddSingleton<IGraphRagService, ManagedCodeGraphRagService>();
+		services.AddSingleton<IGraphRagService>(sp =>
+			new ManagedCodeGraphRagService(
+				sp.GetRequiredService<IKnowledgeGraphStore>(),
+				sp.GetRequiredService<IRagModelRouter>(),
+				sp.GetRequiredService<IProvenanceStamper>(),
+				sp.GetRequiredService<ILogger<ManagedCodeGraphRagService>>(),
+				sp.GetRequiredService<IOptionsMonitor<AppConfig>>()));
+
+		// Feedback-weighted scoring (only registered when feedback enabled)
+		if (appConfig.AI.Rag.GraphRag.FeedbackEnabled)
+		{
+			services.AddSingleton<IFeedbackWeightedScorer>(sp =>
+				new Retrieval.FeedbackWeightedScorer(
+					sp.GetRequiredService<IFeedbackStore>(),
+					sp.GetRequiredService<IKnowledgeGraphStore>(),
+					sp.GetRequiredService<IOptionsMonitor<AppConfig>>(),
+					sp.GetRequiredService<ILogger<Retrieval.FeedbackWeightedScorer>>()));
+		}
 	}
 
 	/// <summary>
@@ -206,7 +224,17 @@ public static class DependencyInjection
 	/// </summary>
 	private static void AddRagOrchestration(IServiceCollection services, AppConfig appConfig)
 	{
-		services.AddSingleton<IRagOrchestrator, RagOrchestrator>();
+		services.AddSingleton<IRagOrchestrator>(sp =>
+			new RagOrchestrator(
+				sp.GetRequiredService<IHybridRetriever>(),
+				sp.GetRequiredService<IReranker>(),
+				sp.GetRequiredService<ICragEvaluator>(),
+				sp.GetRequiredService<IRagContextAssembler>(),
+				sp.GetRequiredService<IGraphRagService>(),
+				sp.GetService<IFeedbackWeightedScorer>(),
+				sp.GetRequiredService<QueryRouter>(),
+				sp.GetRequiredService<IOptionsMonitor<AppConfig>>(),
+				sp.GetRequiredService<ILogger<RagOrchestrator>>()));
 	}
 
 	/// <summary>

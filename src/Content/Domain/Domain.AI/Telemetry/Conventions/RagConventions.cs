@@ -64,6 +64,12 @@ public static class RagConventions
     /// <summary>Counter: total CRAG relevance evaluations performed.</summary>
     public const string CragEvaluations = "rag.crag.evaluations";
 
+    /// <summary>Counter: total documents ingested into the RAG pipeline.</summary>
+    public const string IngestionDocuments = "rag.ingestion.documents";
+
+    /// <summary>Counter: total retrieval queries executed.</summary>
+    public const string RetrievalQueries = "rag.retrieval.queries";
+
     /// <summary>Counter: total RAG-Fusion query variants generated.</summary>
     public const string FusionQueriesGenerated = "rag.fusion.queries_generated";
 

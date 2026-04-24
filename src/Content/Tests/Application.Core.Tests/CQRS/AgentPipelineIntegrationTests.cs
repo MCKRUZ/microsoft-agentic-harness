@@ -54,6 +54,15 @@ public class AgentPipelineIntegrationTests
         registryMock.Setup(r => r.TryGet(It.IsAny<string>())).Returns((Domain.AI.Agents.AgentDefinition?)null);
         services.AddSingleton(registryMock.Object);
 
+        // Observability store — no-op mock for integration tests
+        services.AddSingleton(new Mock<IObservabilityStore>().Object);
+
+        // LLM usage capture — scoped mock matching production DI lifetime
+        var usageCaptureMock = new Mock<ILlmUsageCapture>();
+        usageCaptureMock.Setup(c => c.TakeSnapshot())
+            .Returns(new LlmUsageSnapshot(0, 0, 0, 0, null, 0m, 0m));
+        services.AddScoped<ILlmUsageCapture>(_ => usageCaptureMock.Object);
+
         return services.BuildServiceProvider();
     }
 
@@ -142,7 +151,7 @@ public class AgentPipelineIntegrationTests
 
         // Assert
         result.Success.Should().BeFalse();
-        result.Error.Should().Contain("Model unavailable");
+        result.Error.Should().Contain("An internal error occurred during the agent turn.");
     }
 
     [Fact]

@@ -3,6 +3,7 @@
   <PropertyGroup>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <Configurations>Debug;Release;Debug-AgentHub-All;Debug-AgentHub-WebUI;Debug-AgentHub-Dashboard</Configurations>
   </PropertyGroup>
 
   <ItemGroup>

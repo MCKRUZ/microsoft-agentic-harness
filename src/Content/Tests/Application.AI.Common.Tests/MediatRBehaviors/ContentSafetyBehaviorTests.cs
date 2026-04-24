@@ -1,4 +1,5 @@
 using Application.AI.Common.Exceptions;
+using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.MediatR;
 using Application.AI.Common.MediatRBehaviors;
@@ -124,7 +125,9 @@ public class ContentSafetyBehaviorTests
     private ContentSafetyBehavior<TRequest, TResponse> CreateBehavior<TRequest, TResponse>()
         where TRequest : notnull
     {
-        return new ContentSafetyBehavior<TRequest, TResponse>(_safetyService.Object);
+        return new ContentSafetyBehavior<TRequest, TResponse>(
+            _safetyService.Object,
+            new Mock<IObservabilityStore>().Object);
     }
 
     // Test request types

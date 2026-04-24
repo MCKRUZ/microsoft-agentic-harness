@@ -4,9 +4,11 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <RootNamespace>Infrastructure.Observability</RootNamespace>
+    <Configurations>Debug;Release;Debug-AgentHub-All;Debug-AgentHub-WebUI;Debug-AgentHub-Dashboard</Configurations>
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Npgsql" />
     <PackageReference Include="OpenTelemetry" />
     <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" />
     <PackageReference Include="Azure.Monitor.OpenTelemetry.Exporter" />

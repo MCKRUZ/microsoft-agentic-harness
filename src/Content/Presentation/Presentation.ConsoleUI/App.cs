@@ -23,6 +23,7 @@ public class App
 	private readonly A2AExample _a2aExample;
 	private readonly SetupSecretsExample _setupSecretsExample;
 	private readonly OptimizeExample _optimizeExample;
+	private readonly RagPipelineExample _ragPipelineExample;
 
 	public App(
 		IOptionsMonitor<AppConfig> appConfig,
@@ -34,7 +35,8 @@ public class App
 		PersistentAgentExample persistentAgentExample,
 		A2AExample a2aExample,
 		SetupSecretsExample setupSecretsExample,
-		OptimizeExample optimizeExample)
+		OptimizeExample optimizeExample,
+		RagPipelineExample ragPipelineExample)
 	{
 		_appConfig = appConfig;
 		_loggerFactory = loggerFactory;
@@ -46,6 +48,7 @@ public class App
 		_a2aExample = a2aExample;
 		_setupSecretsExample = setupSecretsExample;
 		_optimizeExample = optimizeExample;
+		_ragPipelineExample = ragPipelineExample;
 	}
 
 	/// <summary>
@@ -93,6 +96,9 @@ public class App
 			case "optimize":
 				await _optimizeExample.RunAsync();
 				break;
+			case "rag-pipeline":
+				await _ragPipelineExample.RunAsync();
+				break;
 			default:
 				ConsoleHelper.DisplayError($"Unknown example: {exampleName}");
 				break;
@@ -111,6 +117,8 @@ public class App
 					"Research Agent (Standalone)",
 					"Orchestrator Agent (Multi-Agent)",
 					"Meta-Harness Optimizer")
+				.AddChoiceGroup("[bold]Retrieval[/]",
+					"RAG Pipeline Demo")
 				.AddChoiceGroup("[bold]Advanced[/]",
 					"MCP Tools Discovery",
 					"Tool Converter Demo",
@@ -135,6 +143,10 @@ public class App
 
 				case "Meta-Harness Optimizer":
 					await _optimizeExample.RunAsync();
+					break;
+
+				case "RAG Pipeline Demo":
+					await _ragPipelineExample.RunAsync();
 					break;
 
 				case "MCP Tools Discovery":

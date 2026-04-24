@@ -14,7 +14,7 @@ namespace Application.Core.CQRS.Agents.ExecuteAgentTurn;
 /// Uses a 5-minute timeout to accommodate multi-step tool call chains.
 /// The default 30s MediatR timeout is too short for agentic workloads.
 /// </remarks>
-public record ExecuteAgentTurnCommand : IRequest<AgentTurnResult>, IAgentScopedRequest, IHasTimeout, IContentScreenable
+public record ExecuteAgentTurnCommand : IRequest<AgentTurnResult>, IAgentScopedRequest, IHasTimeout, IContentScreenable, IHasObservabilitySession
 {
 	/// <inheritdoc />
 	public string ContentToScreen => UserMessage;
@@ -60,6 +60,13 @@ public record ExecuteAgentTurnCommand : IRequest<AgentTurnResult>, IAgentScopedR
 	public string AgentId => AgentName;
 	public string ConversationId { get; init; } = Guid.NewGuid().ToString();
 	public int TurnNumber { get; init; }
+
+	/// <summary>
+	/// Database session ID for correlating observability records.
+	/// Set by <see cref="RunConversation.RunConversationCommandHandler"/>
+	/// when persistence is enabled.
+	/// </summary>
+	public Guid ObservabilitySessionId { get; init; }
 }
 
 /// <summary>
@@ -72,4 +79,12 @@ public record AgentTurnResult
 	public required IReadOnlyList<ChatMessage> UpdatedHistory { get; init; }
 	public IReadOnlyList<string> ToolsInvoked { get; init; } = [];
 	public string? Error { get; init; }
+
+	// Token usage captured from the LLM calls during this turn
+	public int InputTokens { get; init; }
+	public int OutputTokens { get; init; }
+	public int CacheRead { get; init; }
+	public int CacheWrite { get; init; }
+	public decimal CostUsd { get; init; }
+	public string? Model { get; init; }
 }

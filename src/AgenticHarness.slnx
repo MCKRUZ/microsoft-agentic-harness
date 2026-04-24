@@ -2,14 +2,6 @@
   <Folder Name="/Dashboards/">
     <File Path="../Dashboards/docker-compose.yml" />
     <File Path="../Dashboards/prometheus.yml" />
-    <File Path="../Dashboards/StartAllDashboards.bat" />
-    <File Path="../Dashboards/StopAllDashboards.bat" />
-    <File Path="../Dashboards/DashboardLogs.bat" />
-    <File Path="../Dashboards/mission-control.html" />
-    <File Path="../Dashboards/agent-intelligence.html" />
-    <File Path="../Dashboards/tool-operations.html" />
-    <File Path="../Dashboards/safety-compliance.html" />
-    <File Path="../Dashboards/cost-analytics.html" />
     <Folder Name="/Dashboards/Grafana Dashboards/">
       <File Path="../Dashboards/Grafana Dashboards/agentFramework.json" />
       <File Path="../Dashboards/Grafana Dashboards/tokenUsage.json" />
@@ -29,48 +21,209 @@
     <File Path="Directory.Packages.props" />
   </Folder>
   <Folder Name="/Domain/">
-    <Project Path="Content/Domain/Domain.Common/Domain.Common.csproj" />
-    <Project Path="Content/Domain/Domain.AI/Domain.AI.csproj" />
+    <Project Path="Content/Domain/Domain.AI/Domain.AI.csproj">
+      <BuildType Solution="Debug-AgentHub-All|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-Dashboard|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-WebUI|*" Project="Debug" />
+    </Project>
+    <Project Path="Content/Domain/Domain.Common/Domain.Common.csproj">
+      <BuildType Solution="Debug-AgentHub-All|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-Dashboard|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-WebUI|*" Project="Debug" />
+    </Project>
   </Folder>
+  <Configurations>
+    <BuildType Name="Debug" />
+    <BuildType Name="Debug-AgentHub-All" />
+    <BuildType Name="Debug-AgentHub-Dashboard" />
+    <BuildType Name="Debug-AgentHub-WebUI" />
+    <BuildType Name="Release" />
+  </Configurations>
   <Folder Name="/Application/">
-    <Project Path="Content/Application/Application.Common/Application.Common.csproj" />
-    <Project Path="Content/Application/Application.AI.Common/Application.AI.Common.csproj" />
-    <Project Path="Content/Application/Application.Core/Application.Core.csproj" />
+    <Project Path="Content/Application/Application.AI.Common/Application.AI.Common.csproj">
+      <BuildType Solution="Debug-AgentHub-All|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-Dashboard|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-WebUI|*" Project="Debug" />
+    </Project>
+    <Project Path="Content/Application/Application.Common/Application.Common.csproj">
+      <BuildType Solution="Debug-AgentHub-All|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-Dashboard|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-WebUI|*" Project="Debug" />
+    </Project>
+    <Project Path="Content/Application/Application.Core/Application.Core.csproj">
+      <BuildType Solution="Debug-AgentHub-All|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-Dashboard|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-WebUI|*" Project="Debug" />
+    </Project>
   </Folder>
   <Folder Name="/Infrastructure/">
-    <Project Path="Content/Infrastructure/Infrastructure.Common/Infrastructure.Common.csproj" />
-    <Project Path="Content/Infrastructure/Infrastructure.AI/Infrastructure.AI.csproj" />
-    <Project Path="Content/Infrastructure/Infrastructure.APIAccess/Infrastructure.APIAccess.csproj" />
-    <Project Path="Content/Infrastructure/Infrastructure.AI.Connectors/Infrastructure.AI.Connectors.csproj" />
-    <Project Path="Content/Infrastructure/Infrastructure.Observability/Infrastructure.Observability.csproj" />
-    <Project Path="Content/Infrastructure/Infrastructure.AI.MCP/Infrastructure.AI.MCP.csproj" />
-    <Project Path="Content/Infrastructure/Infrastructure.AI.MCPServer/Infrastructure.AI.MCPServer.csproj" />
-    <Project Path="Content/Infrastructure/Infrastructure.AI.RAG/Infrastructure.AI.RAG.csproj" />
+    <Project Path="Content/Infrastructure/Infrastructure.AI.Connectors/Infrastructure.AI.Connectors.csproj">
+      <BuildType Solution="Debug-AgentHub-All|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-Dashboard|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-WebUI|*" Project="Debug" />
+    </Project>
+    <Project Path="Content/Infrastructure/Infrastructure.AI.KnowledgeGraph/Infrastructure.AI.KnowledgeGraph.csproj">
+      <BuildType Solution="Debug-AgentHub-All|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-Dashboard|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-WebUI|*" Project="Debug" />
+    </Project>
+    <Project Path="Content/Infrastructure/Infrastructure.AI.MCP/Infrastructure.AI.MCP.csproj">
+      <BuildType Solution="Debug-AgentHub-All|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-Dashboard|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-WebUI|*" Project="Debug" />
+    </Project>
+    <Project Path="Content/Infrastructure/Infrastructure.AI.MCPServer/Infrastructure.AI.MCPServer.csproj">
+      <BuildType Solution="Debug-AgentHub-All|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-Dashboard|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-WebUI|*" Project="Debug" />
+    </Project>
+    <Project Path="Content/Infrastructure/Infrastructure.AI.RAG/Infrastructure.AI.RAG.csproj">
+      <BuildType Solution="Debug-AgentHub-All|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-Dashboard|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-WebUI|*" Project="Debug" />
+    </Project>
+    <Project Path="Content/Infrastructure/Infrastructure.AI/Infrastructure.AI.csproj">
+      <BuildType Solution="Debug-AgentHub-All|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-Dashboard|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-WebUI|*" Project="Debug" />
+    </Project>
+    <Project Path="Content/Infrastructure/Infrastructure.APIAccess/Infrastructure.APIAccess.csproj">
+      <BuildType Solution="Debug-AgentHub-All|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-Dashboard|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-WebUI|*" Project="Debug" />
+    </Project>
+    <Project Path="Content/Infrastructure/Infrastructure.Common/Infrastructure.Common.csproj">
+      <BuildType Solution="Debug-AgentHub-All|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-Dashboard|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-WebUI|*" Project="Debug" />
+    </Project>
+    <Project Path="Content/Infrastructure/Infrastructure.Observability/Infrastructure.Observability.csproj">
+      <BuildType Solution="Debug-AgentHub-All|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-Dashboard|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-WebUI|*" Project="Debug" />
+    </Project>
   </Folder>
   <Folder Name="/Presentation/">
-    <Project Path="Content/Presentation/Presentation.Common/Presentation.Common.csproj" />
-    <Project Path="Content/Presentation/Presentation.LoggerUI/Presentation.LoggerUI.csproj" />
-    <Project Path="Content/Presentation/Presentation.ConsoleUI/Presentation.ConsoleUI.csproj" />
-    <Project Path="Content/Presentation/Presentation.AgentHub/Presentation.AgentHub.csproj" />
-    <Project Path="Content/Presentation/Presentation.WebUI/Presentation.WebUI.esproj">
+    <Project Path="Content/Presentation/Presentation.AgentHub/Presentation.AgentHub.csproj">
+      <BuildType Solution="Debug-AgentHub-Dashboard|*" Project="Debug-Dashboard" />
+      <BuildType Solution="Debug-AgentHub-WebUI|*" Project="Debug-WebUI" />
+    </Project>
+    <Project Path="Content/Presentation/Presentation.Common/Presentation.Common.csproj">
+      <BuildType Solution="Debug-AgentHub-All|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-Dashboard|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-WebUI|*" Project="Debug" />
+    </Project>
+    <Project Path="Content/Presentation/Presentation.ConsoleUI/Presentation.ConsoleUI.csproj">
+      <BuildType Solution="Debug-AgentHub-All|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-Dashboard|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-WebUI|*" Project="Debug" />
+    </Project>
+    <Project Path="Content/Presentation/Presentation.Dashboard/Presentation.Dashboard.esproj">
+      <BuildType Solution="Debug-AgentHub-All|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-Dashboard|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-WebUI|*" Project="Debug" />
       <Build />
+      <Deploy Solution="Debug-AgentHub-All|*" />
+      <Deploy Solution="Debug-AgentHub-Dashboard|*" />
+      <Deploy Solution="Debug-AgentHub-WebUI|*" />
+      <Deploy Solution="Release|*" />
+    </Project>
+    <Project Path="Content/Presentation/Presentation.LoggerUI/Presentation.LoggerUI.csproj">
+      <BuildType Solution="Debug-AgentHub-All|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-Dashboard|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-WebUI|*" Project="Debug" />
+    </Project>
+    <Project Path="Content/Presentation/Presentation.WebUI/Presentation.WebUI.esproj">
+      <BuildType Solution="Debug-AgentHub-All|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-Dashboard|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-WebUI|*" Project="Debug" />
+      <Build />
+      <Deploy Solution="Debug-AgentHub-All|*" />
+      <Deploy Solution="Debug-AgentHub-Dashboard|*" />
+      <Deploy Solution="Debug-AgentHub-WebUI|*" />
       <Deploy Solution="Release|*" />
     </Project>
   </Folder>
   <Folder Name="/Tests/">
-    <Project Path="Content/Tests/Domain.Common.Tests/Domain.Common.Tests.csproj" />
-    <Project Path="Content/Tests/Domain.AI.Tests/Domain.AI.Tests.csproj" />
-    <Project Path="Content/Tests/Application.Common.Tests/Application.Common.Tests.csproj" />
-    <Project Path="Content/Tests/Application.AI.Common.Tests/Application.AI.Common.Tests.csproj" />
-    <Project Path="Content/Tests/Application.Core.Tests/Application.Core.Tests.csproj" />
-    <Project Path="Content/Tests/Infrastructure.Common.Tests/Infrastructure.Common.Tests.csproj" />
-    <Project Path="Content/Tests/Infrastructure.AI.Tests/Infrastructure.AI.Tests.csproj" />
-    <Project Path="Content/Tests/Infrastructure.AI.Connectors.Tests/Infrastructure.AI.Connectors.Tests.csproj" />
-    <Project Path="Content/Tests/Infrastructure.AI.MCP.Tests/Infrastructure.AI.MCP.Tests.csproj" />
-    <Project Path="Content/Tests/Infrastructure.AI.MCPServer.Tests/Infrastructure.AI.MCPServer.Tests.csproj" />
-    <Project Path="Content/Tests/Infrastructure.APIAccess.Tests/Infrastructure.APIAccess.Tests.csproj" />
-    <Project Path="Content/Tests/Infrastructure.Observability.Tests/Infrastructure.Observability.Tests.csproj" />
-    <Project Path="Content/Tests/Presentation.AgentHub.Tests/Presentation.AgentHub.Tests.csproj" />
-    <Project Path="Content/Tests/Presentation.Common.Tests/Presentation.Common.Tests.csproj" />
+    <Project Path="Content/Tests/Application.AI.Common.Tests/Application.AI.Common.Tests.csproj">
+      <BuildType Solution="Debug-AgentHub-All|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-Dashboard|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-WebUI|*" Project="Debug" />
+    </Project>
+    <Project Path="Content/Tests/Application.Common.Tests/Application.Common.Tests.csproj">
+      <BuildType Solution="Debug-AgentHub-All|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-Dashboard|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-WebUI|*" Project="Debug" />
+    </Project>
+    <Project Path="Content/Tests/Application.Core.Tests/Application.Core.Tests.csproj">
+      <BuildType Solution="Debug-AgentHub-All|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-Dashboard|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-WebUI|*" Project="Debug" />
+    </Project>
+    <Project Path="Content/Tests/Domain.AI.Tests/Domain.AI.Tests.csproj">
+      <BuildType Solution="Debug-AgentHub-All|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-Dashboard|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-WebUI|*" Project="Debug" />
+    </Project>
+    <Project Path="Content/Tests/Domain.Common.Tests/Domain.Common.Tests.csproj">
+      <BuildType Solution="Debug-AgentHub-All|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-Dashboard|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-WebUI|*" Project="Debug" />
+    </Project>
+    <Project Path="Content/Tests/Infrastructure.AI.Connectors.Tests/Infrastructure.AI.Connectors.Tests.csproj">
+      <BuildType Solution="Debug-AgentHub-All|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-Dashboard|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-WebUI|*" Project="Debug" />
+    </Project>
+    <Project Path="Content/Tests/Infrastructure.AI.KnowledgeGraph.Tests/Infrastructure.AI.KnowledgeGraph.Tests.csproj">
+      <BuildType Solution="Debug-AgentHub-All|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-Dashboard|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-WebUI|*" Project="Debug" />
+    </Project>
+    <Project Path="Content/Tests/Infrastructure.AI.MCP.Tests/Infrastructure.AI.MCP.Tests.csproj">
+      <BuildType Solution="Debug-AgentHub-All|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-Dashboard|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-WebUI|*" Project="Debug" />
+    </Project>
+    <Project Path="Content/Tests/Infrastructure.AI.MCPServer.Tests/Infrastructure.AI.MCPServer.Tests.csproj">
+      <BuildType Solution="Debug-AgentHub-All|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-Dashboard|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-WebUI|*" Project="Debug" />
+    </Project>
+    <Project Path="Content/Tests/Infrastructure.AI.RAG.Tests/Infrastructure.AI.RAG.Tests.csproj">
+      <BuildType Solution="Debug-AgentHub-All|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-Dashboard|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-WebUI|*" Project="Debug" />
+    </Project>
+    <Project Path="Content/Tests/Infrastructure.AI.Tests/Infrastructure.AI.Tests.csproj">
+      <BuildType Solution="Debug-AgentHub-All|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-Dashboard|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-WebUI|*" Project="Debug" />
+    </Project>
+    <Project Path="Content/Tests/Infrastructure.APIAccess.Tests/Infrastructure.APIAccess.Tests.csproj">
+      <BuildType Solution="Debug-AgentHub-All|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-Dashboard|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-WebUI|*" Project="Debug" />
+    </Project>
+    <Project Path="Content/Tests/Infrastructure.Common.Tests/Infrastructure.Common.Tests.csproj">
+      <BuildType Solution="Debug-AgentHub-All|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-Dashboard|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-WebUI|*" Project="Debug" />
+    </Project>
+    <Project Path="Content/Tests/Infrastructure.Observability.Tests/Infrastructure.Observability.Tests.csproj">
+      <BuildType Solution="Debug-AgentHub-All|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-Dashboard|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-WebUI|*" Project="Debug" />
+    </Project>
+    <Project Path="Content/Tests/Presentation.AgentHub.Tests/Presentation.AgentHub.Tests.csproj">
+      <BuildType Solution="Debug-AgentHub-All|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-Dashboard|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-WebUI|*" Project="Debug" />
+    </Project>
+    <Project Path="Content/Tests/Presentation.Common.Tests/Presentation.Common.Tests.csproj">
+      <BuildType Solution="Debug-AgentHub-All|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-Dashboard|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-WebUI|*" Project="Debug" />
+    </Project>
   </Folder>
 </Solution>

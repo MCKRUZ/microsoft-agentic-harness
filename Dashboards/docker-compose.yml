@@ -42,6 +42,43 @@ services:
           cpus: "0.25"
           memory: 256M
 
+  postgres:
+    image: postgres:16-alpine
+    container_name: agentic-harness-postgres
+
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./init-db:/docker-entrypoint-initdb.d:ro
+
+    ports:
+      - "5432:5432"
+
+    environment:
+      - POSTGRES_USER=observability
+      - POSTGRES_PASSWORD=observability
+      - POSTGRES_DB=observability
+
+    restart: unless-stopped
+
+    networks:
+      - agentic-harness-otel
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U observability"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+        reservations:
+          cpus: "0.25"
+          memory: 128M
+
   grafana:
     image: grafana/grafana:11.4.0
     container_name: agentic-harness-grafana
@@ -68,6 +105,8 @@ services:
     depends_on:
       prometheus:
         condition: service_healthy
+      postgres:
+        condition: service_healthy
 
     healthcheck:
       test: ["CMD", "wget", "--spider", "--quiet", "http://localhost:3000/api/health"]
@@ -88,6 +127,7 @@ services:
 volumes:
   prometheus-data:
   grafana-data:
+  postgres-data:
 
 networks:
   agentic-harness-otel:

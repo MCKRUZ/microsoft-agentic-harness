@@ -8,6 +8,7 @@
     <RootNamespace>Infrastructure.AI.Tests</RootNamespace>
     <AssemblyName>Infrastructure.AI.Tests</AssemblyName>
     <UserSecretsId>agentic-harness-console-ui</UserSecretsId>
+    <Configurations>Debug;Release;Debug-AgentHub-All;Debug-AgentHub-WebUI;Debug-AgentHub-Dashboard</Configurations>
   </PropertyGroup>
 
   <ItemGroup>

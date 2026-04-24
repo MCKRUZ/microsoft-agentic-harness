@@ -6,6 +6,8 @@
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
     <RootNamespace>Infrastructure.Observability.Tests</RootNamespace>
+    <NuGetPackagePruning>false</NuGetPackagePruning>
+    <Configurations>Debug;Release;Debug-AgentHub-All;Debug-AgentHub-WebUI;Debug-AgentHub-Dashboard</Configurations>
   </PropertyGroup>
 
   <ItemGroup>
@@ -13,6 +15,7 @@
     <PackageReference Include="FluentAssertions" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" />
     <PackageReference Include="Moq" />
+    <PackageReference Include="Npgsql" />
     <PackageReference Include="OpenTelemetry" />
     <PackageReference Include="xunit" />
     <PackageReference Include="xunit.runner.visualstudio" />

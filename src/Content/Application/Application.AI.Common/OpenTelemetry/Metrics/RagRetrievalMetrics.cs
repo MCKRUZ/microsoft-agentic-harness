@@ -25,6 +25,11 @@ public static class RagRetrievalMetrics
         AppInstrument.Meter.CreateHistogram<double>(
             RagConventions.RerankDuration, "{ms}", "Reranking duration");
 
+    /// <summary>Total retrieval queries executed. Tags: rag.retrieval.strategy.</summary>
+    public static Counter<long> Queries { get; } =
+        AppInstrument.Meter.CreateCounter<long>(
+            RagConventions.RetrievalQueries, "{query}", "Total retrieval queries executed");
+
     /// <summary>Total retrieval pipeline errors.</summary>
     public static Counter<long> Errors { get; } =
         AppInstrument.Meter.CreateCounter<long>(

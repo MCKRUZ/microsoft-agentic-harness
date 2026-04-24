@@ -1,5 +1,7 @@
+using System.Diagnostics;
 using Application.AI.Common.Interfaces;
 using Domain.AI.Skills;
+using Domain.Common.Extensions;
 using MediatR;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
@@ -15,15 +17,21 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 {
 	private readonly IAgentFactory _agentFactory;
 	private readonly IAgentMetadataRegistry _agentRegistry;
+	private readonly IObservabilityStore _observabilityStore;
+	private readonly ILlmUsageCapture _usageCapture;
 	private readonly ILogger<ExecuteAgentTurnCommandHandler> _logger;
 
 	public ExecuteAgentTurnCommandHandler(
 		IAgentFactory agentFactory,
 		IAgentMetadataRegistry agentRegistry,
+		IObservabilityStore observabilityStore,
+		ILlmUsageCapture usageCapture,
 		ILogger<ExecuteAgentTurnCommandHandler> logger)
 	{
 		_agentFactory = agentFactory;
 		_agentRegistry = agentRegistry;
+		_observabilityStore = observabilityStore;
+		_usageCapture = usageCapture;
 		_logger = logger;
 	}
 
@@ -56,8 +64,20 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 				new(ChatRole.User, request.UserMessage)
 			};
 
+			await _observabilityStore.RecordMessageAsync(
+				request.ObservabilitySessionId, request.TurnNumber, "user", "user_message",
+				request.UserMessage.Truncate(500), null, 0, 0, 0, 0, 0m, 0m, null, cancellationToken);
+
+			// Clear stale usage data before the agent turn
+			_usageCapture.TakeSnapshot();
+
 			// Execute via AIAgent.RunAsync (MS Agent Framework API)
+			var turnSw = Stopwatch.StartNew();
 			var response = await agent.RunAsync(messages, cancellationToken: cancellationToken);
+			turnSw.Stop();
+
+			// Capture accumulated token usage from all LLM calls during this turn
+			var usage = _usageCapture.TakeSnapshot();
 
 			// Extract response content and tool invocations
 			var (responseText, toolsInvoked) = ExtractContentAndTools(response);
@@ -68,21 +88,42 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 					request.AgentName, request.TurnNumber, toolsInvoked.Count, string.Join(", ", toolsInvoked));
 			}
 
+			var source = toolsInvoked.Count > 0 ? "assistant_mixed" : "assistant_text";
+			await _observabilityStore.RecordMessageAsync(
+				request.ObservabilitySessionId, request.TurnNumber, "assistant", source,
+				responseText.Truncate(500), usage.Model,
+				usage.InputTokens, usage.OutputTokens, usage.CacheRead, usage.CacheWrite,
+				usage.CostUsd, usage.CacheHitPct,
+				toolsInvoked.Count > 0 ? toolsInvoked.ToArray() : null, cancellationToken);
+
+			foreach (var toolName in toolsInvoked)
+			{
+				await _observabilityStore.RecordToolExecutionAsync(
+					request.ObservabilitySessionId, null, toolName, "keyed_di",
+					0, "success", null, null, cancellationToken);
+			}
+
 			// Build updated history (add user message + assistant response)
 			var updatedHistory = new List<ChatMessage>(messages)
 			{
 				new(ChatRole.Assistant, responseText)
 			};
 
-			_logger.LogInformation("Agent {AgentName} turn {TurnNumber} completed",
-				request.AgentName, request.TurnNumber);
+			_logger.LogInformation("Agent {AgentName} turn {TurnNumber} completed — {InputTokens} in, {OutputTokens} out, ${Cost:F4}",
+				request.AgentName, request.TurnNumber, usage.InputTokens, usage.OutputTokens, usage.CostUsd);
 
 			return new AgentTurnResult
 			{
 				Success = true,
 				Response = responseText,
 				UpdatedHistory = updatedHistory,
-				ToolsInvoked = toolsInvoked
+				ToolsInvoked = toolsInvoked,
+				InputTokens = usage.InputTokens,
+				OutputTokens = usage.OutputTokens,
+				CacheRead = usage.CacheRead,
+				CacheWrite = usage.CacheWrite,
+				CostUsd = usage.CostUsd,
+				Model = usage.Model
 			};
 		}
 		catch (Exception ex)
@@ -94,10 +135,11 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 				Success = false,
 				Response = string.Empty,
 				UpdatedHistory = [.. request.ConversationHistory, new ChatMessage(ChatRole.User, request.UserMessage)],
-				Error = ex.Message
+				Error = "An internal error occurred during the agent turn."
 			};
 		}
 	}
+
 
 	/// <summary>
 	/// Extracts text content and tool invocation names from the agent RunAsync response.

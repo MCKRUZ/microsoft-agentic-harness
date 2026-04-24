@@ -28,6 +28,9 @@ appsettings.*.json
 .env*
 secrets/
 
+## Node
+node_modules/
+
 ## OS
 Thumbs.db
 .DS_Store
@@ -60,3 +63,5 @@ coverage-out*/
 infra-cov*/
 parse_coverage.py
 coverage-run*.log
+temp-cov*/
+src/Content/Presentation/Presentation.ConsoleUI/traces/

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Application.AI.Common.Interfaces;
 using Application.AI.Common.OpenTelemetry.Metrics;
 using Application.Core.CQRS.Agents.ExecuteAgentTurn;
 using Domain.AI.Telemetry.Conventions;
@@ -14,13 +15,16 @@ namespace Application.Core.CQRS.Agents.RunConversation;
 public class RunConversationCommandHandler : IRequestHandler<RunConversationCommand, ConversationResult>
 {
 	private readonly IMediator _mediator;
+	private readonly IObservabilityStore _observabilityStore;
 	private readonly ILogger<RunConversationCommandHandler> _logger;
 
 	public RunConversationCommandHandler(
 		IMediator mediator,
+		IObservabilityStore observabilityStore,
 		ILogger<RunConversationCommandHandler> logger)
 	{
 		_mediator = mediator;
+		_observabilityStore = observabilityStore;
 		_logger = logger;
 	}
 
@@ -33,6 +37,14 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 		var turns = new List<TurnSummary>();
 		var totalToolInvocations = 0;
 		AgentTurnResult? lastResult = null;
+
+		// Running token/cost aggregates for session-level metrics
+		int totalInputTokens = 0, totalOutputTokens = 0, totalCacheRead = 0, totalCacheWrite = 0;
+		decimal totalCostUsd = 0m;
+		string? sessionModel = null;
+
+		var dbSessionId = await _observabilityStore.StartSessionAsync(
+			request.ConversationId, request.AgentName, null, cancellationToken);
 
 		foreach (var (userMessage, index) in request.UserMessages.Select((m, i) => (m, i)))
 		{
@@ -59,7 +71,8 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 				UserMessage = userMessage,
 				ConversationHistory = lastResult?.UpdatedHistory ?? [],
 				ConversationId = request.ConversationId,
-				TurnNumber = index + 1
+				TurnNumber = index + 1,
+				ObservabilitySessionId = dbSessionId
 			};
 
 			lastResult = await _mediator.Send(turnCommand, cancellationToken);
@@ -68,6 +81,9 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 			{
 				_logger.LogError("Conversation turn {Turn} failed for {AgentName}: {Error}",
 					index + 1, request.AgentName, lastResult.Error);
+
+				await _observabilityStore.EndSessionAsync(
+					dbSessionId, "error", lastResult.Error, cancellationToken);
 
 				return new ConversationResult
 				{
@@ -88,6 +104,22 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 			});
 
 			totalToolInvocations += lastResult.ToolsInvoked.Count;
+
+			// Accumulate token/cost metrics from this turn
+			totalInputTokens += lastResult.InputTokens;
+			totalOutputTokens += lastResult.OutputTokens;
+			totalCacheRead += lastResult.CacheRead;
+			totalCacheWrite += lastResult.CacheWrite;
+			totalCostUsd += lastResult.CostUsd;
+			sessionModel ??= lastResult.Model;
+
+			var totalInput = totalInputTokens + totalCacheRead;
+			var cacheHitRate = totalInput > 0 ? (decimal)totalCacheRead / totalInput : 0m;
+
+			await _observabilityStore.UpdateSessionMetricsAsync(
+				dbSessionId, index + 1, totalToolInvocations, 0,
+				totalInputTokens, totalOutputTokens, totalCacheRead, totalCacheWrite,
+				totalCostUsd, Math.Round(cacheHitRate, 4), sessionModel, cancellationToken);
 
 			// Report progress with response
 			if (request.OnProgress != null)
@@ -111,6 +143,9 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 		OrchestrationMetrics.TurnsPerConversation.Record(turns.Count, agentTag);
 		if (totalToolInvocations > 0)
 			OrchestrationMetrics.ToolCalls.Add(totalToolInvocations, agentTag);
+
+		await _observabilityStore.EndSessionAsync(
+			dbSessionId, "completed", null, cancellationToken);
 
 		return new ConversationResult
 		{

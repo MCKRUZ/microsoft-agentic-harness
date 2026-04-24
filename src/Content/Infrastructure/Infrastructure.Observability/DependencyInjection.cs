@@ -2,9 +2,11 @@ using Application.AI.Common.Interfaces;
 using Application.Common.Interfaces.Telemetry;
 using Domain.Common.Config;
 using Infrastructure.Observability.Exporters;
+using Infrastructure.Observability.Persistence;
 using Infrastructure.Observability.Processors;
 using Infrastructure.Observability.Services;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace Infrastructure.Observability;
@@ -57,6 +59,18 @@ public static class DependencyInjection
 
         // Session health service — ObservableGauge reporting per-agent health score
         services.AddSingleton<ISessionHealthTracker, SessionHealthService>();
+
+        // Observability store — PostgreSQL persistence for session/message/tool/audit data
+        services.AddSingleton<IObservabilityStore>(sp =>
+        {
+            var config = sp.GetRequiredService<IOptionsMonitor<AppConfig>>();
+            var connStr = config.CurrentValue.Observability.PostgresConnectionString;
+            if (string.IsNullOrWhiteSpace(connStr))
+                return new NullObservabilityStore();
+            return new PostgresObservabilityStore(
+                connStr,
+                sp.GetRequiredService<ILogger<PostgresObservabilityStore>>());
+        });
 
         return services;
     }

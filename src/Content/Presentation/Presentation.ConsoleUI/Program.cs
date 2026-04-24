@@ -41,6 +41,7 @@ public class Program
 		services.AddTransient<A2AExample>();
 		services.AddTransient<SetupSecretsExample>();
 		services.AddTransient<OptimizeExample>();
+		services.AddTransient<RagPipelineExample>();
 		services.AddTransient<App>();
 
 		var serviceProvider = services.BuildServiceProvider();

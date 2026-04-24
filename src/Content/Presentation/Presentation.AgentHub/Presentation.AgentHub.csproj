@@ -4,17 +4,37 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <SpaRoot>..\Presentation.WebUI\</SpaRoot>
-    <SpaProxyServerUrl>http://localhost:5173</SpaProxyServerUrl>
-    <SpaProxyLaunchCommand>npm run dev</SpaProxyLaunchCommand>
+    <Configurations>Debug;Debug-AgentHub-WebUI;Debug-AgentHub-Dashboard;Debug-AgentHub-All;Release</Configurations>
     <!-- Shares the ConsoleUI secrets store so Endpoint/ApiKey/ClientType values
          configured for the console host also apply here without duplication. -->
     <UserSecretsId>agentic-harness-console-ui</UserSecretsId>
   </PropertyGroup>
 
+  <!-- SPA Proxy — configuration selects which frontend(s) to launch -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Debug-AgentHub-WebUI'">
+    <SpaRoot>..\Presentation.WebUI\</SpaRoot>
+    <SpaProxyServerUrl>http://localhost:5173</SpaProxyServerUrl>
+    <SpaProxyLaunchCommand>npm run dev</SpaProxyLaunchCommand>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)' == 'Debug-AgentHub-Dashboard'">
+    <SpaRoot>..\Presentation.Dashboard\</SpaRoot>
+    <SpaProxyServerUrl>http://localhost:5174</SpaProxyServerUrl>
+    <SpaProxyLaunchCommand>npm run dev</SpaProxyLaunchCommand>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)' == 'Debug-AgentHub-All'">
+    <SpaRoot>.\</SpaRoot>
+    <SpaProxyServerUrl>http://localhost:5173</SpaProxyServerUrl>
+    <SpaProxyLaunchCommand>cmd.exe /c start-all-spas.cmd</SpaProxyLaunchCommand>
+  </PropertyGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\Presentation.Common\Presentation.Common.csproj" />
-    <ProjectReference Include="..\Presentation.WebUI\Presentation.WebUI.esproj">
+    <ProjectReference Condition="'$(Configuration)' == 'Debug-AgentHub-WebUI' or '$(Configuration)' == 'Debug-AgentHub-All'" Include="..\Presentation.WebUI\Presentation.WebUI.esproj">
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+    </ProjectReference>
+    <ProjectReference Condition="'$(Configuration)' == 'Debug-AgentHub-Dashboard' or '$(Configuration)' == 'Debug-AgentHub-All'" Include="..\Presentation.Dashboard\Presentation.Dashboard.esproj">
       <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
     </ProjectReference>
   </ItemGroup>
@@ -25,8 +45,7 @@
     <PackageReference Include="OpenTelemetry.Extensions.Hosting" />
     <!-- Microsoft.Identity.Web — already in Directory.Packages.props -->
     <PackageReference Include="Microsoft.Identity.Web" />
-    <!-- SPA Proxy launches the Vite dev server automatically when AgentHub starts -->
-    <PackageReference Include="Microsoft.AspNetCore.SpaProxy" />
+    <PackageReference Condition="$(Configuration.StartsWith('Debug-AgentHub'))" Include="Microsoft.AspNetCore.SpaProxy" />
   </ItemGroup>
 
   <ItemGroup>

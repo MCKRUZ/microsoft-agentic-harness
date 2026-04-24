@@ -25,9 +25,15 @@ public class ExecuteAgentTurnCommandHandlerTests
             .Setup(r => r.TryGet(It.IsAny<string>()))
             .Returns((Domain.AI.Agents.AgentDefinition?)null);
 
+        var usageCapture = new Mock<ILlmUsageCapture>();
+        usageCapture.Setup(c => c.TakeSnapshot())
+            .Returns(new LlmUsageSnapshot(0, 0, 0, 0, null, 0m, 0m));
+
         _handler = new ExecuteAgentTurnCommandHandler(
             _agentFactory.Object,
             _agentRegistry.Object,
+            new Mock<IObservabilityStore>().Object,
+            usageCapture.Object,
             NullLogger<ExecuteAgentTurnCommandHandler>.Instance);
     }
 
@@ -111,7 +117,7 @@ public class ExecuteAgentTurnCommandHandlerTests
         // Assert
         result.Success.Should().BeFalse();
         result.Response.Should().BeEmpty();
-        result.Error.Should().Be("Agent not found");
+        result.Error.Should().Be("An internal error occurred during the agent turn.");
     }
 
     [Fact]
@@ -134,7 +140,7 @@ public class ExecuteAgentTurnCommandHandlerTests
         // Assert
         result.Success.Should().BeFalse();
         result.Response.Should().BeEmpty();
-        result.Error.Should().Be("Model timed out");
+        result.Error.Should().Be("An internal error occurred during the agent turn.");
     }
 
     [Fact]

@@ -15,6 +15,7 @@ using Presentation.AgentHub.Interfaces;
 using Presentation.AgentHub.Config;
 using Presentation.AgentHub.Services;
 using Presentation.AgentHub.Telemetry;
+using Microsoft.Extensions.Options;
 
 namespace Presentation.AgentHub;
 
@@ -147,6 +148,16 @@ public static class DependencyInjection
 
         services.Configure<AgentHubConfig>(
             configuration.GetSection("AppConfig:AgentHub"));
+
+        services.Configure<PrometheusConfig>(
+            configuration.GetSection("AppConfig:Prometheus"));
+
+        services.AddHttpClient<IPrometheusQueryService, PrometheusQueryService>((sp, client) =>
+        {
+            var config = sp.GetRequiredService<IOptions<PrometheusConfig>>().Value;
+            client.BaseAddress = new Uri(config.BaseUrl.TrimEnd('/') + '/');
+            client.Timeout = TimeSpan.FromSeconds(config.TimeoutSeconds);
+        });
 
         // NullMcpPromptProvider is the default when no real implementation is registered.
         // Real implementations (e.g. from Infrastructure) override this via AddSingleton<IMcpPromptProvider, T>

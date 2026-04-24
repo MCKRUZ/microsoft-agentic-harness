@@ -79,6 +79,9 @@ public static class DependencyInjection
         services.AddSingleton<IContextBudgetTracker, ContextBudgetTracker>();
         services.AddTransient<ITieredContextAssembler, TieredContextAssembler>();
 
+        // LLM usage capture — scoped so middleware and handler share the same instance per turn
+        services.AddScoped<ILlmUsageCapture, Services.LlmUsageCapture>();
+
         return services;
     }
 }

@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Application.AI.Common.Interfaces.RAG;
+using Application.AI.Common.OpenTelemetry.Metrics;
 using Domain.AI.RAG.Enums;
 using Domain.AI.RAG.Models;
 using Domain.AI.Telemetry.Conventions;
@@ -44,6 +45,7 @@ public sealed class RagOrchestrator : IRagOrchestrator
     private readonly ICragEvaluator _cragEvaluator;
     private readonly IRagContextAssembler _contextAssembler;
     private readonly IGraphRagService _graphRagService;
+    private readonly IFeedbackWeightedScorer? _feedbackScorer;
     private readonly QueryRouter _queryRouter;
     private readonly IOptionsMonitor<AppConfig> _configMonitor;
     private readonly ILogger<RagOrchestrator> _logger;
@@ -56,6 +58,7 @@ public sealed class RagOrchestrator : IRagOrchestrator
     /// <param name="cragEvaluator">CRAG relevance evaluator.</param>
     /// <param name="contextAssembler">Final context assembly stage.</param>
     /// <param name="graphRagService">Knowledge graph-based retrieval service.</param>
+    /// <param name="feedbackScorer">Optional feedback-weighted scorer. Null when feedback is disabled.</param>
     /// <param name="queryRouter">Query classification and transformation router.</param>
     /// <param name="configMonitor">Application configuration monitor.</param>
     /// <param name="logger">Logger for recording pipeline decisions.</param>
@@ -65,6 +68,7 @@ public sealed class RagOrchestrator : IRagOrchestrator
         ICragEvaluator cragEvaluator,
         IRagContextAssembler contextAssembler,
         IGraphRagService graphRagService,
+        IFeedbackWeightedScorer? feedbackScorer,
         QueryRouter queryRouter,
         IOptionsMonitor<AppConfig> configMonitor,
         ILogger<RagOrchestrator> logger)
@@ -83,6 +87,7 @@ public sealed class RagOrchestrator : IRagOrchestrator
         _cragEvaluator = cragEvaluator;
         _contextAssembler = contextAssembler;
         _graphRagService = graphRagService;
+        _feedbackScorer = feedbackScorer;
         _queryRouter = queryRouter;
         _configMonitor = configMonitor;
         _logger = logger;
@@ -97,24 +102,37 @@ public sealed class RagOrchestrator : IRagOrchestrator
         CancellationToken cancellationToken = default)
     {
         using var activity = ActivitySource.StartActivity("rag.orchestrator.search");
+        var sw = Stopwatch.StartNew();
         var ragConfig = _configMonitor.CurrentValue.AI.Rag;
         var effectiveTopK = topK ?? ragConfig.Retrieval.TopK;
         if (effectiveTopK <= 0) effectiveTopK = DefaultTopK;
 
         // Step 1: Determine retrieval strategy
         var strategy = strategyOverride ?? await ClassifyStrategyAsync(query, cancellationToken);
-        activity?.SetTag(RagConventions.RetrievalStrategy, strategy.ToString().ToLowerInvariant());
+        var strategyTag = strategy.ToString().ToLowerInvariant();
+        activity?.SetTag(RagConventions.RetrievalStrategy, strategyTag);
+
+        var tags = new KeyValuePair<string, object?>(RagConventions.RetrievalStrategy, strategyTag);
+        RagRetrievalMetrics.Queries.Add(1, tags);
 
         _logger.LogInformation(
             "RAG orchestrator: Strategy={Strategy}, TopK={TopK}, MaxTokens={MaxTokens}",
             strategy, effectiveTopK, DefaultMaxTokens);
 
-        // Step 2: Route by strategy
-        if (strategy == RetrievalStrategy.GraphRag)
-            return await ExecuteGraphRagAsync(query, cancellationToken);
+        try
+        {
+            // Step 2: Route by strategy
+            if (strategy == RetrievalStrategy.GraphRag)
+                return await ExecuteGraphRagAsync(query, cancellationToken);
 
-        return await ExecuteVectorPipelineAsync(
-            query, effectiveTopK, collectionName, cancellationToken);
+            return await ExecuteVectorPipelineAsync(
+                query, effectiveTopK, collectionName, cancellationToken);
+        }
+        finally
+        {
+            sw.Stop();
+            RagRetrievalMetrics.RetrievalDuration.Record(sw.Elapsed.TotalMilliseconds, tags);
+        }
     }
 
     private async Task<RetrievalStrategy> ClassifyStrategyAsync(
@@ -167,10 +185,16 @@ public sealed class RagOrchestrator : IRagOrchestrator
             }
 
             activity?.SetTag(RagConventions.RetrievalChunksReturned, candidates.Count);
+            RagRetrievalMetrics.ChunksReturned.Record(candidates.Count);
 
             // Rerank
             var reranked = await _reranker.RerankAsync(
                 currentQuery, candidates, topK, cancellationToken);
+
+            // Feedback blending (when enabled)
+            if (_feedbackScorer is not null)
+                reranked = await _feedbackScorer.BlendFeedbackAsync(
+                    reranked, currentQuery, cancellationToken);
 
             // CRAG evaluation
             var evaluation = await _cragEvaluator.EvaluateAsync(

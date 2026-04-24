@@ -1,8 +1,9 @@
-using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
+using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Application.AI.Common.Interfaces.RAG;
+using Domain.AI.KnowledgeGraph.Models;
 using Domain.AI.RAG.Models;
 using Domain.AI.Telemetry.Conventions;
 using Domain.Common.Config;
@@ -13,57 +14,58 @@ using Microsoft.Extensions.Options;
 namespace Infrastructure.AI.RAG.GraphRag;
 
 /// <summary>
-/// Teaching implementation of <see cref="IGraphRagService"/> that demonstrates the
-/// GraphRAG API shape with in-memory entity/relationship storage and LLM-based
-/// entity extraction. Production implementations should use the ManagedCode.GraphRag
-/// NuGet package with PostgreSQL-backed graph storage and the Leiden community
-/// detection algorithm.
+/// High-level <see cref="IGraphRagService"/> implementation that delegates graph storage
+/// to <see cref="IKnowledgeGraphStore"/> and provides LLM-based entity extraction,
+/// global search (community-level summarization), and local search (entity-neighborhood
+/// retrieval).
 /// </summary>
 /// <remarks>
 /// <para>
-/// This skeleton extracts entities and relationships from document chunks via LLM,
-/// stores them in a <see cref="ConcurrentDictionary{TKey,TValue}"/>, and provides
-/// global search (community-level summarization) and local search (entity-neighborhood
-/// retrieval). Community detection is simplified to a single flat level.
+/// This service orchestrates the GraphRAG pipeline: entity extraction via LLM,
+/// graph construction via <see cref="IKnowledgeGraphStore"/>, and search via graph
+/// traversal + LLM synthesis. The graph storage backend is selected via keyed DI
+/// (<c>"in_memory"</c>, <c>"postgresql"</c>, <c>"neo4j"</c>).
 /// </para>
 /// <para>
-/// <strong>Limitations vs. production GraphRAG:</strong>
-/// <list type="bullet">
-///   <item>No Leiden community detection — all entities are in a single community.</item>
-///   <item>No multi-level hierarchy — <c>communityLevel</c> is accepted but ignored.</item>
-///   <item>In-memory storage — data is lost on restart.</item>
-///   <item>No incremental indexing — <see cref="IndexCorpusAsync"/> is additive but not idempotent.</item>
-/// </list>
+/// <strong>Limitations:</strong> Community detection (Leiden algorithm) is not yet
+/// implemented. The <c>communityLevel</c> parameter in <see cref="GlobalSearchAsync"/>
+/// is accepted but all entities are treated as a single community.
 /// </para>
 /// </remarks>
 public sealed class ManagedCodeGraphRagService : IGraphRagService
 {
     private static readonly ActivitySource ActivitySource = new("Infrastructure.AI.RAG.GraphRag");
 
+    private readonly IKnowledgeGraphStore _graphStore;
     private readonly IRagModelRouter _modelRouter;
+    private readonly IProvenanceStamper _provenanceStamper;
     private readonly ILogger<ManagedCodeGraphRagService> _logger;
     private readonly IOptionsMonitor<AppConfig> _configMonitor;
-
-    private readonly ConcurrentDictionary<string, GraphEntity> _entities = new();
-    private readonly ConcurrentDictionary<string, GraphRelationship> _relationships = new();
-    private readonly ConcurrentDictionary<string, DocumentChunk> _chunkIndex = new();
 
     /// <summary>
     /// Initializes a new instance of the <see cref="ManagedCodeGraphRagService"/> class.
     /// </summary>
+    /// <param name="graphStore">The knowledge graph storage backend.</param>
     /// <param name="modelRouter">Routes LLM calls to the appropriate model tier.</param>
+    /// <param name="provenanceStamper">Stamps provenance metadata on extracted entities.</param>
     /// <param name="logger">Logger for recording graph operations.</param>
     /// <param name="configMonitor">Application configuration monitor.</param>
     public ManagedCodeGraphRagService(
+        IKnowledgeGraphStore graphStore,
         IRagModelRouter modelRouter,
+        IProvenanceStamper provenanceStamper,
         ILogger<ManagedCodeGraphRagService> logger,
         IOptionsMonitor<AppConfig> configMonitor)
     {
+        ArgumentNullException.ThrowIfNull(graphStore);
         ArgumentNullException.ThrowIfNull(modelRouter);
+        ArgumentNullException.ThrowIfNull(provenanceStamper);
         ArgumentNullException.ThrowIfNull(logger);
         ArgumentNullException.ThrowIfNull(configMonitor);
 
+        _graphStore = graphStore;
         _modelRouter = modelRouter;
+        _provenanceStamper = provenanceStamper;
         _logger = logger;
         _configMonitor = configMonitor;
     }
@@ -82,31 +84,30 @@ public sealed class ManagedCodeGraphRagService : IGraphRagService
         foreach (var chunk in chunks)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            _chunkIndex.TryAdd(chunk.Id, chunk);
-
             var extracted = await ExtractEntitiesAsync(client, chunk, cancellationToken);
 
-            foreach (var entity in extracted.Entities)
-            {
-                _entities.AddOrUpdate(
-                    entity.Name,
-                    entity,
-                    (_, existing) => existing with
-                    {
-                        ChunkIds = existing.ChunkIds.Concat(entity.ChunkIds).Distinct().ToList()
-                    });
-            }
+            var stamp = _provenanceStamper.CreateStamp(
+                "rag_ingestion", "entity_extraction",
+                sourceDocumentId: chunk.DocumentId);
 
-            foreach (var rel in extracted.Relationships)
-            {
-                var key = $"{rel.Source}|{rel.Predicate}|{rel.Target}";
-                _relationships.TryAdd(key, rel);
-            }
+            var stampedNodes = extracted.Nodes
+                .Select(n => _provenanceStamper.StampNode(n, stamp))
+                .ToList();
+            var stampedEdges = extracted.Edges
+                .Select(e => _provenanceStamper.StampEdge(e, stamp))
+                .ToList();
+
+            if (stampedNodes.Count > 0)
+                await _graphStore.AddNodesAsync(stampedNodes, cancellationToken);
+            if (stampedEdges.Count > 0)
+                await _graphStore.AddEdgesAsync(stampedEdges, cancellationToken);
         }
 
+        var nodeCount = await _graphStore.GetNodeCountAsync(cancellationToken);
+        var edgeCount = await _graphStore.GetEdgeCountAsync(cancellationToken);
         _logger.LogInformation(
             "GraphRAG indexing completed: {EntityCount} entities, {RelCount} relationships",
-            _entities.Count, _relationships.Count);
+            nodeCount, edgeCount);
     }
 
     /// <inheritdoc />
@@ -119,7 +120,8 @@ public sealed class ManagedCodeGraphRagService : IGraphRagService
         activity?.SetTag(RagConventions.GraphCommunityLevel, communityLevel);
         activity?.SetTag(RagConventions.RetrievalStrategy, RagConventions.StrategyValues.GraphRag);
 
-        if (_entities.IsEmpty)
+        var triplets = await _graphStore.GetTripletsAsync([], cancellationToken);
+        if (triplets.Count == 0)
         {
             return new RagAssembledContext
             {
@@ -130,7 +132,7 @@ public sealed class ManagedCodeGraphRagService : IGraphRagService
         }
 
         var client = _modelRouter.GetClientForOperation("graph_global_search");
-        var summary = BuildCommunitySummary();
+        var summary = BuildCommunitySummary(triplets);
 
         var prompt = $$"""
             You are a knowledge graph analyst. Based on the following entity and relationship
@@ -150,8 +152,8 @@ public sealed class ManagedCodeGraphRagService : IGraphRagService
         var text = response.Text ?? string.Empty;
 
         _logger.LogInformation(
-            "GraphRAG global search completed: {EntityCount} entities considered, Level={Level}",
-            _entities.Count, communityLevel);
+            "GraphRAG global search completed: {TripletCount} triplets considered, Level={Level}",
+            triplets.Count, communityLevel);
 
         return new RagAssembledContext
         {
@@ -162,7 +164,7 @@ public sealed class ManagedCodeGraphRagService : IGraphRagService
     }
 
     /// <inheritdoc />
-    public Task<IReadOnlyList<RetrievalResult>> LocalSearchAsync(
+    public async Task<IReadOnlyList<RetrievalResult>> LocalSearchAsync(
         string query,
         int topK,
         CancellationToken cancellationToken = default)
@@ -172,35 +174,73 @@ public sealed class ManagedCodeGraphRagService : IGraphRagService
 
         var queryTerms = query.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
-        var matchedEntities = _entities.Values
-            .Where(e => queryTerms.Any(t =>
-                e.Name.Contains(t, StringComparison.OrdinalIgnoreCase) ||
-                e.Type.Contains(t, StringComparison.OrdinalIgnoreCase)))
-            .ToList();
+        // Full scan + client-side filter. Replace with IKnowledgeGraphStore.SearchNodesAsync for production scale.
+        var triplets = await _graphStore.GetTripletsAsync([], cancellationToken);
+        if (triplets.Count == 0)
+            return [];
 
-        var relatedChunkIds = matchedEntities
-            .SelectMany(e => e.ChunkIds)
-            .Concat(GetNeighborChunkIds(matchedEntities))
-            .Distinct()
-            .ToList();
+        var matchedNodeIds = new HashSet<string>();
+        foreach (var triplet in triplets)
+        {
+            if (queryTerms.Any(t =>
+                triplet.Source.Name.Contains(t, StringComparison.OrdinalIgnoreCase) ||
+                triplet.Source.Type.Contains(t, StringComparison.OrdinalIgnoreCase)))
+                matchedNodeIds.Add(triplet.Source.Id);
 
-        var results = relatedChunkIds
-            .Where(id => _chunkIndex.ContainsKey(id))
+            if (queryTerms.Any(t =>
+                triplet.Target.Name.Contains(t, StringComparison.OrdinalIgnoreCase) ||
+                triplet.Target.Type.Contains(t, StringComparison.OrdinalIgnoreCase)))
+                matchedNodeIds.Add(triplet.Target.Id);
+        }
+
+        if (matchedNodeIds.Count == 0)
+            return [];
+
+        // Get neighbor chunk IDs from matched nodes and their triplets
+        var neighborTriplets = await _graphStore.GetTripletsAsync(
+            matchedNodeIds.ToList(), cancellationToken);
+
+        var allChunkIds = new HashSet<string>();
+        foreach (var t in neighborTriplets)
+        {
+            foreach (var cid in t.Source.ChunkIds) allChunkIds.Add(cid);
+            foreach (var cid in t.Target.ChunkIds) allChunkIds.Add(cid);
+        }
+
+        var nodeTasks = matchedNodeIds.Select(id => _graphStore.GetNodeAsync(id, cancellationToken));
+        var nodes = await Task.WhenAll(nodeTasks);
+        foreach (var node in nodes)
+        {
+            if (node is not null)
+                foreach (var cid in node.ChunkIds) allChunkIds.Add(cid);
+        }
+
+        _logger.LogInformation(
+            "GraphRAG local search: {MatchedEntities} entities matched, {ChunkCount} chunks found",
+            matchedNodeIds.Count, allChunkIds.Count);
+
+        return allChunkIds
+            .Take(topK)
             .Select((id, index) => new RetrievalResult
             {
-                Chunk = _chunkIndex[id],
+                Chunk = new DocumentChunk
+                {
+                    Id = id,
+                    DocumentId = "",
+                    SectionPath = "",
+                    Content = $"[Graph result from entity match — chunk {id}]",
+                    Tokens = 0,
+                    Metadata = new ChunkMetadata
+                    {
+                        SourceUri = new Uri("graph://entity-match"),
+                        CreatedAt = DateTimeOffset.UtcNow
+                    }
+                },
                 DenseScore = 1.0 - (index * 0.05),
                 SparseScore = 0.0,
                 FusedScore = 1.0 - (index * 0.05)
             })
-            .Take(topK)
             .ToList();
-
-        _logger.LogInformation(
-            "GraphRAG local search: {MatchedEntities} entities matched, {ResultCount} chunks returned",
-            matchedEntities.Count, results.Count);
-
-        return Task.FromResult<IReadOnlyList<RetrievalResult>>(results);
     }
 
     private async Task<ExtractionResult> ExtractEntitiesAsync(
@@ -233,26 +273,34 @@ public sealed class ManagedCodeGraphRagService : IGraphRagService
 
             var parsed = JsonSerializer.Deserialize<ExtractionJson>(json, JsonOptions);
 
-            var entities = (parsed?.Entities ?? [])
-                .Select(e => new GraphEntity
+            var nodes = (parsed?.Entities ?? [])
+                .Select(e => new GraphNode
                 {
+                    Id = $"{(e.Name ?? "unknown").ToLowerInvariant()}:{(e.Type ?? "unknown").ToLowerInvariant()}",
                     Name = e.Name ?? "unknown",
                     Type = e.Type ?? "unknown",
                     ChunkIds = [chunk.Id]
                 })
                 .ToList();
 
-            var relationships = (parsed?.Relationships ?? [])
-                .Select(r => new GraphRelationship
+            var edges = (parsed?.Relationships ?? [])
+                .Select(r =>
                 {
-                    Source = r.Source ?? "unknown",
-                    Predicate = r.Predicate ?? "related_to",
-                    Target = r.Target ?? "unknown",
-                    ChunkId = chunk.Id
+                    var source = $"{(r.Source ?? "unknown").ToLowerInvariant()}:entity";
+                    var target = $"{(r.Target ?? "unknown").ToLowerInvariant()}:entity";
+                    var predicate = r.Predicate ?? "related_to";
+                    return new GraphEdge
+                    {
+                        Id = $"{source}|{predicate}|{target}",
+                        SourceNodeId = source,
+                        TargetNodeId = target,
+                        Predicate = predicate,
+                        ChunkId = chunk.Id
+                    };
                 })
                 .ToList();
 
-            return new ExtractionResult(entities, relationships);
+            return new ExtractionResult(nodes, edges);
         }
         catch (Exception ex)
         {
@@ -261,27 +309,23 @@ public sealed class ManagedCodeGraphRagService : IGraphRagService
         }
     }
 
-    private IEnumerable<string> GetNeighborChunkIds(IReadOnlyList<GraphEntity> entities)
-    {
-        var entityNames = entities.Select(e => e.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-        return _relationships.Values
-            .Where(r => entityNames.Contains(r.Source) || entityNames.Contains(r.Target))
-            .Select(r => r.ChunkId);
-    }
-
-    private string BuildCommunitySummary()
+    private static string BuildCommunitySummary(IReadOnlyList<GraphTriplet> triplets)
     {
         var sb = new StringBuilder();
-        sb.AppendLine($"Entities ({_entities.Count}):");
 
-        foreach (var entity in _entities.Values.Take(100))
-            sb.AppendLine($"  - {entity.Name} ({entity.Type}): referenced in {entity.ChunkIds.Count} chunks");
+        var nodeNames = new HashSet<string>();
+        foreach (var t in triplets.Take(100))
+        {
+            if (nodeNames.Add(t.Source.Name))
+                sb.AppendLine($"  - {t.Source.Name} ({t.Source.Type}): referenced in {t.Source.ChunkIds.Count} chunks");
+            if (nodeNames.Add(t.Target.Name))
+                sb.AppendLine($"  - {t.Target.Name} ({t.Target.Type}): referenced in {t.Target.ChunkIds.Count} chunks");
+        }
 
-        sb.AppendLine($"\nRelationships ({_relationships.Count}):");
-
-        foreach (var rel in _relationships.Values.Take(100))
-            sb.AppendLine($"  - {rel.Source} --[{rel.Predicate}]--> {rel.Target}");
+        sb.AppendLine();
+        sb.AppendLine($"Relationships ({triplets.Count}):");
+        foreach (var t in triplets.Take(100))
+            sb.AppendLine($"  - {t.Source.Name} --[{t.Edge.Predicate}]--> {t.Target.Name}");
 
         return sb.ToString();
     }
@@ -292,8 +336,8 @@ public sealed class ManagedCodeGraphRagService : IGraphRagService
     };
 
     private sealed record ExtractionResult(
-        IReadOnlyList<GraphEntity> Entities,
-        IReadOnlyList<GraphRelationship> Relationships);
+        IReadOnlyList<GraphNode> Nodes,
+        IReadOnlyList<GraphEdge> Edges);
 
     private sealed record ExtractionJson
     {
@@ -312,20 +356,5 @@ public sealed class ManagedCodeGraphRagService : IGraphRagService
         public string? Source { get; init; }
         public string? Predicate { get; init; }
         public string? Target { get; init; }
-    }
-
-    private sealed record GraphEntity
-    {
-        public required string Name { get; init; }
-        public required string Type { get; init; }
-        public required List<string> ChunkIds { get; init; }
-    }
-
-    private sealed record GraphRelationship
-    {
-        public required string Source { get; init; }
-        public required string Predicate { get; init; }
-        public required string Target { get; init; }
-        public required string ChunkId { get; init; }
     }
 }

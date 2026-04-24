@@ -1,3 +1,4 @@
+using Application.AI.Common.Interfaces;
 using Application.Core.CQRS.Agents.ExecuteAgentTurn;
 using Application.Core.CQRS.Agents.RunConversation;
 using FluentAssertions;
@@ -18,6 +19,7 @@ public class RunConversationCommandHandlerTests
     {
         _handler = new RunConversationCommandHandler(
             _mediator.Object,
+            new Mock<IObservabilityStore>().Object,
             NullLogger<RunConversationCommandHandler>.Instance);
     }
 

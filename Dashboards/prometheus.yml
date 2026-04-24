@@ -2,10 +2,6 @@ global:
   scrape_interval: 15s
   evaluation_interval: 15s
 
-# Accept remote writes from Tempo's metrics generator (trace-derived metrics)
-remote_write_receiver:
-  enabled: true
-
 scrape_configs:
   # Application metrics exposed by the OTel Collector Prometheus exporter
   - job_name: "agentic-harness"
