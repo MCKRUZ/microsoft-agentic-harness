@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { usePromQuery } from '@/hooks/usePromQuery';
 import { metricCatalog } from '@/config/metricCatalog';
 import { fetchSessions } from '@/api/sessions';
+import { useTimeRangeStore } from '@/stores/timeRangeStore';
 import { KpiCard } from '@/components/panels/KpiCard';
 import { PanelCard } from '@/components/panels/PanelCard';
 import { PanelGrid } from '@/components/panels/PanelGrid';
@@ -19,6 +20,7 @@ function latestValue(data: ReturnType<typeof usePromQuery>['data']): number {
 
 export default function SessionsPage() {
   const navigate = useNavigate();
+  const { start, end } = useTimeRangeStore((s) => s.getRange());
 
   const sessionsTotal = usePromQuery(metricCatalog['sessions_total']!.query);
   const sessionsActive = usePromQuery(metricCatalog['sessions_active']!.query);
@@ -26,8 +28,8 @@ export default function SessionsPage() {
   const durationAvg = usePromQuery(metricCatalog['sessions_duration_avg']!.query);
 
   const sessionsQuery = useQuery({
-    queryKey: ['sessions-list'],
-    queryFn: () => fetchSessions(50, 0),
+    queryKey: ['sessions-list', start, end],
+    queryFn: () => fetchSessions(50, 0, undefined, start, end),
     staleTime: 30_000,
   });
 

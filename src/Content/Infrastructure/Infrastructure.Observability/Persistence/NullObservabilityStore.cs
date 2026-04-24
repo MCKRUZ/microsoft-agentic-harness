@@ -62,6 +62,7 @@ public sealed class NullObservabilityStore : IObservabilityStore
     /// <inheritdoc />
     public Task<IReadOnlyList<SessionRecord>> GetSessionsAsync(
         int limit = 50, int offset = 0, string? status = null,
+        DateTimeOffset? since = null, DateTimeOffset? until = null,
         CancellationToken cancellationToken = default)
         => Task.FromResult<IReadOnlyList<SessionRecord>>(Array.Empty<SessionRecord>());
 

@@ -120,12 +120,16 @@ public interface IObservabilityStore
     /// <param name="limit">Maximum number of sessions to return (default 50).</param>
     /// <param name="offset">Number of sessions to skip for pagination (default 0).</param>
     /// <param name="status">Optional status filter (e.g. "completed", "errored").</param>
+    /// <param name="since">Optional lower bound on started_at (inclusive).</param>
+    /// <param name="until">Optional upper bound on started_at (exclusive).</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>Read-only list of session records.</returns>
     Task<IReadOnlyList<SessionRecord>> GetSessionsAsync(
         int limit = 50,
         int offset = 0,
         string? status = null,
+        DateTimeOffset? since = null,
+        DateTimeOffset? until = null,
         CancellationToken cancellationToken = default);
 
     /// <summary>

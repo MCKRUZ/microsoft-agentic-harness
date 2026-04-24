@@ -231,38 +231,41 @@ public sealed class PostgresObservabilityStore : IObservabilityStore, IDisposabl
     /// <inheritdoc />
     public async Task<IReadOnlyList<SessionRecord>> GetSessionsAsync(
         int limit = 50, int offset = 0, string? status = null,
+        DateTimeOffset? since = null, DateTimeOffset? until = null,
         CancellationToken cancellationToken = default)
     {
-        var hasStatusFilter = !string.IsNullOrWhiteSpace(status);
+        const string columns = """
+            SELECT id, conversation_id, agent_name, model, started_at, ended_at, duration_ms,
+                   turn_count, tool_call_count, subagent_count, total_input_tokens, total_output_tokens,
+                   total_cache_read, total_cache_write, total_cost_usd, cache_hit_rate,
+                   status, error_message, created_at
+            FROM sessions
+            """;
 
-        var sql = hasStatusFilter
-            ? """
-              SELECT id, conversation_id, agent_name, model, started_at, ended_at, duration_ms,
-                     turn_count, tool_call_count, subagent_count, total_input_tokens, total_output_tokens,
-                     total_cache_read, total_cache_write, total_cost_usd, cache_hit_rate,
-                     status, error_message, created_at
-              FROM sessions
-              WHERE status = $3
-              ORDER BY started_at DESC
-              LIMIT $1 OFFSET $2
-              """
-            : """
-              SELECT id, conversation_id, agent_name, model, started_at, ended_at, duration_ms,
-                     turn_count, tool_call_count, subagent_count, total_input_tokens, total_output_tokens,
-                     total_cache_read, total_cache_write, total_cost_usd, cache_hit_rate,
-                     status, error_message, created_at
-              FROM sessions
-              ORDER BY started_at DESC
-              LIMIT $1 OFFSET $2
-              """;
+        var clauses = new List<string>();
+        var paramIndex = 3;
+
+        if (!string.IsNullOrWhiteSpace(status))
+            clauses.Add($"status = ${paramIndex++}");
+        if (since.HasValue)
+            clauses.Add($"started_at >= ${paramIndex++}");
+        if (until.HasValue)
+            clauses.Add($"started_at < ${paramIndex++}");
+
+        var where = clauses.Count > 0 ? "WHERE " + string.Join(" AND ", clauses) : "";
+        var sql = $"{columns} {where} ORDER BY started_at DESC LIMIT $1 OFFSET $2";
 
         try
         {
             await using var cmd = _dataSource.CreateCommand(sql);
             cmd.Parameters.AddWithValue(limit);
             cmd.Parameters.AddWithValue(offset);
-            if (hasStatusFilter)
+            if (!string.IsNullOrWhiteSpace(status))
                 cmd.Parameters.AddWithValue(status!);
+            if (since.HasValue)
+                cmd.Parameters.AddWithValue(since.Value);
+            if (until.HasValue)
+                cmd.Parameters.AddWithValue(until.Value);
 
             await using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
             var results = new List<SessionRecord>();

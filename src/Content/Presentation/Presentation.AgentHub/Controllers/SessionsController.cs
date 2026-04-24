@@ -28,6 +28,8 @@ public sealed class SessionsController : ControllerBase
     /// <param name="limit">Maximum number of sessions to return (1-200, default 50).</param>
     /// <param name="offset">Number of sessions to skip for pagination (default 0).</param>
     /// <param name="status">Optional status filter (e.g. "completed", "errored", "active").</param>
+    /// <param name="since">Optional Unix epoch seconds lower bound on started_at.</param>
+    /// <param name="until">Optional Unix epoch seconds upper bound on started_at.</param>
     /// <param name="ct">Cancellation token.</param>
     /// <returns>Read-only list of <see cref="SessionRecord"/>.</returns>
     [HttpGet]
@@ -35,12 +37,21 @@ public sealed class SessionsController : ControllerBase
         [FromQuery] int limit = 50,
         [FromQuery] int offset = 0,
         [FromQuery] string? status = null,
+        [FromQuery] long? since = null,
+        [FromQuery] long? until = null,
         CancellationToken ct = default)
     {
         limit = Math.Clamp(limit, 1, 200);
         offset = Math.Max(offset, 0);
 
-        var sessions = await _store.GetSessionsAsync(limit, offset, status, ct);
+        DateTimeOffset? sinceDto = since.HasValue
+            ? DateTimeOffset.FromUnixTimeSeconds(since.Value)
+            : null;
+        DateTimeOffset? untilDto = until.HasValue
+            ? DateTimeOffset.FromUnixTimeSeconds(until.Value)
+            : null;
+
+        var sessions = await _store.GetSessionsAsync(limit, offset, status, sinceDto, untilDto, ct);
         return Ok(sessions);
     }
 
