@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Application.AI.Common.Interfaces;
+using Domain.AI.Observability.Models;
 using Microsoft.Extensions.Logging;
 using Npgsql;
 using NpgsqlTypes;
@@ -7,9 +8,10 @@ using NpgsqlTypes;
 namespace Infrastructure.Observability.Persistence;
 
 /// <summary>
-/// Persists observability data to PostgreSQL using Npgsql.
+/// Persists and retrieves observability data from PostgreSQL using Npgsql.
 /// Designed for append-heavy workloads with fire-and-forget semantics
 /// for non-critical writes (audit, safety) to avoid blocking agent turns.
+/// Read methods return empty collections on failure to maintain resilience.
 /// </summary>
 public sealed class PostgresObservabilityStore : IObservabilityStore, IDisposable
 {
@@ -26,6 +28,7 @@ public sealed class PostgresObservabilityStore : IObservabilityStore, IDisposabl
 
     // ── Sessions ─────────────────────────────────────────────────────────
 
+    /// <inheritdoc />
     public async Task<Guid> StartSessionAsync(
         string conversationId, string agentName, string? model,
         CancellationToken cancellationToken = default)
@@ -54,6 +57,7 @@ public sealed class PostgresObservabilityStore : IObservabilityStore, IDisposabl
         }
     }
 
+    /// <inheritdoc />
     public async Task EndSessionAsync(
         Guid sessionId, string status, string? errorMessage,
         CancellationToken cancellationToken = default)
@@ -73,6 +77,7 @@ public sealed class PostgresObservabilityStore : IObservabilityStore, IDisposabl
             sessionId, status, errorMessage ?? (object)DBNull.Value);
     }
 
+    /// <inheritdoc />
     public async Task UpdateSessionMetricsAsync(
         Guid sessionId, int turnCount, int toolCallCount, int subagentCount,
         int totalInputTokens, int totalOutputTokens, int totalCacheRead,
@@ -105,6 +110,7 @@ public sealed class PostgresObservabilityStore : IObservabilityStore, IDisposabl
 
     // ── Messages ─────────────────────────────────────────────────────────
 
+    /// <inheritdoc />
     public async Task<Guid> RecordMessageAsync(
         Guid sessionId, int turnIndex, string role, string? source,
         string? contentPreview, string? model, int inputTokens, int outputTokens,
@@ -155,6 +161,7 @@ public sealed class PostgresObservabilityStore : IObservabilityStore, IDisposabl
 
     // ── Tool Executions ──────────────────────────────────────────────────
 
+    /// <inheritdoc />
     public async Task RecordToolExecutionAsync(
         Guid sessionId, Guid? messageId, string toolName, string toolSource,
         int durationMs, string status, string? errorType,
@@ -179,6 +186,7 @@ public sealed class PostgresObservabilityStore : IObservabilityStore, IDisposabl
 
     // ── Safety Events ────────────────────────────────────────────────────
 
+    /// <inheritdoc />
     public async Task RecordSafetyEventAsync(
         Guid sessionId, string phase, string outcome, string? category,
         int? severity, string? filterName,
@@ -201,6 +209,7 @@ public sealed class PostgresObservabilityStore : IObservabilityStore, IDisposabl
 
     // ── Audit ────────────────────────────────────────────────────────────
 
+    /// <inheritdoc />
     public async Task RecordAuditAsync(
         string operation, string source, Guid? sessionId,
         Dictionary<string, object>? metadata,
@@ -217,7 +226,252 @@ public sealed class PostgresObservabilityStore : IObservabilityStore, IDisposabl
             metadata is not null ? JsonSerializer.Serialize(metadata) : DBNull.Value);
     }
 
-    // ── Helpers ──────────────────────────────────────────────────────────
+    // ── Reads ────────────────────────────────────────────────────────────
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<SessionRecord>> GetSessionsAsync(
+        int limit = 50, int offset = 0, string? status = null,
+        CancellationToken cancellationToken = default)
+    {
+        var hasStatusFilter = !string.IsNullOrWhiteSpace(status);
+
+        var sql = hasStatusFilter
+            ? """
+              SELECT id, conversation_id, agent_name, model, started_at, ended_at, duration_ms,
+                     turn_count, tool_call_count, subagent_count, total_input_tokens, total_output_tokens,
+                     total_cache_read, total_cache_write, total_cost_usd, cache_hit_rate,
+                     status, error_message, created_at
+              FROM sessions
+              WHERE status = $3
+              ORDER BY started_at DESC
+              LIMIT $1 OFFSET $2
+              """
+            : """
+              SELECT id, conversation_id, agent_name, model, started_at, ended_at, duration_ms,
+                     turn_count, tool_call_count, subagent_count, total_input_tokens, total_output_tokens,
+                     total_cache_read, total_cache_write, total_cost_usd, cache_hit_rate,
+                     status, error_message, created_at
+              FROM sessions
+              ORDER BY started_at DESC
+              LIMIT $1 OFFSET $2
+              """;
+
+        try
+        {
+            await using var cmd = _dataSource.CreateCommand(sql);
+            cmd.Parameters.AddWithValue(limit);
+            cmd.Parameters.AddWithValue(offset);
+            if (hasStatusFilter)
+                cmd.Parameters.AddWithValue(status!);
+
+            await using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
+            var results = new List<SessionRecord>();
+            while (await reader.ReadAsync(cancellationToken))
+                results.Add(ReadSessionRecord(reader));
+
+            return results;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to read sessions (limit={Limit}, offset={Offset})", limit, offset);
+            return Array.Empty<SessionRecord>();
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<SessionRecord?> GetSessionByIdAsync(
+        Guid sessionId, CancellationToken cancellationToken = default)
+    {
+        const string sql = """
+            SELECT id, conversation_id, agent_name, model, started_at, ended_at, duration_ms,
+                   turn_count, tool_call_count, subagent_count, total_input_tokens, total_output_tokens,
+                   total_cache_read, total_cache_write, total_cost_usd, cache_hit_rate,
+                   status, error_message, created_at
+            FROM sessions
+            WHERE id = $1
+            """;
+
+        try
+        {
+            await using var cmd = _dataSource.CreateCommand(sql);
+            cmd.Parameters.AddWithValue(sessionId);
+
+            await using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
+            return await reader.ReadAsync(cancellationToken)
+                ? ReadSessionRecord(reader)
+                : null;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to read session {SessionId}", sessionId);
+            return null;
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<SessionMessageRecord>> GetSessionMessagesAsync(
+        Guid sessionId, CancellationToken cancellationToken = default)
+    {
+        const string sql = """
+            SELECT id, session_id, turn_index, role, source, content_preview, model,
+                   input_tokens, output_tokens, cache_read, cache_write, cost_usd, cache_hit_pct,
+                   tool_names, created_at
+            FROM session_messages
+            WHERE session_id = $1
+            ORDER BY turn_index
+            """;
+
+        try
+        {
+            await using var cmd = _dataSource.CreateCommand(sql);
+            cmd.Parameters.AddWithValue(sessionId);
+
+            await using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
+            var results = new List<SessionMessageRecord>();
+            while (await reader.ReadAsync(cancellationToken))
+                results.Add(ReadSessionMessageRecord(reader));
+
+            return results;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to read messages for session {SessionId}", sessionId);
+            return Array.Empty<SessionMessageRecord>();
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<ToolExecutionRecord>> GetSessionToolExecutionsAsync(
+        Guid sessionId, CancellationToken cancellationToken = default)
+    {
+        const string sql = """
+            SELECT id, session_id, message_id, tool_name, tool_source, duration_ms, status,
+                   error_type, result_size, created_at
+            FROM tool_executions
+            WHERE session_id = $1
+            ORDER BY created_at
+            """;
+
+        try
+        {
+            await using var cmd = _dataSource.CreateCommand(sql);
+            cmd.Parameters.AddWithValue(sessionId);
+
+            await using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
+            var results = new List<ToolExecutionRecord>();
+            while (await reader.ReadAsync(cancellationToken))
+                results.Add(ReadToolExecutionRecord(reader));
+
+            return results;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to read tool executions for session {SessionId}", sessionId);
+            return Array.Empty<ToolExecutionRecord>();
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<SafetyEventRecord>> GetSessionSafetyEventsAsync(
+        Guid sessionId, CancellationToken cancellationToken = default)
+    {
+        const string sql = """
+            SELECT id, session_id, phase, outcome, category, severity, filter_name, created_at
+            FROM safety_events
+            WHERE session_id = $1
+            ORDER BY created_at
+            """;
+
+        try
+        {
+            await using var cmd = _dataSource.CreateCommand(sql);
+            cmd.Parameters.AddWithValue(sessionId);
+
+            await using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
+            var results = new List<SafetyEventRecord>();
+            while (await reader.ReadAsync(cancellationToken))
+                results.Add(ReadSafetyEventRecord(reader));
+
+            return results;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to read safety events for session {SessionId}", sessionId);
+            return Array.Empty<SafetyEventRecord>();
+        }
+    }
+
+    // ── Reader Helpers ───────────────────────────────────────────────────
+
+    private static SessionRecord ReadSessionRecord(NpgsqlDataReader reader) => new()
+    {
+        Id = reader.GetGuid(0),
+        ConversationId = reader.GetString(1),
+        AgentName = reader.GetString(2),
+        Model = reader.IsDBNull(3) ? null : reader.GetString(3),
+        StartedAt = reader.GetFieldValue<DateTimeOffset>(4),
+        EndedAt = reader.IsDBNull(5) ? null : reader.GetFieldValue<DateTimeOffset>(5),
+        DurationMs = reader.IsDBNull(6) ? null : reader.GetInt32(6),
+        TurnCount = reader.GetInt32(7),
+        ToolCallCount = reader.GetInt32(8),
+        SubagentCount = reader.GetInt32(9),
+        TotalInputTokens = reader.GetInt32(10),
+        TotalOutputTokens = reader.GetInt32(11),
+        TotalCacheRead = reader.GetInt32(12),
+        TotalCacheWrite = reader.GetInt32(13),
+        TotalCostUsd = reader.GetDecimal(14),
+        CacheHitRate = reader.GetDecimal(15),
+        Status = reader.GetString(16),
+        ErrorMessage = reader.IsDBNull(17) ? null : reader.GetString(17),
+        CreatedAt = reader.GetFieldValue<DateTimeOffset>(18)
+    };
+
+    private static SessionMessageRecord ReadSessionMessageRecord(NpgsqlDataReader reader) => new()
+    {
+        Id = reader.GetGuid(0),
+        SessionId = reader.GetGuid(1),
+        TurnIndex = reader.GetInt32(2),
+        Role = reader.GetString(3),
+        Source = reader.IsDBNull(4) ? null : reader.GetString(4),
+        ContentPreview = reader.IsDBNull(5) ? null : reader.GetString(5),
+        Model = reader.IsDBNull(6) ? null : reader.GetString(6),
+        InputTokens = reader.GetInt32(7),
+        OutputTokens = reader.GetInt32(8),
+        CacheRead = reader.GetInt32(9),
+        CacheWrite = reader.GetInt32(10),
+        CostUsd = reader.GetDecimal(11),
+        CacheHitPct = reader.GetDecimal(12),
+        ToolNames = reader.IsDBNull(13) ? null : reader.GetFieldValue<string[]>(13),
+        CreatedAt = reader.GetFieldValue<DateTimeOffset>(14)
+    };
+
+    private static ToolExecutionRecord ReadToolExecutionRecord(NpgsqlDataReader reader) => new()
+    {
+        Id = reader.GetGuid(0),
+        SessionId = reader.GetGuid(1),
+        MessageId = reader.IsDBNull(2) ? null : reader.GetGuid(2),
+        ToolName = reader.GetString(3),
+        ToolSource = reader.IsDBNull(4) ? null : reader.GetString(4),
+        DurationMs = reader.IsDBNull(5) ? null : reader.GetInt32(5),
+        Status = reader.GetString(6),
+        ErrorType = reader.IsDBNull(7) ? null : reader.GetString(7),
+        ResultSize = reader.IsDBNull(8) ? null : reader.GetInt32(8),
+        CreatedAt = reader.GetFieldValue<DateTimeOffset>(9)
+    };
+
+    private static SafetyEventRecord ReadSafetyEventRecord(NpgsqlDataReader reader) => new()
+    {
+        Id = reader.GetGuid(0),
+        SessionId = reader.GetGuid(1),
+        Phase = reader.GetString(2),
+        Outcome = reader.GetString(3),
+        Category = reader.IsDBNull(4) ? null : reader.GetString(4),
+        Severity = reader.IsDBNull(5) ? null : reader.GetInt32(5),
+        FilterName = reader.IsDBNull(6) ? null : reader.GetString(6),
+        CreatedAt = reader.GetFieldValue<DateTimeOffset>(7)
+    };
+
+    // ── Write Helpers ────────────────────────────────────────────────────
 
     private async Task ExecuteNonQuerySafe(
         string sql, CancellationToken cancellationToken, params object[] parameters)
@@ -236,5 +490,6 @@ public sealed class PostgresObservabilityStore : IObservabilityStore, IDisposabl
         }
     }
 
+    /// <inheritdoc />
     public void Dispose() => _dataSource.Dispose();
 }

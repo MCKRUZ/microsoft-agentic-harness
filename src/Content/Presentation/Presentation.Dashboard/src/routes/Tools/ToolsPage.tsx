@@ -17,7 +17,7 @@ export default function ToolsPage() {
   const callsTotal = usePromQuery(metricCatalog['tools_calls_total']!.query);
   const errorsTotal = usePromQuery(metricCatalog['tools_errors_total']!.query);
   const avgLatency = usePromQuery(metricCatalog['tools_avg_latency']!.query);
-  const usefulness = usePromQuery(metricCatalog['tools_usefulness_avg']!.query);
+  const resultSize = usePromQuery(metricCatalog['tools_result_size']!.query);
   const callsByTool = usePromQuery(metricCatalog['tools_calls_by_tool']!.query);
   const latencyByTool = usePromQuery(metricCatalog['tools_latency_by_tool']!.query);
   const errorRate = usePromQuery(metricCatalog['tools_error_rate']!.query);
@@ -43,7 +43,7 @@ export default function ToolsPage() {
         <KpiCard title="Total Calls" value={latestValue(callsTotal.data).toFixed(0)} sparklineData={callsTotal.data?.series[0]?.dataPoints} />
         <KpiCard title="Errors" value={latestValue(errorsTotal.data).toFixed(0)} sparklineData={errorsTotal.data?.series[0]?.dataPoints} />
         <KpiCard title="Avg Latency" value={`${latencyMs.toFixed(0)}ms`} sparklineData={avgLatency.data?.series[0]?.dataPoints} />
-        <KpiCard title="Usefulness" value={latestValue(usefulness.data).toFixed(2)} unit="/1.0" sparklineData={usefulness.data?.series[0]?.dataPoints} />
+        <KpiCard title="Avg Result Size" value={`${latestValue(resultSize.data).toFixed(0)}`} unit="chars" sparklineData={resultSize.data?.series[0]?.dataPoints} />
       </PanelGrid>
 
       <PanelGrid columns={2}>

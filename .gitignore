@@ -65,3 +65,4 @@ parse_coverage.py
 coverage-run*.log
 temp-cov*/
 src/Content/Presentation/Presentation.ConsoleUI/traces/
+.claude/scheduled_tasks.lock

@@ -19,7 +19,7 @@ export default function BudgetPage() {
   const remaining = usePromQuery(metricCatalog['budget_remaining']!.query);
   const utilization = usePromQuery(metricCatalog['budget_utilization']!.query);
   const spendRate = usePromQuery(metricCatalog['budget_spend_rate']!.query);
-  const alerts = usePromQuery(metricCatalog['budget_alerts_total']!.query);
+  const statusVal = usePromQuery(metricCatalog['budget_status']!.query);
 
   if (spent.isLoading) {
     return (
@@ -72,12 +72,19 @@ export default function BudgetPage() {
         <PanelCard title="Spend Rate" description="USD burn rate per hour">
           <TimeSeriesChart series={spendRate.data?.series ?? []} unit="usd" />
         </PanelCard>
-        <PanelCard title="Budget Alerts">
+        <PanelCard title="Budget Status">
           <div className="flex flex-col items-center justify-center h-[200px]">
-            <div className="text-4xl font-bold text-card-foreground">
-              {latestValue(alerts.data).toFixed(0)}
-            </div>
-            <div className="text-sm text-muted-foreground mt-2">threshold alerts triggered</div>
+            {(() => {
+              const status = latestValue(statusVal.data);
+              const label = status >= 2 ? 'CRITICAL' : status >= 1 ? 'WARNING' : 'OK';
+              const color = status >= 2 ? 'text-red-500' : status >= 1 ? 'text-yellow-500' : 'text-green-500';
+              return (
+                <>
+                  <div className={`text-4xl font-bold ${color}`}>{label}</div>
+                  <div className="text-sm text-muted-foreground mt-2">current budget health</div>
+                </>
+              );
+            })()}
           </div>
         </PanelCard>
       </PanelGrid>

@@ -6,6 +6,7 @@ const OverviewPage = lazy(() => import('@/routes/Overview/OverviewPage'));
 const TokensPage = lazy(() => import('@/routes/Tokens/TokensPage'));
 const CostPage = lazy(() => import('@/routes/Cost/CostPage'));
 const SessionsPage = lazy(() => import('@/routes/Sessions/SessionsPage'));
+const SessionDetailPage = lazy(() => import('@/routes/Sessions/SessionDetailPage'));
 const ToolsPage = lazy(() => import('@/routes/Tools/ToolsPage'));
 const SafetyPage = lazy(() => import('@/routes/Safety/SafetyPage'));
 const RagPage = lazy(() => import('@/routes/Rag/RagPage'));
@@ -29,6 +30,7 @@ export const router = createBrowserRouter([
       { path: 'tokens', element: <LazyWrapper><TokensPage /></LazyWrapper> },
       { path: 'cost', element: <LazyWrapper><CostPage /></LazyWrapper> },
       { path: 'sessions', element: <LazyWrapper><SessionsPage /></LazyWrapper> },
+      { path: 'sessions/:sessionId', element: <LazyWrapper><SessionDetailPage /></LazyWrapper> },
       { path: 'tools', element: <LazyWrapper><ToolsPage /></LazyWrapper> },
       { path: 'safety', element: <LazyWrapper><SafetyPage /></LazyWrapper> },
       { path: 'rag', element: <LazyWrapper><RagPage /></LazyWrapper> },
