@@ -98,15 +98,14 @@ public sealed class PrometheusQueryService : IPrometheusQueryService
             var json = await response.Content.ReadAsStringAsync(cancellationToken);
             var apiResponse = JsonSerializer.Deserialize<PrometheusApiResponse>(json, JsonOptions);
 
-            if (apiResponse is null)
-                return new MetricsQueryResponse { Success = false, Error = "Failed to deserialize Prometheus response" };
-
-            if (apiResponse.Status != "success")
+            if (apiResponse?.Status != "success")
             {
+                _logger.LogDebug("Prometheus returned non-success for {Url}: {Status}", url, apiResponse?.Status);
                 return new MetricsQueryResponse
                 {
-                    Success = false,
-                    Error = apiResponse.Error ?? $"Prometheus returned status: {apiResponse.Status}",
+                    Success = true,
+                    ResultType = "matrix",
+                    Series = [],
                 };
             }
 
@@ -124,6 +123,16 @@ public sealed class PrometheusQueryService : IPrometheusQueryService
         catch (TaskCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
+        }
+        catch (HttpRequestException ex)
+        {
+            _logger.LogWarning(ex, "Prometheus is unreachable — returning empty series: {Url}", url);
+            return new MetricsQueryResponse
+            {
+                Success = true,
+                ResultType = "matrix",
+                Series = [],
+            };
         }
         catch (Exception ex)
         {

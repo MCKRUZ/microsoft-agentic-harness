@@ -12,6 +12,20 @@ namespace Application.AI.Common.Services;
 /// </summary>
 public sealed class LlmUsageCapture : ILlmUsageCapture
 {
+    private static readonly AsyncLocal<ILlmUsageCapture?> s_current = new();
+
+    /// <summary>
+    /// Ambient capture instance for the current async flow.
+    /// Set by the handler before agent execution so middleware in the
+    /// singleton-scoped chat client pipeline can record to the correct
+    /// scoped instance.
+    /// </summary>
+    public static ILlmUsageCapture? Current
+    {
+        get => s_current.Value;
+        set => s_current.Value = value;
+    }
+
     private readonly Dictionary<string, ModelPricingEntry> _pricing;
     private readonly object _lock = new();
 
@@ -20,6 +34,7 @@ public sealed class LlmUsageCapture : ILlmUsageCapture
     private int _cacheRead;
     private int _cacheWrite;
     private string? _model;
+    private readonly HashSet<string> _toolNames = new(StringComparer.OrdinalIgnoreCase);
 
     public LlmUsageCapture(IOptionsMonitor<AppConfig> appConfig)
     {
@@ -41,6 +56,14 @@ public sealed class LlmUsageCapture : ILlmUsageCapture
         }
     }
 
+    public void RecordToolCall(string toolName)
+    {
+        lock (_lock)
+        {
+            _toolNames.Add(toolName);
+        }
+    }
+
     public LlmUsageSnapshot TakeSnapshot()
     {
         lock (_lock)
@@ -49,15 +72,20 @@ public sealed class LlmUsageCapture : ILlmUsageCapture
             var totalInput = _inputTokens + _cacheRead;
             var cacheHitPct = totalInput > 0 ? (decimal)_cacheRead / totalInput : 0m;
 
+            var toolNames = _toolNames.Count > 0
+                ? (IReadOnlyList<string>)_toolNames.ToList()
+                : Array.Empty<string>();
+
             var snapshot = new LlmUsageSnapshot(
                 _inputTokens, _outputTokens, _cacheRead, _cacheWrite,
-                _model, cost, Math.Round(cacheHitPct, 4));
+                _model, cost, Math.Round(cacheHitPct, 4), toolNames);
 
             _inputTokens = 0;
             _outputTokens = 0;
             _cacheRead = 0;
             _cacheWrite = 0;
             _model = null;
+            _toolNames.Clear();
 
             return snapshot;
         }

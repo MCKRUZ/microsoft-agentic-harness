@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces;
+using Application.AI.Common.Services;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using System.Runtime.CompilerServices;
@@ -73,7 +74,7 @@ public sealed class ObservabilityMiddleware : DelegatingChatClient
             var cacheWrite = GetAdditionalCount(usage, "cache_creation_input_tokens");
             var model = options?.ModelId;
 
-            _usageCapture?.Record(inputTokens, outputTokens, cacheRead, cacheWrite, model);
+            (_usageCapture ?? LlmUsageCapture.Current)?.Record(inputTokens, outputTokens, cacheRead, cacheWrite, model);
         }
 
         return response;

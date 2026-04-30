@@ -287,6 +287,39 @@ dotnet user-secrets set "AppConfig:AI:AgentFramework:Endpoint" "https://your-res
 dotnet user-secrets set "AppConfig:AI:AgentFramework:ApiKey" "your-api-key"
 ```
 
+### Start Observability Infrastructure
+
+The harness uses Docker containers for its observability backend. You need [Docker Desktop](https://www.docker.com/products/docker-desktop) installed and running.
+
+```powershell
+# Start everything (OTel Collector, Tempo, PostgreSQL, Prometheus, Grafana)
+.\scripts\start-infrastructure.ps1
+
+# Verify containers are running
+docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+```
+
+This brings up:
+
+| Service | URL | Credentials |
+|---------|-----|-------------|
+| PostgreSQL | `localhost:5432` | `observability` / `observability` |
+| Prometheus | http://localhost:9090 | — |
+| Grafana | http://localhost:3000 | `admin` / `admin` |
+| OTLP gRPC | `localhost:4317` | — |
+| OTLP HTTP | `localhost:4318` | — |
+| Tempo (traces) | http://localhost:3200 | — |
+
+The PostgreSQL database is automatically initialized with the observability schema on first start. Data persists across container restarts via Docker volumes.
+
+To tear down:
+
+```powershell
+.\scripts\start-infrastructure.ps1 -Down
+```
+
+> **Without Docker:** The harness still runs, but session data, metrics, and traces won't be captured. You'll see a warning at startup: *"Session, message, and tool execution data will NOT be persisted."*
+
 ### Run
 
 ```bash

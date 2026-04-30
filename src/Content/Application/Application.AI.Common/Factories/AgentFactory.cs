@@ -107,6 +107,9 @@ public class AgentFactory : IAgentFactory
                 c.MaximumIterationsPerRequest = 5;
                 c.TerminateOnUnknownCalls = true;
             })
+            .Use(inner => new Middleware.ObservabilityMiddleware(
+                inner,
+                _loggerFactory.CreateLogger<Middleware.ObservabilityMiddleware>()))
             .Use(inner => new Middleware.ToolDiagnosticsMiddleware(
                 inner, _loggerFactory.CreateLogger<Middleware.ToolDiagnosticsMiddleware>()))
             .UseDistributedCache(_distributedCache);

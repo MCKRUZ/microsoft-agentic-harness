@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Traces;
+using Application.AI.Common.Services;
 using Domain.Common.Extensions;
 using Domain.Common.MetaHarness;
 using Microsoft.Extensions.AI;
@@ -182,12 +183,16 @@ public sealed class ToolDiagnosticsMiddleware : DelegatingChatClient
             .SelectMany(m => m.Contents)
             .OfType<FunctionCallContent>();
 
+        var capture = LlmUsageCapture.Current;
         var count = 0;
         foreach (var call in toolCalls)
         {
             count++;
             _logger.LogInformation("[ToolDiag] Tool call: {FunctionName} (CallId: {CallId})",
                 call.Name, call.CallId);
+
+            if (!string.IsNullOrEmpty(call.Name))
+                capture?.RecordToolCall(call.Name);
         }
 
         if (count == 0)

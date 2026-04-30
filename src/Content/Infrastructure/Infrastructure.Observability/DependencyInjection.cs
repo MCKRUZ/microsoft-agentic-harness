@@ -60,16 +60,23 @@ public static class DependencyInjection
         // Session health service — ObservableGauge reporting per-agent health score
         services.AddSingleton<ISessionHealthTracker, SessionHealthService>();
 
-        // Observability store — PostgreSQL persistence for session/message/tool/audit data
+        // Observability store — PostgreSQL persistence for session/message/tool/audit data.
+        // Falls back to NullObservabilityStore (no-op) when the connection string is missing,
+        // but logs a warning so operators know session data is being silently dropped.
         services.AddSingleton<IObservabilityStore>(sp =>
         {
+            var logger = sp.GetRequiredService<ILogger<PostgresObservabilityStore>>();
             var config = sp.GetRequiredService<IOptionsMonitor<AppConfig>>();
             var connStr = config.CurrentValue.Observability.PostgresConnectionString;
             if (string.IsNullOrWhiteSpace(connStr))
+            {
+                logger.LogWarning(
+                    "AppConfig:Observability:PostgresConnectionString is not configured. " +
+                    "Session, message, and tool execution data will NOT be persisted. " +
+                    "Run 'scripts/start-infrastructure.ps1' to start PostgreSQL.");
                 return new NullObservabilityStore();
-            return new PostgresObservabilityStore(
-                connStr,
-                sp.GetRequiredService<ILogger<PostgresObservabilityStore>>());
+            }
+            return new PostgresObservabilityStore(connStr, logger);
         });
 
         return services;

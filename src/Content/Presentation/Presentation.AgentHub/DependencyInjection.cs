@@ -152,12 +152,20 @@ public static class DependencyInjection
         services.Configure<PrometheusConfig>(
             configuration.GetSection("AppConfig:Prometheus"));
 
-        services.AddHttpClient<IPrometheusQueryService, PrometheusQueryService>((sp, client) =>
+        var promConfig = configuration.GetSection("AppConfig:Prometheus").Get<PrometheusConfig>() ?? new PrometheusConfig();
+        if (promConfig.EnableDemoData)
         {
-            var config = sp.GetRequiredService<IOptions<PrometheusConfig>>().Value;
-            client.BaseAddress = new Uri(config.BaseUrl.TrimEnd('/') + '/');
-            client.Timeout = TimeSpan.FromSeconds(config.TimeoutSeconds);
-        });
+            services.AddSingleton<IPrometheusQueryService, DemoMetricsService>();
+        }
+        else
+        {
+            services.AddHttpClient<IPrometheusQueryService, PrometheusQueryService>((sp, client) =>
+            {
+                var config = sp.GetRequiredService<IOptions<PrometheusConfig>>().Value;
+                client.BaseAddress = new Uri(config.BaseUrl.TrimEnd('/') + '/');
+                client.Timeout = TimeSpan.FromSeconds(config.TimeoutSeconds);
+            });
+        }
 
         // NullMcpPromptProvider is the default when no real implementation is registered.
         // Real implementations (e.g. from Infrastructure) override this via AddSingleton<IMcpPromptProvider, T>

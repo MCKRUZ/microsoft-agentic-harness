@@ -6,15 +6,15 @@ import config from '../../vite.config'
 describe('vite dev server proxy config', () => {
   const proxy = (config as Record<string, unknown> & { server?: { proxy?: Record<string, unknown> } }).server?.proxy
 
-  it('forwards /api requests to localhost:50772 with changeOrigin', () => {
+  it('forwards /api requests to localhost:52000 with changeOrigin', () => {
     const api = proxy?.['/api'] as { target: string; changeOrigin: boolean } | undefined
-    expect(api?.target).toBe('http://localhost:50772')
+    expect(api?.target).toBe('http://localhost:52000')
     expect(api?.changeOrigin).toBe(true)
   })
 
-  it('forwards /hubs requests to localhost:50772 with WebSocket support and changeOrigin', () => {
+  it('forwards /hubs requests to localhost:52000 with WebSocket support and changeOrigin', () => {
     const hubs = proxy?.['/hubs'] as { target: string; ws: boolean; changeOrigin: boolean } | undefined
-    expect(hubs?.target).toBe('http://localhost:50772')
+    expect(hubs?.target).toBe('http://localhost:52000')
     expect(hubs?.ws).toBe(true)
     expect(hubs?.changeOrigin).toBe(true)
   })

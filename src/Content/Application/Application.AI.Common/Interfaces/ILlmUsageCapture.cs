@@ -15,6 +15,12 @@ public interface ILlmUsageCapture
     void Record(int inputTokens, int outputTokens, int cacheRead, int cacheWrite, string? model);
 
     /// <summary>
+    /// Records a tool invocation by name. Called by middleware when the LLM requests
+    /// a function call. Accumulates distinct tool names within a turn.
+    /// </summary>
+    void RecordToolCall(string toolName);
+
+    /// <summary>
     /// Returns the accumulated usage since the last snapshot and resets counters.
     /// Call before <c>agent.RunAsync()</c> to clear stale data, then again after
     /// to capture the turn's totals.
@@ -32,4 +38,5 @@ public record LlmUsageSnapshot(
     int CacheWrite,
     string? Model,
     decimal CostUsd,
-    decimal CacheHitPct);
+    decimal CacheHitPct,
+    IReadOnlyList<string> ToolNames);

@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Application.AI.Common.Interfaces;
+using Application.AI.Common.Services;
 using Domain.AI.Skills;
 using Domain.Common.Extensions;
 using MediatR;
@@ -71,16 +72,28 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 			// Clear stale usage data before the agent turn
 			_usageCapture.TakeSnapshot();
 
-			// Execute via AIAgent.RunAsync (MS Agent Framework API)
+			// Set ambient capture so the singleton-scoped ObservabilityMiddleware
+			// records to this handler's scoped ILlmUsageCapture instance.
+			LlmUsageCapture.Current = _usageCapture;
+
+			object? response;
 			var turnSw = Stopwatch.StartNew();
-			var response = await agent.RunAsync(messages, cancellationToken: cancellationToken);
-			turnSw.Stop();
+			try
+			{
+				response = await agent.RunAsync(messages, cancellationToken: cancellationToken);
+				turnSw.Stop();
+			}
+			finally
+			{
+				LlmUsageCapture.Current = null;
+			}
 
 			// Capture accumulated token usage from all LLM calls during this turn
 			var usage = _usageCapture.TakeSnapshot();
 
-			// Extract response content and tool invocations
-			var (responseText, toolsInvoked) = ExtractContentAndTools(response);
+			// Extract response text; tool names come from the ambient capture
+			var responseText = ExtractResponseText(response);
+			var toolsInvoked = usage.ToolNames;
 
 			if (toolsInvoked.Count > 0)
 			{
@@ -142,15 +155,19 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 
 
 	/// <summary>
-	/// Extracts text content and tool invocation names from the agent RunAsync response.
+	/// Extracts text content from the agent RunAsync response.
+	/// Handles <see cref="AgentResponse"/>, <see cref="ChatResponse"/>, string, and reflection fallbacks.
 	/// </summary>
-	private static (string Text, IReadOnlyList<string> ToolsInvoked) ExtractContentAndTools(object? response)
+	private static string ExtractResponseText(object? response)
 	{
 		if (response is null)
-			return (string.Empty, []);
+			return string.Empty;
 
 		if (response is string str)
-			return (str, []);
+			return str;
+
+		if (response is AgentResponse agentResponse)
+			return agentResponse.Text ?? string.Empty;
 
 		if (response is ChatResponse chatResponse)
 		{
@@ -159,20 +176,14 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 				.SelectMany(m => m.Contents.OfType<TextContent>())
 				.Select(tc => tc.Text);
 
-			var toolNames = chatResponse.Messages
-				.SelectMany(m => m.Contents.OfType<FunctionCallContent>())
-				.Select(fc => fc.Name)
-				.Where(n => !string.IsNullOrEmpty(n))
-				.Distinct(StringComparer.OrdinalIgnoreCase)
-				.ToList();
-
-			return (string.Join("\n", textParts), toolNames);
+			return string.Join("\n", textParts);
 		}
 
-		var contentProp = response.GetType().GetProperty("Content");
-		if (contentProp != null)
-			return (contentProp.GetValue(response)?.ToString() ?? string.Empty, []);
+		var textProp = response.GetType().GetProperty("Text")
+			?? response.GetType().GetProperty("Content");
+		if (textProp != null)
+			return textProp.GetValue(response)?.ToString() ?? string.Empty;
 
-		return (response.ToString() ?? string.Empty, []);
+		return response.ToString() ?? string.Empty;
 	}
 }

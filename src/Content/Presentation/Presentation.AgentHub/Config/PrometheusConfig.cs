@@ -11,4 +11,10 @@ public sealed record PrometheusConfig
 
     /// <summary>HTTP request timeout in seconds for Prometheus API calls.</summary>
     public int TimeoutSeconds { get; init; } = 30;
+
+    /// <summary>
+    /// When <c>true</c>, serves synthetic demo data instead of querying Prometheus.
+    /// Useful for template consumers previewing the dashboard without infrastructure.
+    /// </summary>
+    public bool EnableDemoData { get; init; }
 }

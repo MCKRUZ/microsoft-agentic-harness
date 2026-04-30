@@ -35,6 +35,7 @@ app.UseAuthorization();
 app.UseRateLimiter();
 app.MapControllers();
 app.MapHub<AgentTelemetryHub>("/hubs/agent");
+app.MapPrometheusScrapingEndpoint();
 app.AddHealthCheckEndpoint("/api");
 
 app.Run();

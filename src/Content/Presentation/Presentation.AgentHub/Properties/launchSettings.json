@@ -8,7 +8,7 @@
         "ASPNETCORE_ENVIRONMENT": "Development",
         "ASPNETCORE_HOSTINGSTARTUPASSEMBLIES": "Microsoft.AspNetCore.SpaProxy"
       },
-      "applicationUrl": "https://localhost:50771;http://localhost:50772"
+      "applicationUrl": "https://localhost:52001;http://localhost:52000"
     }
   }
 }

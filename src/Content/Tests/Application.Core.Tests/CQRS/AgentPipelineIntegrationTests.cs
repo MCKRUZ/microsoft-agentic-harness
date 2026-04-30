@@ -60,7 +60,7 @@ public class AgentPipelineIntegrationTests
         // LLM usage capture — scoped mock matching production DI lifetime
         var usageCaptureMock = new Mock<ILlmUsageCapture>();
         usageCaptureMock.Setup(c => c.TakeSnapshot())
-            .Returns(new LlmUsageSnapshot(0, 0, 0, 0, null, 0m, 0m));
+            .Returns(new LlmUsageSnapshot(0, 0, 0, 0, null, 0m, 0m, Array.Empty<string>()));
         services.AddScoped<ILlmUsageCapture>(_ => usageCaptureMock.Object);
 
         return services.BuildServiceProvider();

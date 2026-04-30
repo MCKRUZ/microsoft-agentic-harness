@@ -228,6 +228,12 @@ public static class OpenTelemetryServiceCollectionExtensions
             .AddMeter(AppInstrument.Meter.Name)
             .AddMeter("Microsoft.AspNetCore.Hosting")
             .AddMeter("Microsoft.AspNetCore.Server.Kestrel")
+            .AddView(instrument =>
+            {
+                if (instrument.Meter.Name == AppSourceNames.AgenticHarness)
+                    return new MetricStreamConfiguration { Name = $"agentic_harness.{instrument.Name}" };
+                return new MetricStreamConfiguration();
+            })
             .SetExemplarFilter(ExemplarFilterType.TraceBased)
             .AddAspNetCoreInstrumentation()
             .AddHttpClientInstrumentation()

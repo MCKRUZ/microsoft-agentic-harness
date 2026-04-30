@@ -31,7 +31,7 @@ public class ExecuteAgentTurnCommandHandler_ExtractContentTests
 
         var usageCapture = new Mock<ILlmUsageCapture>();
         usageCapture.Setup(c => c.TakeSnapshot())
-            .Returns(new LlmUsageSnapshot(0, 0, 0, 0, null, 0m, 0m));
+            .Returns(new LlmUsageSnapshot(0, 0, 0, 0, null, 0m, 0m, Array.Empty<string>()));
 
         _handler = new ExecuteAgentTurnCommandHandler(
             _agentFactory.Object,
