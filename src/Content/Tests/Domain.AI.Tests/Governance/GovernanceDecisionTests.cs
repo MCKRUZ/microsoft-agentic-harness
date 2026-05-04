@@ -1,4 +1,5 @@
 using Domain.AI.Governance;
+using Domain.Common.Config.AI;
 using Xunit;
 
 namespace Domain.AI.Tests.Governance;
