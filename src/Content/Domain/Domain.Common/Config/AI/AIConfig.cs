@@ -98,4 +98,7 @@ public class AIConfig
     /// retrieval, reranking, query transformation, and model tiering.
     /// </summary>
     public RagConfig Rag { get; set; } = new();
+
+    /// <summary>Agent Governance Toolkit configuration.</summary>
+    public GovernanceConfig Governance { get; init; } = new();
 }

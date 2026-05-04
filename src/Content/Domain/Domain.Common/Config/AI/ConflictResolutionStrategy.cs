@@ -1,4 +1,4 @@
-namespace Domain.AI.Governance;
+namespace Domain.Common.Config.AI;
 
 /// <summary>
 /// Strategy for resolving conflicts when multiple policy rules match the same action.

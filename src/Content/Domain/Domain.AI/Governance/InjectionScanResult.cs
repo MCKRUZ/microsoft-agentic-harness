@@ -1,3 +1,5 @@
+using Domain.Common.Config.AI;
+
 namespace Domain.AI.Governance;
 
 /// <summary>

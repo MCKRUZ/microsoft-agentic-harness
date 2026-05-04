@@ -1,4 +1,4 @@
-namespace Domain.AI.Governance;
+namespace Domain.Common.Config.AI;
 
 /// <summary>
 /// Severity classification for security threats detected by governance scanners.
