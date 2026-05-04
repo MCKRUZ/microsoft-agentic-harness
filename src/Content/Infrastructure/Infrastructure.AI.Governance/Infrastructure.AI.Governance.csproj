@@ -1,5 +1,12 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
+  <PropertyGroup>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>Infrastructure.AI.Governance</RootNamespace>
+    <Configurations>Debug;Release;Debug-AgentHub-All;Debug-AgentHub-WebUI;Debug-AgentHub-Dashboard</Configurations>
+  </PropertyGroup>
+
   <ItemGroup>
     <!-- Microsoft Agent Governance Toolkit — policy enforcement, rate limiting, zero-trust identity,
          OpenTelemetry metrics, and audit logging for autonomous AI agents.
