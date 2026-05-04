@@ -21,6 +21,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="Infrastructure.AI.Governance.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- Policy YAML files are copied to output so the runtime can load them without embedding. -->
     <None Include="Policies/**/*.yaml" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
