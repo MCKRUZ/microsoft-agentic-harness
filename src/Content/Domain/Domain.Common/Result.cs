@@ -81,6 +81,9 @@ public class Result
 
     /// <summary>Creates a permission-required failure result.</summary>
     public static Result PermissionRequired(string reason) => new(false, [reason], ResultFailureType.PermissionRequired);
+
+    /// <summary>Creates a governance-blocked failure result.</summary>
+    public static Result GovernanceBlocked(string reason) => new(false, [reason], ResultFailureType.GovernanceBlocked);
 }
 
 /// <summary>
@@ -122,6 +125,9 @@ public sealed class Result<T> : Result
     /// <summary>Creates a permission-required failure result.</summary>
     public new static Result<T> PermissionRequired(string reason) => new(false, errors: [reason], failureType: ResultFailureType.PermissionRequired);
 
+    /// <summary>Creates a governance-blocked failure result.</summary>
+    public new static Result<T> GovernanceBlocked(string reason) => new(false, errors: [reason], failureType: ResultFailureType.GovernanceBlocked);
+
     /// <summary>
     /// Implicit conversion from a non-null value to a successful result.
     /// Throws <see cref="ArgumentNullException"/> if value is null to prevent
@@ -156,5 +162,7 @@ public enum ResultFailureType
     /// <summary>Entity not found (404).</summary>
     NotFound,
     /// <summary>Permission check requires user confirmation before proceeding.</summary>
-    PermissionRequired
+    PermissionRequired,
+    /// <summary>Action blocked by governance policy.</summary>
+    GovernanceBlocked
 }
