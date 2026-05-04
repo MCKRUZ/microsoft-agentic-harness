@@ -91,7 +91,7 @@ public class DependencyInjectionTests
     }
 
     [Fact]
-    public void AddApplicationAIDependencies_RegistersSevenPipelineBehaviors()
+    public void AddApplicationAIDependencies_RegistersNinePipelineBehaviors()
     {
         var services = CreateServicesWithAIDependencies();
 
@@ -100,7 +100,7 @@ public class DependencyInjectionTests
                         d.ServiceType.GetGenericTypeDefinition() == typeof(MediatR.IPipelineBehavior<,>))
             .ToList();
 
-        behaviors.Should().HaveCount(7);
+        behaviors.Should().HaveCount(9);
         behaviors.Should().OnlyContain(d => d.Lifetime == ServiceLifetime.Transient);
     }
 

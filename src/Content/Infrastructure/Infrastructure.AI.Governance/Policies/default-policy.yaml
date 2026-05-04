@@ -1,0 +1,28 @@
+name: default-policy
+description: Default governance policy for the agentic harness template
+scope: global
+defaultAction: allow
+rules:
+  - name: block-system-exec
+    condition: "tool == 'execute_command' || tool == 'shell_exec' || tool == 'run_process'"
+    action: deny
+    priority: 100
+    description: Block direct system execution tools by default
+
+  - name: block-network-raw
+    condition: "tool == 'raw_http' || tool == 'tcp_connect'"
+    action: deny
+    priority: 90
+    description: Block raw network access tools
+
+  - name: warn-file-write
+    condition: "tool == 'file_write' || tool == 'file_delete'"
+    action: warn
+    priority: 50
+    description: Warn on file mutation operations
+
+  - name: allow-read-tools
+    condition: "tool == 'file_read' || tool == 'web_search' || tool == 'web_fetch'"
+    action: allow
+    priority: 10
+    description: Explicitly allow read-only tools
