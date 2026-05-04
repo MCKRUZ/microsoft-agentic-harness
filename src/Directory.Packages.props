@@ -36,6 +36,9 @@
     <PackageVersion Include="Ardalis.GuardClauses" Version="5.0.0" />
     <PackageVersion Include="Microsoft.Extensions.Http" Version="10.0.5" />
 
+    <!-- Infrastructure.AI.Governance -->
+    <PackageVersion Include="Microsoft.AgentGovernance" Version="3.0.2" />
+
     <!-- Infrastructure.AI.KnowledgeGraph -->
     <PackageVersion Include="Neo4j.Driver" Version="5.28.0" />
 

@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <!-- Microsoft Agent Governance Toolkit — policy enforcement, rate limiting, zero-trust identity,
+         OpenTelemetry metrics, and audit logging for autonomous AI agents.
+         Latest public release is 3.0.2. Extension packages for Microsoft.Agents and MCP
+         (Microsoft.AgentGovernance.Extensions.Microsoft.Agents / .ModelContextProtocol) do not yet
+         exist on NuGet; adapter wiring for those surfaces will be hand-rolled until packages publish. -->
+    <PackageReference Include="Microsoft.AgentGovernance" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../Application/Application.AI.Common/Application.AI.Common.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Policy YAML files are copied to output so the runtime can load them without embedding. -->
+    <None Include="Policies/**/*.yaml" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>
