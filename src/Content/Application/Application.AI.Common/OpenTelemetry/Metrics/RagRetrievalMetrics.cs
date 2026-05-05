@@ -34,4 +34,24 @@ public static class RagRetrievalMetrics
     public static Counter<long> Errors { get; } =
         AppInstrument.Meter.CreateCounter<long>(
             "rag.retrieval.errors", "{error}", "Retrieval pipeline errors");
+
+    /// <summary>Retrieval queries that returned at least one relevant chunk. Tags: rag.retrieval.strategy.</summary>
+    public static Counter<long> Hits { get; } =
+        AppInstrument.Meter.CreateCounter<long>(
+            RagConventions.RetrievalHits, "{hit}", "Retrieval queries with relevant results");
+
+    /// <summary>Per-source retrieval queries. Tags: rag.source.name.</summary>
+    public static Counter<long> SourceRetrievals { get; } =
+        AppInstrument.Meter.CreateCounter<long>(
+            RagConventions.SourceRetrievals, "{query}", "Per-source retrieval queries");
+
+    /// <summary>Grounding score (0-1) — fraction of turns citing retrieved chunks.</summary>
+    public static Histogram<double> GroundingScore { get; } =
+        AppInstrument.Meter.CreateHistogram<double>(
+            RagConventions.GroundingScore, "{ratio}", "Turn grounding score");
+
+    /// <summary>Total documents ingested into the RAG pipeline. Tags: rag.source.name.</summary>
+    public static Counter<long> IngestionDocuments { get; } =
+        AppInstrument.Meter.CreateCounter<long>(
+            RagConventions.IngestionDocuments, "{document}", "Documents ingested into RAG pipeline");
 }
