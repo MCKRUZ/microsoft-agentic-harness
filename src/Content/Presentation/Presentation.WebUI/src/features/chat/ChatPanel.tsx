@@ -6,6 +6,7 @@ import { useChatStore } from './useChatStore';
 import { useAppStore } from '@/stores/appStore';
 import { useConversationSettingsStore } from '@/stores/conversationSettingsStore';
 import { useAgentHub, type ConnectionState, type ConversationSettingsInput, type ServerConversationMessage } from '@/hooks/useAgentHub';
+import { useAgentStream } from '@/hooks/useAgentStream';
 import type { ChatMessage } from './useChatStore';
 import { CONVERSATIONS_QUERY_KEY } from '@/features/conversations/useConversationsQuery';
 import { MessageList } from './MessageList';
@@ -115,13 +116,13 @@ export function ChatPanel() {
   const activeConversationId = useAppStore((s) => s.activeConversationId);
   const setActiveConversationId = useAppStore((s) => s.setActiveConversationId);
   const {
-    sendMessage,
     startConversation,
     retryFromMessage,
     editAndResubmit,
     setConversationSettings,
     connectionState,
   } = useAgentHub();
+  const { sendMessage: agUiSend } = useAgentStream();
   const [conversationReady, setConversationReady] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const currentSettings = useConversationSettingsStore((s) =>
@@ -143,6 +144,10 @@ export function ChatPanel() {
     });
   };
 
+  const sendMessage = async (conversationId: string, userMessageId: string, message: string): Promise<void> => {
+    agUiSend(conversationId, userMessageId, message);
+  };
+
   const handleSuggestionClick = (text: string): void => {
     if (!activeConversationId || !conversationReady) return;
     const userMessageId = crypto.randomUUID();
@@ -153,9 +158,7 @@ export function ChatPanel() {
       timestamp: new Date(),
     });
     useChatStore.getState().startStreaming();
-    void sendMessage(activeConversationId, userMessageId, text).catch((err: unknown) => {
-      useChatStore.getState().setError(err instanceof Error ? err.message : 'Failed to send message');
-    });
+    agUiSend(activeConversationId, userMessageId, text);
   };
 
   const handleEdit = (userMessageId: string, newContent: string): void => {

@@ -6,17 +6,23 @@ import { useAppStore } from '@/stores/appStore';
 import { ChatPanel } from '../ChatPanel';
 import { renderWithProviders } from '@/test/utils';
 
-const mockSendMessage = vi.fn().mockResolvedValue(undefined);
+const mockSendMessage = vi.fn();
 const mockStartConversation = vi.fn().mockResolvedValue(undefined);
 
 vi.mock('@/hooks/useAgentHub', () => ({
   useAgentHub: () => ({
     connectionState: 'connected',
-    sendMessage: mockSendMessage,
     startConversation: mockStartConversation,
     invokeToolViaAgent: vi.fn().mockResolvedValue(undefined),
     retryFromMessage: vi.fn().mockResolvedValue(undefined),
     editAndResubmit: vi.fn().mockResolvedValue(undefined),
+  }),
+}));
+
+vi.mock('@/hooks/useAgentStream', () => ({
+  useAgentStream: () => ({
+    sendMessage: mockSendMessage,
+    abort: vi.fn(),
   }),
 }));
 
@@ -34,7 +40,7 @@ describe('ChatPanel', () => {
       error: null,
     });
     useAppStore.setState({ selectedAgent: null });
-    mockSendMessage.mockReset().mockResolvedValue(undefined);
+    mockSendMessage.mockReset();
     mockStartConversation.mockReset().mockResolvedValue(undefined);
   });
 
