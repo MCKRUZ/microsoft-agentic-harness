@@ -33,7 +33,11 @@ vi.mock('@/hooks/useAgentHub', () => ({
     connectionState: 'connected' as const,
     startConversation: vi.fn().mockResolvedValue(undefined),
     invokeToolViaAgent: vi.fn().mockResolvedValue(undefined),
+    retryFromMessage: vi.fn().mockResolvedValue(undefined),
+    editAndResubmit: vi.fn().mockResolvedValue(undefined),
+    setConversationSettings: vi.fn().mockResolvedValue(undefined),
   }),
+  AgentHubProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
 
 vi.mock('@/hooks/useAgentStream', () => ({

@@ -16,7 +16,9 @@ vi.mock('@/hooks/useAgentHub', () => ({
     invokeToolViaAgent: vi.fn().mockResolvedValue(undefined),
     retryFromMessage: vi.fn().mockResolvedValue(undefined),
     editAndResubmit: vi.fn().mockResolvedValue(undefined),
+    setConversationSettings: vi.fn().mockResolvedValue(undefined),
   }),
+  AgentHubProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
 
 vi.mock('@/hooks/useAgentStream', () => ({
@@ -25,6 +27,12 @@ vi.mock('@/hooks/useAgentStream', () => ({
     abort: vi.fn(),
   }),
 }));
+
+function getSubmitButton(): HTMLButtonElement {
+  const btn = document.querySelector('button[type="submit"]');
+  if (!btn) throw new Error('Submit button not found');
+  return btn as HTMLButtonElement;
+}
 
 function renderPanel() {
   return renderWithProviders(<ChatPanel />);
@@ -39,7 +47,7 @@ describe('ChatPanel', () => {
       streamingContent: '',
       error: null,
     });
-    useAppStore.setState({ selectedAgent: null });
+    useAppStore.setState({ selectedAgent: 'test-agent' });
     mockSendMessage.mockReset();
     mockStartConversation.mockReset().mockResolvedValue(undefined);
   });
@@ -51,15 +59,20 @@ describe('ChatPanel', () => {
       let resolveStart!: () => void;
       const startPromise = new Promise<void>((resolve) => { resolveStart = resolve; });
       mockStartConversation.mockReturnValueOnce(startPromise);
-      useAppStore.setState({ selectedAgent: 'test-agent' });
 
       renderPanel();
 
-      const sendButton = await screen.findByRole('button', { name: /send/i });
-      expect(sendButton).toBeDisabled();
+      // Submit button should be disabled while conversation is starting (disabled prop=true)
+      await waitFor(() => { expect(getSubmitButton()).toBeDisabled(); });
 
       resolveStart();
-      await waitFor(() => { expect(sendButton).not.toBeDisabled(); });
+
+      // After start resolves, ChatInput disabled prop becomes false.
+      // The button is still disabled because there's no text typed yet,
+      // but the textarea should become enabled.
+      await waitFor(() => {
+        expect(screen.getByPlaceholderText(/message the agent/i)).not.toBeDisabled();
+      });
     });
 
     it('does not invoke sendMessage when user clicks Send before startConversation resolves', async () => {
@@ -67,47 +80,53 @@ describe('ChatPanel', () => {
       let resolveStart!: () => void;
       const startPromise = new Promise<void>((resolve) => { resolveStart = resolve; });
       mockStartConversation.mockReturnValueOnce(startPromise);
-      useAppStore.setState({ selectedAgent: 'test-agent' });
 
       renderPanel();
 
-      const textarea = await screen.findByPlaceholderText(/type a message/i);
+      const textarea = await screen.findByPlaceholderText(/message the agent/i);
       await user.type(textarea, 'hello');
-      await user.click(screen.getByRole('button', { name: /send/i }));
+      await user.click(getSubmitButton());
 
       expect(mockSendMessage).not.toHaveBeenCalled();
 
       resolveStart();
-      await waitFor(() => { expect(screen.getByRole('button', { name: /send/i })).not.toBeDisabled(); });
+      await waitFor(() => {
+        expect(screen.getByPlaceholderText(/message the agent/i)).not.toBeDisabled();
+      });
     });
   });
 
   // --- ErrorBanner ---
 
   describe('ErrorBanner', () => {
-    it('renders nothing when error is null', () => {
+    it('renders nothing when error is null', async () => {
       renderPanel();
+      // Wait for conversation to start so the full UI renders
+      await waitFor(() => { expect(screen.getByPlaceholderText(/message the agent/i)).toBeInTheDocument(); });
       expect(screen.queryByRole('button', { name: /dismiss/i })).not.toBeInTheDocument();
     });
 
-    it('renders error message string', () => {
+    it('renders error message string', async () => {
       useChatStore.setState({ error: 'turn failed' });
       renderPanel();
-      expect(screen.getByText('turn failed')).toBeInTheDocument();
+      await waitFor(() => { expect(screen.getByText('turn failed')).toBeInTheDocument(); });
     });
 
-    it('renders extracted .message not the raw [object Object]', () => {
+    it('renders extracted .message not the raw [object Object]', async () => {
       // Simulate what setError now receives after our fix — a clean string
       useChatStore.setState({ error: 'turn failed' });
       renderPanel();
-      expect(screen.queryByText('[object Object]')).not.toBeInTheDocument();
-      expect(screen.getByText('turn failed')).toBeInTheDocument();
+      await waitFor(() => {
+        expect(screen.queryByText('[object Object]')).not.toBeInTheDocument();
+        expect(screen.getByText('turn failed')).toBeInTheDocument();
+      });
     });
 
     it('dismiss button clears the error', async () => {
       const user = userEvent.setup();
       useChatStore.setState({ error: 'something went wrong' });
       renderPanel();
+      await waitFor(() => { expect(screen.getByText('something went wrong')).toBeInTheDocument(); });
       await user.click(screen.getByRole('button', { name: /dismiss/i }));
       expect(useChatStore.getState().error).toBeNull();
       expect(screen.queryByText('something went wrong')).not.toBeInTheDocument();
@@ -117,12 +136,11 @@ describe('ChatPanel', () => {
   // --- ConversationHeader ---
 
   describe('ConversationHeader', () => {
-    // ChatPanel's useEffect always generates a conversationId on mount,
-    // so "No conversation" is unreachable in practice. We test the format instead.
-    it('shows a truncated UUID (8 chars + ellipsis) after mount', async () => {
+    it('shows a truncated UUID (8 chars) after mount', async () => {
       renderPanel();
       await waitFor(() => {
-        expect(screen.getByText(/^.{8}\u2026$/)).toBeInTheDocument();
+        // The component renders conversationId.slice(0, 8) — an 8 char hex substring
+        expect(screen.getByText(/^[0-9a-f]{8}$/i)).toBeInTheDocument();
       });
     });
 
@@ -132,6 +150,7 @@ describe('ChatPanel', () => {
         messages: [{ id: '1', role: 'user', content: 'hello', timestamp: new Date() }],
       });
       renderPanel();
+      await waitFor(() => { expect(screen.getByRole('button', { name: /clear/i })).toBeInTheDocument(); });
       await user.click(screen.getByRole('button', { name: /clear/i }));
       expect(useChatStore.getState().messages).toHaveLength(0);
     });

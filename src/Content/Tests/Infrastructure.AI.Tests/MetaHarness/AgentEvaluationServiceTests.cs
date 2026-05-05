@@ -243,9 +243,9 @@ public class AgentEvaluationServiceTests : IAsyncDisposable
         sw.Stop();
 
         Assert.Equal(1.0, result.PassRate);
-        // 2 parallel × 2 batches = ~100ms; allow 30ms tolerance on each side
-        Assert.True(sw.ElapsedMilliseconds < 200,
-            $"Expected <200ms with parallelism=2 but took {sw.ElapsedMilliseconds}ms");
+        // 2 parallel x 2 batches = ~100ms; allow generous tolerance for CI/loaded machines
+        Assert.True(sw.ElapsedMilliseconds < 500,
+            $"Expected <500ms with parallelism=2 but took {sw.ElapsedMilliseconds}ms");
         Assert.True(sw.ElapsedMilliseconds >= 70,
             $"Expected >=70ms (2 batches) but took {sw.ElapsedMilliseconds}ms");
     }

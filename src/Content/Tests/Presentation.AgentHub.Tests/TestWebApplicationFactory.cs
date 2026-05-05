@@ -10,6 +10,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Moq;
+using OpenTelemetry.Metrics;
 using Presentation.AgentHub.Interfaces;
 using Presentation.AgentHub.Config;
 using Presentation.AgentHub.Services;
@@ -67,6 +68,21 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
             {
                 ["AppConfig:Logging:PipeName"] = string.Empty,
             });
+        });
+
+        builder.ConfigureServices(services =>
+        {
+            // The production OpenTelemetry pipeline checks Assembly.GetEntryAssembly() against
+            // WebTelemetryProjects. In the test runner the entry assembly is "testhost", so
+            // AddDesktopTelemetry() is called — which registers a standalone MeterProvider
+            // singleton without the Prometheus exporter. MapPrometheusScrapingEndpoint() in
+            // Program.cs requires a hosting-integrated MeterProvider with Prometheus support.
+            //
+            // Fix: remove the standalone MeterProvider and register the hosting-integrated
+            // OpenTelemetry metrics pipeline with the Prometheus exporter.
+            services.RemoveAll<MeterProvider>();
+            services.AddOpenTelemetry()
+                .WithMetrics(m => m.AddPrometheusExporter());
         });
 
         builder.ConfigureTestServices(services =>

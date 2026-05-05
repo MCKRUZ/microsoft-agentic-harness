@@ -134,28 +134,37 @@ public sealed class ChatClientFactoryAvailabilityTests : IDisposable
     }
 
     [Fact]
-    public void GetAvailableProviders_ReturnsAllFiveTypes()
+    public void GetAvailableProviders_ReturnsAllSixTypes()
     {
         using var factory = CreateFactory();
 
         var providers = factory.GetAvailableProviders();
 
-        providers.Should().HaveCount(5);
+        providers.Should().HaveCount(6);
         providers.Should().ContainKey(AIAgentFrameworkClientType.AzureOpenAI);
         providers.Should().ContainKey(AIAgentFrameworkClientType.OpenAI);
         providers.Should().ContainKey(AIAgentFrameworkClientType.AzureAIInference);
         providers.Should().ContainKey(AIAgentFrameworkClientType.PersistentAgents);
         providers.Should().ContainKey(AIAgentFrameworkClientType.Anthropic);
+        providers.Should().ContainKey(AIAgentFrameworkClientType.Echo);
     }
 
     [Fact]
-    public void GetAvailableProviders_WithNoConfig_AllFalse()
+    public void GetAvailableProviders_WithNoConfig_EchoAlwaysTrue()
     {
         using var factory = CreateFactory();
 
         var providers = factory.GetAvailableProviders();
 
-        providers.Values.Should().AllSatisfy(v => v.Should().BeFalse());
+        // Echo is always available (no external dependencies)
+        providers[AIAgentFrameworkClientType.Echo].Should().BeTrue();
+
+        // All other providers require configuration or DI registration
+        providers[AIAgentFrameworkClientType.AzureOpenAI].Should().BeFalse();
+        providers[AIAgentFrameworkClientType.OpenAI].Should().BeFalse();
+        providers[AIAgentFrameworkClientType.AzureAIInference].Should().BeFalse();
+        providers[AIAgentFrameworkClientType.PersistentAgents].Should().BeFalse();
+        providers[AIAgentFrameworkClientType.Anthropic].Should().BeFalse();
     }
 
     [Fact]

@@ -28,6 +28,12 @@ function renderInput() {
   return renderWithProviders(<ChatInput conversationId="test-conv" sendMessage={mockSendMessage} />);
 }
 
+function getSubmitButton(): HTMLButtonElement {
+  const btn = document.querySelector('button[type="submit"]');
+  if (!btn) throw new Error('Submit button not found');
+  return btn as HTMLButtonElement;
+}
+
 describe('ChatInput', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -37,39 +43,39 @@ describe('ChatInput', () => {
   it('submit calls sendMessage with input value', async () => {
     const user = userEvent.setup();
     renderInput();
-    await user.type(screen.getByPlaceholderText(/type a message/i), 'hello world');
-    await user.click(screen.getByRole('button', { name: /send/i }));
+    await user.type(screen.getByPlaceholderText(/message the agent/i), 'hello world');
+    await user.click(getSubmitButton());
     expect(mockSendMessage).toHaveBeenCalledWith('test-conv', expect.any(String), 'hello world');
   });
 
   it('is disabled while isStreaming is true', () => {
     useChatStore.setState({ isStreaming: true });
     renderInput();
-    expect(screen.getByPlaceholderText(/type a message/i)).toBeDisabled();
-    expect(screen.getByRole('button', { name: /send/i })).toBeDisabled();
+    expect(screen.getByPlaceholderText(/message the agent/i)).toBeDisabled();
+    expect(getSubmitButton()).toBeDisabled();
   });
 
   it('clears after submit', async () => {
     const user = userEvent.setup();
     renderInput();
-    await user.type(screen.getByPlaceholderText(/type a message/i), 'hello world');
-    await user.click(screen.getByRole('button', { name: /send/i }));
-    expect(screen.getByPlaceholderText(/type a message/i)).toHaveValue('');
+    await user.type(screen.getByPlaceholderText(/message the agent/i), 'hello world');
+    await user.click(getSubmitButton());
+    expect(screen.getByPlaceholderText(/message the agent/i)).toHaveValue('');
   });
 
   it('rejects empty string (does not call sendMessage)', async () => {
     const user = userEvent.setup();
     renderInput();
-    await user.click(screen.getByRole('button', { name: /send/i }));
+    await user.click(getSubmitButton());
     expect(mockSendMessage).not.toHaveBeenCalled();
   });
 
   it('rejects messages over 40000 characters', async () => {
     renderInput();
-    fireEvent.change(screen.getByPlaceholderText(/type a message/i), {
+    fireEvent.change(screen.getByPlaceholderText(/message the agent/i), {
       target: { value: 'a'.repeat(40_001) },
     });
-    fireEvent.click(screen.getByRole('button', { name: /send/i }));
+    fireEvent.click(getSubmitButton());
     expect(await screen.findByText(/message too long/i)).toBeInTheDocument();
     expect(mockSendMessage).not.toHaveBeenCalled();
   });
@@ -77,7 +83,7 @@ describe('ChatInput', () => {
   it('shows prompt picker when user types @', async () => {
     const user = userEvent.setup();
     renderInput();
-    await user.type(screen.getByPlaceholderText(/type a message/i), '@');
+    await user.type(screen.getByPlaceholderText(/message the agent/i), '@');
     expect(await screen.findByRole('listbox', { name: /prompts/i })).toBeInTheDocument();
     expect(screen.getByText('summarize')).toBeInTheDocument();
     expect(screen.getByText('translate')).toBeInTheDocument();
@@ -86,7 +92,7 @@ describe('ChatInput', () => {
   it('shows tool picker when user types /', async () => {
     const user = userEvent.setup();
     renderInput();
-    await user.type(screen.getByPlaceholderText(/type a message/i), '/');
+    await user.type(screen.getByPlaceholderText(/message the agent/i), '/');
     expect(await screen.findByRole('listbox', { name: /tools/i })).toBeInTheDocument();
     expect(screen.getByText('search')).toBeInTheDocument();
     expect(screen.getByText('calculator')).toBeInTheDocument();
@@ -95,7 +101,7 @@ describe('ChatInput', () => {
   it('filters picker items as user types after @', async () => {
     const user = userEvent.setup();
     renderInput();
-    await user.type(screen.getByPlaceholderText(/type a message/i), '@tra');
+    await user.type(screen.getByPlaceholderText(/message the agent/i), '@tra');
     await waitFor(() => {
       expect(screen.getByText('translate')).toBeInTheDocument();
       expect(screen.queryByText('summarize')).not.toBeInTheDocument();
@@ -105,7 +111,7 @@ describe('ChatInput', () => {
   it('inserts selection on Enter and closes picker', async () => {
     const user = userEvent.setup();
     renderInput();
-    const input = screen.getByPlaceholderText(/type a message/i);
+    const input = screen.getByPlaceholderText(/message the agent/i);
     await user.type(input, '@sum');
     await user.keyboard('{Enter}');
     expect(input).toHaveValue('@summarize ');
@@ -115,7 +121,7 @@ describe('ChatInput', () => {
   it('closes picker on Escape without inserting', async () => {
     const user = userEvent.setup();
     renderInput();
-    const input = screen.getByPlaceholderText(/type a message/i);
+    const input = screen.getByPlaceholderText(/message the agent/i);
     await user.type(input, '@sum');
     await user.keyboard('{Escape}');
     expect(input).toHaveValue('@sum');
