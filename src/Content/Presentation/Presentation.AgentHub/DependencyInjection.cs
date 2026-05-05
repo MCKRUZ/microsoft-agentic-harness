@@ -179,6 +179,11 @@ public static class DependencyInjection
         // Singleton: ConversationLockRegistry must outlive hub instances (hubs are transient).
         services.AddSingleton<ConversationLockRegistry>();
 
+        // Scoped: AgUiRunHandler takes per-request dependencies (ClaimsPrincipal, CancellationToken).
+        services.AddScoped<AgUi.AgUiRunHandler>();
+
+        services.AddHostedService<SessionIdleCleanupService>();
+
         // SignalRSpanExporter bridges OTel Activity pipeline → SignalR.
         // Registered as singleton so the same instance is both the IHostedService (drain loop)
         // and the BaseExporter<Activity> added to the OTel tracing pipeline below.

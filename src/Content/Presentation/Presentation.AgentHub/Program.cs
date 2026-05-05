@@ -1,4 +1,5 @@
 using Presentation.AgentHub;
+using Presentation.AgentHub.AgUi;
 using Presentation.AgentHub.Hubs;
 using Presentation.Common.Extensions;
 
@@ -35,6 +36,7 @@ app.UseAuthorization();
 app.UseRateLimiter();
 app.MapControllers();
 app.MapHub<AgentTelemetryHub>("/hubs/agent");
+app.MapAgUiEndpoints();
 app.MapPrometheusScrapingEndpoint();
 app.AddHealthCheckEndpoint("/api");
 
