@@ -185,6 +185,18 @@ public sealed class InMemoryGraphStore : IKnowledgeGraphStore
         return Task.FromResult(_edges.Count);
     }
 
+    /// <inheritdoc />
+    public Task<IReadOnlyList<GraphNode>> GetNodesByOwnerAsync(
+        string ownerId,
+        CancellationToken cancellationToken = default)
+    {
+        var owned = _nodes.Values
+            .Where(n => string.Equals(n.OwnerId, ownerId, StringComparison.Ordinal))
+            .ToList();
+
+        return Task.FromResult<IReadOnlyList<GraphNode>>(owned);
+    }
+
     private static IReadOnlyDictionary<string, string> MergeProperties(
         IReadOnlyDictionary<string, string> existing,
         IReadOnlyDictionary<string, string> incoming)

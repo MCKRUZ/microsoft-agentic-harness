@@ -136,6 +136,22 @@ public sealed class GraphFeedbackStore : IFeedbackStore
         return Task.FromResult<IReadOnlyDictionary<string, NodeFeedbackWeight>>(result);
     }
 
+    /// <inheritdoc />
+    public Task DeleteWeightsByNodeIdsAsync(
+        IReadOnlyList<string> nodeIds,
+        CancellationToken cancellationToken = default)
+    {
+        var deleted = 0;
+        foreach (var nodeId in nodeIds)
+        {
+            if (_nodeWeights.TryRemove(nodeId, out _))
+                deleted++;
+        }
+
+        _logger.LogDebug("Deleted {Count} feedback weights for {Total} node IDs", deleted, nodeIds.Count);
+        return Task.CompletedTask;
+    }
+
     private static double NormalizeScore(double score) =>
         Math.Clamp((score - 1.0) / 4.0, 0.0, 1.0);
 

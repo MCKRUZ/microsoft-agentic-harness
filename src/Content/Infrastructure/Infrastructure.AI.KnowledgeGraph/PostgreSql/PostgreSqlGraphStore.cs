@@ -292,6 +292,17 @@ public sealed class PostgreSqlGraphStore : IKnowledgeGraphStore
         return Convert.ToInt32(result);
     }
 
+    /// <inheritdoc />
+    public Task<IReadOnlyList<GraphNode>> GetNodesByOwnerAsync(
+        string ownerId,
+        CancellationToken cancellationToken = default)
+    {
+        // TODO: When PostgreSQL is wired, use:
+        // SELECT * FROM graph_nodes WHERE owner_id = @ownerId
+        _logger.LogWarning("GetNodesByOwnerAsync not yet implemented for PostgreSQL backend");
+        return Task.FromResult<IReadOnlyList<GraphNode>>([]);
+    }
+
     private async Task<NpgsqlConnection> OpenConnectionAsync(CancellationToken ct)
     {
         var conn = new NpgsqlConnection(_connectionString);

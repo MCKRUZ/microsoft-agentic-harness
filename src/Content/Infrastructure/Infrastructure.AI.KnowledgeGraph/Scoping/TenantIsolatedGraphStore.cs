@@ -138,6 +138,15 @@ public sealed class TenantIsolatedGraphStore : IKnowledgeGraphStore
         return _inner.GetEdgeCountAsync(cancellationToken);
     }
 
+    /// <inheritdoc />
+    public Task<IReadOnlyList<GraphNode>> GetNodesByOwnerAsync(
+        string ownerId,
+        CancellationToken cancellationToken = default)
+    {
+        if (!HasAccess()) return Task.FromResult<IReadOnlyList<GraphNode>>([]);
+        return _inner.GetNodesByOwnerAsync(ownerId, cancellationToken);
+    }
+
     private bool HasAccess()
     {
         var allowed = _validator.ValidateAccess(_scope, _scope.TenantId, _scope.DatasetId);

@@ -248,6 +248,17 @@ public sealed class Neo4jGraphStore : IKnowledgeGraphStore, IAsyncDisposable
         });
     }
 
+    /// <inheritdoc />
+    public Task<IReadOnlyList<GraphNode>> GetNodesByOwnerAsync(
+        string ownerId,
+        CancellationToken cancellationToken = default)
+    {
+        // TODO: When Neo4j driver is wired, use Cypher:
+        // MATCH (n) WHERE n.ownerId = $ownerId RETURN n
+        _logger.LogWarning("GetNodesByOwnerAsync not yet implemented for Neo4j backend");
+        return Task.FromResult<IReadOnlyList<GraphNode>>([]);
+    }
+
     /// <inheritdoc cref="IAsyncDisposable.DisposeAsync"/>
     public async ValueTask DisposeAsync()
     {
