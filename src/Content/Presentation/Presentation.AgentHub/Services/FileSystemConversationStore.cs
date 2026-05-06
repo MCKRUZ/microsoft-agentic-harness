@@ -265,6 +265,41 @@ public sealed class FileSystemConversationStore : IConversationStore
     }
 
     /// <inheritdoc/>
+    public async Task<ConversationRecord?> UpdateTelemetryAsync(
+        string conversationId,
+        Guid observabilitySessionId,
+        TelemetryAccumulator telemetry,
+        CancellationToken ct = default)
+    {
+        var path = ResolveAndValidatePath(conversationId);
+
+        await _lock.WaitAsync(ct);
+        try
+        {
+            if (!File.Exists(path))
+                return null;
+
+            var json = await File.ReadAllTextAsync(path, ct);
+            var existing = JsonSerializer.Deserialize<ConversationRecord>(json, _jsonOptions);
+            if (existing is null) return null;
+
+            var updated = existing with
+            {
+                ObservabilitySessionId = observabilitySessionId,
+                Telemetry = telemetry,
+                UpdatedAt = DateTimeOffset.UtcNow,
+            };
+
+            await WriteAtomicLockedAsync(path, updated, ct);
+            return updated;
+        }
+        finally
+        {
+            _lock.Release();
+        }
+    }
+
+    /// <inheritdoc/>
     public async Task<IReadOnlyList<ConversationMessage>?> GetHistoryForDispatch(
         string conversationId,
         int maxMessages,

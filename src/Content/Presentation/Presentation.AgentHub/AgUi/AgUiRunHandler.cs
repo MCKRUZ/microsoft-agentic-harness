@@ -1,5 +1,9 @@
+using System.Diagnostics;
 using System.Security.Claims;
+using Application.AI.Common.Interfaces;
+using Application.AI.Common.OpenTelemetry.Metrics;
 using Application.Core.CQRS.Agents.ExecuteAgentTurn;
+using Domain.AI.Telemetry.Conventions;
 using MediatR;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
@@ -23,6 +27,7 @@ public sealed class AgUiRunHandler
 
     private readonly IMediator _mediator;
     private readonly IConversationStore _conversationStore;
+    private readonly IObservabilityStore _observabilityStore;
     private readonly ConversationLockRegistry _lockRegistry;
     private readonly ILogger<AgUiRunHandler> _logger;
 
@@ -32,11 +37,13 @@ public sealed class AgUiRunHandler
     public AgUiRunHandler(
         IMediator mediator,
         IConversationStore conversationStore,
+        IObservabilityStore observabilityStore,
         ConversationLockRegistry lockRegistry,
         ILogger<AgUiRunHandler> logger)
     {
         _mediator = mediator;
         _conversationStore = conversationStore;
+        _observabilityStore = observabilityStore;
         _lockRegistry = lockRegistry;
         _logger = logger;
     }
@@ -110,11 +117,29 @@ public sealed class AgUiRunHandler
             return;
         }
 
+        var observabilitySessionId = record.ObservabilitySessionId ?? Guid.Empty;
+        if (observabilitySessionId == Guid.Empty)
+        {
+            var agentTag = new KeyValuePair<string, object?>(AgentConventions.Name, record.AgentName);
+            SessionMetrics.SessionsStarted.Add(1, agentTag);
+            SessionMetrics.ActiveSessions.Add(1, new TagList { { AgentConventions.Name, record.AgentName } });
+            UserActivityMetrics.SessionsStarted.Add(1,
+                new KeyValuePair<string, object?>(UserConventions.UserId, callerId));
+
+            observabilitySessionId = await _observabilityStore.StartSessionAsync(
+                input.ThreadId, record.AgentName, model: null, ct);
+
+            await _conversationStore.UpdateTelemetryAsync(
+                input.ThreadId, observabilitySessionId, TelemetryAccumulator.Zero, ct);
+        }
+
+        Activity.Current?.AddBaggage(UserConventions.UserId, callerId);
+
         var semaphore = _lockRegistry.GetOrCreate(input.ThreadId);
         await semaphore.WaitAsync(ct);
         try
         {
-            await ExecuteRunAsync(input, writer, record, userMessage.Content, ct);
+            await ExecuteRunAsync(input, writer, record, userMessage.Content, callerId, observabilitySessionId, ct);
         }
         catch (OperationCanceledException)
         {
@@ -140,6 +165,8 @@ public sealed class AgUiRunHandler
         IAgUiEventWriter writer,
         ConversationRecord record,
         string userMessageText,
+        string callerId,
+        Guid observabilitySessionId,
         CancellationToken ct)
     {
         // Append user message to the persisted conversation.
@@ -166,6 +193,7 @@ public sealed class AgUiRunHandler
             DeploymentOverride = record.Settings?.DeploymentName,
             Temperature = record.Settings?.Temperature,
             SystemPromptOverride = record.Settings?.SystemPromptOverride,
+            ObservabilitySessionId = observabilitySessionId,
         };
 
         AgentTurnResult result;
@@ -189,6 +217,39 @@ public sealed class AgUiRunHandler
             _logger.LogWarning("AG-UI run {RunId}: agent returned failure — {Error}.", input.RunId, result.Error);
             await writer.WriteAsync(new RunErrorEvent("The agent was unable to process your request."), ct);
             return;
+        }
+
+        var agentTag = new KeyValuePair<string, object?>(AgentConventions.Name, record.AgentName);
+        if (result.ToolsInvoked.Count > 0)
+            OrchestrationMetrics.ToolCalls.Add(result.ToolsInvoked.Count, agentTag);
+
+        UserActivityMetrics.Turns.Add(1,
+            new KeyValuePair<string, object?>(UserConventions.UserId, callerId),
+            new KeyValuePair<string, object?>(AgentConventions.Name, record.AgentName));
+
+        var previousTelemetry = record.Telemetry ?? TelemetryAccumulator.Zero;
+        var updatedTelemetry = previousTelemetry.Add(
+            result.InputTokens, result.OutputTokens,
+            result.CacheRead, result.CacheWrite,
+            result.CostUsd, result.ToolsInvoked.Count);
+
+        try
+        {
+            await _observabilityStore.UpdateSessionMetricsAsync(
+                observabilitySessionId,
+                updatedTelemetry.TurnCount, updatedTelemetry.ToolCallCount, subagentCount: 0,
+                updatedTelemetry.InputTokens, updatedTelemetry.OutputTokens,
+                updatedTelemetry.CacheRead, updatedTelemetry.CacheWrite,
+                updatedTelemetry.CostUsd,
+                Math.Round(updatedTelemetry.CacheHitRate, 4),
+                result.Model, ct);
+
+            await _conversationStore.UpdateTelemetryAsync(
+                input.ThreadId, observabilitySessionId, updatedTelemetry, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "AG-UI run {RunId}: failed to persist session metrics.", input.RunId);
         }
 
         // Stream the response as TEXT_MESSAGE_* events.

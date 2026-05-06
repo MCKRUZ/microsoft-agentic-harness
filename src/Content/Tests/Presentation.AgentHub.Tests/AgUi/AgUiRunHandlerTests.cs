@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using System.Text;
 using System.Text.Json;
+using Application.AI.Common.Interfaces;
 using Application.Core.CQRS.Agents.ExecuteAgentTurn;
 using FluentAssertions;
 using MediatR;
@@ -48,6 +49,24 @@ public sealed class AgUiRunHandlerTests
             UpdatedHistory = [new ChatMessage(ChatRole.Assistant, response)]
         };
 
+    private static AgentTurnResult MakeSuccessResultWithUsage(
+        string response, int inputTokens = 150, int outputTokens = 80,
+        int cacheRead = 40, int cacheWrite = 10, decimal costUsd = 0.003m,
+        string model = "gpt-4o", List<string>? tools = null) =>
+        new()
+        {
+            Success = true,
+            Response = response,
+            UpdatedHistory = [new ChatMessage(ChatRole.Assistant, response)],
+            InputTokens = inputTokens,
+            OutputTokens = outputTokens,
+            CacheRead = cacheRead,
+            CacheWrite = cacheWrite,
+            CostUsd = costUsd,
+            Model = model,
+            ToolsInvoked = tools ?? [],
+        };
+
     private static AgentTurnResult MakeFailureResult(string error) =>
         new()
         {
@@ -86,11 +105,21 @@ public sealed class AgUiRunHandlerTests
 
     private static AgUiRunHandler BuildHandler(
         Mock<IMediator> mediator,
-        Mock<IConversationStore> store)
+        Mock<IConversationStore> store,
+        Mock<IObservabilityStore>? observability = null)
     {
+        if (observability is null)
+        {
+            observability = new Mock<IObservabilityStore>();
+            observability.Setup(o => o.StartSessionAsync(
+                    It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(Guid.NewGuid());
+        }
+
         return new AgUiRunHandler(
             mediator.Object,
             store.Object,
+            observability.Object,
             new ConversationLockRegistry(),
             NullLogger<AgUiRunHandler>.Instance);
     }
@@ -289,5 +318,125 @@ public sealed class AgUiRunHandlerTests
         frames.Should().Contain(f => EventType(f) == AgUiEventType.RunError);
         frames.Should().NotContain(f => EventType(f) == AgUiEventType.RunFinished);
         mediator.Verify(m => m.Send(It.IsAny<IRequest<AgentTurnResult>>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task HandleRunAsync_FirstTurn_CreatesSessionAndPersistsMetrics()
+    {
+        const string threadId = "conv-telemetry-1";
+        const string userId = "user-tel-1";
+        const string agentResponse = "Here are your tools.";
+
+        var mediator = new Mock<IMediator>();
+        var store = new Mock<IConversationStore>();
+        var observability = new Mock<IObservabilityStore>();
+        var sessionId = Guid.NewGuid();
+
+        var record = MakeRecord(threadId, userId);
+        store.Setup(s => s.GetAsync(threadId, It.IsAny<CancellationToken>()))
+             .ReturnsAsync(record);
+        store.Setup(s => s.GetHistoryForDispatch(threadId, It.IsAny<int>(), It.IsAny<CancellationToken>()))
+             .ReturnsAsync([]);
+        store.Setup(s => s.AppendMessageAsync(threadId, It.IsAny<ConversationMessage>(), It.IsAny<CancellationToken>()))
+             .Returns(Task.CompletedTask);
+        store.Setup(s => s.UpdateTelemetryAsync(threadId, It.IsAny<Guid>(), It.IsAny<TelemetryAccumulator>(), It.IsAny<CancellationToken>()))
+             .ReturnsAsync(record);
+
+        observability.Setup(o => o.StartSessionAsync(threadId, "test-agent", null, It.IsAny<CancellationToken>()))
+                     .ReturnsAsync(sessionId);
+
+        mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(MakeSuccessResultWithUsage(agentResponse, inputTokens: 100, outputTokens: 50, costUsd: 0.01m));
+
+        var handler = BuildHandler(mediator, store, observability);
+        var input = MakeInput(threadId, "What tools do you have?");
+        var user = MakeUser(userId);
+
+        using var ms = new MemoryStream();
+        var writer = new AgUiEventWriter(ms);
+
+        await handler.HandleRunAsync(input, writer, user);
+
+        // Session was started in the observability store
+        observability.Verify(o => o.StartSessionAsync(threadId, "test-agent", null, It.IsAny<CancellationToken>()), Times.Once);
+
+        // Session metrics were updated with non-zero values
+        observability.Verify(o => o.UpdateSessionMetricsAsync(
+            sessionId,
+            1, 0, 0,
+            100, 50,
+            It.IsAny<int>(), It.IsAny<int>(),
+            0.01m,
+            It.IsAny<decimal>(),
+            It.IsAny<string?>(),
+            It.IsAny<CancellationToken>()), Times.Once);
+
+        // Telemetry was persisted to conversation store (twice: once for Zero on session start, once after turn)
+        store.Verify(s => s.UpdateTelemetryAsync(
+            threadId, sessionId,
+            It.IsAny<TelemetryAccumulator>(),
+            It.IsAny<CancellationToken>()), Times.Exactly(2));
+    }
+
+    [Fact]
+    public async Task HandleRunAsync_SecondTurn_ReusesSessionAndAccumulatesMetrics()
+    {
+        const string threadId = "conv-telemetry-2";
+        const string userId = "user-tel-2";
+        var sessionId = Guid.NewGuid();
+
+        var mediator = new Mock<IMediator>();
+        var store = new Mock<IConversationStore>();
+        var observability = new Mock<IObservabilityStore>();
+
+        var existingTelemetry = new TelemetryAccumulator(1, 0, 100, 50, 40, 10, 0.01m);
+        var record = new ConversationRecord(
+            threadId, "test-agent", userId,
+            DateTimeOffset.UtcNow, DateTimeOffset.UtcNow,
+            [new ConversationMessage(Guid.NewGuid(), MessageRole.User, "first msg", DateTimeOffset.UtcNow),
+             new ConversationMessage(Guid.NewGuid(), MessageRole.Assistant, "first reply", DateTimeOffset.UtcNow)],
+            "first msg", null, sessionId, existingTelemetry);
+
+        store.Setup(s => s.GetAsync(threadId, It.IsAny<CancellationToken>()))
+             .ReturnsAsync(record);
+        store.Setup(s => s.GetHistoryForDispatch(threadId, It.IsAny<int>(), It.IsAny<CancellationToken>()))
+             .ReturnsAsync(record.Messages);
+        store.Setup(s => s.AppendMessageAsync(threadId, It.IsAny<ConversationMessage>(), It.IsAny<CancellationToken>()))
+             .Returns(Task.CompletedTask);
+        store.Setup(s => s.UpdateTelemetryAsync(threadId, sessionId, It.IsAny<TelemetryAccumulator>(), It.IsAny<CancellationToken>()))
+             .ReturnsAsync(record);
+
+        mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(MakeSuccessResultWithUsage("second reply", inputTokens: 200, outputTokens: 100,
+                    cacheRead: 60, cacheWrite: 20, costUsd: 0.02m, tools: ["file_system"]));
+
+        var handler = BuildHandler(mediator, store, observability);
+        var input = MakeInput(threadId, "Use a tool please");
+        var user = MakeUser(userId);
+
+        using var ms = new MemoryStream();
+        var writer = new AgUiEventWriter(ms);
+
+        await handler.HandleRunAsync(input, writer, user);
+
+        // Should NOT start a new session
+        observability.Verify(o => o.StartSessionAsync(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+
+        // Session metrics should be accumulated (turn1 + turn2)
+        observability.Verify(o => o.UpdateSessionMetricsAsync(
+            sessionId,
+            2, 1, 0,
+            300, 150, 100, 30,
+            0.03m,
+            It.IsAny<decimal>(),
+            It.IsAny<string?>(),
+            It.IsAny<CancellationToken>()), Times.Once);
+
+        // Telemetry persisted once (only after turn, no session start)
+        store.Verify(s => s.UpdateTelemetryAsync(
+            threadId, sessionId,
+            It.Is<TelemetryAccumulator>(t => t.TurnCount == 2 && t.ToolCallCount == 1),
+            It.IsAny<CancellationToken>()), Times.Once);
     }
 }
