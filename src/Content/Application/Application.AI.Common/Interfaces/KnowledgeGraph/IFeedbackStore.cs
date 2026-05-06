@@ -69,4 +69,15 @@ public interface IFeedbackStore
     Task<IReadOnlyDictionary<string, NodeFeedbackWeight>> GetNodeWeightsBatchAsync(
         IReadOnlyList<string> nodeIds,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Deletes feedback weights for the specified node IDs. Used during
+    /// right-to-erasure cascading to remove feedback data for deleted nodes.
+    /// No-op for node IDs without recorded feedback.
+    /// </summary>
+    /// <param name="nodeIds">The node IDs whose feedback weights should be deleted.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    Task DeleteWeightsByNodeIdsAsync(
+        IReadOnlyList<string> nodeIds,
+        CancellationToken cancellationToken = default);
 }
