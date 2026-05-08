@@ -56,16 +56,16 @@ internal sealed partial class ResponseInjectionScrubber : IResponseSanitizer
     [GeneratedRegex(@"[​‌‍⁠﻿]")]
     private static partial Regex ZeroWidthPattern();
 
-    [GeneratedRegex(@"<\s*/?\s*system\s*>", RegexOptions.IgnoreCase | RegexOptions.Compiled)]
+    [GeneratedRegex(@"<\s*/?\s*system\s*>", RegexOptions.IgnoreCase)]
     private static partial Regex SystemTagPattern();
 
-    [GeneratedRegex(@"\b(?:ignore|override|disregard|forget)\b.{0,30}\b(?:previous|above|prior|system|instructions?|prompt)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled)]
+    [GeneratedRegex(@"\b(?:ignore|override|disregard|forget)\b.{0,30}\b(?:previous|above|prior|system|instructions?|prompt)\b", RegexOptions.IgnoreCase)]
     private static partial Regex InstructionOverridePattern();
 
-    [GeneratedRegex(@"(?:^|\n)(?:assistant|system|user)\s*:", RegexOptions.IgnoreCase | RegexOptions.Compiled)]
+    [GeneratedRegex(@"(?:^|\n)(?:assistant|system|user)\s*:", RegexOptions.IgnoreCase)]
     private static partial Regex RoleSwitchPattern();
 
-    [GeneratedRegex(@"<!--\s*(?:.*?(?:ignore|override|disregard|must|should|always|bypass|reveal|secret|inject)\b.*?)-->", RegexOptions.IgnoreCase | RegexOptions.Compiled | RegexOptions.Singleline)]
+    [GeneratedRegex(@"<!--\s*(?:.*?(?:ignore|override|disregard|must|should|always|bypass|reveal|secret|inject)\b.*?)-->", RegexOptions.IgnoreCase | RegexOptions.Singleline)]
     private static partial Regex HiddenDirectiveCommentPattern();
 
     [GeneratedRegex(@"[A-Za-z0-9+/]{40,}={0,2}")]

@@ -1,6 +1,5 @@
 using System.Text.RegularExpressions;
 using Application.AI.Common.Interfaces.Governance;
-using Application.AI.Common.OpenTelemetry.Metrics;
 using Domain.AI.Governance;
 using Domain.Common.Config.AI;
 
@@ -37,7 +36,6 @@ internal sealed partial class CredentialRedactor : IResponseSanitizer
         if (findings.Count == 0)
             return SanitizationResult.Clean(content);
 
-        GovernanceMetrics.ResponseSanitizations.Add(findings.Count);
         return SanitizationResult.WithFindings(sanitized, content, findings.AsReadOnly());
     }
 
@@ -58,30 +56,30 @@ internal sealed partial class CredentialRedactor : IResponseSanitizer
         return pattern.Replace(content, $"[REDACTED:{typeTag}]");
     }
 
-    [GeneratedRegex(@"AKIA[0-9A-Z]{16}", RegexOptions.Compiled)]
+    [GeneratedRegex(@"AKIA[0-9A-Z]{16}")]
     private static partial Regex AwsKeyPattern();
 
-    [GeneratedRegex(@"DefaultEndpointsProtocol=\S+AccountKey=\S+", RegexOptions.Compiled)]
+    [GeneratedRegex(@"DefaultEndpointsProtocol=\S+AccountKey=\S+")]
     private static partial Regex AzureConnectionStringPattern();
 
-    [GeneratedRegex(@"eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]+", RegexOptions.Compiled)]
+    [GeneratedRegex(@"eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]+")]
     private static partial Regex JwtPattern();
 
-    [GeneratedRegex(@"ghp_[A-Za-z0-9]{30,}", RegexOptions.Compiled)]
+    [GeneratedRegex(@"ghp_[A-Za-z0-9]{30,}")]
     private static partial Regex GitHubPatPattern();
 
-    [GeneratedRegex(@"sk-[A-Za-z0-9_-]{20,}", RegexOptions.Compiled)]
+    [GeneratedRegex(@"sk-[A-Za-z0-9_-]{20,}")]
     private static partial Regex ApiKeyPattern();
 
-    [GeneratedRegex(@"xoxb-[0-9]{10,}-[A-Za-z0-9]+", RegexOptions.Compiled)]
+    [GeneratedRegex(@"xoxb-[0-9]{10,}-[A-Za-z0-9]+")]
     private static partial Regex SlackTokenPattern();
 
-    [GeneratedRegex(@"-----BEGIN (?:RSA |EC |DSA )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |DSA )?PRIVATE KEY-----", RegexOptions.Compiled)]
+    [GeneratedRegex(@"-----BEGIN (?:RSA |EC |DSA )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |DSA )?PRIVATE KEY-----")]
     private static partial Regex PrivateKeyPattern();
 
-    [GeneratedRegex(@"Basic [A-Za-z0-9+/]{10,}={0,2}", RegexOptions.Compiled)]
+    [GeneratedRegex(@"Basic [A-Za-z0-9+/]{10,}={0,2}")]
     private static partial Regex BasicAuthPattern();
 
-    [GeneratedRegex(@"(?:password|secret|token|api_key)\s*[=:]\s*(?!\[REDACTED)\S+", RegexOptions.IgnoreCase | RegexOptions.Compiled)]
+    [GeneratedRegex(@"(?:password|secret|token|api_key)\s*[=:]\s*(?!\[REDACTED)\S+", RegexOptions.IgnoreCase)]
     private static partial Regex GenericSecretPattern();
 }

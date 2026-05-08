@@ -38,6 +38,8 @@ namespace Application.AI.Common;
 ///   <item><description><c>ContentSafetyBehavior</c> — screens IContentScreenable requests</description></item>
 ///   <item><description><c>ToolPermissionBehavior</c> — checks IToolRequest permissions</description></item>
 ///   <item><description><c>HookBehavior</c> — fires lifecycle hooks for tool and turn events</description></item>
+///   <item><description><c>RetrievalAuditBehavior</c> — logs retrieval-augmented generation audit trails</description></item>
+///   <item><description><c>ResponseSanitizationBehavior</c> — post-execution: sanitizes tool output for credentials, injection, exfiltration</description></item>
 /// </list>
 /// </para>
 /// </remarks>
@@ -62,7 +64,8 @@ public static class DependencyInjection
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(GovernancePolicyBehavior<,>))
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(PromptInjectionBehavior<,>))
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(HookBehavior<,>))
-            .AddTransient(typeof(IPipelineBehavior<,>), typeof(RetrievalAuditBehavior<,>));
+            .AddTransient(typeof(IPipelineBehavior<,>), typeof(RetrievalAuditBehavior<,>))
+            .AddTransient(typeof(IPipelineBehavior<,>), typeof(ResponseSanitizationBehavior<,>));
 
         // Scoped agent execution context — carries agent identity through the pipeline
         services.AddScoped<IAgentExecutionContext, AgentExecutionContext>();

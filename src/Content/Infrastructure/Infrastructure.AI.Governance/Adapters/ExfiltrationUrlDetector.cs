@@ -52,15 +52,15 @@ internal sealed partial class ExfiltrationUrlDetector : IResponseSanitizer
         return pattern.Replace(content, "[REDACTED:exfiltration_url]");
     }
 
-    [GeneratedRegex(@"https?://[^\s]*(?:ngrok\.io|ngrok\.app|requestbin\.com|pipedream\.net|webhook\.site|burpcollaborator\.net|hookbin\.com|beeceptor\.com)[^\s]*", RegexOptions.IgnoreCase | RegexOptions.Compiled)]
+    [GeneratedRegex(@"https?://[^\s]*(?:ngrok\.io|ngrok\.app|requestbin\.com|pipedream\.net|webhook\.site|burpcollaborator\.net|hookbin\.com|beeceptor\.com)[^\s]*", RegexOptions.IgnoreCase)]
     private static partial Regex KnownExfilServicePattern();
 
-    [GeneratedRegex(@"data:[a-z]+/[a-z0-9+.-]+;base64,[A-Za-z0-9+/]+=*", RegexOptions.IgnoreCase | RegexOptions.Compiled)]
+    [GeneratedRegex(@"data:[a-z]+/[a-z0-9+.-]+;base64,[A-Za-z0-9+/]+=*", RegexOptions.IgnoreCase)]
     private static partial Regex DataUriPattern();
 
-    [GeneratedRegex(@"https?://[^\s?]+\?[^\s]*[=][A-Za-z0-9+/]{40,}={0,2}", RegexOptions.Compiled)]
+    [GeneratedRegex(@"https?://[^\s?]+\?[^\s]*[=][A-Za-z0-9+/]{40,}={0,2}")]
     private static partial Regex Base64QueryParamPattern();
 
-    [GeneratedRegex(@"https?://\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}[^\s]*(?:%[0-9A-Fa-f]{2}){3,}[^\s]*", RegexOptions.Compiled)]
+    [GeneratedRegex(@"https?://\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}[^\s]*(?:%[0-9A-Fa-f]{2}){3,}[^\s]*")]
     private static partial Regex IpUrlEncodedPayloadPattern();
 }
