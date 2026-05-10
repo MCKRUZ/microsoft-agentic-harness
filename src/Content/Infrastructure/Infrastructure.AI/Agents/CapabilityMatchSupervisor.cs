@@ -3,9 +3,11 @@ using System.Diagnostics;
 using Application.AI.Common.Factories;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Agents;
+using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.OpenTelemetry.Metrics;
 using Domain.AI.Agents;
+using Domain.AI.Escalation;
 using Domain.AI.Governance;
 using Domain.AI.Orchestration;
 using Domain.AI.Telemetry.Conventions;
@@ -36,6 +38,7 @@ public sealed class CapabilityMatchSupervisor : ISupervisor, IDisposable
     private readonly IGovernanceAuditService _auditService;
     private readonly AgentExecutionContextFactory _contextFactory;
     private readonly IAgentFactory _agentFactory;
+    private readonly IEscalationService? _escalationService;
     private readonly IOptionsMonitor<AppConfig> _options;
     private readonly ILogger<CapabilityMatchSupervisor> _logger;
     private readonly SemaphoreSlim _concurrencySemaphore;
@@ -54,6 +57,7 @@ public sealed class CapabilityMatchSupervisor : ISupervisor, IDisposable
     /// <param name="agentFactory">Factory for creating configured AI agent instances.</param>
     /// <param name="options">Application configuration for orchestration settings.</param>
     /// <param name="logger">Logger instance.</param>
+    /// <param name="escalationService">Optional escalation service for autonomy tier violations.</param>
     public CapabilityMatchSupervisor(
         [FromKeyedServices("capability-match")] ISupervisorStrategy strategy,
         IDelegationStore delegationStore,
@@ -64,7 +68,8 @@ public sealed class CapabilityMatchSupervisor : ISupervisor, IDisposable
         AgentExecutionContextFactory contextFactory,
         IAgentFactory agentFactory,
         IOptionsMonitor<AppConfig> options,
-        ILogger<CapabilityMatchSupervisor> logger)
+        ILogger<CapabilityMatchSupervisor> logger,
+        IEscalationService? escalationService = null)
     {
         _strategy = strategy;
         _delegationStore = delegationStore;
@@ -76,6 +81,7 @@ public sealed class CapabilityMatchSupervisor : ISupervisor, IDisposable
         _agentFactory = agentFactory;
         _options = options;
         _logger = logger;
+        _escalationService = escalationService;
 
         var maxConcurrent = options.CurrentValue.AI?.Orchestration?.Subagent?.MaxConcurrentDelegations ?? 5;
         _concurrencySemaphore = new SemaphoreSlim(maxConcurrent, maxConcurrent);
@@ -100,7 +106,23 @@ public sealed class CapabilityMatchSupervisor : ISupervisor, IDisposable
         var selection = _strategy.SelectAgent(context);
 
         if (selection is null)
+        {
+            // When minimumTier > Restricted and escalation is available, treat as autonomy violation
+            var escalationConfig = _options.CurrentValue.AI?.Governance?.Escalation;
+            if (minimumTier > AutonomyLevel.Restricted
+                && _escalationService is not null
+                && escalationConfig?.Enabled == true)
+            {
+                var escalationResult = await HandleAutonomyEscalationAsync(
+                    taskDescription, requiredCapabilities, minimumTier,
+                    currentDelegationDepth, toolOverrides, escalationConfig, ct);
+
+                if (escalationResult is not null)
+                    return escalationResult;
+            }
+
             return DelegationResult.Fail("No capable agent found for the requested task and tier requirements.");
+        }
 
         var delegationId = Guid.NewGuid();
         var stopwatch = Stopwatch.StartNew();
@@ -156,6 +178,74 @@ public sealed class CapabilityMatchSupervisor : ISupervisor, IDisposable
         foreach (var cts in _activeDelegations.Values)
             cts.Dispose();
         _activeDelegations.Clear();
+    }
+
+    private async Task<DelegationResult?> HandleAutonomyEscalationAsync(
+        string taskDescription,
+        IReadOnlyList<string> requiredCapabilities,
+        AutonomyLevel minimumTier,
+        int currentDelegationDepth,
+        IReadOnlyList<string>? toolOverrides,
+        Domain.Common.Config.AI.Governance.EscalationConfig escalationConfig,
+        CancellationToken ct)
+    {
+        var escalationRequest = new EscalationRequest
+        {
+            EscalationId = Guid.NewGuid(),
+            AgentId = SupervisorId,
+            ToolName = $"delegate:{string.Join(",", requiredCapabilities)}",
+            Arguments = new Dictionary<string, string>
+            {
+                ["taskDescription"] = taskDescription,
+                ["minimumTier"] = minimumTier.ToString()
+            },
+            Description = $"Delegation blocked by autonomy tier ({minimumTier}): {taskDescription}",
+            RiskLevel = RiskLevel.Medium,
+            Priority = EscalationPriority.Blocking,
+            ApprovalStrategy = Enum.TryParse<ApprovalStrategyType>(
+                escalationConfig.DefaultApprovalStrategy, true, out var strategy)
+                ? strategy : ApprovalStrategyType.AnyOf,
+            Approvers = [],
+            QuorumThreshold = 1,
+            TimeoutSeconds = escalationConfig.DefaultTimeoutSeconds,
+            TimeoutAction = Enum.TryParse<EscalationTimeoutAction>(
+                escalationConfig.DefaultTimeoutAction, true, out var timeoutAction)
+                ? timeoutAction : EscalationTimeoutAction.DenyAndEscalate,
+            RequestedAt = DateTimeOffset.UtcNow
+        };
+
+        if (_escalationService is not { } escalation)
+            return null;
+
+        _logger.LogInformation(
+            "Autonomy tier violation — escalating delegation for {TaskDescription} (minimumTier: {MinimumTier})",
+            taskDescription, minimumTier);
+
+        try
+        {
+            var outcome = await escalation.RequestEscalationAsync(escalationRequest, ct);
+
+            if (!outcome.IsApproved)
+            {
+                _logger.LogWarning("Escalation {EscalationId} denied for delegation: {TaskDescription}",
+                    outcome.EscalationId, taskDescription);
+                return null;
+            }
+
+            _logger.LogInformation("Escalation {EscalationId} approved — retrying delegation with Restricted tier",
+                outcome.EscalationId);
+
+            return await DelegateAsync(
+                taskDescription, requiredCapabilities, AutonomyLevel.Restricted,
+                currentDelegationDepth, toolOverrides, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogError(ex,
+                "Escalation service failed for delegation {TaskDescription} — denying (fail-closed)",
+                taskDescription);
+            return null;
+        }
     }
 
     private SupervisorDecisionContext BuildDecisionContext(

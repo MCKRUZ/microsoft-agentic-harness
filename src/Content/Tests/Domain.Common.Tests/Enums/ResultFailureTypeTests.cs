@@ -18,6 +18,7 @@ public class ResultFailureTypeTests
     [InlineData(ResultFailureType.NotFound, 6)]
     [InlineData(ResultFailureType.PermissionRequired, 7)]
     [InlineData(ResultFailureType.GovernanceBlocked, 8)]
+    [InlineData(ResultFailureType.PendingApproval, 9)]
     public void Value_HasExpectedInteger(ResultFailureType type, int expected)
     {
         ((int)type).Should().Be(expected);
@@ -29,7 +30,7 @@ public class ResultFailureTypeTests
         var values = Enum.GetValues<ResultFailureType>();
 
         values.Should().OnlyHaveUniqueItems();
-        values.Should().HaveCount(9);
+        values.Should().HaveCount(10);
     }
 
     [Theory]

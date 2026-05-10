@@ -84,6 +84,9 @@ public class Result
 
     /// <summary>Creates a governance-blocked failure result.</summary>
     public static Result GovernanceBlocked(string reason) => new(false, [reason], ResultFailureType.GovernanceBlocked);
+
+    /// <summary>Creates a pending-approval result with the escalation ID for correlation.</summary>
+    public static Result PendingApproval(string reason) => new(false, [reason], ResultFailureType.PendingApproval);
 }
 
 /// <summary>
@@ -128,6 +131,9 @@ public sealed class Result<T> : Result
     /// <summary>Creates a governance-blocked failure result.</summary>
     public new static Result<T> GovernanceBlocked(string reason) => new(false, errors: [reason], failureType: ResultFailureType.GovernanceBlocked);
 
+    /// <summary>Creates a pending-approval result with the escalation ID for correlation.</summary>
+    public new static Result<T> PendingApproval(string reason) => new(false, errors: [reason], failureType: ResultFailureType.PendingApproval);
+
     /// <summary>
     /// Implicit conversion from a non-null value to a successful result.
     /// Throws <see cref="ArgumentNullException"/> if value is null to prevent
@@ -164,5 +170,7 @@ public enum ResultFailureType
     /// <summary>Permission check requires user confirmation before proceeding.</summary>
     PermissionRequired,
     /// <summary>Action blocked by governance policy.</summary>
-    GovernanceBlocked
+    GovernanceBlocked,
+    /// <summary>Action requires human approval; escalation is pending.</summary>
+    PendingApproval
 }

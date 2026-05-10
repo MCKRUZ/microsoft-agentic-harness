@@ -5,6 +5,7 @@ using Application.AI.Common.MediatRBehaviors;
 using Domain.AI.Governance;
 using Domain.Common;
 using Domain.Common.Config.AI;
+using Domain.Common.Config.AI.Permissions;
 using MediatR;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -20,12 +21,14 @@ public sealed class GovernancePolicyBehaviorTests
     private readonly Mock<IAgentExecutionContext> _executionContext = new();
     private readonly Mock<ILogger<GovernancePolicyBehavior<TestToolRequest, Result<string>>>> _logger = new();
     private readonly GovernanceConfig _config = new() { Enabled = true, EnableAudit = true };
+    private readonly PermissionsConfig _permissionsConfig = new();
     private readonly GovernancePolicyBehavior<TestToolRequest, Result<string>> _behavior;
     private bool _nextCalled;
 
     public GovernancePolicyBehaviorTests()
     {
         var monitor = Mock.Of<IOptionsMonitor<GovernanceConfig>>(m => m.CurrentValue == _config);
+        var permMonitor = Mock.Of<IOptionsMonitor<PermissionsConfig>>(m => m.CurrentValue == _permissionsConfig);
         _executionContext.Setup(x => x.AgentId).Returns("test-agent");
 
         _behavior = new GovernancePolicyBehavior<TestToolRequest, Result<string>>(
@@ -33,6 +36,7 @@ public sealed class GovernancePolicyBehaviorTests
             _auditService.Object,
             _executionContext.Object,
             monitor,
+            permMonitor,
             _logger.Object);
     }
 
@@ -50,6 +54,7 @@ public sealed class GovernancePolicyBehaviorTests
             _auditService.Object,
             _executionContext.Object,
             Mock.Of<IOptionsMonitor<GovernanceConfig>>(m => m.CurrentValue == _config),
+            Mock.Of<IOptionsMonitor<PermissionsConfig>>(m => m.CurrentValue == _permissionsConfig),
             Mock.Of<ILogger<GovernancePolicyBehavior<NonToolRequest, Result<string>>>>());
 
         var result = await behavior.Handle(new NonToolRequest(), () => Task.FromResult(Result<string>.Success("ok")), CancellationToken.None);
@@ -64,6 +69,7 @@ public sealed class GovernancePolicyBehaviorTests
         var behavior = new GovernancePolicyBehavior<TestToolRequest, Result<string>>(
             _policyEngine.Object, _auditService.Object, _executionContext.Object,
             Mock.Of<IOptionsMonitor<GovernanceConfig>>(m => m.CurrentValue == disabledConfig),
+            Mock.Of<IOptionsMonitor<PermissionsConfig>>(m => m.CurrentValue == _permissionsConfig),
             _logger.Object);
 
         var result = await behavior.Handle(new TestToolRequest("test"), Next, CancellationToken.None);

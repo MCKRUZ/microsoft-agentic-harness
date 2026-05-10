@@ -17,4 +17,11 @@ public class AutonomyTierPolicyConfig
     /// ("Allow", "Ask", "Deny"). Enables specific tools for otherwise restricted agents.
     /// </summary>
     public Dictionary<string, string>? ToolOverrides { get; set; }
+
+    /// <summary>
+    /// Controls agent behavior while an escalation is pending for this tier.
+    /// Valid values: "Block" (agent waits for outcome) or "QueueAndContinue" (agent proceeds).
+    /// Defaults to "Block" for safety.
+    /// </summary>
+    public string EscalationBehavior { get; set; } = "Block";
 }
