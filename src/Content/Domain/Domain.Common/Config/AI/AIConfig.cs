@@ -3,6 +3,7 @@ using Domain.Common.Config.AI.AIFoundry;
 using Domain.Common.Config.AI.ContextManagement;
 using Domain.Common.Config.AI.DriftDetection;
 using Domain.Common.Config.AI.Hooks;
+using Domain.Common.Config.AI.Learnings;
 using Domain.Common.Config.AI.MCP;
 using Domain.Common.Config.AI.Orchestration;
 using Domain.Common.Config.AI.Permissions;
@@ -31,7 +32,8 @@ namespace Domain.Common.Config.AI;
 /// ├── Orchestration     — Subagent management and streaming execution
 /// ├── Resilience        — LLM fallback chains, circuit breakers, retry, degraded mode
 /// ├── Rag               — RAG pipeline: ingestion, retrieval, reranking, model tiering
-/// └── DriftDetection    — EWMA-based drift detection for quality regressions
+/// ├── DriftDetection    — EWMA-based drift detection for quality regressions
+/// └── Learnings         — Cross-session learnings: feedback blending, decay, pruning
 /// </code>
 /// </para>
 /// </remarks>
@@ -113,6 +115,12 @@ public class AIConfig
     /// EWMA-based drift detection configuration for identifying quality regressions.
     /// </summary>
     public DriftDetectionConfig DriftDetection { get; set; } = new();
+
+    /// <summary>
+    /// Cross-session learnings configuration controlling feedback blending,
+    /// temporal decay, pruning schedules, and drift baseline adjustment.
+    /// </summary>
+    public LearningsConfig Learnings { get; set; } = new();
 
     /// <summary>Agent Governance Toolkit configuration.</summary>
     public GovernanceConfig Governance { get; init; } = new();
