@@ -23,7 +23,7 @@ describe('TokensPage', () => {
     expect(screen.getByText('Input Token Rate')).toBeInTheDocument();
     expect(screen.getByText('Output Token Rate')).toBeInTheDocument();
     expect(screen.getByText('Distribution by Model')).toBeInTheDocument();
-    expect(screen.getByText('Cache Hit Rate')).toBeInTheDocument();
+    expect(screen.getByText('Cache Efficiency')).toBeInTheDocument();
   });
 
   it('KPI values show formatted token counts', async () => {

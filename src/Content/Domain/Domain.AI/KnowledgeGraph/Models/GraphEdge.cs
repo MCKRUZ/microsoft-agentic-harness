@@ -60,4 +60,23 @@ public record GraphEdge
     /// via <c>GraphRagConfig.ProvenanceEnabled = false</c>.
     /// </summary>
     public ProvenanceStamp? Provenance { get; init; }
+
+    /// <summary>
+    /// When this edge was created in the knowledge graph. Stamped automatically
+    /// by <c>ComplianceAwareGraphStore</c> during <c>AddEdgesAsync</c>.
+    /// </summary>
+    public DateTimeOffset? CreatedAt { get; init; }
+
+    /// <summary>
+    /// When this edge expires based on the applicable retention policy.
+    /// Computed from <see cref="CreatedAt"/> + <see cref="RetentionPolicy.RetentionPeriod"/>.
+    /// Null when the relationship type allows indefinite retention.
+    /// </summary>
+    public DateTimeOffset? ExpiresAt { get; init; }
+
+    /// <summary>
+    /// The knowledge scope owner (user or tenant ID) who created this edge.
+    /// Used for right-to-erasure cascading: erasing an owner deletes all their edges.
+    /// </summary>
+    public string? OwnerId { get; init; }
 }

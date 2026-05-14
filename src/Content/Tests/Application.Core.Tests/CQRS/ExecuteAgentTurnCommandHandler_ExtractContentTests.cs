@@ -19,7 +19,7 @@ namespace Application.Core.Tests.CQRS;
 /// </summary>
 public class ExecuteAgentTurnCommandHandler_ExtractContentTests
 {
-    private readonly Mock<IAgentFactory> _agentFactory = new();
+    private readonly Mock<IAgentConversationCache> _agentCache = new();
     private readonly Mock<IAgentMetadataRegistry> _agentRegistry = new();
     private readonly ExecuteAgentTurnCommandHandler _handler;
 
@@ -34,7 +34,7 @@ public class ExecuteAgentTurnCommandHandler_ExtractContentTests
             .Returns(new LlmUsageSnapshot(0, 0, 0, 0, null, 0m, 0m, Array.Empty<string>()));
 
         _handler = new ExecuteAgentTurnCommandHandler(
-            _agentFactory.Object,
+            _agentCache.Object,
             _agentRegistry.Object,
             new Mock<IObservabilityStore>().Object,
             usageCapture.Object,
@@ -53,8 +53,9 @@ public class ExecuteAgentTurnCommandHandler_ExtractContentTests
         // Arrange
         var agent = new TestableAIAgent((_, _) =>
             Task.FromResult(new AgentResponse(new ChatMessage(ChatRole.Assistant, (string?)null))));
-        _agentFactory
-            .Setup(f => f.CreateAgentFromSkillAsync(
+        _agentCache
+            .Setup(c => c.GetOrCreateAsync(
+                It.IsAny<string>(),
                 It.IsAny<string>(),
                 It.IsAny<SkillAgentOptions>(),
                 It.IsAny<CancellationToken>()))
@@ -73,8 +74,9 @@ public class ExecuteAgentTurnCommandHandler_ExtractContentTests
     {
         // Arrange
         var agent = new TestableAIAgent("Direct string response");
-        _agentFactory
-            .Setup(f => f.CreateAgentFromSkillAsync(
+        _agentCache
+            .Setup(c => c.GetOrCreateAsync(
+                It.IsAny<string>(),
                 It.IsAny<string>(),
                 It.IsAny<SkillAgentOptions>(),
                 It.IsAny<CancellationToken>()))
@@ -94,8 +96,9 @@ public class ExecuteAgentTurnCommandHandler_ExtractContentTests
         // Arrange
         var longText = new string('A', 10_000);
         var agent = new TestableAIAgent(longText);
-        _agentFactory
-            .Setup(f => f.CreateAgentFromSkillAsync(
+        _agentCache
+            .Setup(c => c.GetOrCreateAsync(
+                It.IsAny<string>(),
                 It.IsAny<string>(),
                 It.IsAny<SkillAgentOptions>(),
                 It.IsAny<CancellationToken>()))
@@ -114,8 +117,9 @@ public class ExecuteAgentTurnCommandHandler_ExtractContentTests
     {
         // Arrange
         var agent = new TestableAIAgent("");
-        _agentFactory
-            .Setup(f => f.CreateAgentFromSkillAsync(
+        _agentCache
+            .Setup(c => c.GetOrCreateAsync(
+                It.IsAny<string>(),
                 It.IsAny<string>(),
                 It.IsAny<SkillAgentOptions>(),
                 It.IsAny<CancellationToken>()))
@@ -134,8 +138,9 @@ public class ExecuteAgentTurnCommandHandler_ExtractContentTests
     {
         // Arrange
         var agent = new TestableAIAgent("   ");
-        _agentFactory
-            .Setup(f => f.CreateAgentFromSkillAsync(
+        _agentCache
+            .Setup(c => c.GetOrCreateAsync(
+                It.IsAny<string>(),
                 It.IsAny<string>(),
                 It.IsAny<SkillAgentOptions>(),
                 It.IsAny<CancellationToken>()))

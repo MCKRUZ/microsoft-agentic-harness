@@ -73,6 +73,15 @@ public static class RagConventions
     /// <summary>Counter: total RAG-Fusion query variants generated.</summary>
     public const string FusionQueriesGenerated = "rag.fusion.queries_generated";
 
+    /// <summary>Counter: retrieval queries that returned at least one relevant chunk.</summary>
+    public const string RetrievalHits = "rag.retrieval.hits";
+    /// <summary>Counter: per-source retrieval queries. Tags: rag.source.name.</summary>
+    public const string SourceRetrievals = "rag.source.retrievals";
+    /// <summary>Histogram: grounding score (0-1) — fraction of turns citing retrieved chunks.</summary>
+    public const string GroundingScore = "rag.grounding.score";
+    /// <summary>Source name tag for per-source metrics.</summary>
+    public const string SourceName = "rag.source.name";
+
     // ── Value sets ───────────────────────────────────────────────────
 
     /// <summary>Well-known values for <see cref="QueryType"/>.</summary>

@@ -4,6 +4,8 @@ using Application.Common.Interfaces.Security;
 using Application.Core;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
+using Domain.Common.Config.AI.Governance;
+using Domain.Common.Config.AI.Resilience;
 using Domain.Common.Config.Azure;
 using Domain.Common.Config.Cache;
 using Domain.Common.Config.Connectors;
@@ -12,6 +14,7 @@ using Domain.Common.Config.Infrastructure;
 using Domain.Common.Config.Observability;
 using Infrastructure.AI;
 using Infrastructure.AI.Connectors;
+using Infrastructure.AI.Governance;
 using Infrastructure.AI.RAG;
 using Infrastructure.AI.MCP;
 using Infrastructure.APIAccess;
@@ -78,6 +81,8 @@ public static class IServiceCollectionExtensions
         services.Configure<AIConfig>(configuration.GetSection("AppConfig:AI"));
         services.Configure<AzureConfig>(configuration.GetSection("AppConfig:Azure"));
         services.Configure<CacheConfig>(configuration.GetSection("AppConfig:Cache"));
+        services.Configure<EscalationConfig>(configuration.GetSection("AppConfig:AI:Governance:Escalation"));
+        services.Configure<ResilienceConfig>(configuration.GetSection("AppConfig:AI:Resilience"));
 
         return services;
     }
@@ -242,6 +247,10 @@ public static class IServiceCollectionExtensions
         // RAG must register before Infrastructure.AI — tool registrations depend on IRagOrchestrator
         services.AddRagDependencies(appConfig);
         services.AddInfrastructureAIDependencies(appConfig);
+        if (appConfig.AI?.Governance is { Enabled: true } govConfig)
+            services.AddGovernanceDependencies(govConfig);
+        else
+            services.AddGovernanceNoOpDependencies();
         services.AddAIConnectors();
         services.AddMcpClientDependencies();
         services.AddInfrastructureApiAccessDependencies();

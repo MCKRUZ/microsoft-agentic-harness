@@ -58,4 +58,23 @@ public record GraphNode
     /// via <c>GraphRagConfig.ProvenanceEnabled = false</c>.
     /// </summary>
     public ProvenanceStamp? Provenance { get; init; }
+
+    /// <summary>
+    /// When this node was created in the knowledge graph. Stamped automatically
+    /// by <c>ComplianceAwareGraphStore</c> during <c>AddNodesAsync</c>.
+    /// </summary>
+    public DateTimeOffset? CreatedAt { get; init; }
+
+    /// <summary>
+    /// When this node expires based on the applicable retention policy.
+    /// Computed from <see cref="CreatedAt"/> + <see cref="RetentionPolicy.RetentionPeriod"/>.
+    /// Null when the entity type allows indefinite retention.
+    /// </summary>
+    public DateTimeOffset? ExpiresAt { get; init; }
+
+    /// <summary>
+    /// The knowledge scope owner (user or tenant ID) who created this node.
+    /// Used for right-to-erasure cascading: erasing an owner deletes all their nodes.
+    /// </summary>
+    public string? OwnerId { get; init; }
 }

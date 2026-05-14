@@ -1,0 +1,1 @@
+import{t as e}from"./jsx-runtime-CKkEqyq3.js";import{t}from"./utils-D7PT_W37.js";var n=e(),r={2:`grid-cols-1 md:grid-cols-2`,3:`grid-cols-1 md:grid-cols-2 lg:grid-cols-3`,4:`grid-cols-1 sm:grid-cols-2 lg:grid-cols-4`};function i({children:e,columns:i=3,className:a}){return(0,n.jsx)(`div`,{className:t(`grid gap-4`,r[i],a),children:e})}export{i as t};

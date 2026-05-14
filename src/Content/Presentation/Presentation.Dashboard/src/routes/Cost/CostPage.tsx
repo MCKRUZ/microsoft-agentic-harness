@@ -5,8 +5,10 @@ import { PanelCard } from '@/components/panels/PanelCard';
 import { PanelGrid } from '@/components/panels/PanelGrid';
 import { LoadingSkeleton } from '@/components/panels/LoadingSkeleton';
 import { TimeSeriesChart } from '@/components/charts/TimeSeriesChart';
-import { MetricPieChart } from '@/components/charts/PieChart';
-import { GaugeChart } from '@/components/charts/GaugeChart';
+import { PageHeader } from '@/components/primitives/PageHeader';
+import { Section } from '@/components/primitives/Section';
+import { HBarList } from '@/components/primitives/HBarList';
+import { ArcGauge } from '@/components/primitives/ArcGauge';
 
 function latestValue(data: ReturnType<typeof usePromQuery>['data']): number {
   const dp = data?.series[0]?.dataPoints;
@@ -24,7 +26,7 @@ export default function CostPage() {
   if (costTotal.isLoading) {
     return (
       <div className="space-y-6">
-        <h1 className="text-xl font-bold text-foreground">Cost Analytics</h1>
+        <PageHeader title="Cost" subtitle="USD spend breakdown by model and environment" />
         <PanelGrid columns={3}>
           {Array.from({ length: 3 }).map((_, i) => <LoadingSkeleton key={i} />)}
         </PanelGrid>
@@ -35,36 +37,74 @@ export default function CostPage() {
   const totalCost = latestValue(costTotal.data);
   const savings = latestValue(cacheSavings.data);
   const remaining = latestValue(budgetRemaining.data);
+  const budgetTotal = Math.max(totalCost + remaining, 1);
+  const budgetPct = totalCost / budgetTotal;
 
   return (
     <div className="space-y-6">
-      <h1 className="text-xl font-bold text-foreground">Cost Analytics</h1>
+      <PageHeader title="Cost" subtitle="USD spend breakdown by model and environment" />
 
-      <PanelGrid columns={3}>
-        <KpiCard title="Total Cost" value={`$${totalCost.toFixed(4)}`} unit="USD" sparklineData={costTotal.data?.series[0]?.dataPoints} />
-        <KpiCard title="Cache Savings" value={`$${savings.toFixed(4)}`} unit="USD" sparklineData={cacheSavings.data?.series[0]?.dataPoints} />
-        <KpiCard title="Budget Remaining" value={`$${remaining.toFixed(2)}`} unit="USD" sparklineData={budgetRemaining.data?.series[0]?.dataPoints} />
-      </PanelGrid>
+      <Section title="Cost Overview" kicker="01">
+        <PanelGrid columns={3}>
+          <KpiCard
+            title="Total Cost"
+            description="Cumulative USD spent on LLM API calls across all models and sessions. Shows $0 when no completions have been recorded in the selected time range."
+            value={`$${totalCost.toFixed(4)}`}
+            unit="USD"
+            sparklineData={costTotal.data?.series[0]?.dataPoints}
+          />
+          <KpiCard
+            title="Cache Savings"
+            description="Estimated USD saved by serving tokens from the prompt cache instead of reprocessing them. Shows $0 when caching is disabled or there have been no cache hits."
+            value={`$${savings.toFixed(4)}`}
+            unit="USD"
+            sparklineData={cacheSavings.data?.series[0]?.dataPoints}
+          />
+          <KpiCard
+            title="Budget Remaining"
+            description="USD left before hitting the configured daily budget cap. Shows $0 when no budget limit is configured or the budget has been fully consumed."
+            value={`$${remaining.toFixed(2)}`}
+            unit="USD"
+            sparklineData={budgetRemaining.data?.series[0]?.dataPoints}
+          />
+        </PanelGrid>
+      </Section>
 
-      <PanelGrid columns={2}>
+      <Section title="Spend Rate" kicker="02">
         <PanelCard title="Cost Rate" description="USD burn rate per hour">
           <TimeSeriesChart series={costRate.data?.series ?? []} unit="usd" />
         </PanelCard>
-        <PanelCard title="Cost by Model">
-          <MetricPieChart series={byModel.data?.series ?? []} unit="usd" />
-        </PanelCard>
-      </PanelGrid>
+      </Section>
 
-      <PanelGrid columns={2}>
-        <PanelCard title="Budget Progress">
-          <GaugeChart
-            value={totalCost}
-            max={totalCost + remaining > 0 ? totalCost + remaining : 100}
-            label="Spent"
-            unit="usd"
-            thresholds={{ warn: (totalCost + remaining) * 0.75, critical: (totalCost + remaining) * 0.9 }}
-          />
-        </PanelCard>
+      <Section title="Distribution" kicker="03">
+        <PanelGrid columns={2}>
+          <PanelCard title="Cost by Model">
+            <HBarList
+              items={(byModel.data?.series ?? []).map((s) => ({
+                label: s.labels['model'] ?? 'unknown',
+                value: parseFloat(s.dataPoints[s.dataPoints.length - 1]?.value ?? '0'),
+              }))}
+              color="var(--otel-accent)"
+              formatValue={(v) => `$${v.toFixed(4)}`}
+            />
+          </PanelCard>
+          <PanelCard title="Budget Progress">
+            <div className="flex items-center justify-center py-4">
+              <ArcGauge
+                value={totalCost}
+                max={budgetTotal}
+                size={140}
+                color={budgetPct > 0.75 ? 'var(--otel-warning)' : 'var(--otel-positive)'}
+                label={`$${totalCost.toFixed(2)}`}
+                subtitle="spent today"
+                thickness={12}
+              />
+            </div>
+          </PanelCard>
+        </PanelGrid>
+      </Section>
+
+      <Section title="Efficiency" kicker="04">
         <PanelCard title="Cache ROI">
           <div className="flex flex-col items-center justify-center h-[160px]">
             <div className="text-3xl font-bold text-card-foreground">
@@ -76,7 +116,7 @@ export default function CostPage() {
             </div>
           </div>
         </PanelCard>
-      </PanelGrid>
+      </Section>
     </div>
   );
 }

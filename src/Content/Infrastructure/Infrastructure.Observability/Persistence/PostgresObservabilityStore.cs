@@ -97,7 +97,8 @@ public sealed class PostgresObservabilityStore : IObservabilityStore, IDisposabl
                 total_cache_write = $8,
                 total_cost_usd = $9,
                 cache_hit_rate = $10,
-                model = COALESCE($11, model)
+                model = COALESCE($11, model),
+                duration_ms = EXTRACT(EPOCH FROM (NOW() - started_at))::INT * 1000
             WHERE id = $1
             """;
 

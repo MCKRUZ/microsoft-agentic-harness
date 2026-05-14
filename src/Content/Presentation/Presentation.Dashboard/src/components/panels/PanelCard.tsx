@@ -8,8 +8,9 @@ interface PanelCardProps {
 }
 
 export function PanelCard({ title, description, children, className }: PanelCardProps) {
+  const testId = `panel-${title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '')}`;
   return (
-    <div role="region" aria-label={title} className={cn('rounded-xl border border-border bg-card p-5', className)}>
+    <div role="region" aria-label={title} data-testid={testId} className={cn('rounded-xl border border-border bg-card p-5', className)}>
       <div className="mb-4">
         <h3 className="text-sm font-semibold text-card-foreground">{title}</h3>
         {description && (

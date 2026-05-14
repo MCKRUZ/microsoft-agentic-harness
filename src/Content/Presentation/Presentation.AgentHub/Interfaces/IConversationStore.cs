@@ -62,4 +62,16 @@ public interface IConversationStore
         string conversationId,
         ConversationSettings settings,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// Persists the observability session ID and telemetry accumulator for the specified
+    /// conversation. Called by the AG-UI handler after each turn to carry session state
+    /// across stateless HTTP requests.
+    /// Returns the updated record, or <c>null</c> if the conversation does not exist.
+    /// </summary>
+    Task<ConversationRecord?> UpdateTelemetryAsync(
+        string conversationId,
+        Guid observabilitySessionId,
+        TelemetryAccumulator telemetry,
+        CancellationToken ct = default);
 }

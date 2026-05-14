@@ -9,6 +9,7 @@ using Domain.AI.Skills;
 using FluentAssertions;
 using MediatR;
 using Microsoft.Agents.AI;
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -24,10 +25,10 @@ namespace Application.Core.Tests.CQRS;
 /// </summary>
 public class AgentPipelineIntegrationTests
 {
-    private static ServiceProvider BuildPipeline(Action<Mock<IAgentFactory>> configureFactory)
+    private static ServiceProvider BuildPipeline(Action<Mock<IAgentConversationCache>> configureCache)
     {
-        var factoryMock = new Mock<IAgentFactory>();
-        configureFactory(factoryMock);
+        var cacheMock = new Mock<IAgentConversationCache>();
+        configureCache(cacheMock);
 
         var services = new ServiceCollection();
 
@@ -45,8 +46,8 @@ public class AgentPipelineIntegrationTests
         // Scoped agent execution context — real implementation, not mock
         services.AddScoped<IAgentExecutionContext, AgentExecutionContext>();
 
-        // Agent factory — mock returns testable agents
-        services.AddSingleton(factoryMock.Object);
+        // Agent conversation cache — mock returns testable agents
+        services.AddSingleton(cacheMock.Object);
 
         // Agent metadata registry — no manifests configured; TryGet returns null so the
         // handler falls back to using AgentName as the skill id (matches the mock above).
@@ -70,10 +71,10 @@ public class AgentPipelineIntegrationTests
     public async Task RunConversation_SingleTurn_CompletesWithoutDoubleInitError()
     {
         // Arrange
-        using var provider = BuildPipeline(factory =>
-            factory
-                .Setup(f => f.CreateAgentFromSkillAsync(
-                    It.IsAny<string>(), It.IsAny<SkillAgentOptions>(), It.IsAny<CancellationToken>()))
+        using var provider = BuildPipeline(cache =>
+            cache
+                .Setup(c => c.GetOrCreateAsync(
+                    It.IsAny<string>(), It.IsAny<string>(), It.IsAny<SkillAgentOptions>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(new TestableAIAgent("Hello from the agent")));
 
         using var scope = provider.CreateScope();
@@ -97,15 +98,17 @@ public class AgentPipelineIntegrationTests
     [Fact]
     public async Task RunConversation_MultiTurn_EachTurnSetsContextCorrectly()
     {
-        // Arrange
+        // Arrange — single cached agent returns a different response each RunAsync call
         var turnResponses = new[] { "Turn 1 response", "Turn 2 response", "Turn 3 response" };
         var callIndex = 0;
+        var agent = new TestableAIAgent((_, _) =>
+            Task.FromResult(new AgentResponse(new ChatMessage(ChatRole.Assistant, turnResponses[callIndex++]))));
 
-        using var provider = BuildPipeline(factory =>
-            factory
-                .Setup(f => f.CreateAgentFromSkillAsync(
-                    It.IsAny<string>(), It.IsAny<SkillAgentOptions>(), It.IsAny<CancellationToken>()))
-                .ReturnsAsync(() => new TestableAIAgent(turnResponses[callIndex++])));
+        using var provider = BuildPipeline(cache =>
+            cache
+                .Setup(c => c.GetOrCreateAsync(
+                    It.IsAny<string>(), It.IsAny<string>(), It.IsAny<SkillAgentOptions>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(agent));
 
         using var scope = provider.CreateScope();
         var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
@@ -131,10 +134,10 @@ public class AgentPipelineIntegrationTests
     public async Task RunConversation_AgentThrows_ReturnsFailureGracefully()
     {
         // Arrange
-        using var provider = BuildPipeline(factory =>
-            factory
-                .Setup(f => f.CreateAgentFromSkillAsync(
-                    It.IsAny<string>(), It.IsAny<SkillAgentOptions>(), It.IsAny<CancellationToken>()))
+        using var provider = BuildPipeline(cache =>
+            cache
+                .Setup(c => c.GetOrCreateAsync(
+                    It.IsAny<string>(), It.IsAny<string>(), It.IsAny<SkillAgentOptions>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(TestableAIAgent.Throwing(new InvalidOperationException("Model unavailable"))));
 
         using var scope = provider.CreateScope();
@@ -158,10 +161,10 @@ public class AgentPipelineIntegrationTests
     public async Task ExecuteAgentTurn_Standalone_SetsAgentContext()
     {
         // Arrange
-        using var provider = BuildPipeline(factory =>
-            factory
-                .Setup(f => f.CreateAgentFromSkillAsync(
-                    It.IsAny<string>(), It.IsAny<SkillAgentOptions>(), It.IsAny<CancellationToken>()))
+        using var provider = BuildPipeline(cache =>
+            cache
+                .Setup(c => c.GetOrCreateAsync(
+                    It.IsAny<string>(), It.IsAny<string>(), It.IsAny<SkillAgentOptions>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(new TestableAIAgent("Direct turn response")));
 
         using var scope = provider.CreateScope();

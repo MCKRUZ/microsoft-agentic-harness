@@ -19,7 +19,7 @@ export function ConversationTimeline({ messages, toolExecutions }: ConversationT
   const sorted = [...messages].sort((a, b) => a.turnIndex - b.turnIndex || a.createdAt.localeCompare(b.createdAt));
 
   return (
-    <div className="space-y-1">
+    <div className="space-y-1" data-testid="conversation-timeline">
       {sorted.map((msg) => {
         const msgTools = toolsByMessageId.get(msg.id) ?? [];
         return (
@@ -38,7 +38,7 @@ interface MessageRowProps {
 function MessageRow({ message, tools }: MessageRowProps) {
   const hasTokens = message.inputTokens > 0 || message.outputTokens > 0;
   return (
-    <div className="group">
+    <div className="group" data-testid={`message-row-${message.turnIndex}-${message.role}`}>
       <div className="flex items-start gap-3 py-2.5 px-3 rounded-lg hover:bg-muted/30 transition-colors">
         <div className="flex-shrink-0 w-8 text-right">
           <span className="text-xs font-mono text-muted-foreground">#{message.turnIndex}</span>

@@ -1,7 +1,10 @@
 using System.Diagnostics;
+using System.Diagnostics.Metrics;
 using Application.AI.Common.Interfaces;
+using Application.AI.Common.OpenTelemetry.Metrics;
 using Application.AI.Common.Services;
 using Domain.AI.Skills;
+using Domain.AI.Telemetry.Conventions;
 using Domain.Common.Extensions;
 using MediatR;
 using Microsoft.Agents.AI;
@@ -16,20 +19,20 @@ namespace Application.Core.CQRS.Agents.ExecuteAgentTurn;
 /// </summary>
 public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCommand, AgentTurnResult>
 {
-	private readonly IAgentFactory _agentFactory;
+	private readonly IAgentConversationCache _agentCache;
 	private readonly IAgentMetadataRegistry _agentRegistry;
 	private readonly IObservabilityStore _observabilityStore;
 	private readonly ILlmUsageCapture _usageCapture;
 	private readonly ILogger<ExecuteAgentTurnCommandHandler> _logger;
 
 	public ExecuteAgentTurnCommandHandler(
-		IAgentFactory agentFactory,
+		IAgentConversationCache agentCache,
 		IAgentMetadataRegistry agentRegistry,
 		IObservabilityStore observabilityStore,
 		ILlmUsageCapture usageCapture,
 		ILogger<ExecuteAgentTurnCommandHandler> logger)
 	{
-		_agentFactory = agentFactory;
+		_agentCache = agentCache;
 		_agentRegistry = agentRegistry;
 		_observabilityStore = observabilityStore;
 		_usageCapture = usageCapture;
@@ -38,6 +41,9 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 
 	public async Task<AgentTurnResult> Handle(ExecuteAgentTurnCommand request, CancellationToken cancellationToken)
 	{
+		Activity.Current?.SetTag(AgentConventions.Name, request.AgentName);
+		Activity.Current?.AddBaggage(AgentConventions.Name, request.AgentName);
+
 		_logger.LogInformation("Executing turn {TurnNumber} for agent {AgentName}",
 			request.TurnNumber, request.AgentName);
 
@@ -49,7 +55,8 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 			// which still pass skill ids (tests, tools) keep working.
 			var skillId = _agentRegistry.TryGet(request.AgentName)?.Skill ?? request.AgentName;
 
-			var agent = await _agentFactory.CreateAgentFromSkillAsync(
+			var agent = await _agentCache.GetOrCreateAsync(
+				request.ConversationId,
 				skillId,
 				new SkillAgentOptions
 				{
@@ -111,6 +118,12 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 
 			foreach (var toolName in toolsInvoked)
 			{
+				ToolExecutionMetrics.Invocations.Add(1, new TagList
+				{
+					{ ToolConventions.Name, toolName },
+					{ ToolConventions.Status, ToolConventions.StatusValues.Success }
+				});
+
 				await _observabilityStore.RecordToolExecutionAsync(
 					request.ObservabilitySessionId, null, toolName, "keyed_di",
 					0, "success", null, null, cancellationToken);
@@ -121,6 +134,10 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 			{
 				new(ChatRole.Assistant, responseText)
 			};
+
+			var agentTag = new TagList { { AgentConventions.Name, request.AgentName } };
+			OrchestrationMetrics.TurnDuration.Record(turnSw.Elapsed.TotalMilliseconds, agentTag);
+			OrchestrationMetrics.TurnsTotal.Add(1, agentTag);
 
 			_logger.LogInformation("Agent {AgentName} turn {TurnNumber} completed — {InputTokens} in, {OutputTokens} out, ${Cost:F4}",
 				request.AgentName, request.TurnNumber, usage.InputTokens, usage.OutputTokens, usage.CostUsd);
@@ -142,6 +159,10 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 		catch (Exception ex)
 		{
 			_logger.LogError(ex, "Agent {AgentName} turn {TurnNumber} failed", request.AgentName, request.TurnNumber);
+
+			var errorTag = new TagList { { AgentConventions.Name, request.AgentName } };
+			OrchestrationMetrics.TurnsTotal.Add(1, errorTag);
+			OrchestrationMetrics.TurnErrors.Add(1, errorTag);
 
 			return new AgentTurnResult
 			{

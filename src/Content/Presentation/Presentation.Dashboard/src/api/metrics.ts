@@ -8,6 +8,22 @@ const emptyMetrics: MetricsQueryResponse = {
   series: [],
 };
 
+function lastTimestamp(s: { dataPoints: { timestamp: number }[] }): number {
+  return s.dataPoints.length > 0 ? s.dataPoints[s.dataPoints.length - 1]!.timestamp : 0;
+}
+
+function stripVectorFallback(response: MetricsQueryResponse): MetricsQueryResponse {
+  if (response.series.length <= 1) return response;
+  const withLabels = response.series.filter(s => Object.keys(s.labels).length > 0);
+  if (withLabels.length === 0) return response;
+  const fallback = response.series.find(s => Object.keys(s.labels).length === 0);
+  if (!fallback) return { ...response, series: withLabels };
+  const fallbackTs = lastTimestamp(fallback);
+  const freshLabeled = withLabels.filter(s => lastTimestamp(s) >= fallbackTs);
+  if (freshLabeled.length > 0) return { ...response, series: freshLabeled };
+  return { ...response, series: [fallback] };
+}
+
 function isNetworkOrProxyError(error: unknown): boolean {
   if (!axios.isAxiosError(error)) return false;
   if (!error.response) return true;
@@ -20,7 +36,7 @@ export async function queryInstant(query: string, time?: string): Promise<Metric
     const params: Record<string, string> = { query };
     if (time) params['time'] = time;
     const { data } = await apiClient.get<MetricsQueryResponse>('/api/metrics/instant', { params });
-    return data;
+    return stripVectorFallback(data);
   } catch (error) {
     if (isNetworkOrProxyError(error)) return emptyMetrics;
     throw error;
@@ -37,7 +53,7 @@ export async function queryRange(
     const { data } = await apiClient.get<MetricsQueryResponse>('/api/metrics/range', {
       params: { query, start, end, step },
     });
-    return data;
+    return stripVectorFallback(data);
   } catch (error) {
     if (isNetworkOrProxyError(error)) return emptyMetrics;
     throw error;

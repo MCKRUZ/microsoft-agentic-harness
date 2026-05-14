@@ -74,7 +74,9 @@ public sealed class LlmTokenTrackingProcessor : BaseProcessor<Activity>
         var cacheReadTokens = GetLongTag(data, TokenConventions.GenAiCacheReadTokens);
         var cacheWriteTokens = GetLongTag(data, TokenConventions.GenAiCacheWriteTokens);
         var model = data.GetTagItem(TokenConventions.GenAiRequestModel) as string ?? _defaultModel;
-        var agentName = data.GetTagItem(AgentConventions.Name) as string ?? "unknown";
+        var agentName = data.GetTagItem(AgentConventions.Name) as string
+            ?? data.GetBaggageItem(AgentConventions.Name)
+            ?? "unknown";
 
         var tags = new TagList
         {

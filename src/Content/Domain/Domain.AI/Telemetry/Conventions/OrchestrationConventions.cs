@@ -9,4 +9,11 @@ public static class OrchestrationConventions
     public const string ConversationDuration = "agent.orchestration.conversation_duration";
     public const string TurnsPerConversation = "agent.orchestration.turns_per_conversation";
     public const string SubagentSpawns = "agent.orchestration.subagent_spawns";
+
+    /// <summary>Per-turn wall-clock duration in milliseconds.</summary>
+    public const string TurnDuration = "agent.orchestration.turn_duration";
+    /// <summary>Total turns executed across all sessions.</summary>
+    public const string TurnsTotal = "agent.orchestration.turns_total";
+    /// <summary>Turns that ended with an error.</summary>
+    public const string TurnErrors = "agent.orchestration.turn_errors";
 }

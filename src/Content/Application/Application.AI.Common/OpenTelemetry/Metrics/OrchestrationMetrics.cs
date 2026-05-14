@@ -28,4 +28,16 @@ public static class OrchestrationMetrics
     /// <summary>Tool calls per session. Tags: agent.name, agent.tool.name.</summary>
     public static Counter<long> ToolCalls { get; } =
         AppInstrument.Meter.CreateCounter<long>(OrchestrationConventions.ToolCallCount, "{call}", "Tool calls per session");
+
+    /// <summary>Per-turn wall-clock duration. Tags: agent.name.</summary>
+    public static Histogram<double> TurnDuration { get; } =
+        AppInstrument.Meter.CreateHistogram<double>(OrchestrationConventions.TurnDuration, "{ms}", "Per-turn execution duration");
+
+    /// <summary>Total turns executed. Tags: agent.name.</summary>
+    public static Counter<long> TurnsTotal { get; } =
+        AppInstrument.Meter.CreateCounter<long>(OrchestrationConventions.TurnsTotal, "{turn}", "Total turns executed");
+
+    /// <summary>Turns that ended with an error. Tags: agent.name.</summary>
+    public static Counter<long> TurnErrors { get; } =
+        AppInstrument.Meter.CreateCounter<long>(OrchestrationConventions.TurnErrors, "{turn}", "Turn errors");
 }

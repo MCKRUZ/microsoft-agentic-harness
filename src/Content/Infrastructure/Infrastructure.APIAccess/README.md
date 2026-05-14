@@ -1,78 +1,99 @@
 # Infrastructure.APIAccess
 
-Every outgoing HTTP call and incoming API request in the harness flows through infrastructure defined here. This project provides the HTTP client pipeline (resilience, correlation, compression, logging), the permission-based authorization system, and the service discovery layer that resolves API endpoints at runtime.
+The HTTP pipeline and authorization layer for the Agentic Harness. Every outgoing HTTP call flows through this project's delegating handler chain (correlation, compression, logging, user-agent), and every API endpoint optionally uses its permission-based authorization system. It also provides production-ready server configuration: Kestrel limits, API versioning, Swagger/OpenAPI generation, rate limiting, CORS policies, and Polly resilience pipelines.
 
----
+This project sits in the Infrastructure layer. It references `Application.Common` for configuration DTOs and `Infrastructure.Common` for endpoint filters. It is consumed exclusively by `Presentation.Common`, which wraps its extension methods into a single facade call.
 
-## The HTTP Client Pipeline
+## Architecture Context
 
-Outgoing HTTP requests pass through a chain of delegating handlers, each adding a cross-cutting concern:
-
-**CorrelationIdDelegatingHandler** propagates correlation IDs to outgoing requests via headers. When the harness calls Azure OpenAI, the correlation ID from the original user request follows — enabling end-to-end tracing across service boundaries.
-
-**UserAgentDelegatingHandler** sets a consistent `User-Agent` header derived from assembly metadata (app name, version, OS). External APIs can identify the harness in their logs.
-
-**LoggingDelegatingHandler** logs every outgoing request at Debug level — method, URI, and response status. Useful for debugging third-party API failures without reaching for Fiddler.
-
-**DefaultHttpClientHandler** enables Brotli/Deflate/GZip decompression and optionally bypasses certificate validation in development environments.
-
-## Resilience Policies
-
-`IServiceCollectionExtensions.AddResiliencePipelines()` configures Polly-based resilience for outgoing HTTP calls:
-
-- **Retry** — Exponential backoff with jitter for transient failures (`SocketException`, `HttpRequestException`, `TimeoutRejectedException`, `BrokenCircuitException`)
-- **Timeout** — Per-request timeout, configurable via `AppConfig.Http.Policies.HttpTimeout`
-- **Circuit Breaker** — Trips open after configurable failure ratio, prevents cascade overload
-
-These are registered as named HTTP client policies — any `IHttpClientFactory`-created client can opt into them. Configuration lives in `AppConfig.Http.Policies`:
-
-```json
-{
-  "Http": {
-    "Policies": {
-      "HttpTimeout": { "Timeout": "00:01:00" },
-      "HttpRetry": { "Count": 3, "Delay": "00:00:01" },
-      "HttpCircuitBreaker": { "FailureRatio": 0.1, "DurationOfBreak": "00:00:30" }
-    }
-  }
-}
+```
+Presentation.AgentHub (Program.cs)
+        |
+        v
+Presentation.Common.DependencyInjection
+  calls AddPresentationCommonDependencies(httpConfig)
+        |
+        v
+Infrastructure.APIAccess.Common.Extensions.IServiceCollectionExtensions
+  - AddCustomKestrelServerOptions()
+  - AddCustomApiVersioning()
+  - AddCustomSwaggerGen(httpConfig)
+  - AddCustomRateLimiter()
+  - AddCustomCorsPolicy(httpConfig)
+        |
+Infrastructure.APIAccess.DependencyInjection
+  - AddDefaultHttpClient()  [handler pipeline + resilience]
+  - PermissionPolicyProvider + PermissionAuthHandler
+        |
+        v
+Domain.Common.Config.Http  (configuration POCOs)
+Application.Common         (exception types, IIdentityService)
+Infrastructure.Common      (HttpAuthEndpointFilter, ClaimExtensions)
 ```
 
-## Rate Limiting
+## Key Concepts
 
-`AddRateLimitingPolicies()` configures fixed-window rate limiting for two endpoint categories: AI endpoints (higher throughput) and MCP endpoints (standard throughput). Applied at the ASP.NET Core middleware level.
+### Permission-Based Authorization
 
-## Permission-Based Authorization
+The harness avoids pre-registering one authorization policy per permission combination. Instead, it uses a dynamic system with three collaborating types:
 
-The authorization system maps domain permissions to ASP.NET Core policies without requiring every combination to be pre-registered:
-
-**PermissionAuthorizeAttribute** marks endpoints with required permissions from the `AuthPermissions` enum. It encodes permissions into policy names like `"Permission0-2"`.
+**1. PermissionAuthorizeAttribute** encodes enum values into a policy name string:
 
 ```csharp
-[PermissionAuthorize(AuthPermissions.Admin)]
-public class AdminEndpoints { }
-
-[PermissionAuthorize(AuthPermissions.TermsAgreement, AuthPermissions.Access)]
-public class UserEndpoints { }
+// Endpoint requires both Access and Admin permissions
+[PermissionAuthorize(AuthPermissions.Access, AuthPermissions.Admin)]
+public async Task<IResult> AdminEndpoint() { ... }
+// Generates policy name: "Permission0-2"
 ```
 
-**PermissionPolicyProvider** dynamically parses these encoded policy names at runtime and constructs policies with `PermissionRequirement` instances. No static registration needed.
+**2. PermissionPolicyProvider** intercepts unknown policy names at runtime, parses the encoded integers back into `AuthPermissions` values, and builds a policy dynamically:
 
-**PermissionAuthHandler** evaluates requirements against user claims: `Access` is always granted, `TermsAgreement` checks for a terms-agreed claim, `Admin` checks for an admin role claim.
+```csharp
+// "Permission0-2" → requirements for AuthPermissions.Access + AuthPermissions.Admin
+var builder = new AuthorizationPolicyBuilder();
+builder.AddRequirements(new PermissionRequirement(AuthPermissions.Access));
+builder.AddRequirements(new PermissionRequirement(AuthPermissions.Admin));
+builder.RequireAuthenticatedUser();
+```
 
-## Service Discovery
+**3. PermissionAuthHandler** evaluates each requirement against the user's claims:
+- `Access` -- always granted for authenticated users
+- `TermsAgreement` -- checks `ClaimConstants.AgreedToTerms` claim
+- `Admin` -- checks `ClaimConstants.IsAdmin` claim
 
-`ApiEndpointResolverService` resolves typed HTTP client configurations from `HttpConfig`. When a client is created, the resolver checks the primary endpoint's health. If it's down, it falls back to configured alternative endpoints. Resolved endpoints are cached per the client config's duration setting.
+### HTTP Client Handler Pipeline
 
-## Adding New HTTP Clients
+Every `HttpClient` created via `IHttpClientFactory` inherits four delegating handlers in this order:
 
-1. Add a configuration class extending `HttpClientConfig` in `Domain.Common.Config.Http`
-2. Add a constant in `ApiAccessConstants.cs` for the configuration section name
-3. Update `GetClientConfig` in `ApiEndpointResolverService` to resolve the new config
-4. Create the client interface in `Application.Common/Interfaces/`
-5. Implement the client and register it using `AddHttpClient<T,TImpl,TOpts>`
+1. **CorrelationIdDelegatingHandler** -- reads the current request's correlation ID and attaches it to the outgoing request header, enabling distributed tracing across Azure OpenAI, MCP servers, and Content Safety calls.
+2. **LoggingDelegatingHandler** -- logs method + URI at Debug level for troubleshooting without Fiddler.
+3. **UserAgentDelegatingHandler** -- stamps outgoing requests with `{ProductName}/{Version} ({OS})` derived from assembly metadata.
+4. **DefaultHttpClientHandler** -- configures Brotli/Deflate/GZip decompression. In Development, bypasses certificate validation for self-signed localhost certs.
 
----
+### Polly Resilience Pipeline
+
+`AddResiliencePipelines()` configures four strategies that protect against downstream failures:
+
+| Strategy | Behavior | Config Source |
+|----------|----------|---------------|
+| Retry | Exponential backoff + jitter for `SocketException`, `HttpRequestException`, `TimeoutRejectedException`, `BrokenCircuitException`, `RateLimiterRejectedException` | `HttpRetry.Count`, `HttpRetry.Delay` |
+| Timeout | Per-operation timeout | `HttpTimeout.Timeout` |
+| Circuit Breaker | Opens after failure ratio exceeds threshold; 30s sampling window | `HttpCircuitBreaker.FailureRatio`, `.DurationOfBreak` |
+| Rate Limiter | Sliding window: 100 requests/min, 4 segments | Hardcoded |
+
+### API Endpoint Resolution
+
+`ApiEndpointResolverService` provides health-check-based service discovery. When `EnableServiceDiscovery` is true in a client config, it tests all endpoints (primary + alternatives) with a `HEAD` request and picks the fastest healthy one. Results are cached per `CacheDuration`.
+
+### Server Configuration Extensions
+
+| Method | What It Configures |
+|--------|-------------------|
+| `AddCustomKestrelServerOptions()` | 100 max connections, 10 MB body limit, 1 min header timeout |
+| `AddCustomApiVersioning()` | Header-based `X-Api-Version`, defaults to 1.0 |
+| `AddCustomSwaggerGen(httpConfig)` | OpenAPI doc with security scheme (when enabled) |
+| `AddCustomRateLimiter()` | Fixed-window: 100 req/min for AI and MCP policies |
+| `AddCustomCorsPolicy(httpConfig)` | 4 named policies: default, config, AI copilot, MCP server |
 
 ## Project Structure
 
@@ -80,36 +101,138 @@ public class UserEndpoints { }
 Infrastructure.APIAccess/
 ├── Auth/
 │   ├── Attributes/
-│   │   └── PermissionAuthorizeAttribute.cs  Declarative permission marking
+│   │   └── PermissionAuthorizeAttribute.cs    Encodes permissions → policy name
 │   ├── Handlers/
-│   │   └── PermissionAuthHandler.cs         Claim-based permission evaluation
+│   │   └── PermissionAuthHandler.cs           Evaluates claims against requirements
 │   ├── Providers/
-│   │   └── PermissionPolicyProvider.cs      Dynamic policy construction
+│   │   └── PermissionPolicyProvider.cs        Parses policy names → builds policies
 │   └── Requirements/
-│       └── PermissionRequirement.cs         AuthPermissions value container
+│       └── PermissionRequirement.cs           Single-permission IAuthorizationRequirement
 ├── Common/
-│   ├── ApiAccessConstants.cs                Config section names
+│   ├── ApiAccessConstants.cs                  Typed client config section names
 │   ├── Extensions/
-│   │   ├── IEndpointConventionBuilderExtensions.cs  Filter composition helper
-│   │   └── IServiceCollectionExtensions.cs          Kestrel, versioning, Swagger, resilience, rate limiting
+│   │   ├── IEndpointConventionBuilderExtensions.cs  .AddFilters() for minimal APIs
+│   │   └── IServiceCollectionExtensions.cs    Kestrel, versioning, Swagger, CORS, resilience
 │   └── Helpers/
-│       └── EndpointFilterHelper.cs          Standard filter pipeline factory
+│       └── EndpointFilterHelper.cs            Factory: error + auth filter arrays
 ├── Handlers/
-│   ├── CorrelationIdDelegatingHandler.cs    Request correlation propagation
-│   ├── DefaultHttpClientHandler.cs          Compression + dev cert bypass
-│   ├── LoggingDelegatingHandler.cs          Debug-level request logging
-│   └── UserAgentDelegatingHandler.cs        Assembly-derived User-Agent
+│   ├── CorrelationIdDelegatingHandler.cs      Propagates X-Correlation-Id
+│   ├── DefaultHttpClientHandler.cs            Decompression + dev cert bypass
+│   ├── LoggingDelegatingHandler.cs            Debug-level request logging
+│   └── UserAgentDelegatingHandler.cs          Assembly-derived User-Agent
 ├── Services/
-│   └── ApiEndpointResolverService.cs        Health-check-based endpoint discovery
-└── DependencyInjection.cs
+│   └── ApiEndpointResolverService.cs          Health-check endpoint discovery + caching
+└── DependencyInjection.cs                     AddInfrastructureApiAccessDependencies()
 ```
+
+## Key Types Reference
+
+| Type | Purpose | Consumed By |
+|------|---------|-------------|
+| `PermissionAuthorizeAttribute` | Declarative permission enforcement | Any API controller/endpoint |
+| `PermissionPolicyProvider` | Runtime policy creation | ASP.NET Core auth middleware |
+| `PermissionAuthHandler` | Claims-based permission evaluation | ASP.NET Core auth middleware |
+| `ApiEndpointResolverService` | Health-check endpoint resolution | Typed HTTP client registration |
+| `IServiceCollectionExtensions` | Server config (Kestrel, CORS, Swagger, etc.) | `Presentation.Common.DependencyInjection` |
+| `EndpointFilterHelper` | Pre-built auth + error filter arrays | Minimal API endpoint registration |
+| `DefaultHttpClientHandler` | Primary message handler for all clients | `IHttpClientFactory` pipeline |
+
+## Configuration
+
+All configuration lives under `AppConfig:Http` in appsettings.json:
+
+```json
+{
+  "AppConfig": {
+    "Http": {
+      "CorsAllowedOrigins": "http://localhost:5173;http://localhost:5174",
+      "Authorization": {
+        "Enabled": true,
+        "HttpHeaderName": "X-API-Key",
+        "AccessKey1": "-- from user-secrets --",
+        "AccessKey2": "-- for zero-downtime rotation --"
+      },
+      "Policies": {
+        "HttpRetry": { "Count": 3, "Delay": "00:00:02" },
+        "HttpTimeout": { "Timeout": "00:00:30" },
+        "HttpCircuitBreaker": { "FailureRatio": 0.5, "DurationOfBreak": "00:00:30" }
+      },
+      "HttpSwagger": {
+        "OpenApiEnabled": true,
+        "ServiceAuthorizationEnabled": false,
+        "OpenApiSpec": {
+          "SpecName": "v1",
+          "HttpOpenApiInfo": {
+            "Title": "Agentic Harness API",
+            "Version": "1.0",
+            "Description": "AI Agent orchestration API"
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+## How to Run
+
+This project is a class library -- it doesn't run independently. It's consumed by Presentation hosts:
+
+```bash
+# Build to verify compilation
+dotnet build src/Content/Infrastructure/Infrastructure.APIAccess
+
+# Run via the AgentHub host
+dotnet run --project src/Content/Presentation/Presentation.AgentHub
+```
+
+## Common Tasks
+
+### Adding a New Typed HTTP Client
+
+1. Define a config class in `Domain.Common.Config.Http` extending `HttpClientConfig`
+2. Add a section name constant in `ApiAccessConstants.cs`
+3. Map it in `ApiEndpointResolverService.GetClientConfig<T>()`
+4. Register in the consuming project:
+
+```csharp
+services.AddHttpClient<IMyService, MyService, MyServiceConfig>(
+    ApiAccessConstants.MyServiceSection);
+```
+
+### Adding a New CORS Policy
+
+Add a new `options.AddPolicy(...)` block in `AddCustomCorsPolicy()` and reference the policy name from `PolicyNameConstants` in Domain.Common.
+
+### Adding a New Permission Level
+
+1. Add a value to `AuthPermissions` enum in Domain.Common
+2. Add a case in `PermissionAuthHandler.PermissionRequirementsMet()`
+3. Use it: `[PermissionAuthorize(AuthPermissions.NewLevel)]`
 
 ## Dependencies
 
-- **Application.Common** — Exception types, config interfaces
-- **Infrastructure.Common** — Endpoint filters, claim extensions
-- **Domain.Common** — `AppConfig.Http` configuration, `AuthPermissions` enum
-- **Polly** — Resilience policies (retry, timeout, circuit breaker)
-- **CorrelationId** — Request correlation middleware
-- **Swashbuckle** — OpenAPI/Swagger generation
-- **Asp.Versioning** — API versioning (header-based via `X-Api-Version`)
+**Project References:**
+- `Application.Common` -- `HttpConfig`, `HttpClientConfig`, `AuthPermissions` enum, exception types
+- `Infrastructure.Common` -- `HttpAuthEndpointFilter`, `HttpErrorEndpointFilter`, `ClaimExtensions`
+
+**NuGet Packages:**
+- `Asp.Versioning.Http` / `Asp.Versioning.Mvc.ApiExplorer` -- header-based API versioning
+- `CorrelationId` -- correlation ID middleware and forwarding
+- `Microsoft.Extensions.Http.Resilience` -- Polly integration for `IHttpClientFactory`
+- `Swashbuckle.AspNetCore.SwaggerGen` -- OpenAPI document generation
+
+## Testing
+
+**Test project:** `Tests/Infrastructure.APIAccess.Tests`
+
+```bash
+dotnet test src/AgenticHarness.slnx --filter "FullyQualifiedName~Infrastructure.APIAccess"
+```
+
+**Coverage areas:**
+- Permission policy encoding/decoding round-trip
+- Handler pipeline (correlation propagation, user-agent header format)
+- Endpoint resolver caching and health-check fallback
+- Rate limiter policy activation
+- CORS origin matching

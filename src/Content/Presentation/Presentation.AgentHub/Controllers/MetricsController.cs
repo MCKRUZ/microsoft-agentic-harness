@@ -128,7 +128,7 @@ internal static class MetricCatalog
         new() { Id = "cost_today", Title = "Cost Today", Description = "Estimated LLM cost since midnight UTC", Query = "sum(agentic_harness_agent_tokens_cost_estimated_total) or vector(0)", ChartType = "stat", Unit = "usd", Category = "overview" },
         new() { Id = "cache_hit_rate", Title = "Cache Hit Rate", Description = "Prompt cache hit ratio", Query = "agentic_harness_agent_tokens_cache_hit_rate_sum / agentic_harness_agent_tokens_cache_hit_rate_count or vector(0)", ChartType = "gauge", Unit = "percent", Category = "overview" },
         new() { Id = "safety_violations", Title = "Safety Evaluations", Description = "Content safety evaluations performed", Query = "sum(agentic_harness_agent_safety_evaluations_total) or vector(0)", ChartType = "stat", Unit = "count", Category = "overview" },
-        new() { Id = "budget_status", Title = "Budget Status", Description = "Current budget utilization percentage", Query = "max(agentic_harness_agent_budget_utilization_percent) or vector(0)", ChartType = "gauge", Unit = "percent", Category = "overview" },
+        new() { Id = "budget_status", Title = "Budget Status", Description = "Current budget utilization percentage", Query = "(agentic_harness_agent_budget_current_spend / agentic_harness_agent_budget_threshold_critical) or vector(0)", ChartType = "gauge", Unit = "percent", Category = "overview" },
 
         // --- Tokens ---
         new() { Id = "tokens_input_total", Title = "Input Tokens", Description = "Total input (prompt) tokens consumed", Query = "sum(agentic_harness_agent_tokens_input_sum) or vector(0)", ChartType = "stat", Unit = "tokens", Category = "tokens" },
@@ -145,7 +145,7 @@ internal static class MetricCatalog
         new() { Id = "cost_rate", Title = "Cost Rate", Description = "USD burn rate per hour", Query = "rate(agentic_harness_agent_tokens_cost_estimated_total[5m]) * 3600", ChartType = "timeseries", Unit = "usd", Category = "cost" },
         new() { Id = "cost_by_model", Title = "Cost by Model", Description = "Cost breakdown per model", Query = "sum by (model) (agentic_harness_agent_tokens_cost_estimated_total)", ChartType = "pie", Unit = "usd", Category = "cost" },
         new() { Id = "cost_cache_savings", Title = "Cache Savings", Description = "Estimated cost saved via prompt caching", Query = "sum(agentic_harness_agent_tokens_cost_cache_savings_total) or vector(0)", ChartType = "stat", Unit = "usd", Category = "cost" },
-        new() { Id = "cost_budget_remaining", Title = "Budget Remaining", Description = "Remaining budget allocation", Query = "max(agentic_harness_agent_budget_remaining) or vector(0)", ChartType = "gauge", Unit = "usd", Category = "cost" },
+        new() { Id = "cost_budget_remaining", Title = "Budget Remaining", Description = "Remaining budget allocation", Query = "(agentic_harness_agent_budget_threshold_critical - agentic_harness_agent_budget_current_spend) or vector(0)", ChartType = "gauge", Unit = "usd", Category = "cost" },
 
         // --- Tools ---
         new() { Id = "tools_calls_total", Title = "Tool Calls", Description = "Total tool invocations", Query = "sum(agentic_harness_agent_tool_invocations_total) or vector(0)", ChartType = "stat", Unit = "count", Category = "tools" },
@@ -164,12 +164,12 @@ internal static class MetricCatalog
         new() { Id = "safety_block_rate", Title = "Block Rate", Description = "Percentage of requests blocked", Query = "sum(agentic_harness_agent_safety_blocks_total) / (sum(agentic_harness_agent_safety_evaluations_total) > 0)", ChartType = "gauge", Unit = "percent", Category = "safety" },
 
         // --- Sessions ---
-        new() { Id = "sessions_total", Title = "Total Sessions", Description = "Lifetime session count", Query = "sum(agentic_harness_user_activity_sessions_started_total) or vector(0)", ChartType = "stat", Unit = "count", Category = "sessions" },
+        new() { Id = "sessions_total", Title = "Total Sessions", Description = "Lifetime session count", Query = "sum(agentic_harness_agent_session_started_total) or vector(0)", ChartType = "stat", Unit = "count", Category = "sessions" },
         new() { Id = "sessions_active", Title = "Active Sessions", Description = "Currently active sessions", Query = "agentic_harness_agent_session_active or vector(0)", ChartType = "stat", Unit = "count", Category = "sessions" },
         new() { Id = "sessions_turns_avg", Title = "Avg Turns/Session", Description = "Average conversation turns per session", Query = "agentic_harness_agent_orchestration_turns_per_conversation_sum / agentic_harness_agent_orchestration_turns_per_conversation_count or vector(0)", ChartType = "stat", Unit = "turns", Category = "sessions" },
         new() { Id = "sessions_duration_avg", Title = "Avg Duration", Description = "Average session duration", Query = "agentic_harness_agent_orchestration_conversation_duration_sum / agentic_harness_agent_orchestration_conversation_duration_count or vector(0)", ChartType = "stat", Unit = "ms", Category = "sessions" },
         new() { Id = "sessions_active_ts", Title = "Active Sessions Over Time", Description = "Session concurrency over time", Query = "agentic_harness_agent_session_active or vector(0)", ChartType = "timeseries", Unit = "count", Category = "sessions" },
-        new() { Id = "sessions_turns_ts", Title = "Turns Over Time", Description = "Conversation turns per minute", Query = "rate(agentic_harness_user_activity_turns_total[5m]) * 60", ChartType = "timeseries", Unit = "turns/min", Category = "sessions" },
+        new() { Id = "sessions_turns_ts", Title = "Turns Over Time", Description = "Conversation turns per minute", Query = "rate(agentic_harness_agent_orchestration_turns_total_total[5m]) * 60", ChartType = "timeseries", Unit = "turns/min", Category = "sessions" },
 
         // --- RAG ---
         new() { Id = "rag_ingestion_total", Title = "Documents Ingested", Description = "Total documents processed for RAG", Query = "sum(agentic_harness_rag_ingestion_documents_total) or vector(0)", ChartType = "stat", Unit = "count", Category = "rag" },
@@ -184,7 +184,7 @@ internal static class MetricCatalog
         new() { Id = "budget_limit", Title = "Budget Limit", Description = "Configured budget ceiling", Query = "agentic_harness_agent_budget_threshold_critical or vector(0)", ChartType = "stat", Unit = "usd", Category = "budget" },
         new() { Id = "budget_remaining", Title = "Remaining", Description = "Budget remaining before limit", Query = "agentic_harness_agent_budget_threshold_critical - agentic_harness_agent_budget_current_spend or vector(0)", ChartType = "stat", Unit = "usd", Category = "budget" },
         new() { Id = "budget_utilization", Title = "Utilization", Description = "Budget utilization percentage", Query = "agentic_harness_agent_budget_current_spend / agentic_harness_agent_budget_threshold_critical or vector(0)", ChartType = "gauge", Unit = "percent", Category = "budget" },
-        new() { Id = "budget_spend_rate", Title = "Spend Rate", Description = "Budget burn rate over time", Query = "rate(agentic_harness_user_activity_cost_accrued_total[5m]) * 3600", ChartType = "timeseries", Unit = "usd/hr", Category = "budget" },
+        new() { Id = "budget_spend_rate", Title = "Spend Rate", Description = "Budget burn rate over time", Query = "rate(agentic_harness_agent_session_cost_sum[5m]) * 3600", ChartType = "timeseries", Unit = "usd/hr", Category = "budget" },
         new() { Id = "budget_status", Title = "Budget Status", Description = "Budget status (0=clear, 1=warning, 2=critical)", Query = "agentic_harness_agent_budget_status or vector(0)", ChartType = "stat", Unit = "status", Category = "budget" },
     ];
 }

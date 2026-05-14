@@ -1,3 +1,4 @@
+using Domain.AI.Governance;
 using Domain.AI.Permissions;
 
 namespace Domain.AI.Agents;
@@ -40,4 +41,11 @@ public sealed record SubagentDefinition
 
     /// <summary>Whether to inherit the parent's tool pool as the starting point.</summary>
     public bool InheritParentTools { get; init; } = true;
+
+    /// <summary>
+    /// The trust tier assigned to this subagent instance, controlling its baseline
+    /// permission behavior. Tiers are orthogonal to <see cref="SubagentType"/> —
+    /// any agent type can be assigned any tier.
+    /// </summary>
+    public AutonomyLevel AutonomyLevel { get; init; } = AutonomyLevel.Supervised;
 }

@@ -20,68 +20,86 @@ namespace Domain.AI.Agents;
 /// </remarks>
 public class AgentExecutionContext
 {
-	/// <summary>
-	/// Display name of the agent, used for identification, logging, and UI.
-	/// </summary>
-	public string? Name { get; set; }
+    /// <summary>
+    /// Display name of the agent, used for identification, logging, and UI.
+    /// </summary>
+    public string? Name { get; set; }
 
-	/// <summary>
-	/// Behavioral instructions defining how the agent should respond and interact.
-	/// Becomes the system prompt for the underlying LLM.
-	/// </summary>
-	public string? Instruction { get; set; }
+    /// <summary>
+    /// Behavioral instructions defining how the agent should respond and interact.
+    /// Becomes the system prompt for the underlying LLM.
+    /// </summary>
+    public string? Instruction { get; set; }
 
-	/// <summary>
-	/// Description of the agent's purpose and capabilities.
-	/// </summary>
-	public string? Description { get; set; }
+    /// <summary>
+    /// Description of the agent's purpose and capabilities.
+    /// </summary>
+    public string? Description { get; set; }
 
-	/// <summary>
-	/// Model deployment name (e.g., "gpt-4o", "gpt-4-turbo").
-	/// Null to use the default deployment from config.
-	/// </summary>
-	public string? DeploymentName { get; set; }
+    /// <summary>
+    /// Model deployment name (e.g., "gpt-4o", "gpt-4-turbo").
+    /// Null to use the default deployment from config.
+    /// </summary>
+    public string? DeploymentName { get; set; }
 
-	/// <summary>
-	/// AI Foundry persistent agent ID. Required when
-	/// <see cref="AIAgentFrameworkType"/> is <see cref="AIAgentFrameworkClientType.PersistentAgents"/>.
-	/// </summary>
-	public string? AgentId { get; set; }
+    /// <summary>
+    /// AI Foundry persistent agent ID. Required when
+    /// <see cref="AIAgentFrameworkType"/> is <see cref="AIAgentFrameworkClientType.PersistentAgents"/>.
+    /// </summary>
+    public string? AgentId { get; set; }
 
-	/// <summary>
-	/// Which AI service provider to use (Azure OpenAI, OpenAI, Persistent Agents).
-	/// </summary>
-	public AIAgentFrameworkClientType AIAgentFrameworkType { get; set; } = AIAgentFrameworkClientType.AzureOpenAI;
+    /// <summary>
+    /// Which AI service provider to use (Azure OpenAI, OpenAI, Persistent Agents).
+    /// </summary>
+    public AIAgentFrameworkClientType AIAgentFrameworkType { get; set; } = AIAgentFrameworkClientType.AzureOpenAI;
 
-	/// <summary>
-	/// Tools available to the agent for function calling.
-	/// </summary>
-	public IList<AITool>? Tools { get; set; }
+    /// <summary>
+    /// Tools available to the agent for function calling.
+    /// </summary>
+    public IList<AITool>? Tools { get; set; }
 
-	/// <summary>
-	/// Middleware types to apply to the agent's chat client pipeline.
-	/// </summary>
-	public IList<Type>? MiddlewareTypes { get; set; }
+    /// <summary>
+    /// Middleware types to apply to the agent's chat client pipeline.
+    /// </summary>
+    public IList<Type>? MiddlewareTypes { get; set; }
 
-	/// <summary>
-	/// AI context providers to invoke before and after each agent turn.
-	/// Used for progressive skill disclosure, memory, and compaction.
-	/// </summary>
-	public IList<AIContextProvider>? AIContextProviders { get; set; }
+    /// <summary>
+    /// AI context providers to invoke before and after each agent turn.
+    /// Used for progressive skill disclosure, memory, and compaction.
+    /// </summary>
+    public IList<AIContextProvider>? AIContextProviders { get; set; }
 
-	/// <summary>
-	/// Trace scope for this execution run. Set by <c>AgentExecutionContextFactory</c>
-	/// when an <c>IExecutionTraceStore</c> is wired in.
-	/// </summary>
-	public TraceScope? TraceScope { get; set; }
+    /// <summary>
+    /// Trace scope for this execution run. Set by <c>AgentExecutionContextFactory</c>
+    /// when an <c>IExecutionTraceStore</c> is wired in.
+    /// </summary>
+    public TraceScope? TraceScope { get; set; }
 
-	/// <summary>
-	/// Sampling temperature for the underlying chat client. Null preserves provider defaults.
-	/// </summary>
-	public float? Temperature { get; set; }
+    /// <summary>
+    /// Sampling temperature for the underlying chat client. Null preserves provider defaults.
+    /// </summary>
+    public float? Temperature { get; set; }
 
-	/// <summary>
-	/// Extensible configuration properties.
-	/// </summary>
-	public Dictionary<string, object>? AdditionalProperties { get; set; }
+    /// <summary>
+    /// Extensible configuration properties.
+    /// </summary>
+    public Dictionary<string, object>? AdditionalProperties { get; set; }
+
+    /// <summary>
+    /// Current delegation nesting depth. Null when the agent is not executing within a delegation.
+    /// 0 = top-level delegation, increments with each nested delegation.
+    /// </summary>
+    public int? DelegationDepth { get; set; }
+
+    /// <summary>
+    /// Current delegation ID. Links child delegations to their parent.
+    /// Null when not in a delegation context.
+    /// </summary>
+    public Guid? DelegationId { get; set; }
+
+    /// <summary>
+    /// The SubagentType of the delegating agent. Enables tier resolution from agent context
+    /// without a back-reference to the SubagentDefinition.
+    /// </summary>
+    public SubagentType? DelegatingAgentType { get; set; }
 }

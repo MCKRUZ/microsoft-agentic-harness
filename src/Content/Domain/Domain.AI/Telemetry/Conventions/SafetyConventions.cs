@@ -10,6 +10,12 @@ public static class SafetyConventions
     public const string Severity = "agent.safety.severity";
     public const string Evaluations = "agent.safety.evaluations";
     public const string Blocks = "agent.safety.blocks";
+    /// <summary>Flagged but not blocked.</summary>
+    public const string Flags = "agent.safety.flags";
+    /// <summary>PII redaction count.</summary>
+    public const string Redactions = "agent.safety.redactions";
+    /// <summary>Action taken (block, flag, redact).</summary>
+    public const string Action = "agent.safety.action";
 
     public static class PhaseValues
     {

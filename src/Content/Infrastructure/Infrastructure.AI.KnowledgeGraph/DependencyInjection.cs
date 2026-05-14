@@ -1,5 +1,9 @@
 using Application.AI.Common.Interfaces.KnowledgeGraph;
+using Application.AI.Common.Interfaces.RAG;
+using Application.AI.Common.Interfaces.Skills;
 using Domain.Common.Config;
+using Infrastructure.AI.KnowledgeGraph.Audit;
+using Infrastructure.AI.KnowledgeGraph.Compliance;
 using Infrastructure.AI.KnowledgeGraph.InMemory;
 using Infrastructure.AI.KnowledgeGraph.Neo4j;
 using Infrastructure.AI.KnowledgeGraph.PostgreSql;
@@ -7,6 +11,7 @@ using Infrastructure.AI.KnowledgeGraph.Feedback;
 using Infrastructure.AI.KnowledgeGraph.Memory;
 using Infrastructure.AI.KnowledgeGraph.Provenance;
 using Infrastructure.AI.KnowledgeGraph.Scoping;
+using Infrastructure.AI.KnowledgeGraph.Skills;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -93,6 +98,63 @@ public static class DependencyInjection
         // Multi-tenant isolation (conditional decorator)
         services.AddSingleton<IKnowledgeScopeValidator>(sp =>
             new KnowledgeScopeValidator(sp.GetRequiredService<IOptionsMonitor<AppConfig>>()));
+
+        // --- Compliance Layer ---
+
+        // Audit sinks (keyed DI)
+        services.AddKeyedSingleton<IMemoryAuditSink>("no_op", (_, _) =>
+            new NoOpAuditSink());
+        services.AddKeyedSingleton<IMemoryAuditSink>("structured_logging", (sp, _) =>
+            new StructuredLoggingAuditSink(
+                sp.GetRequiredService<ILogger<StructuredLoggingAuditSink>>()));
+        services.AddSingleton<IMemoryAuditSink>(sp =>
+        {
+            var config = sp.GetRequiredService<IOptionsMonitor<AppConfig>>().CurrentValue;
+            var key = config.AI.Rag.GraphRag.ComplianceEnabled
+                ? config.AI.Rag.GraphRag.AuditSinkProvider
+                : "no_op";
+            return sp.GetRequiredKeyedService<IMemoryAuditSink>(key);
+        });
+
+        // Retention policy provider
+        services.AddSingleton<IRetentionPolicyProvider>(sp =>
+            new ConfigRetentionPolicyProvider(
+                sp.GetRequiredService<IOptionsMonitor<AppConfig>>()));
+
+        // Erasure orchestrator
+        services.AddScoped<IErasureOrchestrator>(sp =>
+            new DefaultErasureOrchestrator(
+                sp.GetRequiredService<IKnowledgeGraphStore>(),
+                sp.GetRequiredService<IFeedbackStore>(),
+                sp.GetService<IVectorStore>(),
+                sp.GetRequiredService<IMemoryAuditSink>(),
+                sp.GetService<TimeProvider>() ?? TimeProvider.System,
+                sp.GetRequiredService<ILogger<DefaultErasureOrchestrator>>()));
+
+        // Retention enforcement background service
+        if (appConfig.AI.Rag.GraphRag.ComplianceEnabled &&
+            appConfig.AI.Rag.GraphRag.RetentionEnforcementInterval > TimeSpan.Zero)
+        {
+            services.AddHostedService<RetentionEnforcementService>();
+        }
+
+        // --- Procedural Memory ---
+
+        if (appConfig.AI.Rag.GraphRag.SkillEffectivenessEnabled)
+        {
+            services.AddScoped<ISkillEffectivenessTracker>(sp =>
+                new GraphSkillEffectivenessTracker(
+                    sp.GetRequiredService<IKnowledgeGraphStore>(),
+                    sp.GetRequiredService<ILogger<GraphSkillEffectivenessTracker>>()));
+        }
+
+        if (appConfig.AI.Rag.GraphRag.SkillAmendmentsEnabled)
+        {
+            services.AddScoped<ISkillAmendmentProvider>(sp =>
+                new GraphSkillAmendmentProvider(
+                    sp.GetRequiredService<IKnowledgeGraphStore>(),
+                    sp.GetRequiredService<ILogger<GraphSkillAmendmentProvider>>()));
+        }
 
         return services;
     }

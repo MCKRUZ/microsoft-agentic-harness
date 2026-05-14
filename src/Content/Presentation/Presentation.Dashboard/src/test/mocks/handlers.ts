@@ -48,10 +48,24 @@ function routeMetricsQuery(query: string): MetricsQueryResponse {
   if (query.includes('by (category)')) {
     return makeMultiSeries('category', ['violence', 'sexual_content', 'hate_speech'], [5, 2, 1]);
   }
+  if (query.includes('by (agent_governance_action)')) {
+    return makeMultiSeries('agent_governance_action', ['allow', 'deny', 'warn'], [38, 3, 4]);
+  }
+  if (query.includes('by (agent_governance_tool)')) {
+    return makeMultiSeries('agent_governance_tool', ['execute_command', 'shell_exec', 'raw_http', 'file_delete'], [1.2, 0.8, 0.5, 0.3]);
+  }
   if (query.includes('by (source)') || query.includes('topk')) {
     return makeMultiSeries('source', ['docs.md', 'readme.md', 'api-ref.md'], [120, 85, 60]);
   }
 
+  if (query.includes('governance_injection_detections')) return makeTimeSeries(2);
+  if (query.includes('governance_violations')) return makeTimeSeries(3);
+  if (query.includes('governance_decisions')) return makeTimeSeries(45);
+  if (query.includes('governance_evaluation_duration')) return makeTimeSeries(2.5);
+  if (query.includes('governance_rate_limit_hits')) return makeTimeSeries(1);
+  if (query.includes('governance_audit_events')) return makeTimeSeries(50);
+  if (query.includes('governance_mcp_threats')) return makeTimeSeries(1);
+  if (query.includes('governance_mcp_scans')) return makeTimeSeries(30);
   if (query.includes('cache_hit_rate')) return makeTimeSeries(0.72);
   if (query.includes('budget_utilization')) return makeTimeSeries(0.45);
   if (query.includes('budget_status')) return makeTimeSeries(0);
@@ -78,8 +92,8 @@ function routeMetricsQuery(query: string): MetricsQueryResponse {
   if (query.includes('rag_retrieval_duration')) return makeTimeSeries(120);
   if (query.includes('rag_retrieval_chunks')) return makeTimeSeries(4.2);
   if (query.includes('rag_retrieval')) return makeTimeSeries(200);
-  if (query.includes('user_activity_turns')) return makeTimeSeries(45);
-  if (query.includes('user_activity_cost')) return makeTimeSeries(0.035);
+  if (query.includes('orchestration_turns_total')) return makeTimeSeries(45);
+  if (query.includes('cost_estimated_total')) return makeTimeSeries(0.035);
   if (query.includes('rate(')) return makeTimeSeries(450);
 
   return makeTimeSeries(42);

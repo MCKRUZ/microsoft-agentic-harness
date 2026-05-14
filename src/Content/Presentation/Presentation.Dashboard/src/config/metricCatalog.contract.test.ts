@@ -9,10 +9,11 @@ const TOOLS_IDS = ['tools_calls_total', 'tools_errors_total', 'tools_avg_latency
 const SAFETY_IDS = ['safety_total', 'safety_blocked', 'safety_checks_total', 'safety_violations_ts', 'safety_by_category', 'safety_block_rate'];
 const RAG_IDS = ['rag_ingestion_total', 'rag_retrieval_total', 'rag_avg_latency', 'rag_chunks_avg', 'rag_ingestion_rate', 'rag_retrieval_latency_ts', 'rag_by_source'];
 const BUDGET_IDS = ['budget_spent', 'budget_limit', 'budget_remaining', 'budget_utilization', 'budget_spend_rate', 'budget_status'];
+const GOVERNANCE_IDS = ['governance_decisions', 'governance_violations', 'governance_eval_duration', 'governance_rate_limit_hits', 'governance_audit_events', 'governance_injection_detections', 'governance_mcp_scans', 'governance_mcp_threats', 'governance_decisions_ts', 'governance_violations_by_tool', 'governance_injections_ts'];
 
 const ALL_PAGE_IDS = [
   ...OVERVIEW_IDS, ...TOKENS_IDS, ...COST_IDS, ...SESSIONS_IDS,
-  ...TOOLS_IDS, ...SAFETY_IDS, ...RAG_IDS, ...BUDGET_IDS,
+  ...TOOLS_IDS, ...SAFETY_IDS, ...RAG_IDS, ...BUDGET_IDS, ...GOVERNANCE_IDS,
 ];
 
 describe('metricCatalog contract', () => {
@@ -29,7 +30,7 @@ describe('metricCatalog contract', () => {
     expect(unusedIds).toEqual([]);
   });
 
-  it.each(['overview', 'tokens', 'cost', 'sessions', 'tools', 'safety', 'rag', 'budget'])(
+  it.each(['overview', 'tokens', 'cost', 'sessions', 'tools', 'safety', 'rag', 'budget', 'governance'])(
     'category "%s" has entries',
     (category) => {
       const entries = getCatalogByCategory(category);

@@ -1,0 +1,90 @@
+{
+  "plugin_root": "C:\\Users\\kruz7\\.claude\\plugins\\cache\\piercelamb-plugins\\deep-implement\\0.2.0",
+  "sections_dir": "C:\\Users\\kruz7\\OneDrive\\Documents\\Code Repos\\MCKRUZ\\microsoft-agentic-harness\\planning\\phase3-quality-loop\\sections",
+  "target_dir": "C:\\Users\\kruz7\\OneDrive\\Documents\\Code Repos\\MCKRUZ\\microsoft-agentic-harness",
+  "state_dir": "C:\\Users\\kruz7\\OneDrive\\Documents\\Code Repos\\MCKRUZ\\microsoft-agentic-harness\\planning\\phase3-quality-loop\\implementation",
+  "git_root": "C:\\Users\\kruz7\\OneDrive\\Documents\\Code Repos\\MCKRUZ\\microsoft-agentic-harness",
+  "commit_style": "conventional",
+  "test_command": "uv run pytest",
+  "sections": [
+    "section-01-drift-domain",
+    "section-02-learnings-domain",
+    "section-03-drift-config",
+    "section-04-learnings-config",
+    "section-05-drift-interfaces",
+    "section-06-learnings-interfaces",
+    "section-07-ewma-scorer",
+    "section-08-drift-service",
+    "section-09-baseline-store",
+    "section-10-drift-audit",
+    "section-11-decay-service",
+    "section-12-learnings-store",
+    "section-13-command-handlers",
+    "section-14-drift-sse",
+    "section-15-learnings-sse",
+    "section-16-escalation-bridge",
+    "section-17-learnings-bridge",
+    "section-18-di-registration",
+    "section-19-appsettings",
+    "section-20-verification"
+  ],
+  "sections_state": {
+    "section-01-drift-domain": {
+      "status": "complete",
+      "commit_hash": "95af9ff"
+    },
+    "section-02-learnings-domain": {
+      "status": "complete",
+      "commit_hash": "bfb981a"
+    },
+    "section-03-drift-config": {
+      "status": "complete",
+      "commit_hash": "849d6b4"
+    },
+    "section-04-learnings-config": {
+      "status": "complete",
+      "commit_hash": "45dddc0"
+    },
+    "section-05-drift-interfaces": {
+      "status": "complete",
+      "commit_hash": "1d14db6"
+    },
+    "section-06-learnings-interfaces": {
+      "status": "complete",
+      "commit_hash": "f3f8ca9"
+    },
+    "section-07-ewma-scorer": {
+      "status": "complete",
+      "commit_hash": "b388a9d"
+    },
+    "section-08-drift-service": {
+      "status": "complete",
+      "commit_hash": "202a121"
+    },
+    "section-09-baseline-store": {
+      "status": "complete",
+      "commit_hash": "4433d75"
+    },
+    "section-10-drift-audit": {
+      "status": "complete",
+      "commit_hash": "d6a6be8"
+    },
+    "section-11-decay-service": {
+      "status": "complete",
+      "commit_hash": "2af5ca1"
+    },
+    "section-12-learnings-store": {
+      "status": "complete",
+      "commit_hash": "bbad49f"
+    }
+  },
+  "pre_commit": {
+    "present": false,
+    "type": "none",
+    "config_file": null,
+    "native_hook": null,
+    "may_modify_files": false,
+    "detected_formatters": []
+  },
+  "created_at": "2026-05-11T14:16:47.905490+00:00"
+}

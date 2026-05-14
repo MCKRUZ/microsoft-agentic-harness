@@ -67,6 +67,10 @@ public sealed class AgentTelemetryHubTests : IClassFixture<TestWebApplicationFac
                 if (roles is not null)
                     options.Headers[TestAuthHandler.RolesHeader] = roles;
             })
+            .AddJsonProtocol(o =>
+            {
+                o.PayloadSerializerOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter());
+            })
             .Build();
     }
 

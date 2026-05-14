@@ -29,18 +29,21 @@ describe('MessageList', () => {
     expect(screen.getByText('How are you?')).toBeInTheDocument();
   });
 
-  it('renders user message right-aligned (ml-auto)', () => {
+  it('renders user message right-aligned (flex-row-reverse)', () => {
     useChatStore.getState().addMessage({ id: '1', role: 'user', content: 'User msg', timestamp: new Date() });
     render(<MessageList />);
     const msgEl = screen.getByText('User msg');
-    expect(msgEl.closest('[class*="ml-auto"]')).toBeInTheDocument();
+    expect(msgEl.closest('[class*="flex-row-reverse"]')).toBeInTheDocument();
   });
 
-  it('renders assistant message left-aligned (mr-auto)', () => {
+  it('renders assistant message left-aligned (flex-row)', () => {
     useChatStore.getState().addMessage({ id: '1', role: 'assistant', content: 'Agent msg', timestamp: new Date() });
     render(<MessageList />);
     const msgEl = screen.getByText('Agent msg');
-    expect(msgEl.closest('[class*="mr-auto"]')).toBeInTheDocument();
+    const container = msgEl.closest('.group');
+    expect(container).toBeInTheDocument();
+    expect(container?.className).toMatch(/\bflex-row\b/);
+    expect(container?.className).not.toMatch(/flex-row-reverse/);
   });
 
   it('streaming: streamingContent updates visible text in DOM', () => {

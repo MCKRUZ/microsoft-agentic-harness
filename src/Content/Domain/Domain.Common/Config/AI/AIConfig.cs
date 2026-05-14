@@ -1,11 +1,14 @@
 using Domain.Common.Config.AI.A2A;
 using Domain.Common.Config.AI.AIFoundry;
 using Domain.Common.Config.AI.ContextManagement;
+using Domain.Common.Config.AI.DriftDetection;
 using Domain.Common.Config.AI.Hooks;
+using Domain.Common.Config.AI.Learnings;
 using Domain.Common.Config.AI.MCP;
 using Domain.Common.Config.AI.Orchestration;
 using Domain.Common.Config.AI.Permissions;
 using Domain.Common.Config.AI.RAG;
+using Domain.Common.Config.AI.Resilience;
 
 namespace Domain.Common.Config.AI;
 
@@ -27,7 +30,10 @@ namespace Domain.Common.Config.AI;
 /// ├── Permissions       — Permission system for tool and file access approvals
 /// ├── Hooks             — Lifecycle hook execution configuration
 /// ├── Orchestration     — Subagent management and streaming execution
-/// └── Rag               — RAG pipeline: ingestion, retrieval, reranking, model tiering
+/// ├── Resilience        — LLM fallback chains, circuit breakers, retry, degraded mode
+/// ├── Rag               — RAG pipeline: ingestion, retrieval, reranking, model tiering
+/// ├── DriftDetection    — EWMA-based drift detection for quality regressions
+/// └── Learnings         — Cross-session learnings: feedback blending, decay, pruning
 /// </code>
 /// </para>
 /// </remarks>
@@ -98,4 +104,24 @@ public class AIConfig
     /// retrieval, reranking, query transformation, and model tiering.
     /// </summary>
     public RagConfig Rag { get; set; } = new();
+
+    /// <summary>
+    /// LLM provider resilience configuration including fallback chains,
+    /// circuit breakers, retry policies, and degraded mode behavior.
+    /// </summary>
+    public ResilienceConfig Resilience { get; set; } = new();
+
+    /// <summary>
+    /// EWMA-based drift detection configuration for identifying quality regressions.
+    /// </summary>
+    public DriftDetectionConfig DriftDetection { get; set; } = new();
+
+    /// <summary>
+    /// Cross-session learnings configuration controlling feedback blending,
+    /// temporal decay, pruning schedules, and drift baseline adjustment.
+    /// </summary>
+    public LearningsConfig Learnings { get; set; } = new();
+
+    /// <summary>Agent Governance Toolkit configuration.</summary>
+    public GovernanceConfig Governance { get; init; } = new();
 }

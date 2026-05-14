@@ -38,4 +38,16 @@ public class PermissionsConfig
     /// evaluating complex permission patterns.
     /// </summary>
     public int MaxSubcommandLimit { get; set; } = 50;
+
+    /// <summary>
+    /// Default autonomy level assigned to agents that don't specify one in their
+    /// SubagentDefinition. Valid values: "Restricted", "Supervised", "Autonomous".
+    /// </summary>
+    public string DefaultAutonomyLevel { get; set; } = "Supervised";
+
+    /// <summary>
+    /// Per-tier policy overrides keyed by autonomy level name.
+    /// Each entry defines the default behavior and tool overrides for that tier.
+    /// </summary>
+    public Dictionary<string, AutonomyTierPolicyConfig> TierPolicies { get; set; } = new();
 }

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { metricCatalog, getCatalogByCategory } from './metricCatalog';
 
 describe('metricCatalog', () => {
-  it('has entries for all 8 categories', () => {
+  it('has entries for all 9 categories', () => {
     const categories = new Set(Object.values(metricCatalog).map((e) => e.category));
     expect(categories).toContain('overview');
     expect(categories).toContain('tokens');
@@ -12,6 +12,7 @@ describe('metricCatalog', () => {
     expect(categories).toContain('safety');
     expect(categories).toContain('rag');
     expect(categories).toContain('budget');
+    expect(categories).toContain('governance');
   });
 
   it('every entry has required fields', () => {

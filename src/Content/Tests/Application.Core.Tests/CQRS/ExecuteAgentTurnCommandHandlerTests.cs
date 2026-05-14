@@ -13,7 +13,7 @@ namespace Application.Core.Tests.CQRS;
 
 public class ExecuteAgentTurnCommandHandlerTests
 {
-    private readonly Mock<IAgentFactory> _agentFactory = new();
+    private readonly Mock<IAgentConversationCache> _agentCache = new();
     private readonly Mock<IAgentMetadataRegistry> _agentRegistry = new();
     private readonly ExecuteAgentTurnCommandHandler _handler;
 
@@ -30,7 +30,7 @@ public class ExecuteAgentTurnCommandHandlerTests
             .Returns(new LlmUsageSnapshot(0, 0, 0, 0, null, 0m, 0m, Array.Empty<string>()));
 
         _handler = new ExecuteAgentTurnCommandHandler(
-            _agentFactory.Object,
+            _agentCache.Object,
             _agentRegistry.Object,
             new Mock<IObservabilityStore>().Object,
             usageCapture.Object,
@@ -56,8 +56,9 @@ public class ExecuteAgentTurnCommandHandlerTests
     {
         // Arrange
         var agent = new TestableAIAgent("Agent response text");
-        _agentFactory
-            .Setup(f => f.CreateAgentFromSkillAsync(
+        _agentCache
+            .Setup(c => c.GetOrCreateAsync(
+                It.IsAny<string>(),
                 "TestAgent",
                 It.IsAny<SkillAgentOptions>(),
                 It.IsAny<CancellationToken>()))
@@ -79,8 +80,9 @@ public class ExecuteAgentTurnCommandHandlerTests
     {
         // Arrange
         var agent = new TestableAIAgent("Response");
-        _agentFactory
-            .Setup(f => f.CreateAgentFromSkillAsync(
+        _agentCache
+            .Setup(c => c.GetOrCreateAsync(
+                It.IsAny<string>(),
                 It.IsAny<string>(),
                 It.IsAny<SkillAgentOptions>(),
                 It.IsAny<CancellationToken>()))
@@ -99,11 +101,12 @@ public class ExecuteAgentTurnCommandHandlerTests
     }
 
     [Fact]
-    public async Task Handle_AgentFactoryThrows_ReturnsFailureResult()
+    public async Task Handle_AgentCacheThrows_ReturnsFailureResult()
     {
         // Arrange
-        _agentFactory
-            .Setup(f => f.CreateAgentFromSkillAsync(
+        _agentCache
+            .Setup(c => c.GetOrCreateAsync(
+                It.IsAny<string>(),
                 It.IsAny<string>(),
                 It.IsAny<SkillAgentOptions>(),
                 It.IsAny<CancellationToken>()))
@@ -125,8 +128,9 @@ public class ExecuteAgentTurnCommandHandlerTests
     {
         // Arrange
         var agent = TestableAIAgent.Throwing(new TimeoutException("Model timed out"));
-        _agentFactory
-            .Setup(f => f.CreateAgentFromSkillAsync(
+        _agentCache
+            .Setup(c => c.GetOrCreateAsync(
+                It.IsAny<string>(),
                 It.IsAny<string>(),
                 It.IsAny<SkillAgentOptions>(),
                 It.IsAny<CancellationToken>()))
@@ -148,8 +152,9 @@ public class ExecuteAgentTurnCommandHandlerTests
     {
         // Arrange
         var agent = TestableAIAgent.Throwing(new Exception("fail"));
-        _agentFactory
-            .Setup(f => f.CreateAgentFromSkillAsync(
+        _agentCache
+            .Setup(c => c.GetOrCreateAsync(
+                It.IsAny<string>(),
                 It.IsAny<string>(),
                 It.IsAny<SkillAgentOptions>(),
                 It.IsAny<CancellationToken>()))
@@ -177,8 +182,9 @@ public class ExecuteAgentTurnCommandHandlerTests
             return Task.FromResult(new AgentResponse(new ChatMessage(ChatRole.Assistant, "reply")));
         });
 
-        _agentFactory
-            .Setup(f => f.CreateAgentFromSkillAsync(
+        _agentCache
+            .Setup(c => c.GetOrCreateAsync(
+                It.IsAny<string>(),
                 It.IsAny<string>(),
                 It.IsAny<SkillAgentOptions>(),
                 It.IsAny<CancellationToken>()))
@@ -207,8 +213,9 @@ public class ExecuteAgentTurnCommandHandlerTests
     {
         // Arrange
         var agent = new TestableAIAgent("New reply");
-        _agentFactory
-            .Setup(f => f.CreateAgentFromSkillAsync(
+        _agentCache
+            .Setup(c => c.GetOrCreateAsync(
+                It.IsAny<string>(),
                 It.IsAny<string>(),
                 It.IsAny<SkillAgentOptions>(),
                 It.IsAny<CancellationToken>()))
@@ -236,12 +243,13 @@ public class ExecuteAgentTurnCommandHandlerTests
         SkillAgentOptions? capturedOptions = null;
         var agent = new TestableAIAgent("ok");
 
-        _agentFactory
-            .Setup(f => f.CreateAgentFromSkillAsync(
+        _agentCache
+            .Setup(c => c.GetOrCreateAsync(
+                It.IsAny<string>(),
                 It.IsAny<string>(),
                 It.IsAny<SkillAgentOptions>(),
                 It.IsAny<CancellationToken>()))
-            .Callback<string, SkillAgentOptions, CancellationToken>((_, opts, _) => capturedOptions = opts)
+            .Callback<string, string, SkillAgentOptions, CancellationToken>((_, _, opts, _) => capturedOptions = opts)
             .ReturnsAsync(agent);
 
         var command = CreateCommand(systemPromptOverride: "You are a pirate.");
@@ -261,12 +269,13 @@ public class ExecuteAgentTurnCommandHandlerTests
         SkillAgentOptions? capturedOptions = null;
         var agent = new TestableAIAgent("ok");
 
-        _agentFactory
-            .Setup(f => f.CreateAgentFromSkillAsync(
+        _agentCache
+            .Setup(c => c.GetOrCreateAsync(
+                It.IsAny<string>(),
                 It.IsAny<string>(),
                 It.IsAny<SkillAgentOptions>(),
                 It.IsAny<CancellationToken>()))
-            .Callback<string, SkillAgentOptions, CancellationToken>((_, opts, _) => capturedOptions = opts)
+            .Callback<string, string, SkillAgentOptions, CancellationToken>((_, _, opts, _) => capturedOptions = opts)
             .ReturnsAsync(agent);
 
         var command = CreateCommand(systemPromptOverride: null);
@@ -280,12 +289,13 @@ public class ExecuteAgentTurnCommandHandlerTests
     }
 
     [Fact]
-    public async Task Handle_PassesCorrectAgentNameToFactory()
+    public async Task Handle_PassesCorrectAgentNameToCache()
     {
         // Arrange
         var agent = new TestableAIAgent("ok");
-        _agentFactory
-            .Setup(f => f.CreateAgentFromSkillAsync(
+        _agentCache
+            .Setup(c => c.GetOrCreateAsync(
+                It.IsAny<string>(),
                 "SpecificAgent",
                 It.IsAny<SkillAgentOptions>(),
                 It.IsAny<CancellationToken>()))
@@ -297,7 +307,8 @@ public class ExecuteAgentTurnCommandHandlerTests
         await _handler.Handle(command, CancellationToken.None);
 
         // Assert
-        _agentFactory.Verify(f => f.CreateAgentFromSkillAsync(
+        _agentCache.Verify(c => c.GetOrCreateAsync(
+            It.IsAny<string>(),
             "SpecificAgent",
             It.IsAny<SkillAgentOptions>(),
             It.IsAny<CancellationToken>()), Times.Once);

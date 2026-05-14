@@ -103,9 +103,10 @@ public sealed class PrometheusQueryService : IPrometheusQueryService
                 _logger.LogDebug("Prometheus returned non-success for {Url}: {Status}", url, apiResponse?.Status);
                 return new MetricsQueryResponse
                 {
-                    Success = true,
+                    Success = false,
                     ResultType = "matrix",
                     Series = [],
+                    Error = apiResponse?.Error ?? apiResponse?.ErrorType ?? "Prometheus returned non-success status",
                 };
             }
 

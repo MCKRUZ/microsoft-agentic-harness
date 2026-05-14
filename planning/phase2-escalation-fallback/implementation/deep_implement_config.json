@@ -1,0 +1,127 @@
+{
+  "plugin_root": "C:\\Users\\kruz7\\.claude\\plugins\\cache\\piercelamb-plugins\\deep-implement\\0.2.0",
+  "sections_dir": "C:\\Users\\kruz7\\OneDrive\\Documents\\Code Repos\\MCKRUZ\\microsoft-agentic-harness\\planning\\phase2-escalation-fallback\\sections",
+  "target_dir": "C:\\Users\\kruz7\\OneDrive\\Documents\\Code Repos\\MCKRUZ\\microsoft-agentic-harness",
+  "state_dir": "C:\\Users\\kruz7\\OneDrive\\Documents\\Code Repos\\MCKRUZ\\microsoft-agentic-harness\\planning\\phase2-escalation-fallback\\implementation",
+  "git_root": "C:\\Users\\kruz7\\OneDrive\\Documents\\Code Repos\\MCKRUZ\\microsoft-agentic-harness",
+  "commit_style": "conventional",
+  "test_command": "uv run pytest",
+  "sections": [
+    "section-01-domain-escalation",
+    "section-02-domain-resilience",
+    "section-03-otel-conventions",
+    "section-04-config-and-validation",
+    "section-05-approval-strategies",
+    "section-06-escalation-interfaces",
+    "section-07-resilience-interfaces",
+    "section-08-escalation-service",
+    "section-09-audit-store",
+    "section-10-notification-adapters",
+    "section-11-polly-pipelines",
+    "section-12-resilient-chat-client",
+    "section-13-health-monitor",
+    "section-14-capability-registry",
+    "section-15-retry-queue",
+    "section-16-resilient-provider",
+    "section-17-governance-integration",
+    "section-18-agui-events",
+    "section-19-di-registration",
+    "section-20-appsettings-config",
+    "section-21-tests"
+  ],
+  "sections_state": {
+    "section-01-domain-escalation": {
+      "status": "complete",
+      "commit_hash": "6b264bf"
+    },
+    "section-02-domain-resilience": {
+      "status": "complete",
+      "commit_hash": "6ab8663"
+    },
+    "section-03-otel-conventions": {
+      "status": "complete",
+      "commit_hash": "557cc79"
+    },
+    "section-04-config-and-validation": {
+      "status": "complete",
+      "commit_hash": "96a1c8c"
+    },
+    "section-05-approval-strategies": {
+      "status": "complete",
+      "commit_hash": "78a0f98"
+    },
+    "section-06-escalation-interfaces": {
+      "status": "complete",
+      "commit_hash": "b6b036f"
+    },
+    "section-07-resilience-interfaces": {
+      "status": "complete",
+      "commit_hash": "55dd7ea"
+    },
+    "section-08-escalation-service": {
+      "status": "complete",
+      "commit_hash": "e743442"
+    },
+    "section-09-audit-store": {
+      "status": "complete",
+      "commit_hash": "ed5abcf"
+    },
+    "section-10-notification-adapters": {
+      "status": "complete",
+      "commit_hash": "27b1e84"
+    },
+    "section-11-polly-pipelines": {
+      "status": "complete",
+      "commit_hash": "a0abaaf"
+    },
+    "section-12-resilient-chat-client": {
+      "status": "complete",
+      "commit_hash": "ee4d7cb"
+    },
+    "section-13-health-monitor": {
+      "status": "complete",
+      "commit_hash": "432ed86"
+    },
+    "section-14-capability-registry": {
+      "status": "complete",
+      "commit_hash": "53ab504"
+    },
+    "section-15-retry-queue": {
+      "status": "complete",
+      "commit_hash": "9dc27de"
+    },
+    "section-16-resilient-provider": {
+      "status": "complete",
+      "commit_hash": "5a4a914"
+    },
+    "section-17-governance-integration": {
+      "status": "complete",
+      "commit_hash": "858a634"
+    },
+    "section-18-agui-events": {
+      "status": "complete",
+      "commit_hash": "d561b24"
+    },
+    "section-19-di-registration": {
+      "status": "complete",
+      "commit_hash": "cb4b24b"
+    },
+    "section-20-appsettings-config": {
+      "status": "complete",
+      "commit_hash": "1779108"
+    },
+    "section-21-tests": {
+      "status": "complete",
+      "commit_hash": "28ffdb2"
+    }
+  },
+  "pre_commit": {
+    "present": false,
+    "type": "none",
+    "config_file": null,
+    "native_hook": null,
+    "may_modify_files": false,
+    "detected_formatters": []
+  },
+  "created_at": "2026-05-08T20:51:56.527899+00:00"
+}

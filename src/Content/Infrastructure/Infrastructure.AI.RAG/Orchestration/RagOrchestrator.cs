@@ -187,6 +187,9 @@ public sealed class RagOrchestrator : IRagOrchestrator
             activity?.SetTag(RagConventions.RetrievalChunksReturned, candidates.Count);
             RagRetrievalMetrics.ChunksReturned.Record(candidates.Count);
 
+            if (candidates.Count > 0)
+                RagRetrievalMetrics.Hits.Add(1);
+
             // Rerank
             var reranked = await _reranker.RerankAsync(
                 currentQuery, candidates, topK, cancellationToken);

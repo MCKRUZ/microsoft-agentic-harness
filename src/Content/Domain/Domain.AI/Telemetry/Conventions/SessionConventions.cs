@@ -9,4 +9,8 @@ public static class SessionConventions
     public const string Active = "agent.session.active";
     /// <summary>Session identifier dimension label.</summary>
     public const string SessionId = "agent.session.id";
+    /// <summary>Total USD cost for a completed session.</summary>
+    public const string SessionCost = "agent.session.cost";
+    /// <summary>Total sessions started.</summary>
+    public const string SessionsStarted = "agent.session.started";
 }

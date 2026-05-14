@@ -1,7 +1,10 @@
+using Application.AI.Common.Interfaces.Escalation;
 using Application.Core.CQRS.Agents.ExecuteAgentTurn;
 using Application.Core.CQRS.Agents.RunConversation;
 using Application.Core.CQRS.Agents.RunOrchestratedTask;
 using Application.Core.CQRS.MetaHarness;
+using Application.Core.Escalation.Strategies;
+using Domain.AI.Escalation;
 using FluentAssertions;
 using FluentValidation;
 using Microsoft.Extensions.DependencyInjection;
@@ -76,5 +79,19 @@ public class DependencyInjectionTests
         var result = services.AddApplicationCoreDependencies();
 
         result.Should().BeSameAs(services);
+    }
+
+    [Theory]
+    [InlineData(ApprovalStrategyType.AnyOf, typeof(AnyOfApprovalStrategy))]
+    [InlineData(ApprovalStrategyType.AllOf, typeof(AllOfApprovalStrategy))]
+    [InlineData(ApprovalStrategyType.Quorum, typeof(QuorumApprovalStrategy))]
+    public void AddApplicationCoreDependencies_RegistersApprovalStrategies_KeyedByType(
+        ApprovalStrategyType key, Type expectedType)
+    {
+        using var provider = BuildProvider();
+
+        var strategy = provider.GetKeyedService<IApprovalStrategy>(key);
+
+        strategy.Should().NotBeNull().And.BeOfType(expectedType);
     }
 }

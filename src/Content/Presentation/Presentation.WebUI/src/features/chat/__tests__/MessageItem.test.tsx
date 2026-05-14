@@ -23,13 +23,13 @@ describe('MessageItem retry/edit actions', () => {
     const onRetry = vi.fn();
     const user = userEvent.setup();
     render(<MessageItem message={assistantMsg} onRetry={onRetry} />);
-    await user.click(screen.getByRole('button', { name: /retry response/i }));
+    await user.click(screen.getByRole('button', { name: /regenerate response/i }));
     expect(onRetry).toHaveBeenCalledWith('asst-1');
   });
 
   it('does not render Retry on user messages', () => {
     render(<MessageItem message={userMsg} onRetry={vi.fn()} />);
-    expect(screen.queryByRole('button', { name: /retry response/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /regenerate response/i })).not.toBeInTheDocument();
   });
 
   it('Edit button on user message opens inline editor with current content', async () => {
@@ -76,11 +76,11 @@ describe('MessageItem retry/edit actions', () => {
 
   it('disabled hides the action row entirely', () => {
     render(<MessageItem message={assistantMsg} onRetry={vi.fn()} disabled />);
-    expect(screen.queryByRole('button', { name: /retry response/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /regenerate response/i })).not.toBeInTheDocument();
   });
 
   it('isStreaming hides Retry (cannot retry an in-flight response)', () => {
     render(<MessageItem message={assistantMsg} onRetry={vi.fn()} isStreaming />);
-    expect(screen.queryByRole('button', { name: /retry response/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /regenerate response/i })).not.toBeInTheDocument();
   });
 });

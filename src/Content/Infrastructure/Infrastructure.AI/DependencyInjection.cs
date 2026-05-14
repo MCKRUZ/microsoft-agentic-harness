@@ -4,12 +4,17 @@ using Application.AI.Common.Interfaces.MetaHarness;
 using Application.AI.Common.Interfaces.Skills;
 using Application.AI.Common.Interfaces.Memory;
 using Application.AI.Common.Interfaces.Traces;
+using Application.AI.Common.Interfaces.Escalation;
+using Application.AI.Common.Interfaces.Resilience;
+using Infrastructure.AI.Escalation;
 using Infrastructure.AI.Memory;
+using Infrastructure.AI.Resilience;
 using Infrastructure.AI.Security;
 using Infrastructure.AI.Traces;
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Agents;
 using Application.AI.Common.Interfaces.Compaction;
+using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Config;
 using Application.AI.Common.Interfaces.Hooks;
 using Application.AI.Common.Interfaces.Permissions;
@@ -29,6 +34,7 @@ using Infrastructure.AI.Audit;
 using Infrastructure.AI.ContentSafety;
 using OpenAI;
 using Infrastructure.AI.Agents;
+using Infrastructure.AI.Governance;
 using Infrastructure.AI.Compaction;
 using Infrastructure.AI.Compaction.Strategies;
 using Infrastructure.AI.Config;
@@ -129,6 +135,10 @@ public static class DependencyInjection
         services.AddKeyedSingleton<ITool>(DocumentIngestTool.ToolName, (sp, _) =>
             new DocumentIngestTool(sp.GetRequiredService<IMediator>()));
 
+        // Echo tools — deterministic tools for E2E testing pipeline verification
+        services.AddKeyedSingleton<ITool>(EchoLookupTool.ToolName, (_, _) => new EchoLookupTool());
+        services.AddKeyedSingleton<ITool>(EchoCalculateTool.ToolName, (_, _) => new EchoCalculateTool());
+
         // Azure AI Foundry persistent agents — register administration client when configured
         if (appConfig.AI.AIFoundry.IsConfigured)
         {
@@ -205,6 +215,19 @@ public static class DependencyInjection
         services.AddSingleton<IAgentMailbox, InMemoryAgentMailbox>();
         services.AddSingleton<ISubagentProfileRegistry, BuiltInSubagentProfiles>();
 
+        // Autonomy tier resolution — reads tier from SubagentDefinition or falls back to config
+        services.AddSingleton<IAutonomyTierResolver, DefaultAutonomyTierResolver>();
+
+        // Delegation persistence — append-only JSONL per supervisor session
+        services.AddSingleton<IDelegationStore, JsonlDelegationStore>();
+
+        // Supervisor strategy — deterministic capability-based agent selection, keyed for extensibility
+        services.AddKeyedSingleton<ISupervisorStrategy>("capability-match", (sp, _) =>
+            new CapabilityMatchStrategy(sp.GetRequiredService<IOptionsMonitor<AppConfig>>()));
+
+        // Supervisor — coordinates delegation, concurrency, depth tracking, and audit
+        services.AddSingleton<ISupervisor, CapabilityMatchSupervisor>();
+
         // Config discovery — directory walk with @include support
         services.AddTransient<IConfigDiscoveryService, DirectoryWalkConfigDiscovery>();
 
@@ -224,7 +247,42 @@ public static class DependencyInjection
         // Regression suite service — scoped to match evaluation lifecycle
         services.AddScoped<IRegressionSuiteService, FileSystemRegressionSuiteService>();
 
+        RegisterEscalationServices(services);
+        RegisterResilienceServices(services, appConfig);
+
         return services;
+    }
+
+    /// <summary>
+    /// Registers escalation pipeline services: service, audit store, composite notifier,
+    /// and no-op notification channel stubs.
+    /// </summary>
+    private static void RegisterEscalationServices(IServiceCollection services)
+    {
+        services.AddSingleton<IEscalationService, DefaultEscalationService>();
+        services.AddSingleton<IEscalationAuditStore, JsonlEscalationAuditStore>();
+        services.AddSingleton<IEscalationNotifier, CompositeEscalationNotifier>();
+        services.AddSingleton<IEscalationNotificationChannel, NoOpSlackNotifier>();
+        services.AddSingleton<IEscalationNotificationChannel, NoOpTeamsNotifier>();
+    }
+
+    /// <summary>
+    /// Registers resilience pipeline services: health monitor, capability registry,
+    /// resilient provider, and conditionally the retry queue hosted service.
+    /// </summary>
+    private static void RegisterResilienceServices(IServiceCollection services, AppConfig appConfig)
+    {
+        services.AddSingleton<PollyProviderHealthMonitor>();
+        services.AddSingleton<IProviderHealthMonitor>(sp => sp.GetRequiredService<PollyProviderHealthMonitor>());
+        services.AddSingleton<ProviderCapabilityRegistry>();
+        services.AddSingleton<IResilientChatClientProvider, ResilientChatClientProvider>();
+
+        if (appConfig.AI.Resilience.Enabled)
+        {
+            services.AddSingleton<LlmRetryQueue>();
+            services.AddSingleton<ILlmRetryQueue>(sp => sp.GetRequiredService<LlmRetryQueue>());
+            services.AddHostedService(sp => sp.GetRequiredService<LlmRetryQueue>());
+        }
     }
 
     private static void RegisterAIClients(IServiceCollection services, AppConfig appConfig)
@@ -254,6 +312,7 @@ public static class DependencyInjection
 
             case AIAgentFrameworkClientType.AzureAIInference:
             case AIAgentFrameworkClientType.Anthropic:
+            case AIAgentFrameworkClientType.Echo:
                 // No DI registration needed — ChatClientFactory creates the client
                 // directly with a custom endpoint and caches it internally.
                 break;

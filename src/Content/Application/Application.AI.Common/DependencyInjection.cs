@@ -38,6 +38,8 @@ namespace Application.AI.Common;
 ///   <item><description><c>ContentSafetyBehavior</c> — screens IContentScreenable requests</description></item>
 ///   <item><description><c>ToolPermissionBehavior</c> — checks IToolRequest permissions</description></item>
 ///   <item><description><c>HookBehavior</c> — fires lifecycle hooks for tool and turn events</description></item>
+///   <item><description><c>RetrievalAuditBehavior</c> — logs retrieval-augmented generation audit trails</description></item>
+///   <item><description><c>ResponseSanitizationBehavior</c> — post-execution: sanitizes tool output for credentials, injection, exfiltration</description></item>
 /// </list>
 /// </para>
 /// </remarks>
@@ -59,8 +61,11 @@ public static class DependencyInjection
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(AuditTrailBehavior<,>))
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(ContentSafetyBehavior<,>))
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(ToolPermissionBehavior<,>))
+            .AddTransient(typeof(IPipelineBehavior<,>), typeof(GovernancePolicyBehavior<,>))
+            .AddTransient(typeof(IPipelineBehavior<,>), typeof(PromptInjectionBehavior<,>))
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(HookBehavior<,>))
-            .AddTransient(typeof(IPipelineBehavior<,>), typeof(RetrievalAuditBehavior<,>));
+            .AddTransient(typeof(IPipelineBehavior<,>), typeof(RetrievalAuditBehavior<,>))
+            .AddTransient(typeof(IPipelineBehavior<,>), typeof(ResponseSanitizationBehavior<,>));
 
         // Scoped agent execution context — carries agent identity through the pipeline
         services.AddScoped<IAgentExecutionContext, AgentExecutionContext>();
@@ -75,12 +80,15 @@ public static class DependencyInjection
         // Tool conversion — ITool to AITool bridge for keyed DI tools
         services.AddSingleton<IToolConverter, AIToolConverter>();
 
-        // Context budget tracking and tiered context assembly
+        // Context budget tracking
         services.AddSingleton<IContextBudgetTracker, ContextBudgetTracker>();
-        services.AddTransient<ITieredContextAssembler, TieredContextAssembler>();
 
         // LLM usage capture — scoped so middleware and handler share the same instance per turn
         services.AddScoped<ILlmUsageCapture, Services.LlmUsageCapture>();
+
+        // Agent conversation cache — reuses the same AIAgent across all turns in a conversation
+        services.AddMemoryCache();
+        services.AddSingleton<IAgentConversationCache, Services.AgentConversationCache>();
 
         return services;
     }

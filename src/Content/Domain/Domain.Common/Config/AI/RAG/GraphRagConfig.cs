@@ -79,4 +79,51 @@ public class GraphRagConfig
     /// Gets or sets the default dataset ID for operations that don't specify a dataset.
     /// </summary>
     public string? DefaultDatasetId { get; set; }
+
+    // --- Compliance Configuration ---
+
+    /// <summary>
+    /// Gets or sets whether the compliance layer is enabled. When <c>true</c>,
+    /// <c>ComplianceAwareGraphStore</c> decorator stamps temporal metadata,
+    /// filters expired nodes, and emits audit events.
+    /// </summary>
+    public bool ComplianceEnabled { get; set; } = true;
+
+    /// <summary>
+    /// Gets or sets the audit sink provider key for keyed DI resolution.
+    /// Options: <c>"no_op"</c>, <c>"structured_logging"</c>.
+    /// </summary>
+    public string AuditSinkProvider { get; set; } = "structured_logging";
+
+    /// <summary>
+    /// Gets or sets the interval for the retention enforcement background service.
+    /// Default: 24 hours. Set to <see cref="TimeSpan.Zero"/> to disable.
+    /// </summary>
+    public TimeSpan RetentionEnforcementInterval { get; set; } = TimeSpan.FromHours(24);
+
+    /// <summary>
+    /// Gets or sets retention policies per entity type. Key is entity type name,
+    /// value is the retention duration. Entity types not listed get indefinite retention.
+    /// </summary>
+    public Dictionary<string, TimeSpan> RetentionPolicies { get; set; } = new()
+    {
+        ["Fact"] = TimeSpan.FromDays(365),
+        ["SkillMetric"] = TimeSpan.FromDays(180),
+        ["SkillAmendment"] = TimeSpan.FromDays(365),
+        ["Concept"] = TimeSpan.FromDays(730),
+    };
+
+    // --- Procedural Memory Configuration ---
+
+    /// <summary>
+    /// Gets or sets whether skill effectiveness tracking is enabled.
+    /// When <c>true</c>, agents record which skills succeed for which query types.
+    /// </summary>
+    public bool SkillEffectivenessEnabled { get; set; } = true;
+
+    /// <summary>
+    /// Gets or sets whether skill instruction amendments are enabled.
+    /// When <c>true</c>, agents can persist learned notes that append to skill instructions.
+    /// </summary>
+    public bool SkillAmendmentsEnabled { get; set; } = true;
 }

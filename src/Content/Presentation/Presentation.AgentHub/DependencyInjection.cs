@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Threading.RateLimiting;
 using Application.AI.Common.Interfaces;
+using Application.AI.Common.Interfaces.Escalation;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Http;
@@ -9,9 +10,11 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Identity.Web;
 using OpenTelemetry;
 using OpenTelemetry.Trace;
+using Presentation.AgentHub.AgUi;
 using Presentation.AgentHub.Auth;
 using Presentation.AgentHub.Hubs;
 using Presentation.AgentHub.Interfaces;
+using Presentation.AgentHub.Notifications;
 using Presentation.AgentHub.Config;
 using Presentation.AgentHub.Services;
 using Presentation.AgentHub.Telemetry;
@@ -178,6 +181,14 @@ public static class DependencyInjection
 
         // Singleton: ConversationLockRegistry must outlive hub instances (hubs are transient).
         services.AddSingleton<ConversationLockRegistry>();
+
+        services.AddSingleton<IAgUiEventWriterAccessor, AgUiEventWriterAccessor>();
+        services.AddSingleton<IEscalationNotificationChannel, AgUiEscalationNotifier>();
+
+        // Scoped: AgUiRunHandler takes per-request dependencies (ClaimsPrincipal, CancellationToken).
+        services.AddScoped<AgUi.AgUiRunHandler>();
+
+        services.AddHostedService<SessionIdleCleanupService>();
 
         // SignalRSpanExporter bridges OTel Activity pipeline → SignalR.
         // Registered as singleton so the same instance is both the IHostedService (drain loop)

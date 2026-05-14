@@ -64,17 +64,30 @@ processors:
       - key: enduser.id
         action: hash
 
+  # Only accept telemetry from the agentic harness application.
+  # Prevents other apps (Claude Code, dev tools, etc.) on the same machine
+  # from polluting the dashboard metrics and traces.
+  # OTTL conditions define what to DROP — we drop everything NOT from our app.
+  filter/app_only:
+    error_mode: ignore
+    metrics:
+      metric:
+        - 'not IsMatch(resource.attributes["service.name"], "Presentation\\.AgentHub")'
+    traces:
+      span:
+        - 'not IsMatch(resource.attributes["service.name"], "Presentation\\.AgentHub")'
+
   # Filter out framework-emitted gen_ai.client.* metrics — our agent.tokens.*
   # metrics are a superset and these cause "collected before with the same name
   # and label values" errors in the Prometheus exporter when multiple SDK scopes
   # emit identical metric+label combinations, poisoning the entire scrape.
+  # OTTL conditions define what to DROP.
   filter/dedup_genai:
+    error_mode: ignore
     metrics:
-      exclude:
-        match_type: strict
-        metric_names:
-          - gen_ai.client.token.usage
-          - gen_ai.client.operation.duration
+      metric:
+        - 'name == "gen_ai.client.token.usage"'
+        - 'name == "gen_ai.client.operation.duration"'
 
   # Batch processor - reduces network calls, improves throughput
   batch:
@@ -168,6 +181,7 @@ service:
       receivers: [otlp]
       processors:
         - memory_limiter
+        - filter/app_only
         - resourcedetection
         - attributes
         - attributes/pii
@@ -182,6 +196,7 @@ service:
       receivers: [otlp]
       processors:
         - memory_limiter
+        - filter/app_only
         - resourcedetection
         - attributes
         - filter/dedup_genai

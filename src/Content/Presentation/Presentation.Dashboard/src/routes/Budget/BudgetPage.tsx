@@ -5,7 +5,9 @@ import { PanelCard } from '@/components/panels/PanelCard';
 import { PanelGrid } from '@/components/panels/PanelGrid';
 import { LoadingSkeleton } from '@/components/panels/LoadingSkeleton';
 import { TimeSeriesChart } from '@/components/charts/TimeSeriesChart';
-import { GaugeChart } from '@/components/charts/GaugeChart';
+import { PageHeader } from '@/components/primitives/PageHeader';
+import { Section } from '@/components/primitives/Section';
+import { ArcGauge } from '@/components/primitives/ArcGauge';
 
 function latestValue(data: ReturnType<typeof usePromQuery>['data']): number {
   const dp = data?.series[0]?.dataPoints;
@@ -24,7 +26,7 @@ export default function BudgetPage() {
   if (spent.isLoading) {
     return (
       <div className="space-y-6">
-        <h1 className="text-xl font-bold text-foreground">Budget Management</h1>
+        <PageHeader title="Budget" subtitle="Daily and monthly cap utilization" />
         <PanelGrid columns={3}>
           {Array.from({ length: 3 }).map((_, i) => <LoadingSkeleton key={i} />)}
         </PanelGrid>
@@ -39,55 +41,73 @@ export default function BudgetPage() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-xl font-bold text-foreground">Budget Management</h1>
+      <PageHeader title="Budget" subtitle="Daily and monthly cap utilization" />
 
-      <PanelGrid columns={3}>
-        <KpiCard title="Total Spent" value={`$${spentVal.toFixed(4)}`} unit="USD" sparklineData={spent.data?.series[0]?.dataPoints} />
-        <KpiCard title="Budget Limit" value={`$${limitVal.toFixed(2)}`} unit="USD" />
-        <KpiCard title="Remaining" value={`$${remainingVal.toFixed(2)}`} unit="USD" sparklineData={remaining.data?.series[0]?.dataPoints} />
-      </PanelGrid>
-
-      <PanelGrid columns={2}>
-        <PanelCard title="Budget Utilization">
-          <GaugeChart
-            value={utilizationVal}
-            max={1}
-            label="Used"
-            unit="percent"
-            thresholds={{ warn: 0.75, critical: 0.9 }}
+      <Section title="Budget Metrics" kicker="01">
+        <PanelGrid columns={3}>
+          <KpiCard
+            title="Total Spent"
+            description="Cumulative USD spent against the configured budget cap in the current period. Shows $0 when no LLM API calls have incurred cost."
+            value={`$${spentVal.toFixed(4)}`}
+            unit="USD"
+            sparklineData={spent.data?.series[0]?.dataPoints}
           />
-        </PanelCard>
-        <PanelCard title="Spend Gauge">
-          <GaugeChart
-            value={spentVal}
-            max={limitVal > 0 ? limitVal : 100}
-            label={`$${spentVal.toFixed(2)} of $${limitVal.toFixed(2)}`}
-            unit="usd"
-            thresholds={{ warn: limitVal * 0.75, critical: limitVal * 0.9 }}
+          <KpiCard
+            title="Budget Limit"
+            description="Maximum USD spend allowed for the current budget period, set in application configuration. Shows $0 when no budget cap has been configured."
+            value={`$${limitVal.toFixed(2)}`}
+            unit="USD"
           />
-        </PanelCard>
-      </PanelGrid>
+          <KpiCard
+            title="Remaining"
+            description="USD left before the budget cap is reached and requests may be throttled. Shows $0 when the budget is fully consumed or no cap is configured."
+            value={`$${remainingVal.toFixed(2)}`}
+            unit="USD"
+            sparklineData={remaining.data?.series[0]?.dataPoints}
+          />
+        </PanelGrid>
+      </Section>
 
-      <PanelGrid columns={2}>
-        <PanelCard title="Spend Rate" description="USD burn rate per hour">
-          <TimeSeriesChart series={spendRate.data?.series ?? []} unit="usd" />
-        </PanelCard>
-        <PanelCard title="Budget Status">
-          <div className="flex flex-col items-center justify-center h-[200px]">
-            {(() => {
-              const status = latestValue(statusVal.data);
-              const label = status >= 2 ? 'CRITICAL' : status >= 1 ? 'WARNING' : 'OK';
-              const color = status >= 2 ? 'text-red-500' : status >= 1 ? 'text-yellow-500' : 'text-green-500';
-              return (
-                <>
-                  <div className={`text-4xl font-bold ${color}`}>{label}</div>
-                  <div className="text-sm text-muted-foreground mt-2">current budget health</div>
-                </>
-              );
-            })()}
-          </div>
-        </PanelCard>
-      </PanelGrid>
+      <Section title="Utilization" kicker="02">
+        <PanelGrid columns={2}>
+          <PanelCard title="Budget Utilization">
+            <div className="flex items-center justify-center py-4">
+              <ArcGauge
+                value={spentVal}
+                max={limitVal || 1}
+                size={160}
+                color={utilizationVal > 0.75 ? 'var(--otel-warning)' : 'var(--otel-accent)'}
+                label={`${(utilizationVal * 100).toFixed(0)}%`}
+                subtitle="of daily cap"
+                thickness={12}
+              />
+            </div>
+          </PanelCard>
+          <PanelCard title="Spend Rate" description="USD burn rate per hour">
+            <TimeSeriesChart series={spendRate.data?.series ?? []} unit="usd" />
+          </PanelCard>
+        </PanelGrid>
+      </Section>
+
+      <Section title="Alerts" kicker="03">
+        <PanelGrid columns={1}>
+          <PanelCard title="Budget Status">
+            <div className="flex flex-col items-center justify-center h-[200px]">
+              {(() => {
+                const status = latestValue(statusVal.data);
+                const label = status >= 2 ? 'CRITICAL' : status >= 1 ? 'WARNING' : 'OK';
+                const color = status >= 2 ? 'text-red-500' : status >= 1 ? 'text-yellow-500' : 'text-green-500';
+                return (
+                  <>
+                    <div className={`text-4xl font-bold ${color}`}>{label}</div>
+                    <div className="text-sm text-muted-foreground mt-2">current budget health</div>
+                  </>
+                );
+              })()}
+            </div>
+          </PanelCard>
+        </PanelGrid>
+      </Section>
     </div>
   );
 }

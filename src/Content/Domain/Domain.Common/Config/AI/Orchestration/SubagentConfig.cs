@@ -30,4 +30,34 @@ public class SubagentConfig
     /// Relative paths are resolved from the working directory.
     /// </summary>
     public string MailboxStoragePath { get; set; } = ".agent-sessions/mailbox";
+
+    /// <summary>
+    /// Maximum depth of nested delegations (supervisor -> agent -> sub-agent).
+    /// Prevents infinite delegation chains.
+    /// </summary>
+    public int MaxDelegationDepth { get; set; } = 3;
+
+    /// <summary>
+    /// Filesystem path for delegation record storage (append-only JSONL).
+    /// Relative paths resolve from the working directory.
+    /// </summary>
+    public string DelegationStoragePath { get; set; } = ".agent-sessions/delegations";
+
+    /// <summary>
+    /// Maximum time in seconds to wait for a delegated agent to complete.
+    /// Expired delegations are cancelled and recorded as failed.
+    /// </summary>
+    public int DelegationTimeoutSeconds { get; set; } = 300;
+
+    /// <summary>
+    /// Maximum number of concurrent active delegations across all supervisors.
+    /// Additional requests block until a slot is available.
+    /// </summary>
+    public int MaxConcurrentDelegations { get; set; } = 5;
+
+    /// <summary>
+    /// Weights for the capability match scoring algorithm used by the supervisor
+    /// to select the best agent for a delegated task.
+    /// </summary>
+    public CapabilityMatchWeightsConfig CapabilityMatchWeights { get; set; } = new();
 }

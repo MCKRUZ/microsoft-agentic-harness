@@ -21,5 +21,7 @@ public enum PermissionRuleSource
     /// <summary>Rule from organizational policy.</summary>
     PolicySettings,
     /// <summary>Rule from a CLI argument or startup parameter.</summary>
-    CliArgument
+    CliArgument,
+    /// <summary>Rule generated from the agent's autonomy tier assignment.</summary>
+    AutonomyTier
 }

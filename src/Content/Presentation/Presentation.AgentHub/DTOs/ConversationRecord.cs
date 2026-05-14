@@ -10,6 +10,9 @@ namespace Presentation.AgentHub.DTOs;
 /// message is appended. Absent on new records and on records predating this field.
 /// <see cref="Settings"/> is optional; records predating the field deserialize with
 /// <c>null</c> and the store treats a null value as "use skill/provider defaults".
+/// <see cref="ObservabilitySessionId"/> and <see cref="Telemetry"/> persist AG-UI
+/// session telemetry across stateless HTTP requests. Both are optional and absent on
+/// records predating these fields.
 /// </remarks>
 public sealed record ConversationRecord(
     string Id,
@@ -19,7 +22,9 @@ public sealed record ConversationRecord(
     DateTimeOffset UpdatedAt,
     IReadOnlyList<ConversationMessage> Messages,
     string? Title = null,
-    ConversationSettings? Settings = null);
+    ConversationSettings? Settings = null,
+    Guid? ObservabilitySessionId = null,
+    TelemetryAccumulator? Telemetry = null);
 
 /// <summary>Title derivation rules — shared between store and any future rename logic.</summary>
 public static class ConversationRecordTitleDerivation
@@ -33,6 +38,6 @@ public static class ConversationRecordTitleDerivation
         var collapsed = string.Join(' ', content.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
         if (collapsed.Length <= MaxLength)
             return collapsed;
-        return collapsed[..MaxLength].TrimEnd() + "\u2026";
+        return collapsed[..MaxLength].TrimEnd() + "…";
     }
 }

@@ -57,6 +57,11 @@
     </Project>
   </Folder>
   <Folder Name="/Infrastructure/">
+    <Project Path="Content/Infrastructure/Infrastructure.AI.Governance/Infrastructure.AI.Governance.csproj">
+      <BuildType Solution="Debug-AgentHub-All|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-Dashboard|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-WebUI|*" Project="Debug" />
+    </Project>
     <Project Path="Content/Infrastructure/Infrastructure.AI.Connectors/Infrastructure.AI.Connectors.csproj">
       <BuildType Solution="Debug-AgentHub-All|*" Project="Debug" />
       <BuildType Solution="Debug-AgentHub-Dashboard|*" Project="Debug" />
@@ -145,6 +150,11 @@
     </Project>
   </Folder>
   <Folder Name="/Tests/">
+    <Project Path="Content/Tests/Infrastructure.AI.Governance.Tests/Infrastructure.AI.Governance.Tests.csproj">
+      <BuildType Solution="Debug-AgentHub-All|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-Dashboard|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-WebUI|*" Project="Debug" />
+    </Project>
     <Project Path="Content/Tests/Application.AI.Common.Tests/Application.AI.Common.Tests.csproj">
       <BuildType Solution="Debug-AgentHub-All|*" Project="Debug" />
       <BuildType Solution="Debug-AgentHub-Dashboard|*" Project="Debug" />

@@ -125,4 +125,25 @@ public interface IKnowledgeGraphStore
     /// <param name="cancellationToken">Cancellation token.</param>
     Task<int> GetEdgeCountAsync(
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Retrieves all nodes owned by the specified owner. Used by the erasure
+    /// orchestrator to find all entities that must be deleted for right-to-erasure.
+    /// Returns an empty list if no nodes match or if <see cref="GraphNode.OwnerId"/>
+    /// is not populated.
+    /// </summary>
+    /// <param name="ownerId">The owner identifier to filter by.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    Task<IReadOnlyList<GraphNode>> GetNodesByOwnerAsync(
+        string ownerId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Retrieves all nodes in the graph store. Used by the retention enforcement
+    /// service to scan for expired nodes. Production implementations should use
+    /// indexed queries (e.g., <c>WHERE expires_at &lt; @now</c>) for efficiency.
+    /// </summary>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    Task<IReadOnlyList<GraphNode>> GetAllNodesAsync(
+        CancellationToken cancellationToken = default);
 }

@@ -1,8 +1,14 @@
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Agent;
+using Application.AI.Common.Interfaces.Escalation;
+using Application.AI.Common.Interfaces.Resilience;
 using Domain.Common.Config;
+using Domain.Common.Config.AI.Resilience;
 using FluentAssertions;
+using Infrastructure.AI.Escalation;
+using Infrastructure.AI.Resilience;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Xunit;
@@ -72,6 +78,118 @@ public sealed class DependencyInjectionTests
         var factory = provider.GetRequiredService<IChatClientFactory>();
         factory.IsAvailable(Domain.Common.Config.AI.AIAgentFrameworkClientType.AzureOpenAI).Should().BeFalse();
         factory.IsAvailable(Domain.Common.Config.AI.AIAgentFrameworkClientType.OpenAI).Should().BeFalse();
+    }
+
+    [Fact]
+    public void AddInfrastructureAIDependencies_RegistersIEscalationService()
+    {
+        var services = CreateBaseServices();
+        services.AddInfrastructureAIDependencies(new AppConfig());
+        using var provider = services.BuildServiceProvider();
+
+        var svc = provider.GetService<IEscalationService>();
+
+        svc.Should().NotBeNull().And.BeOfType<DefaultEscalationService>();
+    }
+
+    [Fact]
+    public void AddInfrastructureAIDependencies_RegistersIEscalationAuditStore()
+    {
+        var services = CreateBaseServices();
+        services.AddInfrastructureAIDependencies(new AppConfig());
+        using var provider = services.BuildServiceProvider();
+
+        var store = provider.GetService<IEscalationAuditStore>();
+
+        store.Should().NotBeNull().And.BeOfType<JsonlEscalationAuditStore>();
+    }
+
+    [Fact]
+    public void AddInfrastructureAIDependencies_RegistersIEscalationNotifier()
+    {
+        var services = CreateBaseServices();
+        services.AddInfrastructureAIDependencies(new AppConfig());
+        using var provider = services.BuildServiceProvider();
+
+        var notifier = provider.GetService<IEscalationNotifier>();
+
+        notifier.Should().NotBeNull().And.BeOfType<CompositeEscalationNotifier>();
+    }
+
+    [Fact]
+    public void AddInfrastructureAIDependencies_RegistersNotificationChannels()
+    {
+        var services = CreateBaseServices();
+        services.AddInfrastructureAIDependencies(new AppConfig());
+        using var provider = services.BuildServiceProvider();
+
+        var channels = provider.GetServices<IEscalationNotificationChannel>().ToList();
+
+        channels.Should().Contain(c => c is NoOpSlackNotifier);
+        channels.Should().Contain(c => c is NoOpTeamsNotifier);
+    }
+
+    [Fact]
+    public void AddInfrastructureAIDependencies_RegistersIProviderHealthMonitor()
+    {
+        var services = CreateBaseServices();
+        services.AddInfrastructureAIDependencies(new AppConfig());
+        using var provider = services.BuildServiceProvider();
+
+        var monitor = provider.GetService<IProviderHealthMonitor>();
+
+        monitor.Should().NotBeNull().And.BeOfType<PollyProviderHealthMonitor>();
+    }
+
+    [Fact]
+    public void AddInfrastructureAIDependencies_RegistersIResilientChatClientProvider()
+    {
+        var services = CreateBaseServices();
+        services.AddInfrastructureAIDependencies(new AppConfig());
+        using var provider = services.BuildServiceProvider();
+
+        var resilientProvider = provider.GetService<IResilientChatClientProvider>();
+
+        resilientProvider.Should().NotBeNull().And.BeOfType<ResilientChatClientProvider>();
+    }
+
+    [Fact]
+    public void AddInfrastructureAIDependencies_ResilienceEnabled_RegistersLlmRetryQueueHostedService()
+    {
+        var config = new AppConfig { AI = { Resilience = new ResilienceConfig { Enabled = true } } };
+        var services = CreateBaseServices(config);
+        services.AddSingleton(TimeProvider.System);
+        services.AddInfrastructureAIDependencies(config);
+        using var provider = services.BuildServiceProvider();
+
+        var hostedServices = provider.GetServices<IHostedService>().ToList();
+
+        hostedServices.Should().Contain(s => s is LlmRetryQueue);
+    }
+
+    [Fact]
+    public void AddInfrastructureAIDependencies_ResilienceDisabled_DoesNotRegisterLlmRetryQueueHostedService()
+    {
+        var config = new AppConfig { AI = { Resilience = new ResilienceConfig { Enabled = false } } };
+        var services = CreateBaseServices(config);
+        services.AddInfrastructureAIDependencies(config);
+        using var provider = services.BuildServiceProvider();
+
+        var hostedServices = provider.GetServices<IHostedService>().ToList();
+
+        hostedServices.Should().NotContain(s => s is LlmRetryQueue);
+    }
+
+    [Fact]
+    public void AddInfrastructureAIDependencies_CompositeNotifier_DoesNotContainItself()
+    {
+        var services = CreateBaseServices();
+        services.AddInfrastructureAIDependencies(new AppConfig());
+        using var provider = services.BuildServiceProvider();
+
+        var channels = provider.GetServices<IEscalationNotificationChannel>().ToList();
+
+        channels.Should().NotContain(c => c is CompositeEscalationNotifier);
     }
 
     /// <summary>

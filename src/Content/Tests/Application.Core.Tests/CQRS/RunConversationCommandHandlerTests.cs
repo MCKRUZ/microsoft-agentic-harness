@@ -19,6 +19,7 @@ public class RunConversationCommandHandlerTests
     {
         _handler = new RunConversationCommandHandler(
             _mediator.Object,
+            new Mock<IAgentConversationCache>().Object,
             new Mock<IObservabilityStore>().Object,
             NullLogger<RunConversationCommandHandler>.Instance);
     }

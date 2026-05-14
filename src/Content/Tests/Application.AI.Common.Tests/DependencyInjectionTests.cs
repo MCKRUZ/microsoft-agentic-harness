@@ -60,17 +60,6 @@ public class DependencyInjectionTests
     }
 
     [Fact]
-    public void AddApplicationAIDependencies_RegistersTieredContextAssembler_AsTransient()
-    {
-        var services = CreateServicesWithAIDependencies();
-
-        var descriptor = services.FirstOrDefault(d => d.ServiceType == typeof(ITieredContextAssembler));
-        descriptor.Should().NotBeNull();
-        descriptor!.Lifetime.Should().Be(ServiceLifetime.Transient);
-        descriptor.ImplementationType.Should().Be(typeof(TieredContextAssembler));
-    }
-
-    [Fact]
     public void AddApplicationAIDependencies_RegistersAgentExecutionContextFactory_AsSingleton()
     {
         var services = CreateServicesWithAIDependencies();
@@ -91,7 +80,7 @@ public class DependencyInjectionTests
     }
 
     [Fact]
-    public void AddApplicationAIDependencies_RegistersSevenPipelineBehaviors()
+    public void AddApplicationAIDependencies_RegistersTenPipelineBehaviors()
     {
         var services = CreateServicesWithAIDependencies();
 
@@ -100,7 +89,7 @@ public class DependencyInjectionTests
                         d.ServiceType.GetGenericTypeDefinition() == typeof(MediatR.IPipelineBehavior<,>))
             .ToList();
 
-        behaviors.Should().HaveCount(7);
+        behaviors.Should().HaveCount(10);
         behaviors.Should().OnlyContain(d => d.Lifetime == ServiceLifetime.Transient);
     }
 

@@ -31,9 +31,19 @@ vi.mock('@azure/msal-react', () => ({
 vi.mock('@/hooks/useAgentHub', () => ({
   useAgentHub: () => ({
     connectionState: 'connected' as const,
-    sendMessage: vi.fn().mockResolvedValue(undefined),
     startConversation: vi.fn().mockResolvedValue(undefined),
     invokeToolViaAgent: vi.fn().mockResolvedValue(undefined),
+    retryFromMessage: vi.fn().mockResolvedValue(undefined),
+    editAndResubmit: vi.fn().mockResolvedValue(undefined),
+    setConversationSettings: vi.fn().mockResolvedValue(undefined),
+  }),
+  AgentHubProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+}));
+
+vi.mock('@/hooks/useAgentStream', () => ({
+  useAgentStream: () => ({
+    sendMessage: vi.fn(),
+    abort: vi.fn(),
   }),
 }));
 

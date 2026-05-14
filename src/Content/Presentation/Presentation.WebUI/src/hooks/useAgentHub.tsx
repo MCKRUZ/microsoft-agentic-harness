@@ -24,7 +24,6 @@ export interface ConversationSettingsInput {
 
 export interface UseAgentHubReturn {
   connectionState: ConnectionState;
-  sendMessage: (conversationId: string, userMessageId: string, message: string) => Promise<void>;
   startConversation: (agentName: string, conversationId: string) => Promise<ServerConversationMessage[]>;
   invokeToolViaAgent: (conversationId: string, toolName: string, args: Record<string, unknown>) => Promise<void>;
   retryFromMessage: (conversationId: string, assistantMessageId: string) => Promise<void>;
@@ -122,8 +121,6 @@ export function AgentHubProvider({ children }: { children: ReactNode }) {
 
   const value: UseAgentHubReturn = {
     connectionState,
-    sendMessage: (conversationId, userMessageId, message) =>
-      hubInvoke('SendMessage', conversationId, userMessageId, message),
     startConversation: (agentName, conversationId) =>
       hubInvoke<ServerConversationMessage[]>('StartConversation', agentName, conversationId),
     invokeToolViaAgent: (conversationId, toolName, args) =>

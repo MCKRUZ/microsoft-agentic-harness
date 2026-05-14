@@ -254,4 +254,189 @@ public class EndToEndPipelineTests
             r["tool_name"]?.ToString() == toolName &&
             r["error_type"]?.ToString() == "ApiError");
     }
+
+    [Fact]
+    public async Task MultiTurnConversation_AccumulatesMetricsAndRecordsAllMessages()
+    {
+        if (!_fixture.IsAvailable) return;
+
+        using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);
+        var convId = _fixture.NewConversationId();
+
+        var sessionId = await store.StartSessionAsync(convId, "MultiTurnAgent", "claude-sonnet-4-6");
+        Assert.NotEqual(Guid.Empty, sessionId);
+
+        // Simulate 3 turns, accumulating metrics like the hub does
+        var turnData = new[]
+        {
+            new { InputTokens = 500, OutputTokens = 200, CacheRead = 100, CacheWrite = 50, CostUsd = 0.05m, Tool = (string?)null },
+            new { InputTokens = 700, OutputTokens = 350, CacheRead = 200, CacheWrite = 80, CostUsd = 0.08m, Tool = (string?)"code_search" },
+            new { InputTokens = 900, OutputTokens = 500, CacheRead = 400, CacheWrite = 100, CostUsd = 0.12m, Tool = (string?)"file_read" },
+        };
+
+        int accumInput = 0, accumOutput = 0, accumCacheRead = 0, accumCacheWrite = 0, accumToolCalls = 0;
+        decimal accumCost = 0m;
+
+        for (var turn = 0; turn < turnData.Length; turn++)
+        {
+            var td = turnData[turn];
+
+            // Record user message (handler records this before agent execution)
+            await store.RecordMessageAsync(
+                sessionId, turn, "user", "user_message",
+                $"User question for turn {turn}", null,
+                0, 0, 0, 0, 0m, 0m);
+
+            // Record assistant message (handler records this after agent execution)
+            var toolNames = td.Tool is not null ? new[] { td.Tool } : null;
+            await store.RecordMessageAsync(
+                sessionId, turn, "assistant",
+                td.Tool is not null ? "assistant_mixed" : "assistant_text",
+                $"Assistant response for turn {turn}", "claude-sonnet-4-6",
+                td.InputTokens, td.OutputTokens, td.CacheRead, td.CacheWrite,
+                td.CostUsd,
+                td.InputTokens > 0 ? (decimal)td.CacheRead / td.InputTokens : 0m,
+                toolNames);
+
+            // Record tool execution if applicable
+            if (td.Tool is not null)
+            {
+                accumToolCalls++;
+                await store.RecordToolExecutionAsync(
+                    sessionId, null, td.Tool, "keyed_di",
+                    42, "success", null, 256);
+            }
+
+            // Accumulate and update session metrics (mirrors hub's pattern)
+            accumInput += td.InputTokens;
+            accumOutput += td.OutputTokens;
+            accumCacheRead += td.CacheRead;
+            accumCacheWrite += td.CacheWrite;
+            accumCost += td.CostUsd;
+
+            await store.UpdateSessionMetricsAsync(
+                sessionId, turnCount: turn + 1, toolCallCount: accumToolCalls, subagentCount: 0,
+                accumInput, accumOutput, accumCacheRead, accumCacheWrite,
+                accumCost,
+                accumInput > 0 ? (decimal)accumCacheRead / accumInput : 0m,
+                "claude-sonnet-4-6");
+        }
+
+        await store.EndSessionAsync(sessionId, "completed", null);
+
+        // ── Read back via store methods (same path as SessionsController) ──
+
+        var session = await store.GetSessionByIdAsync(sessionId);
+        Assert.NotNull(session);
+        Assert.Equal("MultiTurnAgent", session!.AgentName);
+        Assert.Equal("completed", session.Status);
+        Assert.Equal("claude-sonnet-4-6", session.Model);
+
+        // Aggregate metrics match final accumulation
+        Assert.Equal(3, session.TurnCount);
+        Assert.Equal(2, session.ToolCallCount);
+        Assert.Equal(accumInput, session.TotalInputTokens);
+        Assert.Equal(accumOutput, session.TotalOutputTokens);
+        Assert.Equal(accumCacheRead, session.TotalCacheRead);
+        Assert.Equal(accumCacheWrite, session.TotalCacheWrite);
+        Assert.Equal(accumCost, session.TotalCostUsd);
+        Assert.True(session.CacheHitRate > 0);
+        Assert.NotNull(session.DurationMs);
+        Assert.True(session.DurationMs >= 0);
+
+        // All 6 messages present (user + assistant per turn)
+        var messages = await store.GetSessionMessagesAsync(sessionId);
+        Assert.Equal(6, messages.Count);
+
+        // Messages ordered by turn_index
+        var userMessages = messages.Where(m => m.Role == "user").ToList();
+        var assistantMessages = messages.Where(m => m.Role == "assistant").ToList();
+        Assert.Equal(3, userMessages.Count);
+        Assert.Equal(3, assistantMessages.Count);
+
+        // Turn indices are correct
+        for (var i = 0; i < 3; i++)
+        {
+            Assert.Contains(messages, m => m.TurnIndex == i && m.Role == "user");
+            Assert.Contains(messages, m => m.TurnIndex == i && m.Role == "assistant");
+        }
+
+        // Assistant messages have token data
+        var lastAssistant = assistantMessages.Last();
+        Assert.True(lastAssistant.InputTokens > 0);
+        Assert.True(lastAssistant.OutputTokens > 0);
+        Assert.True(lastAssistant.CostUsd > 0);
+
+        // Tool-bearing messages have tool names
+        var toolMessages = messages.Where(m => m.ToolNames is { Length: > 0 }).ToList();
+        Assert.Equal(2, toolMessages.Count);
+        Assert.Contains(toolMessages, m => m.ToolNames!.Contains("code_search"));
+        Assert.Contains(toolMessages, m => m.ToolNames!.Contains("file_read"));
+
+        // Tool executions present
+        var tools = await store.GetSessionToolExecutionsAsync(sessionId);
+        Assert.Equal(2, tools.Count);
+        Assert.Contains(tools, t => t.ToolName == "code_search");
+        Assert.Contains(tools, t => t.ToolName == "file_read");
+    }
+
+    [Fact]
+    public async Task MultiTurnConversation_MetricsMatchDashboardQueries()
+    {
+        if (!_fixture.IsAvailable) return;
+
+        using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);
+        var convId = _fixture.NewConversationId();
+
+        var sessionId = await store.StartSessionAsync(convId, "DashboardQueryAgent", "claude-sonnet-4-6");
+        Assert.NotEqual(Guid.Empty, sessionId);
+
+        // 2-turn session with known values
+        await store.RecordMessageAsync(sessionId, 0, "user", "user_message", "Hello", null, 0, 0, 0, 0, 0m, 0m);
+        await store.RecordMessageAsync(sessionId, 0, "assistant", "assistant_text", "Hi there",
+            "claude-sonnet-4-6", 300, 150, 60, 30, 0.03m, 0.20m);
+        await store.UpdateSessionMetricsAsync(sessionId, 1, 0, 0, 300, 150, 60, 30, 0.03m, 0.20m, "claude-sonnet-4-6");
+
+        await store.RecordMessageAsync(sessionId, 1, "user", "user_message", "Tell me more", null, 0, 0, 0, 0, 0m, 0m);
+        await store.RecordMessageAsync(sessionId, 1, "assistant", "assistant_mixed", "Here's detail",
+            "claude-sonnet-4-6", 600, 300, 150, 50, 0.07m, 0.25m, new[] { "web_search" });
+        await store.RecordToolExecutionAsync(sessionId, null, "web_search", "mcp", 200, "success", null, 1024);
+        await store.UpdateSessionMetricsAsync(sessionId, 2, 1, 0, 900, 450, 210, 80, 0.10m, 0.23m, "claude-sonnet-4-6");
+
+        await store.EndSessionAsync(sessionId, "completed", null);
+
+        var sessionIdParam = new NpgsqlParameter("@session_id", convId);
+
+        // Dashboard queries return correct values
+        var agentName = await _fixture.QueryScalarAsync<string>(DashboardQueries.Detail_AgentName, sessionIdParam);
+        Assert.Equal("DashboardQueryAgent", agentName);
+
+        var totalTokens = await _fixture.QueryScalarAsync<int>(DashboardQueries.Detail_TotalTokens, sessionIdParam);
+        Assert.Equal(1350, totalTokens); // 900 in + 450 out
+
+        var totalCost = await _fixture.QueryScalarAsync<decimal>(DashboardQueries.Detail_TotalCost, sessionIdParam);
+        Assert.Equal(0.10m, totalCost);
+
+        var toolCalls = await _fixture.QueryScalarAsync<int>(DashboardQueries.Detail_ToolCalls, sessionIdParam);
+        Assert.Equal(1, toolCalls);
+
+        var cacheHit = await _fixture.QueryScalarAsync<decimal>(DashboardQueries.Detail_CacheHitRate, sessionIdParam);
+        Assert.Equal(0.23m, cacheHit);
+
+        var duration = await _fixture.QueryScalarAsync<int>(DashboardQueries.Detail_Duration, sessionIdParam);
+        Assert.True(duration >= 0);
+
+        // Message timeline returns all 4 messages in order
+        var msgRows = await _fixture.QueryRowsAsync(DashboardQueries.Detail_MessageTimeline, sessionIdParam);
+        Assert.Equal(4, msgRows.Count);
+        Assert.Equal("user", msgRows[0]["role"]?.ToString());
+        Assert.Equal("assistant", msgRows[1]["role"]?.ToString());
+        Assert.Equal("user", msgRows[2]["role"]?.ToString());
+        Assert.Equal("assistant", msgRows[3]["role"]?.ToString());
+
+        // Tool executions
+        var toolRows = await _fixture.QueryRowsAsync(DashboardQueries.Detail_ToolExecutions, sessionIdParam);
+        Assert.Single(toolRows);
+        Assert.Equal("web_search", toolRows[0]["tool_name"]?.ToString());
+    }
 }

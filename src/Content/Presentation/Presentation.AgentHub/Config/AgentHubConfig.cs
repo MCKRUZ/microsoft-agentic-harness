@@ -15,6 +15,11 @@ public sealed record AgentHubConfig
     /// <summary>Maximum number of conversation messages dispatched to the agent per turn.</summary>
     public int MaxHistoryMessages { get; init; } = 20;
 
+    /// <summary>
+    /// Minutes of inactivity before an idle session is automatically completed.
+    /// </summary>
+    public int SessionIdleTimeoutMinutes { get; init; } = 5;
+
     /// <summary>CORS configuration for this host.</summary>
     public AgentHubCorsConfig Cors { get; init; } = new();
 }

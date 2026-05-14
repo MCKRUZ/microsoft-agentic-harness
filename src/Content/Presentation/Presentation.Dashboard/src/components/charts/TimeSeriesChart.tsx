@@ -24,8 +24,15 @@ function formatValue(value: string, unit?: string): string {
   return num.toFixed(2);
 }
 
+function seriesName(s: MetricSeries, index: number): string {
+  const label = s.labels['model'] ?? s.labels['agent_name'] ?? s.labels['tool_name'];
+  return label ?? `series ${index + 1}`;
+}
+
 export function TimeSeriesChart({ series, unit }: TimeSeriesChartProps) {
   if (series.length === 0) return <div className="text-muted-foreground text-sm">No data</div>;
+
+  const names = series.map((s, i) => seriesName(s, i));
 
   const chartData = series[0]?.dataPoints.map((dp, i) => {
     const point: Record<string, string | number> = { time: dp.timestamp };
@@ -37,37 +44,55 @@ export function TimeSeriesChart({ series, unit }: TimeSeriesChartProps) {
   }) ?? [];
 
   return (
-    <ResponsiveContainer width="100%" height={200}>
-      <LineChart data={chartData}>
-        <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-        <XAxis
-          dataKey="time"
-          tickFormatter={formatTimestamp}
-          stroke="var(--muted-foreground)"
-          fontSize={11}
-        />
-        <YAxis
-          tickFormatter={(v: string) => formatValue(String(v), unit)}
-          stroke="var(--muted-foreground)"
-          fontSize={11}
-          width={60}
-        />
-        <Tooltip
-          contentStyle={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: '8px' }}
-          labelFormatter={formatTimestamp}
-          formatter={(v: number) => [formatValue(String(v), unit), '']}
-        />
-        {series.map((_, i) => (
-          <Line
-            key={i}
-            type="monotone"
-            dataKey={`series_${i}`}
-            stroke={getChartColor(i)}
-            dot={false}
-            strokeWidth={2}
+    <div>
+      {series.length > 1 && (
+        <div className="flex items-center gap-4 mb-2 px-1">
+          {names.map((name, i) => (
+            <div key={i} className="flex items-center gap-1.5">
+              <span
+                className="w-2 h-2 rounded-full inline-block"
+                style={{ backgroundColor: getChartColor(i) }}
+              />
+              <span className="text-[11px] text-otel-text-dim italic">{name}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      <ResponsiveContainer width="100%" height={200}>
+        <LineChart data={chartData}>
+          <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+          <XAxis
+            dataKey="time"
+            tickFormatter={formatTimestamp}
+            stroke="var(--muted-foreground)"
+            fontSize={11}
           />
-        ))}
-      </LineChart>
-    </ResponsiveContainer>
+          <YAxis
+            tickFormatter={(v: string) => formatValue(String(v), unit)}
+            stroke="var(--muted-foreground)"
+            fontSize={11}
+            width={60}
+          />
+          <Tooltip
+            contentStyle={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: '8px' }}
+            labelFormatter={formatTimestamp}
+            formatter={(v: number, dataKey: string) => {
+              const idx = parseInt(String(dataKey).replace('series_', ''), 10);
+              return [formatValue(String(v), unit), names[idx] ?? ''];
+            }}
+          />
+          {series.map((_, i) => (
+            <Line
+              key={i}
+              type="monotone"
+              dataKey={`series_${i}`}
+              stroke={getChartColor(i)}
+              dot={false}
+              strokeWidth={2}
+            />
+          ))}
+        </LineChart>
+      </ResponsiveContainer>
+    </div>
   );
 }

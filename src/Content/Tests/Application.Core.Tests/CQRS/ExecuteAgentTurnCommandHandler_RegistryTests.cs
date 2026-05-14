@@ -18,7 +18,7 @@ namespace Application.Core.Tests.CQRS;
 /// </summary>
 public class ExecuteAgentTurnCommandHandler_RegistryTests
 {
-    private readonly Mock<IAgentFactory> _agentFactory = new();
+    private readonly Mock<IAgentConversationCache> _agentCache = new();
     private readonly Mock<IAgentMetadataRegistry> _agentRegistry = new();
     private readonly ExecuteAgentTurnCommandHandler _handler;
 
@@ -29,7 +29,7 @@ public class ExecuteAgentTurnCommandHandler_RegistryTests
             .Returns(new LlmUsageSnapshot(0, 0, 0, 0, null, 0m, 0m, Array.Empty<string>()));
 
         _handler = new ExecuteAgentTurnCommandHandler(
-            _agentFactory.Object,
+            _agentCache.Object,
             _agentRegistry.Object,
             new Mock<IObservabilityStore>().Object,
             usageCapture.Object,
@@ -51,8 +51,9 @@ public class ExecuteAgentTurnCommandHandler_RegistryTests
             .Returns(agentDef);
 
         var agent = new TestableAIAgent("response");
-        _agentFactory
-            .Setup(f => f.CreateAgentFromSkillAsync(
+        _agentCache
+            .Setup(c => c.GetOrCreateAsync(
+                It.IsAny<string>(),
                 "research_skill",
                 It.IsAny<SkillAgentOptions>(),
                 It.IsAny<CancellationToken>()))
@@ -69,7 +70,8 @@ public class ExecuteAgentTurnCommandHandler_RegistryTests
 
         // Assert
         result.Success.Should().BeTrue();
-        _agentFactory.Verify(f => f.CreateAgentFromSkillAsync(
+        _agentCache.Verify(c => c.GetOrCreateAsync(
+            It.IsAny<string>(),
             "research_skill",
             It.IsAny<SkillAgentOptions>(),
             It.IsAny<CancellationToken>()), Times.Once);
@@ -90,8 +92,9 @@ public class ExecuteAgentTurnCommandHandler_RegistryTests
             .Returns(agentDef);
 
         var agent = new TestableAIAgent("response");
-        _agentFactory
-            .Setup(f => f.CreateAgentFromSkillAsync(
+        _agentCache
+            .Setup(c => c.GetOrCreateAsync(
+                It.IsAny<string>(),
                 "my-agent",
                 It.IsAny<SkillAgentOptions>(),
                 It.IsAny<CancellationToken>()))
@@ -108,7 +111,8 @@ public class ExecuteAgentTurnCommandHandler_RegistryTests
 
         // Assert
         result.Success.Should().BeTrue();
-        _agentFactory.Verify(f => f.CreateAgentFromSkillAsync(
+        _agentCache.Verify(c => c.GetOrCreateAsync(
+            It.IsAny<string>(),
             "my-agent",
             It.IsAny<SkillAgentOptions>(),
             It.IsAny<CancellationToken>()), Times.Once);
@@ -123,8 +127,9 @@ public class ExecuteAgentTurnCommandHandler_RegistryTests
             .Returns((AgentDefinition?)null);
 
         var agent = new TestableAIAgent("response");
-        _agentFactory
-            .Setup(f => f.CreateAgentFromSkillAsync(
+        _agentCache
+            .Setup(c => c.GetOrCreateAsync(
+                It.IsAny<string>(),
                 "unknown-agent",
                 It.IsAny<SkillAgentOptions>(),
                 It.IsAny<CancellationToken>()))
@@ -141,7 +146,8 @@ public class ExecuteAgentTurnCommandHandler_RegistryTests
 
         // Assert
         result.Success.Should().BeTrue();
-        _agentFactory.Verify(f => f.CreateAgentFromSkillAsync(
+        _agentCache.Verify(c => c.GetOrCreateAsync(
+            It.IsAny<string>(),
             "unknown-agent",
             It.IsAny<SkillAgentOptions>(),
             It.IsAny<CancellationToken>()), Times.Once);
@@ -157,12 +163,13 @@ public class ExecuteAgentTurnCommandHandler_RegistryTests
             .Returns((AgentDefinition?)null);
 
         var agent = new TestableAIAgent("ok");
-        _agentFactory
-            .Setup(f => f.CreateAgentFromSkillAsync(
+        _agentCache
+            .Setup(c => c.GetOrCreateAsync(
+                It.IsAny<string>(),
                 It.IsAny<string>(),
                 It.IsAny<SkillAgentOptions>(),
                 It.IsAny<CancellationToken>()))
-            .Callback<string, SkillAgentOptions, CancellationToken>((_, opts, _) => capturedOptions = opts)
+            .Callback<string, string, SkillAgentOptions, CancellationToken>((_, _, opts, _) => capturedOptions = opts)
             .ReturnsAsync(agent);
 
         var command = new ExecuteAgentTurnCommand
@@ -190,12 +197,13 @@ public class ExecuteAgentTurnCommandHandler_RegistryTests
             .Returns((AgentDefinition?)null);
 
         var agent = new TestableAIAgent("ok");
-        _agentFactory
-            .Setup(f => f.CreateAgentFromSkillAsync(
+        _agentCache
+            .Setup(c => c.GetOrCreateAsync(
+                It.IsAny<string>(),
                 It.IsAny<string>(),
                 It.IsAny<SkillAgentOptions>(),
                 It.IsAny<CancellationToken>()))
-            .Callback<string, SkillAgentOptions, CancellationToken>((_, opts, _) => capturedOptions = opts)
+            .Callback<string, string, SkillAgentOptions, CancellationToken>((_, _, opts, _) => capturedOptions = opts)
             .ReturnsAsync(agent);
 
         var command = new ExecuteAgentTurnCommand

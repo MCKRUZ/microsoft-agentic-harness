@@ -22,7 +22,7 @@ describe('RagPage', () => {
     await screen.findAllByRole('status', {}, { timeout: 3000 });
 
     expect(screen.getByText('Ingestion Throughput')).toBeInTheDocument();
-    expect(screen.getByText('Retrieval Latency')).toBeInTheDocument();
+    expect(screen.getAllByText('Retrieval Latency').length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText('Top Sources')).toBeInTheDocument();
   });
 

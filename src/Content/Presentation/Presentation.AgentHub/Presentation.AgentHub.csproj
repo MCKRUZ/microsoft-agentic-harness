@@ -10,7 +10,14 @@
     <UserSecretsId>agentic-harness-console-ui</UserSecretsId>
   </PropertyGroup>
 
-  <!-- SPA Proxy — configuration selects which frontend(s) to launch -->
+  <!-- SPA Proxy — configuration selects which frontend(s) to launch.
+       Plain "Debug" launches both SPAs so clicking Start Just Works. -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Debug' or '$(Configuration)' == 'Debug-AgentHub-All'">
+    <SpaRoot>.\</SpaRoot>
+    <SpaProxyServerUrl>http://localhost:5173</SpaProxyServerUrl>
+    <SpaProxyLaunchCommand>cmd.exe /c start-all-spas.cmd</SpaProxyLaunchCommand>
+  </PropertyGroup>
+
   <PropertyGroup Condition="'$(Configuration)' == 'Debug-AgentHub-WebUI'">
     <SpaRoot>..\Presentation.WebUI\</SpaRoot>
     <SpaProxyServerUrl>http://localhost:5173</SpaProxyServerUrl>
@@ -23,18 +30,12 @@
     <SpaProxyLaunchCommand>npm run dev</SpaProxyLaunchCommand>
   </PropertyGroup>
 
-  <PropertyGroup Condition="'$(Configuration)' == 'Debug-AgentHub-All'">
-    <SpaRoot>.\</SpaRoot>
-    <SpaProxyServerUrl>http://localhost:5173</SpaProxyServerUrl>
-    <SpaProxyLaunchCommand>cmd.exe /c start-all-spas.cmd</SpaProxyLaunchCommand>
-  </PropertyGroup>
-
   <ItemGroup>
     <ProjectReference Include="..\Presentation.Common\Presentation.Common.csproj" />
-    <ProjectReference Condition="'$(Configuration)' == 'Debug-AgentHub-WebUI' or '$(Configuration)' == 'Debug-AgentHub-All'" Include="..\Presentation.WebUI\Presentation.WebUI.esproj">
+    <ProjectReference Condition="'$(Configuration)' == 'Debug' or '$(Configuration)' == 'Debug-AgentHub-WebUI' or '$(Configuration)' == 'Debug-AgentHub-All'" Include="..\Presentation.WebUI\Presentation.WebUI.esproj">
       <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
     </ProjectReference>
-    <ProjectReference Condition="'$(Configuration)' == 'Debug-AgentHub-Dashboard' or '$(Configuration)' == 'Debug-AgentHub-All'" Include="..\Presentation.Dashboard\Presentation.Dashboard.esproj">
+    <ProjectReference Condition="'$(Configuration)' == 'Debug' or '$(Configuration)' == 'Debug-AgentHub-Dashboard' or '$(Configuration)' == 'Debug-AgentHub-All'" Include="..\Presentation.Dashboard\Presentation.Dashboard.esproj">
       <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
     </ProjectReference>
   </ItemGroup>
@@ -45,7 +46,7 @@
     <PackageReference Include="OpenTelemetry.Extensions.Hosting" />
     <!-- Microsoft.Identity.Web — already in Directory.Packages.props -->
     <PackageReference Include="Microsoft.Identity.Web" />
-    <PackageReference Condition="$(Configuration.StartsWith('Debug-AgentHub'))" Include="Microsoft.AspNetCore.SpaProxy" />
+    <PackageReference Condition="$(Configuration.StartsWith('Debug'))" Include="Microsoft.AspNetCore.SpaProxy" />
   </ItemGroup>
 
   <ItemGroup>
@@ -53,6 +54,9 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
     <Content Include="..\..\..\..\agents\**\*" Link="agents\%(RecursiveDir)%(Filename)%(Extension)">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\..\Infrastructure\Infrastructure.AI.Governance\Policies\**\*.yaml" Link="Policies\%(RecursiveDir)%(Filename)%(Extension)">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
   </ItemGroup>

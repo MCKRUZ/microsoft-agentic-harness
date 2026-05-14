@@ -1,125 +1,343 @@
 # Infrastructure.AI
 
-This is the largest project in the solution, and for good reason — it's where abstractions become reality. Every interface defined in Application.AI.Common has a concrete implementation here: the permission resolver that actually evaluates rules, the compaction service that actually summarizes conversations, the hook executor that actually runs shell commands, the prompt composer that actually assembles system prompts.
+## What This Project Is
 
-If Application.AI.Common is the blueprint, Infrastructure.AI is the building.
+Infrastructure.AI is the core implementation layer of the agentic harness. It takes every abstract interface defined in Application.AI.Common and turns it into working code: the permission system that decides whether an agent can use a tool, the compaction engine that prevents conversations from exceeding context limits, the prompt composer that assembles system prompts from multiple sections, the hook system that fires lifecycle events, and the chat client factory that connects to Azure OpenAI, OpenAI, Anthropic, or AI Foundry. Think of Application.AI.Common as the contract and this project as the contractor that builds the house.
 
----
+This project sits at the center of the Infrastructure layer dependency graph. It is referenced by all Presentation hosts (ConsoleUI, AgentHub, WebUI, MCPServer) and depends on Application.AI.Common for interfaces, Application.Core for MediatR commands, Domain.Common for configuration models, and Infrastructure.AI.RAG for the retrieval pipeline.
 
-## Permissions: The Three-Phase Resolver
+## Architecture Context
 
-`ThreePhasePermissionResolver` is the concrete implementation of the tool permission system. When a tool request arrives, it runs three checks in sequence:
+```
+Application.AI.Common (Interfaces)           Domain.Common (Config)
+         |                                          |
+         v                                          v
++-----------------------------------------------------------+
+|                   Infrastructure.AI                         |
+|  Implements: IChatClientFactory, IToolPermissionService,   |
+|  IContextCompactionService, ISystemPromptComposer,         |
+|  IHookExecutor, IToolExecutionStrategy, ISkillMetadata-    |
+|  Registry, IAgentMetadataRegistry, IA2AAgentHost,          |
+|  IHarnessCandidateRepository, IExecutionTraceStore, ...    |
++-----------------------------------------------------------+
+         ^                        ^
+         |                        |
+  Presentation.AgentHub    Infrastructure.AI.RAG
+  Presentation.ConsoleUI   (for DocumentSearchTool)
+  Presentation.WebUI
+```
 
-**Phase 1 — Rule Matching.** The `ConfigBasedRuleProvider` loads permission rules from AppConfig. The `GlobPatternMatcher` matches tool names against rule patterns (exact match, prefix wildcard `*`, full wildcard). If a rule matches with `Allow` or `Deny`, that's the answer.
+Registration is done through a single extension method called from the Presentation composition root:
 
-**Phase 2 — Safety Gates.** The `SafetyGateRegistry` defines paths that are always dangerous — `.git/`, `.ssh/`, system directories. Even if Phase 1 said "allow," a safety gate can override it to "ask the user."
+```csharp
+services.AddInfrastructureAIDependencies(appConfig);
+```
 
-**Phase 3 — Denial Rate Limiting.** The `InMemoryDenialTracker` tracks how often each tool has been denied per agent. After a configurable threshold (default 3), the tool is auto-denied without prompting. This prevents the agent from repeatedly asking the user about a tool they've already rejected.
+## Key Concepts
 
-## Compaction: Three Strategies
+### Chat Client Factory
 
-When the context window fills up, `ContextCompactionService` orchestrates the reduction. It selects a strategy, fires lifecycle hooks (PreCompact/PostCompact), manages the `AutoCompactStateMachine` circuit breaker, and invalidates prompt caches.
+**What it is:** A multi-provider factory that creates `IChatClient` instances for any supported LLM backend.
 
-**FullCompactionStrategy** sends the entire conversation to the LLM with a summarization prompt. Most thorough, but costs an API call. The result is a single `CompactionBoundaryMessage` that replaces the full history.
+**Why it exists:** The harness must support multiple AI providers (Azure OpenAI, OpenAI, Azure AI Inference for Claude/Mistral, Anthropic via Azure Foundry, AI Foundry Persistent Agents, and an Echo client for testing) without coupling the orchestration layer to any specific SDK.
 
-**PartialCompactionStrategy** splits the conversation in half. The older half gets summarized; the recent half stays intact. Balances context reduction with recency preservation.
+**How it works:**
+1. On startup, `RegisterAIClients` in DependencyInjection.cs reads `AppConfig.AI.AgentFramework` and registers the appropriate SDK client (AzureOpenAIClient or OpenAIClient) into DI.
+2. When an agent needs a chat client, it calls `IChatClientFactory.GetChatClientAsync(clientType, deploymentOrModelId)`.
+3. The factory resolves the correct SDK, creates or retrieves a cached `IChatClient`, and returns it.
+4. For Azure AI Inference (Claude, Mistral on Azure), a `ChatCompletionsClient` is created with `api-key` header auth.
+5. For Anthropic, an `AzureFoundryRewritingHandler` intercepts SDK requests and rewrites URLs from `api.anthropic.com` to the Foundry endpoint.
 
-**MicroCompactionStrategy** doesn't touch the conversation structure at all. Instead, it finds large tool results (file reads, grep output, HTTP responses) and replaces them with abbreviated summaries. No LLM call required — it's pure string processing.
+```csharp
+// Usage in the orchestration layer:
+var chatClient = await _chatClientFactory.GetChatClientAsync(
+    AIAgentFrameworkClientType.AzureOpenAI,
+    "gpt-4o",
+    cancellationToken);
+```
 
-The `AutoCompactStateMachine` prevents compaction storms. If compaction fails repeatedly (LLM timeout, budget still exceeded after summary), the circuit breaker trips and blocks further attempts until a cooldown period passes.
+### Three-Phase Permission Resolver
 
-## Hooks: Lifecycle Interception
+**What it is:** The runtime engine that decides whether an agent is allowed to invoke a specific tool.
 
-`CompositeHookExecutor` runs registered hooks by event type. Four execution mechanisms are supported:
+**Why it exists:** AI agents must have guardrails. Without permissions, an agent could delete files, modify production databases, or execute arbitrary commands. The permission system provides a layered defense: explicit deny rules, safety gates for dangerous paths, rate-limiting for repeated denials, and a default-to-ask posture for unknown tools.
 
-- **Command** — Runs a shell command with hook context as environment variables
-- **Prompt** — Sends a prompt to the LLM (for hooks that need AI judgment)
-- **Http** — Calls a webhook URL with hook context as JSON payload
-- **Middleware** — Invokes registered middleware components (for in-process hooks)
+**How it works:**
+1. **Phase 0 (Rate Limit):** Check if the tool has been denied too many times (configurable threshold). If so, auto-deny without user prompting.
+2. **Phase 1a (Safety Gates):** Check bypass-immune safety gates (e.g., `.git/`, `.ssh/`, system dirs). These cannot be overridden by rules.
+3. **Phase 1b (Deny Rules):** Evaluate deny rules sorted by priority. First match wins.
+4. **Phase 2 (Ask Rules):** Evaluate ask rules. If matched, require user confirmation.
+5. **Phase 3 (Allow Rules):** Evaluate allow rules. If no rule matches at any phase, default to Ask.
 
-`InMemoryHookRegistry` stores hooks in a `ConcurrentDictionary`, sorted by priority. Hooks can optionally match specific tool names via the same glob pattern matcher used by permissions.
+```csharp
+var decision = await _permissionService.ResolvePermissionAsync(
+    agentId: "main-agent",
+    toolName: "file_system",
+    operation: "write",
+    parameters: new Dictionary<string, object?> { ["path"] = "/etc/hosts" });
 
-## Prompts: Composable System Prompts
+// decision.Behavior is Allow, Deny, or Ask
+```
 
-`MemoizedPromptComposer` assembles the system prompt from five section providers, each responsible for one concern:
+### Context Compaction
 
-- **AgentIdentitySectionProvider** — Agent name, role, capabilities, constraints
-- **ToolSchemasSectionProvider** — JSON schemas of available tools
-- **PermissionRulesSectionProvider** — Permission rules formatted as natural language constraints
-- **SkillInstructionsSectionProvider** — Loaded skill instructions
-- **SessionStateSectionProvider** — Current workflow/session state
+**What it is:** A service that reduces conversation history size when approaching the LLM's context window limit.
 
-Sections are cached by `InMemoryPromptSectionCache` and invalidated selectively — a permission change only invalidates the permission section, not the entire prompt.
+**Why it exists:** Long agent conversations accumulate tool results, file contents, and multi-turn reasoning. Without compaction, the agent eventually hits the context limit and cannot continue. Compaction intelligently reduces the history while preserving essential context.
 
-`Sha256PromptCacheTracker` hashes the system prompt and individual tool schemas after each turn. On the next turn, it compares hashes to detect which section caused a cache break — useful for diagnosing why the LLM's prompt cache miss rate is high.
+**How it works:**
+1. `ShouldAutoCompact()` checks current token count against a configurable threshold ratio (e.g., 80% of max).
+2. If triggered, `CompactAsync()` selects a strategy based on urgency:
+   - **Full:** Summarizes the entire conversation via LLM. Most thorough but costs an API call.
+   - **Partial:** Summarizes older half, keeps recent half intact. Balances reduction with recency.
+   - **Micro:** Abbreviates large tool results (file reads, grep output) without an LLM call.
+3. Fires PreCompact/PostCompact hooks for extension points.
+4. Invalidates the prompt cache so the next turn rebuilds with compacted history.
+5. Records success/failure in the circuit breaker to prevent compaction storms.
 
-## Subagent Management
+### Hook System
 
-**BuiltInSubagentProfiles** defines preset agent types: Explore, Plan, Verify, Execute. Each profile specifies a tool allowlist, max turns, and permission mode.
+**What it is:** A lifecycle interception mechanism that executes user-defined actions at specific points in the agent loop.
 
-**SubagentToolResolver** filters the parent agent's tool pool through a subagent's allowlist and denylist. A research subagent gets read-only tools; an execution subagent gets write tools; neither gets tools outside their profile.
+**Why it exists:** Agents need extensibility without modifying core code. Hooks allow external scripts, webhooks, or middleware to observe and react to events like PreToolUse, PostToolUse, PreCompact, PostCompact, and more.
 
-**InMemoryAgentMailbox** provides async message passing between agents using `Channel<T>`. Unbounded FIFO delivery, suitable for single-process orchestration.
+**How it works:**
+- `InMemoryHookRegistry` stores hooks keyed by event type, sorted by priority.
+- `CompositeHookExecutor` iterates registered hooks for an event and executes them via one of four mechanisms: Command (shell), Prompt (LLM), Http (webhook), or Middleware (in-process).
+- Hooks can match specific tool names using glob patterns.
 
-## Tool Execution
+### System Prompt Composition
 
-**BatchedToolExecutionStrategy** partitions tool calls by concurrency classification: read-only tools run in parallel (bounded by `SemaphoreSlim`), write-serial tools run one at a time. Results are returned in the original request order regardless of execution order.
+**What it is:** A section-based system prompt builder that assembles the agent's instructions from multiple providers.
 
-**FileSystemService** implements sandboxed file operations. Every read, write, and search is restricted to explicitly configured base paths. Path traversal attempts are caught and rejected.
+**Why it exists:** System prompts are complex. They include agent identity, tool schemas, permission rules, skill instructions, and session state. Each section changes at different rates (tool schemas change when MCP servers connect; session state changes every turn). Section-based caching avoids regenerating the entire prompt when only one part changes.
 
-**FileSystemTool** wraps `FileSystemService` as an `ITool` with a name, description, and operation schema — making it available to agents through the tool pipeline.
+**How it works:**
+- `MemoizedPromptComposer` iterates `IPromptSectionProvider` instances, each contributing a section.
+- `InMemoryPromptSectionCache` caches each section independently.
+- `Sha256PromptCacheTracker` detects which section caused a prompt cache break between turns.
 
-## State Management
+Four built-in section providers:
+1. `AgentIdentitySectionProvider` -- agent name, role, capabilities
+2. `ToolSchemasSectionProvider` -- JSON schemas of available tools
+3. `PermissionRulesSectionProvider` -- permission rules in natural language
+4. `SessionStateSectionProvider` -- current workflow state
 
-**JsonCheckpointStateManager** persists workflow state as JSON files, using temp-file-then-rename for atomic writes.
+### Subagent Orchestration
 
-**MarkdownCheckpointDecorator** wraps any state manager to also generate human-readable markdown checkpoints with YAML frontmatter — useful for debugging workflow state without parsing JSON.
+**What it is:** Infrastructure for spawning and coordinating child agents with scoped tool access.
 
-**CompositeStateManager** composes multiple managers (JSON + Markdown) so both formats stay in sync.
+**Why it exists:** Complex tasks benefit from specialized sub-agents (research, planning, verification, execution). Each needs different tool permissions and capabilities.
 
-## Configuration Discovery
+**Key types:**
+- `BuiltInSubagentProfiles` -- preset agent archetypes with tool allowlists and max turn limits
+- `SubagentToolResolver` -- filters parent tools through a subagent's allow/deny lists
+- `InMemoryAgentMailbox` -- async message passing between agents via `Channel<T>`
 
-**DirectoryWalkConfigDiscovery** walks the directory tree upward from a starting point, discovering `AGENT.md`, `SKILL.md`, `CLAUDE.md`, `CLAUDE.local.md`, and `.claude/rules/*.md` files. It supports `@include` directives for composing config from multiple files and YAML frontmatter path globs for scoping rules to specific directories.
+### Batched Tool Execution
 
----
+**What it is:** A strategy that executes tool calls with concurrency awareness.
+
+**Why it exists:** LLMs often request multiple tools in parallel. Read-only tools (grep, file read) can safely run concurrently, but write tools (file write, git commit) must run serially to avoid conflicts.
+
+**How it works:**
+- `ToolConcurrencyClassifier` categorizes each tool as ReadOnly or WriteSerial.
+- `BatchedToolExecutionStrategy` partitions calls by classification, runs reads in parallel (bounded by semaphore), writes sequentially, then returns results in original request order.
+
+## Data Flow
+
+```
+Agent Turn Request
+       |
+       v
+[Permission Check] --deny--> Return denial
+       |allow/ask
+       v
+[Tool Execution Strategy]
+       |
+  +----+----+
+  |         |
+  v         v
+[Parallel  [Serial
+ Reads]     Writes]
+  |         |
+  +----+----+
+       |
+       v
+[Hook Execution: PostToolUse]
+       |
+       v
+[Context Size Check]
+       |
+  (if over threshold)
+       v
+[Compaction Service]
+       |
+       v
+[Prompt Recomposition]
+       |
+       v
+[Chat Client Factory] --> LLM Provider
+```
 
 ## Project Structure
 
 ```
 Infrastructure.AI/
-├── A2A/                          A2AAgentHost (agent discovery + delegation)
-├── Agents/                       BuiltInSubagentProfiles, InMemoryAgentMailbox, SubagentToolResolver
+├── A2A/                        Agent-to-Agent protocol host
+├── Agents/                     Subagent profiles, mailbox, tool resolver
+├── Audit/                      StructuredLogAuditSink
+├── Clients/                    EchoChatClient (testing)
 ├── Compaction/
-│   ├── AutoCompactStateMachine.cs
-│   ├── ContextCompactionService.cs
-│   └── Strategies/               Full, Partial, Micro compaction
-├── Config/                       DirectoryWalkConfigDiscovery
-├── Context/                      FileSystemToolResultStore
-├── Factories/                    ChatClientFactory (Azure OpenAI, OpenAI, AI Foundry)
-├── Generators/                   StateMarkdownGenerator
-├── Helpers/                      AgentFrameworkHelper
-├── Hooks/                        CompositeHookExecutor, InMemoryHookRegistry
-├── Permissions/                  ThreePhasePermissionResolver, GlobPatternMatcher,
-│                                 ConfigBasedRuleProvider, InMemoryDenialTracker, SafetyGateRegistry
+│   ├── AutoCompactStateMachine.cs     Circuit breaker for compaction storms
+│   ├── ContextCompactionService.cs    Orchestrates strategy selection + hooks
+│   └── Strategies/                    Full, Partial, Micro implementations
+├── Config/                     DirectoryWalkConfigDiscovery (@include support)
+├── ContentSafety/              StructuredLogContentSafetyService
+├── Context/                    FileSystemToolResultStore
+├── Factories/                  ChatClientFactory (6 providers)
+├── Generators/                 StateMarkdownGenerator
+├── Helpers/                    AgentFrameworkHelper (SDK client options)
+├── Hooks/                      CompositeHookExecutor, InMemoryHookRegistry
+├── Memory/                     JsonlAgentHistoryStore
+├── MetaHarness/                Proposer, evaluator, regression suite, snapshot builder
+├── Permissions/
+│   ├── ThreePhasePermissionResolver.cs
+│   ├── ConfigBasedRuleProvider.cs
+│   ├── GlobPatternMatcher.cs
+│   ├── InMemoryDenialTracker.cs
+│   └── SafetyGateRegistry.cs
 ├── Prompts/
-│   ├── InMemoryPromptSectionCache.cs
 │   ├── MemoizedPromptComposer.cs
+│   ├── InMemoryPromptSectionCache.cs
 │   ├── Sha256PromptCacheTracker.cs
-│   └── Sections/                 5 section providers (identity, tools, permissions, skills, session)
+│   └── Sections/               4 section providers
+├── Security/                   PatternSecretRedactor
+├── Skills/                     SkillMetadataParser, SkillMetadataRegistry, content providers
 ├── StateManagement/
 │   ├── CompositeStateManager.cs
 │   ├── MarkdownCheckpointDecorator.cs
-│   └── Checkpoints/              JsonCheckpointStateManager
-├── Tools/                        BatchedToolExecutionStrategy, FileSystemService/Tool,
-│                                 ToolConcurrencyClassifier, ToolErrorClassifier
-└── DependencyInjection.cs        Registers everything
+│   └── Checkpoints/            JsonCheckpointStateManager
+├── Tools/
+│   ├── BatchedToolExecutionStrategy.cs
+│   ├── FileSystemService.cs / FileSystemTool.cs
+│   ├── DocumentSearchTool.cs / DocumentIngestTool.cs
+│   ├── EchoLookupTool.cs / EchoCalculateTool.cs
+│   ├── RestrictedSearchTool.cs
+│   ├── ReadHistoryTool.cs
+│   ├── ToolConcurrencyClassifier.cs
+│   └── ToolErrorClassifier.cs
+├── Traces/                     FileSystemExecutionTraceStore
+└── DependencyInjection.cs      Central registration (230+ lines)
 ```
+
+## Key Types Reference
+
+| Type | Purpose | Implements | Lifetime |
+|------|---------|-----------|----------|
+| `ChatClientFactory` | Multi-provider LLM client creation | `IChatClientFactory` | Singleton |
+| `ThreePhasePermissionResolver` | Tool permission evaluation | `IToolPermissionService` | Singleton |
+| `ContextCompactionService` | Context reduction orchestration | `IContextCompactionService` | Singleton |
+| `MemoizedPromptComposer` | Section-based prompt assembly | `ISystemPromptComposer` | Singleton |
+| `CompositeHookExecutor` | Lifecycle hook execution | `IHookExecutor` | Transient |
+| `BatchedToolExecutionStrategy` | Concurrent/serial tool dispatch | `IToolExecutionStrategy` | Transient |
+| `FileSystemService` | Sandboxed file I/O | `IFileSystemService` | Singleton |
+| `FileSystemTool` | File ops as agent tool | `ITool` (keyed: "file_system") | Singleton |
+| `DocumentSearchTool` | RAG search as agent tool | `ITool` (keyed: "document_search") | Singleton |
+| `SkillMetadataRegistry` | Skill catalog from filesystem | `ISkillMetadataRegistry` | Singleton |
+| `AgentMetadataRegistry` | Agent manifest catalog | `IAgentMetadataRegistry` | Singleton |
+| `SubagentToolResolver` | Tool scoping for child agents | `ISubagentToolResolver` | Singleton |
+| `InMemoryAgentMailbox` | Inter-agent messaging | `IAgentMailbox` | Singleton |
+| `AutoCompactStateMachine` | Compaction circuit breaker | `IAutoCompactStateMachine` | Singleton |
+| `PatternSecretRedactor` | Regex-based secret masking | `ISecretRedactor` | Singleton |
+
+## Configuration
+
+The project reads configuration from `AppConfig` bound via the Options pattern. Key sections:
+
+```jsonc
+{
+  "AppConfig": {
+    "AI": {
+      "AgentFramework": {
+        "ClientType": "AzureOpenAI",       // AzureOpenAI | OpenAI | AzureAIInference | Anthropic | PersistentAgents | Echo
+        "Endpoint": "https://...",          // Required for AzureOpenAI, AzureAIInference, Anthropic
+        "ApiKey": "...",                    // Required for all except Echo
+        "DefaultDeployment": "gpt-4o"      // Model/deployment name
+      },
+      "Permissions": {
+        "DenialRateLimitThreshold": 3      // Auto-deny after N denials
+      },
+      "ContextManagement": {
+        "Compaction": {
+          "AutoCompactThresholdRatio": 0.8 // Trigger at 80% of max context
+        }
+      }
+    },
+    "Infrastructure": {
+      "FileSystem": {
+        "AllowedBasePaths": ["../../../.."] // Sandboxed directories for file tools
+      }
+    }
+  }
+}
+```
+
+## Common Tasks
+
+### How to Add a New Tool
+
+1. Create a class implementing `ITool` in `Tools/`:
+```csharp
+public sealed class MyCustomTool : ITool
+{
+    public const string ToolName = "my_custom_tool";
+    public string Name => ToolName;
+    public string Description => "Does something useful for the agent.";
+    // Implement ExecuteAsync...
+}
+```
+
+2. Register with keyed DI in `DependencyInjection.cs`:
+```csharp
+services.AddKeyedSingleton<ITool>(MyCustomTool.ToolName, (sp, _) =>
+    new MyCustomTool(sp.GetRequiredService<IMyDependency>()));
+```
+
+3. Add the tool name to the agent's skill `AllowedTools` list in its SKILL.md.
+
+### How to Add a New Prompt Section
+
+1. Create a class implementing `IPromptSectionProvider` in `Prompts/Sections/`.
+2. Register as transient in DI: `services.AddTransient<IPromptSectionProvider, MySectionProvider>()`.
+3. The composer will automatically include it in the next prompt assembly.
+
+### How to Debug Permission Denials
+
+Check structured logs for entries with `Permission resolved for agent {AgentId}, tool {ToolName}: {Decision}`. The `ThreePhasePermissionResolver` logs at Debug level with the full decision chain. OpenTelemetry spans also carry `permission.tool_name`, `permission.decision`, and `permission.rule_source` tags.
 
 ## Dependencies
 
-- **Application.AI.Common** — All 41 interfaces this project implements
-- **Application.Common** — Pipeline behaviors, logging, helpers
-- **Domain.AI** / **Domain.Common** — Domain models, config POCOs
-- **Azure.AI.Agents.Persistent** — Persistent agent client
-- **Azure.AI.OpenAI** — Azure OpenAI chat client
-- **Microsoft.Agents.AI** — Agent framework
+**Project References:**
+- `Application.AI.Common` -- All interfaces this project implements
+- `Application.Core` -- MediatR for DocumentIngestTool command dispatch
+- `Domain.Common` -- AppConfig, AIConfig, permission models
+- `Infrastructure.AI.RAG` -- IRagOrchestrator for DocumentSearchTool
+
+**NuGet Packages:**
+- `Anthropic.SDK` -- Anthropic Messages API client
+- `Azure.AI.Agents.Persistent` -- AI Foundry persistent agent CRUD
+- `Azure.AI.Inference` -- Azure AI Inference (ChatCompletionsClient)
+- `Azure.AI.OpenAI` -- Azure OpenAI SDK
+- `Microsoft.Agents.AI.OpenAI` -- Microsoft Agent Framework adapters
+- `Microsoft.Extensions.AI.AzureAIInference` -- IChatClient bridge for Inference
+- `Microsoft.Extensions.Caching.Memory` -- Client caching in ChatClientFactory
+- `Microsoft.Extensions.Http` -- IHttpClientFactory for hooks
+- `Microsoft.Extensions.Logging.Abstractions` -- Logging
+- `Microsoft.Extensions.Options` -- IOptionsMonitor pattern
+
+## Testing
+
+- **Test project:** `Infrastructure.AI.Tests` (xUnit)
+- **Run:** `dotnet test --filter "FullyQualifiedName~Infrastructure.AI.Tests"`
+- **Mock guidance:** Mock `IChatClient` for LLM calls, use real implementations for `GlobPatternMatcher`, `ToolConcurrencyClassifier`, and in-memory stores. Use `EchoChatClient` for integration tests that need a chat client without real API calls.

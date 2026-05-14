@@ -22,7 +22,6 @@ describe('BudgetPage', () => {
 
     expect(screen.getByText('Spend Rate')).toBeInTheDocument();
     expect(screen.getByText('Budget Utilization')).toBeInTheDocument();
-    expect(screen.getByText('Spend Gauge')).toBeInTheDocument();
   });
 
   it('KPI values show USD formatting', async () => {

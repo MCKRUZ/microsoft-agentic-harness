@@ -5,6 +5,7 @@ using Azure.AI.Inference;
 using Azure.AI.OpenAI;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
+using Infrastructure.AI.Clients;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
@@ -106,6 +107,7 @@ public sealed class ChatClientFactory : IChatClientFactory, IDisposable
             AIAgentFrameworkClientType.PersistentAgents => _adminClient != null,
             AIAgentFrameworkClientType.Anthropic => !string.IsNullOrWhiteSpace(_appConfig.CurrentValue.AI.AgentFramework.Endpoint)
                 && _appConfig.CurrentValue.AI.AgentFramework.IsConfigured,
+            AIAgentFrameworkClientType.Echo => true,
             _ => false
         };
     }
@@ -123,6 +125,7 @@ public sealed class ChatClientFactory : IChatClientFactory, IDisposable
             AIAgentFrameworkClientType.AzureAIInference => await GetAzureAIInferenceChatClientAsync(deploymentOrAgentId, cancellationToken),
             AIAgentFrameworkClientType.PersistentAgents => await GetPersistentAgentChatClientAsync(deploymentOrAgentId, cancellationToken),
             AIAgentFrameworkClientType.Anthropic => GetAnthropicChatClient(deploymentOrAgentId),
+            AIAgentFrameworkClientType.Echo => new EchoChatClient(),
             _ => throw new ArgumentException($"Unsupported AI framework client type: {clientType}", nameof(clientType))
         };
     }
@@ -136,7 +139,8 @@ public sealed class ChatClientFactory : IChatClientFactory, IDisposable
             { AIAgentFrameworkClientType.OpenAI, IsAvailable(AIAgentFrameworkClientType.OpenAI) },
             { AIAgentFrameworkClientType.AzureAIInference, IsAvailable(AIAgentFrameworkClientType.AzureAIInference) },
             { AIAgentFrameworkClientType.PersistentAgents, IsAvailable(AIAgentFrameworkClientType.PersistentAgents) },
-            { AIAgentFrameworkClientType.Anthropic, IsAvailable(AIAgentFrameworkClientType.Anthropic) }
+            { AIAgentFrameworkClientType.Anthropic, IsAvailable(AIAgentFrameworkClientType.Anthropic) },
+            { AIAgentFrameworkClientType.Echo, IsAvailable(AIAgentFrameworkClientType.Echo) }
         };
     }
 

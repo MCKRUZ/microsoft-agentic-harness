@@ -1,4 +1,5 @@
 using Application.AI.Common.OpenTelemetry.Metrics;
+using Domain.AI.Telemetry.Conventions;
 using FluentAssertions;
 using Xunit;
 
@@ -115,5 +116,133 @@ public class MetricsInstrumentTests
         var first = ToolExecutionMetrics.Duration;
         var second = ToolExecutionMetrics.Duration;
         first.Should().BeSameAs(second);
+    }
+
+    // ── Escalation Metrics ──
+
+    [Fact]
+    public void EscalationMetrics_Requests_IsNotNull()
+    {
+        EscalationMetrics.Requests.Should().NotBeNull();
+        EscalationMetrics.Requests.Name.Should().Be(EscalationConventions.Requests);
+    }
+
+    [Fact]
+    public void EscalationMetrics_Resolutions_IsNotNull()
+    {
+        EscalationMetrics.Resolutions.Should().NotBeNull();
+        EscalationMetrics.Resolutions.Name.Should().Be(EscalationConventions.Resolutions);
+    }
+
+    [Fact]
+    public void EscalationMetrics_DurationMs_IsNotNull()
+    {
+        EscalationMetrics.DurationMs.Should().NotBeNull();
+        EscalationMetrics.DurationMs.Name.Should().Be(EscalationConventions.DurationMs);
+    }
+
+    [Fact]
+    public void EscalationMetrics_Timeouts_IsNotNull()
+    {
+        EscalationMetrics.Timeouts.Should().NotBeNull();
+        EscalationMetrics.Timeouts.Name.Should().Be(EscalationConventions.Timeouts);
+    }
+
+    [Fact]
+    public void EscalationMetrics_Pending_IsNotNull()
+    {
+        EscalationMetrics.Pending.Should().NotBeNull();
+        EscalationMetrics.Pending.Name.Should().Be(EscalationConventions.Pending);
+    }
+
+    [Fact]
+    public void EscalationMetrics_ApproverResponseMs_IsNotNull()
+    {
+        EscalationMetrics.ApproverResponseMs.Should().NotBeNull();
+        EscalationMetrics.ApproverResponseMs.Name.Should().Be(EscalationConventions.ApproverResponseMs);
+    }
+
+    // ── Resilience Metrics ──
+
+    [Fact]
+    public void ResilienceMetrics_FallbackActivations_IsNotNull()
+    {
+        ResilienceMetrics.FallbackActivations.Should().NotBeNull();
+        ResilienceMetrics.FallbackActivations.Name.Should().Be(ResilienceConventions.FallbackActivations);
+    }
+
+    [Fact]
+    public void ResilienceMetrics_CircuitStateChanges_IsNotNull()
+    {
+        ResilienceMetrics.CircuitStateChanges.Should().NotBeNull();
+        ResilienceMetrics.CircuitStateChanges.Name.Should().Be(ResilienceConventions.CircuitStateChanges);
+    }
+
+    [Fact]
+    public void ResilienceMetrics_CircuitState_IsNotNull()
+    {
+        ResilienceMetrics.CircuitState.Should().NotBeNull();
+        ResilienceMetrics.CircuitState.Name.Should().Be(ResilienceConventions.CircuitState);
+    }
+
+    [Fact]
+    public void ResilienceMetrics_RetryAttempts_IsNotNull()
+    {
+        ResilienceMetrics.RetryAttempts.Should().NotBeNull();
+        ResilienceMetrics.RetryAttempts.Name.Should().Be(ResilienceConventions.RetryAttempts);
+    }
+
+    [Fact]
+    public void ResilienceMetrics_ProviderDurationMs_IsNotNull()
+    {
+        ResilienceMetrics.ProviderDurationMs.Should().NotBeNull();
+        ResilienceMetrics.ProviderDurationMs.Name.Should().Be(ResilienceConventions.ProviderDurationMs);
+    }
+
+    [Fact]
+    public void ResilienceMetrics_DegradationEvents_IsNotNull()
+    {
+        ResilienceMetrics.DegradationEvents.Should().NotBeNull();
+        ResilienceMetrics.DegradationEvents.Name.Should().Be(ResilienceConventions.DegradationEvents);
+    }
+
+    [Fact]
+    public void ResilienceMetrics_QueueSize_IsNotNull()
+    {
+        ResilienceMetrics.QueueSize.Should().NotBeNull();
+        ResilienceMetrics.QueueSize.Name.Should().Be(ResilienceConventions.QueueSize);
+    }
+
+    [Fact]
+    public void ResilienceMetrics_QueueExpired_IsNotNull()
+    {
+        ResilienceMetrics.QueueExpired.Should().NotBeNull();
+        ResilienceMetrics.QueueExpired.Name.Should().Be(ResilienceConventions.QueueExpired);
+    }
+
+    // ── Conventions Naming Convention Tests ──
+
+    [Fact]
+    public void EscalationConventions_Constants_FollowNamingConvention()
+    {
+        EscalationConventions.Requests.Should().StartWith("agent.escalation.");
+        EscalationConventions.Resolutions.Should().StartWith("agent.escalation.");
+        EscalationConventions.DurationMs.Should().StartWith("agent.escalation.");
+        EscalationConventions.Timeouts.Should().StartWith("agent.escalation.");
+        EscalationConventions.Pending.Should().StartWith("agent.escalation.");
+        EscalationConventions.ApproverResponseMs.Should().StartWith("agent.escalation.");
+    }
+
+    [Fact]
+    public void ResilienceConventions_Constants_FollowNamingConvention()
+    {
+        ResilienceConventions.FallbackActivations.Should().StartWith("agent.resilience.");
+        ResilienceConventions.CircuitStateChanges.Should().StartWith("agent.resilience.");
+        ResilienceConventions.CircuitState.Should().StartWith("agent.resilience.");
+        ResilienceConventions.RetryAttempts.Should().StartWith("agent.resilience.");
+        ResilienceConventions.ProviderDurationMs.Should().StartWith("agent.resilience.");
+        ResilienceConventions.DegradationEvents.Should().StartWith("agent.resilience.");
+        ResilienceConventions.QueueSize.Should().StartWith("agent.resilience.");
+        ResilienceConventions.QueueExpired.Should().StartWith("agent.resilience.");
     }
 }

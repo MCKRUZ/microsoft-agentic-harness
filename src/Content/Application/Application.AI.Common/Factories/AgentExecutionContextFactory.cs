@@ -1,6 +1,7 @@
 using Application.AI.Common.Helpers;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Context;
+using Application.AI.Common.Interfaces.Resilience;
 using Application.AI.Common.Interfaces.Skills;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Interfaces.Traces;
@@ -22,375 +23,432 @@ namespace Application.AI.Common.Factories;
 /// <summary>
 /// Bridges declarative skill definitions (SKILL.md) to runtime <see cref="AgentExecutionContext"/>.
 /// Handles tool provisioning (MCP-first, keyed DI fallback), instruction assembly, middleware
-/// resolution, and wiring of <see cref="FileAgentSkillsProvider"/> for progressive skill disclosure.
+/// resolution, and wiring of <see cref="AgentSkillsProvider"/> for progressive skill disclosure.
 /// </summary>
 public class AgentExecutionContextFactory
 {
-	private readonly ILogger<AgentExecutionContextFactory> _logger;
-	private readonly IOptionsMonitor<AppConfig> _appConfig;
-	private readonly IServiceProvider _serviceProvider;
-	private readonly ILoggerFactory _loggerFactory;
-	private readonly IToolConverter? _toolConverter;
-	private readonly IMcpToolProvider? _mcpToolProvider;
-	private readonly IContextBudgetTracker? _budgetTracker;
-	private readonly IExecutionTraceStore? _traceStore;
-	private readonly ISkillContentProvider? _skillContentProvider;
-	private readonly IAgentConfigReporter? _agentConfigReporter;
+    private static readonly AgentFileSkillScriptRunner NoOpScriptRunner =
+        (skill, script, arguments, serviceProvider, cancellationToken) =>
+            Task.FromResult<object?>(null);
 
-	public AgentExecutionContextFactory(
-		ILogger<AgentExecutionContextFactory> logger,
-		IOptionsMonitor<AppConfig> appConfig,
-		IServiceProvider serviceProvider,
-		ILoggerFactory loggerFactory,
-		IToolConverter? toolConverter = null,
-		IMcpToolProvider? mcpToolProvider = null,
-		IContextBudgetTracker? budgetTracker = null,
-		IExecutionTraceStore? traceStore = null,
-		ISkillContentProvider? skillContentProvider = null,
-		IAgentConfigReporter? agentConfigReporter = null)
-	{
-		_logger = logger;
-		_appConfig = appConfig;
-		_serviceProvider = serviceProvider;
-		_loggerFactory = loggerFactory;
-		_toolConverter = toolConverter;
-		_mcpToolProvider = mcpToolProvider;
-		_budgetTracker = budgetTracker;
-		_traceStore = traceStore;
-		_skillContentProvider = skillContentProvider;
-		_agentConfigReporter = agentConfigReporter;
-	}
+    private readonly ILogger<AgentExecutionContextFactory> _logger;
+    private readonly IOptionsMonitor<AppConfig> _appConfig;
+    private readonly IServiceProvider _serviceProvider;
+    private readonly ILoggerFactory _loggerFactory;
+    private readonly IToolConverter? _toolConverter;
+    private readonly IMcpToolProvider? _mcpToolProvider;
+    private readonly IContextBudgetTracker? _budgetTracker;
+    private readonly IExecutionTraceStore? _traceStore;
+    private readonly ISkillContentProvider? _skillContentProvider;
+    private readonly IAgentConfigReporter? _agentConfigReporter;
+    private readonly IResilientChatClientProvider? _resilientChatClientProvider;
 
-	/// <summary>
-	/// Maps a skill definition and options to a runtime agent execution context.
-	/// Wires <see cref="FileAgentSkillsProvider"/> for progressive skill disclosure.
-	/// When an <see cref="IExecutionTraceStore"/> is available, starts a trace run and
-	/// stores the resulting <see cref="ITraceWriter"/> in <c>AdditionalProperties["__traceWriter"]</c>.
-	/// </summary>
-	public async Task<AgentExecutionContext> MapToAgentContextAsync(SkillDefinition skill, SkillAgentOptions options)
-	{
-		var deploymentName = ResolveDeploymentName(skill, options);
-		var agentName = options.AgentNameOverride ?? ToAgentName(skill.Name);
-		var instruction = BuildInstruction(skill, options);
-		var tools = await BuildToolsAsync(skill, options);
-		var middlewareTypes = ResolveMiddlewareTypes(skill, options);
-		var aiContextProviders = BuildAIContextProviders(skill, options);
-		var frameworkType = options.FrameworkType
-			?? _appConfig.CurrentValue.AI?.AgentFramework?.ClientType
-			?? AIAgentFrameworkClientType.AzureOpenAI;
+    public AgentExecutionContextFactory(
+        ILogger<AgentExecutionContextFactory> logger,
+        IOptionsMonitor<AppConfig> appConfig,
+        IServiceProvider serviceProvider,
+        ILoggerFactory loggerFactory,
+        IToolConverter? toolConverter = null,
+        IMcpToolProvider? mcpToolProvider = null,
+        IContextBudgetTracker? budgetTracker = null,
+        IExecutionTraceStore? traceStore = null,
+        ISkillContentProvider? skillContentProvider = null,
+        IAgentConfigReporter? agentConfigReporter = null,
+        IResilientChatClientProvider? resilientChatClientProvider = null)
+    {
+        _logger = logger;
+        _appConfig = appConfig;
+        _serviceProvider = serviceProvider;
+        _loggerFactory = loggerFactory;
+        _toolConverter = toolConverter;
+        _mcpToolProvider = mcpToolProvider;
+        _budgetTracker = budgetTracker;
+        _traceStore = traceStore;
+        _skillContentProvider = skillContentProvider;
+        _agentConfigReporter = agentConfigReporter;
+        _resilientChatClientProvider = resilientChatClientProvider;
+    }
 
-		// Resolve or create a trace scope for this execution
-		var traceScope = options.TraceScope ?? TraceScope.ForExecution(Guid.NewGuid());
+    /// <summary>
+    /// Maps a skill definition and options to a runtime agent execution context.
+    /// Wires <see cref="AgentSkillsProvider"/> for progressive skill disclosure.
+    /// When an <see cref="IExecutionTraceStore"/> is available, starts a trace run and
+    /// stores the resulting <see cref="ITraceWriter"/> in <c>AdditionalProperties["__traceWriter"]</c>.
+    /// </summary>
+    public async Task<AgentExecutionContext> MapToAgentContextAsync(SkillDefinition skill, SkillAgentOptions options)
+    {
+        var deploymentName = ResolveDeploymentName(skill, options);
+        var agentName = options.AgentNameOverride ?? ToAgentName(skill.Name);
+        var instruction = BuildInstruction(skill, options);
+        var tools = await BuildToolsAsync(skill, options);
+        var middlewareTypes = ResolveMiddlewareTypes(skill, options);
+        var aiContextProviders = BuildAIContextProviders(skill, options);
+        var frameworkType = options.FrameworkType
+            ?? ResolveFrameworkTypeFromMetadata(skill)
+            ?? _appConfig.CurrentValue.AI?.AgentFramework?.ClientType
+            ?? AIAgentFrameworkClientType.AzureOpenAI;
 
-		// Track context budget allocations
-		if (_budgetTracker != null)
-		{
-			var instructionTokens = TokenEstimationHelper.EstimateTokens(instruction);
-			_budgetTracker.RecordAllocation(agentName, "system_prompt", instructionTokens);
+        // Resolve or create a trace scope for this execution
+        var traceScope = options.TraceScope ?? TraceScope.ForExecution(Guid.NewGuid());
 
-			ContextBudgetMetrics.SystemPromptTokens.Record(instructionTokens,
-				new KeyValuePair<string, object?>(AgentConventions.Name, agentName));
-			ContextSourceMetrics.SourceTokens.Record(instructionTokens,
-				new KeyValuePair<string, object?>(ContextConventions.SourceType, ContextConventions.SourceTypeValues.SystemPrompt),
-				new KeyValuePair<string, object?>(AgentConventions.Name, agentName));
+        // Track context budget allocations
+        if (_budgetTracker != null)
+        {
+            var instructionTokens = TokenEstimationHelper.EstimateTokens(instruction);
+            _budgetTracker.RecordAllocation(agentName, "system_prompt", instructionTokens);
 
-			if (tools?.Count > 0)
-			{
-				var toolTokens = tools.Count * 50; // ~50 tokens per tool schema
-				_budgetTracker.RecordAllocation(agentName, "tool_schemas", toolTokens);
+            ContextBudgetMetrics.SystemPromptTokens.Record(instructionTokens,
+                new KeyValuePair<string, object?>(AgentConventions.Name, agentName));
+            ContextSourceMetrics.SourceTokens.Record(instructionTokens,
+                new KeyValuePair<string, object?>(ContextConventions.SourceType, ContextConventions.SourceTypeValues.SystemPrompt),
+                new KeyValuePair<string, object?>(AgentConventions.Name, agentName));
 
-				ContextBudgetMetrics.ToolsSchemaTokens.Record(toolTokens,
-					new KeyValuePair<string, object?>(AgentConventions.Name, agentName));
-				ContextSourceMetrics.SourceTokens.Record(toolTokens,
-					new KeyValuePair<string, object?>(ContextConventions.SourceType, ContextConventions.SourceTypeValues.ToolsSchema),
-					new KeyValuePair<string, object?>(AgentConventions.Name, agentName));
-			}
-		}
+            if (tools?.Count > 0)
+            {
+                var toolTokens = tools.Count * 50; // ~50 tokens per tool schema
+                _budgetTracker.RecordAllocation(agentName, "tool_schemas", toolTokens);
 
-		var additionalProps = BuildAdditionalProperties(skill, options);
+                ContextBudgetMetrics.ToolsSchemaTokens.Record(toolTokens,
+                    new KeyValuePair<string, object?>(AgentConventions.Name, agentName));
+                ContextSourceMetrics.SourceTokens.Record(toolTokens,
+                    new KeyValuePair<string, object?>(ContextConventions.SourceType, ContextConventions.SourceTypeValues.ToolsSchema),
+                    new KeyValuePair<string, object?>(AgentConventions.Name, agentName));
+            }
+        }
 
-		// Expose candidate skill content provider so evaluation contexts can inject candidate content
-		if (_skillContentProvider != null)
-			additionalProps[ISkillContentProvider.AdditionalPropertiesKey] = _skillContentProvider;
+        var additionalProps = BuildAdditionalProperties(skill, options);
 
-		// Start a trace run when a store is wired in
-		if (_traceStore != null)
-		{
-			var metadata = new RunMetadata
-			{
-				AgentName = agentName,
-				StartedAt = DateTimeOffset.UtcNow
-			};
-			var traceWriter = await _traceStore.StartRunAsync(traceScope, metadata);
-			additionalProps[ITraceWriter.AdditionalPropertiesKey] = traceWriter;
+        // Expose candidate skill content provider so evaluation contexts can inject candidate content
+        if (_skillContentProvider != null)
+            additionalProps[ISkillContentProvider.AdditionalPropertiesKey] = _skillContentProvider;
 
-			// Set candidate baggage on the current Activity for CausalSpanAttributionProcessor
-			if (traceScope.CandidateId.HasValue)
-			{
-				System.Diagnostics.Activity.Current?.AddBaggage(
-					Domain.AI.Telemetry.Conventions.ToolConventions.HarnessCandidateId,
-					traceScope.CandidateId.Value.ToString("D"));
-			}
-		}
+        // Stash resilient chat client for transparent fallback when resilience is enabled
+        if (_resilientChatClientProvider is not null)
+        {
+            var resilientClient = await _resilientChatClientProvider.GetResilientChatClientAsync();
+            additionalProps["__resilientChatClient"] = resilientClient;
+        }
 
-		var context = new AgentExecutionContext
-		{
-			Name = agentName,
-			Description = skill.Description,
-			Instruction = instruction,
-			DeploymentName = deploymentName,
-			AgentId = options.AgentId ?? skill.AgentId,
-			AIAgentFrameworkType = frameworkType,
-			Tools = tools,
-			AIContextProviders = aiContextProviders,
-			MiddlewareTypes = middlewareTypes,
-			TraceScope = traceScope,
-			Temperature = options.Temperature,
-			AdditionalProperties = additionalProps
-		};
+        // Start a trace run when a store is wired in
+        if (_traceStore != null)
+        {
+            var metadata = new RunMetadata
+            {
+                AgentName = agentName,
+                StartedAt = DateTimeOffset.UtcNow
+            };
+            var traceWriter = await _traceStore.StartRunAsync(traceScope, metadata);
+            additionalProps[ITraceWriter.AdditionalPropertiesKey] = traceWriter;
 
-		_agentConfigReporter?.RegisterAgent(
-			agentName,
-			deploymentName,
-			(options.Temperature ?? 0.7).ToString("0.##"),
-			tools?.Count ?? 0,
-			aiContextProviders?.Count ?? 0,
-			_mcpToolProvider != null ? 1 : 0);
+            // Set candidate baggage on the current Activity for CausalSpanAttributionProcessor
+            if (traceScope.CandidateId.HasValue)
+            {
+                System.Diagnostics.Activity.Current?.AddBaggage(
+                    Domain.AI.Telemetry.Conventions.ToolConventions.HarnessCandidateId,
+                    traceScope.CandidateId.Value.ToString("D"));
+            }
+        }
 
-		_logger.LogInformation(
-			"Mapped skill {SkillId} to agent context {AgentName} with {ToolCount} tools and {ProviderCount} context providers",
-			skill.Id, agentName, tools?.Count ?? 0, aiContextProviders?.Count ?? 0);
+        var context = new AgentExecutionContext
+        {
+            Name = agentName,
+            Description = skill.Description,
+            Instruction = instruction,
+            DeploymentName = deploymentName,
+            AgentId = options.AgentId ?? skill.AgentId,
+            AIAgentFrameworkType = frameworkType,
+            Tools = tools,
+            AIContextProviders = aiContextProviders,
+            MiddlewareTypes = middlewareTypes,
+            TraceScope = traceScope,
+            Temperature = options.Temperature,
+            AdditionalProperties = additionalProps
+        };
 
-		return context;
-	}
+        _agentConfigReporter?.RegisterAgent(
+            agentName,
+            deploymentName,
+            (options.Temperature ?? 0.7).ToString("0.##"),
+            tools?.Count ?? 0,
+            aiContextProviders?.Count ?? 0,
+            _mcpToolProvider != null ? 1 : 0);
 
-	private string ResolveDeploymentName(SkillDefinition skill, SkillAgentOptions options)
-	{
-		// Priority: options > skill metadata > config default
-		if (!string.IsNullOrEmpty(options.DeploymentName))
-			return options.DeploymentName;
+        _logger.LogInformation(
+            "Mapped skill {SkillId} to agent context {AgentName} with {ToolCount} tools and {ProviderCount} context providers",
+            skill.Id, agentName, tools?.Count ?? 0, aiContextProviders?.Count ?? 0);
 
-		if (!string.IsNullOrEmpty(skill.ModelOverride))
-			return skill.ModelOverride;
+        return context;
+    }
 
-		if (skill.Metadata?.TryGetValue("deployment", out var deployment) == true)
-			return deployment.ToString() ?? "default";
+    /// <summary>
+    /// Creates an execution context for a delegated agent. Used by <see cref="Interfaces.Agents.ISupervisor"/>
+    /// when delegating a task. Bypasses skill-based tool resolution — tools are resolved separately
+    /// by the supervisor using <see cref="Interfaces.Agents.ISubagentToolResolver"/>.
+    /// </summary>
+    public AgentExecutionContext CreateFromDelegation(
+        SubagentDefinition definition,
+        IReadOnlyList<string>? toolOverrides,
+        int delegationDepth,
+        Guid delegationId)
+    {
+        var deploymentName = definition.ModelOverride
+            ?? _appConfig.CurrentValue.AI?.AgentFramework?.DefaultDeployment
+            ?? "default";
 
-		return _appConfig.CurrentValue.AI?.AgentFramework?.DefaultDeployment ?? "default";
-	}
+        var context = new AgentExecutionContext
+        {
+            Name = definition.AgentType + "Agent",
+            Instruction = definition.SystemPromptOverride,
+            DeploymentName = deploymentName,
+            DelegationDepth = delegationDepth,
+            DelegationId = delegationId,
+            DelegatingAgentType = definition.AgentType,
+            AdditionalProperties = new Dictionary<string, object>()
+        };
 
-	private static string BuildInstruction(SkillDefinition skill, SkillAgentOptions options)
-	{
-		var parts = new List<string>();
+        if (toolOverrides is { Count: > 0 })
+            context.AdditionalProperties["delegationToolOverrides"] = toolOverrides;
 
-		if (!string.IsNullOrEmpty(skill.Instructions))
-			parts.Add(skill.Instructions);
+        return context;
+    }
 
-		if (!string.IsNullOrEmpty(options.AdditionalContext))
-			parts.Add(options.AdditionalContext);
+    private static AIAgentFrameworkClientType? ResolveFrameworkTypeFromMetadata(SkillDefinition skill)
+    {
+        if (skill.Metadata?.TryGetValue("framework_type", out var value) == true
+            && Enum.TryParse<AIAgentFrameworkClientType>(value?.ToString(), ignoreCase: true, out var parsed))
+            return parsed;
 
-		return string.Join("\n\n", parts);
-	}
+        return null;
+    }
 
-	private IList<AIContextProvider>? BuildAIContextProviders(SkillDefinition skill, SkillAgentOptions options)
-	{
-		var providers = new List<AIContextProvider>();
+    private string ResolveDeploymentName(SkillDefinition skill, SkillAgentOptions options)
+    {
+        // Priority: options > skill metadata > config default
+        if (!string.IsNullOrEmpty(options.DeploymentName))
+            return options.DeploymentName;
 
-		// Resolve skill paths: options override > config default
-		var skillPaths = ResolveSkillPaths(options);
+        if (!string.IsNullOrEmpty(skill.ModelOverride))
+            return skill.ModelOverride;
 
-		if (skillPaths.Count > 0)
-		{
-			var skillsProvider = new FileAgentSkillsProvider(
-				skillPaths,
-				options: null,
-				loggerFactory: _loggerFactory);
+        if (skill.Metadata?.TryGetValue("deployment", out var deployment) == true)
+            return deployment.ToString() ?? "default";
 
-			providers.Add(skillsProvider);
+        return _appConfig.CurrentValue.AI?.AgentFramework?.DefaultDeployment ?? "default";
+    }
 
-			_logger.LogDebug("Wired FileAgentSkillsProvider for agent {SkillId} with {PathCount} path(s)",
-				skill.Id, skillPaths.Count);
-		}
+    private static string BuildInstruction(SkillDefinition skill, SkillAgentOptions options)
+    {
+        var parts = new List<string>();
 
-		// Enforce allowed-tools constraint after all other providers have contributed tools.
-		// ToolPermissionFilter must be last so it operates on the complete tool set.
-		if (skill.AllowedTools?.Count > 0)
-		{
-			providers.Add(new Services.Agent.ToolPermissionFilter(skill.AllowedTools));
+        if (!string.IsNullOrEmpty(skill.Instructions))
+            parts.Add(skill.Instructions);
 
-			_logger.LogDebug("Wired ToolPermissionFilter for agent {SkillId} with {Count} allowed tool(s)",
-				skill.Id, skill.AllowedTools.Count);
-		}
+        if (!string.IsNullOrEmpty(options.AdditionalContext))
+            parts.Add(options.AdditionalContext);
 
-		return providers.Count > 0 ? providers : null;
-	}
+        return string.Join("\n\n", parts);
+    }
 
-	private IReadOnlyList<string> ResolveSkillPaths(SkillAgentOptions options)
-	{
-		if (options.SkillPaths?.Count > 0)
-			return [.. options.SkillPaths];
+    private IList<AIContextProvider>? BuildAIContextProviders(SkillDefinition skill, SkillAgentOptions options)
+    {
+        var providers = new List<AIContextProvider>();
 
-		var configPaths = _appConfig.CurrentValue.AI?.Skills?.AllPaths.ToList() ?? [];
-		return configPaths
-			.Select(p => Path.IsPathRooted(p) ? p : Path.GetFullPath(p))
-			.Where(Directory.Exists)
-			.ToList();
-	}
+        // Resolve skill paths: options override > config default
+        var skillPaths = ResolveSkillPaths(options);
 
-	private async Task<List<AITool>> BuildToolsAsync(SkillDefinition skill, SkillAgentOptions options)
-	{
-		var tools = new List<AITool>();
+        if (skillPaths.Count > 0)
+        {
+            var builder = new AgentSkillsProviderBuilder()
+                .UseFileScriptRunner(NoOpScriptRunner);
+            foreach (var path in skillPaths)
+                builder.UseFileSkill(path);
+            var skillsProvider = builder.Build();
 
-		// 1. Pre-created tools from skill definition
-		if (skill.Tools?.Count > 0)
-			tools.AddRange(skill.Tools);
+            providers.Add(skillsProvider);
 
-		// 2. Tools from declarations (MCP-first, keyed DI fallback) — resolved in parallel
-		if (skill.ToolDeclarations?.Count > 0)
-		{
-			var provisionTasks = skill.ToolDeclarations.Select(ProvisionToolAsync);
-			var results = await Task.WhenAll(provisionTasks);
-			foreach (var provisioned in results)
-			{
-				if (provisioned != null)
-					tools.AddRange(provisioned);
-			}
-		}
+            _logger.LogDebug("Wired AgentSkillsProvider for agent {SkillId} with {PathCount} path(s)",
+                skill.Id, skillPaths.Count);
+        }
 
-		// 3. Tools from AllowedTools list (simple name-based resolution)
-		if (skill.AllowedTools?.Count > 0)
-		{
-			foreach (var toolName in skill.AllowedTools)
-			{
-				var resolved = ResolveToolByName(toolName);
-				if (resolved != null)
-					tools.AddRange(resolved);
-			}
-		}
+        // Enforce allowed-tools constraint after all other providers have contributed tools.
+        // ToolPermissionFilter must be last so it operates on the complete tool set.
+        if (skill.AllowedTools?.Count > 0)
+        {
+            providers.Add(new Services.Agent.ToolPermissionFilter(skill.AllowedTools));
 
-		// 4. Additional tools from options
-		if (options.AdditionalTools?.Count > 0)
-			tools.AddRange(options.AdditionalTools);
+            _logger.LogDebug("Wired ToolPermissionFilter for agent {SkillId} with {Count} allowed tool(s)",
+                skill.Id, skill.AllowedTools.Count);
+        }
 
-		// Deduplicate by name — ToolDeclarations and AllowedTools can resolve the same tool
-		var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-		return tools.Where(t => seen.Add(t.Name)).ToList();
-	}
+        return providers.Count > 0 ? providers : null;
+    }
 
-	private async Task<IEnumerable<AITool>?> ProvisionToolAsync(Domain.AI.Tools.ToolDeclaration declaration)
-	{
-		// Try MCP first
-		if (_mcpToolProvider != null)
-		{
-			try
-			{
-				var mcpTools = await _mcpToolProvider.GetToolsAsync(declaration.Name);
-				if (mcpTools?.Count > 0)
-				{
-					_logger.LogDebug("Resolved tool {ToolName} from MCP server", declaration.Name);
-					return mcpTools;
-				}
-			}
-			catch (Exception ex)
-			{
-				_logger.LogDebug(ex, "MCP resolution failed for {ToolName}, trying keyed DI", declaration.Name);
-			}
-		}
+    private IReadOnlyList<string> ResolveSkillPaths(SkillAgentOptions options)
+    {
+        if (options.SkillPaths?.Count > 0)
+            return [.. options.SkillPaths];
 
-		// Fallback to keyed DI
-		var resolved = ResolveToolByName(declaration.Name);
-		if (resolved != null)
-			return resolved;
+        var configPaths = _appConfig.CurrentValue.AI?.Skills?.AllPaths.ToList() ?? [];
+        return configPaths
+            .Select(p => Path.IsPathRooted(p) ? p : Path.GetFullPath(p))
+            .Where(Directory.Exists)
+            .ToList();
+    }
 
-		// Try fallback tool
-		if (declaration.HasFallback && !declaration.FallbackIsManual)
-		{
-			resolved = ResolveToolByName(declaration.Fallback!);
-			if (resolved != null)
-			{
-				_logger.LogInformation("Using fallback tool {Fallback} for {ToolName}",
-					declaration.Fallback, declaration.Name);
-				return resolved;
-			}
-		}
+    private async Task<List<AITool>> BuildToolsAsync(SkillDefinition skill, SkillAgentOptions options)
+    {
+        var tools = new List<AITool>();
 
-		if (!declaration.Optional)
-			_logger.LogWarning("Required tool {ToolName} could not be resolved", declaration.Name);
+        // 1. Pre-created tools from skill definition
+        if (skill.Tools?.Count > 0)
+            tools.AddRange(skill.Tools);
 
-		return null;
-	}
+        // 2. Tools from declarations (MCP-first, keyed DI fallback) — resolved in parallel
+        if (skill.ToolDeclarations?.Count > 0)
+        {
+            var provisionTasks = skill.ToolDeclarations.Select(ProvisionToolAsync);
+            var results = await Task.WhenAll(provisionTasks);
+            foreach (var provisioned in results)
+            {
+                if (provisioned != null)
+                    tools.AddRange(provisioned);
+            }
+        }
 
-	private IEnumerable<AITool>? ResolveToolByName(string toolName)
-	{
-		var tool = _serviceProvider.GetKeyedService<ITool>(toolName);
-		if (tool == null)
-			return null;
+        // 3. Tools from AllowedTools list (simple name-based resolution)
+        if (skill.AllowedTools?.Count > 0)
+        {
+            foreach (var toolName in skill.AllowedTools)
+            {
+                var resolved = ResolveToolByName(toolName);
+                if (resolved != null)
+                    tools.AddRange(resolved);
+            }
+        }
 
-		if (_toolConverter != null)
-		{
-			var converted = _toolConverter.Convert(tool);
-			if (converted != null)
-				return [converted];
-		}
+        // 4. Additional tools from options
+        if (options.AdditionalTools?.Count > 0)
+            tools.AddRange(options.AdditionalTools);
 
-		_logger.LogDebug("Resolved tool {ToolName} from keyed DI (no converter available)", toolName);
-		return null;
-	}
+        // Deduplicate by name — ToolDeclarations and AllowedTools can resolve the same tool
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        return tools.Where(t => seen.Add(t.Name)).ToList();
+    }
 
-	private List<Type>? ResolveMiddlewareTypes(SkillDefinition skill, SkillAgentOptions options)
-	{
-		var types = new List<Type>();
+    private async Task<IEnumerable<AITool>?> ProvisionToolAsync(Domain.AI.Tools.ToolDeclaration declaration)
+    {
+        // Try MCP first
+        if (_mcpToolProvider != null)
+        {
+            try
+            {
+                var mcpTools = await _mcpToolProvider.GetToolsAsync(declaration.Name);
+                if (mcpTools?.Count > 0)
+                {
+                    _logger.LogDebug("Resolved tool {ToolName} from MCP server", declaration.Name);
+                    return mcpTools;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "MCP resolution failed for {ToolName}, trying keyed DI", declaration.Name);
+            }
+        }
 
-		// Default middleware from config
-		types.Add(typeof(Middleware.ObservabilityMiddleware));
-		types.Add(typeof(Middleware.ToolDiagnosticsMiddleware));
+        // Fallback to keyed DI
+        var resolved = ResolveToolByName(declaration.Name);
+        if (resolved != null)
+            return resolved;
 
-		// Additional from options
-		if (options.MiddlewareTypes?.Count > 0)
-			types.AddRange(options.MiddlewareTypes);
+        // Try fallback tool
+        if (declaration.HasFallback && !declaration.FallbackIsManual)
+        {
+            resolved = ResolveToolByName(declaration.Fallback!);
+            if (resolved != null)
+            {
+                _logger.LogInformation("Using fallback tool {Fallback} for {ToolName}",
+                    declaration.Fallback, declaration.Name);
+                return resolved;
+            }
+        }
 
-		return types.Count > 0 ? types : null;
-	}
+        if (!declaration.Optional)
+            _logger.LogWarning("Required tool {ToolName} could not be resolved", declaration.Name);
 
-	private static Dictionary<string, object> BuildAdditionalProperties(SkillDefinition skill, SkillAgentOptions options)
-	{
-		var props = new Dictionary<string, object>
-		{
-			["skillId"] = skill.Id,
-			["skillName"] = skill.Name,
-			["loadedAt"] = skill.LoadedAt.ToString("O")
-		};
+        return null;
+    }
 
-		if (!string.IsNullOrEmpty(skill.Category))
-			props["category"] = skill.Category;
-		if (skill.HasTags)
-			props["tags"] = skill.Tags;
-		if (!string.IsNullOrEmpty(skill.Version))
-			props["version"] = skill.Version;
+    private IEnumerable<AITool>? ResolveToolByName(string toolName)
+    {
+        var tool = _serviceProvider.GetKeyedService<ITool>(toolName);
+        if (tool == null)
+            return null;
 
-		if (skill.Metadata != null)
-		{
-			foreach (var (key, value) in skill.Metadata)
-				props[$"skill_{key}"] = value;
-		}
+        if (_toolConverter != null)
+        {
+            var converted = _toolConverter.Convert(tool);
+            if (converted != null)
+                return [converted];
+        }
 
-		if (options.AdditionalProperties != null)
-		{
-			foreach (var (key, value) in options.AdditionalProperties)
-				props[key] = value;
-		}
+        _logger.LogDebug("Resolved tool {ToolName} from keyed DI (no converter available)", toolName);
+        return null;
+    }
 
-		return props;
-	}
+    private List<Type>? ResolveMiddlewareTypes(SkillDefinition skill, SkillAgentOptions options)
+    {
+        var types = new List<Type>();
 
-	private static string ToAgentName(string skillName)
-	{
-		// Convert "research-agent" to "ResearchAgent"
-		var parts = skillName.Split(['-', '_', ' '], StringSplitOptions.RemoveEmptyEntries);
-		var pascal = string.Concat(parts.Select(p =>
-			char.ToUpperInvariant(p[0]) + p[1..]));
-		return pascal.EndsWith("Agent", StringComparison.OrdinalIgnoreCase)
-			? pascal
-			: pascal + "Agent";
-	}
+        // Default middleware from config
+        types.Add(typeof(Middleware.ObservabilityMiddleware));
+        types.Add(typeof(Middleware.ToolDiagnosticsMiddleware));
+
+        // Additional from options
+        if (options.MiddlewareTypes?.Count > 0)
+            types.AddRange(options.MiddlewareTypes);
+
+        return types.Count > 0 ? types : null;
+    }
+
+    private static Dictionary<string, object> BuildAdditionalProperties(SkillDefinition skill, SkillAgentOptions options)
+    {
+        var props = new Dictionary<string, object>
+        {
+            ["skillId"] = skill.Id,
+            ["skillName"] = skill.Name,
+            ["loadedAt"] = skill.LoadedAt.ToString("O")
+        };
+
+        if (!string.IsNullOrEmpty(skill.Category))
+            props["category"] = skill.Category;
+        if (skill.HasTags)
+            props["tags"] = skill.Tags;
+        if (!string.IsNullOrEmpty(skill.Version))
+            props["version"] = skill.Version;
+
+        if (skill.Metadata != null)
+        {
+            foreach (var (key, value) in skill.Metadata)
+                props[$"skill_{key}"] = value;
+        }
+
+        if (options.AdditionalProperties != null)
+        {
+            foreach (var (key, value) in options.AdditionalProperties)
+                props[key] = value;
+        }
+
+        return props;
+    }
+
+    private static string ToAgentName(string skillName)
+    {
+        // Convert "research-agent" to "ResearchAgent"
+        var parts = skillName.Split(['-', '_', ' '], StringSplitOptions.RemoveEmptyEntries);
+        var pascal = string.Concat(parts.Select(p =>
+            char.ToUpperInvariant(p[0]) + p[1..]));
+        return pascal.EndsWith("Agent", StringComparison.OrdinalIgnoreCase)
+            ? pascal
+            : pascal + "Agent";
+    }
 }

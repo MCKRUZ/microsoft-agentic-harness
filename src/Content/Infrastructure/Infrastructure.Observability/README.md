@@ -1,83 +1,259 @@
 # Infrastructure.Observability
 
-LLM-powered agents are notoriously hard to debug. A conversation that goes sideways might involve dozens of turns, multiple tool calls, and branching logic that's invisible from the outside. This project makes the invisible visible.
+LLM-powered agents are notoriously hard to debug. A single conversation can generate hundreds of spans across tool calls, sub-agents, and LLM invocations -- and a trace that goes sideways is invisible from the outside. This project makes the invisible visible by providing the finalization stage of the OpenTelemetry pipeline: PII scrubbing, rate limiting, LLM cost tracking, intelligent tail-based sampling, tool effectiveness measurement, and multi-backend export (Jaeger, Azure Monitor, Prometheus).
 
-Infrastructure.Observability is the finalization stage of the OpenTelemetry pipeline. By the time a trace reaches this layer, it's already been instrumented by Application.Common (base harness sources) and Application.AI.Common (AI-specific sources). This project applies the final processing — PII scrubbing, rate limiting, cost tracking, intelligent sampling, and tool effectiveness measurement — before traces and metrics are exported to Jaeger, Azure Monitor, and Prometheus.
+By the time a trace reaches this layer, it has already been instrumented by `Application.AI.Common` (AI-specific metrics and sources). This project applies the final processing at Order 300 (Finalization) before export, plus provides services for budget tracking, session health monitoring, and observability data persistence.
 
----
+## Architecture Context
 
-## The Processor Pipeline
+```
+                    OpenTelemetry Pipeline (ordered by ITelemetryConfigurator.Order)
+                    ═══════════════════════════════════════════════════════════════
 
-Five processors run in strict order. The order matters — PII must be scrubbed before export, cost must be tracked before sampling drops spans, and effectiveness must be measured on every span regardless of sampling decisions.
+Order 100: Application.AI.Common.AiTelemetryConfigurator
+           → Registers AI activity sources, custom metrics (session, orchestration, safety, RAG)
 
-### 1. PII Filtering
+Order 300: Infrastructure.Observability.ObservabilityTelemetryConfigurator  ← THIS PROJECT
+           → Adds processors (PII → Rate Limit → Token Track → Tool Effectiveness → Sampling)
+           → Configures exporters (OTLP/Jaeger, Azure Monitor)
 
-`PiiFilteringProcessor` runs first because nothing leaves the harness with sensitive data attached. It performs a two-pass scan: first identifying attributes that match PII patterns (auth headers, user identifiers, email addresses), then either removing them or replacing them with SHA-256 hashes.
+                         ┌──────────────────────────────┐
+        Activity Span    │  PiiFilteringProcessor       │  Scrub sensitive attributes
+             │           │  RateLimitingProcessor       │  Token bucket throttling
+             ▼           │  LlmTokenTrackingProcessor   │  Cost aggregation + cache hits
+        [Processors]  →  │  ToolEffectivenessProcessor  │  Result quality enrichment
+             │           │  ToolUsefulnessProcessor     │  Composite 0-1 score
+             ▼           │  CausalSpanAttributionProcessor │  Cross-span attribute bridging
+        [Sampling]       │  TailBasedSamplingProcessor  │  Keep errors/slow/AI, sample rest
+             │           └──────────────────────────────┘
+             ▼
+        [Exporters]  →  OTLP (Jaeger/Tempo) | Azure Monitor | Prometheus
+```
 
-The matching is case-insensitive to handle SDK variation — Azure SDK tags attributes as `Authorization` while custom code might use `authorization` or `auth_header`. All variations get caught.
+**Additional services:**
+- `BudgetTrackingService` -- cost spend state machine with ObservableGauge callbacks
+- `AgentConfigInfoService` -- reports agent configurations as metric labels
+- `SessionHealthService` -- per-agent health score gauge
+- `PostgresObservabilityStore` / `NullObservabilityStore` -- session/message/tool data persistence
 
-### 2. Rate Limiting
+## Key Concepts
 
-`RateLimitingProcessor` prevents trace storms from overwhelming the export backend. It implements a token bucket algorithm: configurable spans-per-second throughput with burst capacity. Excess spans are dropped silently, with periodic summary logs so you know *that* dropping happened without amplifying the log volume.
+### Processor Pipeline (Order Matters)
 
-This matters because a single orchestrated task can generate hundreds of spans — one per tool call, per turn, per sub-agent. Without rate limiting, a complex task could saturate the Jaeger backend.
+The seven processors execute in strict sequence. PII scrubbing runs first (sensitive data never lingers in memory), cost tracking runs before sampling (cost is always recorded even for sampled-out spans), and tail-based sampling runs last (all metrics are already captured).
 
-### 3. LLM Token Cost Tracking
+#### 1. PII Filtering Processor
 
-`LlmTokenTrackingProcessor` reads `gen_ai.usage.*` attributes from LLM spans — input tokens, output tokens, cache read/write tokens — and records cost metrics. It uses configurable per-model pricing to estimate dollar costs per turn and tracks prompt cache hit rates for efficiency analysis.
+Scans span attributes for sensitive patterns (auth headers, emails, user IDs) and replaces them with SHA-256 hashes or removes them entirely. Case-insensitive matching handles SDK variation (`Authorization` vs `authorization` vs `auth_header`).
 
-This processor runs before sampling because cost data is too valuable to lose. Even if a trace is sampled out, the cost metrics still get recorded.
+```csharp
+// Config: AppConfig.Observability.PiiFiltering.Enabled = true
+```
 
-### 4. Tail-Based Sampling
+#### 2. Rate Limiting Processor
 
-`TailBasedSamplingProcessor` makes the keep/drop decision after seeing the complete trace. It buffers spans by trace ID, then applies sampling policies:
+Token bucket algorithm preventing trace storms from overwhelming export backends. A complex orchestrated task can generate hundreds of spans -- without throttling, it could saturate Jaeger.
 
-- **Always keep** error traces (any span with an error status)
-- **Always keep** slow traces (duration exceeds configurable threshold)
-- **Always keep** AI agent execution traces (orchestration-level spans)
-- **Probabilistically sample** everything else
+```csharp
+// Config: AppConfig.Observability.RateLimiting.Enabled = true
+// Config: AppConfig.Observability.RateLimiting.SpansPerSecond = 100
+```
 
-This means you never lose visibility into failures or performance problems, while routine successful traces are sampled down to control storage costs. The buffer includes overflow eviction to prevent unbounded memory growth during burst traffic.
+#### 3. LLM Token Cost Tracking
 
-### 5. Tool Effectiveness
+Reads `gen_ai.usage.*` attributes (input tokens, output tokens, cache read/write tokens) and records per-model cost estimates. Tracks prompt cache hit rates for efficiency analysis. Feeds the `BudgetTrackingService` state machine.
 
-`ToolEffectivenessProcessor` enriches `execute_tool` spans with quality signals: result size in characters, whether the result was empty, and whether it was truncated. It records metrics for tool execution duration, invocation counts, error rates, and empty result frequency.
+#### 4. Tool Effectiveness Processor
 
-This data answers questions like: "Is the file search tool actually returning useful results, or is the agent calling it repeatedly and getting nothing?"
+Enriches `execute_tool` spans with quality signals: result size, empty-result detection, truncation. Records histogram metrics for tool duration, invocation counts, and error rates.
 
-## Exporters
+#### 5. Tool Usefulness Processor
 
-The `ObservabilityTelemetryConfigurator` wires all five processors into the OpenTelemetry pipeline, then configures export targets:
+Computes a composite 0-1 usefulness score per tool call based on multiple heuristic signals. Enables "is this tool actually helping the agent?" analysis.
 
-- **OTLP (Jaeger/Tempo)** — Distributed traces via gRPC protocol
-- **Azure Monitor** — Traces and metrics to Application Insights
-- **Prometheus** — Metrics scraping endpoint for Grafana dashboards
+#### 6. Causal Span Attribution Processor
 
-Export targets are conditional — if Jaeger isn't configured, it's skipped. If Azure Monitor isn't configured, it's skipped. The harness adapts to whatever observability infrastructure is available.
+Bridges attributes between related spans (e.g., `agent.tool.name` to `gen_ai.tool.name`). Adds input hashes and result categories. Reads eval context from Activity baggage for cross-span correlation.
 
----
+#### 7. Tail-Based Sampling
+
+Unlike head-based sampling (decided at trace start with incomplete info), tail-based sampling buffers spans by trace ID and evaluates the complete trace before deciding:
+
+- **Always keep** traces containing error spans
+- **Always keep** traces exceeding the slow-request threshold
+- **Always keep** traces with AI agent execution attributes
+- **Probabilistically sample** remaining traces at configurable percentage
+
+```csharp
+// Config: AppConfig.Observability.Sampling
+{
+  "Enabled": true,
+  "DefaultSamplingPercentage": 25,
+  "SlowRequestThresholdMs": 5000,
+  "AlwaysKeepErrors": true,
+  "AlwaysKeepAgentExecutions": true,
+  "MaxBufferedTraces": 10000,
+  "DecisionWait": "00:00:10"
+}
+```
+
+The buffer includes overflow eviction (oldest traces dropped first) to prevent unbounded memory growth during burst traffic.
+
+### Export Targets
+
+The `ObservabilityTelemetryConfigurator` configures conditional export:
+
+| Target | Protocol | When Active |
+|--------|----------|-------------|
+| OTLP (Jaeger/Tempo) | gRPC | `Exporters.Otlp.Enabled = true` + endpoint configured |
+| Azure Monitor | Application Insights SDK | `Exporters.AzureMonitor.Enabled = true` + connection string |
+| Prometheus | HTTP scrape endpoint (`/metrics`) | Always (configured in Presentation.Common) |
+
+### Budget Tracking Service
+
+A state machine that aggregates LLM costs across all agent turns and exposes them via ObservableGauge callbacks. When budget limits are exceeded, it can signal the orchestration layer to degrade gracefully.
+
+### Observability Persistence
+
+`PostgresObservabilityStore` persists session metadata, messages, tool executions, and safety events to PostgreSQL. Falls back to `NullObservabilityStore` (silent no-op with a warning log) when no connection string is configured.
 
 ## Project Structure
 
 ```
 Infrastructure.Observability/
 ├── Exporters/
-│   └── ObservabilityTelemetryConfigurator.cs  Pipeline orchestrator (Order 300)
+│   └── ObservabilityTelemetryConfigurator.cs     Pipeline orchestrator (Order 300)
+├── Persistence/
+│   ├── PostgresObservabilityStore.cs             Session/message/tool persistence
+│   └── NullObservabilityStore.cs                 No-op fallback (logs warning)
 ├── Processors/
-│   ├── PiiFilteringProcessor.cs               SHA-256 hashing of sensitive attributes
-│   ├── RateLimitingProcessor.cs               Token bucket span throttling
-│   ├── LlmTokenTrackingProcessor.cs           Cost estimation + cache hit tracking
-│   ├── TailBasedSamplingProcessor.cs          Error/slow/AI-aware trace sampling
-│   └── ToolEffectivenessProcessor.cs          Result quality enrichment + metrics
-└── DependencyInjection.cs                     Registers configurator at Order 300
+│   ├── PiiFilteringProcessor.cs                  SHA-256 hashing of sensitive attributes
+│   ├── RateLimitingProcessor.cs                  Token bucket span throttling
+│   ├── LlmTokenTrackingProcessor.cs             Cost estimation + cache hit tracking
+│   ├── TailBasedSamplingProcessor.cs            Error/slow/AI-aware trace sampling
+│   ├── ToolEffectivenessProcessor.cs            Result quality enrichment + metrics
+│   ├── ToolUsefulnessProcessor.cs               Composite 0-1 usefulness score
+│   └── CausalSpanAttributionProcessor.cs        Cross-span attribute bridging
+├── Services/
+│   ├── AgentConfigInfoService.cs                Agent config as metric labels
+│   ├── BudgetTrackingService.cs                 Cost state machine + ObservableGauge
+│   ├── NullBudgetTrackingService.cs             No-op when budget tracking disabled
+│   └── SessionHealthService.cs                  Per-agent health score gauge
+└── DependencyInjection.cs                       AddInfrastructureObservabilityDependencies()
 ```
+
+## Key Types Reference
+
+| Type | Purpose | Lifetime |
+|------|---------|----------|
+| `ObservabilityTelemetryConfigurator` | Wires processors + exporters into OTel pipeline | Singleton |
+| `TailBasedSamplingProcessor` | Deferred trace-level keep/drop decisions | Created by configurator |
+| `PiiFilteringProcessor` | Scrub sensitive span attributes | Created by configurator |
+| `LlmTokenTrackingProcessor` | Token count → cost metrics | Created by configurator |
+| `ToolEffectivenessProcessor` | Tool result quality enrichment | Created by configurator |
+| `BudgetTrackingService` | LLM cost aggregation state machine | Singleton |
+| `PostgresObservabilityStore` | Observability data persistence | Singleton |
+| `SessionHealthService` | Per-agent health score gauge | Singleton |
+
+## Configuration
+
+```json
+{
+  "AppConfig": {
+    "Observability": {
+      "PostgresConnectionString": "Host=localhost;Port=5432;Database=observability;Username=observability;Password=observability",
+      "EnableSensitiveTelemetry": false,
+      "WebTelemetryProjects": ["Infrastructure.AI.MCPServer", "Presentation.AgentHub"],
+      "PiiFiltering": { "Enabled": true },
+      "RateLimiting": { "Enabled": true, "SpansPerSecond": 100 },
+      "BudgetTracking": { "Enabled": false },
+      "Sampling": {
+        "Enabled": true,
+        "DefaultSamplingPercentage": 25,
+        "SlowRequestThresholdMs": 5000,
+        "AlwaysKeepErrors": true,
+        "AlwaysKeepAgentExecutions": true,
+        "MaxBufferedTraces": 10000,
+        "DecisionWait": "00:00:10"
+      },
+      "Exporters": {
+        "Otlp": {
+          "Enabled": true,
+          "Endpoint": "http://localhost:4317",
+          "Timeout": "00:00:10"
+        },
+        "AzureMonitor": {
+          "Enabled": false,
+          "ConnectionString": ""
+        }
+      }
+    }
+  }
+}
+```
+
+## How to Run
+
+This is a class library consumed by Presentation hosts. To see observability in action:
+
+```bash
+# Start infrastructure (PostgreSQL, Jaeger, Prometheus)
+.\scripts\start-infrastructure.ps1
+
+# Run AgentHub (exports traces to Jaeger on localhost:4317)
+dotnet run --project src/Content/Presentation/Presentation.AgentHub
+
+# View traces: http://localhost:16686 (Jaeger UI)
+# View metrics: http://localhost:52000/metrics (Prometheus scrape endpoint)
+```
+
+## Common Tasks
+
+### Adding a New Processor
+
+1. Create a class extending `BaseProcessor<Activity>` in `Processors/`
+2. Override `OnEnd(Activity data)` to process completed spans
+3. Register it in `ObservabilityTelemetryConfigurator.ConfigureTracing()` at the correct pipeline position
+4. Add a config flag in `ObservabilityConfig` to enable/disable it
+
+### Adding a New Export Target
+
+1. Add config section in `Domain.Common.Config.Observability`
+2. Add conditional exporter registration in `ObservabilityTelemetryConfigurator.ConfigureTracing()` and/or `ConfigureMetrics()`
+
+### Debugging Missing Spans
+
+1. Check `AppConfig.Observability.Sampling.Enabled` -- if true, non-error/non-slow traces may be sampled out
+2. Check `RateLimiting.SpansPerSecond` -- high-throughput scenarios may be throttled
+3. Check the OTLP endpoint is reachable: `curl http://localhost:4317`
 
 ## Dependencies
 
-- **Application.Common** — `ITelemetryConfigurator` interface
-- **Application.AI.Common** — AI-specific metrics and source names
-- **Domain.AI** — Telemetry convention constants
-- **OpenTelemetry** — Base SDK
-- **OpenTelemetry.Exporter.OpenTelemetryProtocol** — OTLP/gRPC export
-- **Azure.Monitor.OpenTelemetry.Exporter** — Azure Application Insights
-- **OpenTelemetry.Exporter.Prometheus.AspNetCore** — Prometheus metrics endpoint
+**Project References:**
+- `Application.Common` -- `ITelemetryConfigurator` interface, `IObservabilityStore`
+- `Application.AI.Common` -- `IBudgetTrackingService`, AI metric types
+- `Domain.AI` -- Telemetry convention constants (`AgentConventions`, `GenAiSystem*`)
+
+**NuGet Packages:**
+- `OpenTelemetry` -- Base SDK (`BaseProcessor<Activity>`)
+- `OpenTelemetry.Exporter.OpenTelemetryProtocol` -- OTLP/gRPC export
+- `Azure.Monitor.OpenTelemetry.Exporter` -- Application Insights traces + metrics
+- `OpenTelemetry.Exporter.Prometheus.AspNetCore` -- Prometheus scraping
+- `Npgsql` -- PostgreSQL persistence
+- `Microsoft.Extensions.Options` / `Microsoft.Extensions.Logging`
+
+## Testing
+
+**Test project:** `Tests/Infrastructure.Observability.Tests`
+
+```bash
+dotnet test src/AgenticHarness.slnx --filter "FullyQualifiedName~Infrastructure.Observability"
+```
+
+**Coverage areas:**
+- Tail-based sampling decisions (error keeps, slow keeps, probabilistic)
+- Buffer overflow eviction ordering
+- PII attribute detection and hashing
+- Rate limiter token bucket behavior
+- LLM cost calculation with model pricing
+- Tool effectiveness metric recording

@@ -41,14 +41,25 @@ public sealed class DemoMetricsService : IPrometheusQueryService
         ["budget_status"] = (0, 0.0),
         ["user_activity_turns"] = (45, 0.20),
         ["user_activity_cost"] = (0.035, 0.25),
+        ["governance_decisions"] = (45, 0.15),
+        ["governance_violations"] = (3, 0.40),
+        ["governance_evaluation_duration"] = (2.5, 0.20),
+        ["governance_rate_limit_hits"] = (1, 0.50),
+        ["governance_audit_events"] = (50, 0.15),
+        ["governance_injection_detections"] = (2, 0.45),
+        ["governance_mcp_scans"] = (30, 0.15),
+        ["governance_mcp_threats"] = (1, 0.50),
     };
 
     private static readonly Dictionary<string, (string LabelKey, string[] LabelValues, double[] BaseValues)> MultiSeriesProfiles = new()
     {
         ["by (model)"] = ("model", ["claude-3-opus", "claude-3-sonnet", "gpt-4o"], [5000, 12000, 3000]),
+        ["by (agent_name)"] = ("agent_name", ["default", "echo-test", "research-agent"], [25, 18, 7]),
         ["by (agent_tool_name)"] = ("agent_tool_name", ["file_search", "code_exec", "web_fetch"], [150, 80, 45]),
         ["by (category)"] = ("category", ["violence", "sexual_content", "hate_speech"], [5, 2, 1]),
         ["by (source)"] = ("source", ["docs.md", "readme.md", "api-ref.md"], [120, 85, 60]),
+        ["by (agent_governance_action)"] = ("agent_governance_action", ["allow", "deny", "warn"], [38, 3, 4]),
+        ["by (agent_governance_tool)"] = ("agent_governance_tool", ["execute_command", "shell_exec", "raw_http", "file_delete"], [1.2, 0.8, 0.5, 0.3]),
     };
 
     /// <inheritdoc />

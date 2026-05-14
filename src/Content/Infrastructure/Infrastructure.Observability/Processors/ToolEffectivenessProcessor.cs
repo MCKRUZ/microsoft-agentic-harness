@@ -46,7 +46,9 @@ public sealed class ToolEffectivenessProcessor : BaseProcessor<Activity>
         if (!string.Equals(opName, ToolConventions.ExecuteToolOperation, StringComparison.Ordinal))
             return;
 
-        var toolName = data.GetTagItem(ToolConventions.Name) as string ?? "unknown";
+        var toolName = data.GetTagItem(ToolConventions.Name) as string
+            ?? data.GetTagItem(ToolConventions.GenAiToolName) as string
+            ?? "unknown";
         var result = data.GetTagItem(ToolConventions.ToolCallResult) as string;
 
         // Enrich span with effectiveness attributes

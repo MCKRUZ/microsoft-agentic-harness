@@ -32,4 +32,10 @@ public enum AIAgentFrameworkClientType
 	/// Required for Claude models, which do not support the OpenAI-compatible inference endpoint.
 	/// </summary>
 	Anthropic,
+
+	/// <summary>
+	/// Deterministic echo client for E2E testing — returns canned responses with simulated
+	/// tool calls and token usage. Requires no external API keys or endpoints.
+	/// </summary>
+	Echo,
 }

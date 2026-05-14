@@ -26,7 +26,7 @@ describe('SessionsPage', () => {
       { timeout: 3000 },
     );
 
-    expect(screen.getByText('ResearchAgent')).toBeInTheDocument();
+    expect(screen.getAllByText('ResearchAgent').length).toBeGreaterThanOrEqual(1);
   });
 
   it('displays agent names and models in the table', async () => {
