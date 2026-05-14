@@ -601,3 +601,43 @@ public static class LearningsMetrics
 - `TimeProvider` injected everywhere — never use `DateTimeOffset.UtcNow` directly.
 - Namespace: `Application.Core.CQRS.Learnings` for handlers, `Application.AI.Common.OpenTelemetry.Metrics` for metrics, `Domain.AI.Telemetry.Conventions` for conventions.
 - XML docs on all public types and methods — this is a template, docs are teaching material.
+
+---
+
+## Actual Implementation Notes
+
+**Status:** Complete. Build green, 59 tests pass (34 new + 25 pre-existing).
+
+### Deviations from Plan
+
+| # | Planned | Actual | Rationale |
+|---|---------|--------|-----------|
+| 1 | Sequential embedding in RecallQueryHandler (foreach loop) | Parallel embedding via `Task.WhenAll` | Code review fix — O(n) sequential API calls replaced with parallel for performance |
+| 2 | MinRelevance filter after diversity injection (step 10) | MinRelevance filter BEFORE diversity injection | Code review fix — filtering after diversity could remove injected diversity picks that were below threshold, defeating the purpose |
+| 3 | Bare `_ = _mediator.Send(...)` fire-and-forget | Wrapped in `RecordAccessSafeAsync` helper with try/catch | Code review fix — unhandled exceptions in fire-and-forget would crash the process |
+| 4 | ImproveLearningCommandHandler disabled returns `default!` | Returns `CreateDisabledPlaceholder(request.LearningId)` with valid `LearningEntry` | Code review fix — null return violated caller expectations; matches RememberHandler pattern |
+| 5 | RecordLearningAccessCommandHandler ignores UpdateAsync result | Logs UpdateAsync failures at Warning level | Code review fix — silent failures hid store errors |
+| 6 | Baseline adjustment threshold signaling in ImproveLearningCommandHandler (step 8) | Deferred — handler returns updated entry, section-17 bridge checks threshold | Keeps handler focused on EMA; bridge owns cross-concern coordination |
+| 7 | `CosineSimilarity` and `ApplyDiversityInjection` as `private static` | Made `internal static` | Enables direct unit testing without going through full handler pipeline |
+
+### Additional Changes Not in Plan
+
+- `Application.Core.Tests.csproj`: Added `<PackageReference Include="Microsoft.Extensions.TimeProvider.Testing" />` for `FakeTimeProvider`
+- All test files use a shared helper pattern: `CreateOptions(LearningsConfig)` wrapping `Mock<IOptionsMonitor<AppConfig>>`
+
+### Test Coverage
+
+| Test File | Test Count |
+|-----------|-----------|
+| RememberCommandHandlerTests | 7 |
+| RecallQueryHandlerTests | 7 |
+| ForgetCommandHandlerTests | 3 |
+| ImproveLearningCommandHandlerTests | 8 |
+| RecordLearningAccessCommandHandlerTests | 3 |
+| LearningsMetricsTests | 6 |
+| **Total new tests** | **34** |
+
+### Code Review Trail
+
+- Review: `planning/phase3-quality-loop/implementation/code_review/section-13-review.md`
+- Interview: `planning/phase3-quality-loop/implementation/code_review/section-13-interview.md`
