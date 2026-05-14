@@ -271,3 +271,39 @@ dotnet test src/Content/Tests/Presentation.AgentHub.Tests/Presentation.AgentHub.
 ```
 
 All 7 tests should pass. The notifier depends on `IDriftNotificationChannel` (section 05) and domain types (section 01) being available at compile time. If those sections are not yet implemented, create minimal stub interfaces/records to unblock compilation, or implement this section after sections 01 and 05 are complete.
+
+---
+
+## Actual Implementation Notes
+
+**Status:** Complete. Build green, 12 tests pass.
+
+### Deviations from Plan
+
+| # | Planned | Actual | Rationale |
+|---|---------|--------|-----------|
+| 1 | Plan specified 7 tests | 12 tests implemented | Code review identified 3 missing coverage areas: OperationCanceledException propagation, null-writer for resolved path, writer-throws for resolved path |
+| 2 | `MapToEvent` allocated Dictionary before severity switch | Early return for `DriftSeverity.None` before allocation | Code review fix — avoided wasted allocation for the no-drift case |
+| 3 | Plan mentioned DriftEscalateEvent with optional EscalationId | Used `string.Empty` sentinel as default | Matches plan's "simplest approach" — clients correlate with escalation-requested events by timestamp and scope |
+
+### Test Coverage
+
+| Test | Description |
+|------|-------------|
+| NotifyDriftDetectedAsync_WarnSeverity_WritesDriftWarnEvent | Warn → DriftWarnEvent with correct fields |
+| NotifyDriftDetectedAsync_AlertSeverity_WritesDriftAlertEvent | Alert → DriftAlertEvent with BaselineId |
+| NotifyDriftDetectedAsync_EscalateSeverity_WritesDriftEscalateEvent | Escalate → DriftEscalateEvent with empty EscalationId |
+| NotifyDriftDetectedAsync_NoneSeverity_DoesNotWrite | None → no SSE event emitted |
+| NotifyDriftResolvedAsync_WritesDriftResolvedEvent | Resolved drift → DriftResolvedEvent with resolution details |
+| NotifyDriftResolvedAsync_NullResolution_DoesNotWrite | Unresolved drift → no event |
+| NotifyDriftDetectedAsync_NoWriter_SilentlyReturns | No active run → silent no-op |
+| NotifyDriftDetectedAsync_WriterThrows_CatchesAndDoesNotThrow | Non-cancellation exception → caught |
+| NotifyDriftDetectedAsync_DimensionsMapCorrectly | Enum→string keys, Deviation values |
+| NotifyDriftDetectedAsync_OperationCanceledException_Propagates | Cancellation → propagates (not swallowed) |
+| NotifyDriftResolvedAsync_NoWriter_SilentlyReturns | No active run for resolved path |
+| NotifyDriftResolvedAsync_WriterThrows_CatchesAndDoesNotThrow | Exception handling for resolved path |
+
+### Code Review Trail
+
+- Review: `planning/phase3-quality-loop/implementation/code_review/section-14-review.md`
+- Interview: `planning/phase3-quality-loop/implementation/code_review/section-14-interview.md`
