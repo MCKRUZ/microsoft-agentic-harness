@@ -15,6 +15,7 @@
     <!-- Infrastructure layer -->
     <ProjectReference Include="..\..\Infrastructure\Infrastructure.Common\Infrastructure.Common.csproj" />
     <ProjectReference Include="..\..\Infrastructure\Infrastructure.AI\Infrastructure.AI.csproj" />
+    <ProjectReference Include="..\..\Infrastructure\Infrastructure.AI.KnowledgeGraph\Infrastructure.AI.KnowledgeGraph.csproj" />
     <ProjectReference Include="..\..\Infrastructure\Infrastructure.AI.Governance\Infrastructure.AI.Governance.csproj" />
     <ProjectReference Include="..\..\Infrastructure\Infrastructure.AI.RAG\Infrastructure.AI.RAG.csproj" />
     <ProjectReference Include="..\..\Infrastructure\Infrastructure.AI.Connectors\Infrastructure.AI.Connectors.csproj" />

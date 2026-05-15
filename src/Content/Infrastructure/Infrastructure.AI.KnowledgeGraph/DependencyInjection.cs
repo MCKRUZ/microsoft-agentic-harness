@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces.KnowledgeGraph;
+using Application.AI.Common.Interfaces.Learnings;
 using Application.AI.Common.Interfaces.RAG;
 using Application.AI.Common.Interfaces.Skills;
 using Domain.Common.Config;
@@ -155,6 +156,20 @@ public static class DependencyInjection
                     sp.GetRequiredService<IKnowledgeGraphStore>(),
                     sp.GetRequiredService<ILogger<GraphSkillAmendmentProvider>>()));
         }
+
+        // --- Learnings Store (keyed DI) ---
+
+        services.AddKeyedSingleton<ILearningsStore>("graph", (sp, _) =>
+            new Learnings.GraphLearningsStore(
+                sp.GetRequiredService<IKnowledgeGraphStore>(),
+                sp.GetRequiredService<ILogger<Learnings.GraphLearningsStore>>()));
+
+        services.AddKeyedSingleton<ILearningsStore>("in_memory", (_, _) =>
+            new Learnings.InMemoryLearningsStore());
+
+        var learningsProvider = appConfig.AI.Learnings.StoreProvider;
+        services.AddSingleton<ILearningsStore>(sp =>
+            sp.GetRequiredKeyedService<ILearningsStore>(learningsProvider));
 
         return services;
     }

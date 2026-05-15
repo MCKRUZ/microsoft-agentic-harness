@@ -6,11 +6,14 @@ using Domain.Common.Config;
 using Domain.Common.Config.AI.Resilience;
 using FluentAssertions;
 using Infrastructure.AI.Escalation;
+using Infrastructure.AI.KnowledgeGraph;
 using Infrastructure.AI.Resilience;
+using MediatR;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Moq;
 using Xunit;
 
 namespace Infrastructure.AI.Tests;
@@ -24,8 +27,11 @@ public sealed class DependencyInjectionTests
 
         // Register dependencies that Infrastructure.AI expects
         services.AddLogging(b => b.AddConsole());
+        services.AddSingleton(TimeProvider.System);
         services.AddSingleton<IOptionsMonitor<AppConfig>>(
             new OptionsMonitorStub(config));
+        services.AddSingleton<ISender>(new Mock<ISender>().Object);
+        services.AddKnowledgeGraphDependencies(config);
 
         return services;
     }

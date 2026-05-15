@@ -1,7 +1,9 @@
 using System.Diagnostics;
 using System.Threading.RateLimiting;
 using Application.AI.Common.Interfaces;
+using Application.AI.Common.Interfaces.DriftDetection;
 using Application.AI.Common.Interfaces.Escalation;
+using Application.AI.Common.Interfaces.Learnings;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Http;
@@ -184,6 +186,8 @@ public static class DependencyInjection
 
         services.AddSingleton<IAgUiEventWriterAccessor, AgUiEventWriterAccessor>();
         services.AddSingleton<IEscalationNotificationChannel, AgUiEscalationNotifier>();
+        services.AddSingleton<IDriftNotificationChannel, AgUiDriftNotifier>();
+        services.AddSingleton<ILearningNotificationChannel, AgUiLearningNotifier>();
 
         // Scoped: AgUiRunHandler takes per-request dependencies (ClaimsPrincipal, CancellationToken).
         services.AddScoped<AgUi.AgUiRunHandler>();

@@ -88,6 +88,14 @@
     "section-15-learnings-sse": {
       "status": "complete",
       "commit_hash": "204ead3"
+    },
+    "section-16-escalation-bridge": {
+      "status": "complete",
+      "commit_hash": "474400c"
+    },
+    "section-17-learnings-bridge": {
+      "status": "complete",
+      "commit_hash": "4b8197a"
     }
   },
   "pre_commit": {

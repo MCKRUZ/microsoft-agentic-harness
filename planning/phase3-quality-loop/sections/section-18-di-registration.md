@@ -268,16 +268,38 @@ MediatR command handlers (`RememberCommandHandler`, `RecallQueryHandler`, etc. f
 
 Verify that the assembly containing the command handlers (`Application.Core`) is already scanned. Check `Application.Core/DependencyInjection.cs` for the MediatR assembly registration.
 
-## File Summary
+## Actual Implementation
+
+### Deviations from Plan
+
+1. **AIConfig.cs already had DriftDetection and Learnings properties** — Added in sections 03-04. Step 1 (Update AIConfig.cs) was skipped entirely.
+
+2. **Config section bindings pulled forward from section-19** — `Configure<DriftDetectionConfig>` and `Configure<LearningsConfig>` were added to `RegisterConfigSections` in this section because `DefaultLearningDecayService` takes `IOptionsMonitor<LearningsConfig>` (not `IOptionsMonitor<AppConfig>`). Section-19 can skip these bindings.
+
+3. **Existing DependencyInjectionTests required updates** — The new drift/learnings registrations introduced transitive dependencies (`ISender` for `DriftEscalationBridge`, `TimeProvider`, `IKnowledgeGraphStore`) that the existing test helper didn't provide. Fixed by adding `TimeProvider.System`, `Mock<ISender>`, and `AddKnowledgeGraphDependencies` to `CreateBaseServices`.
+
+4. **Hardcoded baseline store default** — Unlike `ILearningsStore` which resolves from `LearningsConfig.StoreProvider`, `IDriftBaselineStore` defaults to `"graph"` because `DriftDetectionConfig` has no `BaselineProvider` property. Documented with a comment explaining EWMA continuity requires persistent storage.
+
+5. **Project references added** — `Presentation.Common.csproj` and `Infrastructure.AI.Tests.csproj` both needed `Infrastructure.AI.KnowledgeGraph` project references for the `AddKnowledgeGraphDependencies` extension method.
+
+### Files Created/Modified
 
 | File | Action |
 |------|--------|
-| `src/Content/Domain/Domain.Common/Config/AI/AIConfig.cs` | Add `DriftDetection` and `Learnings` properties |
-| `src/Content/Infrastructure/Infrastructure.AI/DependencyInjection.cs` | Add `RegisterDriftDetectionServices` + `RegisterLearningsServices`, add `DriftEscalationBridge` to escalation channels |
-| `src/Content/Infrastructure/Infrastructure.AI.KnowledgeGraph/DependencyInjection.cs` | Add keyed `ILearningsStore` registrations |
-| `src/Content/Presentation/Presentation.AgentHub/DependencyInjection.cs` | Add `AgUiDriftNotifier` and `AgUiLearningNotifier` |
-| `src/Content/Presentation/Presentation.Common/Extensions/IServiceCollectionExtensions.cs` | Ensure `AddKnowledgeGraphDependencies` is called (if not already) |
-| `src/Content/Tests/Infrastructure.AI.Tests/DriftLearningsDiTests.cs` | New test class with all DI resolution tests |
+| `src/Content/Infrastructure/Infrastructure.AI/DependencyInjection.cs` | Added `RegisterDriftDetectionServices` + `RegisterLearningsServices`, added `DriftEscalationBridge` to escalation channels |
+| `src/Content/Infrastructure/Infrastructure.AI.KnowledgeGraph/DependencyInjection.cs` | Added keyed `ILearningsStore` registrations ("graph"/"in_memory" + config-driven default) |
+| `src/Content/Presentation/Presentation.AgentHub/DependencyInjection.cs` | Added `AgUiDriftNotifier` and `AgUiLearningNotifier` channel registrations |
+| `src/Content/Presentation/Presentation.Common/Extensions/IServiceCollectionExtensions.cs` | Added `AddKnowledgeGraphDependencies` to composition root + `Configure<DriftDetectionConfig>`/`Configure<LearningsConfig>` section bindings |
+| `src/Content/Presentation/Presentation.Common/Presentation.Common.csproj` | Added project reference to Infrastructure.AI.KnowledgeGraph |
+| `src/Content/Tests/Infrastructure.AI.Tests/DriftLearningsDiTests.cs` | New: 15 DI resolution tests |
+| `src/Content/Tests/Infrastructure.AI.Tests/DependencyInjectionTests.cs` | Updated: added TimeProvider, ISender mock, KnowledgeGraph deps to test helper |
+| `src/Content/Tests/Infrastructure.AI.Tests/Infrastructure.AI.Tests.csproj` | Added project reference to Infrastructure.AI.KnowledgeGraph |
+
+### Test Results
+
+- DriftLearningsDiTests: 15/15 passed
+- DependencyInjectionTests: 13/13 passed (no regressions)
+- Total new + regression-verified: 28/28 passed
 
 ## Key Patterns to Follow
 

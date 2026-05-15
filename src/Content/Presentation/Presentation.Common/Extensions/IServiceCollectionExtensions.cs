@@ -15,6 +15,7 @@ using Domain.Common.Config.Observability;
 using Infrastructure.AI;
 using Infrastructure.AI.Connectors;
 using Infrastructure.AI.Governance;
+using Infrastructure.AI.KnowledgeGraph;
 using Infrastructure.AI.RAG;
 using Infrastructure.AI.MCP;
 using Infrastructure.APIAccess;
@@ -83,6 +84,10 @@ public static class IServiceCollectionExtensions
         services.Configure<CacheConfig>(configuration.GetSection("AppConfig:Cache"));
         services.Configure<EscalationConfig>(configuration.GetSection("AppConfig:AI:Governance:Escalation"));
         services.Configure<ResilienceConfig>(configuration.GetSection("AppConfig:AI:Resilience"));
+        services.Configure<Domain.Common.Config.AI.DriftDetection.DriftDetectionConfig>(
+            configuration.GetSection("AppConfig:AI:DriftDetection"));
+        services.Configure<Domain.Common.Config.AI.Learnings.LearningsConfig>(
+            configuration.GetSection("AppConfig:AI:Learnings"));
 
         return services;
     }
@@ -244,6 +249,7 @@ public static class IServiceCollectionExtensions
 
         // Infrastructure layer
         services.AddInfrastructureCommonDependencies();
+        services.AddKnowledgeGraphDependencies(appConfig);
         // RAG must register before Infrastructure.AI — tool registrations depend on IRagOrchestrator
         services.AddRagDependencies(appConfig);
         services.AddInfrastructureAIDependencies(appConfig);
