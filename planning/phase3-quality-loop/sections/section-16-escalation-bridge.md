@@ -240,8 +240,15 @@ Note: The full DI registration is handled in Section 18, but the bridge class it
 
 2. **Escalation resolved before requested notification:** In the composite fan-out, `NotifyEscalationRequestedAsync` fires before `NotifyEscalationResolvedAsync` (the escalation service calls `RecordAndNotifyRequestAsync` during creation and `ResolveEscalationAsync` during resolution). So the tracking dictionary will always be populated before resolution fires.
 
-3. **Memory leak from unresolved escalations:** If an escalation is requested but never resolved (process crash), the tracked request stays in the dictionary. Since escalations have timeouts (default 300s), this is bounded. For production hardening, a periodic cleanup of entries older than max timeout could be added, but is not required for this implementation.
+3. **Memory leak from unresolved escalations:** Addressed: `NotifyEscalationExpiringAsync` now removes tracked entries when escalations expire, preventing unbounded dictionary growth.
 
-4. **Circular dependency prevention:** The bridge injects `IDriftDetectionService` and `ISender`. The drift detection service does NOT inject the bridge. The escalation flow is: DriftService -> IEscalationService -> CompositeNotifier -> DriftEscalationBridge -> IDriftDetectionService (for resolution). This is a callback-style cycle through the notification system, not a constructor injection cycle. DI resolves correctly because all are singletons and the bridge never calls back into the escalation path.
+4. **Circular dependency prevention:** The bridge injects `IDriftNotifier` (not `IDriftDetectionService` — the service has no resolution method) and `ISender`. The escalation flow is: DriftService -> IEscalationService -> CompositeNotifier -> DriftEscalationBridge -> IDriftNotifier (for resolution notification). DI resolves correctly because all are singletons and the bridge never calls back into the escalation path.
+
+## Implementation Notes
+
+- **IDriftNotifier instead of IDriftDetectionService**: The spec called for `IDriftDetectionService` but that interface has no drift resolution method. The bridge uses `IDriftNotifier` to fan out resolution notifications (e.g., to AgUiDriftNotifier for SSE events).
+- **Synthetic DriftEvent**: The bridge builds a minimal `DriftEvent` for notifications. `AgUiDriftNotifier` only reads `EventId`, `Resolution.*` fields, so the minimal `DriftScore` is sufficient.
+- **Confidence constant**: `EscalationResolutionConfidence = 0.8` extracted to named constant per code review.
+- **13 tests**: 12 original + 1 expiring-cleanup test added during review.
 
 5. **Constant sharing:** `DriftEscalationBridge.DriftDetectionToolName` is the single source of truth for the `"drift_detection"` tool name convention. `DefaultDriftDetectionService` (Section 8) should reference this constant when building escalation requests rather than using a string literal.

@@ -84,6 +84,10 @@
     "section-14-drift-sse": {
       "status": "complete",
       "commit_hash": "5f0fb94"
+    },
+    "section-15-learnings-sse": {
+      "status": "complete",
+      "commit_hash": "204ead3"
     }
   },
   "pre_commit": {
