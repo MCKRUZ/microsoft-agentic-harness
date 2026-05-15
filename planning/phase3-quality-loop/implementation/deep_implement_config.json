@@ -76,6 +76,14 @@
     "section-12-learnings-store": {
       "status": "complete",
       "commit_hash": "bbad49f"
+    },
+    "section-13-command-handlers": {
+      "status": "complete",
+      "commit_hash": "c7f1a9c"
+    },
+    "section-14-drift-sse": {
+      "status": "complete",
+      "commit_hash": "5f0fb94"
     }
   },
   "pre_commit": {

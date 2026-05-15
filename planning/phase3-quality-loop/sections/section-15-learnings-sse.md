@@ -340,7 +340,14 @@ After implementation, run:
 
 ```powershell
 dotnet build src/Content/Presentation/Presentation.AgentHub/Presentation.AgentHub.csproj
-dotnet test src/Content/Tests/Presentation.AgentHub.Tests/Presentation.AgentHub.Tests.csproj --filter "FullyQualifiedName~AgUiLearningNotifier or FullyQualifiedName~AgUiLearningEventSerialization"
+dotnet test src/Content/Tests/Presentation.AgentHub.Tests/Presentation.AgentHub.Tests.csproj --filter "FullyQualifiedName~AgUiLearningNotifier|FullyQualifiedName~AgUiLearningEventSerialization"
 ```
 
-All 11 tests (6 notifier + 5 serialization) should pass. The notifier depends on `ILearningNotificationChannel` (section 06) and domain types (section 02) being available at compile time. If those sections are not yet implemented, create minimal stub interfaces/records to unblock compilation, or implement this section after sections 02 and 06 are complete.
+All 16 tests (9 notifier + 7 serialization) should pass. Notifier depends on `ILearningNotificationChannel` (section 06) and domain types (section 02).
+
+## Implementation Notes
+
+- **Tests added beyond spec**: Code review identified 3 test gaps (OperationCanceledException propagation for Applied path, round-trip deserialization for Applied and Forgotten events). Total: 16 tests vs. planned 11.
+- **Filter syntax**: dotnet test uses `|` not `or` for filter disjunction.
+- **AgUiEvents.cs at 382 lines**: Approaching 400-line limit. Plan to split into partial classes before Phase 4 adds more event types.
+- **DI registration**: Not included in this section — covered by section 18.

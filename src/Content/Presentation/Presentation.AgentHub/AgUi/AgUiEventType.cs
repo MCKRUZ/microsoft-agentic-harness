@@ -79,4 +79,13 @@ public static class AgUiEventType
 
     /// <summary>Signals that a previously detected drift has been resolved.</summary>
     public const string DriftResolved = "DRIFT_RESOLVED";
+
+    /// <summary>Signals that a new learning has been captured.</summary>
+    public const string LearningCaptured = "LEARNING_CAPTURED";
+
+    /// <summary>Signals that a learning was applied during agent execution.</summary>
+    public const string LearningApplied = "LEARNING_APPLIED";
+
+    /// <summary>Signals that a learning has been forgotten (soft-deleted).</summary>
+    public const string LearningForgotten = "LEARNING_FORGOTTEN";
 }
