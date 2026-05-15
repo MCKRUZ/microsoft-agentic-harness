@@ -1,0 +1,816 @@
+<section class="module" id="module-8">
+  <div class="module-number">08</div>
+
+  <!-- ============================================================
+       SCREEN 1 — Welcome to the Quality Loop
+       ============================================================ -->
+  <div class="screen" id="screen-8-1">
+    <h2 class="screen-title">The Quality Loop</h2>
+    <p class="screen-subtitle">Five new systems shipped in the last work cycle. Individually they each fix one problem. Together they form a feedback loop that lets the harness watch itself, catch itself getting worse, and learn from corrections.</p>
+
+    <p>So far the course has shown a harness that <em>runs</em> agents well. This module is about a harness that <em>improves</em> agents over time &mdash; without you sitting there grading every output.</p>
+
+    <p>Think of an autoimmune system. White blood cells (governance) check every request. When something looks risky, they flag it for a doctor (escalation). Long-term blood panels (drift detection) catch slow degradation that no single test would notice. The body remembers what made it sick before (learnings). And the autonomic nervous system (autonomy tiers) decides how much you have to think about any of this consciously. The five systems below are the harness's version of that.</p>
+
+    <div class="icon-rows" style="margin-top: var(--space-8);">
+      <div class="icon-row">
+        <div class="icon-circle" style="background: var(--color-actor-1)">A</div>
+        <div>
+          <strong>Autonomy Tiers</strong>
+          <p>The trust dial. Each agent runs as Restricted, Supervised, or Autonomous. This setting decides how often everything below has to fire.</p>
+        </div>
+      </div>
+      <div class="icon-row">
+        <div class="icon-circle" style="background: var(--color-actor-2)">G</div>
+        <div>
+          <strong>Governance</strong>
+          <p>YAML-defined rules + Microsoft AGT policy engine. Evaluates every tool call. Six possible verdicts: Allow, Deny, Warn, RequireApproval, Log, RateLimit.</p>
+        </div>
+      </div>
+      <div class="icon-row">
+        <div class="icon-circle" style="background: var(--color-actor-3)">E</div>
+        <div>
+          <strong>Escalation</strong>
+          <p>When governance returns RequireApproval, this pauses the agent and asks a human via Server-Sent Events. Times out gracefully if no one answers.</p>
+        </div>
+      </div>
+      <div class="icon-row">
+        <div class="icon-circle" style="background: var(--color-actor-4)">D</div>
+        <div>
+          <strong>Drift Detection</strong>
+          <p>Uses EWMA (a smoothed running average) to detect when an agent's quality scores slide away from a stored baseline. Four severity tiers escalate automatically.</p>
+        </div>
+      </div>
+      <div class="icon-row">
+        <div class="icon-circle" style="background: var(--color-actor-5)">L</div>
+        <div>
+          <strong>Learnings</strong>
+          <p>Natural-language facts captured from corrections, drift alerts, and escalation outcomes. They decay over time so old wisdom doesn't poison new behavior.</p>
+        </div>
+      </div>
+    </div>
+
+    <h3 style="margin-top: var(--space-12);">Meet the loop &mdash; in their own voice</h3>
+    <p>The five systems talk to each other on every interesting turn. Here is roughly what that conversation looks like when an agent does something governance doesn&rsquo;t love.</p>
+
+    <div class="chat-window" id="chat-module8-intro">
+      <div class="chat-messages">
+        <div class="chat-message" data-msg="0" data-sender="actor-1" style="display:none">
+          <div class="chat-avatar" style="background: var(--color-actor-1)">A</div>
+          <div class="chat-bubble">
+            <span class="chat-sender" style="color: var(--color-actor-1)">Autonomy</span>
+            <p>This agent is configured as Supervised. Default behavior is Ask. Specific tools may be pre-Allowed via tier overrides.</p>
+          </div>
+        </div>
+        <div class="chat-message" data-msg="1" data-sender="actor-2" style="display:none">
+          <div class="chat-avatar" style="background: var(--color-actor-2)">G</div>
+          <div class="chat-bubble">
+            <span class="chat-sender" style="color: var(--color-actor-2)">Governance</span>
+            <p>The agent just asked for <code>file_system.write</code> on <code>/etc/hosts</code>. Policy match: rule "system-files-need-approval". Decision: <code>RequireApproval</code>.</p>
+          </div>
+        </div>
+        <div class="chat-message" data-msg="2" data-sender="actor-3" style="display:none">
+          <div class="chat-avatar" style="background: var(--color-actor-3)">E</div>
+          <div class="chat-bubble">
+            <span class="chat-sender" style="color: var(--color-actor-3)">Escalation</span>
+            <p>Emitting <code>EscalationRequestedEvent</code> over AG-UI SSE. Approvers: ops-team. Timeout: 300 seconds. Blocking the turn until they vote.</p>
+          </div>
+        </div>
+        <div class="chat-message" data-msg="3" data-sender="actor-4" style="display:none">
+          <div class="chat-avatar" style="background: var(--color-actor-4)">D</div>
+          <div class="chat-bubble">
+            <span class="chat-sender" style="color: var(--color-actor-4)">Drift Detection</span>
+            <p>FYI: this agent&rsquo;s faithfulness scores have been trending down for three runs. EWMA deviation is at 1.8 sigma &mdash; just below the Alert threshold. Worth watching.</p>
+          </div>
+        </div>
+        <div class="chat-message" data-msg="4" data-sender="actor-5" style="display:none">
+          <div class="chat-avatar" style="background: var(--color-actor-5)">L</div>
+          <div class="chat-bubble">
+            <span class="chat-sender" style="color: var(--color-actor-5)">Learnings</span>
+            <p>I have an existing volatile learning that says &ldquo;agents writing to system paths is almost always a hallucination from outdated context.&rdquo; Reinforcing it.</p>
+          </div>
+        </div>
+        <div class="chat-message" data-msg="5" data-sender="actor-3" style="display:none">
+          <div class="chat-avatar" style="background: var(--color-actor-3)">E</div>
+          <div class="chat-bubble">
+            <span class="chat-sender" style="color: var(--color-actor-3)">Escalation</span>
+            <p>Approver ops-team voted Deny. Emitting <code>EscalationResolvedEvent</code>. The turn fails closed with <code>Result.GovernanceBlocked</code>.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="chat-typing" id="chat-module8-intro-typing" style="display:none">
+        <div class="chat-avatar" id="typing-avatar">?</div>
+        <div class="chat-typing-dots">
+          <span class="typing-dot"></span>
+          <span class="typing-dot"></span>
+          <span class="typing-dot"></span>
+        </div>
+      </div>
+
+      <div class="chat-controls">
+        <button class="btn chat-next-btn">Next Message</button>
+        <button class="btn chat-all-btn">Play All</button>
+        <button class="btn chat-reset-btn">Replay</button>
+        <span class="chat-progress"></span>
+      </div>
+    </div>
+
+    <div class="callout callout-accent">
+      <div class="callout-icon">&#x1F4A1;</div>
+      <div class="callout-content">
+        <strong class="callout-title">Why these five together</strong>
+        <p>Any one of these systems on its own is just a feature. Together they are a <em>loop</em>: governance catches risky calls &rarr; escalation surfaces them to humans &rarr; the human verdict becomes a learning &rarr; drift detection notices when patterns shift &rarr; autonomy tiers decide how aggressively the whole loop fires for each agent. That&rsquo;s the &ldquo;quality loop&rdquo;.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       SCREEN 2 — Autonomy Tiers
+       ============================================================ -->
+  <div class="screen" id="screen-8-2">
+    <h2 class="screen-title">Autonomy Tiers &mdash; The Trust Dial</h2>
+    <p class="screen-subtitle">Every agent has one knob that governs how much freedom it gets. Three positions: Restricted, Supervised, Autonomous.</p>
+
+    <p>Without autonomy tiers, you have two bad options: every agent asks for permission on every action (annoying, slow) or every agent runs unsupervised (terrifying). The tier is the per-agent compromise &mdash; a new internal-tools agent might start Restricted, a production support agent might be Supervised with a handful of pre-approved tools, and a fully-vetted research agent can be Autonomous.</p>
+
+    <div class="pattern-cards" style="margin-top: var(--space-8);">
+      <div class="pattern-card" style="border-top: 3px solid var(--color-actor-1)">
+        <div class="pattern-icon" style="background: var(--color-actor-1)">&#x1F512;</div>
+        <h4 class="pattern-title">Restricted</h4>
+        <p class="pattern-desc">Default behavior is <code>Ask</code>. Every action requires approval. Safety gates still apply as hard denies. Use for new agents, untrusted skills, demos.</p>
+      </div>
+      <div class="pattern-card" style="border-top: 3px solid var(--color-actor-2)">
+        <div class="pattern-icon" style="background: var(--color-actor-2)">&#x1F441;</div>
+        <h4 class="pattern-title">Supervised</h4>
+        <p class="pattern-desc">Default is also <code>Ask</code>, but specific tools can be pre-Allowed via <code>ToolOverrides</code> in tier policy. The most useful tier in practice &mdash; high oversight, low friction on the safe tools.</p>
+      </div>
+      <div class="pattern-card" style="border-top: 3px solid var(--color-actor-3)">
+        <div class="pattern-icon" style="background: var(--color-actor-3)">&#x1F680;</div>
+        <h4 class="pattern-title">Autonomous</h4>
+        <p class="pattern-desc">Default is <code>Allow</code>. Safety gates and AGT policies are still the ceiling. Use for stable, well-instrumented agents whose drift scores have stayed clean for a long time.</p>
+      </div>
+    </div>
+
+    <p style="margin-top: var(--space-8);">In code it&rsquo;s a single enum &mdash; deliberately small so it can be compared with <code>&gt;=</code> for &ldquo;requires at least tier X&rdquo; checks elsewhere in the harness.</p>
+
+    <div class="translation-block animate-in">
+      <div class="translation-code">
+        <span class="translation-label">CODE</span>
+        <pre><code>
+<span class="code-line"><span class="code-keyword">public enum</span> <span class="code-function">AutonomyLevel</span></span>
+<span class="code-line">{</span>
+<span class="code-line">    <span class="code-comment">/// Read-only tier. Default behavior is Ask, forcing approval for every action.</span></span>
+<span class="code-line">    <span class="code-comment">/// Safety gates handle true Deny scenarios.</span></span>
+<span class="code-line">    Restricted = 0,</span>
+<span class="code-line"></span>
+<span class="code-line">    <span class="code-comment">/// Recommend-and-wait tier. Default is also Ask, but Supervised agents</span></span>
+<span class="code-line">    <span class="code-comment">/// can have specific tool Allow overrides via ToolOverrides in tier policy.</span></span>
+<span class="code-line">    Supervised = 1,</span>
+<span class="code-line"></span>
+<span class="code-line">    <span class="code-comment">/// Act-within-guardrails tier. Default is Allow. Safety gates and AGT</span></span>
+<span class="code-line">    <span class="code-comment">/// policies still apply as a ceiling above the tier's baseline.</span></span>
+<span class="code-line">    Autonomous = 2</span>
+<span class="code-line">}</span>
+        </code></pre>
+      </div>
+      <div class="translation-english">
+        <span class="translation-label">PLAIN ENGLISH</span>
+        <div class="translation-lines">
+          <p class="tl">Define the three trust levels an agent can run at.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Most cautious tier. Every tool call needs human approval.</p>
+          <p class="tl">Safety gates &mdash; hard organizational denies &mdash; still apply regardless of tier.</p>
+          <p class="tl">Value 0 (lowest trust).</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Middle tier. Default is still "ask", but you can pre-allow specific tools (e.g. read-only file ops).</p>
+          <p class="tl">This is where most production agents live &mdash; oversight for the dangerous stuff, freedom for routine work.</p>
+          <p class="tl">Value 1.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Most trusted tier. Default is "allow" &mdash; the agent acts immediately.</p>
+          <p class="tl">Governance policies and safety gates can still block specific actions; the tier just sets the default.</p>
+          <p class="tl">Value 2 (highest trust).</p>
+          <p class="tl">&nbsp;</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="callout callout-info">
+      <div class="callout-icon">&#x1F4A1;</div>
+      <div class="callout-content">
+        <strong class="callout-title">Why an enum, not a config string</strong>
+        <p>Integer-backed enums let you write <code>if (agent.Tier &gt;= AutonomyLevel.Supervised)</code> &mdash; concise, type-safe, and impossible to typo. The XML doc comments above each value are the source of truth for what the tier <em>means</em>; the rest of the codebase reads them, so changing the comment changes the docs everywhere.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       SCREEN 3 — Governance
+       ============================================================ -->
+  <div class="screen" id="screen-8-3">
+    <h2 class="screen-title">Governance &mdash; The Rulebook Engine</h2>
+    <p class="screen-subtitle">Six decisions, one pipeline behavior, a YAML policy file. Sits at position 7 of the pipeline &mdash; between tool permission and the hook layer.</p>
+
+    <p><span class="term" data-definition="Governance in this harness means policy-driven evaluation of every tool call. The rules live in YAML files; an engine (Microsoft AGT) evaluates them at runtime and returns one of six decisions. Different from tool permissions, which are about what the agent is allowed to call at all &mdash; governance is about whether each specific call should proceed.">Governance</span> answers: &ldquo;Should this specific tool call, by this specific agent, on these specific arguments, proceed?&rdquo; The answer is one of six verdicts.</p>
+
+    <div class="step-cards" style="margin-top: var(--space-8);">
+      <div class="step-card" style="border-left-color: var(--color-actor-1)">
+        <div class="step-num" style="background: var(--color-actor-1)">A</div>
+        <div class="step-body">
+          <strong>Allow</strong>
+          <p>Proceed without intervention. The vast majority of calls land here when the agent is well-instructed.</p>
+        </div>
+      </div>
+      <div class="step-card" style="border-left-color: var(--color-actor-2)">
+        <div class="step-num" style="background: var(--color-actor-2)">D</div>
+        <div class="step-body">
+          <strong>Deny</strong>
+          <p>Hard block. Returns <code>Result.GovernanceBlocked</code> with the reason and the matched rule. No appeal.</p>
+        </div>
+      </div>
+      <div class="step-card" style="border-left-color: var(--color-actor-3)">
+        <div class="step-num" style="background: var(--color-actor-3)">W</div>
+        <div class="step-body">
+          <strong>Warn</strong>
+          <p>Allow the call but log it as concerning. Used for tools that aren&rsquo;t banned but warrant a second look in audit review.</p>
+        </div>
+      </div>
+      <div class="step-card" style="border-left-color: var(--color-actor-4)">
+        <div class="step-num" style="background: var(--color-actor-4)">R</div>
+        <div class="step-body">
+          <strong>RequireApproval</strong>
+          <p>Pause the turn and hand off to the Escalation system (next screen). The agent waits until a human votes or the timeout fires.</p>
+        </div>
+      </div>
+      <div class="step-card" style="border-left-color: var(--color-actor-5)">
+        <div class="step-num" style="background: var(--color-actor-5)">L</div>
+        <div class="step-body">
+          <strong>Log</strong>
+          <p>Allow and quietly record. The lightest verdict &mdash; used when you want a paper trail without changing behavior.</p>
+        </div>
+      </div>
+      <div class="step-card" style="border-left-color: var(--color-actor-1)">
+        <div class="step-num" style="background: var(--color-actor-1)">T</div>
+        <div class="step-body">
+          <strong>RateLimit</strong>
+          <p>Allow up to N calls per window, then reject the rest. Useful for expensive or rate-capped external APIs.</p>
+        </div>
+      </div>
+    </div>
+
+    <h3 style="margin-top: var(--space-12);">Inside <code>GovernancePolicyBehavior.Handle</code></h3>
+    <p>The pipeline behavior at position 7 of the gauntlet. Note the early bail-out if the request isn&rsquo;t a tool call, and the fail-closed behavior when the engine isn&rsquo;t available.</p>
+
+    <div class="translation-block animate-in">
+      <div class="translation-code">
+        <span class="translation-label">CODE</span>
+        <pre><code>
+<span class="code-line"><span class="code-keyword">public async</span> Task&lt;TResponse&gt; <span class="code-function">Handle</span>(TRequest request,</span>
+<span class="code-line">    RequestHandlerDelegate&lt;TResponse&gt; next, CancellationToken cancellationToken)</span>
+<span class="code-line">{</span>
+<span class="code-line">    <span class="code-keyword">if</span> (request <span class="code-keyword">is not</span> IToolRequest toolRequest)</span>
+<span class="code-line">        <span class="code-keyword">return await</span> next();</span>
+<span class="code-line"></span>
+<span class="code-line">    <span class="code-keyword">if</span> (!_config.CurrentValue.Enabled || !_policyEngine.HasPolicies)</span>
+<span class="code-line">        <span class="code-keyword">return await</span> next();</span>
+<span class="code-line"></span>
+<span class="code-line">    <span class="code-keyword">var</span> agentId = _executionContext.AgentId ?? <span class="code-string">"unknown"</span>;</span>
+<span class="code-line"></span>
+<span class="code-line">    <span class="code-keyword">var</span> decision = _policyEngine.<span class="code-function">EvaluateToolCall</span>(agentId, toolRequest.ToolName);</span>
+<span class="code-line"></span>
+<span class="code-line">    <span class="code-keyword">if</span> (_config.CurrentValue.EnableAudit)</span>
+<span class="code-line">        _auditService.<span class="code-function">Log</span>(agentId, toolRequest.ToolName, decision.Action.ToString());</span>
+<span class="code-line"></span>
+<span class="code-line">    <span class="code-keyword">if</span> (decision.IsAllowed) <span class="code-keyword">return await</span> next();</span>
+<span class="code-line"></span>
+<span class="code-line">    <span class="code-keyword">if</span> (decision.Action == GovernancePolicyAction.RequireApproval)</span>
+<span class="code-line">        <span class="code-keyword">return await</span> <span class="code-function">HandleRequireApprovalAsync</span>(agentId, toolRequest, decision, next, cancellationToken);</span>
+<span class="code-line"></span>
+<span class="code-line">    <span class="code-keyword">if</span> (ResultHelper.<span class="code-function">TryCreateFailure</span>&lt;TResponse&gt;(<span class="code-keyword">nameof</span>(Result.GovernanceBlocked),</span>
+<span class="code-line">            decision.Reason, <span class="code-keyword">out var</span> blocked)) <span class="code-keyword">return</span> blocked;</span>
+<span class="code-line"></span>
+<span class="code-line">    <span class="code-keyword">throw new</span> InvalidOperationException($<span class="code-string">"Governance policy denied: {decision.Reason}"</span>);</span>
+<span class="code-line">}</span>
+        </code></pre>
+      </div>
+      <div class="translation-english">
+        <span class="translation-label">PLAIN ENGLISH</span>
+        <div class="translation-lines">
+          <p class="tl">The behavior&rsquo;s Handle method &mdash; runs for every command in the pipeline.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">First gate: governance only cares about tool requests. Everything else passes through unchanged.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Second gate: if governance is disabled in config, or no policies are loaded, pass through.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Pull the agent ID from the ambient execution context (set earlier by AgentContextPropagationBehavior).</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Ask the policy engine: given this agent, this tool, what should happen? Returns a <code>GovernanceDecision</code>.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">If auditing is on, write a tamper-evident audit record &mdash; agent, tool, decision.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">If the decision is Allow (or any "ok to proceed" verdict like Log/Warn), continue to the inner handler.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">If RequireApproval, branch into the escalation flow &mdash; we&rsquo;ll see this on the next screen.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Otherwise the decision was Deny (or RateLimit refused). Try to return a structured Result.GovernanceBlocked &hellip;</p>
+          <p class="tl">&hellip; if the response type supports it. Carries the reason string back to the caller.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">If the response type isn&rsquo;t a Result, throw &mdash; better to fail loudly than silently allow.</p>
+          <p class="tl">&nbsp;</p>
+        </div>
+      </div>
+    </div>
+
+    <h3 style="margin-top: var(--space-10);">Quick check</h3>
+    <div class="quiz-container" id="quiz-module8-governance">
+      <div class="quiz-question-block"
+           data-correct="opt-g2"
+           data-explanation-right="Right. Governance is a per-call decision engine; tool permissions are a static allowlist on the skill. A tool can pass the permission check (it's in AllowedTools) but still be denied by a runtime governance policy that fires only for certain arguments or agents."
+           data-explanation-wrong="Re-read the screen. Tool permissions are about whether the agent is allowed to call this tool AT ALL (from its SKILL.md). Governance is about whether this SPECIFIC call, with these specific arguments, should proceed.">
+        <h3 class="quiz-question">What is the difference between ToolPermission and Governance?</h3>
+        <div class="quiz-options">
+          <button class="quiz-option" data-value="opt-g1" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div><span>They&rsquo;re the same thing &mdash; Governance is the new name for ToolPermission</span>
+          </button>
+          <button class="quiz-option" data-value="opt-g2" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div><span>ToolPermission is a static allowlist from the skill; Governance is per-call decision based on runtime context</span>
+          </button>
+          <button class="quiz-option" data-value="opt-g3" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div><span>ToolPermission runs after the LLM, Governance runs before</span>
+          </button>
+        </div>
+        <div class="quiz-feedback"></div>
+      </div>
+      <button class="quiz-check-btn" onclick="checkQuiz('quiz-module8-governance')">Check Answers</button>
+      <button class="quiz-reset-btn" onclick="resetQuiz('quiz-module8-governance')">Try Again</button>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       SCREEN 4 — Escalation
+       ============================================================ -->
+  <div class="screen" id="screen-8-4">
+    <h2 class="screen-title">Escalation &mdash; Pause and Ask a Human</h2>
+    <p class="screen-subtitle">When governance returns <code>RequireApproval</code>, the agent pauses. The UI receives a <code>EscalationRequestedEvent</code> over Server-Sent Events. A human votes. The agent resumes &mdash; or fails closed.</p>
+
+    <p>This is the single most concrete benefit of the whole governance stack: <span class="term" data-definition="Human-in-the-loop (HITL) means a human gets to approve or reject specific agent actions before they happen. It is the difference between an agent that surprises you and an agent that asks first.">human-in-the-loop</span> without the agent permanently blocking on every call. The cost of being safe is one extra <span class="term" data-definition="SSE = Server-Sent Events. A one-way HTTP streaming protocol where the server pushes events to the browser over a long-lived connection. Simpler than WebSockets when only the server needs to push.">SSE</span> event when something risky happens.</p>
+
+    <h3 style="margin-top: var(--space-8);">The shape of an escalation event</h3>
+    <p>This is what the browser actually receives when an agent triggers approval. It is a JSON object with a polymorphic <code>type</code> discriminator so multiple event types can travel the same stream.</p>
+
+    <div class="translation-block animate-in">
+      <div class="translation-code">
+        <span class="translation-label">CODE</span>
+        <pre><code>
+<span class="code-line"><span class="code-keyword">public sealed record</span> <span class="code-function">EscalationRequestedEvent</span> : AgUiEvent</span>
+<span class="code-line">{</span>
+<span class="code-line">    [JsonPropertyName(<span class="code-string">"escalationId"</span>)]</span>
+<span class="code-line">    <span class="code-keyword">public required string</span> EscalationId { <span class="code-keyword">get</span>; <span class="code-keyword">init</span>; }</span>
+<span class="code-line"></span>
+<span class="code-line">    [JsonPropertyName(<span class="code-string">"agentId"</span>)]</span>
+<span class="code-line">    <span class="code-keyword">public required string</span> AgentId { <span class="code-keyword">get</span>; <span class="code-keyword">init</span>; }</span>
+<span class="code-line"></span>
+<span class="code-line">    [JsonPropertyName(<span class="code-string">"toolName"</span>)]</span>
+<span class="code-line">    <span class="code-keyword">public required string</span> ToolName { <span class="code-keyword">get</span>; <span class="code-keyword">init</span>; }</span>
+<span class="code-line"></span>
+<span class="code-line">    [JsonPropertyName(<span class="code-string">"description"</span>)]</span>
+<span class="code-line">    <span class="code-keyword">public required string</span> Description { <span class="code-keyword">get</span>; <span class="code-keyword">init</span>; }</span>
+<span class="code-line"></span>
+<span class="code-line">    [JsonPropertyName(<span class="code-string">"priority"</span>)]</span>
+<span class="code-line">    <span class="code-keyword">public required string</span> Priority { <span class="code-keyword">get</span>; <span class="code-keyword">init</span>; }</span>
+<span class="code-line"></span>
+<span class="code-line">    [JsonPropertyName(<span class="code-string">"approvers"</span>)]</span>
+<span class="code-line">    <span class="code-keyword">public required</span> IReadOnlyList&lt;<span class="code-keyword">string</span>&gt; Approvers { <span class="code-keyword">get</span>; <span class="code-keyword">init</span>; }</span>
+<span class="code-line"></span>
+<span class="code-line">    [JsonPropertyName(<span class="code-string">"timeoutSeconds"</span>)]</span>
+<span class="code-line">    <span class="code-keyword">public required int</span> TimeoutSeconds { <span class="code-keyword">get</span>; <span class="code-keyword">init</span>; }</span>
+<span class="code-line"></span>
+<span class="code-line">    [JsonPropertyName(<span class="code-string">"arguments"</span>)]</span>
+<span class="code-line">    <span class="code-keyword">public</span> IReadOnlyDictionary&lt;<span class="code-keyword">string</span>, <span class="code-keyword">string</span>&gt;? Arguments { <span class="code-keyword">get</span>; <span class="code-keyword">init</span>; }</span>
+<span class="code-line">}</span>
+        </code></pre>
+      </div>
+      <div class="translation-english">
+        <span class="translation-label">PLAIN ENGLISH</span>
+        <div class="translation-lines">
+          <p class="tl">An immutable record that gets serialized to JSON and pushed to the browser.</p>
+          <p class="tl">It inherits from <code>AgUiEvent</code>, which adds a polymorphic <code>"type": "EscalationRequested"</code> field automatically.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">A unique ID for this escalation &mdash; the UI uses it to correlate the eventual resolution event.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Which agent triggered the escalation. Helps the human know what context they&rsquo;re approving in.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">The tool the agent wants to call (e.g. "file_system.write").</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">A human-readable summary the UI can show as the headline of the approval prompt.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Urgency level &mdash; "Informational" / "Blocking" / "Critical". Lets the UI color-code or route to different channels.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Ordered list of who can vote on this escalation.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">How long the escalation is valid for. After this many seconds with no decision, the timeout-action config kicks in.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Optional &mdash; the actual arguments the agent wanted to pass to the tool, sanitized for display.</p>
+          <p class="tl">&nbsp;</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="callout callout-info">
+      <div class="callout-icon">&#x1F4A1;</div>
+      <div class="callout-content">
+        <strong class="callout-title">Two wait modes</strong>
+        <p>The escalation service supports both <strong>blocking</strong> (<code>RequestEscalationAsync</code> &mdash; the turn awaits the resolution) and <strong>non-blocking</strong> (<code>QueueEscalationAsync</code> &mdash; the turn proceeds optimistically; humans get an audit-only ping). Which mode runs is determined by the agent&rsquo;s autonomy-tier <code>EscalationWaitBehavior</code>. Restricted agents always block; Autonomous agents can be configured to queue.</p>
+      </div>
+    </div>
+
+    <h3 style="margin-top: var(--space-10);">Quick check</h3>
+    <div class="quiz-container" id="quiz-module8-escalation">
+      <div class="quiz-question-block"
+           data-correct="opt-e2"
+           data-explanation-right="Right. AgUiEscalationNotifier gets the active run's IAgUiEventWriter from IAgUiEventWriterAccessor. When there is no active AG-UI run (e.g. CLI), the writer is null and the notifier silently skips emission &mdash; fallback channels like Slack handle non-SSE contexts."
+           data-explanation-wrong="Look at the SSE notifier. It uses an event-writer accessor &mdash; if no active AG-UI run, the writer is null and emission is skipped. Other channels (Slack, email) handle the no-browser case.">
+        <h3 class="quiz-question">An agent triggers an escalation while running from the CLI (no browser connected). What happens to the SSE event?</h3>
+        <div class="quiz-options">
+          <button class="quiz-option" data-value="opt-e1" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div><span>The agent crashes because no SSE consumer exists</span>
+          </button>
+          <button class="quiz-option" data-value="opt-e2" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div><span>The SSE notifier silently no-ops; alternate channels (Slack, email) handle delivery</span>
+          </button>
+          <button class="quiz-option" data-value="opt-e3" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div><span>The event is buffered to disk and replayed when a browser connects</span>
+          </button>
+        </div>
+        <div class="quiz-feedback"></div>
+      </div>
+      <button class="quiz-check-btn" onclick="checkQuiz('quiz-module8-escalation')">Check Answers</button>
+      <button class="quiz-reset-btn" onclick="resetQuiz('quiz-module8-escalation')">Try Again</button>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       SCREEN 5 — Drift & Learnings
+       ============================================================ -->
+  <div class="screen" id="screen-8-5">
+    <h2 class="screen-title">Drift Detection &amp; Learnings &mdash; The Long Memory</h2>
+    <p class="screen-subtitle">Two systems that work as a pair: drift catches slow quality regressions; learnings remember the corrections so the same mistake isn&rsquo;t repeated.</p>
+
+    <h3>Drift Detection &mdash; the canary</h3>
+    <p>After each evaluation run, quality scores (faithfulness, relevance, structural correctness, &hellip;) feed into an <span class="term" data-definition="EWMA = Exponentially Weighted Moving Average. A running average that gives more weight to recent values than old ones. The lambda parameter (typically 0.1-0.3) controls how quickly the average reacts to new data: higher lambda = more reactive, lower lambda = smoother.">EWMA</span> running average. Each new score updates the EWMA via the formula <code>EWMA<sub>t</sub> = &lambda; &middot; x<sub>t</sub> + (1 - &lambda;) &middot; EWMA<sub>t-1</sub></code>. The current EWMA is compared to a stored baseline; if it has drifted by more than N sigma, an alert fires.</p>
+
+    <div class="translation-block animate-in">
+      <div class="translation-code">
+        <span class="translation-label">CODE</span>
+        <pre><code>
+<span class="code-line"><span class="code-keyword">var</span> lambda = config.EwmaLambda;</span>
+<span class="code-line"><span class="code-keyword">var</span> previousEwma = existingState?.CurrentEwma ?? baselineMean;</span>
+<span class="code-line"></span>
+<span class="code-line"><span class="code-keyword">var</span> newEwma = lambda * currentValue + (1 - lambda) * previousEwma;</span>
+<span class="code-line"><span class="code-keyword">var</span> deviation = sigma &gt; 0</span>
+<span class="code-line">    ? Math.<span class="code-function">Abs</span>(newEwma - baselineMean) / sigma</span>
+<span class="code-line">    : 0.0;</span>
+<span class="code-line"></span>
+<span class="code-line"><span class="code-keyword">var</span> updatedState = <span class="code-keyword">new</span> EwmaState</span>
+<span class="code-line">{</span>
+<span class="code-line">    Scope = baseline.Scope,</span>
+<span class="code-line">    ScopeIdentifier = baseline.ScopeIdentifier,</span>
+<span class="code-line">    Dimension = dimension,</span>
+<span class="code-line">    CurrentEwma = newEwma,</span>
+<span class="code-line">    SampleCount = newSampleCount,</span>
+<span class="code-line">    LastUpdatedAt = _timeProvider.<span class="code-function">GetUtcNow</span>()</span>
+<span class="code-line">};</span>
+<span class="code-line"></span>
+<span class="code-line"><span class="code-keyword">var</span> saveResult = <span class="code-keyword">await</span> _stateStore.<span class="code-function">SaveStateAsync</span>(updatedState, ct);</span>
+        </code></pre>
+      </div>
+      <div class="translation-english">
+        <span class="translation-label">PLAIN ENGLISH</span>
+        <div class="translation-lines">
+          <p class="tl">Read lambda from config &mdash; how reactive the smoothing should be (typical: 0.2).</p>
+          <p class="tl">Get the previous EWMA. If this is the first sample, start from the baseline mean.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">The EWMA update step. New value contributes lambda; the old EWMA contributes the rest.</p>
+          <p class="tl">Compute how many sigma the new EWMA is away from the baseline. Sigma is the baseline&rsquo;s standard deviation.</p>
+          <p class="tl">Special-case: if there&rsquo;s no variance in the baseline, deviation is forced to 0 instead of NaN.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Build the new state record to persist.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Which agent / dataset / dimension this state belongs to.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">The just-computed EWMA so the next call can pick up where we left off.</p>
+          <p class="tl">Bump the sample count.</p>
+          <p class="tl">Record when this state was last updated &mdash; used for staleness checks elsewhere.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Persist via the configured state store (graph or in-memory).</p>
+          <p class="tl">&nbsp;</p>
+        </div>
+      </div>
+    </div>
+
+    <p>The resulting deviation is classified into four severity tiers by <code>DriftSeverityClassifier</code>:</p>
+
+    <div class="badge-list">
+      <div class="badge-item">
+        <code class="badge-code">None</code>
+        <span class="badge-desc">Below the warn threshold. Normal operation, no signal.</span>
+      </div>
+      <div class="badge-item">
+        <code class="badge-code">Warn</code>
+        <span class="badge-desc">Deviation past the warn threshold. Logged; no escalation yet.</span>
+      </div>
+      <div class="badge-item">
+        <code class="badge-code">Alert</code>
+        <span class="badge-desc">Notifier fires &mdash; ops team gets a Slack ping. Drift is real but not catastrophic.</span>
+      </div>
+      <div class="badge-item">
+        <code class="badge-code">Escalate</code>
+        <span class="badge-desc">Deviation past the escalate threshold. Pipes directly into the Escalation system &mdash; a human must intervene.</span>
+      </div>
+    </div>
+
+    <h3 style="margin-top: var(--space-12);">Learnings &mdash; remembering corrections</h3>
+    <p>When something goes wrong &mdash; a drift alert, an escalation Deny, a human correction in chat &mdash; the harness can capture a <span class="term" data-definition="A learning is a natural-language piece of knowledge the harness stores about how an agent or domain should behave. Example: 'this agent tends to hallucinate dates when summarizing meeting notes'. Stored either in memory or in a graph database, ranked by freshness and how many times it has been reinforced.">learning</span>. Learnings are natural-language facts: &ldquo;agents writing to system paths are almost always hallucinating&rdquo;, &ldquo;customer X prefers concise summaries&rdquo;. They decay over time so old wisdom doesn&rsquo;t poison new behavior.</p>
+
+    <div class="translation-block animate-in">
+      <div class="translation-code">
+        <span class="translation-label">CODE</span>
+        <pre><code>
+<span class="code-line"><span class="code-keyword">public</span> Task&lt;<span class="code-keyword">double</span>&gt; <span class="code-function">CalculateFreshnessAsync</span>(LearningEntry learning, CancellationToken ct)</span>
+<span class="code-line">{</span>
+<span class="code-line">    <span class="code-keyword">if</span> (learning.DecayClass == DecayClass.Permanent)</span>
+<span class="code-line">        <span class="code-keyword">return</span> Task.<span class="code-function">FromResult</span>(1.0);</span>
+<span class="code-line"></span>
+<span class="code-line">    <span class="code-keyword">var</span> shelfLifeDays = learning.DecayClass <span class="code-keyword">switch</span></span>
+<span class="code-line">    {</span>
+<span class="code-line">        DecayClass.Volatile =&gt; config.VolatileShelfLifeDays,   <span class="code-comment">// default 7</span></span>
+<span class="code-line">        DecayClass.Stable =&gt; config.StableShelfLifeDays,       <span class="code-comment">// default 180</span></span>
+<span class="code-line">        _ =&gt; config.StableShelfLifeDays</span>
+<span class="code-line">    };</span>
+<span class="code-line"></span>
+<span class="code-line">    <span class="code-keyword">var</span> referenceTime = learning.LastReinforcedAt ?? learning.CreatedAt;</span>
+<span class="code-line">    <span class="code-keyword">var</span> ageDays = (_timeProvider.<span class="code-function">GetUtcNow</span>() - referenceTime).TotalDays;</span>
+<span class="code-line">    <span class="code-keyword">var</span> rawFreshness = Math.<span class="code-function">Clamp</span>(1.0 - (ageDays / shelfLifeDays), 0.0, 1.0);</span>
+<span class="code-line"></span>
+<span class="code-line">    <span class="code-keyword">if</span> (config.BiasCorrection &amp;&amp; learning.UpdateCount <span class="code-keyword">is</span> &gt; 0 <span class="code-keyword">and</span> &lt; 5)</span>
+<span class="code-line">    {</span>
+<span class="code-line">        <span class="code-keyword">var</span> correctionFactor = 1.0 / (1.0 - Math.<span class="code-function">Pow</span>(1.0 - config.DecayBiasAlpha, learning.UpdateCount));</span>
+<span class="code-line">        <span class="code-keyword">return</span> Task.<span class="code-function">FromResult</span>(Math.<span class="code-function">Clamp</span>(rawFreshness * correctionFactor, 0.0, 1.0));</span>
+<span class="code-line">    }</span>
+<span class="code-line"></span>
+<span class="code-line">    <span class="code-keyword">return</span> Task.<span class="code-function">FromResult</span>(rawFreshness);</span>
+<span class="code-line">}</span>
+        </code></pre>
+      </div>
+      <div class="translation-english">
+        <span class="translation-label">PLAIN ENGLISH</span>
+        <div class="translation-lines">
+          <p class="tl">Compute how "fresh" a learning is on a scale of 0 to 1 (1 = brand new, 0 = expired).</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Permanent learnings (e.g. compliance policies, hard organizational facts) never decay.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">For other decay classes, look up how long the learning is supposed to live.</p>
+          <p class="tl">Volatile = ~1 week (tactical, ephemeral knowledge).</p>
+          <p class="tl">Stable = ~6 months (durable patterns that change slowly).</p>
+          <p class="tl">Fall back to stable for unknown classes.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Use the last reinforcement time, or the creation time if never reinforced.</p>
+          <p class="tl">How many days has it been?</p>
+          <p class="tl">Linear decay: 100% on day 0, 0% at end of shelf life. Clamp to [0, 1].</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Bias-correction guard: if a learning is young AND has been reinforced only a few times,</p>
+          <p class="tl">apply an EMA bias correction. This stops young, lightly-reinforced learnings from looking artificially weak.</p>
+          <p class="tl">Return the corrected score, clamped to [0, 1].</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Otherwise return the raw linear-decay score.</p>
+          <p class="tl">&nbsp;</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="callout callout-accent">
+      <div class="callout-icon">&#x1F4A1;</div>
+      <div class="callout-content">
+        <strong class="callout-title">Why decay matters</strong>
+        <p>Without decay, learnings accumulate forever and the agent gets weighed down by stale advice. With decay, the system implicitly believes: "this knowledge was true when we captured it; it&rsquo;s probably less true now; if it&rsquo;s still useful someone will reinforce it." A background service (<code>LearningsPruningBackgroundService</code>) periodically soft-deletes zero-freshness entries.</p>
+      </div>
+    </div>
+
+    <h3 style="margin-top: var(--space-10);">Quick check</h3>
+    <div class="quiz-container" id="quiz-module8-drift">
+      <div class="quiz-question-block"
+           data-correct="opt-d2"
+           data-explanation-right="Exactly. EWMA gives more weight to recent values via the lambda parameter, so a small recent dip influences the moving average more than a single old outlier. That smooths out noise while still being responsive to real trends."
+           data-explanation-wrong="EWMA stands for Exponentially Weighted Moving Average. The 'exponentially weighted' part means recent values dominate &mdash; older values have less and less influence over time.">
+        <h3 class="quiz-question">Why use EWMA instead of a plain rolling average for drift detection?</h3>
+        <div class="quiz-options">
+          <button class="quiz-option" data-value="opt-d1" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div><span>EWMA is faster to compute</span>
+          </button>
+          <button class="quiz-option" data-value="opt-d2" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div><span>EWMA weights recent values more heavily, so trends register faster than with a uniform average</span>
+          </button>
+          <button class="quiz-option" data-value="opt-d3" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div><span>EWMA is required by the OpenTelemetry spec</span>
+          </button>
+        </div>
+        <div class="quiz-feedback"></div>
+      </div>
+
+      <div class="quiz-question-block"
+           data-correct="opt-l3"
+           data-explanation-right="Correct. Volatile learnings have a 7-day shelf life. Without reinforcement, they linearly decay to 0 over that window and become candidates for the pruning service to soft-delete."
+           data-explanation-wrong="Look at the freshness formula: 1 - (ageDays / shelfLifeDays). For a Volatile learning with default shelfLifeDays = 7, after 7 days the score is 0 and the learning is pruned.">
+        <h3 class="quiz-question">A Volatile learning was created 8 days ago and never reinforced. What is its freshness?</h3>
+        <div class="quiz-options">
+          <button class="quiz-option" data-value="opt-l1" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div><span>1.0 &mdash; learnings never expire</span>
+          </button>
+          <button class="quiz-option" data-value="opt-l2" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div><span>0.5 &mdash; halfway decayed</span>
+          </button>
+          <button class="quiz-option" data-value="opt-l3" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div><span>0.0 &mdash; past the 7-day Volatile shelf life, ready for pruning</span>
+          </button>
+        </div>
+        <div class="quiz-feedback"></div>
+      </div>
+
+      <button class="quiz-check-btn" onclick="checkQuiz('quiz-module8-drift')">Check Answers</button>
+      <button class="quiz-reset-btn" onclick="resetQuiz('quiz-module8-drift')">Try Again</button>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       SCREEN 6 — Putting It Together
+       ============================================================ -->
+  <div class="screen" id="screen-8-6">
+    <h2 class="screen-title">Putting It Together &mdash; The Closed Loop</h2>
+    <p class="screen-subtitle">Five systems, one feedback cycle. Each one feeds the next, and the cycle as a whole makes the harness improve over time without manual intervention on every turn.</p>
+
+    <p>Here is the loop in motion. Drift detection notices an agent slipping. The next risky call gets caught by governance &mdash; either because policies have tightened, or because the autonomy tier was downgraded after the drift alert. Escalation surfaces it to a human. The human&rsquo;s decision is captured as a learning. The learning shifts the agent&rsquo;s future behavior, which shifts its quality scores, which (eventually) brings drift back into the green. Round and round.</p>
+
+    <div class="flow-animation" data-steps='[
+      {"highlight":"flow-actor-1","label":"Drift Detection: agent quality scores trending down. EWMA crossing the Warn threshold."},
+      {"highlight":"flow-actor-2","label":"Drift notifier pings ops; severity escalator may downgrade the autonomy tier.","packet":true,"from":"actor-1","to":"actor-2"},
+      {"highlight":"flow-actor-3","label":"Next risky tool call hits Governance &mdash; now stricter, returns RequireApproval.","packet":true,"from":"actor-2","to":"actor-3"},
+      {"highlight":"flow-actor-4","label":"Escalation fires: SSE EscalationRequestedEvent reaches the human on duty.","packet":true,"from":"actor-3","to":"actor-4"},
+      {"highlight":"flow-actor-4","label":"Human votes Deny with a reason: &ldquo;agent confused timezones again&rdquo;."},
+      {"highlight":"flow-actor-5","label":"That reason is captured as a new Learning, decay class = Stable.","packet":true,"from":"actor-4","to":"actor-5"},
+      {"highlight":"flow-actor-1","label":"Next time the agent runs, the learning is in its retrieval context. Quality scores recover.","packet":true,"from":"actor-5","to":"actor-1"}
+    ]'>
+      <div class="flow-actors">
+        <div class="flow-actor" id="flow-actor-1">
+          <div class="flow-actor-icon" style="background: var(--color-actor-4)">D</div>
+          <span>Drift</span>
+        </div>
+        <div class="flow-actor" id="flow-actor-2">
+          <div class="flow-actor-icon" style="background: var(--color-actor-1)">A</div>
+          <span>Autonomy</span>
+        </div>
+        <div class="flow-actor" id="flow-actor-3">
+          <div class="flow-actor-icon" style="background: var(--color-actor-2)">G</div>
+          <span>Governance</span>
+        </div>
+        <div class="flow-actor" id="flow-actor-4">
+          <div class="flow-actor-icon" style="background: var(--color-actor-3)">E</div>
+          <span>Escalation</span>
+        </div>
+        <div class="flow-actor" id="flow-actor-5">
+          <div class="flow-actor-icon" style="background: var(--color-actor-5)">L</div>
+          <span>Learnings</span>
+        </div>
+      </div>
+
+      <div class="flow-packet" id="flow-packet"></div>
+
+      <div class="flow-step-label" id="flow-label">Click &ldquo;Next Step&rdquo; to follow one full turn of the quality loop.</div>
+
+      <div class="flow-controls">
+        <button class="btn flow-next-btn">Next Step</button>
+        <button class="btn flow-reset-btn">Restart</button>
+        <span class="flow-progress"></span>
+      </div>
+    </div>
+
+    <div class="callout callout-accent" style="margin-top: var(--space-8);">
+      <div class="callout-icon">&#x1F4A1;</div>
+      <div class="callout-content">
+        <strong class="callout-title">There&rsquo;s no QualityLoopService class</strong>
+        <p>The &ldquo;quality loop&rdquo; is the name we give to the <em>emergent</em> behavior of these five subsystems working together. There&rsquo;s no single class called <code>QualityLoopService</code>. The loop is a property of the architecture, not of any one file &mdash; which is why it works without any system coordinator coupling everything together.</p>
+      </div>
+    </div>
+
+    <h3 style="margin-top: var(--space-12);">Final scenario quiz</h3>
+    <div class="quiz-container" id="quiz-module8-final">
+
+      <div class="quiz-question-block"
+           data-correct="opt-q1-c"
+           data-explanation-right="Right. The chain is: governance returns RequireApproval (so the call doesn&rsquo;t go through) &rarr; escalation fires SSE event &rarr; human votes &rarr; result either unblocks the call or fails closed with Result.GovernanceBlocked."
+           data-explanation-wrong="Re-read screen 3 and 4. Governance returns the decision; if it&rsquo;s RequireApproval, the behavior delegates to escalation, which awaits a human vote.">
+        <h3 class="quiz-question">Your agent asks for <code>file_system.write</code> on <code>/etc/hosts</code>. Trace the order of systems that fire.</h3>
+        <div class="quiz-options">
+          <button class="quiz-option" data-value="opt-q1-a" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div><span>Escalation &rarr; Governance &rarr; Drift &rarr; Learnings</span>
+          </button>
+          <button class="quiz-option" data-value="opt-q1-b" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div><span>Drift &rarr; Learnings &rarr; Autonomy &rarr; Governance</span>
+          </button>
+          <button class="quiz-option" data-value="opt-q1-c" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div><span>Governance (returns RequireApproval) &rarr; Escalation (asks human) &rarr; human vote &rarr; resume or Result.GovernanceBlocked</span>
+          </button>
+        </div>
+        <div class="quiz-feedback"></div>
+      </div>
+
+      <div class="quiz-question-block"
+           data-correct="opt-q2-b"
+           data-explanation-right="Right. Drift detection&rsquo;s job is to spot slow regressions. The deviation crossing thresholds triggers Warn / Alert / Escalate. Single bad outputs are not what drift detection is for &mdash; that&rsquo;s evaluation harnesses and live content safety."
+           data-explanation-wrong="Drift is about TRENDS, not single events. It uses EWMA to smooth noisy individual scores into a running view of where the agent is heading.">
+        <h3 class="quiz-question">An agent produces one bad answer in 100 turns. Should drift detection fire?</h3>
+        <div class="quiz-options">
+          <button class="quiz-option" data-value="opt-q2-a" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div><span>Yes &mdash; every bad answer should be caught</span>
+          </button>
+          <button class="quiz-option" data-value="opt-q2-b" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div><span>No &mdash; drift looks at trends via EWMA; a single bad answer is noise, not a trend</span>
+          </button>
+          <button class="quiz-option" data-value="opt-q2-c" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div><span>Only if the agent is Autonomous tier</span>
+          </button>
+        </div>
+        <div class="quiz-feedback"></div>
+      </div>
+
+      <div class="quiz-question-block"
+           data-correct="opt-q3-c"
+           data-explanation-right="Right. Volatile is the right choice for an observation that&rsquo;s probably temporary (model version was rolled back later). The 7-day decay matches that uncertainty &mdash; if the issue stays relevant beyond a week, it can be re-reinforced or upgraded to Stable."
+           data-explanation-wrong="Volatile = ~7 days for tactical/ephemeral observations. Stable = ~180 days for durable patterns. Permanent = forever for compliance/hard facts. An observation tied to a specific transient model version is tactical, so Volatile fits.">
+        <h3 class="quiz-question">You captured a learning: &ldquo;agent X tends to hallucinate dates after model deployment v3.7&rdquo;. Which decay class?</h3>
+        <div class="quiz-options">
+          <button class="quiz-option" data-value="opt-q3-a" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div><span>Permanent &mdash; all corrections should be remembered forever</span>
+          </button>
+          <button class="quiz-option" data-value="opt-q3-b" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div><span>Stable &mdash; it sounds like a durable behavior</span>
+          </button>
+          <button class="quiz-option" data-value="opt-q3-c" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div><span>Volatile &mdash; tied to a specific transient deployment; let it decay over the week</span>
+          </button>
+        </div>
+        <div class="quiz-feedback"></div>
+      </div>
+
+      <div class="quiz-question-block"
+           data-correct="opt-q4-b"
+           data-explanation-right="Right. Restricted forces Ask by default &mdash; every tool call needs approval, which floods escalation. Move the new agent to Restricted only for the launch period; review the escalation log; promote to Supervised once you trust it."
+           data-explanation-wrong="If you want maximum oversight on a new agent, you want every action approved &mdash; that&rsquo;s Restricted tier. The cost is approval-fatigue, which is exactly why you graduate to Supervised once the agent has earned trust.">
+        <h3 class="quiz-question">You&rsquo;re launching a brand-new agent in production. Which autonomy tier do you start at?</h3>
+        <div class="quiz-options">
+          <button class="quiz-option" data-value="opt-q4-a" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div><span>Autonomous &mdash; let it learn quickly</span>
+          </button>
+          <button class="quiz-option" data-value="opt-q4-b" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div><span>Restricted &mdash; every action through escalation until you have trust signal</span>
+          </button>
+          <button class="quiz-option" data-value="opt-q4-c" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div><span>Whichever tier the previous agent used</span>
+          </button>
+        </div>
+        <div class="quiz-feedback"></div>
+      </div>
+
+      <button class="quiz-check-btn" onclick="checkQuiz('quiz-module8-final')">Check Answers</button>
+      <button class="quiz-reset-btn" onclick="resetQuiz('quiz-module8-final')">Try Again</button>
+    </div>
+
+    <!-- Closer -->
+    <div class="animate-in" style="margin-top: var(--space-12); padding: var(--space-8); background: linear-gradient(135deg, var(--color-accent-light), var(--color-surface)); border-radius: var(--radius-md); border-left: 4px solid var(--color-accent); text-align: center;">
+      <h2 style="margin-top: 0;">The loop closes here &mdash; for now.</h2>
+      <p>
+        You&rsquo;ve seen the harness as it stands today: <strong>seven modules</strong> covering what it is, who&rsquo;s in the cast, how a conversation flows, how skills load, how tools fire safely, how the system watches itself, and how to trace any of it end-to-end in the code. <strong>This eighth module</strong> shows what changes when those same systems start learning from their own behavior.
+      </p>
+      <p>
+        Drift detection plus learnings is the harness&rsquo;s answer to the hardest question in production AI: <em>is my agent getting worse, and can I prove it?</em> The answer is yes &mdash; with five tightly-coupled subsystems and one feedback loop.
+      </p>
+      <p style="font-weight: 600; color: var(--color-accent);">
+        Now go put a real agent through this loop. Watch the EWMA scores in the Quality dashboard. Trigger an escalation and resolve it. Create a learning. See it surface on the next run. That&rsquo;s when the patterns from these modules become muscle memory.
+      </p>
+    </div>
+  </div>
+
+</section>

@@ -60,14 +60,14 @@
 
     <div class="flow-animation" data-steps='[
       {"highlight":"flow-actor-1","label":"You type a message in the web chat UI and hit Send."},
-      {"highlight":"flow-actor-2","label":"AgentHub receives the message over a live SignalR connection.","packet":true,"from":"actor-1","to":"actor-2"},
-      {"highlight":"flow-actor-3","label":"The MediatR pipeline validates the request and runs content-safety checks.","packet":true,"from":"actor-2","to":"actor-3"},
+      {"highlight":"flow-actor-2","label":"Browser POSTs to /ag-ui/run; AgUiRunHandler receives the message as a Server-Sent Events stream.","packet":true,"from":"actor-1","to":"actor-2"},
+      {"highlight":"flow-actor-3","label":"The MediatR pipeline runs 15 behaviors &mdash; safety, governance, prompt-injection, permissions, audit, tracing &mdash; before the handler.","packet":true,"from":"actor-2","to":"actor-3"},
       {"highlight":"flow-actor-4","label":"The handler sends the conversation to the LLM (Azure OpenAI).","packet":true,"from":"actor-3","to":"actor-4"},
       {"highlight":"flow-actor-4","label":"The LLM decides it needs a tool and asks the harness to call one."},
       {"highlight":"flow-actor-5","label":"The Tool System runs the requested tool inside a safe sandbox.","packet":true,"from":"actor-4","to":"actor-5"},
       {"highlight":"flow-actor-4","label":"The tool result flows back to the LLM as fresh context.","packet":true,"from":"actor-5","to":"actor-4"},
-      {"highlight":"flow-actor-2","label":"The LLM writes a final reply; AgentHub streams it back through SignalR.","packet":true,"from":"actor-4","to":"actor-2"},
-      {"highlight":"flow-actor-1","label":"Words appear on your screen, one token at a time. Journey complete."}
+      {"highlight":"flow-actor-2","label":"The LLM writes a final reply; AgUiRunHandler chunks it and streams it back as AG-UI TEXT_MESSAGE_CONTENT events.","packet":true,"from":"actor-4","to":"actor-2"},
+      {"highlight":"flow-actor-1","label":"Words appear on your screen, chunk by chunk. Journey complete."}
     ]'>
       <div class="flow-actors">
         <div class="flow-actor" id="flow-actor-1" style="--actor-color: var(--color-actor-1)">
@@ -76,7 +76,7 @@
         </div>
         <div class="flow-actor" id="flow-actor-2" style="--actor-color: var(--color-actor-2)">
           <div class="flow-actor-icon" style="background: var(--color-actor-2)">&#x1F4E1;</div>
-          <span>AgentHub</span>
+          <span>AgUiRunHandler</span>
         </div>
         <div class="flow-actor" id="flow-actor-3" style="--actor-color: var(--color-actor-3)">
           <div class="flow-actor-icon" style="background: var(--color-actor-3)">&#x1F6E1;&#xFE0F;</div>
@@ -106,15 +106,22 @@
       <div class="icon-row">
         <div class="icon-circle" style="background: var(--color-actor-2)">&#x1F4E1;</div>
         <div>
-          <strong><span class="term" data-definition="SignalR is a Microsoft library that keeps an always-open connection between a browser and a server so messages can flow both ways in real time — like a phone line that stays open, not a letter you post.">SignalR</span> &middot; The radio</strong>
-          <p>Keeps a live two-way connection open so tokens stream to you as the LLM produces them.</p>
+          <strong><span class="term" data-definition="AG-UI is an open protocol for streaming AI agent events over HTTP Server-Sent Events (SSE). The harness implements POST /ag-ui/run as the chat-message transport.">AG-UI SSE</span> &middot; The chat front door</strong>
+          <p>The React SPA POSTs each user message to <code>POST /ag-ui/run</code>; the server pins the response as <span class="term" data-definition="Server-Sent Events (SSE) is a one-way HTTP streaming protocol. The server sends a long series of named events to the browser over a single open connection. Simpler than WebSockets when only the server needs to push.">Server-Sent Events</span> and streams back AG-UI-protocol events until the run finishes. The LLM call is awaited fully before chunking, then sliced into 50-character <code>TEXT_MESSAGE_CONTENT</code> events &mdash; real token streaming is still on the roadmap.</p>
+        </div>
+      </div>
+      <div class="icon-row">
+        <div class="icon-circle" style="background: var(--color-actor-2)">&#x260E;</div>
+        <div>
+          <strong><span class="term" data-definition="SignalR is a Microsoft library that keeps an always-open connection between a browser and a server. In this harness it carries lifecycle operations like StartConversation, RetryFromMessage, EditAndResubmit, and SetConversationSettings &mdash; not the chat messages themselves.">SignalR</span> &middot; The side-channel</strong>
+          <p>A parallel SignalR connection (<code>/hubs/agent</code>) carries lifecycle operations &mdash; starting a conversation, retrying a message, editing and resubmitting, changing settings &mdash; plus server-push notifications. <code>AgentTelemetryHub.SendMessage</code> exists in the codebase but the WebUI never invokes it; the chat send path was migrated to AG-UI.</p>
         </div>
       </div>
       <div class="icon-row">
         <div class="icon-circle" style="background: var(--color-actor-3)">&#x1F6E1;&#xFE0F;</div>
         <div>
           <strong>The <span class="term" data-definition="MediatR is a .NET library for sending commands through a pipeline of steps. Each request passes through validators, logging, and safety checks before reaching the handler that does the real work.">MediatR</span> <span class="term" data-definition="A pipeline is a chain of steps a request passes through in order — like a conveyor belt in a factory. Each step can inspect, change, or reject the request before the next one sees it.">pipeline</span></strong>
-          <p>Every command passes through validation and content-safety checks before a handler touches it.</p>
+          <p>Every command passes through fifteen checkpoints &mdash; exception capture, content safety, tool permissions, governance, prompt-injection scan, audit, validation, tracing, timeout, response sanitization &mdash; before (and after) a handler touches it.</p>
         </div>
       </div>
       <div class="icon-row">
@@ -230,7 +237,7 @@
           <p class="tl">Loop through the user&apos;s messages one at a time, numbering them as we go.</p>
           <p class="tl">If we&apos;ve hit the max-turns safety limit, log a warning and stop &mdash; runaway agents are expensive.</p>
           <p class="tl">Build an &ldquo;execute one turn&rdquo; command with this message and the history so far.</p>
-          <p class="tl">Send the command through <span class="term" data-definition="CQRS = Command Query Responsibility Segregation. A code pattern where writes (commands) and reads (queries) travel through separate lanes, each with its own handler. Keeps the code organized and testable.">CQRS</span> / MediatR &mdash; validation and content-safety behaviors run automatically first.</p>
+          <p class="tl">Send the command through <span class="term" data-definition="CQRS = Command Query Responsibility Segregation. A code pattern where writes (commands) and reads (queries) travel through separate lanes, each with its own handler. Keeps the code organized and testable.">CQRS</span> / MediatR &mdash; all fifteen pipeline behaviors (exception capture, content safety, tool permissions, governance, prompt-injection, audit, validation, tracing, timeout, response sanitization, &hellip;) run automatically before the turn handler.</p>
           <p class="tl">Remember this turn&apos;s result so the next turn has context, and loop back for the next message.</p>
         </div>
       </div>
@@ -357,7 +364,7 @@
           </button>
           <button class="quiz-option" data-value="option-c" onclick="selectOption(this)">
             <div class="quiz-option-radio"></div>
-            <span>SignalR &mdash; the streaming connection is duplicating messages.</span>
+            <span>AG-UI SSE &mdash; the streaming connection is duplicating messages.</span>
           </button>
         </div>
         <div class="quiz-feedback"></div>

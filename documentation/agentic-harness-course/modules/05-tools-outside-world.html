@@ -194,7 +194,7 @@
       <div class="pattern-card" style="border-top: 3px solid var(--color-actor-1)">
         <div class="pattern-icon" style="background: var(--color-actor-1)">&#x1F6AB;</div>
         <h4 class="pattern-title">Deny Gates</h4>
-        <p class="pattern-desc">Absolute blocks on dangerous paths like <code>.git/</code> and <code>.ssh/</code>. No override, no appeal.</p>
+        <p class="pattern-desc">Absolute blocks on Windows system folders &mdash; <code>%WINDIR%</code>, <code>Program Files</code>, <code>System32</code>. No override, no appeal.</p>
       </div>
       <div class="pattern-card" style="border-top: 3px solid var(--color-actor-2)">
         <div class="pattern-icon" style="background: var(--color-actor-2)">&#x2753;</div>
@@ -214,26 +214,40 @@
         <pre><code>
 <span class="code-line"><span class="code-keyword">public class</span> <span class="code-type">ToolPermissionBehavior</span>&lt;TRequest, TResponse&gt;</span>
 <span class="code-line">    : <span class="code-type">IPipelineBehavior</span>&lt;TRequest, TResponse&gt;</span>
-<span class="code-line">    <span class="code-keyword">where</span> TRequest : <span class="code-type">IToolRequest</span></span>
+<span class="code-line">    <span class="code-keyword">where</span> TRequest : notnull</span>
 <span class="code-line">{</span>
-<span class="code-line">    <span class="code-comment">// 3-phase permission resolution:</span></span>
-<span class="code-line">    <span class="code-comment">// Phase 1: Deny gates &mdash; absolute blocks (e.g., .git/, .ssh/)</span></span>
-<span class="code-line">    <span class="code-comment">// Phase 2: Ask rules &mdash; requires user confirmation</span></span>
-<span class="code-line">    <span class="code-comment">// Phase 3: Allow rules &mdash; permitted operations</span></span>
+<span class="code-line">    <span class="code-keyword">public async</span> Task&lt;TResponse&gt; <span class="code-function">Handle</span>(TRequest request, RequestHandlerDelegate&lt;TResponse&gt; next, CancellationToken ct)</span>
+<span class="code-line">    {</span>
+<span class="code-line">        <span class="code-comment">// Runtime check &mdash; only requests that opt in get gated</span></span>
+<span class="code-line">        <span class="code-keyword">if</span> (request <span class="code-keyword">is not</span> IToolRequest toolRequest) <span class="code-keyword">return await</span> next();</span>
+<span class="code-line"></span>
+<span class="code-line">        <span class="code-comment">// 3-phase resolution via ThreePhasePermissionResolver:</span></span>
+<span class="code-line">        <span class="code-comment">// Phase 1: Deny gates &mdash; absolute blocks (%WINDIR%, Program Files, System32)</span></span>
+<span class="code-line">        <span class="code-comment">// Phase 2: Ask rules &mdash; requires user confirmation</span></span>
+<span class="code-line">        <span class="code-comment">// Phase 3: Allow rules &mdash; permitted operations</span></span>
+<span class="code-line">        <span class="code-keyword">var</span> decision = <span class="code-keyword">await</span> _resolver.<span class="code-function">ResolveAsync</span>(toolRequest, ct);</span>
+<span class="code-line">        <span class="code-keyword">return</span> decision.Allowed ? <span class="code-keyword">await</span> next() : <span class="code-function">CreateRejection</span>(decision);</span>
+<span class="code-line">    }</span>
 <span class="code-line">}</span>
         </code></pre>
       </div>
       <div class="translation-english">
         <span class="translation-label">PLAIN ENGLISH</span>
         <div class="translation-lines">
-          <p class="tl">This is a permission gatekeeper that runs before every tool request.</p>
-          <p class="tl">It plugs into the <span class="term" data-definition="A pipeline behavior is middleware that intercepts every request flowing through the system. Like a security checkpoint at an airport &mdash; every passenger (request) must pass through it.">pipeline</span> so no tool request can skip it.</p>
-          <p class="tl">It only applies to requests that involve tools.</p>
+          <p class="tl">This is a permission gatekeeper that runs before every command.</p>
+          <p class="tl">It plugs into the <span class="term" data-definition="A pipeline behavior is middleware that intercepts every request flowing through the system. Like a security checkpoint at an airport &mdash; every passenger (request) must pass through it.">pipeline</span> so no command can skip it.</p>
+          <p class="tl">The constraint is just <code>notnull</code> &mdash; any request can pass through.</p>
           <p class="tl">&nbsp;</p>
-          <p class="tl">It checks permissions in three phases, from strictest to most lenient:</p>
-          <p class="tl">Phase 1: Is this path absolutely forbidden? If yes, reject immediately.</p>
-          <p class="tl">Phase 2: Is this path sensitive? If yes, pause and ask the human.</p>
-          <p class="tl">Phase 3: Is this path inside a safe zone? If yes, allow it.</p>
+          <p class="tl">Inside Handle, the behavior receives the request and a delegate to invoke the next layer.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Runtime check: only requests that implement IToolRequest get gated. Everything else short-circuits to the next behavior.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Otherwise, run the three-phase resolver: deny gates &rarr; ask rules &rarr; allow rules.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Ask the resolver for a decision (allow / ask / deny).</p>
+          <p class="tl">If allowed, run the inner handler. Otherwise, return a structured rejection.</p>
         </div>
       </div>
     </div>
@@ -387,14 +401,15 @@
       <div class="translation-code">
         <span class="translation-label">CODE</span>
         <pre><code>
-<span class="code-line"><span class="code-keyword">public sealed record</span> <span class="code-type">AgentCard</span></span>
+<span class="code-line"><span class="code-keyword">public record</span> <span class="code-type">AgentCard</span></span>
+
 <span class="code-line">{</span>
 <span class="code-line">    <span class="code-keyword">public required</span> <span class="code-type">string</span> Name { <span class="code-keyword">get</span>; <span class="code-keyword">init</span>; }</span>
-<span class="code-line">    <span class="code-keyword">public</span> <span class="code-type">string</span>? Description { <span class="code-keyword">get</span>; <span class="code-keyword">init</span>; }</span>
+<span class="code-line">    <span class="code-keyword">public required</span> <span class="code-type">string</span> Description { <span class="code-keyword">get</span>; <span class="code-keyword">init</span>; }</span>
 <span class="code-line">    <span class="code-keyword">public</span> <span class="code-type">string</span>? Url { <span class="code-keyword">get</span>; <span class="code-keyword">init</span>; }</span>
 <span class="code-line">    <span class="code-keyword">public</span> IReadOnlyList&lt;<span class="code-type">string</span>&gt; Capabilities { <span class="code-keyword">get</span>; <span class="code-keyword">init</span>; } = [];</span>
-<span class="code-line">    <span class="code-keyword">public</span> IReadOnlyList&lt;<span class="code-type">string</span>&gt; InputModes { <span class="code-keyword">get</span>; <span class="code-keyword">init</span>; } = [];</span>
-<span class="code-line">    <span class="code-keyword">public</span> IReadOnlyList&lt;<span class="code-type">string</span>&gt; OutputModes { <span class="code-keyword">get</span>; <span class="code-keyword">init</span>; } = [];</span>
+<span class="code-line">    <span class="code-keyword">public</span> IReadOnlyList&lt;<span class="code-type">string</span>&gt; Skills { <span class="code-keyword">get</span>; <span class="code-keyword">init</span>; } = [];</span>
+<span class="code-line">    <span class="code-keyword">public</span> <span class="code-type">string</span>? Version { <span class="code-keyword">get</span>; <span class="code-keyword">init</span>; }</span>
 <span class="code-line">}</span>
         </code></pre>
       </div>
@@ -404,11 +419,11 @@
           <p class="tl">An <span class="term" data-definition="An AgentCard is a business card for an AI agent. It advertises the agent&rsquo;s name, what it can do, and how to reach it, so other agents can find and delegate tasks to it.">AgentCard</span> is a business card that an agent publishes so others can find it.</p>
           <p class="tl">&nbsp;</p>
           <p class="tl">Every agent card must have a name &mdash; this is how other agents address it.</p>
-          <p class="tl">An optional human-readable description of what this agent specializes in.</p>
+          <p class="tl">Required description &mdash; what this agent specializes in.</p>
           <p class="tl">The URL where this agent can be reached over the network.</p>
-          <p class="tl">A list of what this agent can do (e.g., &ldquo;code-review&rdquo;, &ldquo;translation&rdquo;).</p>
-          <p class="tl">What kinds of input it accepts (e.g., &ldquo;text&rdquo;, &ldquo;image&rdquo;).</p>
-          <p class="tl">What kinds of output it produces (e.g., &ldquo;text&rdquo;, &ldquo;structured-data&rdquo;).</p>
+          <p class="tl">A list of high-level capabilities the agent advertises.</p>
+          <p class="tl">The list of named skills the agent exposes (matches its <code>SKILL.md</code> files).</p>
+          <p class="tl">Optional version pin so callers can target a specific build.</p>
         </div>
       </div>
     </div>

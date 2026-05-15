@@ -32,9 +32,9 @@
             <div class="arch-icon" style="background: var(--color-actor-1); color: white;">C</div>
             <span><span class="term" data-definition="A Console UI is a text-based interface that runs in a terminal window. No graphics, just typing — like texting vs. using a visual app.">ConsoleUI</span></span>
           </div>
-          <div class="arch-component" data-desc="The real-time communication hub that connects browsers to the backend using SignalR — like a live switchboard operator." onclick="showArchDesc(this)">
+          <div class="arch-component" data-desc="Two transports run side by side. AG-UI SSE (POST /ag-ui/run) handles the actual chat sends and response streams. SignalR (/hubs/agent) handles lifecycle operations and telemetry pushes." onclick="showArchDesc(this)">
             <div class="arch-icon" style="background: var(--color-actor-2); color: white;">H</div>
-            <span><span class="term" data-definition="AgentHub is the real-time communication server that relays messages between your browser and the AI agent. It uses SignalR (like a persistent phone line) instead of one-off web requests.">AgentHub</span></span>
+            <span><span class="term" data-definition="The browser front-end uses two transports. AG-UI Server-Sent Events handle chat messages and response streams (POST /ag-ui/run, served by AgUiRunHandler). A parallel SignalR connection (AgentTelemetryHub at /hubs/agent) handles lifecycle operations like start/retry/edit and pushes telemetry to the dashboard.">AG-UI + AgentTelemetryHub</span></span>
           </div>
         </div>
       </div>
@@ -268,36 +268,44 @@
       <div class="translation-code">
         <span class="translation-label">CODE</span>
         <pre><code>
-<span class="code-line"><span class="code-keyword">public sealed record</span> <span class="code-function">AgentManifest</span></span>
+<span class="code-line"><span class="code-keyword">public class</span> <span class="code-function">AgentManifest</span></span>
 <span class="code-line">{</span>
-<span class="code-line">    <span class="code-keyword">public required</span> <span class="code-keyword">string</span> <span class="code-property">Name</span> { <span class="code-keyword">get</span>; <span class="code-keyword">init</span>; }</span>
-<span class="code-line">    <span class="code-keyword">public</span> <span class="code-keyword">string</span>? <span class="code-property">Description</span> { <span class="code-keyword">get</span>; <span class="code-keyword">init</span>; }</span>
-<span class="code-line">    <span class="code-keyword">public</span> <span class="code-keyword">string</span>? <span class="code-property">SystemPrompt</span> { <span class="code-keyword">get</span>; <span class="code-keyword">init</span>; }</span>
-<span class="code-line">    <span class="code-keyword">public</span> IReadOnlyList&lt;SkillReference&gt; <span class="code-property">Skills</span> { <span class="code-keyword">get</span>; <span class="code-keyword">init</span>; } = [];</span>
-<span class="code-line">    <span class="code-keyword">public</span> IReadOnlyList&lt;SubagentDefinition&gt; <span class="code-property">Subagents</span> { <span class="code-keyword">get</span>; <span class="code-keyword">init</span>; } = [];</span>
-<span class="code-line">    <span class="code-keyword">public</span> AgentConfig <span class="code-property">Config</span> { <span class="code-keyword">get</span>; <span class="code-keyword">init</span>; } = <span class="code-keyword">new</span>();</span>
+<span class="code-line">    <span class="code-keyword">public</span> <span class="code-keyword">string</span> <span class="code-property">Id</span> { <span class="code-keyword">get</span>; <span class="code-keyword">set</span>; } = <span class="code-keyword">string</span>.Empty;</span>
+<span class="code-line">    <span class="code-keyword">public</span> <span class="code-keyword">string</span> <span class="code-property">Name</span> { <span class="code-keyword">get</span>; <span class="code-keyword">set</span>; } = <span class="code-keyword">string</span>.Empty;</span>
+<span class="code-line">    <span class="code-keyword">public</span> <span class="code-keyword">string</span> <span class="code-property">Description</span> { <span class="code-keyword">get</span>; <span class="code-keyword">set</span>; } = <span class="code-keyword">string</span>.Empty;</span>
+<span class="code-line">    <span class="code-keyword">public</span> <span class="code-keyword">string</span> <span class="code-property">Instructions</span> { <span class="code-keyword">get</span>; <span class="code-keyword">set</span>; } = <span class="code-keyword">string</span>.Empty;</span>
+<span class="code-line">    <span class="code-keyword">public</span> IList&lt;SkillReference&gt; <span class="code-property">Skills</span> { <span class="code-keyword">get</span>; <span class="code-keyword">set</span>; } = <span class="code-keyword">new</span> List&lt;SkillReference&gt;();</span>
+<span class="code-line">    <span class="code-keyword">public</span> IList&lt;<span class="code-keyword">string</span>&gt; <span class="code-property">AllowedTools</span> { <span class="code-keyword">get</span>; <span class="code-keyword">set</span>; } = <span class="code-keyword">new</span> List&lt;<span class="code-keyword">string</span>&gt;();</span>
+<span class="code-line">    <span class="code-keyword">public</span> IList&lt;ToolDeclaration&gt; <span class="code-property">ToolDeclarations</span> { <span class="code-keyword">get</span>; <span class="code-keyword">set</span>; } = <span class="code-keyword">new</span> List&lt;ToolDeclaration&gt;();</span>
+<span class="code-line">    <span class="code-keyword">public</span> StateConfiguration? <span class="code-property">StateConfiguration</span> { <span class="code-keyword">get</span>; <span class="code-keyword">set</span>; }</span>
+<span class="code-line">    <span class="code-keyword">public</span> DecisionFramework? <span class="code-property">DecisionFramework</span> { <span class="code-keyword">get</span>; <span class="code-keyword">set</span>; }</span>
+<span class="code-line">    <span class="code-comment">// plus Version, Author, Domain, Category, Tags, file-system metadata</span></span>
 <span class="code-line">}</span>
         </code></pre>
       </div>
       <div class="translation-english">
         <span class="translation-label">PLAIN ENGLISH</span>
         <div class="translation-lines">
-          <p class="tl">This is an <span class="term" data-definition="A record in C# is a special type that holds data and is immutable — once created, its values cannot be changed. Like a printed form: you fill it out once, and if you need changes, you create a new copy.">immutable data shape</span> called AgentManifest.</p>
+          <p class="tl">A <span class="term" data-definition="A class in C# is a blueprint with mutable properties — you can build it up field by field at load time, then hand it around. Different from a 'record', which is immutable once created.">class</span> called AgentManifest that describes one agent.</p>
           <p class="tl">Opening the definition...</p>
-          <p class="tl">Every agent <strong>must</strong> have a name &mdash; this is required, no default.</p>
-          <p class="tl">An optional text description of what this agent does.</p>
-          <p class="tl">An optional <span class="term" data-definition="A system prompt is the hidden set of instructions given to an AI before the conversation starts. It defines the agent's personality, rules, and capabilities — like a director's notes to an actor before filming.">system prompt</span> &mdash; the agent's personality and instructions.</p>
-          <p class="tl">A list of skills this agent can use (starts empty). This list is read-only &mdash; nobody can tamper with it later.</p>
-          <p class="tl">A list of <span class="term" data-definition="A subagent is a smaller, specialized agent that a main agent can delegate tasks to — like a lead actor handing off stunts to a stunt double.">subagents</span> this agent can delegate to (also read-only, starts empty).</p>
-          <p class="tl">Configuration settings with sensible defaults.</p>
+          <p class="tl">A unique identifier for this agent.</p>
+          <p class="tl">A human-readable name shown in UIs and logs.</p>
+          <p class="tl">A short sentence describing what this agent does.</p>
+          <p class="tl">The <span class="term" data-definition="Instructions are the system prompt for the agent — the personality, rules, and operating procedure the LLM gets before any user message. Same role as the system prompt; the codebase calls it Instructions to match the Microsoft.Extensions.AI naming.">instructions</span> field is the agent's system prompt &mdash; everything the LLM should know about its role before talking to a user.</p>
+          <p class="tl">Skills this agent can use &mdash; loaded progressively from disk.</p>
+          <p class="tl">An allow-list of tool names the agent is permitted to invoke.</p>
+          <p class="tl">Full tool declarations &mdash; richer metadata for tools (parameters, descriptions) the agent can call.</p>
+          <p class="tl">Optional configuration for stateful agents &mdash; tracking goals or progress across turns.</p>
+          <p class="tl">Optional decision framework &mdash; rubric the agent uses when picking next actions.</p>
+          <p class="tl">Plus ten more fields covering versioning, authorship, categorization, and file-system metadata.</p>
           <p class="tl">End of the blueprint.</p>
         </div>
       </div>
     </div>
 
     <!-- SkillDefinition Translation -->
-    <h3 style="margin-top: var(--space-8);">SkillDefinition Level 1 &mdash; The Index Card</h3>
-    <p>Skills use <span class="term" data-definition="Progressive disclosure means showing only a summary at first, then revealing more detail when needed. Like a book index: you scan chapter titles first, then dive into the one you want. This saves the agent's limited context window.">progressive disclosure</span> &mdash; the agent sees a quick summary first, and only loads full details when needed.</p>
+    <h3 style="margin-top: var(--space-8);">SkillDefinition &mdash; Three Tiers of Detail</h3>
+    <p>Skills use <span class="term" data-definition="Progressive disclosure means showing only a summary at first, then revealing more detail when needed. Like a book index: you scan chapter titles first, then dive into the one you want. This saves the agent's limited context window.">progressive disclosure</span> across three levels: Level 1 (Index Card, ~50-100 tokens), Level 2 (Folder, ~5,000-token instructions body), and Level 3 (Filing Cabinet, on-demand resource files). The agent sees Level 1 in a menu, opens Level 2 only for the skill it picks, and never auto-loads Level 3 &mdash; it reads those files only via file-system tools.</p>
 
     <div class="translation-block animate-in">
       <div class="translation-code">
@@ -346,36 +354,48 @@
       <div class="translation-code">
         <span class="translation-label">CODE</span>
         <pre><code>
-<span class="code-line"><span class="code-keyword">public</span> AIAgent <span class="code-function">CreateAgent</span>(AgentDefinition definition)</span>
+<span class="code-line"><span class="code-keyword">public async</span> Task&lt;AIAgent&gt; <span class="code-function">CreateAgentAsync</span>(AgentExecutionContext agentContext, CancellationToken cancellationToken = <span class="code-keyword">default</span>)</span>
 <span class="code-line">{</span>
-<span class="code-line">    Guard.Against.Null(definition, <span class="code-keyword">nameof</span>(definition));</span>
+<span class="code-line">    <span class="code-keyword">var</span> chatClient = <span class="code-keyword">await</span> _chatClientFactory.<span class="code-function">GetChatClientAsync</span>(clientType, deploymentOrAgentId, cancellationToken);</span>
 <span class="code-line"></span>
-<span class="code-line">    <span class="code-keyword">var</span> chatClient = <span class="code-function">BuildChatClientPipeline</span>(definition);</span>
-<span class="code-line">    <span class="code-keyword">var</span> agent = <span class="code-function">CreateBaseAgent</span>(chatClient, definition);</span>
+<span class="code-line">    <span class="code-keyword">var</span> chatClientBuilder = chatClient.<span class="code-function">AsBuilder</span>()</span>
+<span class="code-line">        .<span class="code-function">UseOpenTelemetry</span>(configure: c =&gt; c.EnableSensitiveData = <span class="code-keyword">true</span>)</span>
+<span class="code-line">        .<span class="code-function">UseFunctionInvocation</span>(configure: c =&gt; { c.AllowConcurrentInvocation = <span class="code-keyword">true</span>; c.MaximumIterationsPerRequest = 5; })</span>
+<span class="code-line">        .<span class="code-function">Use</span>(inner =&gt; <span class="code-keyword">new</span> Middleware.ObservabilityMiddleware(inner, &hellip;))</span>
+<span class="code-line">        .<span class="code-function">Use</span>(inner =&gt; <span class="code-keyword">new</span> Middleware.ToolDiagnosticsMiddleware(inner, &hellip;))</span>
+<span class="code-line">        .<span class="code-function">UseDistributedCache</span>(_distributedCache);</span>
 <span class="code-line"></span>
-<span class="code-line">    _logger.<span class="code-function">LogInformation</span>(</span>
-<span class="code-line">        <span class="code-string">"Created agent {AgentName} with {ToolCount} tools, model {Model}"</span>,</span>
-<span class="code-line">        definition.Name, definition.Tools?.Count ?? 0, definition.ModelDeployment);</span>
+<span class="code-line">    <span class="code-keyword">var</span> middlewareEnabledChatClient = chatClientBuilder.<span class="code-function">Build</span>();</span>
+<span class="code-line">    <span class="code-keyword">var</span> agent = <span class="code-keyword">new</span> ChatClientAgent(middlewareEnabledChatClient, agentOptions);</span>
 <span class="code-line"></span>
-<span class="code-line">    <span class="code-keyword">return</span> agent;</span>
+<span class="code-line">    _logger.<span class="code-function">LogInformation</span>(<span class="code-string">"Creating agent {AgentName} using {ClientType} with {Deployment}"</span>,</span>
+<span class="code-line">        agentContext.Name, clientType, deploymentOrAgentId);</span>
+<span class="code-line"></span>
+<span class="code-line">    <span class="code-keyword">return</span> agent.<span class="code-function">AsBuilder</span>().<span class="code-function">UseOpenTelemetry</span>(&hellip;).<span class="code-function">Build</span>();</span>
 <span class="code-line">}</span>
         </code></pre>
       </div>
       <div class="translation-english">
         <span class="translation-label">PLAIN ENGLISH</span>
         <div class="translation-lines">
-          <p class="tl">A <span class="term" data-definition="A method (or function) is a named block of code that performs a specific task. You 'call' it by name, pass it inputs, and it returns a result. Like pressing a button on a machine that does one thing.">method</span> called CreateAgent that takes an agent definition and returns a fully-assembled AI agent.</p>
+          <p class="tl">An asynchronous <span class="term" data-definition="A method (or function) is a named block of code that performs a specific task. You 'call' it by name, pass it inputs, and it returns a result.">method</span> called CreateAgentAsync. Takes an AgentExecutionContext &mdash; the resolved bundle of skill instructions, tools, model, temperature, and deployment.</p>
           <p class="tl">Opening the method...</p>
-          <p class="tl">Safety check: if someone passes in nothing, stop immediately with a clear error rather than crashing mysteriously later.</p>
+          <p class="tl">Ask the <span class="term" data-definition="A chat client is the software component that sends messages to and receives responses from an LLM. ChatClientFactory picks the right provider (Azure OpenAI, Anthropic, Azure AI Inference, etc.) based on AppConfig.">chat client factory</span> for an IChatClient connected to the right LLM provider.</p>
           <p class="tl">&nbsp;</p>
-          <p class="tl">Build the communication pipeline to the <span class="term" data-definition="A chat client is the software component that sends messages to and receives responses from an LLM. The 'pipeline' part means messages pass through multiple processing steps (logging, safety, retry logic) on the way.">LLM</span> based on the agent's config.</p>
-          <p class="tl">Create the base agent object, wiring together the chat client and the agent's definition (tools, skills, system prompt).</p>
+          <p class="tl">Wrap the raw chat client in a tower of middleware: tracing first, &hellip;</p>
+          <p class="tl">&hellip; OpenTelemetry exports detailed spans (with the option to include prompts/responses), &hellip;</p>
+          <p class="tl">&hellip; function-invocation middleware loops on tool calls up to 5 iterations, &hellip;</p>
+          <p class="tl">&hellip; observability middleware records turn-level telemetry, &hellip;</p>
+          <p class="tl">&hellip; tool-diagnostics middleware traces every tool call and result, &hellip;</p>
+          <p class="tl">&hellip; distributed cache lets identical requests skip the LLM entirely.</p>
           <p class="tl">&nbsp;</p>
-          <p class="tl">Write a <span class="term" data-definition="Structured logging is writing log messages with named placeholders (like {AgentName}) instead of raw strings. This makes logs searchable and filterable — you can find all logs for a specific agent by name instead of searching through plain text.">structured log</span> entry recording what was just built &mdash;</p>
-          <p class="tl">including the agent's name, how many tools it has, and which AI model it uses.</p>
-          <p class="tl">If no tools are defined, report 0 rather than crashing.</p>
+          <p class="tl">Build the final IChatClient with all that middleware baked in.</p>
+          <p class="tl">Wrap it in a ChatClientAgent &mdash; the agent object the rest of the system holds onto.</p>
           <p class="tl">&nbsp;</p>
-          <p class="tl">Hand back the fully assembled agent, ready to receive messages.</p>
+          <p class="tl">Write a <span class="term" data-definition="Structured logging is writing log messages with named placeholders (like {AgentName}) instead of raw strings. This makes logs searchable and filterable — you can find all logs for a specific agent by name instead of searching through plain text.">structured log</span> entry: agent name, client type, deployment.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Return the agent with one final OpenTelemetry wrapper so the outer span captures every call.</p>
           <p class="tl">End of the method.</p>
         </div>
       </div>
@@ -420,8 +440,8 @@
       </div>
       <div class="pattern-card" style="border-top: 3px solid var(--color-actor-2)">
         <div class="pattern-icon" style="background: var(--color-actor-2)">&#128225;</div>
-        <h4 class="pattern-title">AgentHub (SignalR)</h4>
-        <p class="pattern-desc">Real-time communication hub using <span class="term" data-definition="SignalR is a Microsoft library that enables real-time, two-way communication between a server and connected clients. Instead of the browser repeatedly asking 'any news?', SignalR keeps a persistent connection open — like a phone call instead of texting.">SignalR</span>. Pushes agent responses to the browser the instant they're ready.</p>
+        <h4 class="pattern-title">AG-UI SSE + AgentTelemetryHub</h4>
+        <p class="pattern-desc">Two transports. <strong>AG-UI</strong> Server-Sent Events at <code>POST /ag-ui/run</code> carry the chat sends and the streamed response. <strong>SignalR</strong> at <code>/hubs/agent</code> handles lifecycle (start, retry, edit, settings) and pushes telemetry events to the dashboard.</p>
       </div>
       <div class="pattern-card" style="border-top: 3px solid var(--color-actor-3)">
         <div class="pattern-icon" style="background: var(--color-actor-3)">&#128200;</div>
@@ -484,7 +504,7 @@
       <div class="quiz-question-block"
            data-correct="option-c"
            data-explanation-right="Exactly. The factory decides what to assemble using interfaces — it never touches real services directly. That decision-making logic is Application territory. Infrastructure provides the implementations those interfaces point to."
-           data-explanation-wrong="The key question is: does AgentFactory connect to real services, or does it orchestrate through interfaces? It calls BuildChatClientPipeline and CreateBaseAgent using abstractions — it never knows if the LLM is Azure, Anthropic, or local. That makes it Application-layer orchestration.">
+           data-explanation-wrong="The key question is: does AgentFactory connect to real services, or does it orchestrate through interfaces? It calls IChatClientFactory.GetChatClientAsync, then chains middleware via chatClient.AsBuilder().UseOpenTelemetry().UseFunctionInvocation()... — it never knows if the LLM is Azure, Anthropic, or local. That makes it Application-layer orchestration.">
         <h3 class="quiz-question">3. Why does the AgentFactory live in Application, not Infrastructure?</h3>
         <div class="quiz-options">
           <button class="quiz-option" data-value="option-a" onclick="selectOption(this)">
@@ -497,7 +517,7 @@
           </button>
           <button class="quiz-option" data-value="option-c" onclick="selectOption(this)">
             <div class="quiz-option-radio"></div>
-            <span>Because it orchestrates assembly through interfaces, without knowing which concrete services are behind them</span>
+            <span>Because it orchestrates assembly through interfaces (IChatClientFactory, ISkillMetadataRegistry, IServiceProvider for keyed tools) without knowing which concrete services are behind them</span>
           </button>
         </div>
         <div class="quiz-feedback"></div>
@@ -511,7 +531,7 @@
             <div class="dnd-chip" draggable="true" data-answer="domain">AgentManifest</div>
             <div class="dnd-chip" draggable="true" data-answer="application">MediatR Pipeline</div>
             <div class="dnd-chip" draggable="true" data-answer="infrastructure">FileSystemService</div>
-            <div class="dnd-chip" draggable="true" data-answer="presentation">AgentHub</div>
+            <div class="dnd-chip" draggable="true" data-answer="presentation">AgentTelemetryHub</div>
           </div>
           <div class="dnd-zones">
             <div class="dnd-zone" data-correct="domain">

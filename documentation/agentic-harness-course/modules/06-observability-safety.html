@@ -54,7 +54,7 @@
 <span class="code-line">{</span>
 <span class="code-line">    <span class="code-keyword">public static</span> <span class="code-function">Histogram</span>&lt;<span class="code-keyword">double</span>&gt; ConversationDuration { <span class="code-keyword">get</span>; } =</span>
 <span class="code-line">        AppInstrument.Meter.<span class="code-function">CreateHistogram</span>&lt;<span class="code-keyword">double</span>&gt;(</span>
-<span class="code-line">            OrchestrationConventions.ConversationDuration, <span class="code-string">"ms"</span>);</span>
+<span class="code-line">            OrchestrationConventions.ConversationDuration, <span class="code-string">"{ms}"</span>);</span>
 <span class="code-line"></span>
 <span class="code-line">    <span class="code-keyword">public static</span> <span class="code-function">Histogram</span>&lt;<span class="code-keyword">int</span>&gt; TurnsPerConversation { <span class="code-keyword">get</span>; } =</span>
 <span class="code-line">        AppInstrument.Meter.<span class="code-function">CreateHistogram</span>&lt;<span class="code-keyword">int</span>&gt;(</span>
@@ -63,6 +63,22 @@
 <span class="code-line">    <span class="code-keyword">public static</span> <span class="code-function">Counter</span>&lt;<span class="code-keyword">long</span>&gt; SubagentSpawns { <span class="code-keyword">get</span>; } =</span>
 <span class="code-line">        AppInstrument.Meter.<span class="code-function">CreateCounter</span>&lt;<span class="code-keyword">long</span>&gt;(</span>
 <span class="code-line">            OrchestrationConventions.SubagentSpawns, <span class="code-string">"{spawn}"</span>);</span>
+<span class="code-line"></span>
+<span class="code-line">    <span class="code-keyword">public static</span> <span class="code-function">Counter</span>&lt;<span class="code-keyword">long</span>&gt; ToolCalls { <span class="code-keyword">get</span>; } =</span>
+<span class="code-line">        AppInstrument.Meter.<span class="code-function">CreateCounter</span>&lt;<span class="code-keyword">long</span>&gt;(</span>
+<span class="code-line">            OrchestrationConventions.ToolCalls, <span class="code-string">"{call}"</span>);</span>
+<span class="code-line"></span>
+<span class="code-line">    <span class="code-keyword">public static</span> <span class="code-function">Histogram</span>&lt;<span class="code-keyword">double</span>&gt; TurnDuration { <span class="code-keyword">get</span>; } =</span>
+<span class="code-line">        AppInstrument.Meter.<span class="code-function">CreateHistogram</span>&lt;<span class="code-keyword">double</span>&gt;(</span>
+<span class="code-line">            OrchestrationConventions.TurnDuration, <span class="code-string">"{ms}"</span>);</span>
+<span class="code-line"></span>
+<span class="code-line">    <span class="code-keyword">public static</span> <span class="code-function">Counter</span>&lt;<span class="code-keyword">long</span>&gt; TurnsTotal { <span class="code-keyword">get</span>; } =</span>
+<span class="code-line">        AppInstrument.Meter.<span class="code-function">CreateCounter</span>&lt;<span class="code-keyword">long</span>&gt;(</span>
+<span class="code-line">            OrchestrationConventions.TurnsTotal, <span class="code-string">"{turn}"</span>);</span>
+<span class="code-line"></span>
+<span class="code-line">    <span class="code-keyword">public static</span> <span class="code-function">Counter</span>&lt;<span class="code-keyword">long</span>&gt; TurnErrors { <span class="code-keyword">get</span>; } =</span>
+<span class="code-line">        AppInstrument.Meter.<span class="code-function">CreateCounter</span>&lt;<span class="code-keyword">long</span>&gt;(</span>
+<span class="code-line">            OrchestrationConventions.TurnErrors, <span class="code-string">"{turn}"</span>);</span>
 <span class="code-line">}</span>
         </code></pre>
       </div>
@@ -79,6 +95,17 @@
           <p class="tl">&nbsp;</p>
           <p class="tl">A <span class="term" data-definition="A counter is the simplest metric type &mdash; it only goes up. Every time the event happens, the counter increments by one. It answers questions like &lsquo;how many times has X happened since we started?&rsquo;">counter</span> that increments every time the orchestrator spawns a sub-agent.</p>
           <p class="tl">This lets you monitor how heavily the system relies on delegation.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">A fourth counter that increments every time a tool call fires &mdash; aggregated per agent on the Tools dashboard.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Per-turn wall-clock duration histogram &mdash; lets you spot slow turns even if the overall conversation looks fine.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Counter of total turns executed across all agents.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Counter of turns that ended in error &mdash; divide by TurnsTotal to get error rate.</p>
+          <p class="tl">&nbsp;</p>
           <p class="tl">&nbsp;</p>
         </div>
       </div>
@@ -151,31 +178,36 @@
         <pre><code>
 <span class="code-line"><span class="code-keyword">public class</span> <span class="code-function">ContentSafetyBehavior</span>&lt;TRequest, TResponse&gt;</span>
 <span class="code-line">    : <span class="code-function">IPipelineBehavior</span>&lt;TRequest, TResponse&gt;</span>
-<span class="code-line">    <span class="code-keyword">where</span> TRequest : <span class="code-function">IContentScreenable</span></span>
+<span class="code-line">    <span class="code-keyword">where</span> TRequest : notnull</span>
 <span class="code-line">{</span>
-<span class="code-line">    <span class="code-keyword">public async</span> Task&lt;TResponse&gt; <span class="code-function">Handle</span>(</span>
-<span class="code-line">        TRequest request, <span class="code-function">RequestHandlerDelegate</span>&lt;TResponse&gt; next,</span>
-<span class="code-line">        CancellationToken cancellationToken)</span>
+<span class="code-line">    <span class="code-keyword">public</span> <span class="code-function">ContentSafetyBehavior</span>(ITextContentSafetyService safety, IObservabilityStore observabilityStore)</span>
+<span class="code-line">    { _safety = safety; _observabilityStore = observabilityStore; }</span>
+<span class="code-line"></span>
+<span class="code-line">    <span class="code-keyword">public async</span> Task&lt;TResponse&gt; <span class="code-function">Handle</span>(TRequest request, RequestHandlerDelegate&lt;TResponse&gt; next, CancellationToken ct)</span>
 <span class="code-line">    {</span>
-<span class="code-line">        <span class="code-keyword">var</span> content = request.<span class="code-function">GetContentToScreen</span>();</span>
+<span class="code-line">        <span class="code-comment">// Runtime opt-in: only requests that implement IContentScreenable get screened</span></span>
+<span class="code-line">        <span class="code-keyword">if</span> (request <span class="code-keyword">is not</span> IContentScreenable screenable) <span class="code-keyword">return await</span> next();</span>
+<span class="code-line"></span>
+<span class="code-line">        <span class="code-keyword">var</span> content = screenable.ContentToScreen;</span>
+<span class="code-line">        ContentSafetyMetrics.Evaluations.<span class="code-function">Add</span>(1);  <span class="code-comment">// every screen, pass or fail</span></span>
 <span class="code-line"></span>
 <span class="code-line">        <span class="code-keyword">if</span> (!<span class="code-keyword">string</span>.<span class="code-function">IsNullOrWhiteSpace</span>(content))</span>
 <span class="code-line">        {</span>
-<span class="code-line">            <span class="code-keyword">var</span> safetyResult = <span class="code-keyword">await</span> _contentSafetyService.<span class="code-function">ScreenContentAsync</span>(</span>
-<span class="code-line">                content, cancellationToken);</span>
+<span class="code-line">            <span class="code-keyword">var</span> result = <span class="code-keyword">await</span> _safety.<span class="code-function">ScreenContentAsync</span>(content, ct);</span>
 <span class="code-line"></span>
-<span class="code-line">            <span class="code-keyword">if</span> (!safetyResult.IsSafe)</span>
+<span class="code-line">            <span class="code-keyword">if</span> (!result.IsSafe)</span>
 <span class="code-line">            {</span>
-<span class="code-line">                _logger.<span class="code-function">LogWarning</span>(</span>
-<span class="code-line">                    <span class="code-string">"Content safety violation detected: {Categories}"</span>,</span>
-<span class="code-line">                    <span class="code-keyword">string</span>.<span class="code-function">Join</span>(<span class="code-string">", "</span>, safetyResult.FlaggedCategories));</span>
+<span class="code-line">                _logger.<span class="code-function">LogWarning</span>(<span class="code-string">"Content safety block: {Categories}"</span>, <span class="code-keyword">string</span>.<span class="code-function">Join</span>(<span class="code-string">", "</span>, result.Categories));</span>
+<span class="code-line">                <span class="code-keyword">await</span> _observabilityStore.<span class="code-function">RecordSafetyEventAsync</span>(screenable, result, ct);</span>
+<span class="code-line">                ContentSafetyMetrics.Blocks.<span class="code-function">Add</span>(1);</span>
 <span class="code-line"></span>
-<span class="code-line">                ContentSafetyMetrics.Violations.<span class="code-function">Add</span>(1);</span>
-<span class="code-line">                <span class="code-keyword">throw new</span> <span class="code-function">ContentSafetyException</span>(safetyResult);</span>
+<span class="code-line">                <span class="code-comment">// Prefer returning a structured Result.ContentBlocked rather than throwing</span></span>
+<span class="code-line">                <span class="code-keyword">if</span> (ResultHelper.<span class="code-function">TryCreateFailure</span>&lt;TResponse&gt;(result, <span class="code-keyword">out var</span> failure)) <span class="code-keyword">return</span> failure;</span>
+<span class="code-line">                <span class="code-keyword">throw new</span> ContentSafetyException(result.Reason, result.Category);</span>
 <span class="code-line">            }</span>
 <span class="code-line">        }</span>
 <span class="code-line"></span>
-<span class="code-line">        <span class="code-keyword">return await</span> <span class="code-function">next</span>();</span>
+<span class="code-line">        <span class="code-keyword">return await</span> next();</span>
 <span class="code-line">    }</span>
 <span class="code-line">}</span>
         </code></pre>
@@ -183,28 +215,32 @@
       <div class="translation-english">
         <span class="translation-label">PLAIN ENGLISH</span>
         <div class="translation-lines">
-          <p class="tl">This is a safety checkpoint that wraps around any command containing user content.</p>
-          <p class="tl">It plugs into the MediatR pipeline so it runs automatically, no manual wiring needed.</p>
-          <p class="tl">It only applies to commands that have opted in by implementing the screening interface.</p>
+          <p class="tl">This is a safety checkpoint registered as a pipeline behavior.</p>
+          <p class="tl">It plugs into MediatR so it runs automatically &mdash; no manual wiring.</p>
+          <p class="tl">Constraint is just <code>notnull</code>; the screening opt-in happens at runtime, not by generic constraint.</p>
           <p class="tl">&nbsp;</p>
-          <p class="tl">This method runs every time a matching command comes through the pipeline.</p>
-          <p class="tl">The <code>next</code> parameter is the rest of the pipeline &mdash; calling it means &ldquo;let the message through.&rdquo;</p>
+          <p class="tl">Constructor takes the safety service and an observability store (to record safety events to Postgres).</p>
           <p class="tl">&nbsp;</p>
           <p class="tl">&nbsp;</p>
-          <p class="tl">Pull out the text content that needs to be screened from the incoming request.</p>
+          <p class="tl">The Handle method runs for every command.</p>
           <p class="tl">&nbsp;</p>
-          <p class="tl">If there is actual content to check (not blank)...</p>
+          <p class="tl">Runtime opt-in: only screen if the request implements <code>IContentScreenable</code>. Otherwise pass through immediately.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Read the content directly from the property (not a method).</p>
+          <p class="tl">Bump the &ldquo;evaluations&rdquo; counter on every screen so you can see how often safety runs &mdash; pass or fail.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">If there is actual content to check&hellip;</p>
           <p class="tl">&nbsp;</p>
           <p class="tl">Send the content to the safety service and wait for the verdict.</p>
           <p class="tl">&nbsp;</p>
+          <p class="tl">If the verdict says the content is NOT safe&hellip;</p>
           <p class="tl">&nbsp;</p>
-          <p class="tl">If the verdict says the content is NOT safe...</p>
+          <p class="tl">Log a warning with the flagged categories.</p>
+          <p class="tl">Record the safety event to the observability store so Sessions dashboard can show it.</p>
+          <p class="tl">Bump the &ldquo;blocks&rdquo; counter &mdash; Prometheus tracks both evaluations and blocks separately.</p>
           <p class="tl">&nbsp;</p>
-          <p class="tl">Log a warning with the specific categories that were flagged (hate, violence, etc.).</p>
-          <p class="tl">&nbsp;</p>
-          <p class="tl">&nbsp;</p>
-          <p class="tl">Increment the violations metric so Prometheus tracks how often this happens.</p>
-          <p class="tl">Throw an exception &mdash; this STOPS the pipeline. The agent never sees the message.</p>
+          <p class="tl">Prefer returning a structured failure (<code>Result.ContentBlocked</code>) if the response type supports it. Cleaner than an exception.</p>
+          <p class="tl">Otherwise fall back to throwing a typed exception so the outer handler can map it.</p>
           <p class="tl">&nbsp;</p>
           <p class="tl">&nbsp;</p>
           <p class="tl">&nbsp;</p>
@@ -263,14 +299,13 @@
 <span class="code-line">    <span class="code-keyword">public bool</span> IsBypassImmune =&gt; <span class="code-keyword">true</span>;</span>
 <span class="code-line">}</span>
 <span class="code-line"></span>
-<span class="code-line"><span class="code-keyword">public sealed record</span> <span class="code-function">ToolPermissionRule</span></span>
-<span class="code-line">{</span>
-<span class="code-line">    <span class="code-keyword">public required string</span> ToolName { <span class="code-keyword">get</span>; <span class="code-keyword">init</span>; }</span>
-<span class="code-line">    <span class="code-keyword">public string</span>? OperationPattern { <span class="code-keyword">get</span>; <span class="code-keyword">init</span>; }</span>
-<span class="code-line">    <span class="code-keyword">public required</span> <span class="code-function">PermissionBehaviorType</span> Behavior { <span class="code-keyword">get</span>; <span class="code-keyword">init</span>; }</span>
-<span class="code-line">    <span class="code-keyword">public required</span> <span class="code-function">PermissionRuleSource</span> Source { <span class="code-keyword">get</span>; <span class="code-keyword">init</span>; }</span>
-<span class="code-line">    <span class="code-keyword">public int</span> Priority { <span class="code-keyword">get</span>; <span class="code-keyword">init</span>; }</span>
-<span class="code-line">}</span>
+<span class="code-line"><span class="code-keyword">public sealed record</span> <span class="code-function">ToolPermissionRule</span>(</span>
+<span class="code-line">    <span class="code-keyword">string</span> ToolPattern,</span>
+<span class="code-line">    <span class="code-keyword">string</span>? OperationPattern,  <span class="code-comment">// nullable &mdash; omit to match any operation</span></span>
+<span class="code-line">    PermissionBehaviorType Behavior,</span>
+<span class="code-line">    PermissionRuleSource Source,</span>
+<span class="code-line">    <span class="code-keyword">int</span> Priority,</span>
+<span class="code-line">    <span class="code-keyword">bool</span> IsBypassImmune = <span class="code-keyword">false</span>);</span>
         </code></pre>
       </div>
       <div class="translation-english">
@@ -281,13 +316,14 @@
           <p class="tl"><span class="term" data-definition="Bypass-immune means this rule cannot be overridden by any other configuration, admin setting, or special permission. It is always enforced, no matter what.">Bypass-immune</span> is always true &mdash; no one and nothing can override a safety gate. Ever.</p>
           <p class="tl">&nbsp;</p>
           <p class="tl">&nbsp;</p>
-          <p class="tl">A ToolPermissionRule is a configurable rule for a specific tool.</p>
+          <p class="tl">A ToolPermissionRule is a configurable rule for a specific tool. Positional record syntax &mdash; six parameters.</p>
           <p class="tl">&nbsp;</p>
-          <p class="tl">Which tool does this rule apply to? (e.g., &ldquo;file_system&rdquo;, &ldquo;web_search&rdquo;)</p>
+          <p class="tl">A tool name pattern (e.g., &ldquo;file_system&rdquo;, or &ldquo;file_*&rdquo; to match any file-related tool).</p>
           <p class="tl">An optional pattern to match specific operations (e.g., &ldquo;delete*&rdquo; for delete operations only).</p>
           <p class="tl">What should happen: Allow, Ask (prompt user), or Deny?</p>
           <p class="tl">Where did this rule come from: the agent manifest, user settings, or a safety gate?</p>
           <p class="tl">Higher priority rules win when two rules conflict for the same tool and operation.</p>
+          <p class="tl">Optional flag &mdash; if true, this rule cannot be overridden even by higher-priority rules. Same idea as a safety gate.</p>
           <p class="tl">&nbsp;</p>
         </div>
       </div>
@@ -328,29 +364,29 @@
       <div class="step-card">
         <div class="step-num">1</div>
         <div class="step-body">
-          <strong>Gather History</strong>
-          <p>Pull recent trace data showing how the agent performed across many conversations.</p>
+          <strong>Load Eval Tasks &amp; Learnings</strong>
+          <p>Read benchmark tasks from disk plus a <code>learnings.md</code> file that records what worked or failed on previous runs.</p>
         </div>
       </div>
       <div class="step-card">
         <div class="step-num">2</div>
         <div class="step-body">
-          <strong><span class="term" data-definition="The proposer is the component of the meta-harness that reads trace history and generates suggested changes to the agent&rsquo;s skill files. It is itself powered by an LLM, so it can reason about patterns in the traces.">Proposer</span> Suggests Changes</strong>
-          <p>A second agent reads the traces and proposes specific edits to skill files to improve performance.</p>
+          <strong><span class="term" data-definition="The proposer is the component of the meta-harness that reads the current candidate and prior learnings, then generates a new candidate skill. It is itself powered by an LLM, so it can reason about patterns.">Proposer</span> Generates a Candidate</strong>
+          <p>A second agent reads the current best candidate, the run history, and prior learnings, then proposes a new candidate skill folder.</p>
         </div>
       </div>
       <div class="step-card">
         <div class="step-num">3</div>
         <div class="step-body">
-          <strong><span class="term" data-definition="The evaluator runs the proposed skill changes against a set of benchmark tasks and scores the results. It answers the question: did this change actually make the agent better, or just different?">Evaluator</span> Tests Changes</strong>
-          <p>Run the proposed changes against <span class="term" data-definition="Benchmark tasks are a fixed set of test scenarios with known-good outcomes. Running the agent against benchmarks produces a score, letting you objectively compare &lsquo;before&rsquo; and &lsquo;after&rsquo; performance.">benchmark</span> tasks and score the results objectively.</p>
+          <strong><span class="term" data-definition="The evaluation service runs the proposed candidate against a set of benchmark tasks and scores it on pass rate. It answers: did this change actually make the agent better?">Evaluation Service</span> Scores It</strong>
+          <p>Run the candidate against <span class="term" data-definition="Benchmark tasks are a fixed set of test scenarios with known-good outcomes. Running the agent against benchmarks produces a pass rate, letting you objectively compare &lsquo;before&rsquo; and &lsquo;after&rsquo; performance.">benchmark</span> tasks and compute a pass rate.</p>
         </div>
       </div>
       <div class="step-card">
         <div class="step-num">4</div>
         <div class="step-body">
-          <strong>Keep or Discard</strong>
-          <p>If the score improves beyond a threshold, keep the change. Otherwise, discard it. No regressions allowed.</p>
+          <strong>Better AND No Regressions</strong>
+          <p>Accept only if the candidate beats the current best by the configured margin AND a regression suite check passes &mdash; otherwise discard. No silent regressions allowed.</p>
         </div>
       </div>
     </div>
@@ -359,42 +395,53 @@
       <div class="translation-code">
         <span class="translation-label">CODE</span>
         <pre><code>
-<span class="code-line"><span class="code-comment">// Phase 1: Create orchestrator and get task decomposition</span></span>
-<span class="code-line"><span class="code-keyword">var</span> history = <span class="code-keyword">await</span> _historyStore.<span class="code-function">GetRecentTracesAsync</span>(config.TraceWindowSize);</span>
+<span class="code-line"><span class="code-comment">// Phase 1: Load benchmark tasks and prior learnings from disk</span></span>
+<span class="code-line"><span class="code-keyword">var</span> evalTasks = <span class="code-keyword">await</span> <span class="code-function">LoadEvalTasksAsync</span>(cfg.EvalTasksPath);</span>
+<span class="code-line"><span class="code-keyword">var</span> priorLearnings = <span class="code-keyword">await</span> <span class="code-function">LoadPriorLearningsAsync</span>(cfg.LearningsPath);</span>
 <span class="code-line"></span>
-<span class="code-line"><span class="code-comment">// Phase 2: Proposer reads traces and suggests improvements</span></span>
-<span class="code-line"><span class="code-keyword">var</span> proposal = <span class="code-keyword">await</span> _proposer.<span class="code-function">ProposeAsync</span>(</span>
-<span class="code-line">    currentSkillContent, history, cancellationToken);</span>
+<span class="code-line"><span class="code-comment">// Phase 2: Build a proposer context, ask the proposer for a candidate</span></span>
+<span class="code-line"><span class="code-keyword">var</span> proposerCtx = <span class="code-keyword">new</span> HarnessProposerContext {</span>
+<span class="code-line">    CurrentCandidate = currentBest,</span>
+<span class="code-line">    OptimizationRunDirectoryPath = runDir,</span>
+<span class="code-line">    PriorCandidateIds = candidateHistory, Iteration = iteration,</span>
+<span class="code-line">    PriorLearnings = priorLearnings</span>
+<span class="code-line">};</span>
+<span class="code-line"><span class="code-keyword">var</span> candidate = <span class="code-keyword">await</span> _proposer.<span class="code-function">ProposeAsync</span>(proposerCtx, cancellationToken);</span>
 <span class="code-line"></span>
-<span class="code-line"><span class="code-comment">// Phase 3: Evaluate proposed changes against benchmark tasks</span></span>
-<span class="code-line"><span class="code-keyword">var</span> evalResult = <span class="code-keyword">await</span> _evaluator.<span class="code-function">EvaluateAsync</span>(</span>
-<span class="code-line">    proposal.CandidateSkill, config.EvalTasks, cancellationToken);</span>
+<span class="code-line"><span class="code-comment">// Phase 3: Evaluate the candidate against the eval task set</span></span>
+<span class="code-line"><span class="code-keyword">var</span> evaluated = <span class="code-keyword">await</span> _evaluationService.<span class="code-function">EvaluateAsync</span>(candidate, evalTasks, cancellationToken);</span>
 <span class="code-line"></span>
-<span class="code-line"><span class="code-comment">// Phase 4: Keep if improved, discard if not</span></span>
-<span class="code-line"><span class="code-keyword">if</span> (evalResult.Score &gt; currentBestScore + config.ScoreImprovementThreshold)</span>
+<span class="code-line"><span class="code-comment">// Phase 4: Accept only if better AND passes regression check</span></span>
+<span class="code-line"><span class="code-keyword">if</span> (<span class="code-function">IsBetter</span>(evaluated, currentBest, cfg.ScoreImprovementThreshold)</span>
+<span class="code-line">    &amp;&amp; _regressionService.<span class="code-function">Check</span>(regressionSuite, evaluated))</span>
 <span class="code-line">{</span>
-<span class="code-line">    <span class="code-keyword">await</span> _candidateRepo.<span class="code-function">SaveAsync</span>(proposal.Candidate);</span>
-<span class="code-line">    _logger.<span class="code-function">LogInformation</span>(<span class="code-string">"New best candidate: score {Score} (was {Previous})"</span>,</span>
-<span class="code-line">        evalResult.Score, currentBestScore);</span>
+<span class="code-line">    <span class="code-keyword">await</span> _candidateRepository.<span class="code-function">SaveAsync</span>(evaluated, cancellationToken);</span>
+<span class="code-line">    _logger.<span class="code-function">LogInformation</span>(<span class="code-string">"New best candidate: pass rate {Rate} (was {Previous})"</span>,</span>
+<span class="code-line">        evaluated.PassRate, currentBest.PassRate);</span>
 <span class="code-line">}</span>
         </code></pre>
       </div>
       <div class="translation-english">
         <span class="translation-label">PLAIN ENGLISH</span>
         <div class="translation-lines">
-          <p class="tl">Step 1: Pull the last N traces from the history store &mdash; the &ldquo;game tape&rdquo; of recent conversations.</p>
+          <p class="tl">Step 1: Load the benchmark task set and any prior &ldquo;learnings&rdquo; notes from disk.</p>
           <p class="tl">&nbsp;</p>
           <p class="tl">&nbsp;</p>
-          <p class="tl">Step 2: Give the proposer agent the current skill file and the trace history.</p>
-          <p class="tl">It analyzes patterns and returns a proposed new version of the skill file.</p>
+          <p class="tl">Step 2: Build a context bundle for the proposer:</p>
+          <p class="tl">The current best skill candidate.</p>
+          <p class="tl">Where to write artifacts for this optimization run.</p>
+          <p class="tl">The IDs of every prior candidate &amp; which iteration we are on.</p>
+          <p class="tl">Prior learnings so the proposer doesn&apos;t repeat past mistakes.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Ask the proposer to generate a new candidate.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Step 3: Run the candidate through the evaluation service against the benchmark tasks.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Step 4: Accept only if BOTH conditions hold: better than current best (with margin), AND a regression check passes &mdash; no new failures on the regression suite.</p>
           <p class="tl">&nbsp;</p>
           <p class="tl">&nbsp;</p>
-          <p class="tl">Step 3: Run the proposed skill file through the evaluator.</p>
-          <p class="tl">The evaluator tests it against benchmark tasks and returns a numeric score.</p>
-          <p class="tl">&nbsp;</p>
-          <p class="tl">Step 4: Only keep the proposal if the score beats the current best by a meaningful margin.</p>
-          <p class="tl">The threshold prevents &ldquo;noise&rdquo; improvements that are within the margin of error.</p>
-          <p class="tl">Save the winning candidate and log how much better it scored.</p>
+          <p class="tl">Save the new best to the candidate repository.</p>
+          <p class="tl">Log the new pass rate vs. the previous best.</p>
           <p class="tl">&nbsp;</p>
           <p class="tl">&nbsp;</p>
         </div>
@@ -458,8 +505,8 @@
       <!-- Question 2 -->
       <div class="quiz-question-block"
            data-correct="option-2c"
-           data-explanation-right="Exactly. The ContentSafetyBehavior throws an exception, which halts the pipeline. The agent handler never executes, so the agent never even knows the message existed. The violation is also logged and the metric counter incremented for monitoring."
-           data-explanation-wrong="Not quite. Look back at the ContentSafetyBehavior code &mdash; what happens when IsSafe is false? Does the pipeline continue, or does it stop?">
+           data-explanation-right="Exactly. The ContentSafetyBehavior returns a structured Result.ContentBlocked failure (or throws ContentSafetyException as a fallback). Either way the pipeline halts &mdash; the agent handler never executes. The block is recorded to the observability store and ContentSafetyMetrics.Blocks is incremented for monitoring."
+           data-explanation-wrong="Not quite. Look at the ContentSafetyBehavior code &mdash; when IsSafe is false, the behavior tries TryCreateFailure first, falls back to throwing ContentSafetyException, and either way the pipeline halts. The agent never sees the message.">
         <h3 class="quiz-question">What happens when ContentSafetyBehavior flags a message as unsafe?</h3>
         <div class="quiz-options">
           <button class="quiz-option" data-value="option-2a" onclick="selectOption(this)">

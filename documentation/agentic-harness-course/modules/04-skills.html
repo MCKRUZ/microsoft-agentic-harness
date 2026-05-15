@@ -87,23 +87,34 @@
 <span class="code-line"><span class="code-keyword">public class</span> <span class="code-function">SkillDefinition</span></span>
 <span class="code-line">{</span>
 <span class="code-line">    <span class="code-comment">#region Level 1: Index Card (Metadata — Always Loaded)</span></span>
-<span class="code-line">    <span class="code-keyword">public</span> <span class="code-type">string</span> Id { <span class="code-keyword">get</span>; <span class="code-keyword">set</span>; }</span>
-<span class="code-line">    <span class="code-keyword">public</span> <span class="code-type">string</span> Name { <span class="code-keyword">get</span>; <span class="code-keyword">set</span>; }</span>
-<span class="code-line">    <span class="code-keyword">public</span> <span class="code-type">string</span> Description { <span class="code-keyword">get</span>; <span class="code-keyword">set</span>; }</span>
-<span class="code-line">    <span class="code-keyword">public</span> IList&lt;<span class="code-type">string</span>&gt; Tags { <span class="code-keyword">get</span>; <span class="code-keyword">set</span>; }</span>
+<span class="code-line">    <span class="code-keyword">public</span> <span class="code-type">string</span> Id { <span class="code-keyword">get</span>; <span class="code-keyword">set</span>; } = <span class="code-keyword">string</span>.Empty;</span>
+<span class="code-line">    <span class="code-keyword">public</span> <span class="code-type">string</span> Name { <span class="code-keyword">get</span>; <span class="code-keyword">set</span>; } = <span class="code-keyword">string</span>.Empty;</span>
+<span class="code-line">    <span class="code-keyword">public</span> <span class="code-type">string</span> Description { <span class="code-keyword">get</span>; <span class="code-keyword">set</span>; } = <span class="code-keyword">string</span>.Empty;</span>
 <span class="code-line">    <span class="code-comment">#endregion</span></span>
 <span class="code-line"></span>
 <span class="code-line">    <span class="code-comment">#region Level 2: Folder (Instructions — On Demand)</span></span>
-<span class="code-line">    <span class="code-keyword">public</span> <span class="code-type">string</span> Instructions { <span class="code-keyword">get</span>; <span class="code-keyword">set</span>; }</span>
-<span class="code-line">    <span class="code-keyword">public</span> IList&lt;<span class="code-type">ToolDeclaration</span>&gt; ToolDeclarations { <span class="code-keyword">get</span>; <span class="code-keyword">set</span>; }</span>
-<span class="code-line">    <span class="code-keyword">public</span> IList&lt;<span class="code-type">string</span>&gt; AllowedTools { <span class="code-keyword">get</span>; <span class="code-keyword">set</span>; }</span>
+<span class="code-line">    <span class="code-keyword">public</span> <span class="code-type">string</span>? Instructions { <span class="code-keyword">get</span>; <span class="code-keyword">set</span>; }</span>
+<span class="code-line">    <span class="code-keyword">public</span> <span class="code-type">string</span>? Objectives { <span class="code-keyword">get</span>; <span class="code-keyword">set</span>; }</span>
+<span class="code-line">    <span class="code-keyword">public</span> <span class="code-type">string</span>? TraceFormat { <span class="code-keyword">get</span>; <span class="code-keyword">set</span>; }</span>
+<span class="code-line">    <span class="code-comment">#endregion</span></span>
+<span class="code-line"></span>
+<span class="code-line">    <span class="code-comment">#region Categorization</span></span>
+<span class="code-line">    <span class="code-keyword">public</span> <span class="code-type">string</span>? Category { <span class="code-keyword">get</span>; <span class="code-keyword">set</span>; }</span>
+<span class="code-line">    <span class="code-keyword">public</span> IList&lt;<span class="code-type">string</span>&gt; Tags { <span class="code-keyword">get</span>; <span class="code-keyword">set</span>; } = <span class="code-keyword">new</span> List&lt;<span class="code-keyword">string</span>&gt;();</span>
+<span class="code-line">    <span class="code-keyword">public</span> <span class="code-type">string</span>? SkillType { <span class="code-keyword">get</span>; <span class="code-keyword">set</span>; }</span>
+<span class="code-line">    <span class="code-comment">#endregion</span></span>
+<span class="code-line"></span>
+<span class="code-line">    <span class="code-comment">#region Runtime Configuration</span></span>
+<span class="code-line">    <span class="code-keyword">public</span> IList&lt;<span class="code-type">string</span>&gt; AllowedTools { <span class="code-keyword">get</span>; <span class="code-keyword">set</span>; } = <span class="code-keyword">new</span> List&lt;<span class="code-keyword">string</span>&gt;();</span>
 <span class="code-line">    <span class="code-comment">#endregion</span></span>
 <span class="code-line"></span>
 <span class="code-line">    <span class="code-comment">#region Level 3: Filing Cabinet (Resources — On Demand)</span></span>
-<span class="code-line">    <span class="code-keyword">public</span> IList&lt;<span class="code-type">SkillResource</span>&gt; Templates { <span class="code-keyword">get</span>; <span class="code-keyword">set</span>; }</span>
-<span class="code-line">    <span class="code-keyword">public</span> IList&lt;<span class="code-type">SkillResource</span>&gt; References { <span class="code-keyword">get</span>; <span class="code-keyword">set</span>; }</span>
-<span class="code-line">    <span class="code-keyword">public</span> IList&lt;<span class="code-type">SkillResource</span>&gt; Scripts { <span class="code-keyword">get</span>; <span class="code-keyword">set</span>; }</span>
+<span class="code-line">    <span class="code-keyword">public</span> IList&lt;<span class="code-type">SkillResource</span>&gt; Templates { <span class="code-keyword">get</span>; <span class="code-keyword">set</span>; } = <span class="code-keyword">new</span> List&lt;<span class="code-type">SkillResource</span>&gt;();</span>
+<span class="code-line">    <span class="code-keyword">public</span> IList&lt;<span class="code-type">SkillResource</span>&gt; References { <span class="code-keyword">get</span>; <span class="code-keyword">set</span>; } = <span class="code-keyword">new</span> List&lt;<span class="code-type">SkillResource</span>&gt;();</span>
+<span class="code-line">    <span class="code-keyword">public</span> IList&lt;<span class="code-type">SkillResource</span>&gt; Scripts { <span class="code-keyword">get</span>; <span class="code-keyword">set</span>; } = <span class="code-keyword">new</span> List&lt;<span class="code-type">SkillResource</span>&gt;();</span>
+<span class="code-line">    <span class="code-keyword">public</span> IList&lt;<span class="code-type">SkillResource</span>&gt; Assets { <span class="code-keyword">get</span>; <span class="code-keyword">set</span>; } = <span class="code-keyword">new</span> List&lt;<span class="code-type">SkillResource</span>&gt;();</span>
 <span class="code-line">    <span class="code-comment">#endregion</span></span>
+<span class="code-line">    <span class="code-comment">// Plus Extensibility (ToolDeclarations), Hierarchy, Loading State, Computed Properties regions</span></span>
 <span class="code-line">}</span>
         </code></pre>
       </div>
@@ -114,19 +125,28 @@
           <p class="tl">&nbsp;</p>
           <p class="tl"><strong style="color: #3498DB;">Compartment 1 — the label on the briefcase.</strong></p>
           <p class="tl">A unique identifier for this skill.</p>
-          <p class="tl">A human-readable name (e.g., "orchestrator").</p>
-          <p class="tl">A short sentence explaining what this skill does.</p>
-          <p class="tl">Searchable keywords so the agent can find relevant skills quickly.</p>
+          <p class="tl">A human-readable name (e.g., "orchestrator-agent").</p>
+          <p class="tl">A short sentence explaining what this skill does &mdash; what shows up in the menu.</p>
           <p class="tl">&nbsp;</p>
           <p class="tl"><strong style="color: #F39C12;">Compartment 2 — the full mission briefing.</strong></p>
           <p class="tl">The detailed instructions the agent follows when this skill is active.</p>
-          <p class="tl">Which tools this skill declares (schemas sent to the AI).</p>
-          <p class="tl">A list of tool names this skill is allowed to use.</p>
+          <p class="tl">Optional objectives section &mdash; what success looks like.</p>
+          <p class="tl">Optional trace format &mdash; how the agent should report its work.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl"><strong>Categorization &mdash; separate region.</strong></p>
+          <p class="tl">Which group the skill belongs to (e.g., "orchestration").</p>
+          <p class="tl">Searchable hashtag-style keywords.</p>
+          <p class="tl">Type discriminator (e.g., "orchestration", "research").</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl"><strong>Runtime config &mdash; separate region.</strong></p>
+          <p class="tl">Allow-list of tool names the skill may invoke.</p>
           <p class="tl">&nbsp;</p>
           <p class="tl"><strong style="color: #E74C3C;">Compartment 3 — the filing cabinet in the back room.</strong></p>
           <p class="tl">Reusable document templates the agent can fill in.</p>
           <p class="tl">Background reading material loaded from files on disk.</p>
           <p class="tl">Automation scripts the agent can run when needed.</p>
+          <p class="tl">Arbitrary assets &mdash; images, configs, sample data.</p>
+          <p class="tl">Plus four more regions for tool declarations, hierarchy, loading state, and computed properties.</p>
           <p class="tl">&nbsp;</p>
         </div>
       </div>
@@ -147,9 +167,13 @@
         <span class="translation-label">CODE</span>
         <pre><code>
 <span class="code-line"><span class="code-comment">---</span></span>
-<span class="code-line"><span class="code-property">name</span>: <span class="code-string">orchestrator</span></span>
-<span class="code-line"><span class="code-property">description</span>: <span class="code-string">Decomposes complex tasks into subtasks and delegates to specialized sub-agents</span></span>
-<span class="code-line"><span class="code-property">allowed-tools</span>: <span class="code-string">file_system web_search</span></span>
+<span class="code-line"><span class="code-property">name</span>: <span class="code-string">"orchestrator-agent"</span></span>
+<span class="code-line"><span class="code-property">description</span>: <span class="code-string">"Coordinates specialized agents to accomplish complex, multi-step tasks."</span></span>
+<span class="code-line"><span class="code-property">category</span>: <span class="code-string">"orchestration"</span></span>
+<span class="code-line"><span class="code-property">skill_type</span>: <span class="code-string">"orchestration"</span></span>
+<span class="code-line"><span class="code-property">version</span>: <span class="code-string">"1.0.0"</span></span>
+<span class="code-line"><span class="code-property">tags</span>: [<span class="code-string">"orchestrator"</span>, <span class="code-string">"multi-agent"</span>, <span class="code-string">"coordination"</span>]</span>
+<span class="code-line"><span class="code-property">allowed-tools</span>: [<span class="code-string">"file_system"</span>, <span class="code-string">"web_search"</span>]</span>
 <span class="code-line"><span class="code-comment">---</span></span>
 <span class="code-line"></span>
 <span class="code-line"><span class="code-comment"># Your Role</span></span>
@@ -172,9 +196,13 @@
         <span class="translation-label">PLAIN ENGLISH</span>
         <div class="translation-lines">
           <p class="tl">Start of the structured header (frontmatter).</p>
-          <p class="tl"><strong>Tier 1 data:</strong> The skill's name — its ID badge.</p>
-          <p class="tl"><strong>Tier 1 data:</strong> A one-line summary of what this skill does.</p>
-          <p class="tl"><strong>Tier 2 link:</strong> Which tools this skill is allowed to call.</p>
+          <p class="tl"><strong>Tier 1 data:</strong> The skill's name &mdash; matches the kebab-case folder it lives in.</p>
+          <p class="tl"><strong>Tier 1 data:</strong> The one-line summary that shows up in <code>list_skills</code>.</p>
+          <p class="tl"><strong>Tier 1 data:</strong> Which category this skill belongs to.</p>
+          <p class="tl"><strong>Tier 1 data:</strong> Type discriminator for routing.</p>
+          <p class="tl"><strong>Metadata:</strong> Version pin so callers can track changes.</p>
+          <p class="tl"><strong>Tier 1 data:</strong> Tags in YAML array syntax &mdash; the parser requires <code>[...]</code> form.</p>
+          <p class="tl"><strong>Runtime config:</strong> Tools this skill is allowed to invoke (also array syntax).</p>
           <p class="tl">End of the structured header.</p>
           <p class="tl">&nbsp;</p>
           <p class="tl"><strong>Tier 2 starts here</strong> — the full instructions for the agent.</p>
@@ -214,62 +242,54 @@
 <span class="code-line">    <span class="code-keyword">private const int</span> DefaultTier1MaxTokens = <span class="code-string">3000</span>;</span>
 <span class="code-line">    <span class="code-keyword">private const int</span> DefaultTier2MaxTokens = <span class="code-string">8000</span>;</span>
 <span class="code-line"></span>
-<span class="code-line">    <span class="code-keyword">public async</span> Task&lt;TieredContextResult&gt; <span class="code-function">AssembleAsync</span>(</span>
-<span class="code-line">        SkillDefinition skill, TierLoadingOptions? options,</span>
-<span class="code-line">        CancellationToken cancellationToken)</span>
+<span class="code-line">    <span class="code-keyword">public</span> Task&lt;AssembledContext&gt; <span class="code-function">AssembleContextAsync</span>(</span>
+<span class="code-line">        SkillDefinition skill,</span>
+<span class="code-line">        <span class="code-keyword">string</span>? basePath = <span class="code-keyword">null</span>,</span>
+<span class="code-line">        CancellationToken cancellationToken = <span class="code-keyword">default</span>)</span>
 <span class="code-line">    {</span>
-<span class="code-line">        <span class="code-keyword">var</span> result = <span class="code-keyword">new</span> TieredContextResult { SkillId = skill.Id };</span>
+<span class="code-line">        <span class="code-keyword">var</span> agentName = skill.Id;</span>
 <span class="code-line"></span>
-<span class="code-line">        <span class="code-comment">// Tier 1: Always loaded — lightweight metadata</span></span>
-<span class="code-line">        <span class="code-keyword">var</span> tier1Content = BuildTier1Content(skill);</span>
-<span class="code-line">        <span class="code-keyword">var</span> tier1Tokens = TokenEstimationHelper.EstimateTokens(tier1Content);</span>
-<span class="code-line">        _budgetTracker.RecordAllocation(<span class="code-string">"skill-tier1"</span>, skill.Id, tier1Tokens);</span>
+<span class="code-line">        <span class="code-comment">// Tier 1: org-level files declared in context_loading frontmatter</span></span>
+<span class="code-line">        <span class="code-keyword">var</span> tier1 = <span class="code-function">LoadTier1</span>(skill, agentName);   <span class="code-comment">// truncates oversized files at budget boundary</span></span>
+<span class="code-line">        _budgetTracker.<span class="code-function">RecordAllocation</span>(agentName, <span class="code-string">"tier1_context"</span>, tier1.TotalTokens);</span>
 <span class="code-line"></span>
-<span class="code-line">        <span class="code-comment">// Tier 2: On-demand — full instructions</span></span>
-<span class="code-line">        <span class="code-keyword">if</span> (options?.LoadTier2 == <span class="code-keyword">true</span>)</span>
-<span class="code-line">        {</span>
-<span class="code-line">            <span class="code-keyword">var</span> tier2Content = BuildTier2Content(skill);</span>
-<span class="code-line">            <span class="code-keyword">var</span> tier2Tokens = TokenEstimationHelper.EstimateTokens(tier2Content);</span>
-<span class="code-line">            _budgetTracker.RecordAllocation(<span class="code-string">"skill-tier2"</span>, skill.Id, tier2Tokens);</span>
-<span class="code-line">        }</span>
+<span class="code-line">        <span class="code-comment">// Tier 2: domain/activity files — always loaded, also bounded by budget</span></span>
+<span class="code-line">        <span class="code-keyword">var</span> tier2 = <span class="code-function">LoadTier2</span>(skill, agentName);</span>
+<span class="code-line">        _budgetTracker.<span class="code-function">RecordAllocation</span>(agentName, <span class="code-string">"tier2_context"</span>, tier2.TotalTokens);</span>
 <span class="code-line"></span>
-<span class="code-line">        <span class="code-comment">// Tier 3: Never loaded into context</span></span>
-<span class="code-line">        result.Tier3ResourcePaths = skill.References</span>
-<span class="code-line">            .Concat(skill.Templates)</span>
-<span class="code-line">            .Select(r =&gt; r.Path).ToList();</span>
+<span class="code-line">        <span class="code-comment">// Tier 3: NEVER preloaded — just return the lookup config</span></span>
+<span class="code-line">        <span class="code-keyword">var</span> tier3 = <span class="code-function">BuildTier3Config</span>(skill);  <span class="code-comment">// returns Tier3AccessConfig with paths + fallback prompt</span></span>
+<span class="code-line"></span>
+<span class="code-line">        <span class="code-keyword">return</span> Task.<span class="code-function">FromResult</span>(<span class="code-keyword">new</span> AssembledContext(tier1, tier2, tier3, <span class="code-function">FormatPromptSection</span>(tier1, tier2, tier3)));</span>
+<span class="code-line">    }</span>
         </code></pre>
       </div>
       <div class="translation-english">
         <span class="translation-label">PLAIN ENGLISH</span>
         <div class="translation-lines">
-          <p class="tl">Define the Assembler — it builds context from skill tiers.</p>
+          <p class="tl">Define the Assembler &mdash; it builds context from skill tiers.</p>
           <p class="tl">&nbsp;</p>
-          <p class="tl">Tier 1 has a budget cap of 3,000 tokens (the index cards).</p>
-          <p class="tl">Tier 2 has a budget cap of 8,000 tokens (the full briefings).</p>
+          <p class="tl">Tier 1 has a budget cap of 3,000 tokens.</p>
+          <p class="tl">Tier 2 has a budget cap of 8,000 tokens.</p>
           <p class="tl">&nbsp;</p>
-          <p class="tl">The main method — "assemble context for this skill."</p>
-          <p class="tl">It takes the skill definition and optional loading preferences.</p>
-          <p class="tl">It can be cancelled if the operation takes too long.</p>
+          <p class="tl">The main method &mdash; "assemble context for this skill."</p>
+          <p class="tl">Takes the skill, an optional base path for resolving relative files, &hellip;</p>
+          <p class="tl">&hellip; and a cancellation token.</p>
           <p class="tl">&nbsp;</p>
-          <p class="tl">Create an empty result container tagged with the skill's ID.</p>
+          <p class="tl">Use the skill ID as the agent name for budget bookkeeping.</p>
           <p class="tl">&nbsp;</p>
           <p class="tl"><strong style="color: #3498DB;">Always open Compartment 1.</strong></p>
-          <p class="tl">Build the index card content (name, description, tags).</p>
-          <p class="tl">Estimate how many tokens it will cost.</p>
-          <p class="tl">Tell the budget tracker: "I just used X tokens for this skill's index card."</p>
+          <p class="tl">Load Tier 1 files declared in the skill&apos;s context_loading config. Files that would blow the budget are truncated, not skipped.</p>
+          <p class="tl">Record the actual allocation under "tier1_context".</p>
           <p class="tl">&nbsp;</p>
-          <p class="tl"><strong style="color: #F39C12;">Only open Compartment 2 if asked.</strong></p>
-          <p class="tl">Check: "Did the caller request the full instructions?"</p>
-          <p class="tl">If yes, open the folder...</p>
-          <p class="tl">Build the full instruction content.</p>
-          <p class="tl">Estimate the token cost of the instructions.</p>
-          <p class="tl">Tell the budget tracker about this bigger allocation.</p>
-          <p class="tl">&nbsp;</p>
+          <p class="tl"><strong style="color: #F39C12;">Always open Compartment 2 too.</strong></p>
+          <p class="tl">Load Tier 2 files the same way. There is no &ldquo;skip Tier 2&rdquo; flag &mdash; if a skill declares Tier 2 files, they load.</p>
+          <p class="tl">Record the allocation under "tier2_context".</p>
           <p class="tl">&nbsp;</p>
           <p class="tl"><strong style="color: #E74C3C;">Compartment 3 never enters the jar.</strong></p>
-          <p class="tl">Just collect the file paths to templates and references...</p>
-          <p class="tl">...so the agent can read them from disk later if it needs them.</p>
-          <p class="tl">Store the paths — not the content — in the result.</p>
+          <p class="tl">Return a Tier3AccessConfig with the lookup paths and an optional fallback prompt &mdash; no file content.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Return the final AssembledContext bundling all three tiers plus the formatted prompt section ready to inject into the LLM&apos;s instructions.</p>
         </div>
       </div>
     </div>
@@ -284,7 +304,7 @@
           <div class="chat-avatar" style="background: #E74C3C;">B</div>
           <div class="chat-bubble">
             <span class="chat-sender" style="color: #E74C3C;">ContextBudgetTracker</span>
-            <p>Current status: 12,000 tokens remaining out of 128,000. System prompt and Tier 1 index cards for all 6 skills are already loaded.</p>
+            <p>Current status: 12,000 tokens remaining out of 128,000. System prompt and Tier 1 index cards for all 3 skills (orchestrator-agent, research-agent, harness-proposer) are already loaded.</p>
           </div>
         </div>
 
@@ -324,7 +344,7 @@
           <div class="chat-avatar" style="background: #E74C3C;">B</div>
           <div class="chat-bubble">
             <span class="chat-sender" style="color: #E74C3C;">ContextBudgetTracker</span>
-            <p>Updated: 7,200 tokens remaining. Warning threshold is 3,000. We still have room, but the conversation is growing fast.</p>
+            <p>Updated: 7,200 tokens remaining. Warning threshold is 80% utilization (currently at ~94% used). We still have room, but the conversation is growing fast.</p>
           </div>
         </div>
 
@@ -340,7 +360,7 @@
           <div class="chat-avatar" style="background: #E74C3C;">B</div>
           <div class="chat-bubble">
             <span class="chat-sender" style="color: #E74C3C;">ContextBudgetTracker</span>
-            <p>WARNING: Only 2,100 tokens remain. Below the 3,000 threshold. Requesting compaction.</p>
+            <p>WARNING: Utilization at 98.4% &mdash; past the 80% threshold. Logging a warning event and signaling for compaction.</p>
           </div>
         </div>
 
@@ -474,8 +494,8 @@
       <!-- Q3: What triggers compaction? -->
       <div class="quiz-question-block"
            data-correct="option-3c"
-           data-explanation-right="Exactly — the ContextBudgetTracker continuously monitors token usage. When remaining tokens drop below a configured threshold (like 3,000), it triggers compaction to make room. It is a proactive system, not a reactive crash recovery."
-           data-explanation-wrong="Not quite. Compaction is triggered by the ContextBudgetTracker when token usage crosses a warning threshold. It is not a user action or an error recovery — it is a planned, automatic response to the context window filling up. The budget tracker watches the numbers and acts before things get critical.">
+           data-explanation-right="Exactly — the ContextBudgetTracker continuously monitors token usage. When utilization crosses the 80% warning threshold, it logs a warning and signals for compaction to make room. It is a proactive system, not reactive crash recovery."
+           data-explanation-wrong="Not quite. Compaction is triggered by the ContextBudgetTracker when utilization crosses its 80% warning threshold. It is not a user action or an error recovery — it is a planned, automatic response to the context window filling up.">
         <h3 class="quiz-question">3. What triggers the compaction process?</h3>
         <div class="quiz-options">
           <button class="quiz-option" data-value="option-3a" onclick="selectOption(this)">
@@ -488,7 +508,7 @@
           </button>
           <button class="quiz-option" data-value="option-3c" onclick="selectOption(this)">
             <div class="quiz-option-radio"></div>
-            <span>The ContextBudgetTracker detects that remaining tokens have dropped below a configured threshold</span>
+            <span>The ContextBudgetTracker detects that utilization has crossed the 80% warning threshold</span>
           </button>
         </div>
         <div class="quiz-feedback"></div>
