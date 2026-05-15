@@ -20,7 +20,15 @@ namespace Application.Core.Tests.CQRS.Learnings;
 public sealed class ImproveLearningCommandHandlerTests
 {
     private readonly Mock<ILearningsStore> _store = new();
+    private readonly Mock<ILearningsDriftBridge> _driftBridge = new();
     private readonly FakeTimeProvider _timeProvider = new(new DateTimeOffset(2026, 5, 14, 12, 0, 0, TimeSpan.Zero));
+
+    public ImproveLearningCommandHandlerTests()
+    {
+        _driftBridge
+            .Setup(b => b.CheckAndAdjustBaselineAsync(It.IsAny<LearningEntry>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success());
+    }
 
     [Fact]
     public async Task Handle_AppliesEmaToFeedbackWeight()
@@ -156,6 +164,7 @@ public sealed class ImproveLearningCommandHandlerTests
 
     private ImproveLearningCommandHandler CreateHandler(LearningsConfig? config = null) => new(
         _store.Object,
+        _driftBridge.Object,
         CreateOptions(config ?? new LearningsConfig { BiasCorrection = false }),
         _timeProvider,
         NullLogger<ImproveLearningCommandHandler>.Instance);
@@ -194,6 +203,53 @@ public sealed class ImproveLearningCommandHandlerTests
         FeedbackWeight = feedbackWeight,
         UpdateCount = updateCount
     };
+
+    [Fact]
+    public async Task Handle_SuccessfulUpdate_CallsBridge()
+    {
+        var learning = CreateLearning(feedbackWeight: 0.9);
+        SetupGetAndUpdate(learning);
+        var handler = CreateHandler();
+
+        await handler.Handle(
+            new ImproveLearningCommand { LearningId = learning.LearningId, FeedbackScore = 5.0 },
+            CancellationToken.None);
+
+        _driftBridge.Verify(
+            b => b.CheckAndAdjustBaselineAsync(It.IsAny<LearningEntry>(), It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task Handle_BridgeFailure_StillReturnsSuccess()
+    {
+        var learning = CreateLearning(feedbackWeight: 0.9);
+        SetupGetAndUpdate(learning);
+        _driftBridge
+            .Setup(b => b.CheckAndAdjustBaselineAsync(It.IsAny<LearningEntry>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Fail("Bridge error"));
+        var handler = CreateHandler();
+
+        var result = await handler.Handle(
+            new ImproveLearningCommand { LearningId = learning.LearningId, FeedbackScore = 5.0 },
+            CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Handle_Disabled_DoesNotCallBridge()
+    {
+        var handler = CreateHandler(new LearningsConfig { Enabled = false });
+
+        await handler.Handle(
+            new ImproveLearningCommand { LearningId = Guid.NewGuid(), FeedbackScore = 3.0 },
+            CancellationToken.None);
+
+        _driftBridge.Verify(
+            b => b.CheckAndAdjustBaselineAsync(It.IsAny<LearningEntry>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
 
     private static IOptionsMonitor<AppConfig> CreateOptions(LearningsConfig config)
     {

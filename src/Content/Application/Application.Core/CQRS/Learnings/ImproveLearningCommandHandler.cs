@@ -16,13 +16,14 @@ namespace Application.Core.CQRS.Learnings;
 /// <remarks>
 /// <para>EMA formula: <c>newWeight = alpha * normalized + (1 - alpha) * currentWeight</c></para>
 /// <para>Bias correction (first 5 updates): <c>corrected = weight / (1 - (1 - alpha)^updateCount)</c></para>
-/// <para>The updated entry is returned to callers. The section-17 bridge inspects the
-/// <see cref="LearningEntry.FeedbackWeight"/> against <c>BaselineAdjustmentThreshold</c>
-/// to decide whether drift baselines should be recalibrated.</para>
+/// <para>After a successful weight update, the <see cref="ILearningsDriftBridge"/> checks whether
+/// the learning qualifies for drift baseline adjustment. Bridge failure is non-critical —
+/// the learning update always succeeds independently.</para>
 /// </remarks>
 public sealed class ImproveLearningCommandHandler : IRequestHandler<ImproveLearningCommand, Result<LearningEntry>>
 {
     private readonly ILearningsStore _store;
+    private readonly ILearningsDriftBridge _driftBridge;
     private readonly IOptionsMonitor<AppConfig> _options;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<ImproveLearningCommandHandler> _logger;
@@ -30,11 +31,13 @@ public sealed class ImproveLearningCommandHandler : IRequestHandler<ImproveLearn
     /// <summary>Initializes a new instance of the <see cref="ImproveLearningCommandHandler"/> class.</summary>
     public ImproveLearningCommandHandler(
         ILearningsStore store,
+        ILearningsDriftBridge driftBridge,
         IOptionsMonitor<AppConfig> options,
         TimeProvider timeProvider,
         ILogger<ImproveLearningCommandHandler> logger)
     {
         _store = store;
+        _driftBridge = driftBridge;
         _options = options;
         _timeProvider = timeProvider;
         _logger = logger;
@@ -77,6 +80,14 @@ public sealed class ImproveLearningCommandHandler : IRequestHandler<ImproveLearn
         var updateResult = await _store.UpdateAsync(updated, cancellationToken);
         if (!updateResult.IsSuccess)
             return Result<LearningEntry>.Fail(updateResult.Errors.ToArray());
+
+        var bridgeResult = await _driftBridge.CheckAndAdjustBaselineAsync(updated, cancellationToken);
+        if (!bridgeResult.IsSuccess)
+        {
+            _logger.LogWarning(
+                "Drift baseline adjustment failed for learning {LearningId}: {Reason}",
+                updated.LearningId, string.Join("; ", bridgeResult.Errors));
+        }
 
         LearningsMetrics.Improved.Add(1);
         return Result<LearningEntry>.Success(updated);

@@ -333,15 +333,24 @@ From `DriftDetectionConfig` (section-03):
 
 ---
 
-## Implementation Checklist
+## Implementation Checklist (Completed)
 
-1. Create test file `src/Content/Tests/Infrastructure.AI.Tests/Learnings/LearningsDriftBridgeTests.cs` with all test stubs
-2. Create interface `src/Content/Application/Application.AI.Common/Interfaces/Learnings/ILearningsDriftBridge.cs`
-3. Create implementation `src/Content/Infrastructure/Infrastructure.AI/Learnings/LearningsDriftBridge.cs`
-4. Modify `src/Content/Application/Application.Core/CQRS/Learnings/ImproveLearningCommandHandler.cs` to inject and call the bridge
-5. Update handler test file `src/Content/Tests/Application.Core.Tests/CQRS/Learnings/ImproveLearningCommandHandlerTests.cs` to verify bridge integration (add test: `Handle_AboveThreshold_DriftSource_CallsBridge`, `Handle_BelowThreshold_DoesNotCallBridge`)
-6. Verify build: `dotnet build src/AgenticHarness.slnx`
-7. Run tests: `dotnet test src/AgenticHarness.slnx`
+1. [x] Created test file `src/Content/Tests/Infrastructure.AI.Tests/Learnings/LearningsDriftBridgeTests.cs` — 12 tests
+2. [x] Created interface `src/Content/Application/Application.AI.Common/Interfaces/Learnings/ILearningsDriftBridge.cs`
+3. [x] Created implementation `src/Content/Infrastructure/Infrastructure.AI/Learnings/LearningsDriftBridge.cs`
+4. [x] Modified `src/Content/Application/Application.Core/CQRS/Learnings/ImproveLearningCommandHandler.cs` — added `ILearningsDriftBridge` injection + call
+5. [x] Updated `src/Content/Tests/Application.Core.Tests/CQRS/Learnings/ImproveLearningCommandHandlerTests.cs` — 3 new tests (`Handle_SuccessfulUpdate_CallsBridge`, `Handle_BridgeFailure_StillReturnsSuccess`, `Handle_Disabled_DoesNotCallBridge`)
+6. [x] Build verified: `dotnet build src/AgenticHarness.slnx` — 0 errors
+7. [x] Tests verified: 23/23 passed (12 bridge + 11 handler)
+
+## Deviations from Plan
+
+1. **DriftScope enum**: Plan referenced `DriftScope.Task` and `DriftScope.Global` — actual enum values are `Agent`, `Skill`, `TaskType`. Tests adjusted.
+2. **Defensive parsing**: Code review identified unguarded `Enum.Parse` on graph node properties. Changed to `TryParse`/`TryGetValue` with graceful no-op on corruption. Matches section-16 pattern.
+3. **Post-baseline try/catch**: Code review identified missing exception guard around audit+resolution side effects. Added `try/catch (Exception ex) when (ex is not OperationCanceledException)` — matches DriftEscalationBridge.
+4. **JsonStringEnumConverter**: Added for serialized Resolution data readability (default System.Text.Json serializes enums as numbers).
+5. **Additional test**: `CheckAndAdjustBaselineAsync_CorruptedNodeScope_ReturnsSuccess` added for corrupted graph node edge case.
+6. **Handler tests**: Plan suggested `Handle_AboveThreshold_DriftSource_CallsBridge` and `Handle_BelowThreshold_DoesNotCallBridge`. Actual tests: `Handle_SuccessfulUpdate_CallsBridge`, `Handle_BridgeFailure_StillReturnsSuccess`, `Handle_Disabled_DoesNotCallBridge` — better coverage of the handler's responsibility (calling bridge, tolerating failure).
 
 ## Conventions
 
