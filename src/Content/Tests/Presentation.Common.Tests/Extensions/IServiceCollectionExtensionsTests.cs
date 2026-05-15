@@ -1,6 +1,8 @@
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
+using Domain.Common.Config.AI.DriftDetection;
 using Domain.Common.Config.AI.Governance;
+using Domain.Common.Config.AI.Learnings;
 using Domain.Common.Config.AI.Resilience;
 using Domain.Common.Config.Cache;
 using FluentAssertions;
@@ -257,6 +259,118 @@ public sealed class IServiceCollectionExtensionsTests
         resConfig.Timeout.PerAttemptSeconds.Should().Be(30);
         resConfig.DegradedMode.RetryQueueTtlSeconds.Should().Be(300);
         resConfig.DegradedMode.MaxQueueSize.Should().Be(100);
+    }
+
+    // -- DriftDetectionConfig and LearningsConfig bindings --
+
+    [Fact]
+    public void DriftDetectionConfig_BindsFromAppsettings()
+    {
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["AppConfig:AI:DriftDetection:Enabled"] = "true",
+                ["AppConfig:AI:DriftDetection:EwmaLambda"] = "0.2",
+                ["AppConfig:AI:DriftDetection:ControlLimitWidth"] = "3.0",
+                ["AppConfig:AI:DriftDetection:MinSamplesForBaseline"] = "20",
+                ["AppConfig:AI:DriftDetection:BaselineWindowDays"] = "7",
+                ["AppConfig:AI:DriftDetection:WarnThresholdSigma"] = "1.5",
+                ["AppConfig:AI:DriftDetection:AlertThresholdSigma"] = "2.5",
+                ["AppConfig:AI:DriftDetection:EscalateThresholdSigma"] = "3.0",
+                ["AppConfig:AI:DriftDetection:EscalationEnabled"] = "true",
+                ["AppConfig:AI:DriftDetection:AuditPath"] = "data/audit",
+            })
+            .Build();
+
+        var driftConfig = config.GetSection("AppConfig:AI:DriftDetection").Get<DriftDetectionConfig>();
+
+        driftConfig.Should().NotBeNull();
+        driftConfig!.Enabled.Should().BeTrue();
+        driftConfig.EwmaLambda.Should().Be(0.2);
+        driftConfig.ControlLimitWidth.Should().Be(3.0);
+        driftConfig.MinSamplesForBaseline.Should().Be(20);
+        driftConfig.BaselineWindowDays.Should().Be(7);
+        driftConfig.WarnThresholdSigma.Should().Be(1.5);
+        driftConfig.AlertThresholdSigma.Should().Be(2.5);
+        driftConfig.EscalateThresholdSigma.Should().Be(3.0);
+        driftConfig.EscalationEnabled.Should().BeTrue();
+        driftConfig.AuditPath.Should().Be("data/audit");
+    }
+
+    [Fact]
+    public void LearningsConfig_BindsFromAppsettings()
+    {
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["AppConfig:AI:Learnings:Enabled"] = "true",
+                ["AppConfig:AI:Learnings:StoreProvider"] = "graph",
+                ["AppConfig:AI:Learnings:FeedbackAlpha"] = "0.25",
+                ["AppConfig:AI:Learnings:FeedbackCeiling"] = "0.3",
+                ["AppConfig:AI:Learnings:DiversityInjectionRatio"] = "0.15",
+                ["AppConfig:AI:Learnings:VolatileShelfLifeDays"] = "7",
+                ["AppConfig:AI:Learnings:StableShelfLifeDays"] = "180",
+                ["AppConfig:AI:Learnings:PruneIntervalHours"] = "24",
+                ["AppConfig:AI:Learnings:BaselineAdjustmentThreshold"] = "0.8",
+                ["AppConfig:AI:Learnings:BiasCorrection"] = "true",
+                ["AppConfig:AI:Learnings:DecayBiasAlpha"] = "0.25",
+            })
+            .Build();
+
+        var learningsConfig = config.GetSection("AppConfig:AI:Learnings").Get<LearningsConfig>();
+
+        learningsConfig.Should().NotBeNull();
+        learningsConfig!.Enabled.Should().BeTrue();
+        learningsConfig.StoreProvider.Should().Be("graph");
+        learningsConfig.FeedbackAlpha.Should().Be(0.25);
+        learningsConfig.FeedbackCeiling.Should().Be(0.3);
+        learningsConfig.DiversityInjectionRatio.Should().Be(0.15);
+        learningsConfig.VolatileShelfLifeDays.Should().Be(7);
+        learningsConfig.StableShelfLifeDays.Should().Be(180);
+        learningsConfig.PruneIntervalHours.Should().Be(24);
+        learningsConfig.BaselineAdjustmentThreshold.Should().Be(0.8);
+        learningsConfig.BiasCorrection.Should().BeTrue();
+        learningsConfig.DecayBiasAlpha.Should().Be(0.25);
+    }
+
+    [Fact]
+    public void RegisterConfigSections_BindsDriftDetectionConfig()
+    {
+        var services = new ServiceCollection();
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["AppConfig:AI:DriftDetection:Enabled"] = "true",
+                ["AppConfig:AI:DriftDetection:EwmaLambda"] = "0.2",
+            })
+            .Build();
+
+        services.RegisterConfigSections(config);
+        var provider = services.BuildServiceProvider();
+
+        var driftConfig = provider.GetRequiredService<IOptionsMonitor<DriftDetectionConfig>>().CurrentValue;
+        driftConfig.Enabled.Should().BeTrue();
+        driftConfig.EwmaLambda.Should().Be(0.2);
+    }
+
+    [Fact]
+    public void RegisterConfigSections_BindsLearningsConfig()
+    {
+        var services = new ServiceCollection();
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["AppConfig:AI:Learnings:Enabled"] = "true",
+                ["AppConfig:AI:Learnings:FeedbackAlpha"] = "0.25",
+            })
+            .Build();
+
+        services.RegisterConfigSections(config);
+        var provider = services.BuildServiceProvider();
+
+        var learningsConfig = provider.GetRequiredService<IOptionsMonitor<LearningsConfig>>().CurrentValue;
+        learningsConfig.Enabled.Should().BeTrue();
+        learningsConfig.FeedbackAlpha.Should().Be(0.25);
     }
 
     [Fact]

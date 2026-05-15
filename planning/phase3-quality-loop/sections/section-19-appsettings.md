@@ -4,7 +4,7 @@
 
 This section adds `DriftDetection` and `Learnings` JSON config blocks to both `appsettings.json` files (`Presentation.AgentHub` and `Presentation.ConsoleUI`). These blocks provide concrete values for the config POCOs defined in section-03 (`DriftDetectionConfig`) and section-04 (`LearningsConfig`), which bind automatically through the .NET Options pattern.
 
-No C# code changes are needed beyond the JSON edits and two new `services.Configure<T>()` lines in the shared config registration method.
+No C# code changes are needed beyond the JSON edits — the two `services.Configure<T>()` lines were already added in section 18 (DI registration).
 
 ## Dependencies
 
@@ -18,8 +18,8 @@ No C# code changes are needed beyond the JSON edits and two new `services.Config
 |------|--------|
 | `src/Content/Presentation/Presentation.AgentHub/appsettings.json` | Add `DriftDetection` and `Learnings` blocks under `AppConfig.AI` |
 | `src/Content/Presentation/Presentation.ConsoleUI/appsettings.json` | Add `DriftDetection` and `Learnings` blocks under `AppConfig.AI` |
-| `src/Content/Presentation/Presentation.Common/Extensions/IServiceCollectionExtensions.cs` | Add two `services.Configure<>()` lines for direct injection |
-| `src/Content/Tests/Presentation.Common.Tests/Extensions/IServiceCollectionExtensionsTests.cs` | Add config binding tests |
+| `src/Content/Presentation/Presentation.Common/Extensions/IServiceCollectionExtensions.cs` | Already done in section 18 — no changes needed |
+| `src/Content/Tests/Presentation.Common.Tests/Extensions/IServiceCollectionExtensionsTests.cs` | Add 4 config binding tests |
 
 ---
 
@@ -145,6 +145,7 @@ Design notes:
 - `PruneIntervalHours: 24` -- the `LearningsPruningBackgroundService` (section 11) runs once per day.
 - `BaselineAdjustmentThreshold: 0.8` -- when a learning's `FeedbackWeight` exceeds this value, it signals that the drift baseline should be adjusted (section 17 integration). High threshold ensures only well-validated learnings trigger baseline changes.
 - `BiasCorrection: true` -- applies bias-corrected EMA for learnings with fewer than 5 updates, preventing early feedback scores from being overweighted.
+- `DecayBiasAlpha: 0.25` -- bias correction alpha for the decay EMA calculation. Added to match the `LearningsConfig.DecayBiasAlpha` property defined in section 04.
 
 ### Placement in JSON
 
@@ -197,3 +198,9 @@ dotnet test src/Content/Tests/Presentation.Common.Tests/Presentation.Common.Test
 ```
 
 Expected: all existing config binding tests continue passing, plus the 4 new tests (`DriftDetectionConfig_BindsFromAppsettings`, `LearningsConfig_BindsFromAppsettings`, `RegisterConfigSections_BindsDriftDetectionConfig`, `RegisterConfigSections_BindsLearningsConfig`) pass.
+
+## Implementation Notes
+
+- The `services.Configure<DriftDetectionConfig>()` and `services.Configure<LearningsConfig>()` calls were already added in section 18 (DI registration), so no changes to `IServiceCollectionExtensions.cs` were needed in this section.
+- `DecayBiasAlpha` property exists on `LearningsConfig` (added in section 04) but was not in the original plan for this section. Added to JSON blocks and tests for completeness.
+- All 18 tests pass (14 existing + 4 new).
