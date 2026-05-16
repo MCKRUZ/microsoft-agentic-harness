@@ -1,12 +1,16 @@
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.MediatR;
 using Application.AI.Common.Interfaces.Permissions;
+using Application.AI.Common.Interfaces.Sandbox;
 using Application.Common.Exceptions.ExceptionTypes;
 using Domain.AI.Permissions;
+using Domain.AI.Sandbox;
 using Domain.Common;
+using Domain.Common.Config.AI.Sandbox;
 using Domain.Common.Helpers;
 using MediatR;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace Application.AI.Common.MediatRBehaviors;
 
@@ -33,6 +37,8 @@ public sealed class ToolPermissionBehavior<TRequest, TResponse>
     private readonly IAgentExecutionContext _executionContext;
     private readonly IToolPermissionService _toolPermissionService;
     private readonly IDenialTracker _denialTracker;
+    private readonly ICapabilityEnforcer _capabilityEnforcer;
+    private readonly IOptionsMonitor<SandboxConfig> _sandboxConfig;
     private readonly ILogger<ToolPermissionBehavior<TRequest, TResponse>> _logger;
 
     /// <summary>
@@ -41,16 +47,22 @@ public sealed class ToolPermissionBehavior<TRequest, TResponse>
     /// <param name="executionContext">The ambient agent execution context.</param>
     /// <param name="toolPermissionService">The permission resolution service.</param>
     /// <param name="denialTracker">Tracks repeated denials for rate-limiting auto-deny.</param>
+    /// <param name="capabilityEnforcer">Capability-based enforcement for tool resource access.</param>
+    /// <param name="sandboxConfig">Sandbox configuration providing granted capabilities.</param>
     /// <param name="logger">Logger for permission decision auditing.</param>
     public ToolPermissionBehavior(
         IAgentExecutionContext executionContext,
         IToolPermissionService toolPermissionService,
         IDenialTracker denialTracker,
+        ICapabilityEnforcer capabilityEnforcer,
+        IOptionsMonitor<SandboxConfig> sandboxConfig,
         ILogger<ToolPermissionBehavior<TRequest, TResponse>> logger)
     {
         _executionContext = executionContext;
         _toolPermissionService = toolPermissionService;
         _denialTracker = denialTracker;
+        _capabilityEnforcer = capabilityEnforcer;
+        _sandboxConfig = sandboxConfig;
         _logger = logger;
     }
 
@@ -73,7 +85,35 @@ public sealed class ToolPermissionBehavior<TRequest, TResponse>
         switch (decision.Behavior)
         {
             case PermissionBehaviorType.Allow:
+            {
+                var grantedCapabilities = ToolCapability.None;
+                foreach (var name in _sandboxConfig.CurrentValue.DefaultGrantedCapabilities)
+                {
+                    if (Enum.TryParse<ToolCapability>(name, ignoreCase: true, out var cap))
+                        grantedCapabilities |= cap;
+                }
+                var requestedPaths = (toolRequest as IResourceScopedToolRequest)?.RequestedPaths;
+                var requestedHosts = (toolRequest as IResourceScopedToolRequest)?.RequestedHosts;
+
+                var capResult = await _capabilityEnforcer.EnforceAsync(
+                    toolRequest.ToolName, grantedCapabilities,
+                    requestedPaths, requestedHosts, cancellationToken);
+
+                if (!capResult.IsSuccess)
+                {
+                    _logger.LogWarning(
+                        "Agent {AgentId} capability violation for tool {ToolName}: {Reason}",
+                        agentId, toolRequest.ToolName, capResult.Errors[0]);
+
+                    if (ResultHelper.TryCreateFailure<TResponse>(
+                            nameof(Result.Forbidden), capResult.Errors[0], out var capForbidden))
+                        return capForbidden;
+
+                    throw new ForbiddenAccessException(capResult.Errors[0]);
+                }
+
                 return await next();
+            }
 
             case PermissionBehaviorType.Deny:
             {

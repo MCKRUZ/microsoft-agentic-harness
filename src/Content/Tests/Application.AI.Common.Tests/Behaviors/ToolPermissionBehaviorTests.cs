@@ -1,12 +1,16 @@
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.MediatR;
 using Application.AI.Common.Interfaces.Permissions;
+using Application.AI.Common.Interfaces.Sandbox;
 using Application.AI.Common.MediatRBehaviors;
 using Domain.AI.Permissions;
+using Domain.AI.Sandbox;
 using Domain.Common;
+using Domain.Common.Config.AI.Sandbox;
 using FluentAssertions;
 using MediatR;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Moq;
 using Xunit;
 
@@ -17,10 +21,24 @@ public sealed class ToolPermissionBehaviorTests
     private readonly Mock<IAgentExecutionContext> _executionContext = new();
     private readonly Mock<IToolPermissionService> _permissionService = new();
     private readonly Mock<IDenialTracker> _denialTracker = new();
+    private readonly Mock<ICapabilityEnforcer> _capabilityEnforcer = new();
+    private readonly Mock<IOptionsMonitor<SandboxConfig>> _sandboxConfig = new();
     private readonly Mock<ILogger<ToolPermissionBehavior<TestToolRequest, Result<string>>>> _logger = new();
 
+    public ToolPermissionBehaviorTests()
+    {
+        _sandboxConfig.Setup(o => o.CurrentValue).Returns(new SandboxConfig());
+        _capabilityEnforcer
+            .Setup(e => e.EnforceAsync(
+                It.IsAny<string>(), It.IsAny<ToolCapability>(),
+                It.IsAny<IReadOnlyList<string>?>(), It.IsAny<IReadOnlyList<string>?>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success());
+    }
+
     private ToolPermissionBehavior<TestToolRequest, Result<string>> CreateBehavior() =>
-        new(_executionContext.Object, _permissionService.Object, _denialTracker.Object, _logger.Object);
+        new(_executionContext.Object, _permissionService.Object, _denialTracker.Object,
+            _capabilityEnforcer.Object, _sandboxConfig.Object, _logger.Object);
 
     private static RequestHandlerDelegate<Result<string>> CreateNext(string value = "success") =>
         () => Task.FromResult(Result<string>.Success(value));
@@ -130,7 +148,8 @@ public sealed class ToolPermissionBehaviorTests
     {
         var nonToolLogger = new Mock<ILogger<ToolPermissionBehavior<NonToolRequest, Result<string>>>>();
         var behavior = new ToolPermissionBehavior<NonToolRequest, Result<string>>(
-            _executionContext.Object, _permissionService.Object, _denialTracker.Object, nonToolLogger.Object);
+            _executionContext.Object, _permissionService.Object, _denialTracker.Object,
+            _capabilityEnforcer.Object, _sandboxConfig.Object, nonToolLogger.Object);
 
         RequestHandlerDelegate<Result<string>> next = () =>
             Task.FromResult(Result<string>.Success("passed"));

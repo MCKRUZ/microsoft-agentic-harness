@@ -96,6 +96,18 @@
     "section-17-learnings-bridge": {
       "status": "complete",
       "commit_hash": "4b8197a"
+    },
+    "section-18-di-registration": {
+      "status": "complete",
+      "commit_hash": "c89cfb3"
+    },
+    "section-19-appsettings": {
+      "status": "complete",
+      "commit_hash": "c89cfb3"
+    },
+    "section-20-verification": {
+      "status": "complete",
+      "commit_hash": "c89cfb3"
     }
   },
   "pre_commit": {

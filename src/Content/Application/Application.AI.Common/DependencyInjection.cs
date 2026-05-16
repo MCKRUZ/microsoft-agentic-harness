@@ -2,13 +2,16 @@ using Application.AI.Common.Factories;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Context;
+using Application.AI.Common.Interfaces.Sandbox;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.MediatRBehaviors;
 using Application.AI.Common.OpenTelemetry;
 using Application.AI.Common.Services.Agent;
 using Application.AI.Common.Services.Context;
+using Application.AI.Common.Services.Sandbox;
 using Application.AI.Common.Services.Tools;
 using Application.Common.Interfaces.Telemetry;
+using Domain.Common.Config.AI.Sandbox;
 using MediatR;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -66,6 +69,11 @@ public static class DependencyInjection
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(HookBehavior<,>))
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(RetrievalAuditBehavior<,>))
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(ResponseSanitizationBehavior<,>));
+
+        // Sandbox capability enforcement — profile resolution and enforcement
+        services.AddOptions<SandboxConfig>();
+        services.AddSingleton<ToolPermissionProfileResolver>();
+        services.AddScoped<ICapabilityEnforcer, CapabilityEnforcer>();
 
         // Scoped agent execution context — carries agent identity through the pipeline
         services.AddScoped<IAgentExecutionContext, AgentExecutionContext>();
