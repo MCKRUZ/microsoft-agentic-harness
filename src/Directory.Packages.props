@@ -48,6 +48,7 @@
     <PackageVersion Include="Microsoft.Data.Sqlite" Version="10.0.5" />
 
     <!-- Infrastructure.AI -->
+    <PackageVersion Include="Docker.DotNet" Version="3.125.15" />
     <PackageVersion Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.5" />
     <PackageVersion Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.5" />
     <PackageVersion Include="Polly.Core" Version="8.5.2" />

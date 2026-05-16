@@ -9,6 +9,7 @@
 
   <ItemGroup>
     <PackageReference Include="Anthropic.SDK" />
+    <PackageReference Include="Docker.DotNet" />
     <PackageReference Include="Azure.AI.Agents.Persistent" />
     <PackageReference Include="Azure.AI.Inference" />
     <PackageReference Include="Azure.AI.OpenAI" />
