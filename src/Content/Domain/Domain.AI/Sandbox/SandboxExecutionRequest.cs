@@ -19,4 +19,10 @@ public sealed record SandboxExecutionRequest
 
     /// <summary>Maximum wall-clock time before forcibly terminating the tool.</summary>
     public TimeSpan Timeout { get; init; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>Executable to launch. Falls back to <see cref="ToolName"/> if null.</summary>
+    public string? Command { get; init; }
+
+    /// <summary>Command-line arguments for the subprocess.</summary>
+    public string? Arguments { get; init; }
 }
