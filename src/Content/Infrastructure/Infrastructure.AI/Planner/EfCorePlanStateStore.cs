@@ -323,6 +323,38 @@ public sealed class EfCorePlanStateStore : IPlanStateStore
     }
 
     /// <inheritdoc />
+    public async Task<Result<IReadOnlyDictionary<PlanStepId, StepExecutionState>>> LoadStepStatesAsync(
+        PlanId planId, CancellationToken ct)
+    {
+        await using var ctx = _factory.CreateDbContext();
+
+        var entities = await ctx.StepExecutionStates
+            .AsNoTracking()
+            .Where(s => ctx.PlanSteps.Any(ps => ps.Id == s.StepId && ps.PlanGraphId == planId.Value))
+            .ToListAsync(ct);
+
+        if (entities.Count == 0)
+            return Result<IReadOnlyDictionary<PlanStepId, StepExecutionState>>.Success(
+                new Dictionary<PlanStepId, StepExecutionState>());
+
+        var stateMap = entities.ToDictionary(
+            e => new PlanStepId(e.StepId),
+            e => new StepExecutionState
+            {
+                StepId = new PlanStepId(e.StepId),
+                Status = e.Status,
+                AttemptCount = e.AttemptCount,
+                StartedAt = e.StartedAt,
+                CompletedAt = e.CompletedAt,
+                Output = e.Output,
+                ErrorMessage = e.ErrorMessage,
+                Attestation = DeserializeAttestation(e.AttestationJson),
+            });
+
+        return Result<IReadOnlyDictionary<PlanStepId, StepExecutionState>>.Success(stateMap);
+    }
+
+    /// <inheritdoc />
     public async Task<Result<IReadOnlyList<PlanGraph>>> ListPlansAsync(
         StepExecutionStatus? statusFilter,
         DateTimeOffset? from,

@@ -40,6 +40,15 @@ public interface IPlanStateStore
     /// <param name="ct">Cancellation token.</param>
     Task<Result<IReadOnlyDictionary<PlanStepId, StepExecutionState>>> ResumeAsync(PlanId planId, CancellationToken ct);
 
+    /// <summary>
+    /// Loads the current step execution states for a plan without mutation.
+    /// Unlike <see cref="ResumeAsync"/>, this does not reset Running steps to Ready.
+    /// </summary>
+    /// <param name="planId">Identifier of the plan.</param>
+    /// <param name="ct">Cancellation token.</param>
+    Task<Result<IReadOnlyDictionary<PlanStepId, StepExecutionState>>> LoadStepStatesAsync(
+        PlanId planId, CancellationToken ct);
+
     /// <summary>Retrieves the execution history for a plan.</summary>
     /// <param name="planId">Identifier of the plan.</param>
     /// <param name="ct">Cancellation token.</param>
