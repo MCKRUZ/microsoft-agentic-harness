@@ -4,6 +4,7 @@ using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.DriftDetection;
 using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.Interfaces.Learnings;
+using Application.AI.Common.Interfaces.Planner;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Http;
@@ -17,6 +18,7 @@ using Presentation.AgentHub.Auth;
 using Presentation.AgentHub.Hubs;
 using Presentation.AgentHub.Interfaces;
 using Presentation.AgentHub.Notifications;
+using Presentation.AgentHub.Planner;
 using Presentation.AgentHub.Config;
 using Presentation.AgentHub.Services;
 using Presentation.AgentHub.Telemetry;
@@ -188,6 +190,7 @@ public static class DependencyInjection
         services.AddSingleton<IEscalationNotificationChannel, AgUiEscalationNotifier>();
         services.AddSingleton<IDriftNotificationChannel, AgUiDriftNotifier>();
         services.AddSingleton<ILearningNotificationChannel, AgUiLearningNotifier>();
+        services.AddSingleton<IPlanProgressNotifier, AgUiPlanProgressNotifier>();
 
         // Scoped: AgUiRunHandler takes per-request dependencies (ClaimsPrincipal, CancellationToken).
         services.AddScoped<AgUi.AgUiRunHandler>();

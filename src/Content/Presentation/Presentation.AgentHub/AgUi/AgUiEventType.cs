@@ -88,4 +88,25 @@ public static class AgUiEventType
 
     /// <summary>Signals that a learning has been forgotten (soft-deleted).</summary>
     public const string LearningForgotten = "LEARNING_FORGOTTEN";
+
+    /// <summary>Signals that a plan has started executing.</summary>
+    public const string PlanStarted = "PLAN_STARTED";
+
+    /// <summary>Signals that a plan step has started executing.</summary>
+    public const string PlanStepStarted = "PLAN_STEP_STARTED";
+
+    /// <summary>Signals that a plan step has completed (success, failure, or skipped).</summary>
+    public const string PlanStepCompleted = "PLAN_STEP_COMPLETED";
+
+    /// <summary>An incremental JSON-Patch delta applied to plan step state.</summary>
+    public const string PlanStateDelta = "PLAN_STATE_DELTA";
+
+    /// <summary>Reports sandbox resource usage and attestation for a tool execution step.</summary>
+    public const string SandboxStatus = "SANDBOX_STATUS";
+
+    /// <summary>Signals that an entire plan completed successfully.</summary>
+    public const string PlanCompleted = "PLAN_COMPLETED";
+
+    /// <summary>Signals that a plan failed due to a step failure.</summary>
+    public const string PlanFailed = "PLAN_FAILED";
 }
