@@ -24,4 +24,10 @@ public sealed record StepExecutionResult
     /// Null for non-tool steps or when attestation could not be created.
     /// </summary>
     public ToolExecutionAttestation? Attestation { get; init; }
+
+    /// <summary>
+    /// For conditional branch steps: identifies which downstream edge to activate.
+    /// Null for non-branching steps.
+    /// </summary>
+    public PlanStepId? ActiveEdgeTarget { get; init; }
 }

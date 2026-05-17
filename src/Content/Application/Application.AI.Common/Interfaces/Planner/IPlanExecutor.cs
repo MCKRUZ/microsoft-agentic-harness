@@ -20,6 +20,15 @@ public interface IPlanExecutor
     Task<Result<PlanExecutionSummary>> ExecuteAsync(PlanId planId, CancellationToken ct);
 
     /// <summary>
+    /// Executes a child plan with explicit execution context (for sub-plan depth tracking).
+    /// </summary>
+    /// <param name="planId">Identifier of the plan to execute.</param>
+    /// <param name="context">Execution context with incremented depth for recursion enforcement.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>Execution summary on success, or a failure result.</returns>
+    Task<Result<PlanExecutionSummary>> ExecuteAsync(PlanId planId, PlanExecutionContext context, CancellationToken ct);
+
+    /// <summary>
     /// Cancels a running plan execution. Steps already in progress complete but no new steps start.
     /// </summary>
     /// <param name="planId">Identifier of the plan to cancel.</param>

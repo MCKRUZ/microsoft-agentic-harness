@@ -25,6 +25,12 @@ public record RunConversationCommand : IRequest<ConversationResult>, IHasTimeout
 	public required string AgentName { get; init; }
 
 	/// <summary>
+	/// Optional system prompt override for this conversation.
+	/// When set, takes precedence over the agent's default system prompt.
+	/// </summary>
+	public string? SystemPrompt { get; init; }
+
+	/// <summary>
 	/// Initial user messages to seed the conversation.
 	/// </summary>
 	public required IReadOnlyList<string> UserMessages { get; init; }
