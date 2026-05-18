@@ -1,18 +1,28 @@
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.A2A;
+using Application.AI.Common.Interfaces.Attestation;
 using Application.AI.Common.Interfaces.DriftDetection;
 using Application.AI.Common.Interfaces.Learnings;
 using Application.AI.Common.Interfaces.MetaHarness;
+using Application.AI.Common.Interfaces.Planner;
+using Application.AI.Common.Interfaces.Sandbox;
 using Application.AI.Common.Interfaces.Skills;
 using Application.AI.Common.Interfaces.Memory;
 using Application.AI.Common.Interfaces.Traces;
 using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.Interfaces.Resilience;
+using Domain.AI.Planner;
+using Domain.AI.Sandbox;
+using Infrastructure.AI.Attestation;
 using Infrastructure.AI.DriftDetection;
 using Infrastructure.AI.Escalation;
 using Infrastructure.AI.Learnings;
 using Infrastructure.AI.Memory;
+using Infrastructure.AI.Persistence;
+using Infrastructure.AI.Planner;
+using Infrastructure.AI.Planner.StepExecutors;
 using Infrastructure.AI.Resilience;
+using Infrastructure.AI.Sandbox;
 using Infrastructure.AI.Security;
 using Infrastructure.AI.Traces;
 using Application.AI.Common.Interfaces.Agent;
@@ -31,6 +41,7 @@ using Azure.AI.OpenAI;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
 using Domain.Common.Config.MetaHarness;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using Infrastructure.AI.A2A;
 using Infrastructure.AI.MetaHarness;
@@ -256,6 +267,10 @@ public static class DependencyInjection
         RegisterDriftDetectionServices(services);
         RegisterLearningsServices(services, appConfig);
 
+        RegisterPlannerDbContext(services);
+        RegisterPlannerServices(services);
+        RegisterSandboxServices(services);
+
         return services;
     }
 
@@ -363,6 +378,63 @@ public static class DependencyInjection
             services.AddSingleton<LearningsPruningBackgroundService>();
             services.AddHostedService(sp => sp.GetRequiredService<LearningsPruningBackgroundService>());
         }
+    }
+
+    private static void RegisterPlannerDbContext(IServiceCollection services)
+    {
+        var dataDir = Path.Combine(AppContext.BaseDirectory, "data");
+        Directory.CreateDirectory(dataDir);
+        var connectionString = $"DataSource={Path.Combine(dataDir, "planner.db")}";
+
+        services.AddDbContextFactory<PlannerDbContext>(options => options.UseSqlite(connectionString));
+        services.AddScoped(sp => sp.GetRequiredService<IDbContextFactory<PlannerDbContext>>().CreateDbContext());
+    }
+
+    private static void RegisterPlannerServices(IServiceCollection services)
+    {
+        services.AddScoped<IPlanExecutor, PlanExecutor>();
+        services.AddScoped<IPlanValidator, PlanValidator>();
+        services.AddScoped<IPlanGenerator, LlmPlanGeneratorService>();
+        services.AddScoped<IPlanStateStore, EfCorePlanStateStore>();
+        services.AddScoped<PlanExecutionContext>();
+
+        services.AddKeyedScoped<IPlanStepExecutor>(StepType.LlmCall,
+            (sp, _) => sp.GetRequiredService<LlmCallStepExecutor>());
+        services.AddKeyedScoped<IPlanStepExecutor>(StepType.ToolUse,
+            (sp, _) => sp.GetRequiredService<ToolUseStepExecutor>());
+        services.AddKeyedScoped<IPlanStepExecutor>(StepType.HumanGate,
+            (sp, _) => sp.GetRequiredService<HumanGateStepExecutor>());
+        services.AddKeyedScoped<IPlanStepExecutor>(StepType.ConditionalBranch,
+            (sp, _) => sp.GetRequiredService<ConditionalBranchStepExecutor>());
+        services.AddKeyedScoped<IPlanStepExecutor>(StepType.SubPlanInvocation,
+            (sp, _) => sp.GetRequiredService<SubPlanStepExecutor>());
+
+        services.AddScoped<LlmCallStepExecutor>();
+        services.AddScoped<ToolUseStepExecutor>();
+        services.AddScoped<HumanGateStepExecutor>();
+        services.AddScoped<ConditionalBranchStepExecutor>();
+        services.AddScoped<SubPlanStepExecutor>();
+    }
+
+    private static void RegisterSandboxServices(IServiceCollection services)
+    {
+        services.AddKeyedScoped<ISandboxExecutor>(SandboxIsolationLevel.Process,
+            (sp, _) => sp.GetRequiredService<ProcessSandboxExecutor>());
+        services.AddKeyedScoped<ISandboxExecutor>(SandboxIsolationLevel.Container,
+            (sp, _) => sp.GetRequiredService<DockerSandboxExecutor>());
+
+        services.AddScoped<ProcessSandboxExecutor>();
+        services.AddScoped<DockerSandboxExecutor>();
+
+        services.AddSingleton<Docker.DotNet.IDockerClient>(_ =>
+            new Docker.DotNet.DockerClientConfiguration().CreateClient());
+
+        services.AddScoped<IAttestationService, HmacAttestationService>();
+
+        if (OperatingSystem.IsWindows())
+            services.AddSingleton<IProcessResourceLimiter, WindowsProcessResourceLimiter>();
+        else
+            services.AddSingleton<IProcessResourceLimiter, NoOpProcessResourceLimiter>();
     }
 
     private static void RegisterAIClients(IServiceCollection services, AppConfig appConfig)
