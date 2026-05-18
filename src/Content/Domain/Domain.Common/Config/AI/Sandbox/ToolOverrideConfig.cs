@@ -30,4 +30,13 @@ public sealed class ToolOverrideConfig
     /// Takes the higher of attribute and override (never downgrades).
     /// </summary>
     public string? MinimumIsolation { get; init; }
+
+    /// <summary>Per-tool memory limit override in MB. Null uses system default.</summary>
+    public int? MemoryLimitMb { get; init; }
+
+    /// <summary>Per-tool CPU time override in seconds. Null uses system default.</summary>
+    public double? CpuTimeSeconds { get; init; }
+
+    /// <summary>Per-tool execution timeout override in seconds. Null uses system default.</summary>
+    public int? TimeoutSeconds { get; init; }
 }

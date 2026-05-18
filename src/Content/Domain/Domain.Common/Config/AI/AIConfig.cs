@@ -7,8 +7,10 @@ using Domain.Common.Config.AI.Learnings;
 using Domain.Common.Config.AI.MCP;
 using Domain.Common.Config.AI.Orchestration;
 using Domain.Common.Config.AI.Permissions;
+using Domain.Common.Config.AI.Planner;
 using Domain.Common.Config.AI.RAG;
 using Domain.Common.Config.AI.Resilience;
+using Domain.Common.Config.AI.Sandbox;
 
 namespace Domain.Common.Config.AI;
 
@@ -33,7 +35,9 @@ namespace Domain.Common.Config.AI;
 /// ├── Resilience        — LLM fallback chains, circuit breakers, retry, degraded mode
 /// ├── Rag               — RAG pipeline: ingestion, retrieval, reranking, model tiering
 /// ├── DriftDetection    — EWMA-based drift detection for quality regressions
-/// └── Learnings         — Cross-session learnings: feedback blending, decay, pruning
+/// ├── Learnings         — Cross-session learnings: feedback blending, decay, pruning
+/// ├── Planner           — Plan execution: concurrency, timeouts, persistence
+/// └── Sandbox           — Sandbox execution: resource limits, isolation, containers
 /// </code>
 /// </para>
 /// </remarks>
@@ -124,4 +128,16 @@ public class AIConfig
 
     /// <summary>Agent Governance Toolkit configuration.</summary>
     public GovernanceConfig Governance { get; init; } = new();
+
+    /// <summary>
+    /// Planner subsystem configuration: concurrency limits, timeouts,
+    /// database path, and checkpoint behavior.
+    /// </summary>
+    public PlannerOptions Planner { get; set; } = new();
+
+    /// <summary>
+    /// Sandbox execution subsystem configuration: resource limits,
+    /// isolation defaults, container settings, and per-tool overrides.
+    /// </summary>
+    public SandboxOptions Sandbox { get; set; } = new();
 }

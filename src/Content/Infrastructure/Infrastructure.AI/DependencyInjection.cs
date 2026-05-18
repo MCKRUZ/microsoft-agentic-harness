@@ -267,7 +267,7 @@ public static class DependencyInjection
         RegisterDriftDetectionServices(services);
         RegisterLearningsServices(services, appConfig);
 
-        RegisterPlannerDbContext(services);
+        RegisterPlannerDbContext(services, appConfig);
         RegisterPlannerServices(services);
         RegisterSandboxServices(services);
 
@@ -380,11 +380,12 @@ public static class DependencyInjection
         }
     }
 
-    private static void RegisterPlannerDbContext(IServiceCollection services)
+    private static void RegisterPlannerDbContext(IServiceCollection services, AppConfig appConfig)
     {
-        var dataDir = Path.Combine(AppContext.BaseDirectory, "data");
+        var dbPath = appConfig.AI.Planner.DatabasePath;
+        var dataDir = Path.GetDirectoryName(Path.Combine(AppContext.BaseDirectory, dbPath))!;
         Directory.CreateDirectory(dataDir);
-        var connectionString = $"DataSource={Path.Combine(dataDir, "planner.db")}";
+        var connectionString = $"DataSource={Path.Combine(AppContext.BaseDirectory, dbPath)}";
 
         services.AddDbContextFactory<PlannerDbContext>(options => options.UseSqlite(connectionString));
         services.AddScoped(sp => sp.GetRequiredService<IDbContextFactory<PlannerDbContext>>().CreateDbContext());
