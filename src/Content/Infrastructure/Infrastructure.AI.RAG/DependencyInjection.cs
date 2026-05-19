@@ -39,6 +39,8 @@ public static class DependencyInjection
 		AddRagEvaluation(services, appConfig);
 		AddRagGraphRag(services, appConfig);
 		AddRagComplexityRouting(services);
+		AddRagMultiHop(services, appConfig);
+		AddRagFaithfulness(services, appConfig);
 		AddRagOrchestration(services, appConfig);
 
 		return services;
@@ -226,6 +228,25 @@ public static class DependencyInjection
 	{
 		services.AddSingleton<IQueryComplexityClassifier, QueryComplexityClassifier>();
 		services.AddSingleton<IRetrievalDecisionGate, RetrievalDecisionGate>();
+	}
+
+	/// <summary>
+	/// Registers Phase B multi-hop iterative retrieval services: query decomposer,
+	/// sufficiency evaluator, and iterative retriever.
+	/// </summary>
+	private static void AddRagMultiHop(IServiceCollection services, AppConfig appConfig)
+	{
+		services.AddSingleton<IQueryDecomposer, QueryDecomposer>();
+		services.AddSingleton<ISufficiencyEvaluator, SufficiencyEvaluator>();
+		services.AddSingleton<IIterativeRetriever, IterativeRetriever>();
+	}
+
+	/// <summary>
+	/// Registers Phase B answer faithfulness evaluation services.
+	/// </summary>
+	private static void AddRagFaithfulness(IServiceCollection services, AppConfig appConfig)
+	{
+		services.AddSingleton<IAnswerFaithfulnessEvaluator, AnswerFaithfulnessEvaluator>();
 	}
 
 	/// <summary>
