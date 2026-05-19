@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Application.AI.Common.Interfaces.RAG;
 using Domain.AI.RAG.Models;
 using Domain.Common.Config;
@@ -29,6 +30,9 @@ namespace Infrastructure.AI.RAG.Retrieval;
 /// </remarks>
 public sealed class IterativeRetriever : IIterativeRetriever
 {
+    private static readonly ActivitySource ActivitySource =
+        new("Infrastructure.AI.RAG.Retrieval.IterativeRetriever");
+
     private readonly IQueryDecomposer _decomposer;
     private readonly IHybridRetriever _hybridRetriever;
     private readonly ISufficiencyEvaluator _sufficiencyEvaluator;
@@ -64,6 +68,8 @@ public sealed class IterativeRetriever : IIterativeRetriever
         string? collectionName = null,
         CancellationToken cancellationToken = default)
     {
+        using var activity = ActivitySource.StartActivity("rag.iterative_retriever.retrieve");
+
         var multiHopConfig = _configMonitor.CurrentValue.AI.Rag.MultiHop;
         var maxHops = multiHopConfig.MaxHops;
         var tokenBudgetPerHop = multiHopConfig.TokenBudgetPerHop;
@@ -119,14 +125,25 @@ public sealed class IterativeRetriever : IIterativeRetriever
                 subQuery.Text, candidates, cancellationToken);
             var isSufficient = sufficiencyScore >= minSufficiency;
 
-            hops.Add(new HopResult
+            var hopResult = new HopResult
             {
                 SubQuery = subQuery,
                 Results = candidates,
                 SufficiencyScore = sufficiencyScore,
                 HopNumber = hopNumber,
                 IsSufficient = isSufficient,
-            });
+            };
+            hops.Add(hopResult);
+
+            activity?.AddEvent(new ActivityEvent("hop_completed", tags: new ActivityTagsCollection
+            {
+                { "rag.hop.number", hopNumber },
+                { "rag.hop.sub_query_order", subQuery.Order },
+                { "rag.hop.sufficiency_score", sufficiencyScore },
+                { "rag.hop.is_sufficient", isSufficient },
+                { "rag.hop.result_count", candidates.Count },
+                { "rag.hop.tokens", hopTokens },
+            }));
 
             foreach (var result in candidates)
             {
@@ -151,6 +168,12 @@ public sealed class IterativeRetriever : IIterativeRetriever
         var aggregatedResults = allResults.Values
             .OrderByDescending(r => r.FusedScore)
             .ToList();
+
+        activity?.SetTag("rag.iterative.total_hops", hops.Count);
+        activity?.SetTag("rag.iterative.total_results", aggregatedResults.Count);
+        activity?.SetTag("rag.iterative.total_tokens", totalTokensUsed);
+        activity?.SetTag("rag.iterative.budget_exhausted", budgetExhausted);
+        activity?.SetTag("rag.iterative.sub_query_count", decomposed.SubQueries.Count);
 
         _logger.LogInformation(
             "Iterative retrieval complete: {Hops} hops, {Results} unique results, {Tokens} tokens, budgetExhausted={BudgetExhausted}",
