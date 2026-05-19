@@ -38,6 +38,7 @@ public static class DependencyInjection
 		AddRagQueryTransform(services, appConfig);
 		AddRagEvaluation(services, appConfig);
 		AddRagGraphRag(services, appConfig);
+		AddRagComplexityRouting(services);
 		AddRagOrchestration(services, appConfig);
 
 		return services;
@@ -218,6 +219,16 @@ public static class DependencyInjection
 	}
 
 	/// <summary>
+	/// Registers the complexity classifier and retrieval decision gate for
+	/// cost-aware query routing (Phase A — Adaptive Routing).
+	/// </summary>
+	private static void AddRagComplexityRouting(IServiceCollection services)
+	{
+		services.AddSingleton<IQueryComplexityClassifier, QueryComplexityClassifier>();
+		services.AddSingleton<IRetrievalDecisionGate, RetrievalDecisionGate>();
+	}
+
+	/// <summary>
 	/// Registers the top-level RAG orchestrator that coordinates all pipeline
 	/// stages (classify, retrieve, rerank, evaluate, assemble) into a single
 	/// <see cref="IRagOrchestrator.SearchAsync"/> entry point.
@@ -234,7 +245,9 @@ public static class DependencyInjection
 				sp.GetService<IFeedbackWeightedScorer>(),
 				sp.GetRequiredService<QueryRouter>(),
 				sp.GetRequiredService<IOptionsMonitor<AppConfig>>(),
-				sp.GetRequiredService<ILogger<RagOrchestrator>>()));
+				sp.GetRequiredService<ILogger<RagOrchestrator>>(),
+				sp.GetRequiredService<IQueryComplexityClassifier>(),
+				sp.GetRequiredService<IRetrievalDecisionGate>()));
 	}
 
 	/// <summary>
