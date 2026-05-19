@@ -49,6 +49,8 @@ public sealed class RagOrchestrator : IRagOrchestrator
     private readonly QueryRouter _queryRouter;
     private readonly IOptionsMonitor<AppConfig> _configMonitor;
     private readonly ILogger<RagOrchestrator> _logger;
+    private readonly IQueryComplexityClassifier? _complexityClassifier;
+    private readonly IRetrievalDecisionGate? _decisionGate;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="RagOrchestrator"/> class.
@@ -62,6 +64,8 @@ public sealed class RagOrchestrator : IRagOrchestrator
     /// <param name="queryRouter">Query classification and transformation router.</param>
     /// <param name="configMonitor">Application configuration monitor.</param>
     /// <param name="logger">Logger for recording pipeline decisions.</param>
+    /// <param name="complexityClassifier">Optional complexity classifier for tiered routing. Null disables complexity routing.</param>
+    /// <param name="decisionGate">Optional retrieval decision gate. Null disables complexity routing.</param>
     public RagOrchestrator(
         IHybridRetriever hybridRetriever,
         IReranker reranker,
@@ -71,7 +75,9 @@ public sealed class RagOrchestrator : IRagOrchestrator
         IFeedbackWeightedScorer? feedbackScorer,
         QueryRouter queryRouter,
         IOptionsMonitor<AppConfig> configMonitor,
-        ILogger<RagOrchestrator> logger)
+        ILogger<RagOrchestrator> logger,
+        IQueryComplexityClassifier? complexityClassifier = null,
+        IRetrievalDecisionGate? decisionGate = null)
     {
         ArgumentNullException.ThrowIfNull(hybridRetriever);
         ArgumentNullException.ThrowIfNull(reranker);
@@ -91,6 +97,8 @@ public sealed class RagOrchestrator : IRagOrchestrator
         _queryRouter = queryRouter;
         _configMonitor = configMonitor;
         _logger = logger;
+        _complexityClassifier = complexityClassifier;
+        _decisionGate = decisionGate;
     }
 
     /// <inheritdoc />
@@ -106,6 +114,40 @@ public sealed class RagOrchestrator : IRagOrchestrator
         var ragConfig = _configMonitor.CurrentValue.AI.Rag;
         var effectiveTopK = topK ?? ragConfig.Retrieval.TopK;
         if (effectiveTopK <= 0) effectiveTopK = DefaultTopK;
+
+        // Complexity-based routing (when enabled and services available)
+        if (ragConfig.ComplexityRouting.Enabled
+            && _complexityClassifier is not null
+            && _decisionGate is not null
+            && strategyOverride is null)
+        {
+            var complexity = await _complexityClassifier.ClassifyAsync(query, cancellationToken);
+            var decision = complexity is not null ? _decisionGate.Decide(complexity, topK) : null;
+
+            if (complexity is null || decision is null)
+            {
+                _logger.LogWarning(
+                    "Complexity routing unavailable (classifier={ClassifierResult}, gate={GateResult}); falling back to full pipeline",
+                    complexity is null ? "null" : "ok",
+                    decision is null ? "null" : "ok");
+            }
+            else if (decision.SkipRetrieval)
+            {
+                _logger.LogInformation(
+                    "Complexity routing: skipping retrieval for {Complexity} query",
+                    decision.Complexity);
+                return new RagAssembledContext
+                {
+                    AssembledText = string.Empty,
+                    TotalTokens = 0,
+                    WasTruncated = false,
+                };
+            }
+            else
+            {
+                return await ExecuteRoutedPipelineAsync(query, decision, collectionName, cancellationToken);
+            }
+        }
 
         // Step 1: Determine retrieval strategy
         var strategy = strategyOverride ?? await ClassifyStrategyAsync(query, cancellationToken);
@@ -242,6 +284,68 @@ public sealed class RagOrchestrator : IRagOrchestrator
         }
 
         return CreateEmptyContext("Query refinement exhausted without acceptable results.");
+    }
+
+    private async Task<RagAssembledContext> ExecuteRoutedPipelineAsync(
+        string query,
+        RetrievalDecision decision,
+        string? collectionName,
+        CancellationToken cancellationToken)
+    {
+        using var activity = ActivitySource.StartActivity("rag.orchestrator.routed_pipeline");
+        activity?.SetTag("rag.complexity", decision.Complexity.ToString().ToLowerInvariant());
+        activity?.SetTag("rag.use_reranking", decision.UseReranking);
+        activity?.SetTag("rag.use_crag", decision.UseCragEvaluation);
+
+        // Step 1: Retrieve with decision's topK
+        var candidates = await _hybridRetriever.RetrieveAsync(
+            query, decision.TopK, collectionName, cancellationToken);
+
+        if (candidates.Count == 0)
+        {
+            _logger.LogWarning(
+                "Routed pipeline: retrieval returned 0 candidates (complexity={Complexity})",
+                decision.Complexity);
+            return new RagAssembledContext
+            {
+                AssembledText = string.Empty,
+                TotalTokens = 0,
+                WasTruncated = false,
+            };
+        }
+
+        IReadOnlyList<RerankedResult> reranked;
+
+        // Step 2: Conditional reranking
+        if (decision.UseReranking)
+        {
+            reranked = await _reranker.RerankAsync(
+                query, candidates, decision.TopK, cancellationToken);
+        }
+        else
+        {
+            // Convert retrieval results directly to reranked results (preserve order, skip reranker)
+            reranked = candidates.Select((r, i) => new RerankedResult
+            {
+                RetrievalResult = r,
+                RerankScore = r.FusedScore,
+                OriginalRank = i + 1,
+                RerankRank = i + 1,
+            }).ToList();
+        }
+
+        // Step 3: Conditional CRAG evaluation (reuses existing vector pipeline loop logic)
+        if (decision.UseCragEvaluation)
+        {
+            return await ExecuteVectorPipelineAsync(
+                query, decision.TopK, collectionName, cancellationToken);
+        }
+
+        // Step 4: Direct assembly (skip CRAG)
+        _logger.LogInformation(
+            "Routed pipeline: assembling {Count} results without CRAG (complexity={Complexity})",
+            reranked.Count, decision.Complexity);
+        return await _contextAssembler.AssembleAsync(reranked, DefaultMaxTokens, cancellationToken);
     }
 
     private static IReadOnlyList<RerankedResult> FilterWeakChunks(
