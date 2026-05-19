@@ -53,6 +53,7 @@ public sealed class SufficiencyEvaluator : ISufficiencyEvaluator
         IReadOnlyList<RetrievalResult> results,
         CancellationToken cancellationToken = default)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(subQuery);
         cancellationToken.ThrowIfCancellationRequested();
 
         if (results.Count == 0)

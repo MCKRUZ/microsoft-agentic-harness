@@ -20,7 +20,7 @@ namespace Infrastructure.AI.RAG.Retrieval;
 ///   <item>Retrieve via <see cref="IHybridRetriever"/> with configured <c>TopKPerHop</c>.</item>
 ///   <item>Evaluate sufficiency via <see cref="ISufficiencyEvaluator"/>.</item>
 ///   <item>If sufficient (score >= threshold), record the hop and move to the next sub-query.</item>
-///   <item>If insufficient, refine the sub-query with prior context and re-retrieve (up to <c>MaxHops</c>).</item>
+///   <item>If insufficient, record the hop and move to the next sub-query (up to <c>MaxHops</c> total).</item>
 /// </list>
 /// </para>
 /// <para>
@@ -68,6 +68,9 @@ public sealed class IterativeRetriever : IIterativeRetriever
         string? collectionName = null,
         CancellationToken cancellationToken = default)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(query);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(topKPerHop);
+
         using var activity = ActivitySource.StartActivity("rag.iterative_retriever.retrieve");
 
         var multiHopConfig = _configMonitor.CurrentValue.AI.Rag.MultiHop;

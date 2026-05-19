@@ -37,7 +37,7 @@ namespace Infrastructure.AI.RAG.Orchestration;
 /// multi-hop iterative retrieval with post-assembly faithfulness evaluation.
 /// </para>
 /// </remarks>
-public sealed class RagOrchestrator : IRagOrchestrator
+public sealed partial class RagOrchestrator : IRagOrchestrator
 {
     private static readonly ActivitySource ActivitySource = new("Infrastructure.AI.RAG.Orchestration");
 
@@ -328,7 +328,14 @@ public sealed class RagOrchestrator : IRagOrchestrator
                 query, decision.TopK, collectionName, cancellationToken);
         }
 
-        // Step 1: Retrieve with decision's topK
+        // Step 1: CRAG evaluation path (reuses existing vector pipeline loop with refinement)
+        if (decision.UseCragEvaluation)
+        {
+            return await ExecuteVectorPipelineAsync(
+                query, decision.TopK, collectionName, cancellationToken);
+        }
+
+        // Step 2: Retrieve with decision's topK
         var candidates = await _hybridRetriever.RetrieveAsync(
             query, decision.TopK, collectionName, cancellationToken);
 
@@ -347,7 +354,7 @@ public sealed class RagOrchestrator : IRagOrchestrator
 
         IReadOnlyList<RerankedResult> reranked;
 
-        // Step 2: Conditional reranking
+        // Step 3: Conditional reranking
         if (decision.UseReranking)
         {
             reranked = await _reranker.RerankAsync(
@@ -355,7 +362,6 @@ public sealed class RagOrchestrator : IRagOrchestrator
         }
         else
         {
-            // Convert retrieval results directly to reranked results (preserve order, skip reranker)
             reranked = candidates.Select((r, i) => new RerankedResult
             {
                 RetrievalResult = r,
@@ -365,100 +371,11 @@ public sealed class RagOrchestrator : IRagOrchestrator
             }).ToList();
         }
 
-        // Step 3: Conditional CRAG evaluation (reuses existing vector pipeline loop logic)
-        if (decision.UseCragEvaluation)
-        {
-            return await ExecuteVectorPipelineAsync(
-                query, decision.TopK, collectionName, cancellationToken);
-        }
-
         // Step 4: Direct assembly (skip CRAG)
         _logger.LogInformation(
             "Routed pipeline: assembling {Count} results without CRAG (complexity={Complexity})",
             reranked.Count, decision.Complexity);
         return await _contextAssembler.AssembleAsync(reranked, DefaultMaxTokens, cancellationToken);
-    }
-
-    private async Task<RagAssembledContext> ExecuteMultiHopPipelineAsync(
-        string query, int topKPerHop, string? collectionName,
-        CancellationToken cancellationToken)
-    {
-        using var activity = ActivitySource.StartActivity("rag.orchestrator.multi_hop_pipeline");
-        var ragConfig = _configMonitor.CurrentValue.AI.Rag;
-
-        _logger.LogInformation("Entering multi-hop pipeline for complex query");
-
-        // Step 1: Iterative retrieval
-        var iterativeResult = await _iterativeRetriever!.RetrieveIterativelyAsync(
-            query, topKPerHop, collectionName, cancellationToken);
-
-        activity?.SetTag("rag.multi_hop.hop_count", iterativeResult.Hops.Count);
-        activity?.SetTag("rag.multi_hop.total_tokens", iterativeResult.TotalTokensUsed);
-        activity?.SetTag("rag.multi_hop.budget_exhausted", iterativeResult.BudgetExhausted);
-
-        if (iterativeResult.AggregatedResults.Count == 0)
-        {
-            _logger.LogWarning("Multi-hop retrieval returned 0 results");
-            return CreateEmptyContext("No relevant documents found after multi-hop retrieval.");
-        }
-
-        // Step 2: Rerank the aggregated results
-        var reranked = await _reranker.RerankAsync(
-            query, iterativeResult.AggregatedResults, topKPerHop, cancellationToken);
-
-        // Step 3: Assemble context
-        var assembled = await _contextAssembler.AssembleAsync(
-            reranked, DefaultMaxTokens, cancellationToken);
-
-        // Step 4: Faithfulness evaluation (if enabled)
-        if (ragConfig.Faithfulness.Enabled && _faithfulnessEvaluator is not null)
-        {
-            var faithfulness = await _faithfulnessEvaluator.EvaluateAsync(
-                assembled.AssembledText, reranked, cancellationToken);
-
-            activity?.SetTag("rag.faithfulness.score", faithfulness.Score);
-            activity?.SetTag("rag.faithfulness.is_faithful", faithfulness.IsFaithful);
-            activity?.SetTag("rag.faithfulness.hallucinated_count", faithfulness.HallucinatedClaims.Count);
-
-            if (!faithfulness.IsFaithful)
-            {
-                _logger.LogWarning(
-                    "Faithfulness evaluation failed: score={Score:F2}, hallucinated={Count} claims. Triggering CRAG refinement.",
-                    faithfulness.Score, faithfulness.HallucinatedClaims.Count);
-
-                var cragEval = await _cragEvaluator.EvaluateAsync(
-                    query, iterativeResult.AggregatedResults, cancellationToken);
-
-                if (cragEval.Action == CorrectionAction.Accept || cragEval.Action == CorrectionAction.Refine)
-                {
-                    var filtered = FilterWeakChunks(reranked, cragEval.WeakChunkIds);
-                    return await _contextAssembler.AssembleAsync(
-                        filtered, DefaultMaxTokens, cancellationToken);
-                }
-
-                _logger.LogWarning("CRAG also rejected after faithfulness failure; returning best available");
-            }
-            else
-            {
-                _logger.LogInformation(
-                    "Faithfulness check passed: score={Score:F2}, {Supported} supported claims",
-                    faithfulness.Score, faithfulness.SupportedClaims.Count);
-            }
-        }
-
-        return assembled;
-    }
-
-    private static IReadOnlyList<RerankedResult> FilterWeakChunks(
-        IReadOnlyList<RerankedResult> results,
-        IReadOnlyList<string> weakChunkIds)
-    {
-        if (weakChunkIds.Count == 0) return results;
-
-        var weakSet = weakChunkIds.ToHashSet();
-        return results
-            .Where(r => !weakSet.Contains(r.RetrievalResult.Chunk.Id))
-            .ToList();
     }
 
     private static RagAssembledContext CreateEmptyContext(string reasoning) => new()

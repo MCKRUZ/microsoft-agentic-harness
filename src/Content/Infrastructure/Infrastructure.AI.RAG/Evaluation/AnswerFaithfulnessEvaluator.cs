@@ -80,6 +80,7 @@ public sealed class AnswerFaithfulnessEvaluator : IAnswerFaithfulnessEvaluator
         IReadOnlyList<RerankedResult> supportingContext,
         CancellationToken cancellationToken = default)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(answer);
         cancellationToken.ThrowIfCancellationRequested();
 
         if (supportingContext.Count == 0)
