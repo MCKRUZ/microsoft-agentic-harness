@@ -165,6 +165,122 @@ internal static class RagTestData
         return config;
     }
 
+    public static SubQuery CreateSubQuery(
+        string text = "What is the default chunking strategy?",
+        int order = 1,
+        IReadOnlyList<int>? dependsOnOrders = null) =>
+        new()
+        {
+            Text = text,
+            Order = order,
+            DependsOnOrders = dependsOnOrders ?? []
+        };
+
+    public static DecomposedQuery CreateDecomposedQuery(
+        string originalQuery = "Complex multi-part query",
+        params string[] subQueryTexts)
+    {
+        var texts = subQueryTexts.Length > 0
+            ? subQueryTexts
+            : new[] { "Sub-query 1: first part", "Sub-query 2: second part" };
+
+        var subQueries = texts.Select((text, i) => new SubQuery
+        {
+            Text = text,
+            Order = i + 1,
+            DependsOnOrders = i > 0 ? [i] : []
+        }).ToList();
+
+        return new DecomposedQuery
+        {
+            OriginalQuery = originalQuery,
+            SubQueries = subQueries
+        };
+    }
+
+    public static HopResult CreateHopResult(
+        SubQuery? subQuery = null,
+        IReadOnlyList<RetrievalResult>? results = null,
+        double sufficiencyScore = 0.8,
+        int hopNumber = 1,
+        bool? isSufficient = null) =>
+        new()
+        {
+            SubQuery = subQuery ?? CreateSubQuery(),
+            Results = results ?? CreateRetrievalResults(3),
+            SufficiencyScore = sufficiencyScore,
+            HopNumber = hopNumber,
+            IsSufficient = isSufficient ?? sufficiencyScore >= 0.7
+        };
+
+    public static IterativeRetrievalResult CreateIterativeRetrievalResult(
+        IReadOnlyList<HopResult>? hops = null,
+        int totalTokensUsed = 512,
+        bool budgetExhausted = false)
+    {
+        var effectiveHops = hops ?? [CreateHopResult()];
+        var aggregated = effectiveHops
+            .SelectMany(h => h.Results)
+            .GroupBy(r => r.Chunk.Id)
+            .Select(g => g.OrderByDescending(r => r.FusedScore).First())
+            .ToList();
+
+        return new IterativeRetrievalResult
+        {
+            Hops = effectiveHops,
+            AggregatedResults = aggregated,
+            TotalTokensUsed = totalTokensUsed,
+            BudgetExhausted = budgetExhausted
+        };
+    }
+
+    public static FaithfulnessEvaluation CreateFaithfulEvaluation(double score = 0.9) =>
+        new()
+        {
+            IsFaithful = true,
+            Score = score,
+            SupportedClaims = ["Claim A is supported by chunk-1", "Claim B is supported by chunk-2"],
+            HallucinatedClaims = [],
+            Reasoning = "All claims are grounded in the retrieved context."
+        };
+
+    public static FaithfulnessEvaluation CreateUnfaithfulEvaluation(
+        IReadOnlyList<string>? hallucinatedClaims = null) =>
+        new()
+        {
+            IsFaithful = false,
+            Score = 0.3,
+            SupportedClaims = ["Claim A is supported by chunk-1"],
+            HallucinatedClaims = hallucinatedClaims ?? ["Claim X has no source", "Claim Y contradicts chunk-2"],
+            Reasoning = "Multiple claims are not grounded in the retrieved context."
+        };
+
+    public static MultiHopConfig CreateMultiHopConfig(Action<MultiHopConfig>? configure = null)
+    {
+        var config = new MultiHopConfig
+        {
+            Enabled = true,
+            MaxHops = 3,
+            TokenBudgetPerHop = 1024,
+            MinSufficiencyScore = 0.7,
+            TopKPerHop = 5,
+        };
+        configure?.Invoke(config);
+        return config;
+    }
+
+    public static FaithfulnessConfig CreateFaithfulnessConfig(Action<FaithfulnessConfig>? configure = null)
+    {
+        var config = new FaithfulnessConfig
+        {
+            Enabled = true,
+            HallucinationThreshold = 0.3,
+            RequireCitationSupport = true,
+        };
+        configure?.Invoke(config);
+        return config;
+    }
+
     public static IOptionsMonitor<AppConfig> CreateConfigMonitor(
         Action<AppConfig>? configure = null)
     {
@@ -188,6 +304,20 @@ internal static class RagTestData
             ComplexTopK = 15,
             SkipRerankForSimple = true,
             SkipCragForSimple = true,
+        };
+        appConfig.AI.Rag.MultiHop = new MultiHopConfig
+        {
+            Enabled = true,
+            MaxHops = 3,
+            TokenBudgetPerHop = 1024,
+            MinSufficiencyScore = 0.7,
+            TopKPerHop = 5,
+        };
+        appConfig.AI.Rag.Faithfulness = new FaithfulnessConfig
+        {
+            Enabled = true,
+            HallucinationThreshold = 0.3,
+            RequireCitationSupport = true,
         };
 
         configure?.Invoke(appConfig);
