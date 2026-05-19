@@ -70,4 +70,10 @@ public class RagConfig
     /// to appropriate model tiers based on complexity.
     /// </summary>
     public ModelTieringConfig ModelTiering { get; set; } = new();
+
+    /// <summary>
+    /// Gets or sets the complexity-based query routing configuration controlling
+    /// cost-aware tier selection and pipeline optimization.
+    /// </summary>
+    public ComplexityRoutingConfig ComplexityRouting { get; set; } = new();
 }

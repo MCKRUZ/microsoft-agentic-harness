@@ -19,6 +19,8 @@ public sealed class RagOrchestratorTests
     private readonly Mock<ICragEvaluator> _mockCrag = new();
     private readonly Mock<IRagContextAssembler> _mockAssembler = new();
     private readonly Mock<IGraphRagService> _mockGraphRag = new();
+    private readonly Mock<IQueryComplexityClassifier> _mockComplexityClassifier = new();
+    private readonly Mock<IRetrievalDecisionGate> _mockDecisionGate = new();
 
     private readonly RagAssembledContext _expectedContext = new()
     {
@@ -45,7 +47,9 @@ public sealed class RagOrchestratorTests
             feedbackScorer: null,
             queryRouter,
             config,
-            Mock.Of<ILogger<RagOrchestrator>>());
+            Mock.Of<ILogger<RagOrchestrator>>(),
+            _mockComplexityClassifier.Object,
+            _mockDecisionGate.Object);
     }
 
     private void SetupHappyPath(int chunkCount = 3)
@@ -184,5 +188,98 @@ public sealed class RagOrchestratorTests
         _mockReranker.Verify(
             r => r.RerankAsync(It.IsAny<string>(), It.IsAny<IReadOnlyList<RetrievalResult>>(), It.IsAny<int>(), It.IsAny<CancellationToken>()),
             Times.Never);
+    }
+
+    [Fact]
+    public async Task SearchAsync_TrivialQuery_SkipsRetrievalEntirely()
+    {
+        var trivialClassification = RagTestData.CreateTrivialClassification();
+        var skipDecision = new RetrievalDecision
+        {
+            SkipRetrieval = true,
+            TopK = 0,
+            UseReranking = false,
+            UseCragEvaluation = false,
+            Complexity = QueryComplexity.Trivial,
+        };
+
+        _mockComplexityClassifier
+            .Setup(c => c.ClassifyAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(trivialClassification);
+        _mockDecisionGate
+            .Setup(g => g.Decide(trivialClassification, It.IsAny<int?>()))
+            .Returns(skipDecision);
+
+        var orchestrator = CreateOrchestrator();
+
+        var result = await orchestrator.SearchAsync("What is 2+2?");
+
+        result.AssembledText.Should().BeEmpty();
+        result.TotalTokens.Should().Be(0);
+        _mockRetriever.Verify(
+            r => r.RetrieveAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task SearchAsync_SimpleQuery_SkipsRerankAndCrag()
+    {
+        var simpleClassification = RagTestData.CreateSimpleClassification();
+        var simpleDecision = new RetrievalDecision
+        {
+            SkipRetrieval = false,
+            TopK = 5,
+            UseReranking = false,
+            UseCragEvaluation = false,
+            Complexity = QueryComplexity.Simple,
+        };
+        var retrievalResults = RagTestData.CreateRetrievalResults(3);
+
+        _mockComplexityClassifier
+            .Setup(c => c.ClassifyAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(simpleClassification);
+        _mockDecisionGate
+            .Setup(g => g.Decide(simpleClassification, It.IsAny<int?>()))
+            .Returns(simpleDecision);
+        _mockRetriever
+            .Setup(r => r.RetrieveAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(retrievalResults);
+        _mockAssembler
+            .Setup(a => a.AssembleAsync(It.IsAny<IReadOnlyList<RerankedResult>>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(_expectedContext);
+
+        var orchestrator = CreateOrchestrator();
+
+        var result = await orchestrator.SearchAsync("What is clean architecture?");
+
+        result.AssembledText.Should().Be("assembled text");
+        _mockReranker.Verify(
+            r => r.RerankAsync(It.IsAny<string>(), It.IsAny<IReadOnlyList<RetrievalResult>>(), It.IsAny<int>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+        _mockCrag.Verify(
+            e => e.EvaluateAsync(It.IsAny<string>(), It.IsAny<IReadOnlyList<RetrievalResult>>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task SearchAsync_RoutingDisabled_UsesFullPipeline()
+    {
+        SetupHappyPath();
+
+        // Classifier would return trivial but routing is disabled — should be ignored
+        _mockComplexityClassifier
+            .Setup(c => c.ClassifyAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(RagTestData.CreateTrivialClassification());
+
+        var orchestrator = CreateOrchestrator(cfg =>
+            cfg.AI.Rag.ComplexityRouting.Enabled = false);
+
+        var result = await orchestrator.SearchAsync("trivial query with routing off");
+
+        result.AssembledText.Should().Be("assembled text");
+        // Full pipeline ran — retriever was called
+        _mockRetriever.Verify(
+            r => r.RetrieveAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()),
+            Times.Once);
     }
 }

@@ -23,8 +23,15 @@ namespace Infrastructure.AI.Tools;
 /// <para>
 /// Operations:
 /// <list type="bullet">
-///   <item><c>"search"</c>: Basic search returning top results as formatted text.</item>
-///   <item><c>"search_global"</c>: Forces GraphRAG strategy for broad thematic queries.</item>
+///   <item><c>"search"</c>: Basic search returning top results as formatted text. Accepts an optional
+///   <c>strategy</c> parameter to override the default retrieval strategy at runtime. Accepted values:
+///   <c>"hybrid"</c> (<see cref="RetrievalStrategy.HybridVectorBm25"/>),
+///   <c>"graph"</c> or <c>"graphrag"</c> (<see cref="RetrievalStrategy.GraphRag"/>),
+///   <c>"raptor"</c> (<see cref="RetrievalStrategy.RaptorTree"/>),
+///   <c>"multiqueryFusion"</c> or <c>"fusion"</c> (<see cref="RetrievalStrategy.MultiQueryFusion"/>).
+///   Unknown values fall back to the pipeline default.</item>
+///   <item><c>"search_global"</c>: Forces <see cref="RetrievalStrategy.GraphRag"/> for broad thematic
+///   queries. The <c>strategy</c> parameter is ignored — the operation-level override always wins.</item>
 ///   <item><c>"search_with_citations"</c>: Includes citation spans with source attribution.</item>
 /// </list>
 /// </para>
@@ -102,8 +109,11 @@ public sealed class DocumentSearchTool : ITool
         var topK = GetOptionalInt(parameters, "top_k");
         var collection = GetOptionalString(parameters, "collection");
 
+        // Allow agent to override strategy via parameter unless already overridden by the operation.
+        var effectiveStrategy = strategyOverride ?? ParseStrategy(GetOptionalString(parameters, "strategy"));
+
         var context = await _orchestrator.SearchAsync(
-            query, topK, collection, strategyOverride, cancellationToken);
+            query, topK, collection, effectiveStrategy, cancellationToken);
 
         if (context.TotalTokens == 0)
             return ToolResult.Ok(context.AssembledText);
@@ -144,6 +154,21 @@ public sealed class DocumentSearchTool : ITool
 
         return ToolResult.Ok(JsonSerializer.Serialize(result, JsonOptions));
     }
+
+    /// <summary>
+    /// Maps an agent-supplied strategy name to the corresponding
+    /// <see cref="RetrievalStrategy"/>, or <see langword="null"/> when the value is
+    /// unrecognised (preserving the pipeline default).
+    /// </summary>
+    private static RetrievalStrategy? ParseStrategy(string? value) =>
+        value?.ToLowerInvariant() switch
+        {
+            "hybrid" => RetrievalStrategy.HybridVectorBm25,
+            "graph" or "graphrag" => RetrievalStrategy.GraphRag,
+            "raptor" => RetrievalStrategy.RaptorTree,
+            "multiqueryfusion" or "fusion" => RetrievalStrategy.MultiQueryFusion,
+            _ => null
+        };
 
     private static string GetRequiredString(IReadOnlyDictionary<string, object?> parameters, string key)
     {

@@ -1,6 +1,7 @@
 using Domain.AI.RAG.Enums;
 using Domain.AI.RAG.Models;
 using Domain.Common.Config;
+using Domain.Common.Config.AI.RAG;
 using Microsoft.Extensions.Options;
 using Moq;
 
@@ -115,6 +116,55 @@ internal static class RagTestData
             Reasoning = "Results are not relevant"
         };
 
+    public static ComplexityClassification CreateTrivialClassification(double confidence = 0.9) =>
+        new()
+        {
+            Complexity = QueryComplexity.Trivial,
+            Confidence = confidence,
+            Reasoning = "Query can be answered from general knowledge without retrieval."
+        };
+
+    public static ComplexityClassification CreateSimpleClassification(double confidence = 0.85) =>
+        new()
+        {
+            Complexity = QueryComplexity.Simple,
+            Confidence = confidence,
+            Reasoning = "Direct factual lookup requiring single-pass retrieval."
+        };
+
+    public static ComplexityClassification CreateModerateClassification(double confidence = 0.8) =>
+        new()
+        {
+            Complexity = QueryComplexity.Moderate,
+            Confidence = confidence,
+            Reasoning = "Query requires hybrid retrieval with quality evaluation."
+        };
+
+    public static ComplexityClassification CreateComplexClassification(double confidence = 0.75) =>
+        new()
+        {
+            Complexity = QueryComplexity.Complex,
+            Confidence = confidence,
+            Reasoning = "Multi-hop query requiring iterative retrieval across documents."
+        };
+
+    public static ComplexityRoutingConfig CreateComplexityRoutingConfig(
+        Action<ComplexityRoutingConfig>? configure = null)
+    {
+        var config = new ComplexityRoutingConfig
+        {
+            Enabled = true,
+            ConfidenceThreshold = 0.7,
+            SimpleTopK = 5,
+            ModerateTopK = null,
+            ComplexTopK = 15,
+            SkipRerankForSimple = true,
+            SkipCragForSimple = true,
+        };
+        configure?.Invoke(config);
+        return config;
+    }
+
     public static IOptionsMonitor<AppConfig> CreateConfigMonitor(
         Action<AppConfig>? configure = null)
     {
@@ -130,6 +180,15 @@ internal static class RagTestData
         appConfig.AI.Rag.QueryTransform.EnableClassification = false;
         appConfig.AI.Rag.QueryTransform.EnableRagFusion = false;
         appConfig.AI.Rag.QueryTransform.EnableHyde = false;
+        appConfig.AI.Rag.ComplexityRouting = new ComplexityRoutingConfig
+        {
+            Enabled = true,
+            ConfidenceThreshold = 0.7,
+            SimpleTopK = 5,
+            ComplexTopK = 15,
+            SkipRerankForSimple = true,
+            SkipCragForSimple = true,
+        };
 
         configure?.Invoke(appConfig);
 
