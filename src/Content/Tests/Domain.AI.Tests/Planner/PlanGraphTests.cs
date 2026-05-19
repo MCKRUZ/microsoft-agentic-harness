@@ -98,7 +98,7 @@ public sealed class PlanGraphTests
     {
         var values = Enum.GetValues<StepExecutionStatus>();
 
-        Assert.Equal(7, values.Length);
+        Assert.Equal(8, values.Length);
         Assert.Contains(StepExecutionStatus.Pending, values);
         Assert.Contains(StepExecutionStatus.Ready, values);
         Assert.Contains(StepExecutionStatus.Running, values);
@@ -106,5 +106,6 @@ public sealed class PlanGraphTests
         Assert.Contains(StepExecutionStatus.Failed, values);
         Assert.Contains(StepExecutionStatus.Skipped, values);
         Assert.Contains(StepExecutionStatus.Blocked, values);
+        Assert.Contains(StepExecutionStatus.Cancelled, values);
     }
 }

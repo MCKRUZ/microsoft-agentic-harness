@@ -1,6 +1,5 @@
 using System.Text.Json;
 using Application.AI.Common.Interfaces.Planner;
-using Domain.AI.Attestation;
 using Domain.AI.Planner;
 using Domain.Common;
 using Infrastructure.AI.Persistence;
@@ -15,7 +14,7 @@ namespace Infrastructure.AI.Planner;
 /// operations to the persistence layer. Uses <see cref="IDbContextFactory{TContext}"/>
 /// for short-lived contexts, making it safe for singleton and scoped callers.
 /// </summary>
-public sealed class EfCorePlanStateStore : IPlanStateStore
+public sealed partial class EfCorePlanStateStore : IPlanStateStore
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -104,23 +103,6 @@ public sealed class EfCorePlanStateStore : IPlanStateStore
     }
 
     /// <inheritdoc />
-    public async Task<Result<PlanGraph?>> LoadPlanAsync(PlanId planId, CancellationToken ct)
-    {
-        await using var ctx = _factory.CreateDbContext();
-
-        var entity = await ctx.PlanGraphs
-            .AsNoTracking()
-            .Include(g => g.Steps).ThenInclude(s => s.ExecutionState)
-            .Include(g => g.Edges)
-            .FirstOrDefaultAsync(g => g.Id == planId.Value, ct);
-
-        if (entity is null)
-            return Result<PlanGraph?>.Success(null);
-
-        return Result<PlanGraph?>.Success(MapToDomain(entity));
-    }
-
-    /// <inheritdoc />
     public async Task<Result> UpdateStepStateAsync(StepExecutionState state, CancellationToken ct)
     {
         await using var ctx = _factory.CreateDbContext();
@@ -168,58 +150,6 @@ public sealed class EfCorePlanStateStore : IPlanStateStore
         }
 
         return Result.Success();
-    }
-
-    /// <inheritdoc />
-    public async Task<Result<IReadOnlyList<PlanExecutionLogEntry>>> GetExecutionHistoryAsync(
-        PlanId planId, CancellationToken ct)
-    {
-        await using var ctx = _factory.CreateDbContext();
-
-        var logs = await ctx.PlanExecutionLogs
-            .AsNoTracking()
-            .Where(l => l.PlanGraphId == planId.Value && l.StepId != null)
-            .OrderBy(l => l.Id)
-            .ToListAsync(ct);
-
-        var entries = new List<PlanExecutionLogEntry>(logs.Count);
-        foreach (var log in logs)
-        {
-            if (!Enum.TryParse<StepExecutionStatus>(log.EventType, out var status))
-                continue;
-
-            var attemptNumber = 1;
-            string? message = null;
-            if (log.DetailsJson is not null)
-            {
-                try
-                {
-                    using var doc = JsonDocument.Parse(log.DetailsJson);
-                    if (doc.RootElement.TryGetProperty("attemptCount", out var ac))
-                        attemptNumber = ac.GetInt32();
-                    if (doc.RootElement.TryGetProperty("output", out var o) && o.ValueKind == JsonValueKind.String)
-                        message = o.GetString();
-                    if (message is null && doc.RootElement.TryGetProperty("errorMessage", out var em) && em.ValueKind == JsonValueKind.String)
-                        message = em.GetString();
-                }
-                catch (JsonException)
-                {
-                    // Malformed details — skip enrichment
-                }
-            }
-
-            entries.Add(new PlanExecutionLogEntry
-            {
-                PlanId = planId,
-                StepId = new PlanStepId(log.StepId!.Value),
-                Timestamp = log.Timestamp,
-                Status = status,
-                Message = message,
-                AttemptNumber = attemptNumber,
-            });
-        }
-
-        return Result<IReadOnlyList<PlanExecutionLogEntry>>.Success(entries);
     }
 
     /// <inheritdoc />
@@ -273,156 +203,5 @@ public sealed class EfCorePlanStateStore : IPlanStateStore
 
         _logger.LogInformation("Checkpointed plan {PlanId} with {StateCount} step states", planId.Value, states.Count);
         return Result.Success();
-    }
-
-    /// <inheritdoc />
-    public async Task<Result<IReadOnlyDictionary<PlanStepId, StepExecutionState>>> ResumeAsync(
-        PlanId planId, CancellationToken ct)
-    {
-        await using var ctx = _factory.CreateDbContext();
-
-        var entities = await ctx.StepExecutionStates
-            .Where(s => ctx.PlanSteps.Any(ps => ps.Id == s.StepId && ps.PlanGraphId == planId.Value))
-            .ToListAsync(ct);
-
-        if (entities.Count == 0)
-            return Result<IReadOnlyDictionary<PlanStepId, StepExecutionState>>.NotFound(
-                $"No step states found for plan {planId.Value}");
-
-        foreach (var entity in entities.Where(e => e.Status == StepExecutionStatus.Running))
-        {
-            entity.Status = StepExecutionStatus.Ready;
-            // Version incremented by SqliteVersionInterceptor on save
-        }
-
-        ctx.PlanExecutionLogs.Add(new PlanExecutionLogEntity
-        {
-            PlanGraphId = planId.Value,
-            EventType = "resumed",
-            Timestamp = _timeProvider.GetUtcNow(),
-        });
-
-        await ctx.SaveChangesAsync(ct);
-
-        var stateMap = MapToStepStateDictionary(entities);
-
-        _logger.LogInformation("Resumed plan {PlanId}, {StateCount} step states loaded", planId.Value, stateMap.Count);
-        return Result<IReadOnlyDictionary<PlanStepId, StepExecutionState>>.Success(stateMap);
-    }
-
-    /// <inheritdoc />
-    public async Task<Result<IReadOnlyDictionary<PlanStepId, StepExecutionState>>> LoadStepStatesAsync(
-        PlanId planId, CancellationToken ct)
-    {
-        await using var ctx = _factory.CreateDbContext();
-
-        var entities = await ctx.StepExecutionStates
-            .AsNoTracking()
-            .Where(s => ctx.PlanSteps.Any(ps => ps.Id == s.StepId && ps.PlanGraphId == planId.Value))
-            .ToListAsync(ct);
-
-        if (entities.Count == 0)
-            return Result<IReadOnlyDictionary<PlanStepId, StepExecutionState>>.Success(
-                new Dictionary<PlanStepId, StepExecutionState>());
-
-        return Result<IReadOnlyDictionary<PlanStepId, StepExecutionState>>.Success(
-            MapToStepStateDictionary(entities));
-    }
-
-    /// <inheritdoc />
-    public async Task<Result<IReadOnlyList<PlanGraph>>> ListPlansAsync(
-        StepExecutionStatus? statusFilter,
-        DateTimeOffset? from,
-        DateTimeOffset? to,
-        CancellationToken ct)
-    {
-        await using var ctx = _factory.CreateDbContext();
-
-        IQueryable<PlanGraphEntity> query = ctx.PlanGraphs
-            .AsNoTracking()
-            .Include(g => g.Steps).ThenInclude(s => s.ExecutionState)
-            .Include(g => g.Edges);
-
-        if (from.HasValue)
-            query = query.Where(g => g.CreatedAt >= from.Value);
-
-        if (to.HasValue)
-            query = query.Where(g => g.CreatedAt <= to.Value);
-
-        if (statusFilter.HasValue)
-            query = query.Where(g => g.Steps.Any(s => s.ExecutionState != null && s.ExecutionState.Status == statusFilter.Value));
-
-        var entities = await query
-            .Take(100)
-            .ToListAsync(ct);
-
-        var plans = entities
-            .OrderByDescending(e => e.CreatedAt)
-            .Select(MapToDomain)
-            .ToList();
-        return Result<IReadOnlyList<PlanGraph>>.Success(plans);
-    }
-
-    // --- Mapping helpers ---
-
-    private static PlanGraph MapToDomain(PlanGraphEntity entity)
-    {
-        var steps = entity.Steps.OrderBy(s => s.Name).Select(s => new PlanStep
-        {
-            Id = new PlanStepId(s.Id),
-            Name = s.Name,
-            Type = s.Type,
-            Configuration = JsonSerializer.Deserialize<StepConfiguration>(s.ConfigurationJson, JsonOptions)!,
-            RetryPolicy = JsonSerializer.Deserialize<RetryPolicy>(s.RetryPolicyJson, JsonOptions)!,
-            Timeout = TimeSpan.FromSeconds(s.TimeoutSeconds),
-            RequiredAutonomyLevel = s.RequiredAutonomyLevel,
-        }).ToList();
-
-        var edges = entity.Edges.Select(e => new PlanEdge(
-            new PlanStepId(e.FromStepId),
-            new PlanStepId(e.ToStepId),
-            e.Type,
-            e.Condition)).ToList();
-
-        return new PlanGraph
-        {
-            Id = new PlanId(entity.Id),
-            Name = entity.Name,
-            Steps = steps,
-            Edges = edges,
-            Configuration = JsonSerializer.Deserialize<PlanConfiguration>(entity.ConfigurationJson, JsonOptions)!,
-            ParentPlanId = entity.ParentPlanId.HasValue ? new PlanId(entity.ParentPlanId.Value) : null,
-        };
-    }
-
-    private static StepExecutionState MapToStepState(StepExecutionStateEntity e) => new()
-    {
-        StepId = new PlanStepId(e.StepId),
-        Status = e.Status,
-        AttemptCount = e.AttemptCount,
-        StartedAt = e.StartedAt,
-        CompletedAt = e.CompletedAt,
-        Output = e.Output,
-        ErrorMessage = e.ErrorMessage,
-        Attestation = DeserializeAttestation(e.AttestationJson),
-    };
-
-    private static Dictionary<PlanStepId, StepExecutionState> MapToStepStateDictionary(
-        IEnumerable<StepExecutionStateEntity> entities)
-        => entities.ToDictionary(e => new PlanStepId(e.StepId), MapToStepState);
-
-    private static ToolExecutionAttestation? DeserializeAttestation(string? json)
-    {
-        if (string.IsNullOrEmpty(json))
-            return null;
-
-        try
-        {
-            return JsonSerializer.Deserialize<ToolExecutionAttestation>(json, JsonOptions);
-        }
-        catch (JsonException)
-        {
-            return null;
-        }
     }
 }

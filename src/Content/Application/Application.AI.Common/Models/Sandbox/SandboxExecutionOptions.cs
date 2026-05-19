@@ -1,10 +1,13 @@
 namespace Application.AI.Common.Models.Sandbox;
 
 /// <summary>
-/// Configuration for sandbox execution environments.
+/// Configuration for sandbox execution environments (container/Docker settings).
 /// Bound from <c>AppConfig:AI:Sandbox</c> configuration section.
+/// Named <c>SandboxExecutionOptions</c> to distinguish from the Domain-layer
+/// <see cref="Domain.Common.Config.AI.Sandbox.SandboxOptions"/> which holds
+/// system-level sandbox policy (resource limits, isolation defaults).
 /// </summary>
-public sealed class SandboxOptions
+public sealed class SandboxExecutionOptions
 {
     /// <summary>Configuration section path.</summary>
     public const string SectionName = "AI:Sandbox";

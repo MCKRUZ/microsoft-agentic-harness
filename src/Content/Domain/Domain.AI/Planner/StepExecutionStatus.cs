@@ -2,8 +2,9 @@ namespace Domain.AI.Planner;
 
 /// <summary>
 /// Represents the state machine for plan step execution lifecycle.
-/// Transitions: Pending → Ready → Running → Completed | Failed | Skipped.
+/// Transitions: Pending -> Ready -> Running -> Completed | Failed | Skipped.
 /// Blocked is entered from Ready when awaiting external input (e.g., human gate).
+/// Cancelled is entered when a plan is explicitly cancelled by the user.
 /// </summary>
 public enum StepExecutionStatus
 {
@@ -26,5 +27,8 @@ public enum StepExecutionStatus
     Skipped,
 
     /// <summary>Waiting on external input such as human gate approval.</summary>
-    Blocked
+    Blocked,
+
+    /// <summary>Explicitly cancelled by user or system before execution completed.</summary>
+    Cancelled
 }

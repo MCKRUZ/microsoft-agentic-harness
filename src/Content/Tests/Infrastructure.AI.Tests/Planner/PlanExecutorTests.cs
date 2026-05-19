@@ -750,6 +750,303 @@ public sealed class PlanExecutorTests : IDisposable
         Assert.False(result.IsSuccess);
     }
 
+    // === CancelAsync ===
+
+    [Fact]
+    public async Task CancelAsync_CancelsNonTerminalSteps()
+    {
+        var planId = PlanId.New();
+        var stepA = new PlanStepId(Guid.NewGuid());
+        var stepB = new PlanStepId(Guid.NewGuid());
+        var stepC = new PlanStepId(Guid.NewGuid());
+
+        var states = new Dictionary<PlanStepId, StepExecutionState>
+        {
+            [stepA] = new StepExecutionState { StepId = stepA, Status = StepExecutionStatus.Completed, AttemptCount = 1 },
+            [stepB] = new StepExecutionState { StepId = stepB, Status = StepExecutionStatus.Pending },
+            [stepC] = new StepExecutionState { StepId = stepC, Status = StepExecutionStatus.Running, AttemptCount = 1 }
+        };
+
+        _stateStore.Setup(s => s.LoadStepStatesAsync(planId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<IReadOnlyDictionary<PlanStepId, StepExecutionState>>.Success(states));
+        _stateStore.Setup(s => s.CheckpointAsync(planId, It.IsAny<IReadOnlyList<StepExecutionState>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success());
+
+        var result = await _sut.CancelAsync(planId, CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        _stateStore.Verify(s => s.CheckpointAsync(
+            planId,
+            It.Is<IReadOnlyList<StepExecutionState>>(list =>
+                list.Count(x => x.Status == StepExecutionStatus.Cancelled) == 2 &&
+                list.Count(x => x.Status == StepExecutionStatus.Completed) == 1),
+            It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task CancelAsync_PreservesTerminalSteps()
+    {
+        var planId = PlanId.New();
+        var stepA = new PlanStepId(Guid.NewGuid());
+        var stepB = new PlanStepId(Guid.NewGuid());
+
+        var states = new Dictionary<PlanStepId, StepExecutionState>
+        {
+            [stepA] = new StepExecutionState { StepId = stepA, Status = StepExecutionStatus.Completed, AttemptCount = 1 },
+            [stepB] = new StepExecutionState { StepId = stepB, Status = StepExecutionStatus.Failed, AttemptCount = 2, ErrorMessage = "boom" }
+        };
+
+        _stateStore.Setup(s => s.LoadStepStatesAsync(planId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<IReadOnlyDictionary<PlanStepId, StepExecutionState>>.Success(states));
+        _stateStore.Setup(s => s.CheckpointAsync(planId, It.IsAny<IReadOnlyList<StepExecutionState>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success());
+
+        var result = await _sut.CancelAsync(planId, CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        _stateStore.Verify(s => s.CheckpointAsync(
+            planId,
+            It.Is<IReadOnlyList<StepExecutionState>>(list =>
+                list.All(x => x.Status != StepExecutionStatus.Cancelled)),
+            It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task CancelAsync_NoStepStates_ReturnsNotFound()
+    {
+        var planId = PlanId.New();
+
+        _stateStore.Setup(s => s.LoadStepStatesAsync(planId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<IReadOnlyDictionary<PlanStepId, StepExecutionState>>.Success(
+                new Dictionary<PlanStepId, StepExecutionState>()));
+
+        var result = await _sut.CancelAsync(planId, CancellationToken.None);
+
+        Assert.False(result.IsSuccess);
+    }
+
+    [Fact]
+    public async Task CancelAsync_LoadFails_PropagatesError()
+    {
+        var planId = PlanId.New();
+
+        _stateStore.Setup(s => s.LoadStepStatesAsync(planId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<IReadOnlyDictionary<PlanStepId, StepExecutionState>>.Fail("store unavailable"));
+
+        var result = await _sut.CancelAsync(planId, CancellationToken.None);
+
+        Assert.False(result.IsSuccess);
+        Assert.Contains("store unavailable", result.Errors);
+    }
+
+    // === RetryStepAsync ===
+
+    [Fact]
+    public async Task RetryStepAsync_FailedStep_ResetsToReady()
+    {
+        var planId = PlanId.New();
+        var stepId = new PlanStepId(Guid.NewGuid());
+
+        var states = new Dictionary<PlanStepId, StepExecutionState>
+        {
+            [stepId] = new StepExecutionState
+            {
+                StepId = stepId,
+                Status = StepExecutionStatus.Failed,
+                AttemptCount = 2,
+                ErrorMessage = "timeout",
+                CompletedAt = DateTimeOffset.UtcNow.AddMinutes(-1)
+            }
+        };
+
+        _stateStore.Setup(s => s.LoadStepStatesAsync(planId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<IReadOnlyDictionary<PlanStepId, StepExecutionState>>.Success(states));
+        _stateStore.Setup(s => s.UpdateStepStateAsync(It.IsAny<StepExecutionState>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success());
+
+        var result = await _sut.RetryStepAsync(planId, stepId, CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        _stateStore.Verify(s => s.UpdateStepStateAsync(
+            It.Is<StepExecutionState>(st =>
+                st.StepId == stepId &&
+                st.Status == StepExecutionStatus.Ready &&
+                st.AttemptCount == 2 &&
+                st.ErrorMessage == null &&
+                st.CompletedAt == null),
+            It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task RetryStepAsync_NonFailedStep_ReturnsFailure()
+    {
+        var planId = PlanId.New();
+        var stepId = new PlanStepId(Guid.NewGuid());
+
+        var states = new Dictionary<PlanStepId, StepExecutionState>
+        {
+            [stepId] = new StepExecutionState
+            {
+                StepId = stepId,
+                Status = StepExecutionStatus.Completed,
+                AttemptCount = 1
+            }
+        };
+
+        _stateStore.Setup(s => s.LoadStepStatesAsync(planId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<IReadOnlyDictionary<PlanStepId, StepExecutionState>>.Success(states));
+
+        var result = await _sut.RetryStepAsync(planId, stepId, CancellationToken.None);
+
+        Assert.False(result.IsSuccess);
+        Assert.Contains("Only failed steps can be retried", result.Errors.First());
+    }
+
+    [Fact]
+    public async Task RetryStepAsync_UnknownStep_ReturnsNotFound()
+    {
+        var planId = PlanId.New();
+        var stepId = new PlanStepId(Guid.NewGuid());
+
+        var states = new Dictionary<PlanStepId, StepExecutionState>();
+
+        _stateStore.Setup(s => s.LoadStepStatesAsync(planId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<IReadOnlyDictionary<PlanStepId, StepExecutionState>>.Success(states));
+
+        var result = await _sut.RetryStepAsync(planId, stepId, CancellationToken.None);
+
+        Assert.False(result.IsSuccess);
+    }
+
+    [Fact]
+    public async Task RetryStepAsync_NoPlanStates_ReturnsNotFound()
+    {
+        var planId = PlanId.New();
+        var stepId = new PlanStepId(Guid.NewGuid());
+
+        _stateStore.Setup(s => s.LoadStepStatesAsync(planId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<IReadOnlyDictionary<PlanStepId, StepExecutionState>>.Fail("not found"));
+
+        var result = await _sut.RetryStepAsync(planId, stepId, CancellationToken.None);
+
+        Assert.False(result.IsSuccess);
+    }
+
+    // === ErrorRecovery.Escalate ===
+
+    [Fact]
+    public async Task Execute_EscalateRecovery_QueuesEscalationAndBlocksStep()
+    {
+        var escalationId = Guid.NewGuid();
+        _escalation.Setup(e => e.QueueEscalationAsync(It.IsAny<EscalationRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(escalationId);
+
+        RegisterStepExecutor(StepType.LlmCall, (step, _, _) =>
+        {
+            _executionOrder.Add(step.Id);
+            return Task.FromResult(new StepExecutionResult
+            {
+                Status = StepExecutionStatus.Failed,
+                ErrorMessage = "LLM call failed",
+                Duration = TimeSpan.FromMilliseconds(1)
+            });
+        });
+
+        var sut = CreateSut();
+        var a = CreateStep("escalate-step") with
+        {
+            RetryPolicy = new RetryPolicy { MaxRetries = 0, OnExhausted = ErrorRecovery.Escalate }
+        };
+        var b = CreateStep("downstream");
+        var plan = new PlanGraph
+        {
+            Id = PlanId.New(),
+            Name = "escalate-plan",
+            Steps = [a, b],
+            Edges = [new PlanEdge(a.Id, b.Id, EdgeType.ControlFlow)],
+            Configuration = new PlanConfiguration { PlanTimeout = TimeSpan.FromSeconds(10) }
+        };
+        SetupPlanLoad(plan);
+
+        var result = await sut.ExecuteAsync(plan.Id, CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        // Step should be blocked, not failed
+        var summary = result.Value!;
+        var aState = summary.StepStates.First(s => s.StepId == a.Id);
+        Assert.Equal(StepExecutionStatus.Blocked, aState.Status);
+
+        // Downstream should NOT be skipped (blocked step, not failed)
+        var bState = summary.StepStates.First(s => s.StepId == b.Id);
+        Assert.NotEqual(StepExecutionStatus.Skipped, bState.Status);
+
+        // Escalation was queued
+        _escalation.Verify(e => e.QueueEscalationAsync(
+            It.Is<EscalationRequest>(r =>
+                r.AgentId == "plan-executor" &&
+                r.ToolName == "escalate-step" &&
+                r.RiskLevel == RiskLevel.High &&
+                r.Priority == EscalationPriority.Blocking &&
+                r.Description.Contains("LLM call failed")),
+            It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task Execute_EscalateRecovery_DoesNotSkipDownstream()
+    {
+        _escalation.Setup(e => e.QueueEscalationAsync(It.IsAny<EscalationRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Guid.NewGuid());
+
+        RegisterStepExecutor(StepType.LlmCall, (step, _, _) =>
+        {
+            _executionOrder.Add(step.Id);
+            if (step.Name == "escalate-step")
+            {
+                return Task.FromResult(new StepExecutionResult
+                {
+                    Status = StepExecutionStatus.Failed,
+                    ErrorMessage = "fail",
+                    Duration = TimeSpan.FromMilliseconds(1)
+                });
+            }
+            return Task.FromResult(new StepExecutionResult
+            {
+                Status = StepExecutionStatus.Completed,
+                Output = "ok",
+                Duration = TimeSpan.FromMilliseconds(1)
+            });
+        });
+
+        var sut = CreateSut();
+        var a = CreateStep("escalate-step") with
+        {
+            RetryPolicy = new RetryPolicy { MaxRetries = 0, OnExhausted = ErrorRecovery.Escalate }
+        };
+        var b = CreateStep("downstream");
+        var plan = new PlanGraph
+        {
+            Id = PlanId.New(),
+            Name = "escalate-no-skip-plan",
+            Steps = [a, b],
+            Edges = [new PlanEdge(a.Id, b.Id, EdgeType.ControlFlow)],
+            Configuration = new PlanConfiguration { PlanTimeout = TimeSpan.FromSeconds(10) }
+        };
+        SetupPlanLoad(plan);
+
+        var result = await sut.ExecuteAsync(plan.Id, CancellationToken.None);
+
+        var summary = result.Value!;
+        var bState = summary.StepStates.First(s => s.StepId == b.Id);
+
+        // Downstream stays Pending (not Skipped), because the escalated step is Blocked, not Failed
+        Assert.Equal(StepExecutionStatus.Pending, bState.Status);
+    }
+
     public void Dispose()
     {
         _serviceProvider?.Dispose();

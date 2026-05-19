@@ -19,13 +19,13 @@ public sealed class DockerSandboxExecutor : ISandboxExecutor
 {
     private readonly IDockerClient _dockerClient;
     private readonly IAttestationService _attestationService;
-    private readonly IOptionsMonitor<SandboxOptions> _options;
+    private readonly IOptionsMonitor<SandboxExecutionOptions> _options;
     private readonly ILogger<DockerSandboxExecutor> _logger;
 
     public DockerSandboxExecutor(
         IDockerClient dockerClient,
         IAttestationService attestationService,
-        IOptionsMonitor<SandboxOptions> options,
+        IOptionsMonitor<SandboxExecutionOptions> options,
         ILogger<DockerSandboxExecutor> logger)
     {
         _dockerClient = dockerClient;

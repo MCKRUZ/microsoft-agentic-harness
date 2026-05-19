@@ -20,7 +20,7 @@ public class DockerSandboxExecutorTests
     private readonly Mock<IImageOperations> _images = new();
     private readonly Mock<ISystemOperations> _system = new();
     private readonly Mock<IAttestationService> _attestation = new();
-    private readonly Mock<IOptionsMonitor<SandboxOptions>> _options = new();
+    private readonly Mock<IOptionsMonitor<SandboxExecutionOptions>> _options = new();
     private readonly DockerSandboxExecutor _sut;
 
     public DockerSandboxExecutorTests()
@@ -68,7 +68,7 @@ public class DockerSandboxExecutorTests
             .ReturnsAsync((string tool, string _, string reason, CancellationToken ___) =>
                 CreateAttestation(tool, true, reason));
 
-        _options.Setup(x => x.CurrentValue).Returns(new SandboxOptions());
+        _options.Setup(x => x.CurrentValue).Returns(new SandboxExecutionOptions());
 
         _sut = new DockerSandboxExecutor(
             _dockerClient.Object,
@@ -275,7 +275,7 @@ public class DockerSandboxExecutorTests
             .Callback<CreateContainerParameters, CancellationToken>((p, _) => captured = p)
             .ReturnsAsync(new CreateContainerResponse { ID = "test-id" });
 
-        var options = new SandboxOptions
+        var options = new SandboxExecutionOptions
         {
             ToolOverrides = new Dictionary<string, ToolSandboxOverride>
             {

@@ -128,8 +128,8 @@ public sealed class PlannerDiRegistrationTests : IDisposable
         services.AddSingleton(typeof(ILogger<>), typeof(NullLogger<>));
         services.AddSingleton<IOptionsMonitor<AppConfig>>(new AppConfigMonitorStub(appConfig));
         services.AddSingleton<IOptionsMonitor<PlannerOptions>>(new PlannerOptionsMonitorStub(new PlannerOptions()));
-        services.AddSingleton<IOptionsMonitor<SandboxOptions>>(
-            new SandboxOptionsMonitorStub(new SandboxOptions()));
+        services.AddSingleton<IOptionsMonitor<SandboxExecutionOptions>>(
+            new SandboxExecutionOptionsMonitorStub(new SandboxExecutionOptions()));
         services.AddSingleton<IOptionsMonitor<AttestationKeyOptions>>(
             new AttestationKeyOptionsMonitorStub(new AttestationKeyOptions
             {
@@ -166,12 +166,12 @@ public sealed class PlannerDiRegistrationTests : IDisposable
         public IDisposable? OnChange(Action<PlannerOptions, string?> listener) => null;
     }
 
-    private sealed class SandboxOptionsMonitorStub(SandboxOptions config)
-        : IOptionsMonitor<SandboxOptions>
+    private sealed class SandboxExecutionOptionsMonitorStub(SandboxExecutionOptions config)
+        : IOptionsMonitor<SandboxExecutionOptions>
     {
-        public SandboxOptions CurrentValue => config;
-        public SandboxOptions Get(string? name) => config;
-        public IDisposable? OnChange(Action<SandboxOptions, string?> listener) => null;
+        public SandboxExecutionOptions CurrentValue => config;
+        public SandboxExecutionOptions Get(string? name) => config;
+        public IDisposable? OnChange(Action<SandboxExecutionOptions, string?> listener) => null;
     }
 
     private sealed class AttestationKeyOptionsMonitorStub(AttestationKeyOptions config)
