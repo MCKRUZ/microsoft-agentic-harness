@@ -232,6 +232,9 @@ public static class DependencyInjection
 	/// Registers the top-level RAG orchestrator that coordinates all pipeline
 	/// stages (classify, retrieve, rerank, evaluate, assemble) into a single
 	/// <see cref="IRagOrchestrator.SearchAsync"/> entry point.
+	/// Phase B optional services (iterative retriever, faithfulness evaluator)
+	/// are resolved via <see cref="ServiceProviderServiceExtensions.GetService{T}"/>
+	/// and remain null when not registered.
 	/// </summary>
 	private static void AddRagOrchestration(IServiceCollection services, AppConfig appConfig)
 	{
@@ -246,8 +249,10 @@ public static class DependencyInjection
 				sp.GetRequiredService<QueryRouter>(),
 				sp.GetRequiredService<IOptionsMonitor<AppConfig>>(),
 				sp.GetRequiredService<ILogger<RagOrchestrator>>(),
-				sp.GetRequiredService<IQueryComplexityClassifier>(),
-				sp.GetRequiredService<IRetrievalDecisionGate>()));
+				sp.GetService<IQueryComplexityClassifier>(),
+				sp.GetService<IRetrievalDecisionGate>(),
+				sp.GetService<IIterativeRetriever>(),
+				sp.GetService<IAnswerFaithfulnessEvaluator>()));
 	}
 
 	/// <summary>

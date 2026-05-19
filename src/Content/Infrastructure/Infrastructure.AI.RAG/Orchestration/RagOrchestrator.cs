@@ -21,15 +21,20 @@ namespace Infrastructure.AI.RAG.Orchestration;
 /// Pipeline flow for vector-based strategies:
 /// <list type="number">
 ///   <item>Classify query via <see cref="QueryRouter"/> (if classification enabled).</item>
-///   <item>Retrieve via <see cref="IHybridRetriever"/>.</item>
+///   <item>Retrieve via <see cref="IHybridRetriever"/> or <see cref="IIterativeRetriever"/> (complex queries).</item>
 ///   <item>Rerank via <see cref="IReranker"/>.</item>
 ///   <item>Evaluate via <see cref="ICragEvaluator"/> — may trigger refinement loop.</item>
+///   <item>Evaluate via <see cref="IAnswerFaithfulnessEvaluator"/> — may trigger CRAG fallback (complex queries).</item>
 ///   <item>Assemble via <see cref="IRagContextAssembler"/>.</item>
 /// </list>
 /// </para>
 /// <para>
 /// For <see cref="RetrievalStrategy.GraphRag"/>, the pipeline bypasses vector
 /// retrieval and delegates directly to <see cref="IGraphRagService.GlobalSearchAsync"/>.
+/// </para>
+/// <para>
+/// For <see cref="QueryComplexity.Complex"/> queries (Phase B), the pipeline uses
+/// multi-hop iterative retrieval with post-assembly faithfulness evaluation.
 /// </para>
 /// </remarks>
 public sealed class RagOrchestrator : IRagOrchestrator
@@ -51,6 +56,8 @@ public sealed class RagOrchestrator : IRagOrchestrator
     private readonly ILogger<RagOrchestrator> _logger;
     private readonly IQueryComplexityClassifier? _complexityClassifier;
     private readonly IRetrievalDecisionGate? _decisionGate;
+    private readonly IIterativeRetriever? _iterativeRetriever;
+    private readonly IAnswerFaithfulnessEvaluator? _faithfulnessEvaluator;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="RagOrchestrator"/> class.
@@ -66,6 +73,8 @@ public sealed class RagOrchestrator : IRagOrchestrator
     /// <param name="logger">Logger for recording pipeline decisions.</param>
     /// <param name="complexityClassifier">Optional complexity classifier for tiered routing. Null disables complexity routing.</param>
     /// <param name="decisionGate">Optional retrieval decision gate. Null disables complexity routing.</param>
+    /// <param name="iterativeRetriever">Optional multi-hop iterative retriever for complex queries. Null disables multi-hop.</param>
+    /// <param name="faithfulnessEvaluator">Optional post-assembly faithfulness evaluator. Null disables faithfulness checks.</param>
     public RagOrchestrator(
         IHybridRetriever hybridRetriever,
         IReranker reranker,
@@ -77,7 +86,9 @@ public sealed class RagOrchestrator : IRagOrchestrator
         IOptionsMonitor<AppConfig> configMonitor,
         ILogger<RagOrchestrator> logger,
         IQueryComplexityClassifier? complexityClassifier = null,
-        IRetrievalDecisionGate? decisionGate = null)
+        IRetrievalDecisionGate? decisionGate = null,
+        IIterativeRetriever? iterativeRetriever = null,
+        IAnswerFaithfulnessEvaluator? faithfulnessEvaluator = null)
     {
         ArgumentNullException.ThrowIfNull(hybridRetriever);
         ArgumentNullException.ThrowIfNull(reranker);
@@ -99,6 +110,8 @@ public sealed class RagOrchestrator : IRagOrchestrator
         _logger = logger;
         _complexityClassifier = complexityClassifier;
         _decisionGate = decisionGate;
+        _iterativeRetriever = iterativeRetriever;
+        _faithfulnessEvaluator = faithfulnessEvaluator;
     }
 
     /// <inheritdoc />
@@ -305,6 +318,16 @@ public sealed class RagOrchestrator : IRagOrchestrator
         activity?.SetTag("rag.use_reranking", decision.UseReranking);
         activity?.SetTag("rag.use_crag", decision.UseCragEvaluation);
 
+        // Phase B: Complex tier uses multi-hop iterative retrieval
+        var ragConfig = _configMonitor.CurrentValue.AI.Rag;
+        if (decision.Complexity == QueryComplexity.Complex
+            && ragConfig.MultiHop.Enabled
+            && _iterativeRetriever is not null)
+        {
+            return await ExecuteMultiHopPipelineAsync(
+                query, decision.TopK, collectionName, cancellationToken);
+        }
+
         // Step 1: Retrieve with decision's topK
         var candidates = await _hybridRetriever.RetrieveAsync(
             query, decision.TopK, collectionName, cancellationToken);
@@ -354,6 +377,76 @@ public sealed class RagOrchestrator : IRagOrchestrator
             "Routed pipeline: assembling {Count} results without CRAG (complexity={Complexity})",
             reranked.Count, decision.Complexity);
         return await _contextAssembler.AssembleAsync(reranked, DefaultMaxTokens, cancellationToken);
+    }
+
+    private async Task<RagAssembledContext> ExecuteMultiHopPipelineAsync(
+        string query, int topKPerHop, string? collectionName,
+        CancellationToken cancellationToken)
+    {
+        using var activity = ActivitySource.StartActivity("rag.orchestrator.multi_hop_pipeline");
+        var ragConfig = _configMonitor.CurrentValue.AI.Rag;
+
+        _logger.LogInformation("Entering multi-hop pipeline for complex query");
+
+        // Step 1: Iterative retrieval
+        var iterativeResult = await _iterativeRetriever!.RetrieveIterativelyAsync(
+            query, topKPerHop, collectionName, cancellationToken);
+
+        activity?.SetTag("rag.multi_hop.hop_count", iterativeResult.Hops.Count);
+        activity?.SetTag("rag.multi_hop.total_tokens", iterativeResult.TotalTokensUsed);
+        activity?.SetTag("rag.multi_hop.budget_exhausted", iterativeResult.BudgetExhausted);
+
+        if (iterativeResult.AggregatedResults.Count == 0)
+        {
+            _logger.LogWarning("Multi-hop retrieval returned 0 results");
+            return CreateEmptyContext("No relevant documents found after multi-hop retrieval.");
+        }
+
+        // Step 2: Rerank the aggregated results
+        var reranked = await _reranker.RerankAsync(
+            query, iterativeResult.AggregatedResults, topKPerHop, cancellationToken);
+
+        // Step 3: Assemble context
+        var assembled = await _contextAssembler.AssembleAsync(
+            reranked, DefaultMaxTokens, cancellationToken);
+
+        // Step 4: Faithfulness evaluation (if enabled)
+        if (ragConfig.Faithfulness.Enabled && _faithfulnessEvaluator is not null)
+        {
+            var faithfulness = await _faithfulnessEvaluator.EvaluateAsync(
+                assembled.AssembledText, reranked, cancellationToken);
+
+            activity?.SetTag("rag.faithfulness.score", faithfulness.Score);
+            activity?.SetTag("rag.faithfulness.is_faithful", faithfulness.IsFaithful);
+            activity?.SetTag("rag.faithfulness.hallucinated_count", faithfulness.HallucinatedClaims.Count);
+
+            if (!faithfulness.IsFaithful)
+            {
+                _logger.LogWarning(
+                    "Faithfulness evaluation failed: score={Score:F2}, hallucinated={Count} claims. Triggering CRAG refinement.",
+                    faithfulness.Score, faithfulness.HallucinatedClaims.Count);
+
+                var cragEval = await _cragEvaluator.EvaluateAsync(
+                    query, iterativeResult.AggregatedResults, cancellationToken);
+
+                if (cragEval.Action == CorrectionAction.Accept || cragEval.Action == CorrectionAction.Refine)
+                {
+                    var filtered = FilterWeakChunks(reranked, cragEval.WeakChunkIds);
+                    return await _contextAssembler.AssembleAsync(
+                        filtered, DefaultMaxTokens, cancellationToken);
+                }
+
+                _logger.LogWarning("CRAG also rejected after faithfulness failure; returning best available");
+            }
+            else
+            {
+                _logger.LogInformation(
+                    "Faithfulness check passed: score={Score:F2}, {Supported} supported claims",
+                    faithfulness.Score, faithfulness.SupportedClaims.Count);
+            }
+        }
+
+        return assembled;
     }
 
     private static IReadOnlyList<RerankedResult> FilterWeakChunks(
