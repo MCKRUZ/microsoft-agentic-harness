@@ -53,12 +53,15 @@ public static partial class DependencyInjection
             (sp, _) => sp.GetRequiredService<ConditionalBranchStepExecutor>());
         services.AddKeyedScoped<IPlanStepExecutor>(StepType.SubPlanInvocation,
             (sp, _) => sp.GetRequiredService<SubPlanStepExecutor>());
+        services.AddKeyedScoped<IPlanStepExecutor>(StepType.Retrieval,
+            (sp, _) => sp.GetRequiredService<RetrievalPlanStepExecutor>());
 
         services.AddScoped<LlmCallStepExecutor>();
         services.AddScoped<ToolUseStepExecutor>();
         services.AddScoped<HumanGateStepExecutor>();
         services.AddScoped<ConditionalBranchStepExecutor>();
         services.AddScoped<SubPlanStepExecutor>();
+        services.AddScoped<RetrievalPlanStepExecutor>();
     }
 
     /// <summary>

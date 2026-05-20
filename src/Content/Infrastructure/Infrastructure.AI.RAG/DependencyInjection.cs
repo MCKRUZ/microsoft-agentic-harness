@@ -44,6 +44,8 @@ public static class DependencyInjection
 		AddRagMultiHop(services, appConfig);
 		AddRagFaithfulness(services, appConfig);
 		AddRagOrchestration(services, appConfig);
+		AddRagMultiSource(services, appConfig);
+		AddRagQualityGates(services, appConfig);
 
 		return services;
 	}
@@ -279,6 +281,37 @@ public static class DependencyInjection
 				sp.GetService<IRetrievalDecisionGate>(),
 				sp.GetService<IIterativeRetriever>(),
 				sp.GetService<IAnswerFaithfulnessEvaluator>()));
+	}
+
+	/// <summary>
+	/// Registers multi-source orchestration services: the <see cref="IMultiSourceOrchestrator"/>
+	/// for parallel fan-out across vector, graph, and web sources, and the
+	/// <see cref="IRetrievalCostTracker"/> for per-execution token accounting.
+	/// </summary>
+	private static void AddRagMultiSource(IServiceCollection services, AppConfig appConfig)
+	{
+		services.AddSingleton<IRetrievalCostTracker, RetrievalCostTracker>();
+
+		services.AddSingleton<IMultiSourceOrchestrator>(sp =>
+			new MultiSourceOrchestrator(
+				sp.GetRequiredService<IHybridRetriever>(),
+				sp.GetRequiredService<IGraphRagService>(),
+				sp.GetRequiredService<IRetrievalCostTracker>(),
+				sp.GetRequiredService<IOptionsMonitor<AppConfig>>(),
+				sp.GetRequiredService<ILogger<MultiSourceOrchestrator>>()));
+	}
+
+	/// <summary>
+	/// Registers the Ragas-inspired <see cref="IRetrievalQualityEvaluator"/> for evaluating
+	/// retrieval quality via LLM judges. Used by CI/CD quality gate tests and runtime
+	/// quality monitoring.
+	/// </summary>
+	private static void AddRagQualityGates(IServiceCollection services, AppConfig appConfig)
+	{
+		services.AddSingleton<IRetrievalQualityEvaluator>(sp =>
+			new RetrievalQualityEvaluator(
+				sp.GetRequiredService<IRagModelRouter>(),
+				sp.GetRequiredService<ILogger<RetrievalQualityEvaluator>>()));
 	}
 
 	/// <summary>
