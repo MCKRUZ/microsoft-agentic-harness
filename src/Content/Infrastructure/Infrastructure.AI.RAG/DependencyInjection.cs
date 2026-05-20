@@ -37,6 +37,8 @@ public static class DependencyInjection
 		AddRagRetrieval(services, appConfig);
 		AddRagQueryTransform(services, appConfig);
 		AddRagEvaluation(services, appConfig);
+		AddRagGraphDatabase(services, appConfig);
+		AddRagCrossSessionMemory(services, appConfig);
 		AddRagGraphRag(services, appConfig);
 		AddRagComplexityRouting(services);
 		AddRagMultiHop(services, appConfig);
@@ -275,6 +277,62 @@ public static class DependencyInjection
 				sp.GetService<IRetrievalDecisionGate>(),
 				sp.GetService<IIterativeRetriever>(),
 				sp.GetService<IAnswerFaithfulnessEvaluator>()));
+	}
+
+	/// <summary>
+	/// Registers the graph database backend and community detector services.
+	/// The backend provider is selected via <c>GraphDatabaseConfig.Provider</c>
+	/// using keyed DI.
+	/// </summary>
+	private static void AddRagGraphDatabase(IServiceCollection services, AppConfig appConfig)
+	{
+		var graphDbConfig = appConfig.AI.Rag.GraphDatabase;
+		if (!graphDbConfig.Enabled)
+			return;
+
+		// Graph database backends — keyed by provider name
+		services.AddKeyedSingleton<IGraphDatabaseBackend>("kuzu", (sp, _) =>
+			new KuzuGraphBackend(
+				sp.GetRequiredService<IOptionsMonitor<AppConfig>>()
+					.CurrentValue.AI.Rag.GraphDatabase.DataDirectory,
+				sp.GetRequiredService<ILogger<KuzuGraphBackend>>()));
+
+		// Default graph backend from config
+		services.AddSingleton<IGraphDatabaseBackend>(sp =>
+		{
+			var config = sp.GetRequiredService<IOptionsMonitor<AppConfig>>().CurrentValue;
+			var provider = config.AI.Rag.GraphDatabase.Provider;
+			return sp.GetRequiredKeyedService<IGraphDatabaseBackend>(provider);
+		});
+
+		// Community detector
+		services.AddSingleton<ICommunityDetector>(sp =>
+			new LeidenCommunityDetector(
+				sp.GetRequiredService<ILogger<LeidenCommunityDetector>>()));
+	}
+
+	/// <summary>
+	/// Registers cross-session memory services: memory store and decay service.
+	/// Only registered when <c>CrossSessionMemoryConfig.Enabled</c> is <c>true</c>.
+	/// </summary>
+	private static void AddRagCrossSessionMemory(IServiceCollection services, AppConfig appConfig)
+	{
+		var memoryConfig = appConfig.AI.Rag.CrossSessionMemory;
+		if (!memoryConfig.Enabled)
+			return;
+
+		services.AddSingleton<ICrossSessionMemoryStore>(sp =>
+			new CrossSessionMemoryStore(
+				sp.GetRequiredService<IGraphDatabaseBackend>(),
+				sp.GetRequiredService<IOptionsMonitor<AppConfig>>(),
+				sp.GetRequiredService<ILogger<CrossSessionMemoryStore>>()));
+
+		services.AddSingleton<IMemoryDecayService>(sp =>
+			new MemoryDecayService(
+				sp.GetRequiredService<IGraphDatabaseBackend>(),
+				sp.GetRequiredService<ICrossSessionMemoryStore>(),
+				sp.GetRequiredService<IOptionsMonitor<AppConfig>>(),
+				sp.GetRequiredService<ILogger<MemoryDecayService>>()));
 	}
 
 	/// <summary>
