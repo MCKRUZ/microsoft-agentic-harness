@@ -8,6 +8,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="Infrastructure.AI.RAG.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Azure.Search.Documents" />
     <PackageReference Include="Microsoft.Data.Sqlite" />
     <PackageReference Include="Microsoft.Extensions.Logging" />
