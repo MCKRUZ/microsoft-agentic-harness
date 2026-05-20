@@ -24,4 +24,8 @@ public sealed class SqlDatabaseConfig
 
     /// <summary>Minimum confidence threshold (0.0-1.0) for template matching.</summary>
     public double TemplateMatchConfidenceThreshold { get; set; } = 0.7;
+
+    /// <summary>Database schema description passed to the LLM for text-to-SQL generation.
+    /// Include table/column definitions so the LLM can generate valid queries.</summary>
+    public string DatabaseSchema { get; set; } = "";
 }

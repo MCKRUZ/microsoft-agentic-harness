@@ -54,7 +54,9 @@ internal sealed class WebSearchRetrievalSource(IWebSearchProvider webSearchProvi
                 Tokens = content.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length,
                 Metadata = new ChunkMetadata
                 {
-                    SourceUri = new Uri(wr.Url),
+                    SourceUri = Uri.TryCreate(wr.Url, UriKind.Absolute, out var uri)
+                        ? uri
+                        : new Uri("about:blank"),
                     CreatedAt = DateTimeOffset.UtcNow
                 }
             },

@@ -54,7 +54,16 @@ internal sealed class SqlQueryTemplateMatcher(IChatClient chatClient, IOptionsMo
         var response = await chatClient.GetResponseAsync(messages, cancellationToken: cancellationToken);
         var responseText = response.Text ?? "";
 
-        var parsed = JsonSerializer.Deserialize<MatchResponse>(responseText, JsonOptions);
+        MatchResponse? parsed;
+        try
+        {
+            parsed = JsonSerializer.Deserialize<MatchResponse>(responseText, JsonOptions);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+
         if (parsed is null || parsed.Confidence < threshold || parsed.TemplateName == "none")
             return null;
 

@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using Application.AI.Common.Interfaces.RAG;
 using Domain.AI.RAG.Enums;
@@ -60,7 +62,7 @@ internal sealed class SqlDatabaseRetrievalSource(
             };
         }
 
-        var generatedSql = await textToSqlGenerator.GenerateAsync(query, "", cancellationToken);
+        var generatedSql = await textToSqlGenerator.GenerateAsync(query, config.DatabaseSchema, cancellationToken);
         if (generatedSql is null)
         {
             sw.Stop();
@@ -102,7 +104,7 @@ internal sealed class SqlDatabaseRetrievalSource(
         {
             Chunk = new DocumentChunk
             {
-                Id = $"sql-{query.GetHashCode():x8}-{index}",
+                Id = $"sql-{StableHash(query)}-{index}",
                 DocumentId = $"sql:{(wasTemplate ? "template" : "generated")}",
                 SectionPath = $"SQL {(wasTemplate ? "Template" : "Generated")}: {query}",
                 Content = content,
@@ -117,5 +119,11 @@ internal sealed class SqlDatabaseRetrievalSource(
             SparseScore = 0.0,
             FusedScore = score
         };
+    }
+
+    private static string StableHash(string input)
+    {
+        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(input));
+        return Convert.ToHexStringLower(bytes)[..8];
     }
 }
