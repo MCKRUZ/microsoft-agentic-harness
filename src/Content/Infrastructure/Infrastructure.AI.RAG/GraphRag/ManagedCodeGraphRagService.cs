@@ -15,57 +15,66 @@ namespace Infrastructure.AI.RAG.GraphRag;
 
 /// <summary>
 /// High-level <see cref="IGraphRagService"/> implementation that delegates graph storage
-/// to <see cref="IKnowledgeGraphStore"/> and provides LLM-based entity extraction,
-/// global search (community-level summarization), and local search (entity-neighborhood
-/// retrieval).
+/// to <see cref="IGraphDatabaseBackend"/> and provides LLM-based entity extraction,
+/// community-aware global search, and graph-traversal local search.
 /// </summary>
 /// <remarks>
 /// <para>
 /// This service orchestrates the GraphRAG pipeline: entity extraction via LLM,
-/// graph construction via <see cref="IKnowledgeGraphStore"/>, and search via graph
+/// graph construction via <see cref="IGraphDatabaseBackend"/>, and search via graph
 /// traversal + LLM synthesis. The graph storage backend is selected via keyed DI
-/// (<c>"in_memory"</c>, <c>"postgresql"</c>, <c>"neo4j"</c>).
+/// (<c>"in_memory"</c>, <c>"postgresql"</c>, <c>"neo4j"</c>, <c>"kuzu"</c>).
 /// </para>
 /// <para>
-/// <strong>Limitations:</strong> Community detection (Leiden algorithm) is not yet
-/// implemented. The <c>communityLevel</c> parameter in <see cref="GlobalSearchAsync"/>
-/// is accepted but all entities are treated as a single community.
+/// <strong>Global search</strong> checks for pre-computed communities first. When communities
+/// exist at the configured level, each community's LLM-generated summary is used for synthesis.
+/// When no communities exist, the service falls back to a full triplet scan.
+/// </para>
+/// <para>
+/// <strong>Local search</strong> matches query terms against all nodes, then uses
+/// <see cref="IGraphDatabaseBackend.TraverseAsync"/> to expand each matched node's
+/// neighborhood (depth 1) and collect chunk IDs for result construction.
 /// </para>
 /// </remarks>
 public sealed class ManagedCodeGraphRagService : IGraphRagService
 {
     private static readonly ActivitySource ActivitySource = new("Infrastructure.AI.RAG.GraphRag");
 
-    private readonly IKnowledgeGraphStore _graphStore;
+    private readonly IGraphDatabaseBackend _graphBackend;
     private readonly IRagModelRouter _modelRouter;
     private readonly IProvenanceStamper _provenanceStamper;
+    private readonly ICommunityDetector _communityDetector;
     private readonly ILogger<ManagedCodeGraphRagService> _logger;
     private readonly IOptionsMonitor<AppConfig> _configMonitor;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="ManagedCodeGraphRagService"/> class.
     /// </summary>
-    /// <param name="graphStore">The knowledge graph storage backend.</param>
+    /// <param name="graphBackend">The extended knowledge graph storage backend supporting communities and traversal.</param>
     /// <param name="modelRouter">Routes LLM calls to the appropriate model tier.</param>
     /// <param name="provenanceStamper">Stamps provenance metadata on extracted entities.</param>
+    /// <param name="communityDetector">Detects communities in the graph using a partitioning algorithm.</param>
     /// <param name="logger">Logger for recording graph operations.</param>
     /// <param name="configMonitor">Application configuration monitor.</param>
     public ManagedCodeGraphRagService(
-        IKnowledgeGraphStore graphStore,
+        IGraphDatabaseBackend graphBackend,
         IRagModelRouter modelRouter,
         IProvenanceStamper provenanceStamper,
+        ICommunityDetector communityDetector,
         ILogger<ManagedCodeGraphRagService> logger,
         IOptionsMonitor<AppConfig> configMonitor)
     {
-        ArgumentNullException.ThrowIfNull(graphStore);
+        ArgumentNullException.ThrowIfNull(graphBackend);
         ArgumentNullException.ThrowIfNull(modelRouter);
         ArgumentNullException.ThrowIfNull(provenanceStamper);
+        ArgumentNullException.ThrowIfNull(communityDetector);
         ArgumentNullException.ThrowIfNull(logger);
         ArgumentNullException.ThrowIfNull(configMonitor);
 
-        _graphStore = graphStore;
+        _graphBackend = graphBackend;
         _modelRouter = modelRouter;
         _provenanceStamper = provenanceStamper;
+        _communityDetector = communityDetector;
         _logger = logger;
         _configMonitor = configMonitor;
     }
@@ -98,13 +107,13 @@ public sealed class ManagedCodeGraphRagService : IGraphRagService
                 .ToList();
 
             if (stampedNodes.Count > 0)
-                await _graphStore.AddNodesAsync(stampedNodes, cancellationToken);
+                await _graphBackend.AddNodesAsync(stampedNodes, cancellationToken);
             if (stampedEdges.Count > 0)
-                await _graphStore.AddEdgesAsync(stampedEdges, cancellationToken);
+                await _graphBackend.AddEdgesAsync(stampedEdges, cancellationToken);
         }
 
-        var nodeCount = await _graphStore.GetNodeCountAsync(cancellationToken);
-        var edgeCount = await _graphStore.GetEdgeCountAsync(cancellationToken);
+        var nodeCount = await _graphBackend.GetNodeCountAsync(cancellationToken);
+        var edgeCount = await _graphBackend.GetEdgeCountAsync(cancellationToken);
         _logger.LogInformation(
             "GraphRAG indexing completed: {EntityCount} entities, {RelCount} relationships",
             nodeCount, edgeCount);
@@ -120,19 +129,37 @@ public sealed class ManagedCodeGraphRagService : IGraphRagService
         activity?.SetTag(RagConventions.GraphCommunityLevel, communityLevel);
         activity?.SetTag(RagConventions.RetrievalStrategy, RagConventions.StrategyValues.GraphRag);
 
-        var triplets = await _graphStore.GetTripletsAsync([], cancellationToken);
-        if (triplets.Count == 0)
+        // Prefer community summaries — fall back to full triplet scan when none exist.
+        var communities = await _graphBackend.GetCommunitiesAsync(communityLevel, cancellationToken);
+        string summary;
+
+        if (communities.Count > 0)
         {
-            return new RagAssembledContext
+            _logger.LogInformation(
+                "GraphRAG global search: using {CommunityCount} communities at level {Level}",
+                communities.Count, communityLevel);
+            summary = BuildCommunitySummaryFromCommunities(communities);
+        }
+        else
+        {
+            var triplets = await _graphBackend.GetTripletsAsync([], cancellationToken);
+            if (triplets.Count == 0)
             {
-                AssembledText = "No entities have been indexed. Please ingest documents first.",
-                TotalTokens = 0,
-                WasTruncated = false
-            };
+                return new RagAssembledContext
+                {
+                    AssembledText = "No entities have been indexed. Please ingest documents first.",
+                    TotalTokens = 0,
+                    WasTruncated = false
+                };
+            }
+
+            _logger.LogInformation(
+                "GraphRAG global search: no communities at level {Level}, falling back to {TripletCount} triplets",
+                communityLevel, triplets.Count);
+            summary = BuildCommunitySummaryFromTriplets(triplets);
         }
 
         var client = _modelRouter.GetClientForOperation("graph_global_search");
-        var summary = BuildCommunitySummary(triplets);
 
         var prompt = $$"""
             You are a knowledge graph analyst. Based on the following entity and relationship
@@ -150,10 +177,6 @@ public sealed class ManagedCodeGraphRagService : IGraphRagService
 
         var response = await client.GetResponseAsync(prompt, cancellationToken: cancellationToken);
         var text = response.Text ?? string.Empty;
-
-        _logger.LogInformation(
-            "GraphRAG global search completed: {TripletCount} triplets considered, Level={Level}",
-            triplets.Count, communityLevel);
 
         return new RagAssembledContext
         {
@@ -174,46 +197,38 @@ public sealed class ManagedCodeGraphRagService : IGraphRagService
 
         var queryTerms = query.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
-        // Full scan + client-side filter. Replace with IKnowledgeGraphStore.SearchNodesAsync for production scale.
-        var triplets = await _graphStore.GetTripletsAsync([], cancellationToken);
-        if (triplets.Count == 0)
+        // Full scan for node matching — replace with SearchNodesAsync for production scale.
+        var allNodes = await _graphBackend.GetAllNodesAsync(cancellationToken);
+        if (allNodes.Count == 0)
             return [];
 
         var matchedNodeIds = new HashSet<string>();
-        foreach (var triplet in triplets)
+        foreach (var node in allNodes)
         {
             if (queryTerms.Any(t =>
-                triplet.Source.Name.Contains(t, StringComparison.OrdinalIgnoreCase) ||
-                triplet.Source.Type.Contains(t, StringComparison.OrdinalIgnoreCase)))
-                matchedNodeIds.Add(triplet.Source.Id);
-
-            if (queryTerms.Any(t =>
-                triplet.Target.Name.Contains(t, StringComparison.OrdinalIgnoreCase) ||
-                triplet.Target.Type.Contains(t, StringComparison.OrdinalIgnoreCase)))
-                matchedNodeIds.Add(triplet.Target.Id);
+                node.Name.Contains(t, StringComparison.OrdinalIgnoreCase) ||
+                node.Type.Contains(t, StringComparison.OrdinalIgnoreCase)))
+                matchedNodeIds.Add(node.Id);
         }
 
         if (matchedNodeIds.Count == 0)
             return [];
 
-        // Get neighbor chunk IDs from matched nodes and their triplets
-        var neighborTriplets = await _graphStore.GetTripletsAsync(
-            matchedNodeIds.ToList(), cancellationToken);
-
+        // Collect chunk IDs from matched nodes and their depth-1 neighbors via graph traversal.
         var allChunkIds = new HashSet<string>();
-        foreach (var t in neighborTriplets)
+        foreach (var nodeId in matchedNodeIds)
         {
-            foreach (var cid in t.Source.ChunkIds) allChunkIds.Add(cid);
-            foreach (var cid in t.Target.ChunkIds) allChunkIds.Add(cid);
+            var matchedNode = allNodes.FirstOrDefault(n => n.Id == nodeId);
+            if (matchedNode is not null)
+                foreach (var cid in matchedNode.ChunkIds) allChunkIds.Add(cid);
+
+            var neighbors = await _graphBackend.TraverseAsync(nodeId, maxDepth: 1, cancellationToken);
+            foreach (var neighbor in neighbors)
+                foreach (var cid in neighbor.ChunkIds) allChunkIds.Add(cid);
         }
 
-        var nodeTasks = matchedNodeIds.Select(id => _graphStore.GetNodeAsync(id, cancellationToken));
-        var nodes = await Task.WhenAll(nodeTasks);
-        foreach (var node in nodes)
-        {
-            if (node is not null)
-                foreach (var cid in node.ChunkIds) allChunkIds.Add(cid);
-        }
+        activity?.SetTag("rag.graph.traversal_depth", 1);
+        activity?.SetTag(RagConventions.RetrievalChunksReturned, allChunkIds.Count);
 
         _logger.LogInformation(
             "GraphRAG local search: {MatchedEntities} entities matched, {ChunkCount} chunks found",
@@ -309,7 +324,27 @@ public sealed class ManagedCodeGraphRagService : IGraphRagService
         }
     }
 
-    private static string BuildCommunitySummary(IReadOnlyList<GraphTriplet> triplets)
+    /// <summary>
+    /// Builds a community summary string from pre-computed <see cref="Community"/> records.
+    /// Uses the top 20 communities to stay within reasonable token budgets.
+    /// </summary>
+    private static string BuildCommunitySummaryFromCommunities(IReadOnlyList<Community> communities)
+    {
+        var sb = new StringBuilder();
+        foreach (var community in communities.Take(20))
+        {
+            sb.AppendLine($"### Community: {community.Id} ({community.NodeIds.Count} entities)");
+            sb.AppendLine(community.Summary);
+            sb.AppendLine();
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Builds a community summary from raw triplets when no pre-computed communities exist.
+    /// Used as fallback in <see cref="GlobalSearchAsync"/> when community detection has not run.
+    /// </summary>
+    private static string BuildCommunitySummaryFromTriplets(IReadOnlyList<GraphTriplet> triplets)
     {
         var sb = new StringBuilder();
 

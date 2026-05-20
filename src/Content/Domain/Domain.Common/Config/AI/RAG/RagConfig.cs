@@ -10,14 +10,17 @@ namespace Domain.Common.Config.AI.RAG;
 /// Configuration hierarchy:
 /// <code>
 /// AppConfig.AI.Rag
-/// ├── Ingestion      — Chunking strategy, token targets, RAPTOR summaries
-/// ├── Retrieval      — Top-K, RRF constant, hybrid search toggle
-/// ├── VectorStore    — Provider, endpoint, embedding model, dimensions
-/// ├── GraphRag       — Graph provider, community level, entity extraction
-/// ├── Reranker       — Reranking strategy and model selection
-/// ├── Crag           — Corrective RAG thresholds and web fallback
-/// ├── QueryTransform — RAG-Fusion, HyDE, query classification toggles
-/// └── ModelTiering   — Per-operation model tier assignment
+/// ├── Ingestion          — Chunking strategy, token targets, RAPTOR summaries
+/// ├── Retrieval          — Top-K, RRF constant, hybrid search toggle
+/// ├── VectorStore        — Provider, endpoint, embedding model, dimensions
+/// ├── GraphRag           — Graph provider, community level, entity extraction
+/// ├── Reranker           — Reranking strategy and model selection
+/// ├── Crag               — Corrective RAG thresholds and web fallback
+/// ├── QueryTransform     — RAG-Fusion, HyDE, query classification toggles
+/// ├── ModelTiering       — Per-operation model tier assignment
+/// ├── ComplexityRouting  — Cost-aware tier selection and pipeline optimization
+/// ├── MultiHop           — Iterative multi-hop retrieval for complex queries
+/// └── Faithfulness       — Post-assembly answer faithfulness evaluation
 /// </code>
 /// </para>
 /// </remarks>
@@ -76,4 +79,16 @@ public class RagConfig
     /// cost-aware tier selection and pipeline optimization.
     /// </summary>
     public ComplexityRoutingConfig ComplexityRouting { get; set; } = new();
+
+    /// <summary>Gets or sets the multi-hop iterative retrieval configuration.</summary>
+    public MultiHopConfig MultiHop { get; set; } = new();
+
+    /// <summary>Gets or sets the faithfulness evaluation configuration.</summary>
+    public FaithfulnessConfig Faithfulness { get; set; } = new();
+
+    /// <summary>Graph database backend configuration for production knowledge graph storage.</summary>
+    public GraphDatabaseConfig GraphDatabase { get; set; } = new();
+
+    /// <summary>Cross-session memory configuration for knowledge persistence across conversations.</summary>
+    public CrossSessionMemoryConfig CrossSessionMemory { get; set; } = new();
 }

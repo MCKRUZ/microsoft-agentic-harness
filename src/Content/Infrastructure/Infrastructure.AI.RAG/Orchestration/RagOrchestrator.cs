@@ -21,9 +21,10 @@ namespace Infrastructure.AI.RAG.Orchestration;
 /// Pipeline flow for vector-based strategies:
 /// <list type="number">
 ///   <item>Classify query via <see cref="QueryRouter"/> (if classification enabled).</item>
-///   <item>Retrieve via <see cref="IHybridRetriever"/>.</item>
+///   <item>Retrieve via <see cref="IHybridRetriever"/> or <see cref="IIterativeRetriever"/> (complex queries).</item>
 ///   <item>Rerank via <see cref="IReranker"/>.</item>
 ///   <item>Evaluate via <see cref="ICragEvaluator"/> — may trigger refinement loop.</item>
+///   <item>Evaluate via <see cref="IAnswerFaithfulnessEvaluator"/> — may trigger CRAG fallback (complex queries).</item>
 ///   <item>Assemble via <see cref="IRagContextAssembler"/>.</item>
 /// </list>
 /// </para>
@@ -31,8 +32,12 @@ namespace Infrastructure.AI.RAG.Orchestration;
 /// For <see cref="RetrievalStrategy.GraphRag"/>, the pipeline bypasses vector
 /// retrieval and delegates directly to <see cref="IGraphRagService.GlobalSearchAsync"/>.
 /// </para>
+/// <para>
+/// For <see cref="QueryComplexity.Complex"/> queries (Phase B), the pipeline uses
+/// multi-hop iterative retrieval with post-assembly faithfulness evaluation.
+/// </para>
 /// </remarks>
-public sealed class RagOrchestrator : IRagOrchestrator
+public sealed partial class RagOrchestrator : IRagOrchestrator
 {
     private static readonly ActivitySource ActivitySource = new("Infrastructure.AI.RAG.Orchestration");
 
@@ -51,6 +56,8 @@ public sealed class RagOrchestrator : IRagOrchestrator
     private readonly ILogger<RagOrchestrator> _logger;
     private readonly IQueryComplexityClassifier? _complexityClassifier;
     private readonly IRetrievalDecisionGate? _decisionGate;
+    private readonly IIterativeRetriever? _iterativeRetriever;
+    private readonly IAnswerFaithfulnessEvaluator? _faithfulnessEvaluator;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="RagOrchestrator"/> class.
@@ -66,6 +73,8 @@ public sealed class RagOrchestrator : IRagOrchestrator
     /// <param name="logger">Logger for recording pipeline decisions.</param>
     /// <param name="complexityClassifier">Optional complexity classifier for tiered routing. Null disables complexity routing.</param>
     /// <param name="decisionGate">Optional retrieval decision gate. Null disables complexity routing.</param>
+    /// <param name="iterativeRetriever">Optional multi-hop iterative retriever for complex queries. Null disables multi-hop.</param>
+    /// <param name="faithfulnessEvaluator">Optional post-assembly faithfulness evaluator. Null disables faithfulness checks.</param>
     public RagOrchestrator(
         IHybridRetriever hybridRetriever,
         IReranker reranker,
@@ -77,7 +86,9 @@ public sealed class RagOrchestrator : IRagOrchestrator
         IOptionsMonitor<AppConfig> configMonitor,
         ILogger<RagOrchestrator> logger,
         IQueryComplexityClassifier? complexityClassifier = null,
-        IRetrievalDecisionGate? decisionGate = null)
+        IRetrievalDecisionGate? decisionGate = null,
+        IIterativeRetriever? iterativeRetriever = null,
+        IAnswerFaithfulnessEvaluator? faithfulnessEvaluator = null)
     {
         ArgumentNullException.ThrowIfNull(hybridRetriever);
         ArgumentNullException.ThrowIfNull(reranker);
@@ -99,6 +110,8 @@ public sealed class RagOrchestrator : IRagOrchestrator
         _logger = logger;
         _complexityClassifier = complexityClassifier;
         _decisionGate = decisionGate;
+        _iterativeRetriever = iterativeRetriever;
+        _faithfulnessEvaluator = faithfulnessEvaluator;
     }
 
     /// <inheritdoc />
@@ -305,7 +318,24 @@ public sealed class RagOrchestrator : IRagOrchestrator
         activity?.SetTag("rag.use_reranking", decision.UseReranking);
         activity?.SetTag("rag.use_crag", decision.UseCragEvaluation);
 
-        // Step 1: Retrieve with decision's topK
+        // Phase B: Complex tier uses multi-hop iterative retrieval
+        var ragConfig = _configMonitor.CurrentValue.AI.Rag;
+        if (decision.Complexity == QueryComplexity.Complex
+            && ragConfig.MultiHop.Enabled
+            && _iterativeRetriever is not null)
+        {
+            return await ExecuteMultiHopPipelineAsync(
+                query, decision.TopK, collectionName, cancellationToken);
+        }
+
+        // Step 1: CRAG evaluation path (reuses existing vector pipeline loop with refinement)
+        if (decision.UseCragEvaluation)
+        {
+            return await ExecuteVectorPipelineAsync(
+                query, decision.TopK, collectionName, cancellationToken);
+        }
+
+        // Step 2: Retrieve with decision's topK
         var candidates = await _hybridRetriever.RetrieveAsync(
             query, decision.TopK, collectionName, cancellationToken);
 
@@ -324,7 +354,7 @@ public sealed class RagOrchestrator : IRagOrchestrator
 
         IReadOnlyList<RerankedResult> reranked;
 
-        // Step 2: Conditional reranking
+        // Step 3: Conditional reranking
         if (decision.UseReranking)
         {
             reranked = await _reranker.RerankAsync(
@@ -332,7 +362,6 @@ public sealed class RagOrchestrator : IRagOrchestrator
         }
         else
         {
-            // Convert retrieval results directly to reranked results (preserve order, skip reranker)
             reranked = candidates.Select((r, i) => new RerankedResult
             {
                 RetrievalResult = r,
@@ -342,30 +371,11 @@ public sealed class RagOrchestrator : IRagOrchestrator
             }).ToList();
         }
 
-        // Step 3: Conditional CRAG evaluation (reuses existing vector pipeline loop logic)
-        if (decision.UseCragEvaluation)
-        {
-            return await ExecuteVectorPipelineAsync(
-                query, decision.TopK, collectionName, cancellationToken);
-        }
-
         // Step 4: Direct assembly (skip CRAG)
         _logger.LogInformation(
             "Routed pipeline: assembling {Count} results without CRAG (complexity={Complexity})",
             reranked.Count, decision.Complexity);
         return await _contextAssembler.AssembleAsync(reranked, DefaultMaxTokens, cancellationToken);
-    }
-
-    private static IReadOnlyList<RerankedResult> FilterWeakChunks(
-        IReadOnlyList<RerankedResult> results,
-        IReadOnlyList<string> weakChunkIds)
-    {
-        if (weakChunkIds.Count == 0) return results;
-
-        var weakSet = weakChunkIds.ToHashSet();
-        return results
-            .Where(r => !weakSet.Contains(r.RetrievalResult.Chunk.Id))
-            .ToList();
     }
 
     private static RagAssembledContext CreateEmptyContext(string reasoning) => new()

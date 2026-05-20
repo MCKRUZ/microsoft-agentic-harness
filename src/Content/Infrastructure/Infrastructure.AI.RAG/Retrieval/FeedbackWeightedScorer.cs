@@ -8,19 +8,22 @@ using Microsoft.Extensions.Options;
 namespace Infrastructure.AI.RAG.Retrieval;
 
 /// <summary>
-/// Blends reranked retrieval scores with feedback weights from the knowledge graph.
-/// For each chunk, finds matching graph nodes by entity name and averages their
-/// feedback weights, then blends with the rerank score using the configured alpha.
+/// Blends reranked retrieval scores with feedback weights from the knowledge graph,
+/// then persists the adjusted weights back to the graph backend for future retrieval
+/// improvement.
 /// </summary>
 /// <remarks>
 /// Blending formula:
 /// <c>adjustedScore = (1 - alpha) * rerankScore + alpha * avgNodeWeight</c>.
 /// Chunks without matching graph entities pass through with their original score.
+/// After blending, the adjusted scores are persisted back to the graph via
+/// <see cref="IGraphDatabaseBackend.UpdateNodeWeightAsync"/> so that future
+/// retrievals benefit from accumulated feedback.
 /// </remarks>
 public sealed class FeedbackWeightedScorer : IFeedbackWeightedScorer
 {
     private readonly IFeedbackStore _feedbackStore;
-    private readonly IKnowledgeGraphStore _graphStore;
+    private readonly IGraphDatabaseBackend _graphBackend;
     private readonly IOptionsMonitor<AppConfig> _configMonitor;
     private readonly ILogger<FeedbackWeightedScorer> _logger;
 
@@ -28,22 +31,22 @@ public sealed class FeedbackWeightedScorer : IFeedbackWeightedScorer
     /// Initializes a new instance of the <see cref="FeedbackWeightedScorer"/> class.
     /// </summary>
     /// <param name="feedbackStore">Feedback weight storage.</param>
-    /// <param name="graphStore">Knowledge graph store for entity lookup.</param>
+    /// <param name="graphBackend">Graph database backend for weight persistence.</param>
     /// <param name="configMonitor">Application configuration for alpha value.</param>
     /// <param name="logger">Logger for recording blending decisions.</param>
     public FeedbackWeightedScorer(
         IFeedbackStore feedbackStore,
-        IKnowledgeGraphStore graphStore,
+        IGraphDatabaseBackend graphBackend,
         IOptionsMonitor<AppConfig> configMonitor,
         ILogger<FeedbackWeightedScorer> logger)
     {
         ArgumentNullException.ThrowIfNull(feedbackStore);
-        ArgumentNullException.ThrowIfNull(graphStore);
+        ArgumentNullException.ThrowIfNull(graphBackend);
         ArgumentNullException.ThrowIfNull(configMonitor);
         ArgumentNullException.ThrowIfNull(logger);
 
         _feedbackStore = feedbackStore;
-        _graphStore = graphStore;
+        _graphBackend = graphBackend;
         _configMonitor = configMonitor;
         _logger = logger;
     }
@@ -59,7 +62,7 @@ public sealed class FeedbackWeightedScorer : IFeedbackWeightedScorer
             .Select(r => r.RetrievalResult.Chunk.Id)
             .ToList();
 
-        var triplets = await _graphStore.GetTripletsAsync(chunkIds, cancellationToken);
+        var triplets = await _graphBackend.GetTripletsAsync(chunkIds, cancellationToken);
         if (triplets.Count == 0)
         {
             _logger.LogDebug("No graph triplets found for chunk IDs; skipping feedback blending");
@@ -76,6 +79,7 @@ public sealed class FeedbackWeightedScorer : IFeedbackWeightedScorer
 
         var adjusted = new List<RerankedResult>(rerankedResults.Count);
         var blendedCount = 0;
+        var nodeAdjustedWeights = new Dictionary<string, double>();
 
         foreach (var result in rerankedResults)
         {
@@ -95,6 +99,11 @@ public sealed class FeedbackWeightedScorer : IFeedbackWeightedScorer
             var adjustedScore = (1 - alpha) * result.RerankScore + alpha * avgWeight;
             adjusted.Add(result with { RerankScore = adjustedScore });
             blendedCount++;
+
+            foreach (var nodeId in nodeIds)
+            {
+                nodeAdjustedWeights[nodeId] = adjustedScore;
+            }
         }
 
         var sorted = adjusted
@@ -102,9 +111,16 @@ public sealed class FeedbackWeightedScorer : IFeedbackWeightedScorer
             .Select((r, i) => r with { RerankRank = i + 1 })
             .ToList();
 
+        // Persist adjusted weights back to graph backend
+        foreach (var (nodeId, adjustedWeight) in nodeAdjustedWeights)
+        {
+            var clampedWeight = Math.Clamp(adjustedWeight, 0.0, 1.0);
+            await _graphBackend.UpdateNodeWeightAsync(nodeId, clampedWeight, cancellationToken);
+        }
+
         _logger.LogInformation(
-            "Feedback blending: {Blended}/{Total} results adjusted, alpha={Alpha:F2}",
-            blendedCount, rerankedResults.Count, alpha);
+            "Feedback blending: {Blended}/{Total} results adjusted, alpha={Alpha:F2}, {PersistCount} weights persisted",
+            blendedCount, rerankedResults.Count, alpha, nodeAdjustedWeights.Count);
 
         return sorted;
     }

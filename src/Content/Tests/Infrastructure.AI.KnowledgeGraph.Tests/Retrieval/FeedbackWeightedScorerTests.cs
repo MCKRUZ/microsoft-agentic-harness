@@ -20,20 +20,20 @@ namespace Infrastructure.AI.KnowledgeGraph.Tests.Retrieval;
 public sealed class FeedbackWeightedScorerTests
 {
     private readonly Mock<IFeedbackStore> _feedbackStore;
-    private readonly Mock<IKnowledgeGraphStore> _graphStore;
+    private readonly Mock<IGraphDatabaseBackend> _graphBackend;
     private readonly Mock<IOptionsMonitor<AppConfig>> _configMonitor;
     private readonly FeedbackWeightedScorer _scorer;
 
     public FeedbackWeightedScorerTests()
     {
         _feedbackStore = new Mock<IFeedbackStore>();
-        _graphStore = new Mock<IKnowledgeGraphStore>();
+        _graphBackend = new Mock<IGraphDatabaseBackend>();
         _configMonitor = new Mock<IOptionsMonitor<AppConfig>>();
         SetAlpha(0.3);
 
         _scorer = new FeedbackWeightedScorer(
             _feedbackStore.Object,
-            _graphStore.Object,
+            _graphBackend.Object,
             _configMonitor.Object,
             Mock.Of<ILogger<FeedbackWeightedScorer>>());
     }
@@ -41,7 +41,7 @@ public sealed class FeedbackWeightedScorerTests
     [Fact]
     public async Task BlendFeedback_NoTriplets_ReturnsOriginalResults()
     {
-        _graphStore
+        _graphBackend
             .Setup(g => g.GetTripletsAsync(It.IsAny<IReadOnlyList<string>>(), default))
             .ReturnsAsync(Array.Empty<GraphTriplet>());
 
@@ -101,7 +101,7 @@ public sealed class FeedbackWeightedScorerTests
             Predicate = "related", ChunkId = "c1"
         };
 
-        _graphStore
+        _graphBackend
             .Setup(g => g.GetTripletsAsync(It.IsAny<IReadOnlyList<string>>(), default))
             .ReturnsAsync(new[]
             {
@@ -152,7 +152,7 @@ public sealed class FeedbackWeightedScorerTests
         };
         var target = new GraphNode { Id = $"{nodeId}-target", Name = "Target", Type = "Thing", ChunkIds = chunkIds };
 
-        _graphStore
+        _graphBackend
             .Setup(g => g.GetTripletsAsync(It.IsAny<IReadOnlyList<string>>(), default))
             .ReturnsAsync(new[]
             {
