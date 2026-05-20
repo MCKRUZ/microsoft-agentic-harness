@@ -458,6 +458,10 @@ internal static class RagTestData
             HallucinationThreshold = 0.3,
             RequireCitationSupport = true,
         };
+        appConfig.AI.Rag.MultiSource = new MultiSourceConfig
+        {
+            Enabled = false,
+        };
 
         configure?.Invoke(appConfig);
 

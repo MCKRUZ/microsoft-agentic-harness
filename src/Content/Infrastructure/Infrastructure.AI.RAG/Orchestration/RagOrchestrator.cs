@@ -52,9 +52,11 @@ public sealed partial class RagOrchestrator : IRagOrchestrator
     private readonly IGraphRagService _graphRagService;
     private readonly IFeedbackWeightedScorer? _feedbackScorer;
     private readonly QueryRouter _queryRouter;
+    private readonly IMultiSourceOrchestrator? _multiSourceOrchestrator;
+    private readonly IQueryComplexityClassifier? _complexityClassifier;
+    private readonly IRetrievalCostTracker? _costTracker;
     private readonly IOptionsMonitor<AppConfig> _configMonitor;
     private readonly ILogger<RagOrchestrator> _logger;
-    private readonly IQueryComplexityClassifier? _complexityClassifier;
     private readonly IRetrievalDecisionGate? _decisionGate;
     private readonly IIterativeRetriever? _iterativeRetriever;
     private readonly IAnswerFaithfulnessEvaluator? _faithfulnessEvaluator;
@@ -69,9 +71,11 @@ public sealed partial class RagOrchestrator : IRagOrchestrator
     /// <param name="graphRagService">Knowledge graph-based retrieval service.</param>
     /// <param name="feedbackScorer">Optional feedback-weighted scorer. Null when feedback is disabled.</param>
     /// <param name="queryRouter">Query classification and transformation router.</param>
+    /// <param name="multiSourceOrchestrator">Optional multi-source retrieval orchestrator. Null disables multi-source routing.</param>
+    /// <param name="complexityClassifier">Optional complexity classifier for tiered routing. Null disables complexity routing.</param>
+    /// <param name="costTracker">Optional retrieval cost tracker. Null disables cost tracking.</param>
     /// <param name="configMonitor">Application configuration monitor.</param>
     /// <param name="logger">Logger for recording pipeline decisions.</param>
-    /// <param name="complexityClassifier">Optional complexity classifier for tiered routing. Null disables complexity routing.</param>
     /// <param name="decisionGate">Optional retrieval decision gate. Null disables complexity routing.</param>
     /// <param name="iterativeRetriever">Optional multi-hop iterative retriever for complex queries. Null disables multi-hop.</param>
     /// <param name="faithfulnessEvaluator">Optional post-assembly faithfulness evaluator. Null disables faithfulness checks.</param>
@@ -83,9 +87,11 @@ public sealed partial class RagOrchestrator : IRagOrchestrator
         IGraphRagService graphRagService,
         IFeedbackWeightedScorer? feedbackScorer,
         QueryRouter queryRouter,
+        IMultiSourceOrchestrator? multiSourceOrchestrator,
+        IQueryComplexityClassifier? complexityClassifier,
+        IRetrievalCostTracker? costTracker,
         IOptionsMonitor<AppConfig> configMonitor,
         ILogger<RagOrchestrator> logger,
-        IQueryComplexityClassifier? complexityClassifier = null,
         IRetrievalDecisionGate? decisionGate = null,
         IIterativeRetriever? iterativeRetriever = null,
         IAnswerFaithfulnessEvaluator? faithfulnessEvaluator = null)
@@ -106,9 +112,11 @@ public sealed partial class RagOrchestrator : IRagOrchestrator
         _graphRagService = graphRagService;
         _feedbackScorer = feedbackScorer;
         _queryRouter = queryRouter;
+        _multiSourceOrchestrator = multiSourceOrchestrator;
+        _complexityClassifier = complexityClassifier;
+        _costTracker = costTracker;
         _configMonitor = configMonitor;
         _logger = logger;
-        _complexityClassifier = complexityClassifier;
         _decisionGate = decisionGate;
         _iterativeRetriever = iterativeRetriever;
         _faithfulnessEvaluator = faithfulnessEvaluator;
@@ -184,12 +192,28 @@ public sealed partial class RagOrchestrator : IRagOrchestrator
 
         try
         {
+            RagAssembledContext result;
+
             // Step 2: Route by strategy
             if (strategy == RetrievalStrategy.GraphRag)
-                return await ExecuteGraphRagAsync(query, cancellationToken);
+            {
+                result = await ExecuteGraphRagAsync(query, cancellationToken);
+            }
+            else if (ragConfig.MultiSource.Enabled
+                     && _multiSourceOrchestrator is not null
+                     && _complexityClassifier is not null)
+            {
+                result = await ExecuteMultiSourcePipelineAsync(
+                    query, effectiveTopK, cancellationToken);
+            }
+            else
+            {
+                result = await ExecuteVectorPipelineAsync(
+                    query, effectiveTopK, collectionName, cancellationToken);
+            }
 
-            return await ExecuteVectorPipelineAsync(
-                query, effectiveTopK, collectionName, cancellationToken);
+            _costTracker?.RecordCall(result.TotalTokens, 0, sw.Elapsed);
+            return result;
         }
         finally
         {
@@ -375,6 +399,54 @@ public sealed partial class RagOrchestrator : IRagOrchestrator
         _logger.LogInformation(
             "Routed pipeline: assembling {Count} results without CRAG (complexity={Complexity})",
             reranked.Count, decision.Complexity);
+        return await _contextAssembler.AssembleAsync(reranked, DefaultMaxTokens, cancellationToken);
+    }
+
+    private async Task<RagAssembledContext> ExecuteMultiSourcePipelineAsync(
+        string query, int topK, CancellationToken cancellationToken)
+    {
+        using var activity = ActivitySource.StartActivity("rag.orchestrator.multi_source_pipeline");
+        var classification = await _complexityClassifier!.ClassifyAsync(query, cancellationToken);
+
+        _logger.LogInformation(
+            "Multi-source pipeline: Complexity={Complexity}, Confidence={Confidence:F2}",
+            classification!.Complexity, classification.Confidence);
+
+        var candidates = await _multiSourceOrchestrator!.RetrieveFromAllSourcesAsync(
+            query, topK, classification.Complexity, cancellationToken);
+
+        if (candidates.Count == 0)
+        {
+            _logger.LogWarning("Multi-source retrieval returned 0 candidates");
+            return CreateEmptyContext("No relevant documents found across any source.");
+        }
+
+        activity?.SetTag(RagConventions.RetrievalChunksReturned, candidates.Count);
+        RagRetrievalMetrics.ChunksReturned.Record(candidates.Count);
+        RagRetrievalMetrics.Hits.Add(1);
+
+        var reranked = await _reranker.RerankAsync(query, candidates, topK, cancellationToken);
+
+        if (_feedbackScorer is not null)
+            reranked = await _feedbackScorer.BlendFeedbackAsync(reranked, query, cancellationToken);
+
+        var evaluation = await _cragEvaluator.EvaluateAsync(query, candidates, cancellationToken);
+
+        activity?.SetTag(RagConventions.CragAction, evaluation.Action.ToString().ToLowerInvariant());
+        activity?.SetTag(RagConventions.CragScore, evaluation.RelevanceScore);
+
+        if (evaluation.Action == CorrectionAction.Reject)
+        {
+            return CreateEmptyContext(
+                evaluation.Reasoning ?? "Multi-source content not relevant to the query.");
+        }
+
+        if (evaluation.Action == CorrectionAction.Refine)
+        {
+            var filtered = FilterWeakChunks(reranked, evaluation.WeakChunkIds);
+            return await _contextAssembler.AssembleAsync(filtered, DefaultMaxTokens, cancellationToken);
+        }
+
         return await _contextAssembler.AssembleAsync(reranked, DefaultMaxTokens, cancellationToken);
     }
 
