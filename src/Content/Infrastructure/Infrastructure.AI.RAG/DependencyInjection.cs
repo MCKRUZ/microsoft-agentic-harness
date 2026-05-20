@@ -215,7 +215,7 @@ public static class DependencyInjection
 			services.AddSingleton<IFeedbackWeightedScorer>(sp =>
 				new Retrieval.FeedbackWeightedScorer(
 					sp.GetRequiredService<IFeedbackStore>(),
-					sp.GetRequiredService<IKnowledgeGraphStore>(),
+					sp.GetRequiredService<IGraphDatabaseBackend>(),
 					sp.GetRequiredService<IOptionsMonitor<AppConfig>>(),
 					sp.GetRequiredService<ILogger<Retrieval.FeedbackWeightedScorer>>()));
 		}
