@@ -3,27 +3,24 @@ using Application.AI.Common.Interfaces.RAG;
 using Domain.AI.RAG.Enums;
 using Domain.AI.RAG.Models;
 using Domain.Common.Config;
-using Domain.Common.Config.AI.RAG;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace Infrastructure.AI.RAG.Orchestration;
 
 /// <summary>
-/// Coordinates retrieval across vector, graph, and web sources in parallel.
-/// Selects sources based on query complexity, deduplicates results by chunk ID
-/// (keeping the highest fused score), and respects per-source timeouts.
+/// Coordinates retrieval across multiple sources in parallel.
+/// Sources are resolved by key from the DI container, enabling pluggable source registration
+/// without modifying the orchestrator. Selects sources based on config-driven complexity
+/// mappings, deduplicates results by chunk ID (keeping the highest fused score), and
+/// respects per-source timeouts.
 /// </summary>
 public sealed class MultiSourceOrchestrator : IMultiSourceOrchestrator
 {
     private static readonly ActivitySource ActivitySource = new("Infrastructure.AI.RAG.MultiSource");
 
-    private const string SourceVector = "vector";
-    private const string SourceGraph = "graph";
-    private const string SourceWeb = "web";
-
-    private readonly IHybridRetriever _hybridRetriever;
-    private readonly IGraphRagService _graphRagService;
+    private readonly IServiceProvider _serviceProvider;
     private readonly IRetrievalCostTracker _costTracker;
     private readonly IOptionsMonitor<AppConfig> _configMonitor;
     private readonly ILogger<MultiSourceOrchestrator> _logger;
@@ -31,21 +28,22 @@ public sealed class MultiSourceOrchestrator : IMultiSourceOrchestrator
     /// <summary>
     /// Initializes a new instance of the <see cref="MultiSourceOrchestrator"/> class.
     /// </summary>
+    /// <param name="serviceProvider">Used to resolve <see cref="IRetrievalSource"/> implementations by key.</param>
+    /// <param name="costTracker">Tracks retrieval cost and token usage across sources.</param>
+    /// <param name="configMonitor">Live config access for source enablement and complexity mappings.</param>
+    /// <param name="logger">Logger for retrieval lifecycle events and warnings.</param>
     public MultiSourceOrchestrator(
-        IHybridRetriever hybridRetriever,
-        IGraphRagService graphRagService,
+        IServiceProvider serviceProvider,
         IRetrievalCostTracker costTracker,
         IOptionsMonitor<AppConfig> configMonitor,
         ILogger<MultiSourceOrchestrator> logger)
     {
-        ArgumentNullException.ThrowIfNull(hybridRetriever);
-        ArgumentNullException.ThrowIfNull(graphRagService);
+        ArgumentNullException.ThrowIfNull(serviceProvider);
         ArgumentNullException.ThrowIfNull(costTracker);
         ArgumentNullException.ThrowIfNull(configMonitor);
         ArgumentNullException.ThrowIfNull(logger);
 
-        _hybridRetriever = hybridRetriever;
-        _graphRagService = graphRagService;
+        _serviceProvider = serviceProvider;
         _costTracker = costTracker;
         _configMonitor = configMonitor;
         _logger = logger;
@@ -61,7 +59,7 @@ public sealed class MultiSourceOrchestrator : IMultiSourceOrchestrator
         using var activity = ActivitySource.StartActivity("rag.multi_source.retrieve");
         var config = _configMonitor.CurrentValue.AI.Rag.MultiSource;
 
-        var sourcesToQuery = DetermineSourcesForComplexity(complexity, config);
+        var sourcesToQuery = DetermineSourcesForComplexity(complexity);
         activity?.SetTag("rag.multi_source.source_count", sourcesToQuery.Count);
         activity?.SetTag("rag.multi_source.complexity", complexity.ToString().ToLowerInvariant());
 
@@ -70,7 +68,7 @@ public sealed class MultiSourceOrchestrator : IMultiSourceOrchestrator
             complexity, string.Join(", ", sourcesToQuery), topK);
 
         var sourceResults = await FanOutToSourcesAsync(
-            query, topK, sourcesToQuery, config.SourceTimeout, cancellationToken);
+            query, topK, complexity, sourcesToQuery, config.SourceTimeout, cancellationToken);
 
         var allResults = new List<RetrievalResult>();
         foreach (var sourceResult in sourceResults)
@@ -92,32 +90,29 @@ public sealed class MultiSourceOrchestrator : IMultiSourceOrchestrator
         return sorted;
     }
 
-    private static IReadOnlyList<string> DetermineSourcesForComplexity(
-        QueryComplexity complexity,
-        MultiSourceConfig config)
+    private IReadOnlyList<string> DetermineSourcesForComplexity(QueryComplexity complexity)
     {
-        var enabled = new HashSet<string>(config.EnabledSources, StringComparer.OrdinalIgnoreCase);
+        var config = _configMonitor.CurrentValue.AI.Rag.MultiSource;
+        var complexityKey = complexity.ToString();
 
-        var candidates = complexity switch
-        {
-            QueryComplexity.Trivial or QueryComplexity.Simple => new[] { SourceVector },
-            QueryComplexity.Moderate => new[] { SourceVector, SourceGraph },
-            QueryComplexity.Complex => new[] { SourceVector, SourceGraph, SourceWeb },
-            _ => new[] { SourceVector }
-        };
+        if (!config.SourcesByComplexity.TryGetValue(complexityKey, out var candidates))
+            candidates = ["vector"];
 
-        return candidates.Where(s => enabled.Contains(s)).ToList();
+        return candidates
+            .Where(s => config.EnabledSources.Contains(s, StringComparer.OrdinalIgnoreCase))
+            .ToList();
     }
 
     private async Task<IReadOnlyList<SourceRetrievalResult>> FanOutToSourcesAsync(
         string query,
         int topK,
+        QueryComplexity complexity,
         IReadOnlyList<string> sources,
         TimeSpan sourceTimeout,
         CancellationToken cancellationToken)
     {
         var tasks = sources.Select(source =>
-            ExecuteSourceWithTimeoutAsync(source, query, topK, sourceTimeout, cancellationToken));
+            ExecuteSourceWithTimeoutAsync(source, query, topK, complexity, sourceTimeout, cancellationToken));
 
         var results = await Task.WhenAll(tasks);
         return results.Where(r => r is not null).Cast<SourceRetrievalResult>().ToList();
@@ -127,57 +122,35 @@ public sealed class MultiSourceOrchestrator : IMultiSourceOrchestrator
         string sourceName,
         string query,
         int topK,
+        QueryComplexity complexity,
         TimeSpan timeout,
         CancellationToken cancellationToken)
     {
-        var sw = Stopwatch.StartNew();
+        var source = _serviceProvider.GetKeyedService<IRetrievalSource>(sourceName);
+        if (source is null)
+        {
+            _logger.LogWarning("Retrieval source '{SourceName}' is enabled but not registered in DI", sourceName);
+            return null;
+        }
+
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeoutCts.CancelAfter(timeout);
 
         try
         {
-            var results = sourceName switch
-            {
-                SourceVector => await _hybridRetriever.RetrieveAsync(
-                    query, topK, collectionName: null, timeoutCts.Token),
-                SourceGraph => await _graphRagService.LocalSearchAsync(
-                    query, topK, timeoutCts.Token),
-                SourceWeb => await ExecuteWebSearchAsync(query, topK, timeoutCts.Token),
-                _ => (IReadOnlyList<RetrievalResult>)[]
-            };
-
-            sw.Stop();
-
-            _logger.LogDebug(
-                "Source {Source} returned {Count} results in {ElapsedMs}ms",
-                sourceName, results.Count, sw.Elapsed.TotalMilliseconds);
-
-            return new SourceRetrievalResult
-            {
-                SourceName = sourceName,
-                Results = results,
-                Latency = sw.Elapsed,
-                TokensUsed = 0
-            };
+            return await source.RetrieveAsync(query, topK, complexity, timeoutCts.Token);
         }
         catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {
-            sw.Stop();
-            _logger.LogWarning("Source {Source} timed out after {TimeoutMs}ms", sourceName, timeout.TotalMilliseconds);
+            _logger.LogWarning("Retrieval source '{SourceName}' timed out after {Timeout}ms",
+                sourceName, timeout.TotalMilliseconds);
             return null;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            sw.Stop();
-            _logger.LogWarning(ex, "Source {Source} failed: {Message}", sourceName, ex.Message);
+            _logger.LogError(ex, "Retrieval source '{SourceName}' failed", sourceName);
             return null;
         }
-    }
-
-    private static Task<IReadOnlyList<RetrievalResult>> ExecuteWebSearchAsync(
-        string query, int topK, CancellationToken cancellationToken)
-    {
-        return Task.FromResult<IReadOnlyList<RetrievalResult>>([]);
     }
 
     private static IReadOnlyList<RetrievalResult> DeduplicateByChunkId(

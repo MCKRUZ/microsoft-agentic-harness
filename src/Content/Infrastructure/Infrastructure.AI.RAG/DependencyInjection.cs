@@ -285,8 +285,9 @@ public static class DependencyInjection
 
 	/// <summary>
 	/// Registers multi-source orchestration services: the <see cref="IMultiSourceOrchestrator"/>
-	/// for parallel fan-out across vector, graph, and web sources, and the
-	/// <see cref="IRetrievalCostTracker"/> for per-execution token accounting.
+	/// for parallel fan-out across pluggable <see cref="IRetrievalSource"/> implementations
+	/// resolved by key from DI, and the <see cref="IRetrievalCostTracker"/> for per-execution
+	/// token accounting.
 	/// </summary>
 	private static void AddRagMultiSource(IServiceCollection services, AppConfig appConfig)
 	{
@@ -294,8 +295,7 @@ public static class DependencyInjection
 
 		services.AddSingleton<IMultiSourceOrchestrator>(sp =>
 			new MultiSourceOrchestrator(
-				sp.GetRequiredService<IHybridRetriever>(),
-				sp.GetRequiredService<IGraphRagService>(),
+				sp,
 				sp.GetRequiredService<IRetrievalCostTracker>(),
 				sp.GetRequiredService<IOptionsMonitor<AppConfig>>(),
 				sp.GetRequiredService<ILogger<MultiSourceOrchestrator>>()));
