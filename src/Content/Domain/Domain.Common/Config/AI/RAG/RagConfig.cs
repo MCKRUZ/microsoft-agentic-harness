@@ -20,7 +20,11 @@ namespace Domain.Common.Config.AI.RAG;
 /// ├── ModelTiering       — Per-operation model tier assignment
 /// ├── ComplexityRouting  — Cost-aware tier selection and pipeline optimization
 /// ├── MultiHop           — Iterative multi-hop retrieval for complex queries
-/// └── Faithfulness       — Post-assembly answer faithfulness evaluation
+/// ├── Faithfulness       — Post-assembly answer faithfulness evaluation
+/// ├── GraphDatabase      — Graph database backend configuration
+/// ├── CrossSessionMemory — Cross-session knowledge persistence
+/// ├── MultiSource        — Multi-source retrieval orchestration
+/// └── QualityGate        — CI/CD retrieval quality gates
 /// </code>
 /// </para>
 /// </remarks>
@@ -91,4 +95,16 @@ public class RagConfig
 
     /// <summary>Cross-session memory configuration for knowledge persistence across conversations.</summary>
     public CrossSessionMemoryConfig CrossSessionMemory { get; set; } = new();
+
+    /// <summary>
+    /// Multi-source orchestration configuration for fanning out
+    /// retrieval queries across vector, graph, and web sources.
+    /// </summary>
+    public MultiSourceConfig MultiSource { get; set; } = new();
+
+    /// <summary>
+    /// CI/CD quality gate configuration for enforcing minimum
+    /// retrieval quality thresholds via Ragas-style evaluation.
+    /// </summary>
+    public QualityGateConfig QualityGate { get; set; } = new();
 }

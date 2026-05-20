@@ -124,6 +124,75 @@ public static class RagConventions
     /// <summary>Histogram: community detection duration in seconds.</summary>
     public const string CommunityDetectionDuration = "rag.graph.community_detection.duration";
 
+    // ── Multi-source attributes ─────────────────────────────────────
+
+    /// <summary>Number of sources queried in a multi-source retrieval.</summary>
+    public const string MultiSourceCount = "rag.multi_source.source_count";
+
+    /// <summary>Query complexity tier used for source selection.</summary>
+    public const string MultiSourceComplexity = "rag.multi_source.complexity";
+
+    /// <summary>Per-source latency in milliseconds.</summary>
+    public const string MultiSourceLatency = "rag.multi_source.latency_ms";
+
+    // ── Quality evaluation attributes ───────────────────────────────
+
+    /// <summary>Context precision score (0-1) from quality evaluation.</summary>
+    public const string QualityContextPrecision = "rag.quality.context_precision";
+
+    /// <summary>Context recall score (0-1) from quality evaluation.</summary>
+    public const string QualityContextRecall = "rag.quality.context_recall";
+
+    /// <summary>Faithfulness score (0-1) from quality evaluation.</summary>
+    public const string QualityFaithfulness = "rag.quality.faithfulness";
+
+    /// <summary>Answer relevancy score (0-1) from quality evaluation.</summary>
+    public const string QualityAnswerRelevancy = "rag.quality.answer_relevancy";
+
+    /// <summary>Overall quality score (0-1) from quality evaluation.</summary>
+    public const string QualityOverallScore = "rag.quality.overall_score";
+
+    // ── Cost tracking attributes ────────────────────────────────────
+
+    /// <summary>Total tokens consumed in a retrieval execution.</summary>
+    public const string CostTotalTokens = "rag.cost.total_tokens";
+
+    /// <summary>Prompt tokens consumed in a retrieval execution.</summary>
+    public const string CostPromptTokens = "rag.cost.prompt_tokens";
+
+    /// <summary>Completion tokens consumed in a retrieval execution.</summary>
+    public const string CostCompletionTokens = "rag.cost.completion_tokens";
+
+    /// <summary>Estimated cost in USD for a retrieval execution.</summary>
+    public const string CostEstimatedUsd = "rag.cost.estimated_usd";
+
+    // ── Multi-source metric name constants ──────────────────────────
+
+    /// <summary>Histogram: multi-source orchestration total duration in milliseconds.</summary>
+    public const string MultiSourceDuration = "rag.multi_source.duration";
+
+    /// <summary>Histogram: per-source retrieval latency in milliseconds.</summary>
+    public const string MultiSourcePerSourceLatency = "rag.multi_source.per_source_latency";
+
+    /// <summary>Counter: total multi-source orchestration invocations.</summary>
+    public const string MultiSourceInvocations = "rag.multi_source.invocations";
+
+    // ── Quality metric name constants ───────────────────────────────
+
+    /// <summary>Histogram: overall quality scores from evaluations.</summary>
+    public const string QualityScoreHistogram = "rag.quality.overall_score_histogram";
+
+    /// <summary>Counter: total quality evaluations performed.</summary>
+    public const string QualityEvaluations = "rag.quality.evaluations";
+
+    // ── Cost metric name constants ──────────────────────────────────
+
+    /// <summary>Counter: total tokens consumed across all retrieval operations.</summary>
+    public const string CostTokensTotal = "rag.cost.tokens_total";
+
+    /// <summary>Histogram: estimated cost per retrieval execution in USD.</summary>
+    public const string CostPerExecution = "rag.cost.per_execution";
+
     // ── Value sets ───────────────────────────────────────────────────
 
     /// <summary>Well-known values for <see cref="QueryType"/>.</summary>

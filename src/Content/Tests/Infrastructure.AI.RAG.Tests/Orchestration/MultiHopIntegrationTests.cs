@@ -51,9 +51,11 @@ public sealed class MultiHopIntegrationTests
             _mockGraphRag.Object,
             feedbackScorer: null,
             queryRouter,
+            multiSourceOrchestrator: null,
+            _mockClassifier.Object,
+            costTracker: null,
             config,
             Mock.Of<ILogger<RagOrchestrator>>(),
-            _mockClassifier.Object,
             gate,
             _mockIterativeRetriever.Object,
             _mockFaithfulness.Object);

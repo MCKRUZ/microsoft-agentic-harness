@@ -54,4 +54,45 @@ public static class RagRetrievalMetrics
     public static Counter<long> IngestionDocuments { get; } =
         AppInstrument.Meter.CreateCounter<long>(
             RagConventions.IngestionDocuments, "{document}", "Documents ingested into RAG pipeline");
+
+    // ── Multi-source instruments ────────────────────────────────────
+
+    /// <summary>Multi-source orchestration total duration in milliseconds.</summary>
+    public static Histogram<double> MultiSourceDuration { get; } =
+        AppInstrument.Meter.CreateHistogram<double>(
+            RagConventions.MultiSourceDuration, "{ms}", "Multi-source orchestration duration");
+
+    /// <summary>Per-source retrieval latency in milliseconds. Tags: rag.source.name.</summary>
+    public static Histogram<double> MultiSourcePerSourceLatency { get; } =
+        AppInstrument.Meter.CreateHistogram<double>(
+            RagConventions.MultiSourcePerSourceLatency, "{ms}", "Per-source retrieval latency");
+
+    /// <summary>Total multi-source orchestration invocations.</summary>
+    public static Counter<long> MultiSourceInvocations { get; } =
+        AppInstrument.Meter.CreateCounter<long>(
+            RagConventions.MultiSourceInvocations, "{invocation}", "Multi-source invocations");
+
+    // ── Quality instruments ─────────────────────────────────────────
+
+    /// <summary>Overall quality score histogram. Tags: none.</summary>
+    public static Histogram<double> QualityScores { get; } =
+        AppInstrument.Meter.CreateHistogram<double>(
+            RagConventions.QualityScoreHistogram, "{score}", "RAG quality evaluation scores");
+
+    /// <summary>Total quality evaluations performed.</summary>
+    public static Counter<long> QualityEvaluations { get; } =
+        AppInstrument.Meter.CreateCounter<long>(
+            RagConventions.QualityEvaluations, "{evaluation}", "Quality evaluations performed");
+
+    // ── Cost instruments ────────────────────────────────────────────
+
+    /// <summary>Total tokens consumed across all retrieval operations.</summary>
+    public static Counter<long> CostTokensTotal { get; } =
+        AppInstrument.Meter.CreateCounter<long>(
+            RagConventions.CostTokensTotal, "{token}", "Total tokens consumed by retrieval");
+
+    /// <summary>Estimated cost per retrieval execution in USD.</summary>
+    public static Histogram<double> CostPerExecution { get; } =
+        AppInstrument.Meter.CreateHistogram<double>(
+            RagConventions.CostPerExecution, "{usd}", "Estimated cost per retrieval execution");
 }

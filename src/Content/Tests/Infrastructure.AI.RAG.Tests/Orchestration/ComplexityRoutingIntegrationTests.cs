@@ -43,9 +43,11 @@ public sealed class ComplexityRoutingIntegrationTests
             _mockGraphRag.Object,
             feedbackScorer: null,
             queryRouter,
+            multiSourceOrchestrator: null,
+            _mockClassifier.Object,
+            costTracker: null,
             config,
             Mock.Of<ILogger<RagOrchestrator>>(),
-            _mockClassifier.Object,
             gate);
     }
 

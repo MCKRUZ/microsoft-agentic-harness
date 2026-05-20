@@ -21,6 +21,8 @@ public sealed class RagOrchestratorTests
     private readonly Mock<IGraphRagService> _mockGraphRag = new();
     private readonly Mock<IQueryComplexityClassifier> _mockComplexityClassifier = new();
     private readonly Mock<IRetrievalDecisionGate> _mockDecisionGate = new();
+    private readonly Mock<IMultiSourceOrchestrator> _mockMultiSource = new();
+    private readonly Mock<IRetrievalCostTracker> _mockCostTracker = new();
 
     private readonly RagAssembledContext _expectedContext = new()
     {
@@ -46,9 +48,11 @@ public sealed class RagOrchestratorTests
             _mockGraphRag.Object,
             feedbackScorer: null,
             queryRouter,
+            _mockMultiSource.Object,
+            _mockComplexityClassifier.Object,
+            _mockCostTracker.Object,
             config,
             Mock.Of<ILogger<RagOrchestrator>>(),
-            _mockComplexityClassifier.Object,
             _mockDecisionGate.Object);
     }
 
@@ -280,6 +284,90 @@ public sealed class RagOrchestratorTests
         // Full pipeline ran — retriever was called
         _mockRetriever.Verify(
             r => r.RetrieveAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task SearchAsync_MultiSourceEnabled_UsesMultiSourcePipeline()
+    {
+        var retrievalResults = RagTestData.CreateRetrievalResults(3);
+        var rerankedResults = RagTestData.CreateRerankedResults(3);
+
+        _mockComplexityClassifier
+            .Setup(c => c.ClassifyAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(RagTestData.CreateModerateClassification());
+        _mockMultiSource
+            .Setup(m => m.RetrieveFromAllSourcesAsync(
+                It.IsAny<string>(), It.IsAny<int>(), It.IsAny<QueryComplexity>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(retrievalResults);
+        _mockReranker
+            .Setup(r => r.RerankAsync(It.IsAny<string>(), It.IsAny<IReadOnlyList<RetrievalResult>>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(rerankedResults);
+        _mockCrag
+            .Setup(e => e.EvaluateAsync(It.IsAny<string>(), It.IsAny<IReadOnlyList<RetrievalResult>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(RagTestData.CreateAcceptEvaluation());
+        _mockAssembler
+            .Setup(a => a.AssembleAsync(It.IsAny<IReadOnlyList<RerankedResult>>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(_expectedContext);
+
+        var orchestrator = CreateOrchestrator(cfg =>
+        {
+            cfg.AI.Rag.MultiSource.Enabled = true;
+            cfg.AI.Rag.ComplexityRouting.Enabled = false;
+        });
+
+        var result = await orchestrator.SearchAsync("multi-source query");
+
+        result.AssembledText.Should().Be("assembled text");
+        _mockMultiSource.Verify(
+            m => m.RetrieveFromAllSourcesAsync(It.IsAny<string>(), It.IsAny<int>(), QueryComplexity.Moderate, It.IsAny<CancellationToken>()),
+            Times.Once);
+        _mockRetriever.Verify(
+            r => r.RetrieveAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task SearchAsync_MultiSourceReturnsEmpty_ReturnsEmptyContext()
+    {
+        _mockComplexityClassifier
+            .Setup(c => c.ClassifyAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(RagTestData.CreateSimpleClassification());
+        _mockMultiSource
+            .Setup(m => m.RetrieveFromAllSourcesAsync(
+                It.IsAny<string>(), It.IsAny<int>(), It.IsAny<QueryComplexity>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<RetrievalResult>());
+
+        var orchestrator = CreateOrchestrator(cfg =>
+        {
+            cfg.AI.Rag.MultiSource.Enabled = true;
+            cfg.AI.Rag.ComplexityRouting.Enabled = false;
+        });
+
+        var result = await orchestrator.SearchAsync("empty multi-source query");
+
+        result.TotalTokens.Should().Be(0);
+        result.AssembledText.Should().Contain("No relevant documents found across any source");
+        _mockAssembler.Verify(
+            a => a.AssembleAsync(It.IsAny<IReadOnlyList<RerankedResult>>(), It.IsAny<int>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task SearchAsync_CostTrackerPresent_RecordsCallAfterResult()
+    {
+        SetupHappyPath();
+
+        var orchestrator = CreateOrchestrator(cfg =>
+        {
+            cfg.AI.Rag.MultiSource.Enabled = false;
+            cfg.AI.Rag.ComplexityRouting.Enabled = false;
+        });
+
+        await orchestrator.SearchAsync("cost-tracked query");
+
+        _mockCostTracker.Verify(
+            t => t.RecordCall(It.IsAny<int>(), 0, It.IsAny<TimeSpan>()),
             Times.Once);
     }
 }

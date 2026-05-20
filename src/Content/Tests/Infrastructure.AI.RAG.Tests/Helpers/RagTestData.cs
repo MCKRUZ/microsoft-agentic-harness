@@ -1,4 +1,5 @@
 using Domain.AI.KnowledgeGraph.Models;
+using Domain.AI.Planner;
 using Domain.AI.RAG.Enums;
 using Domain.AI.RAG.Models;
 using Domain.Common.Config;
@@ -359,6 +360,66 @@ internal static class RagTestData
         return config;
     }
 
+    public static RetrievalQualityReport CreateQualityReport(
+        double contextPrecision = 0.85,
+        double contextRecall = 0.80,
+        double faithfulness = 0.90,
+        double answerRelevancy = 0.88,
+        double overallScore = 0.86) =>
+        new()
+        {
+            ContextPrecision = contextPrecision,
+            ContextRecall = contextRecall,
+            Faithfulness = faithfulness,
+            AnswerRelevancy = answerRelevancy,
+            OverallScore = overallScore,
+            Reasoning = "Test quality report with high scores across all metrics.",
+            EvaluatedAt = DateTimeOffset.UtcNow
+        };
+
+    public static RetrievalCostSummary CreateCostSummary(
+        int promptTokens = 1500,
+        int completionTokens = 500,
+        int retrievalCalls = 3,
+        double totalLatencyMs = 2500.0) =>
+        new()
+        {
+            TotalTokensUsed = promptTokens + completionTokens,
+            PromptTokens = promptTokens,
+            CompletionTokens = completionTokens,
+            RetrievalCalls = retrievalCalls,
+            TotalLatency = TimeSpan.FromMilliseconds(totalLatencyMs),
+            EstimatedCost = (promptTokens * 2.50 / 1_000_000) + (completionTokens * 10.00 / 1_000_000)
+        };
+
+    public static SourceRetrievalResult CreateSourceResult(
+        string sourceName = "vector",
+        int resultCount = 3,
+        double latencyMs = 500.0,
+        int tokensUsed = 200) =>
+        new()
+        {
+            SourceName = sourceName,
+            Results = CreateRetrievalResults(resultCount),
+            Latency = TimeSpan.FromMilliseconds(latencyMs),
+            TokensUsed = tokensUsed
+        };
+
+    public static RetrievalStepConfiguration CreateRetrievalStepConfiguration(
+        string query = "What is the architecture of the system?",
+        RetrievalStrategy? strategy = null,
+        int? topK = null,
+        string? collectionName = null,
+        bool useMultiSource = false) =>
+        new()
+        {
+            Query = query,
+            Strategy = strategy,
+            TopK = topK,
+            CollectionName = collectionName,
+            UseMultiSource = useMultiSource
+        };
+
     public static IOptionsMonitor<AppConfig> CreateConfigMonitor(
         Action<AppConfig>? configure = null)
     {
@@ -396,6 +457,10 @@ internal static class RagTestData
             Enabled = true,
             HallucinationThreshold = 0.3,
             RequireCitationSupport = true,
+        };
+        appConfig.AI.Rag.MultiSource = new MultiSourceConfig
+        {
+            Enabled = false,
         };
 
         configure?.Invoke(appConfig);
