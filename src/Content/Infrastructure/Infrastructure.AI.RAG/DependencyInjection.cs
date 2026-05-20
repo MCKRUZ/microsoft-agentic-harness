@@ -202,9 +202,10 @@ public static class DependencyInjection
 	{
 		services.AddSingleton<IGraphRagService>(sp =>
 			new ManagedCodeGraphRagService(
-				sp.GetRequiredService<IKnowledgeGraphStore>(),
+				sp.GetRequiredService<IGraphDatabaseBackend>(),
 				sp.GetRequiredService<IRagModelRouter>(),
 				sp.GetRequiredService<IProvenanceStamper>(),
+				sp.GetRequiredService<ICommunityDetector>(),
 				sp.GetRequiredService<ILogger<ManagedCodeGraphRagService>>(),
 				sp.GetRequiredService<IOptionsMonitor<AppConfig>>()));
 
