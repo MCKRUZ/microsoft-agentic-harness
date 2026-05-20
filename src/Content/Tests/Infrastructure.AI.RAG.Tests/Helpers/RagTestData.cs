@@ -1,3 +1,4 @@
+using Domain.AI.KnowledgeGraph.Models;
 using Domain.AI.RAG.Enums;
 using Domain.AI.RAG.Models;
 using Domain.Common.Config;
@@ -276,6 +277,83 @@ internal static class RagTestData
             Enabled = true,
             HallucinationThreshold = 0.3,
             RequireCitationSupport = true,
+        };
+        configure?.Invoke(config);
+        return config;
+    }
+
+    public static Community CreateCommunity(
+        string id = "community_0_1", int level = 0,
+        string summary = "A community of related technology entities.",
+        IReadOnlyList<string>? nodeIds = null, double modularity = 0.65) =>
+        new()
+        {
+            Id = id, Level = level, Summary = summary,
+            NodeIds = nodeIds ?? ["node-1", "node-2", "node-3"],
+            Modularity = modularity
+        };
+
+    public static MemoryRecord CreateMemoryRecord(
+        string id = "mem-1",
+        string content = "The user prefers concise answers over verbose explanations.",
+        string source = "session-abc", double weight = 0.8,
+        DateTimeOffset? createdAt = null, DateTimeOffset? lastAccessedAt = null,
+        int accessCount = 1, IReadOnlyDictionary<string, string>? metadata = null) =>
+        new()
+        {
+            Id = id, Content = content, Source = source, Weight = weight,
+            CreatedAt = createdAt ?? DateTimeOffset.UtcNow,
+            LastAccessedAt = lastAccessedAt ?? DateTimeOffset.UtcNow,
+            AccessCount = accessCount,
+            Metadata = metadata ?? new Dictionary<string, string>()
+        };
+
+    public static MemoryQuery CreateMemoryQuery(
+        string query = "user preferences", int topK = 10,
+        double minWeight = 0.1, string? source = null) =>
+        new() { Query = query, TopK = topK, MinWeight = minWeight, Source = source };
+
+    public static GraphNode CreateGraphNode(
+        string id = "node-1", string name = "Azure OpenAI",
+        string type = "Technology", IReadOnlyList<string>? chunkIds = null,
+        IReadOnlyDictionary<string, string>? properties = null) =>
+        new()
+        {
+            Id = id, Name = name, Type = type,
+            ChunkIds = chunkIds ?? ["chunk-1"],
+            Properties = properties ?? new Dictionary<string, string>()
+        };
+
+    public static GraphEdge CreateGraphEdge(
+        string id = "edge-1", string sourceNodeId = "node-1",
+        string targetNodeId = "node-2", string predicate = "uses",
+        string chunkId = "chunk-1",
+        IReadOnlyDictionary<string, string>? properties = null) =>
+        new()
+        {
+            Id = id, SourceNodeId = sourceNodeId, TargetNodeId = targetNodeId,
+            Predicate = predicate, ChunkId = chunkId,
+            Properties = properties ?? new Dictionary<string, string>()
+        };
+
+    public static CrossSessionMemoryConfig CreateCrossSessionMemoryConfig(
+        Action<CrossSessionMemoryConfig>? configure = null)
+    {
+        var config = new CrossSessionMemoryConfig
+        {
+            Enabled = true, DecayRate = 0.05, PruneThreshold = 0.01,
+            MaxMemories = 10_000, SyncInterval = TimeSpan.FromMinutes(5),
+        };
+        configure?.Invoke(config);
+        return config;
+    }
+
+    public static GraphDatabaseConfig CreateGraphDatabaseConfig(
+        Action<GraphDatabaseConfig>? configure = null)
+    {
+        var config = new GraphDatabaseConfig
+        {
+            Enabled = true, Provider = "kuzu", DataDirectory = "./data/graph",
         };
         configure?.Invoke(config);
         return config;
