@@ -13,4 +13,5 @@ namespace Domain.AI.Planner;
 [JsonDerivedType(typeof(HumanGateConfig), "human_gate")]
 [JsonDerivedType(typeof(ConditionalBranchConfig), "conditional_branch")]
 [JsonDerivedType(typeof(SubPlanConfig), "sub_plan")]
+[JsonDerivedType(typeof(RetrievalStepConfiguration), "retrieval")]
 public abstract record StepConfiguration;

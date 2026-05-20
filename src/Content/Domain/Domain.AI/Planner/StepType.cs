@@ -19,5 +19,11 @@ public enum StepType
     ConditionalBranch,
 
     /// <summary>Invokes a child plan in an isolated scope with depth limiting.</summary>
-    SubPlanInvocation
+    SubPlanInvocation,
+
+    /// <summary>
+    /// Executes a RAG retrieval query, producing assembled context as output for
+    /// downstream steps. Supports single-source and multi-source orchestration.
+    /// </summary>
+    Retrieval
 }
