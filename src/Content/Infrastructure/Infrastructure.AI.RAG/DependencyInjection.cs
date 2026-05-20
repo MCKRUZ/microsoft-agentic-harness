@@ -271,9 +271,11 @@ public static class DependencyInjection
 				sp.GetRequiredService<IGraphRagService>(),
 				sp.GetService<IFeedbackWeightedScorer>(),
 				sp.GetRequiredService<QueryRouter>(),
+				sp.GetService<IMultiSourceOrchestrator>(),
+				sp.GetService<IQueryComplexityClassifier>(),
+				sp.GetService<IRetrievalCostTracker>(),
 				sp.GetRequiredService<IOptionsMonitor<AppConfig>>(),
 				sp.GetRequiredService<ILogger<RagOrchestrator>>(),
-				sp.GetService<IQueryComplexityClassifier>(),
 				sp.GetService<IRetrievalDecisionGate>(),
 				sp.GetService<IIterativeRetriever>(),
 				sp.GetService<IAnswerFaithfulnessEvaluator>()));
