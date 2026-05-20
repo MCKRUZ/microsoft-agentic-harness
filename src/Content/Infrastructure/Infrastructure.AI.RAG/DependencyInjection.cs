@@ -10,7 +10,9 @@ using Infrastructure.AI.RAG.Ingestion;
 using Infrastructure.AI.RAG.Orchestration;
 using Infrastructure.AI.RAG.QueryTransform;
 using Infrastructure.AI.RAG.Retrieval;
+using Infrastructure.AI.RAG.SqlDatabase;
 using Infrastructure.AI.RAG.WebSearch;
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -48,6 +50,7 @@ public static class DependencyInjection
 		AddRagMultiSource(services, appConfig);
 		AddRagQualityGates(services, appConfig);
 		AddRagWebSearch(services, appConfig);
+		AddRagSqlDatabase(services, appConfig);
 
 		return services;
 	}
@@ -289,12 +292,22 @@ public static class DependencyInjection
 	/// Registers multi-source orchestration services: the <see cref="IMultiSourceOrchestrator"/>
 	/// for parallel fan-out across pluggable <see cref="IRetrievalSource"/> implementations
 	/// resolved by key from DI, and the <see cref="IRetrievalCostTracker"/> for per-execution
-	/// token accounting.
+	/// token accounting. Also registers the vector and graph source adapters keyed as
+	/// "vector" and "graph" respectively.
 	/// </summary>
 	private static void AddRagMultiSource(IServiceCollection services, AppConfig appConfig)
 	{
 		services.AddSingleton<IRetrievalCostTracker, RetrievalCostTracker>();
 
+		// Adapter: existing IHybridRetriever → IRetrievalSource
+		services.AddKeyedSingleton<IRetrievalSource>("vector", (sp, _) =>
+			new VectorRetrievalSource(sp.GetRequiredService<IHybridRetriever>()));
+
+		// Adapter: existing IGraphRagService → IRetrievalSource
+		services.AddKeyedSingleton<IRetrievalSource>("graph", (sp, _) =>
+			new GraphRetrievalSource(sp.GetRequiredService<IGraphRagService>()));
+
+		// Orchestrator resolves IRetrievalSource by key from the container
 		services.AddSingleton<IMultiSourceOrchestrator>(sp =>
 			new MultiSourceOrchestrator(
 				sp,
@@ -406,6 +419,52 @@ public static class DependencyInjection
 		// IRetrievalSource adapter — keyed as "web_search" for multi-source orchestration
 		services.AddKeyedSingleton<IRetrievalSource>("web_search", (sp, _) =>
 			new WebSearchRetrievalSource(sp.GetRequiredService<IWebSearchProvider>()));
+	}
+
+	/// <summary>
+	/// Registers SQL database retrieval services: template store, safe executor,
+	/// template matcher, text-to-SQL generator, and the <see cref="IRetrievalSource"/>
+	/// adapter keyed as "sql_database". Only registered when
+	/// <see cref="SqlDatabaseConfig.Enabled"/> is <c>true</c>.
+	/// <para>
+	/// <see cref="SafeSqlQueryExecutor"/> requires a <see cref="System.Data.Common.DbConnection"/>
+	/// registered in DI by the consuming application. If no connection is registered the
+	/// "sql_database" source will throw at resolution time, not at startup.
+	/// </para>
+	/// </summary>
+	private static void AddRagSqlDatabase(IServiceCollection services, AppConfig appConfig)
+	{
+		var config = appConfig.AI?.Rag?.SqlDatabase;
+		if (config is null || !config.Enabled) return;
+
+		services.AddSingleton<ISqlQueryTemplateStore>(sp =>
+			new JsonSqlQueryTemplateStore(sp.GetRequiredService<IOptionsMonitor<AppConfig>>()));
+
+		services.AddSingleton<SqlQueryTemplateMatcher>(sp =>
+			new SqlQueryTemplateMatcher(
+				sp.GetRequiredService<IChatClient>(),
+				sp.GetRequiredService<IOptionsMonitor<AppConfig>>()));
+
+		services.AddSingleton<TextToSqlGenerator>(sp =>
+			new TextToSqlGenerator(sp.GetRequiredService<IChatClient>()));
+
+		// DbConnection is opt-in — the consuming app must register one.
+		// SafeSqlQueryExecutor is resolved lazily so a missing DbConnection only fails
+		// at first retrieval, not at startup.
+		services.AddSingleton<ISqlQueryExecutor>(sp =>
+			new SafeSqlQueryExecutor(
+				sp.GetRequiredService<System.Data.Common.DbConnection>(),
+				sp.GetRequiredService<IOptionsMonitor<AppConfig>>(),
+				sp.GetRequiredService<ILogger<SafeSqlQueryExecutor>>()));
+
+		services.AddKeyedSingleton<IRetrievalSource>("sql_database", (sp, _) =>
+			new SqlDatabaseRetrievalSource(
+				sp.GetRequiredService<ISqlQueryTemplateStore>(),
+				sp.GetRequiredService<ISqlQueryExecutor>(),
+				sp.GetRequiredService<SqlQueryTemplateMatcher>(),
+				sp.GetRequiredService<TextToSqlGenerator>(),
+				sp.GetRequiredService<IOptionsMonitor<AppConfig>>(),
+				sp.GetRequiredService<ILogger<SqlDatabaseRetrievalSource>>()));
 	}
 
 	/// <summary>
