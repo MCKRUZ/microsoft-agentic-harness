@@ -85,4 +85,10 @@ public class RagConfig
 
     /// <summary>Gets or sets the faithfulness evaluation configuration.</summary>
     public FaithfulnessConfig Faithfulness { get; set; } = new();
+
+    /// <summary>Graph database backend configuration for production knowledge graph storage.</summary>
+    public GraphDatabaseConfig GraphDatabase { get; set; } = new();
+
+    /// <summary>Cross-session memory configuration for knowledge persistence across conversations.</summary>
+    public CrossSessionMemoryConfig CrossSessionMemory { get; set; } = new();
 }
