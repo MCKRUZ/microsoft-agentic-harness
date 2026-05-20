@@ -11,7 +11,7 @@ public sealed class MultiSourceConfig
     public bool Enabled { get; set; } = true;
 
     /// <summary>
-    /// Enabled source names. Valid: "vector", "graph", "web".
+    /// Enabled source names. Valid: "vector", "graph", "web_search", "sql_database".
     /// Sources not listed are never queried.
     /// </summary>
     public List<string> EnabledSources { get; set; } = ["vector", "graph"];
@@ -27,4 +27,16 @@ public sealed class MultiSourceConfig
 
     /// <summary>Cost per 1M output tokens in USD for cost estimation.</summary>
     public double CostPerMillionOutputTokens { get; set; } = 10.00;
+
+    /// <summary>
+    /// Maps each <see cref="QueryComplexity"/> tier to the source names that should be queried.
+    /// Filtered at runtime by <see cref="EnabledSources"/> — a source must appear in both lists.
+    /// </summary>
+    public Dictionary<string, List<string>> SourcesByComplexity { get; set; } = new()
+    {
+        ["Trivial"] = ["vector"],
+        ["Simple"] = ["vector"],
+        ["Moderate"] = ["vector", "graph"],
+        ["Complex"] = ["vector", "graph", "web_search", "sql_database"]
+    };
 }

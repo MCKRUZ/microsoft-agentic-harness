@@ -24,7 +24,9 @@ namespace Domain.Common.Config.AI.RAG;
 /// ├── GraphDatabase      — Graph database backend configuration
 /// ├── CrossSessionMemory — Cross-session knowledge persistence
 /// ├── MultiSource        — Multi-source retrieval orchestration
-/// └── QualityGate        — CI/CD retrieval quality gates
+/// ├── QualityGate        — CI/CD retrieval quality gates
+/// ├── WebSearch          — Web search retrieval source
+/// └── SqlDatabase        — SQL database retrieval source (disabled by default)
 /// </code>
 /// </para>
 /// </remarks>
@@ -107,4 +109,10 @@ public class RagConfig
     /// retrieval quality thresholds via Ragas-style evaluation.
     /// </summary>
     public QualityGateConfig QualityGate { get; set; } = new();
+
+    /// <summary>Web search retrieval source configuration.</summary>
+    public WebSearchConfig WebSearch { get; set; } = new();
+
+    /// <summary>SQL database retrieval source configuration (disabled by default).</summary>
+    public SqlDatabaseConfig SqlDatabase { get; set; } = new();
 }

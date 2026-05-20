@@ -193,6 +193,31 @@ public static class RagConventions
     /// <summary>Histogram: estimated cost per retrieval execution in USD.</summary>
     public const string CostPerExecution = "rag.cost.per_execution";
 
+    // ── Web search source attributes ───────────────────────────────
+
+    /// <summary>Web search provider name (e.g., "bing", "tavily").</summary>
+    public const string WebSearchProvider = "rag.web_search.provider";
+
+    /// <summary>Number of results returned by the web search provider.</summary>
+    public const string WebSearchResultCount = "rag.web_search.result_count";
+
+    /// <summary>Web search provider latency in milliseconds.</summary>
+    public const string WebSearchLatency = "rag.web_search.latency_ms";
+
+    // ── SQL database source attributes ─────────────────────────────
+
+    /// <summary>SQL template name matched (empty if LLM-generated).</summary>
+    public const string SqlSourceTemplate = "rag.sql.template_name";
+
+    /// <summary>Whether the SQL query was from a template (true) or LLM-generated (false).</summary>
+    public const string SqlSourceWasTemplate = "rag.sql.was_template_match";
+
+    /// <summary>Number of rows returned by the SQL query.</summary>
+    public const string SqlSourceRowCount = "rag.sql.row_count";
+
+    /// <summary>SQL query execution latency in milliseconds.</summary>
+    public const string SqlSourceLatency = "rag.sql.latency_ms";
+
     // ── Value sets ───────────────────────────────────────────────────
 
     /// <summary>Well-known values for <see cref="QueryType"/>.</summary>
