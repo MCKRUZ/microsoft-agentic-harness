@@ -172,6 +172,50 @@ The harness streams real-time progress to the WebUI through SignalR using the AG
 
 Plan events are the Phase 4 additions. When a plan starts executing, the frontend receives `PLAN_STARTED` with the full DAG structure. As each step runs, `PLAN_STEP_STARTED` and `PLAN_STEP_COMPLETED` fire with status, duration, and error details. `PLAN_STATE_DELTA` streams incremental updates for long-running steps. `SANDBOX_STATUS` reports resource usage and attestation hashes for tool execution steps. `PLAN_COMPLETED` and `PLAN_FAILED` signal terminal states.
 
+### Governance & Quality Loop
+
+Production agents need guardrails that go beyond content safety filters. The harness implements five interconnected governance subsystems that monitor agent behavior, enforce autonomy boundaries, and feed quality signals back into the system.
+
+**Drift Detection** uses EWMA (Exponentially Weighted Moving Average) scoring to monitor agent output quality against established baselines. When quality metrics drift beyond configurable thresholds, the system escalates through three severity levels — warn, alert, escalate — each triggering appropriate notifications via the AG-UI event stream. Baselines and audit records persist to graph or JSONL stores, and a `DriftEscalationBridge` connects drift alerts directly to the escalation system.
+
+**Learnings System** captures knowledge from agent interactions with configurable decay. `LearningEntry` records flow through CQRS commands — `Remember`, `Recall`, `Forget`, `Improve` — and are classified into decay tiers: `CRITICAL` (never expires), `STANDARD` (gradual decay), and `EPHEMERAL` (fast decay). A `LearningsPruningBackgroundService` runs scheduled cleanup, and a `LearningsDriftBridge` feeds learning quality signals into drift scoring. Persistence backends include graph-backed and in-memory stores.
+
+**Escalation System** handles multi-approval workflows with pluggable strategies: `AllOf` (unanimous), `AnyOf` (first responder), and `Quorum` (majority). Each `EscalationRequest` carries priority, risk level, and timeout actions. A `JsonlEscalationAuditStore` provides compliance trails, and the `AgUiEscalationNotifier` streams escalation events to the UI for real-time human-in-the-loop interactions.
+
+**Autonomy Tiers** enforce permission boundaries at three levels — `Manual`, `Supervised`, and `Autonomous` — with tier policies defined in configuration. A `GovernancePolicyBehavior` intercepts every MediatR command to enforce the current autonomy level. Response sanitizers (`CredentialRedactor`, `ExfiltrationUrlDetector`, `ResponseInjectionScrubber`) scrub agent output before it reaches users. MCP security scanning and prompt injection detection protect the tool boundary.
+
+**Resilience & Circuit Breaker** uses Polly-based circuit breakers with retry queues and provider fallback chains. Each provider maintains a health state (`Healthy`, `Degraded`, `Unhealthy`, `Exhausted`), and a capability registry enables automatic failover to alternative providers when the primary degrades.
+
+All five systems emit OpenTelemetry metrics and are wired into the AG-UI event stream for live frontend visualization.
+
+### Knowledge Graph
+
+The knowledge graph subsystem (`Infrastructure.AI.KnowledgeGraph`) provides structured entity and relationship storage with production-grade backends, cross-session memory, and compliance-aware data lifecycle management.
+
+**Graph Storage** supports three backends — in-memory (development), Neo4j, and PostgreSQL — behind the `IGraphDatabaseBackend` interface. Entity extraction produces `GraphNode` and `GraphEdge` instances organized into `GraphTriplet` records. Hierarchical community detection uses the Leiden algorithm (`ICommunityDetector`) to cluster related entities at configurable granularity levels.
+
+**Cross-Session Memory** implements `Remember()`/`Recall()`/`Forget()`/`Improve()` operations through the `IKnowledgeMemory` interface. A session-local `InMemorySessionCache` provides fast reads with background sync to the permanent graph store. Agents learn across conversations — knowledge captured in one session is available in the next via `ICrossSessionMemoryStore`.
+
+**Feedback-Weighted Search** tracks retrieval quality scores on graph nodes and edges through `IFeedbackStore`. An `LlmFeedbackDetector` automatically identifies positive and negative signals from agent interactions. Future retrievals blend semantic relevance with historical feedback weights, so frequently useful paths rank higher.
+
+**Provenance & Compliance** stamps every extracted node/edge with source pipeline, task, and timestamp via `IProvenanceStamper`. Retention policies (`IRetentionPolicyProvider`) define per-data-class lifetimes. The `DefaultErasureOrchestrator` handles right-to-erasure requests with verifiable `ErasureReceipt` records. A `ComplianceAwareGraphStore` decorator enforces retention and audit policies transparently. All mutations flow through `IMemoryAuditSink` for compliance trails.
+
+**Multi-Tenant Isolation** via `TenantIsolatedGraphStore` enforces scope boundaries (user → dataset → owner) with permission-checked access through `IKnowledgeScopeValidator`. Multiple agents and users can share knowledge infrastructure while maintaining strict data isolation.
+
+### Agentic RAG Pipeline
+
+The RAG pipeline (`Infrastructure.AI.RAG`) has evolved through four phases into a fully autonomous retrieval system that adapts its strategy based on query complexity, decomposes multi-part questions, maintains knowledge across sessions, and orchestrates multiple sources in parallel.
+
+**Phase A — Adaptive Complexity Routing** classifies incoming queries by complexity using an LLM-based few-shot classifier (`IQueryComplexityClassifier`). A `RetrievalDecisionGate` routes each query to the appropriate retrieval tier: simple queries skip expensive operations like reranking and CRAG evaluation, while complex queries get the full pipeline. Configuration via `ComplexityRoutingConfig` targets 30-50% cost reduction on mixed workloads.
+
+**Phase B — Multi-Hop Retrieval & Faithfulness** handles questions that require synthesizing information from multiple documents. The `IQueryDecomposer` breaks complex questions into sub-queries, and the `IIterativeRetriever` executes retrieval rounds until an `ISufficiencyEvaluator` determines enough evidence has been gathered. An `IAnswerFaithfulnessEvaluator` validates that generated answers are grounded in retrieved evidence, flagging hallucinated claims.
+
+**Phase C — Production Graph & Memory** replaces the teaching-stub GraphRAG service with production backends (Neo4j, Kuzu, PostgreSQL). Entity extraction feeds into the knowledge graph with Leiden community detection. Cross-session memory enables agents to learn across conversations. See the Knowledge Graph section above for details.
+
+**Phase D — Full Autonomy** introduces multi-source orchestration and quality gates. The `MultiSourceOrchestrator` executes retrieval across vector stores, BM25 indexes, and knowledge graphs in parallel, merging results via configurable fusion strategies. A `RetrievalCostTracker` monitors per-query costs against budgets. Quality gates evaluate retrieval quality at each stage, and the orchestrator can autonomously decide to retry, expand, or escalate based on quality signals.
+
+The full pipeline flows through the `RagOrchestrator`, which coordinates all four phases: classify → route → transform → retrieve (single-hop or multi-hop) → rerank → evaluate → expand → assemble. See `docs/rag/README.md` for the complete architecture.
+
 ---
 
 ## Architecture
@@ -192,11 +236,15 @@ The project follows Clean Architecture with strict dependency inversion. Each la
 │  Azure OpenAI / AI Foundry  ·  MCP Client  ·  Connectors          │
 │  Planner (DAG executor)  ·  Sandbox (process/container isolation)  │
 │  Observability (OTel)  ·  State Management  ·  API Access          │
+│  RAG (hybrid retrieval, CRAG, complexity routing, multi-hop)       │
+│  Knowledge Graph (Neo4j/PostgreSQL, Leiden, cross-session memory)  │
+│  Governance (drift, escalation, autonomy, resilience, learnings)   │
 ├─────────────────────────────────────────────────────────────────────┤
 │                          Domain Layer                              │
 │  Agent Manifests  ·  Skill Definitions  ·  Tool Declarations      │
 │  Plan Graphs  ·  Sandbox Capabilities  ·  Attestation Models      │
 │  A2A Agent Cards  ·  Workflow State  ·  Configuration Hierarchy    │
+│  Knowledge Graph Models  ·  Governance Policies  ·  RAG Models     │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -218,7 +266,12 @@ src/
 │       ├── A2A/                        AgentCard
 │       ├── Planner/                    PlanGraph, PlanStep, PlanEdge, StepType, ErrorRecovery
 │       ├── Sandbox/                    SandboxExecutionRequest, ToolCapability, ResourceLimits
-│       └── Attestation/               ToolExecutionAttestation
+│       ├── Attestation/               ToolExecutionAttestation
+│       ├── RAG/                        DocumentChunk, RetrievalResult, QueryComplexity, Faithfulness
+│       ├── KnowledgeGraph/             GraphNode, GraphEdge, Community, MemoryRecord, Provenance
+│       ├── Governance/                 AutonomyLevel, AutonomyTierPolicy
+│       ├── Orchestration/              AgentCandidate, AgentSelection, DelegationRecord
+│       └── Permissions/                SafetyGate
 │
 ├── Content/Application/
 │   ├── Application.Common/
@@ -229,13 +282,19 @@ src/
 │   ├── Application.AI.Common/
 │   │   ├── Factories/                  AgentFactory, AgentExecutionContextFactory
 │   │   ├── Interfaces/                 IAgentFactory, IChatClientFactory, ISkillLoaderService
+│   │   ├── Interfaces/RAG/            IVectorStore, IReranker, IRagOrchestrator + 19 more
+│   │   ├── Interfaces/KnowledgeGraph/  IKnowledgeGraphStore, IKnowledgeMemory, IFeedbackStore + 14 more
+│   │   ├── Interfaces/Governance/      IAutonomyTierResolver, ISafetyGateRegistry
 │   │   ├── Models/Context/             ContextModels (tier enums, budget types)
+│   │   ├── OpenTelemetry/              RagIngestionMetrics, RagRetrievalMetrics
 │   │   └── Services/                   ContextBudgetTracker, TieredContextAssembler, AIToolConverter
 │   └── Application.Core/
 │       ├── Agents/Skills/              SKILL.md files per agent
 │       ├── CQRS/Agents/               ExecuteAgentTurn, RunConversation, RunOrchestratedTask
 │       ├── CQRS/MetaHarness/          RunHarnessOptimization (propose→evaluate outer loop)
-│       └── CQRS/Planner/             GeneratePlan, CreatePlan, ExecutePlan, CancelPlan, RetryPlanStep
+│       ├── CQRS/Planner/             GeneratePlan, CreatePlan, ExecutePlan, CancelPlan, RetryPlanStep
+│       ├── CQRS/RAG/                  IngestDocument, SearchDocuments (commands + handlers)
+│       └── Workflows/                  KG ingestion, orchestration, and RAG search workflows
 │
 ├── Content/Infrastructure/
 │   ├── Infrastructure.Common/          Identity service, claim extensions
@@ -246,8 +305,20 @@ src/
 │   │   ├── Persistence/               PlannerDbContext, EF Core entities, SQLite migrations
 │   │   └── ...                        ChatClientFactory, A2AAgentHost, state management
 │   ├── Infrastructure.AI.Connectors/   Unified external API adapters with ITool bridge
+│   ├── Infrastructure.AI.Governance/   Autonomy tiers, response sanitizers, AGT adapters
+│   ├── Infrastructure.AI.KnowledgeGraph/ Graph stores (Neo4j/PostgreSQL/in-memory), memory,
+│   │                                     compliance, feedback, provenance, scoping
 │   ├── Infrastructure.AI.MCP/          MCP client — discover and invoke remote tools
 │   ├── Infrastructure.AI.MCPServer/    MCP server — expose tools/prompts/resources via HTTP
+│   ├── Infrastructure.AI.RAG/          Full RAG pipeline — ingestion, retrieval, evaluation,
+│   │   ├── Ingestion/                    parsers, chunkers, enricher, RAPTOR, embeddings
+│   │   ├── Retrieval/                    vector stores, BM25, hybrid, rerankers, iterative
+│   │   ├── QueryTransform/               classifier, RAG-Fusion, HyDE, complexity routing
+│   │   ├── Evaluation/                   CRAG, sufficiency, faithfulness evaluators
+│   │   ├── Assembly/                     pointer expansion, citation tracking
+│   │   ├── GraphRag/                     Kuzu/ManagedCode backends, Leiden, cross-session memory
+│   │   ├── Orchestration/                RagOrchestrator, multi-source, decision gate, cost tracker
+│   │   └── CostControl/                 RagModelRouter (model tiering)
 │   ├── Infrastructure.APIAccess/       HTTP resilience policies, security middleware
 │   └── Infrastructure.Observability/   OTel pipeline, Prometheus, Jaeger, LLM span processor
 │
@@ -433,6 +504,14 @@ The ConsoleUI launches an interactive [Spectre.Console](https://spectreconsole.n
 | `AppConfig.Observability` | Tracing, metrics, and sampling (`EnableTracing`, `SamplingRatio`) |
 | `AppConfig.Cache` | Cache backend (`CacheType`: Memory or Redis) |
 | `AppConfig.Logging` | Log output (`LogsBasePath`, `PipeName` for named pipe streaming) |
+| `AppConfig.AI.Rag` | RAG pipeline: `VectorStore` (provider, endpoint, embedding model), `Ingestion` (chunking strategy, overlap), `Reranker` (strategy), `Crag` (thresholds), `GraphRag` (enabled, provider, connection string) |
+| `AppConfig.AI.Rag.ModelTiering` | Cost optimization: `Enabled`, `DefaultTier`, `OperationOverrides` (per-operation tier), `Tiers[]` (name, deployment, rate limit). See `docs/rag/model-tiering.md` |
+| `AppConfig.AI.Rag.ComplexityRouting` | Adaptive routing: tier thresholds, cost weights, bypass rules for simple queries |
+| `AppConfig.AI.Rag.Faithfulness` | Answer grounding: evaluation model, hallucination thresholds, citation requirements |
+| `AppConfig.AI.Rag.CrossSessionMemory` | Memory persistence: decay rates, retention policies, sync intervals |
+| `AppConfig.AI.Rag.GraphDatabase` | Graph backend: provider (InMemory/Neo4j/PostgreSQL), connection string, community level |
+| `AppConfig.AI.Permissions` | Autonomy tier policies: per-tier allowed operations, escalation triggers |
+| `AppConfig.AI.Orchestration` | Multi-agent: capability match weights, streaming execution, subagent config |
 | `MetaHarness` | Optimization settings: `EvalTasksPath`, `SeedCandidatePath`, `MaxIterations`, `ProposerModel`, `EvaluatorModel`, `ScoreImprovementThreshold`, `RegressionSuiteThreshold` (0.8), `ConsecutiveNoImprovementLimit` (5) |
 | `Planner` | Plan generation: `GenerationModel`, `ClientType`, `GenerationTemperature` (0.3), `GenerationMaxTokens` (4096) |
 | `Attestation` | HMAC attestation keys: `HmacKeys[]` (version + Base64 key), `CurrentKeyVersion` — keys in User Secrets (dev) or Key Vault (prod) |
@@ -447,9 +526,12 @@ The ConsoleUI launches an interactive [Spectre.Console](https://spectreconsole.n
 | **AI** | Microsoft.Agents.AI, Microsoft.Extensions.AI, Semantic Kernel |
 | **LLM Providers** | Azure OpenAI, OpenAI, Azure AI Foundry |
 | **Architecture** | Clean Architecture, CQRS (MediatR), FluentValidation |
+| **RAG** | Hybrid retrieval (dense + BM25/RRF), CRAG, RAPTOR, HyDE, RAG-Fusion, GraphRAG, multi-hop |
+| **Knowledge Graph** | Neo4j, PostgreSQL, Kuzu, Leiden community detection, cross-session memory |
+| **Governance** | Drift detection (EWMA), escalation workflows, autonomy tiers, Polly circuit breakers |
 | **Protocols** | MCP (HTTP transport, JWT auth), A2A (agent discovery + delegation) |
-| **Observability** | OpenTelemetry, Prometheus, Jaeger, Azure Monitor |
-| **Security** | Azure Identity, JWT Bearer, CORS allowlists, sandboxed tool execution |
+| **Observability** | OpenTelemetry, Prometheus, Grafana, Tempo, Azure Monitor |
+| **Security** | Azure Identity, JWT Bearer, CORS allowlists, sandboxed tool execution, response sanitization |
 | **Testing** | xUnit, Moq, coverlet, Vitest, React Testing Library |
 | **WebUI** | React 19, TypeScript, Vite, Tailwind CSS, shadcn/ui, Zustand, TanStack Query, MSAL |
 

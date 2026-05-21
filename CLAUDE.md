@@ -4,22 +4,32 @@
 Production-grade template for a Microsoft Agent Framework agent with a full agentic harness — skills, MCP, tools, RAG, and knowledge graph systems — modeled after Claude Code's architecture. Built on the ApplicationTemplate Clean Architecture pattern. Designed for enterprise consumers to clone and extend.
 
 ## RAG & Knowledge Architecture
-The harness includes a full RAG pipeline (`Infrastructure.AI.RAG`) and a planned knowledge graph layer inspired by [Cognee](https://github.com/topoteretes/cognee).
+The harness includes a full RAG pipeline (`Infrastructure.AI.RAG`) and a production knowledge graph layer (`Infrastructure.AI.KnowledgeGraph`) inspired by [Cognee](https://github.com/topoteretes/cognee).
 
-### Current RAG Capabilities (Implemented)
+### RAG Capabilities
 - **Ingestion**: 3 chunking strategies (structure-aware, fixed-size, semantic), contextual enrichment (Anthropic pattern), RAPTOR hierarchical summarization
 - **Retrieval**: Hybrid dense+sparse via Reciprocal Rank Fusion, query transformation (RAG Fusion, HyDE), query classification/routing
 - **Quality**: CRAG evaluation with refinement loops, configurable accept/refine/reject thresholds
 - **Assembly**: Token budget enforcement, pointer expansion (sibling/parent), citation tracking
 - **Reranking**: Azure Semantic, Cross-Encoder, NoOp (strategy-keyed DI)
 - **Stores**: Azure AI Search + FAISS (vector), Azure AI Search + SQLite FTS5 (BM25)
+- **Complexity Routing** (Phase A): LLM-based query complexity classification, tiered pipeline selection, 30-50% cost reduction on mixed workloads
+- **Multi-Hop** (Phase B): Query decomposition, iterative retrieval with sufficiency evaluation, answer faithfulness evaluation for hallucination detection
+- **Full Autonomy** (Phase D): Multi-source parallel orchestration (vector + BM25 + graph), retrieval cost tracking, quality gates at each pipeline stage
 
-### Knowledge Graph Enhancements (Planned — from Cognee analysis)
-1. **Production Graph Backend** — Replace the teaching-stub `ManagedCodeGraphRagService` with a real graph database (Neo4j/Kuzu/PostgreSQL). Entity extraction with ontology validation, temporal event support, community detection (Leiden algorithm)
-2. **Feedback-Weighted Search** — Track retrieval quality scores on graph nodes/edges. Re-rank future retrievals by blending semantic relevance with historical feedback weights. Configurable learning rate (`feedback_alpha`)
-3. **Cross-Session Knowledge Persistence** — `Remember()`/`Recall()`/`Forget()`/`Improve()` operations. Session-local fast cache with background sync to permanent graph. Agents learn across conversations
-4. **Entity-Level Provenance** — Stamp every extracted node/edge with source pipeline, task, and timestamp. Audit trail for knowledge lineage beyond document-level citations
-5. **Multi-Tenant Knowledge Isolation** — Agent scope boundaries (user → dataset → owner) with permission-checked dataset access. Enables multiple agents/users against shared knowledge infrastructure
+### Knowledge Graph (Implemented — from Cognee analysis)
+1. **Production Graph Backend** — Neo4j, Kuzu, and PostgreSQL backends behind `IGraphDatabaseBackend`. Entity extraction, Leiden community detection (`LeidenCommunityDetector`), in-memory store for development
+2. **Feedback-Weighted Search** — `GraphFeedbackStore` + `LlmFeedbackDetector` track retrieval quality on graph nodes/edges. Future retrievals blend semantic relevance with historical feedback weights
+3. **Cross-Session Knowledge Persistence** — `Remember()`/`Recall()`/`Forget()`/`Improve()` via `IKnowledgeMemory`. `InMemorySessionCache` for fast reads with background sync to `ICrossSessionMemoryStore`. `MemoryDecayService` handles configurable decay tiers (CRITICAL/STANDARD/EPHEMERAL)
+4. **Entity-Level Provenance** — `DefaultProvenanceStamper` stamps every node/edge with source pipeline, task, and timestamp. `ComplianceAwareGraphStore` enforces retention policies. `DefaultErasureOrchestrator` handles right-to-erasure with `ErasureReceipt` records
+5. **Multi-Tenant Knowledge Isolation** — `TenantIsolatedGraphStore` enforces scope boundaries (user → dataset → owner) via `IKnowledgeScopeValidator`. Multiple agents/users share infrastructure with strict data isolation
+
+### Governance Subsystems
+- **Drift Detection**: EWMA-based quality monitoring against baselines, three severity levels, DriftEscalationBridge
+- **Learnings**: CQRS-based knowledge capture with exponential decay, scheduled pruning, drift integration
+- **Escalation**: Multi-approval workflows (AllOf/AnyOf/Quorum), JSONL audit, AG-UI notifications
+- **Autonomy Tiers**: Manual/Supervised/Autonomous enforcement via MediatR pipeline behavior, response sanitizers
+- **Resilience**: Polly circuit breakers, provider fallback chains, health state tracking
 
 ## Stack
 - C# .NET 10, Clean Architecture, CQRS/MediatR, FluentValidation, AutoMapper
@@ -27,7 +37,10 @@ The harness includes a full RAG pipeline (`Infrastructure.AI.RAG`) and a planned
 - MCP (Model Context Protocol) server/client — HTTP transport with JWT auth
 - EF Core with SQLite (plan state persistence), IDbContextFactory for short-lived contexts
 - Docker.DotNet (container sandbox)
-- OpenTelemetry (Jaeger + Azure Monitor), Prometheus
+- RAG: Azure AI Search, FAISS, SQLite FTS5, ManagedCode.GraphRag
+- Knowledge Graph: Neo4j, Kuzu, PostgreSQL, Leiden community detection
+- Governance: Polly (resilience), EWMA drift detection, JSONL audit stores
+- OpenTelemetry (Grafana + Tempo + Prometheus + Azure Monitor)
 - xUnit, Moq, coverlet
 
 ## Architecture
