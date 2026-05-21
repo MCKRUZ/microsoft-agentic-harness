@@ -10,6 +10,12 @@ public sealed class SqlDatabaseConfig
     /// <summary>Enable/disable the SQL database retrieval source.</summary>
     public bool Enabled { get; set; }
 
+    /// <summary>
+    /// Connection string for the SQL database.
+    /// Set via User Secrets (dev) or Key Vault (prod) — never hardcode.
+    /// </summary>
+    public string ConnectionString { get; set; } = "";
+
     /// <summary>Path to the JSON file containing SQL query templates.</summary>
     public string TemplatesPath { get; set; } = "sql-templates.json";
 
