@@ -40,7 +40,7 @@ public sealed class McpConnectionException : ApplicationExceptionBase
     /// Gets the transport type that was in use when the connection failed, if specified.
     /// </summary>
     /// <value>
-    /// The transport identifier (e.g., "stdio", "sse", "http", "websocket"),
+    /// The transport identifier (see <see cref="Domain.AI.Constants.McpTransports"/> for well-known values),
     /// or <c>null</c> if not provided.
     /// </value>
     public string? Transport { get; }

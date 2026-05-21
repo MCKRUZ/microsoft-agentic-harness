@@ -39,7 +39,7 @@ public sealed class SkillNotFoundException : ApplicationExceptionBase
     /// Gets the source from which the skill was expected to be loaded, if specified.
     /// </summary>
     /// <value>
-    /// The skill source (e.g., "bundled", "filesystem", "mcp", "plugin"),
+    /// The skill source (see <see cref="Domain.AI.Constants.SkillSources"/> for well-known values),
     /// or <c>null</c> if the source is unknown or not relevant.
     /// </value>
     public string? SkillSource { get; }

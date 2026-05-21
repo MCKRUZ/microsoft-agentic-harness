@@ -36,7 +36,7 @@ public sealed class ContentSafetyException : ApplicationExceptionBase
     /// Gets the category of the safety violation, if specified.
     /// </summary>
     /// <value>
-    /// The safety category (e.g., "hate", "violence", "self-harm", "sexual", "pii", "jailbreak"),
+    /// The safety category (see <see cref="Domain.AI.Constants.SafetyCategories"/> for well-known values),
     /// or <c>null</c> if the category is unknown or not classified.
     /// </value>
     public string? Category { get; }
