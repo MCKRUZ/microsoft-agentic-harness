@@ -31,34 +31,43 @@ public class MultiSourceRetrievalExample
 
     public async Task RunAsync(CancellationToken cancellationToken = default)
     {
-        ConsoleHelper.DisplayHeader("Multi-Source Retrieval", Color.Cyan);
-
-        if (!AnsiConsole.Profile.Capabilities.Interactive)
+        try
         {
-            await RunHeadlessAsync(cancellationToken);
-            return;
+            ConsoleHelper.DisplayHeader("Multi-Source Retrieval", Color.Cyan);
+            ConsoleHelper.DisplayModeInfo(isLive: false, "In-memory vector + graph stores");
+
+            if (!AnsiConsole.Profile.Capabilities.Interactive)
+            {
+                await RunHeadlessAsync(cancellationToken);
+                return;
+            }
+
+            var mode = AnsiConsole.Prompt(
+                new SelectionPrompt<string>()
+                    .Title("[bold]Select scenario:[/]")
+                    .AddChoices(
+                        "Simple Query (Vector Only)",
+                        "Complex Query (All Sources)",
+                        "Cost Comparison",
+                        "Back"));
+
+            switch (mode)
+            {
+                case "Simple Query (Vector Only)":
+                    await RunSimpleQueryAsync(cancellationToken);
+                    break;
+                case "Complex Query (All Sources)":
+                    await RunComplexQueryAsync(cancellationToken);
+                    break;
+                case "Cost Comparison":
+                    await RunCostComparisonAsync(cancellationToken);
+                    break;
+            }
         }
-
-        var mode = AnsiConsole.Prompt(
-            new SelectionPrompt<string>()
-                .Title("[bold]Select scenario:[/]")
-                .AddChoices(
-                    "Simple Query (Vector Only)",
-                    "Complex Query (All Sources)",
-                    "Cost Comparison",
-                    "Back"));
-
-        switch (mode)
+        catch (Exception ex)
         {
-            case "Simple Query (Vector Only)":
-                await RunSimpleQueryAsync(cancellationToken);
-                break;
-            case "Complex Query (All Sources)":
-                await RunComplexQueryAsync(cancellationToken);
-                break;
-            case "Cost Comparison":
-                await RunCostComparisonAsync(cancellationToken);
-                break;
+            ConsoleHelper.DisplayError($"Demo failed: {ex.Message}");
+            _logger.LogError(ex, "MultiSourceRetrievalExample failed");
         }
     }
 
@@ -72,7 +81,7 @@ public class MultiSourceRetrievalExample
 
     private async Task RunSimpleQueryAsync(CancellationToken cancellationToken)
     {
-        AnsiConsole.MarkupLine("\n[bold cyan]Step 1/3: Simple Query (Vector Only)[/]");
+        ConsoleHelper.DisplayStep(1, 3, "Simple Query (Vector Only)");
         AnsiConsole.MarkupLine("[grey]Query complexity: Simple → Vector search only, no reranking[/]\n");
 
         _costTracker.Reset();
@@ -103,7 +112,7 @@ public class MultiSourceRetrievalExample
 
     private async Task RunComplexQueryAsync(CancellationToken cancellationToken)
     {
-        AnsiConsole.MarkupLine("\n[bold cyan]Step 2/3: Complex Query (All Sources)[/]");
+        ConsoleHelper.DisplayStep(2, 3, "Complex Query (All Sources)");
         AnsiConsole.MarkupLine("[grey]Query complexity: Complex → Vector + Graph + Web in parallel[/]\n");
 
         _costTracker.Reset();
@@ -134,7 +143,7 @@ public class MultiSourceRetrievalExample
 
     private async Task RunCostComparisonAsync(CancellationToken cancellationToken)
     {
-        AnsiConsole.MarkupLine("\n[bold cyan]Step 3/3: Cost Comparison[/]");
+        ConsoleHelper.DisplayStep(3, 3, "Cost Comparison");
         AnsiConsole.MarkupLine("[grey]Comparing retrieval costs across complexity levels[/]\n");
 
         // Simple query cost

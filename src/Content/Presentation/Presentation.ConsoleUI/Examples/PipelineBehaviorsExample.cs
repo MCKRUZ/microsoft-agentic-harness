@@ -1,7 +1,6 @@
 using Application.AI.Common.Interfaces.Governance;
 using Domain.AI.Governance;
 using Domain.Common.Config.AI;
-using MediatR;
 using Microsoft.Extensions.Logging;
 using Presentation.ConsoleUI.Common.Helpers;
 using Spectre.Console;
@@ -14,16 +13,13 @@ namespace Presentation.ConsoleUI.Examples;
 /// </summary>
 public sealed class PipelineBehaviorsExample
 {
-    private readonly ISender _sender;
     private readonly ICompositeResponseSanitizer _sanitizer;
     private readonly ILogger<PipelineBehaviorsExample> _logger;
 
     public PipelineBehaviorsExample(
-        ISender sender,
         ICompositeResponseSanitizer sanitizer,
         ILogger<PipelineBehaviorsExample> logger)
     {
-        _sender = sender;
         _sanitizer = sanitizer;
         _logger = logger;
     }
@@ -36,6 +32,7 @@ public sealed class PipelineBehaviorsExample
         try
         {
             ConsoleHelper.DisplayHeader("MediatR Pipeline Behaviors");
+            ConsoleHelper.DisplayModeInfo(isLive: false, "Pipeline behaviors are in-process");
 
             // Step 1: Behavior Execution Order
             Step1_DisplayBehaviorChain();

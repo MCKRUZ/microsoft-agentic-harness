@@ -42,6 +42,7 @@ public class DriftDetectionExample
         try
         {
             ConsoleHelper.DisplayHeader("Drift Detection: EWMA Quality Monitoring", Color.Cyan);
+            ConsoleHelper.DisplayModeInfo(isLive: false, "EWMA is pure math — fully offline");
             AnsiConsole.WriteLine();
 
             await Step1_EstablishBaselineAsync(cancellationToken);
@@ -201,10 +202,10 @@ public class DriftDetectionExample
         {
             var status = severity switch
             {
-                DriftSeverity.None => "[green]✓ Normal[/]",
-                DriftSeverity.Warn => "[yellow]⚠ Warning[/]",
-                DriftSeverity.Alert => "[orange1]🔶 Alert[/]",
-                DriftSeverity.Escalate => "[red]⛔ Escalate[/]",
+                DriftSeverity.None => "[green]Normal[/]",
+                DriftSeverity.Warn => "[yellow]Warning[/]",
+                DriftSeverity.Alert => "[orange1]Alert[/]",
+                DriftSeverity.Escalate => "[red]Escalate[/]",
                 _ => "[white]?[/]"
             };
 

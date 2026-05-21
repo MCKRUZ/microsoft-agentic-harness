@@ -37,6 +37,7 @@ public class EscalationApprovalsExample
         try
         {
             ConsoleHelper.DisplayHeader("Governance: Escalation & Approvals", Color.Cyan);
+            ConsoleHelper.DisplayModeInfo(isLive: false, "In-memory escalation state");
             AnsiConsole.WriteLine();
 
             await Step1_AnyOfApprovalAsync(cancellationToken);
@@ -278,7 +279,7 @@ public class EscalationApprovalsExample
             {
                 { "action", "execute" },
                 { "resource", "system-critical" }
-            }.AsReadOnly(),
+            },
             Description = description,
             RiskLevel = RiskLevel.High,
             Priority = EscalationPriority.Blocking,

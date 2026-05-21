@@ -41,6 +41,7 @@ public class GovernanceSanitizationExample
         try
         {
             ConsoleHelper.DisplayHeader("Governance: Response Sanitization", Color.Cyan);
+            ConsoleHelper.DisplayModeInfo(isLive: false, "Pure string processing — no external dependencies");
             AnsiConsole.WriteLine();
 
             await Step1_CleanResponseAsync();
@@ -66,11 +67,11 @@ public class GovernanceSanitizationExample
         var cleanContent = "The database returned 1,500 customer records successfully.";
         var result = _compositeSanitizer.Sanitize(cleanContent);
 
-        AnsiConsole.WriteLine($"[bold]Input:[/] {Markup.Escape(cleanContent)}");
-        AnsiConsole.WriteLine($"[bold]Sanitized:[/] {Markup.Escape(result.SanitizedContent)}");
-        AnsiConsole.WriteLine($"[bold]Was Sanitized:[/] {result.WasSanitized}");
-        AnsiConsole.WriteLine($"[bold]Findings Count:[/] {result.Findings.Count}");
-        AnsiConsole.WriteLine($"[bold]Threat Level:[/] {result.HighestThreatLevel}");
+        AnsiConsole.MarkupLine($"[bold]Input:[/] {Markup.Escape(cleanContent)}");
+        AnsiConsole.MarkupLine($"[bold]Sanitized:[/] {Markup.Escape(result.SanitizedContent)}");
+        AnsiConsole.MarkupLine($"[bold]Was Sanitized:[/] {result.WasSanitized}");
+        AnsiConsole.MarkupLine($"[bold]Findings Count:[/] {result.Findings.Count}");
+        AnsiConsole.MarkupLine($"[bold]Threat Level:[/] {result.HighestThreatLevel}");
 
         AnsiConsole.WriteLine();
         await Task.CompletedTask;
@@ -190,7 +191,7 @@ public class GovernanceSanitizationExample
 
         var result = _compositeSanitizer.Sanitize(combinedAttack);
 
-        AnsiConsole.WriteLine("[bold]Combined Attack Input:[/]");
+        AnsiConsole.MarkupLine("[bold]Combined Attack Input:[/]");
         AnsiConsole.WriteLine(Markup.Escape(combinedAttack));
         AnsiConsole.WriteLine();
 
@@ -220,8 +221,8 @@ public class GovernanceSanitizationExample
 
         AnsiConsole.Write(findingsTable);
         AnsiConsole.WriteLine();
-        AnsiConsole.WriteLine($"[bold]Overall Threat Level:[/] {result.HighestThreatLevel}");
-        AnsiConsole.WriteLine($"[bold]Total Findings:[/] {result.Findings.Count}");
+        AnsiConsole.MarkupLine($"[bold]Overall Threat Level:[/] {result.HighestThreatLevel}");
+        AnsiConsole.MarkupLine($"[bold]Total Findings:[/] {result.Findings.Count}");
         AnsiConsole.WriteLine();
 
         await Task.CompletedTask;

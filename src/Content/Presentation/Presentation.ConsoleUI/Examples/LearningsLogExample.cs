@@ -39,6 +39,7 @@ public class LearningsLogExample
         try
         {
             ConsoleHelper.DisplayHeader("Learnings Log: Knowledge Persistence & Feedback Learning", Color.Cyan);
+            ConsoleHelper.DisplayModeInfo(isLive: false, "In-memory learnings store");
             AnsiConsole.WriteLine();
 
             await Step1_SaveEntriesAsync(cancellationToken);

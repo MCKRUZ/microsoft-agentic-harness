@@ -39,21 +39,30 @@ public class SandboxCapabilitiesExample
     /// </summary>
     public async Task RunAsync(CancellationToken cancellationToken = default)
     {
-        ConsoleHelper.DisplayHeader("Sandbox Capabilities & Permission Enforcement", Color.Blue);
+        try
+        {
+            ConsoleHelper.DisplayHeader("Sandbox Capabilities & Permission Enforcement", Color.Blue);
+            ConsoleHelper.DisplayModeInfo(isLive: false, "Pure logic — no external dependencies");
 
-        await Step1_DisplayCapabilityTaxonomyAsync();
-        await Step2_ResolveProfilesAsync(cancellationToken);
-        await Step3_ValidEnforcementAsync(cancellationToken);
-        await Step4_InvalidEnforcementAsync(cancellationToken);
-        Step5_DisplayResolutionProcess();
+            await Step1_DisplayCapabilityTaxonomyAsync();
+            await Step2_ResolveProfilesAsync(cancellationToken);
+            await Step3_ValidEnforcementAsync(cancellationToken);
+            await Step4_InvalidEnforcementAsync(cancellationToken);
+            Step5_DisplayResolutionProcess();
 
-        AnsiConsole.WriteLine();
-        ConsoleHelper.DisplaySuccess("Sandbox capabilities demonstration complete.");
+            AnsiConsole.WriteLine();
+            ConsoleHelper.DisplaySuccess("Sandbox capabilities demonstration complete.");
+        }
+        catch (Exception ex)
+        {
+            ConsoleHelper.DisplayError($"Demo failed: {ex.Message}");
+            _logger.LogError(ex, "SandboxCapabilitiesExample failed");
+        }
     }
 
     private static Task Step1_DisplayCapabilityTaxonomyAsync()
     {
-        AnsiConsole.MarkupLine("[bold]Step 1/5 — Capability Taxonomy[/]");
+        ConsoleHelper.DisplayStep(1, 5, "Capability Taxonomy");
         AnsiConsole.WriteLine("All available ToolCapability flags with their bit values:");
         AnsiConsole.WriteLine();
 
@@ -90,7 +99,7 @@ public class SandboxCapabilitiesExample
 
     private async Task Step2_ResolveProfilesAsync(CancellationToken cancellationToken)
     {
-        AnsiConsole.MarkupLine("[bold]Step 2/5 — Profile Resolution[/]");
+        ConsoleHelper.DisplayStep(2, 5, "Profile Resolution");
         AnsiConsole.WriteLine("Resolving permission profiles for sample tools:");
         AnsiConsole.WriteLine();
 
@@ -139,7 +148,7 @@ public class SandboxCapabilitiesExample
 
     private async Task Step3_ValidEnforcementAsync(CancellationToken cancellationToken)
     {
-        AnsiConsole.MarkupLine("[bold]Step 3/5 — Valid Enforcement[/]");
+        ConsoleHelper.DisplayStep(3, 5, "Valid Enforcement");
         AnsiConsole.WriteLine("Checking: Can 'file_system' tool read a file?");
         AnsiConsole.WriteLine();
 
@@ -164,7 +173,7 @@ public class SandboxCapabilitiesExample
 
     private async Task Step4_InvalidEnforcementAsync(CancellationToken cancellationToken)
     {
-        AnsiConsole.MarkupLine("[bold]Step 4/5 — Invalid Enforcement[/]");
+        ConsoleHelper.DisplayStep(4, 5, "Invalid Enforcement");
         AnsiConsole.WriteLine("Checking: Can 'file_system' tool make network requests? (read-only tool)");
         AnsiConsole.WriteLine();
 
@@ -190,7 +199,7 @@ public class SandboxCapabilitiesExample
 
     private static void Step5_DisplayResolutionProcess()
     {
-        AnsiConsole.MarkupLine("[bold]Step 5/5 — Deny-Overrides-Allow Resolution[/]");
+        ConsoleHelper.DisplayStep(5, 5, "Deny-Overrides-Allow Resolution");
         AnsiConsole.WriteLine("The 5-step capability resolution process:");
         AnsiConsole.WriteLine();
 

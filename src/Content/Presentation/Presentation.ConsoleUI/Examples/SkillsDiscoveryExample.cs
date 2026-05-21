@@ -39,25 +39,34 @@ public class SkillsDiscoveryExample
 	public async Task RunAsync(CancellationToken cancellationToken = default)
 	{
 		ConsoleHelper.DisplayHeader("Skills Discovery & Context Budget", Color.Cyan1);
+		ConsoleHelper.DisplayModeInfo(isLive: false, "Reading skills from local filesystem");
 
-		// Step 1: Discover skills
-		ConsoleHelper.DisplayStep(1, 4, "Discover available skills");
-		var skills = DiscoverSkills();
-		DisplaySkillsList(skills);
+		try
+		{
+			// Step 1: Discover skills
+			ConsoleHelper.DisplayStep(1, 4, "Discover available skills");
+			var skills = DiscoverSkills();
+			DisplaySkillsList(skills);
 
-		// Step 2: Tier 1 view (metadata)
-		ConsoleHelper.DisplayStep(2, 4, "Tier 1 - Index Card view (metadata only)");
-		DisplayTier1View(skills);
+			// Step 2: Tier 1 view (metadata)
+			ConsoleHelper.DisplayStep(2, 4, "Tier 1 - Index Card view (metadata only)");
+			DisplayTier1View(skills);
 
-		// Step 3: Tier 2 view (instructions)
-		ConsoleHelper.DisplayStep(3, 4, "Tier 2 - Folder view (full instructions)");
-		DisplayTier2View(skills);
+			// Step 3: Tier 2 view (instructions)
+			ConsoleHelper.DisplayStep(3, 4, "Tier 2 - Folder view (full instructions)");
+			DisplayTier2View(skills);
 
-		// Step 4: Budget tracking
-		ConsoleHelper.DisplayStep(4, 4, "Context budget tracking and assessment");
-		await DisplayBudgetTrackingAsync(cancellationToken);
+			// Step 4: Budget tracking
+			ConsoleHelper.DisplayStep(4, 4, "Context budget tracking and assessment");
+			await DisplayBudgetTrackingAsync(cancellationToken);
 
-		ConsoleHelper.DisplaySuccess("Skills discovery and budget tracking demonstration complete.");
+			ConsoleHelper.DisplaySuccess("Skills Discovery & Budget demo complete.");
+		}
+		catch (Exception ex)
+		{
+			ConsoleHelper.DisplayError($"Demo failed: {ex.Message}");
+			_logger.LogError(ex, "SkillsDiscoveryExample failed");
+		}
 	}
 
 	/// <summary>
