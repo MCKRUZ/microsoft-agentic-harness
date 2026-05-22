@@ -21,6 +21,7 @@ public class ModelRouterTests
     private readonly Mock<IEscalationTracker> _mockEscalation = new();
     private readonly Mock<IChatClientFactory> _mockClientFactory = new();
     private readonly Mock<IChatClient> _mockClient = new();
+    private readonly Mock<IServiceProvider> _mockServiceProvider = new();
     private readonly ModelRouter _sut;
     private readonly ModelRoutingConfig _config;
 
@@ -48,9 +49,13 @@ public class ModelRouterTests
             .Setup(f => f.GetChatClientAsync(It.IsAny<AIAgentFrameworkClientType>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(_mockClient.Object);
 
+        _mockServiceProvider
+            .Setup(sp => sp.GetService(typeof(ITaskComplexityClassifier)))
+            .Returns(_mockClassifier.Object);
+
         _sut = new ModelRouter(
             _mockHeuristic.Object,
-            _mockClassifier.Object,
+            _mockServiceProvider.Object,
             _mockEscalation.Object,
             _mockClientFactory.Object,
             Options.Create(_config),
@@ -160,7 +165,7 @@ public class ModelRouterTests
 
         var sut = new ModelRouter(
             _mockHeuristic.Object,
-            _mockClassifier.Object,
+            _mockServiceProvider.Object,
             _mockEscalation.Object,
             _mockClientFactory.Object,
             Options.Create(config),

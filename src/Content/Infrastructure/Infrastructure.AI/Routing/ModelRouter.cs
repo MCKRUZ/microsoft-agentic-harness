@@ -5,6 +5,7 @@ using Domain.AI.Routing.Enums;
 using Domain.AI.Routing.Models;
 using Domain.Common.Config.AI.Routing;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -17,26 +18,34 @@ namespace Infrastructure.AI.Routing;
 public sealed class ModelRouter : IModelRouter
 {
     private readonly ITaskComplexityHeuristic _heuristic;
-    private readonly ITaskComplexityClassifier _classifier;
+    private readonly IServiceProvider _serviceProvider;
     private readonly IEscalationTracker _escalationTracker;
     private readonly IChatClientFactory _clientFactory;
     private readonly ModelRoutingConfig _config;
     private readonly IReadOnlyList<ModelTier> _orderedTiers;
     private readonly ILogger<ModelRouter> _logger;
+    private ITaskComplexityClassifier? _classifierInstance;
+
+    /// <summary>
+    /// Lazily resolves the classifier to break the circular dependency
+    /// ModelRouter → ITaskComplexityClassifier → IModelRouter.
+    /// </summary>
+    private ITaskComplexityClassifier Classifier =>
+        _classifierInstance ??= _serviceProvider.GetRequiredService<ITaskComplexityClassifier>();
 
     /// <summary>
     /// Initializes the router, building a cost-ordered tier list from config.
     /// </summary>
     public ModelRouter(
         ITaskComplexityHeuristic heuristic,
-        ITaskComplexityClassifier classifier,
+        IServiceProvider serviceProvider,
         IEscalationTracker escalationTracker,
         IChatClientFactory clientFactory,
         IOptions<ModelRoutingConfig> config,
         ILogger<ModelRouter> logger)
     {
         _heuristic = heuristic;
-        _classifier = classifier;
+        _serviceProvider = serviceProvider;
         _escalationTracker = escalationTracker;
         _clientFactory = clientFactory;
         _config = config.Value;
@@ -69,7 +78,7 @@ public sealed class ModelRouter : IModelRouter
         }
 
         var assessment = _heuristic.Classify(turnContext)
-            ?? await _classifier.ClassifyAsync(turnContext, ct);
+            ?? await Classifier.ClassifyAsync(turnContext, ct);
 
         var effectiveTier = _escalationTracker.GetEffectiveTier(turnContext.ConversationId, assessment.Complexity, _orderedTiers);
         var baseTier = GetBaseTierForComplexity(assessment.Complexity);
@@ -116,7 +125,7 @@ public sealed class ModelRouter : IModelRouter
         };
 
         return _heuristic.Classify(context)
-            ?? await _classifier.ClassifyAsync(context, ct);
+            ?? await Classifier.ClassifyAsync(context, ct);
     }
 
     /// <inheritdoc />

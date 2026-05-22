@@ -8,6 +8,7 @@ using Application.AI.Common.Interfaces.MetaHarness;
 using Application.AI.Common.Interfaces.Prompts;
 using Application.AI.Common.Interfaces.Skills;
 using Application.AI.Common.Interfaces.Memory;
+using Application.AI.Common.Interfaces.Routing;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Interfaces.Traces;
 using Application.Common.Factories;
@@ -29,6 +30,7 @@ using Infrastructure.AI.Security;
 using Infrastructure.AI.Skills;
 using Infrastructure.AI.StateManagement;
 using Infrastructure.AI.StateManagement.Checkpoints;
+using Infrastructure.AI.Routing;
 using Infrastructure.AI.Tools;
 using Infrastructure.AI.Traces;
 using Microsoft.Extensions.DependencyInjection;
@@ -214,6 +216,14 @@ public static partial class DependencyInjection
                     opts.GenerationModel = cfg.DefaultDeployment;
                 opts.ClientType = cfg.ClientType;
             });
+
+        // --- Unified model routing ---
+
+        services.AddSingleton(Options.Create(appConfig.AI.ModelRouting));
+        services.AddSingleton<ITaskComplexityHeuristic, TaskComplexityHeuristic>();
+        services.AddSingleton<IEscalationTracker, EscalationTracker>();
+        services.AddSingleton<ITaskComplexityClassifier, TaskComplexityClassifier>();
+        services.AddSingleton<IModelRouter, ModelRouter>();
 
         return services;
     }
