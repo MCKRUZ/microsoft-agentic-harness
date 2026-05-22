@@ -1,5 +1,7 @@
 using Application.AI.Common.Interfaces;
+using Application.AI.Common.Interfaces.Routing;
 using Domain.AI.Agents;
+using Domain.AI.Routing.Models;
 using Domain.AI.Skills;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
@@ -248,5 +250,26 @@ public class AgentFactory : IAgentFactory
     {
         var skills = _skillRegistry.GetByTags(tags);
         return await CreateAgentsFromSkillsAsync(skills.Select(s => s.Id), options, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public async Task<IChatClient> GetRoutedChatClientAsync(
+        AgentTurnContext turnContext,
+        string? fallbackDeployment = null,
+        CancellationToken ct = default)
+    {
+        var modelRouter = _serviceProvider.GetService<IModelRouter>();
+        if (modelRouter is not null)
+        {
+            var decision = await modelRouter.RouteAgentTurnAsync(turnContext, ct);
+            return decision.Client;
+        }
+
+        var deployment = fallbackDeployment
+            ?? _appConfig.CurrentValue.AI?.AgentFramework?.DefaultDeployment
+            ?? "default";
+        var clientType = _appConfig.CurrentValue.AI?.AgentFramework?.ClientType
+            ?? AIAgentFrameworkClientType.AzureOpenAI;
+        return await _chatClientFactory.GetChatClientAsync(clientType, deployment, ct);
     }
 }

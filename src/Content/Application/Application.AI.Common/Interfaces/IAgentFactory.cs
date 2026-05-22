@@ -1,4 +1,5 @@
 using Domain.AI.Agents;
+using Domain.AI.Routing.Models;
 using Domain.AI.Skills;
 using Domain.Common.Config.AI;
 using Microsoft.Agents.AI;
@@ -78,6 +79,19 @@ public interface IAgentFactory
     /// Creates multiple agents by discovering skills with matching tags.
     /// </summary>
     Task<IDictionary<string, AIAgent>> CreateAgentsByTagsAsync(IEnumerable<string> tags, SkillAgentOptions? options = null, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Gets a routing-aware <see cref="IChatClient"/> for a specific agent turn.
+    /// Falls back to the agent's configured deployment if routing is disabled or <see cref="Routing.IModelRouter"/> is not registered.
+    /// </summary>
+    /// <param name="turnContext">Turn context containing query, agent identity, and routing metadata.</param>
+    /// <param name="fallbackDeployment">Deployment name to use when routing is unavailable. Defaults to <c>AppConfig.AI.AgentFramework.DefaultDeployment</c>.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>The <see cref="IChatClient"/> selected by the router, or the fallback client.</returns>
+    Task<IChatClient> GetRoutedChatClientAsync(
+        AgentTurnContext turnContext,
+        string? fallbackDeployment = null,
+        CancellationToken ct = default);
 
     /// <summary>
     /// Checks if a specific AI provider is configured and available.
