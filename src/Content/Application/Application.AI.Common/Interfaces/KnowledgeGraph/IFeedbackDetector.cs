@@ -17,7 +17,7 @@ namespace Application.AI.Common.Interfaces.KnowledgeGraph;
 /// </list>
 /// </para>
 /// <para>
-/// Implementations use an economy-tier LLM via <see cref="RAG.IRagModelRouter"/>
+/// Implementations use an economy-tier LLM via <see cref="Routing.IModelRouter"/>
 /// to minimize cost, since feedback detection runs on every conversation turn.
 /// </para>
 /// </remarks>

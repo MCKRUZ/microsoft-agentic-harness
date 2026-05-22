@@ -21,7 +21,7 @@ namespace Application.AI.Common.Interfaces.RAG;
 ///   <item><see cref="LocalSearchAsync"/>: Starting from entities mentioned in the query,
 ///         traverse the graph neighborhood to find relevant chunks. Returns results
 ///         compatible with the standard reranking pipeline.</item>
-///   <item>Indexing is expensive (many LLM calls). Use <see cref="IRagModelRouter"/> to
+///   <item>Indexing is expensive (many LLM calls). Use <see cref="IModelRouter"/> to
 ///         route entity extraction to an economy-tier model.</item>
 ///   <item>Graph storage: Use a graph database (Neo4j, Cosmos DB Gremlin) or an in-memory
 ///         representation for small corpora.</item>

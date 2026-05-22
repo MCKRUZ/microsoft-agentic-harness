@@ -15,7 +15,7 @@ namespace Infrastructure.AI.RAG.QueryTransform;
 /// optimal retrieval strategy. Sends a structured prompt with examples of each
 /// <see cref="QueryType"/> and parses the JSON response into a
 /// <see cref="QueryClassification"/> record. Uses an economy-tier model via
-/// <see cref="IRagModelRouter"/> since classification is latency-sensitive
+/// <see cref="IModelRouter"/> since classification is latency-sensitive
 /// and does not require a high-capability model.
 /// </summary>
 /// <remarks>

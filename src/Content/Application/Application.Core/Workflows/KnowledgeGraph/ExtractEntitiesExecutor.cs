@@ -17,7 +17,7 @@ namespace Application.Core.Workflows.KnowledgeGraph;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Uses <see cref="IRagModelRouter"/> to route extraction to the economy-tier model,
+/// Uses <see cref="IModelRouter"/> to route extraction to the economy-tier model,
 /// since entity extraction is a high-volume operation where cost matters more than
 /// maximum accuracy. The operation name <c>"graph_entity_extraction"</c> maps to the
 /// economy tier by default.

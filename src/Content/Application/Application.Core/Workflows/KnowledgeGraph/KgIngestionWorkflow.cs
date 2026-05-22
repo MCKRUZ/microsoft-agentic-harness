@@ -21,7 +21,7 @@ namespace Application.Core.Workflows.KnowledgeGraph;
 /// workflow events for observability.
 /// </para>
 /// <para>
-/// The workflow uses <see cref="IRagModelRouter"/> (via <see cref="ExtractEntitiesExecutor"/>)
+/// The workflow uses <see cref="IModelRouter"/> (via <see cref="ExtractEntitiesExecutor"/>)
 /// to route entity extraction to the economy-tier LLM model, keeping ingestion costs low
 /// for large document batches.
 /// </para>

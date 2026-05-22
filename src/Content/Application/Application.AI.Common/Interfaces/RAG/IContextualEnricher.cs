@@ -12,7 +12,7 @@ namespace Application.AI.Common.Interfaces.RAG;
 /// <remarks>
 /// <para><strong>Implementation guidance:</strong></para>
 /// <list type="bullet">
-///   <item>Use <see cref="IRagModelRouter"/> to select an economy-tier model — this is a
+///   <item>Use <see cref="IModelRouter"/> to select an economy-tier model — this is a
 ///         high-volume, low-complexity LLM call (one per chunk).</item>
 ///   <item>Batch chunks to maximize throughput; respect rate limits via retry policies.</item>
 ///   <item>The prompt template should include the full document text (or a large window around

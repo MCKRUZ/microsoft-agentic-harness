@@ -95,7 +95,6 @@ public static class DependencyInjection
 		services.AddSingleton<IEmbeddingService, EmbeddingService>();
 
 		// Model router is registered by Infrastructure.AI (unified IModelRouter)
-		// IRagModelRouter removed — use IModelRouter from Application.AI.Common.Interfaces.Routing
 	}
 
 	private static void AddRagRetrieval(IServiceCollection services, AppConfig appConfig)
@@ -237,7 +236,6 @@ public static class DependencyInjection
 	/// </summary>
 	private static void AddRagComplexityRouting(IServiceCollection services)
 	{
-		// IQueryComplexityClassifier removed — use ITaskComplexityClassifier from IModelRouter
 		services.AddSingleton<IRetrievalDecisionGate, RetrievalDecisionGate>();
 	}
 

@@ -9,7 +9,7 @@ namespace Infrastructure.AI.RAG.Retrieval;
 
 /// <summary>
 /// Cross-encoder reranker that uses an LLM to score (query, chunk) pairs for
-/// relevance. Routes to an appropriate model via <see cref="IRagModelRouter"/>
+/// relevance. Routes to an appropriate model via <see cref="IModelRouter"/>
 /// using the <c>"reranking"</c> operation. Batches scoring prompts for efficiency.
 /// Registered as keyed service <c>"cross_encoder"</c>.
 /// </summary>

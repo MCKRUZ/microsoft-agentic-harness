@@ -14,7 +14,7 @@ namespace Application.AI.Common.Interfaces.RAG;
 /// <list type="bullet">
 ///   <item>Clustering: Use Gaussian Mixture Models (GMM) or k-means on chunk embeddings.
 ///         GMM is preferred because chunks can belong to multiple clusters (soft assignment).</item>
-///   <item>Summarization: Use <see cref="IRagModelRouter"/> to select an economy-tier model —
+///   <item>Summarization: Use <see cref="IModelRouter"/> to select an economy-tier model —
 ///         this is a high-volume operation. Each cluster of 5-10 chunks produces one summary.</item>
 ///   <item>Recursion depth: <paramref name="maxDepth"/> controls how many levels of summaries
 ///         are generated. Typical values: 2-3. Depth 0 means no summarization.</item>

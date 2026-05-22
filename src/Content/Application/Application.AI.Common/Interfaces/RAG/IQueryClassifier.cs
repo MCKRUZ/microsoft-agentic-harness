@@ -12,7 +12,7 @@ namespace Application.AI.Common.Interfaces.RAG;
 /// <remarks>
 /// <para><strong>Implementation guidance:</strong></para>
 /// <list type="bullet">
-///   <item>Use a lightweight, fast model (economy tier via <see cref="IRagModelRouter"/>)
+///   <item>Use a lightweight, fast model (economy tier via <see cref="IModelRouter"/>)
 ///         since classification is on the critical path for every query.</item>
 ///   <item>Prompt design: Include 2-3 few-shot examples per query type. The prompt should
 ///         output structured JSON with type, strategy, confidence, and reasoning fields.</item>

@@ -18,7 +18,7 @@ namespace Application.AI.Common.Interfaces.RAG;
 ///         documentation style).</item>
 ///   <item><c>"none"</c>: Returns the original query as a single-element list. Used when
 ///         transformation is disabled or the query classifier indicates a simple lookup.</item>
-///   <item>Use <see cref="IRagModelRouter"/> to select an economy-tier model for generation —
+///   <item>Use <see cref="IModelRouter"/> to select an economy-tier model for generation —
 ///         query transformations don't need the best model.</item>
 ///   <item>The returned list always contains at least one query (the original or transformed).</item>
 /// </list>

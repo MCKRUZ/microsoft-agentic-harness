@@ -15,7 +15,7 @@ namespace Infrastructure.AI.KnowledgeGraph.Feedback;
 /// the assistant's previous response.
 /// </summary>
 /// <remarks>
-/// Uses <see cref="IRagModelRouter"/> to select a cheap model for feedback
+/// Uses <see cref="IModelRouter"/> to select a cheap model for feedback
 /// detection, keeping per-turn cost minimal. Returns a no-feedback result
 /// if the LLM call fails, ensuring the pipeline continues gracefully.
 /// </remarks>
