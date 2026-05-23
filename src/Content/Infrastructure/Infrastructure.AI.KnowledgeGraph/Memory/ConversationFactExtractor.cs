@@ -147,9 +147,6 @@ public sealed class ConversationFactExtractor : IConversationFactExtractor
 
     private sealed record RawFact
     {
-        [JsonPropertyName("key")]
-        public string Key { get; init; } = string.Empty;
-
         [JsonPropertyName("content")]
         public string Content { get; init; } = string.Empty;
 

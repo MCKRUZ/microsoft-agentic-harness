@@ -28,7 +28,7 @@ public interface IConversationFactExtractor
     /// <param name="turnNumber">Turn number for deterministic key generation.</param>
     /// <param name="cancellationToken">Cancellation token with extraction timeout.</param>
     /// <returns>
-    /// Extracted facts ordered by confidence descending. Empty list when no notable
+    /// Extracted facts in extraction order. Empty list when no notable
     /// facts are found or when extraction fails.
     /// </returns>
     Task<IReadOnlyList<ConversationFact>> ExtractAsync(
