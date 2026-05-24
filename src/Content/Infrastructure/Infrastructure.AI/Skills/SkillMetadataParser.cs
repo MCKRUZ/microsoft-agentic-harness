@@ -38,6 +38,8 @@ public sealed class SkillMetadataParser
         var name = ParseString(frontmatter, "name") ?? Path.GetFileName(sourcePath);
         var description = ParseString(frontmatter, "description") ?? string.Empty;
 
+        var metaBlock = ParseNestedBlock(frontmatter, "metadata");
+
         return new SkillDefinition
         {
             Id = name,
@@ -55,6 +57,8 @@ public sealed class SkillMetadataParser
             AllowedTools = ParseList(frontmatter, "allowed-tools"),
             Prerequisites = ParseList(frontmatter, "prerequisites"),
             CompletionTool = ParseString(frontmatter, "completion_tool"),
+            Metadata = ParseMetadata(frontmatter),
+            Author = metaBlock != null && metaBlock.TryGetValue("author", out var author) ? author : null,
             FilePath = skillFilePath,
             BaseDirectory = sourcePath,
             LoadedAt = DateTime.UtcNow,
@@ -89,6 +93,8 @@ public sealed class SkillMetadataParser
 
         var (objectives, traceFormat, instructions) = ExtractStructuredSections(body);
 
+        var metaBlock = ParseNestedBlock(rawFrontmatter, "metadata");
+
         return new SkillDefinition
         {
             Id = skillName,
@@ -106,6 +112,8 @@ public sealed class SkillMetadataParser
             AllowedTools = ParseList(rawFrontmatter, "allowed-tools"),
             Prerequisites = ParseList(rawFrontmatter, "prerequisites"),
             CompletionTool = ParseString(rawFrontmatter, "completion_tool"),
+            Metadata = ParseMetadata(rawFrontmatter),
+            Author = metaBlock != null && metaBlock.TryGetValue("author", out var author) ? author : null,
             FilePath = skillFilePath,
             BaseDirectory = sourcePath,
             LoadedAt = DateTime.UtcNow,
@@ -258,6 +266,10 @@ public sealed class SkillMetadataParser
 
         foreach (var line in frontmatter.Split('\n'))
         {
+            // Skip indented lines — they belong to a nested block, not the top level
+            if (line.Length > 0 && (line[0] == ' ' || line[0] == '\t'))
+                continue;
+
             var trimmed = line.Trim();
             if (!trimmed.StartsWith(key + ":", StringComparison.OrdinalIgnoreCase))
                 continue;
@@ -276,6 +288,10 @@ public sealed class SkillMetadataParser
 
         foreach (var line in frontmatter.Split('\n'))
         {
+            // Skip indented lines — they belong to a nested block, not the top level
+            if (line.Length > 0 && (line[0] == ' ' || line[0] == '\t'))
+                continue;
+
             var trimmed = line.Trim();
             if (!trimmed.StartsWith(key + ":", StringComparison.OrdinalIgnoreCase))
                 continue;
@@ -293,5 +309,64 @@ public sealed class SkillMetadataParser
         }
 
         return [];
+    }
+
+    /// <summary>
+    /// Extracts all indented key-value pairs under a parent key (e.g., <c>metadata:</c>).
+    /// Returns null if the block is not found or contains no entries.
+    /// The block ends at the first non-indented line following the parent key.
+    /// </summary>
+    private static Dictionary<string, string>? ParseNestedBlock(string? frontmatter, string parentKey)
+    {
+        if (string.IsNullOrEmpty(frontmatter))
+            return null;
+
+        var lines = frontmatter.Split('\n');
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var inBlock = false;
+
+        foreach (var line in lines)
+        {
+            if (!inBlock)
+            {
+                // Match unindented "parentKey:" with no value after the colon
+                var trimmed = line.Trim();
+                if (trimmed.Equals(parentKey + ":", StringComparison.OrdinalIgnoreCase))
+                    inBlock = true;
+
+                continue;
+            }
+
+            // A non-indented line (or empty) terminates the block
+            if (line.Length == 0 || (line[0] != ' ' && line[0] != '\t'))
+                break;
+
+            // Parse "  key: value" — split on first colon only
+            var stripped = line.Trim();
+            var colonIdx = stripped.IndexOf(':', StringComparison.Ordinal);
+            if (colonIdx <= 0)
+                continue;
+
+            var entryKey = stripped[..colonIdx].Trim();
+            var entryValue = stripped[(colonIdx + 1)..].Trim().Trim('"', '\'');
+
+            if (!string.IsNullOrEmpty(entryKey))
+                result[entryKey] = entryValue;
+        }
+
+        return result.Count > 0 ? result : null;
+    }
+
+    /// <summary>
+    /// Parses the <c>metadata:</c> nested block from frontmatter into a string-keyed dictionary.
+    /// Returns null if the block is absent or empty.
+    /// </summary>
+    private static IDictionary<string, object>? ParseMetadata(string? frontmatter)
+    {
+        var block = ParseNestedBlock(frontmatter, "metadata");
+        if (block == null || block.Count == 0)
+            return null;
+
+        return block.ToDictionary(kv => kv.Key, kv => (object)kv.Value);
     }
 }
