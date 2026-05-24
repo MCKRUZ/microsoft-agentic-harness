@@ -24,6 +24,7 @@ namespace Application.AI.Common.Factories;
 /// Bridges declarative skill definitions (SKILL.md) to runtime <see cref="AgentExecutionContext"/>.
 /// Handles tool provisioning (MCP-first, keyed DI fallback), instruction assembly, middleware
 /// resolution, and wiring of <see cref="AgentSkillsProvider"/> for progressive skill disclosure.
+/// Supports merging multiple skills into a single context with deduplication and AllowedTools filtering.
 /// </summary>
 public class AgentExecutionContextFactory
 {
@@ -70,21 +71,37 @@ public class AgentExecutionContextFactory
     }
 
     /// <summary>
-    /// Maps a skill definition and options to a runtime agent execution context.
-    /// Wires <see cref="AgentSkillsProvider"/> for progressive skill disclosure.
-    /// When an <see cref="IExecutionTraceStore"/> is available, starts a trace run and
-    /// stores the resulting <see cref="ITraceWriter"/> in <c>AdditionalProperties["__traceWriter"]</c>.
+    /// Maps a single skill definition and options to a runtime agent execution context.
+    /// Delegates to the multi-skill overload.
     /// </summary>
-    public async Task<AgentExecutionContext> MapToAgentContextAsync(SkillDefinition skill, SkillAgentOptions options)
+    public Task<AgentExecutionContext> MapToAgentContextAsync(SkillDefinition skill, SkillAgentOptions options)
+        => MapToAgentContextAsync([skill], options);
+
+    /// <summary>
+    /// Maps multiple skill definitions to a single agent execution context by merging
+    /// instructions, tools, and context providers from all skills. The first skill is
+    /// used as the primary for deployment resolution, agent ID, and additional properties.
+    /// </summary>
+    /// <param name="skills">The skill definitions to merge.</param>
+    /// <param name="options">Configuration for resource loading and agent overrides.</param>
+    /// <param name="allowedTools">Optional tool allowlist applied after merge — only tools with matching names are kept.</param>
+    public virtual async Task<AgentExecutionContext> MapToAgentContextAsync(
+        IReadOnlyList<SkillDefinition> skills,
+        SkillAgentOptions options,
+        IReadOnlyList<string>? allowedTools = null)
     {
-        var deploymentName = ResolveDeploymentName(skill, options);
-        var agentName = options.AgentNameOverride ?? ToAgentName(skill.Name);
-        var instruction = BuildInstruction(skill, options);
-        var tools = await BuildToolsAsync(skill, options);
-        var middlewareTypes = ResolveMiddlewareTypes(skill, options);
-        var aiContextProviders = BuildAIContextProviders(skill, options);
+        if (skills.Count == 0)
+            throw new ArgumentException("At least one skill is required.", nameof(skills));
+
+        var primarySkill = skills[0];
+        var deploymentName = ResolveDeploymentName(primarySkill, options);
+        var agentName = options.AgentNameOverride ?? ToAgentName(primarySkill.Name);
+        var instruction = BuildMergedInstruction(skills, options);
+        var tools = await BuildMergedToolsAsync(skills, options, allowedTools);
+        var middlewareTypes = ResolveMiddlewareTypes(primarySkill, options);
+        var aiContextProviders = BuildMergedAIContextProviders(skills, options);
         var frameworkType = options.FrameworkType
-            ?? ResolveFrameworkTypeFromMetadata(skill)
+            ?? ResolveFrameworkTypeFromMetadata(primarySkill)
             ?? _appConfig.CurrentValue.AI?.AgentFramework?.ClientType
             ?? AIAgentFrameworkClientType.AzureOpenAI;
 
@@ -116,7 +133,7 @@ public class AgentExecutionContextFactory
             }
         }
 
-        var additionalProps = BuildAdditionalProperties(skill, options);
+        var additionalProps = BuildAdditionalProperties(primarySkill, options);
 
         // Expose candidate skill content provider so evaluation contexts can inject candidate content
         if (_skillContentProvider != null)
@@ -152,10 +169,10 @@ public class AgentExecutionContextFactory
         var context = new AgentExecutionContext
         {
             Name = agentName,
-            Description = skill.Description,
+            Description = primarySkill.Description,
             Instruction = instruction,
             DeploymentName = deploymentName,
-            AgentId = options.AgentId ?? skill.AgentId,
+            AgentId = options.AgentId ?? primarySkill.AgentId,
             AIAgentFrameworkType = frameworkType,
             Tools = tools,
             AIContextProviders = aiContextProviders,
@@ -174,29 +191,10 @@ public class AgentExecutionContextFactory
             _mcpToolProvider != null ? 1 : 0);
 
         _logger.LogInformation(
-            "Mapped skill {SkillId} to agent context {AgentName} with {ToolCount} tools and {ProviderCount} context providers",
-            skill.Id, agentName, tools?.Count ?? 0, aiContextProviders?.Count ?? 0);
+            "Mapped {SkillCount} skill(s) to agent context {AgentName} with {ToolCount} tools and {ProviderCount} context providers",
+            skills.Count, agentName, tools?.Count ?? 0, aiContextProviders?.Count ?? 0);
 
         return context;
-    }
-
-    /// <summary>
-    /// Maps multiple skill definitions to a single agent execution context by merging
-    /// instructions and tools from all skills. Temporary bridge: delegates to single-skill
-    /// overload using the first skill. Full multi-skill merge implemented in Task 5.
-    /// </summary>
-    /// <param name="skills">The skill definitions to merge.</param>
-    /// <param name="options">Configuration for resource loading and agent overrides.</param>
-    /// <param name="allowedTools">Optional tool allowlist applied after merge.</param>
-    public virtual Task<AgentExecutionContext> MapToAgentContextAsync(
-        IReadOnlyList<SkillDefinition> skills,
-        SkillAgentOptions options,
-        IReadOnlyList<string>? allowedTools = null)
-    {
-        if (skills.Count == 0)
-            throw new ArgumentException("At least one skill is required.", nameof(skills));
-
-        return MapToAgentContextAsync(skills[0], options);
     }
 
     /// <summary>
@@ -255,12 +253,25 @@ public class AgentExecutionContextFactory
         return _appConfig.CurrentValue.AI?.AgentFramework?.DefaultDeployment ?? "default";
     }
 
-    private static string BuildInstruction(SkillDefinition skill, SkillAgentOptions options)
+    /// <summary>
+    /// Merges instructions from all skills into a single instruction string.
+    /// When multiple skills are present, each skill's instructions are wrapped with a section header.
+    /// A single skill's instructions are used as-is without headers.
+    /// </summary>
+    private static string BuildMergedInstruction(IReadOnlyList<SkillDefinition> skills, SkillAgentOptions options)
     {
         var parts = new List<string>();
 
-        if (!string.IsNullOrEmpty(skill.Instructions))
-            parts.Add(skill.Instructions);
+        foreach (var skill in skills)
+        {
+            if (string.IsNullOrEmpty(skill.Instructions))
+                continue;
+
+            if (skills.Count > 1)
+                parts.Add($"## Skill: {skill.Name}\n\n{skill.Instructions}");
+            else
+                parts.Add(skill.Instructions);
+        }
 
         if (!string.IsNullOrEmpty(options.AdditionalContext))
             parts.Add(options.AdditionalContext);
@@ -268,11 +279,48 @@ public class AgentExecutionContextFactory
         return string.Join("\n\n", parts);
     }
 
-    private IList<AIContextProvider>? BuildAIContextProviders(SkillDefinition skill, SkillAgentOptions options)
+    /// <summary>
+    /// Merges tools from all skills, deduplicates by name (first occurrence wins),
+    /// and applies an optional AllowedTools whitelist.
+    /// </summary>
+    private async Task<List<AITool>> BuildMergedToolsAsync(
+        IReadOnlyList<SkillDefinition> skills,
+        SkillAgentOptions options,
+        IReadOnlyList<string>? allowedTools = null)
+    {
+        var allTools = new List<AITool>();
+
+        foreach (var skill in skills)
+        {
+            var skillTools = await BuildToolsAsync(skill, options);
+            allTools.AddRange(skillTools);
+        }
+
+        // Deduplicate by name across all skills — first occurrence wins
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var deduplicated = allTools.Where(t => seen.Add(t.Name)).ToList();
+
+        // Apply agent-level AllowedTools whitelist
+        if (allowedTools is { Count: > 0 })
+        {
+            var allowed = new HashSet<string>(allowedTools, StringComparer.OrdinalIgnoreCase);
+            deduplicated = deduplicated.Where(t => allowed.Contains(t.Name)).ToList();
+        }
+
+        return deduplicated;
+    }
+
+    /// <summary>
+    /// Unions context providers from all skills. Skill paths are resolved once (from options or config).
+    /// AllowedTools constraints from all skills are merged into a single <see cref="Services.Agent.ToolPermissionFilter"/>.
+    /// </summary>
+    private IList<AIContextProvider>? BuildMergedAIContextProviders(
+        IReadOnlyList<SkillDefinition> skills,
+        SkillAgentOptions options)
     {
         var providers = new List<AIContextProvider>();
 
-        // Resolve skill paths: options override > config default
+        // Resolve skill paths once — they come from options or config, not per-skill
         var skillPaths = ResolveSkillPaths(options);
 
         if (skillPaths.Count > 0)
@@ -281,22 +329,24 @@ public class AgentExecutionContextFactory
                 .UseFileScriptRunner(NoOpScriptRunner);
             foreach (var path in skillPaths)
                 builder.UseFileSkill(path);
-            var skillsProvider = builder.Build();
+            providers.Add(builder.Build());
 
-            providers.Add(skillsProvider);
-
-            _logger.LogDebug("Wired AgentSkillsProvider for agent {SkillId} with {PathCount} path(s)",
-                skill.Id, skillPaths.Count);
+            _logger.LogDebug("Wired AgentSkillsProvider with {PathCount} path(s)", skillPaths.Count);
         }
 
-        // Enforce allowed-tools constraint after all other providers have contributed tools.
-        // ToolPermissionFilter must be last so it operates on the complete tool set.
-        if (skill.AllowedTools?.Count > 0)
-        {
-            providers.Add(new Services.Agent.ToolPermissionFilter(skill.AllowedTools));
+        // Union AllowedTools from all skills for the permission filter
+        var allAllowedTools = skills
+            .Where(s => s.AllowedTools?.Count > 0)
+            .SelectMany(s => s.AllowedTools!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
 
-            _logger.LogDebug("Wired ToolPermissionFilter for agent {SkillId} with {Count} allowed tool(s)",
-                skill.Id, skill.AllowedTools.Count);
+        if (allAllowedTools.Count > 0)
+        {
+            providers.Add(new Services.Agent.ToolPermissionFilter(allAllowedTools));
+
+            _logger.LogDebug("Wired ToolPermissionFilter with {Count} allowed tool(s) from {SkillCount} skill(s)",
+                allAllowedTools.Count, skills.Count);
         }
 
         return providers.Count > 0 ? providers : null;
