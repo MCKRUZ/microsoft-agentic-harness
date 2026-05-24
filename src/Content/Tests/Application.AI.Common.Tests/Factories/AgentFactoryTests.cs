@@ -1,5 +1,7 @@
 using Application.AI.Common.Factories;
 using Application.AI.Common.Interfaces;
+using Application.AI.Common.Interfaces.Skills;
+using Application.AI.Common.Services.Skills;
 using Application.AI.Common.Tests.Fakes;
 using Domain.AI.Agents;
 using Domain.AI.Skills;
@@ -80,7 +82,8 @@ public class AgentFactoryTests
             _contextFactory.Object,
             _skillRegistry.Object,
             _chatClientFactory.Object,
-            new ServiceCollection().BuildServiceProvider());
+            new ServiceCollection().BuildServiceProvider(),
+            new InMemorySkillCompletionTracker());
     }
 
     [Fact]

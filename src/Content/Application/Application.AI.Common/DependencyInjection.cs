@@ -3,12 +3,14 @@ using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Context;
 using Application.AI.Common.Interfaces.Sandbox;
+using Application.AI.Common.Interfaces.Skills;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.MediatRBehaviors;
 using Application.AI.Common.OpenTelemetry;
 using Application.AI.Common.Services.Agent;
 using Application.AI.Common.Services.Context;
 using Application.AI.Common.Services.Sandbox;
+using Application.AI.Common.Services.Skills;
 using Application.AI.Common.Services.Tools;
 using Application.Common.Interfaces.Telemetry;
 using Domain.Common.Config.AI.Sandbox;
@@ -99,6 +101,9 @@ public static class DependencyInjection
         // Agent conversation cache — reuses the same AIAgent across all turns in a conversation
         services.AddMemoryCache();
         services.AddSingleton<IAgentConversationCache, Services.AgentConversationCache>();
+
+        // Skill completion tracking — conversation-scoped prerequisite state
+        services.AddSingleton<ISkillCompletionTracker, InMemorySkillCompletionTracker>();
 
         return services;
     }

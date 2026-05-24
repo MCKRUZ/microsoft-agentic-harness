@@ -1,5 +1,7 @@
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Routing;
+using Application.AI.Common.Interfaces.Skills;
+using Application.AI.Common.Models;
 using Domain.AI.Agents;
 using Domain.AI.Routing.Models;
 using Domain.AI.Skills;
@@ -29,6 +31,7 @@ public class AgentFactory : IAgentFactory
     private readonly AgentExecutionContextFactory _agentContextFactory;
     private readonly IChatClientFactory _chatClientFactory;
     private readonly IServiceProvider _serviceProvider;
+    private readonly ISkillCompletionTracker _completionTracker;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="AgentFactory"/> class.
@@ -41,6 +44,7 @@ public class AgentFactory : IAgentFactory
     /// <param name="skillRegistry">Registry for discovering skill metadata.</param>
     /// <param name="chatClientFactory">Factory for creating chat clients from configured providers.</param>
     /// <param name="serviceProvider">Service provider for resolving optional dependencies.</param>
+    /// <param name="completionTracker">Tracks skill completion state for prerequisite enforcement.</param>
     public AgentFactory(
         ILogger<AgentFactory> logger,
         IOptionsMonitor<AppConfig> appConfig,
@@ -49,7 +53,8 @@ public class AgentFactory : IAgentFactory
         AgentExecutionContextFactory agentContextFactory,
         ISkillMetadataRegistry skillRegistry,
         IChatClientFactory chatClientFactory,
-        IServiceProvider serviceProvider)
+        IServiceProvider serviceProvider,
+        ISkillCompletionTracker completionTracker)
     {
         _logger = logger;
         _appConfig = appConfig;
@@ -59,6 +64,7 @@ public class AgentFactory : IAgentFactory
         _skillRegistry = skillRegistry;
         _chatClientFactory = chatClientFactory;
         _serviceProvider = serviceProvider;
+        _completionTracker = completionTracker;
     }
 
     /// <inheritdoc />
@@ -113,8 +119,25 @@ public class AgentFactory : IAgentFactory
                 inner,
                 _loggerFactory.CreateLogger<Middleware.ObservabilityMiddleware>()))
             .Use(inner => new Middleware.ToolDiagnosticsMiddleware(
-                inner, _loggerFactory.CreateLogger<Middleware.ToolDiagnosticsMiddleware>()))
-            .UseDistributedCache(_distributedCache);
+                inner, _loggerFactory.CreateLogger<Middleware.ToolDiagnosticsMiddleware>()));
+
+        // Wire prerequisite middleware when prerequisite metadata exists
+        if (agentContext.AdditionalProperties?.TryGetValue(
+                SkillPrerequisiteMap.AdditionalPropertiesKey, out var prereqObj) == true
+            && prereqObj is SkillPrerequisiteMap prereqMap
+            && prereqMap.HasAnyPrerequisites)
+        {
+            var conversationId = agentContext.AdditionalProperties.TryGetValue("conversationId", out var convId)
+                ? convId?.ToString() ?? Guid.NewGuid().ToString()
+                : Guid.NewGuid().ToString();
+
+            chatClientBuilder = chatClientBuilder.Use(inner =>
+                new Middleware.SkillPrerequisiteMiddleware(
+                    inner, _completionTracker, prereqMap, conversationId,
+                    _loggerFactory.CreateLogger<Middleware.SkillPrerequisiteMiddleware>()));
+        }
+
+        chatClientBuilder = chatClientBuilder.UseDistributedCache(_distributedCache);
 
         var middlewareEnabledChatClient = chatClientBuilder.Build();
 
