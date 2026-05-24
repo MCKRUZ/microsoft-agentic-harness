@@ -118,6 +118,18 @@ public class SkillDefinition
 	/// </summary>
 	public string? License { get; set; }
 
+	/// <summary>
+	/// Skill IDs that must complete before this skill's tools become available.
+	/// Empty list means no prerequisites (always unlocked).
+	/// </summary>
+	public IList<string> Prerequisites { get; set; } = new List<string>();
+
+	/// <summary>
+	/// Tool name whose successful invocation signals this skill is complete.
+	/// Null means the skill is always considered complete (no gate).
+	/// </summary>
+	public string? CompletionTool { get; set; }
+
 	#endregion
 
 	#region File System
@@ -254,6 +266,13 @@ public class SkillDefinition
 	public bool HasModelOverride => !string.IsNullOrEmpty(ModelOverride);
 	public bool HasPersistentAgentId => !string.IsNullOrEmpty(AgentId);
 	public bool HasLicense => !string.IsNullOrEmpty(License);
+
+	/// <summary>Whether this skill has prerequisite dependencies.</summary>
+	public bool HasPrerequisites => Prerequisites.Count > 0;
+
+	/// <summary>Whether this skill declares a completion tool gate.</summary>
+	public bool HasCompletionTool => !string.IsNullOrEmpty(CompletionTool);
+
 	public int TotalResourceCount =>
 		(Templates?.Count ?? 0) + (References?.Count ?? 0) +
 		(Scripts?.Count ?? 0) + (Assets?.Count ?? 0);

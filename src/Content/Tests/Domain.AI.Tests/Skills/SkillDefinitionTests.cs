@@ -39,6 +39,7 @@ public sealed class SkillDefinitionTests
         skill.References.Should().BeEmpty();
         skill.Scripts.Should().BeEmpty();
         skill.Assets.Should().BeEmpty();
+        skill.Prerequisites.Should().BeEmpty();
     }
 
     [Fact]
@@ -54,6 +55,7 @@ public sealed class SkillDefinitionTests
         skill.ModelOverride.Should().BeNull();
         skill.AgentId.Should().BeNull();
         skill.License.Should().BeNull();
+        skill.CompletionTool.Should().BeNull();
         skill.Metadata.Should().BeNull();
         skill.ContextContract.Should().BeNull();
         skill.ContextLoading.Should().BeNull();
@@ -216,4 +218,46 @@ public sealed class SkillDefinitionTests
     {
         new SkillDefinition { License = "MIT" }.HasLicense.Should().BeTrue();
     }
+
+    #region Prerequisites
+
+    [Fact]
+    public void Prerequisites_DefaultsToEmptyList()
+    {
+        var skill = new SkillDefinition();
+
+        skill.Prerequisites.Should().BeEmpty();
+        skill.HasPrerequisites.Should().BeFalse();
+    }
+
+    [Fact]
+    public void HasPrerequisites_WithItems_ReturnsTrue()
+    {
+        var skill = new SkillDefinition { Prerequisites = ["validate"] };
+
+        skill.HasPrerequisites.Should().BeTrue();
+    }
+
+    #endregion
+
+    #region CompletionTool
+
+    [Fact]
+    public void CompletionTool_DefaultsToNull()
+    {
+        var skill = new SkillDefinition();
+
+        skill.CompletionTool.Should().BeNull();
+        skill.HasCompletionTool.Should().BeFalse();
+    }
+
+    [Fact]
+    public void HasCompletionTool_WithValue_ReturnsTrue()
+    {
+        var skill = new SkillDefinition { CompletionTool = "run_validation" };
+
+        skill.HasCompletionTool.Should().BeTrue();
+    }
+
+    #endregion
 }
