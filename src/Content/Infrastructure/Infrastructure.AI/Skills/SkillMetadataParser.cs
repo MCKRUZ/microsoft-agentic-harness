@@ -10,7 +10,7 @@ namespace Infrastructure.AI.Skills;
 /// The framework's <c>FileAgentSkillLoader</c> parses only the standard <c>name</c> and
 /// <c>description</c> fields. This parser extracts harness-specific fields:
 /// <c>category</c>, <c>tags</c>, <c>version</c>, <c>model-override</c>, <c>agent-id</c>,
-/// <c>allowed-tools</c>, and <c>skill_type</c>.
+/// <c>allowed-tools</c>, <c>prerequisites</c>, <c>completion_tool</c>, and <c>skill_type</c>.
 /// </remarks>
 public sealed class SkillMetadataParser
 {
@@ -53,6 +53,8 @@ public sealed class SkillMetadataParser
             AgentId = ParseString(frontmatter, "agent-id"),
             Tags = ParseList(frontmatter, "tags"),
             AllowedTools = ParseList(frontmatter, "allowed-tools"),
+            Prerequisites = ParseList(frontmatter, "prerequisites"),
+            CompletionTool = ParseString(frontmatter, "completion_tool"),
             FilePath = skillFilePath,
             BaseDirectory = sourcePath,
             LoadedAt = DateTime.UtcNow,
@@ -102,6 +104,8 @@ public sealed class SkillMetadataParser
             AgentId = ParseString(rawFrontmatter, "agent-id"),
             Tags = ParseList(rawFrontmatter, "tags"),
             AllowedTools = ParseList(rawFrontmatter, "allowed-tools"),
+            Prerequisites = ParseList(rawFrontmatter, "prerequisites"),
+            CompletionTool = ParseString(rawFrontmatter, "completion_tool"),
             FilePath = skillFilePath,
             BaseDirectory = sourcePath,
             LoadedAt = DateTime.UtcNow,
