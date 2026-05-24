@@ -27,7 +27,8 @@ public sealed class SkillMetadataParser
     /// </summary>
     /// <param name="skillFilePath">Absolute path to the SKILL.md file.</param>
     /// <param name="sourcePath">Directory containing the SKILL.md file (used as <c>BaseDirectory</c>).</param>
-    public SkillDefinition ParseFromFile(string skillFilePath, string sourcePath)
+    /// <param name="pluginSource">Optional plugin source identifier; set when loading skills from a plugin package.</param>
+    public SkillDefinition ParseFromFile(string skillFilePath, string sourcePath, string? pluginSource = null)
     {
         var raw = File.ReadAllText(skillFilePath);
         var frontmatter = ExtractFrontmatter(raw);
@@ -62,7 +63,8 @@ public sealed class SkillMetadataParser
             FilePath = skillFilePath,
             BaseDirectory = sourcePath,
             LoadedAt = DateTime.UtcNow,
-            IsFullyLoaded = true
+            IsFullyLoaded = true,
+            PluginSource = pluginSource,
         };
     }
 
@@ -73,7 +75,8 @@ public sealed class SkillMetadataParser
     /// <param name="skillDescription">The skill description.</param>
     /// <param name="body">The SKILL.md body content (after frontmatter).</param>
     /// <param name="sourcePath">Directory containing the SKILL.md file.</param>
-    public SkillDefinition Parse(string skillName, string? skillDescription, string body, string sourcePath)
+    /// <param name="pluginSource">Optional plugin source identifier; set when loading skills from a plugin package.</param>
+    public SkillDefinition Parse(string skillName, string? skillDescription, string body, string sourcePath, string? pluginSource = null)
     {
         // Resolve to a canonical absolute path to eliminate any traversal sequences (e.g. "../")
         // before constructing the file path from caller-supplied input.
@@ -120,7 +123,8 @@ public sealed class SkillMetadataParser
             FilePath = skillFilePath,
             BaseDirectory = resolvedSourcePath,
             LoadedAt = DateTime.UtcNow,
-            IsFullyLoaded = true
+            IsFullyLoaded = true,
+            PluginSource = pluginSource,
         };
     }
 
