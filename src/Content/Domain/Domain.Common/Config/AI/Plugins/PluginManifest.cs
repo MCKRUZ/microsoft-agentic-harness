@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace Domain.Common.Config.AI.Plugins;
 
 /// <summary>
@@ -40,7 +42,14 @@ public class PluginManifest
 }
 
 /// <summary>Plugin author with optional URL.</summary>
-public record PluginAuthor(string Name, string? Url = null);
+public record PluginAuthor
+{
+    /// <summary>Author display name.</summary>
+    public string Name { get; init; } = string.Empty;
+
+    /// <summary>Author homepage or profile URL.</summary>
+    public string? Url { get; init; }
+}
 
 /// <summary>Hook configuration from plugin.json.</summary>
 public class PluginHooksManifest
