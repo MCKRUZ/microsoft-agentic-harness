@@ -219,6 +219,8 @@ public class AgentFactory : IAgentFactory
             skills.Add(skill);
         }
 
+        ValidatePrerequisites(skills);
+
         var agentContext = await _agentContextFactory.MapToAgentContextAsync(skills, options);
         var agent = await CreateAgentAsync(agentContext, cancellationToken);
 
@@ -285,5 +287,67 @@ public class AgentFactory : IAgentFactory
         var clientType = _appConfig.CurrentValue.AI?.AgentFramework?.ClientType
             ?? AIAgentFrameworkClientType.AzureOpenAI;
         return await _chatClientFactory.GetChatClientAsync(clientType, deployment, ct);
+    }
+
+    /// <summary>
+    /// Validates that all prerequisite references are valid and contain no cycles.
+    /// Uses Kahn's algorithm for topological sort — if the sort doesn't include all skills,
+    /// a cycle exists.
+    /// </summary>
+    private static void ValidatePrerequisites(IReadOnlyList<SkillDefinition> skills)
+    {
+        // Skip validation when no prerequisites exist
+        if (!skills.Any(s => s.HasPrerequisites))
+            return;
+
+        var skillIds = new HashSet<string>(skills.Select(s => s.Id), StringComparer.OrdinalIgnoreCase);
+
+        // Check all referenced prerequisites exist in the skill list
+        foreach (var skill in skills)
+        {
+            foreach (var prereq in skill.Prerequisites)
+            {
+                if (!skillIds.Contains(prereq))
+                    throw new InvalidOperationException(
+                        $"Skill '{skill.Id}' declares prerequisite '{prereq}' which is not in the agent's skill list. " +
+                        $"Available skills: [{string.Join(", ", skillIds)}]");
+            }
+        }
+
+        // Topological sort to detect cycles (Kahn's algorithm)
+        var inDegree = skills.ToDictionary(s => s.Id, _ => 0, StringComparer.OrdinalIgnoreCase);
+        var adj = skills.ToDictionary(s => s.Id, _ => new List<string>(), StringComparer.OrdinalIgnoreCase);
+
+        foreach (var skill in skills)
+        {
+            foreach (var prereq in skill.Prerequisites)
+            {
+                adj[prereq].Add(skill.Id);
+                inDegree[skill.Id]++;
+            }
+        }
+
+        var queue = new Queue<string>(inDegree.Where(kv => kv.Value == 0).Select(kv => kv.Key));
+        var sorted = 0;
+
+        while (queue.Count > 0)
+        {
+            var current = queue.Dequeue();
+            sorted++;
+            foreach (var dependent in adj[current])
+            {
+                inDegree[dependent]--;
+                if (inDegree[dependent] == 0)
+                    queue.Enqueue(dependent);
+            }
+        }
+
+        if (sorted != skills.Count)
+        {
+            var cycleSkills = inDegree.Where(kv => kv.Value > 0).Select(kv => kv.Key);
+            throw new InvalidOperationException(
+                $"Prerequisite cycle detected among skills: [{string.Join(", ", cycleSkills)}]. " +
+                "Remove or restructure prerequisites to eliminate the cycle.");
+        }
     }
 }
