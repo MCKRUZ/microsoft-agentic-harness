@@ -91,6 +91,23 @@ public class AgentExecutionContextFactoryToolEnforcementTests
     }
 
     [Fact]
+    public async Task MapToAgentContextAsync_RequiredToolWithNamedFallbackBothMissing_Throws()
+    {
+        var skill = new SkillDefinition
+        {
+            Id = "deploy",
+            Name = "deploy",
+            Instructions = "Deploy things",
+            ToolDeclarations = [new ToolDeclaration { Name = "deploy_execute", Optional = false, Fallback = "deploy_fallback" }]
+        };
+
+        var act = () => _factory.MapToAgentContextAsync(skill, new SkillAgentOptions());
+
+        await act.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*deploy_execute*could not be resolved*");
+    }
+
+    [Fact]
     public async Task MapToAgentContextAsync_NoToolDeclarations_Succeeds()
     {
         var skill = new SkillDefinition

@@ -471,8 +471,8 @@ public class AgentExecutionContextFactory
                 return [converted];
         }
 
-        _logger.LogDebug("Resolved tool {ToolName} from keyed DI (no converter available)", toolName);
-        return null;
+        _logger.LogWarning("Tool {ToolName} found in keyed DI but no IToolConverter available to convert it", toolName);
+        return [];
     }
 
     private List<Type>? ResolveMiddlewareTypes(SkillDefinition skill, SkillAgentOptions options)
