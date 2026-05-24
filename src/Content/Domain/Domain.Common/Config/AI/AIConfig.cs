@@ -39,7 +39,8 @@ namespace Domain.Common.Config.AI;
 /// ├── DriftDetection    — EWMA-based drift detection for quality regressions
 /// ├── Learnings         — Cross-session learnings: feedback blending, decay, pruning
 /// ├── Planner           — Plan execution: concurrency, timeouts, persistence
-/// └── Sandbox           — Sandbox execution: resource limits, isolation, containers
+/// ├── Sandbox           — Sandbox execution: resource limits, isolation, containers
+/// └── ToolOutputCompression — Tool output compression: thresholds, LLM fallback, strategies
 /// </code>
 /// </para>
 /// </remarks>
@@ -148,4 +149,10 @@ public class AIConfig
     /// isolation defaults, container settings, and per-tool overrides.
     /// </summary>
     public SandboxOptions Sandbox { get; set; } = new();
+
+    /// <summary>
+    /// Tool output compression configuration: thresholds, LLM fallback,
+    /// and strategy selection for reducing context window consumption.
+    /// </summary>
+    public ToolOutputCompressionConfig ToolOutputCompression { get; set; } = new();
 }

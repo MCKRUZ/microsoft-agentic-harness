@@ -43,6 +43,7 @@ namespace Application.AI.Common;
 ///   <item><description><c>HookBehavior</c> — fires lifecycle hooks for tool and turn events</description></item>
 ///   <item><description><c>RetrievalAuditBehavior</c> — logs retrieval-augmented generation audit trails</description></item>
 ///   <item><description><c>ResponseSanitizationBehavior</c> — post-execution: sanitizes tool output for credentials, injection, exfiltration</description></item>
+///   <item><description><c>ToolOutputCompressionBehavior</c> — post-execution: compresses large tool output for context window savings</description></item>
 /// </list>
 /// </para>
 /// </remarks>
@@ -68,7 +69,8 @@ public static class DependencyInjection
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(PromptInjectionBehavior<,>))
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(HookBehavior<,>))
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(RetrievalAuditBehavior<,>))
-            .AddTransient(typeof(IPipelineBehavior<,>), typeof(ResponseSanitizationBehavior<,>));
+            .AddTransient(typeof(IPipelineBehavior<,>), typeof(ResponseSanitizationBehavior<,>))
+            .AddTransient(typeof(IPipelineBehavior<,>), typeof(ToolOutputCompressionBehavior<,>));
 
         // Sandbox capability enforcement — profile resolution and enforcement
         services.AddOptions<SandboxConfig>();

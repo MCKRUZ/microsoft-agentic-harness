@@ -61,6 +61,18 @@ public interface ITool
     bool IsConcurrencySafe => false;
 
     /// <summary>
+    /// Declares the expected output content type for compression strategy selection.
+    /// When null, <c>ContentTypeDetector</c> sniffs the output at runtime.
+    /// </summary>
+    Domain.AI.Compression.Enums.ToolOutputCategory? OutputCategory => null;
+
+    /// <summary>
+    /// Per-tool compression token threshold override. When null, falls back
+    /// to <c>ToolOutputCompressionConfig.DefaultTokenThreshold</c>.
+    /// </summary>
+    int? CompressionTokenThreshold => null;
+
+    /// <summary>
     /// Executes a tool operation with the given parameters.
     /// </summary>
     /// <param name="operation">The operation to perform (must be in <see cref="SupportedOperations"/>).</param>

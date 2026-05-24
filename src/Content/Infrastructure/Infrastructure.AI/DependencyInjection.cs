@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Agent;
+using Application.AI.Common.Interfaces.Compression;
 using Application.AI.Common.Interfaces.Agents;
 using Application.AI.Common.Interfaces.Compaction;
 using Application.AI.Common.Interfaces.Config;
@@ -17,6 +18,8 @@ using Infrastructure.AI.Agents;
 using Infrastructure.AI.Audit;
 using Infrastructure.AI.Compaction;
 using Infrastructure.AI.Compaction.Strategies;
+using Infrastructure.AI.Compression;
+using Infrastructure.AI.Compression.Strategies;
 using Infrastructure.AI.Config;
 using Infrastructure.AI.ContentSafety;
 using Infrastructure.AI.Factories;
@@ -224,6 +227,14 @@ public static partial class DependencyInjection
         services.AddSingleton<IEscalationTracker, EscalationTracker>();
         services.AddSingleton<ITaskComplexityClassifier, TaskComplexityClassifier>();
         services.AddSingleton<IModelRouter, ModelRouter>();
+
+        // --- Tool output compression ---
+
+        services.AddSingleton(Options.Create(appConfig.AI.ToolOutputCompression));
+        services.AddTransient<ICompressionStrategy, JsonCompressionStrategy>();
+        services.AddTransient<ICompressionStrategy, StructuredTextCompressionStrategy>();
+        services.AddTransient<ICompressionStrategy, FreeTextCompressionStrategy>();
+        services.AddTransient<IToolOutputCompressor, ToolOutputCompressor>();
 
         return services;
     }
