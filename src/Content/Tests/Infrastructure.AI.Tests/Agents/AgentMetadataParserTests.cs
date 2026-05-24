@@ -126,4 +126,67 @@ public sealed class AgentMetadataParserTests : IDisposable
 
         definition.Tags.Should().BeEmpty();
     }
+
+    [Fact]
+    public void ParseFromFile_SkillsListInFrontmatter_ParsesAllSkillIds()
+    {
+        var dir = WriteAgent("multi-skill", """
+            ---
+            name: content-agent
+            skills: [research-topic, make-ppt]
+            ---
+            Agent body.
+            """);
+
+        var definition = CreateParser().ParseFromFile(Path.Combine(dir, "AGENT.md"), dir);
+
+        definition.Skills.Should().BeEquivalentTo(["research-topic", "make-ppt"]);
+    }
+
+    [Fact]
+    public void ParseFromFile_SingleSkillInFrontmatter_ParsesAsSingleElementList()
+    {
+        var dir = WriteAgent("single-skill", """
+            ---
+            name: single-agent
+            skills: [my-skill]
+            ---
+            Agent body.
+            """);
+
+        var definition = CreateParser().ParseFromFile(Path.Combine(dir, "AGENT.md"), dir);
+
+        definition.Skills.Should().BeEquivalentTo(["my-skill"]);
+    }
+
+    [Fact]
+    public void ParseFromFile_NoSkillsFrontmatter_ReturnsEmptySkillsList()
+    {
+        var dir = WriteAgent("no-skills", """
+            ---
+            name: bare-agent
+            ---
+            Agent body.
+            """);
+
+        var definition = CreateParser().ParseFromFile(Path.Combine(dir, "AGENT.md"), dir);
+
+        definition.Skills.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void ParseFromFile_LegacySkillSingular_ParsesAsSingleElementList()
+    {
+        var dir = WriteAgent("legacy-skill", """
+            ---
+            name: legacy-agent
+            skill: my-skill
+            ---
+            Agent body.
+            """);
+
+        var definition = CreateParser().ParseFromFile(Path.Combine(dir, "AGENT.md"), dir);
+
+        definition.Skills.Should().BeEquivalentTo(["my-skill"]);
+    }
 }
