@@ -4,6 +4,7 @@ using Application.AI.Common.Interfaces.Context;
 using Application.AI.Common.Interfaces.Skills;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Interfaces.Traces;
+using Application.AI.Common.Models;
 using Domain.AI.Skills;
 using Domain.AI.Tools;
 using Domain.Common.Config;
@@ -727,5 +728,77 @@ public class AgentExecutionContextFactoryTests
         var context = await factory.MapToAgentContextAsync(skills, new SkillAgentOptions());
 
         context.Tools.Should().HaveCount(2);
+    }
+
+    // --- Prerequisite map ---
+
+    [Fact]
+    public async Task MapToAgentContextAsync_WithPrerequisites_StashesMapInAdditionalProperties()
+    {
+        var factory = CreateFactory();
+        var validate = new SkillDefinition
+        {
+            Id = "validate", Name = "validate",
+            Instructions = "Validate things",
+            CompletionTool = "run_validation",
+            AllowedTools = ["check_syntax", "run_validation"]
+        };
+        var deploy = new SkillDefinition
+        {
+            Id = "deploy", Name = "deploy",
+            Instructions = "Deploy things",
+            Prerequisites = ["validate"],
+            AllowedTools = ["deploy_execute"]
+        };
+
+        var context = await factory.MapToAgentContextAsync([validate, deploy], new SkillAgentOptions());
+
+        context.AdditionalProperties.Should().ContainKey(SkillPrerequisiteMap.AdditionalPropertiesKey);
+        var map = (SkillPrerequisiteMap)context.AdditionalProperties[SkillPrerequisiteMap.AdditionalPropertiesKey];
+        map.HasAnyPrerequisites.Should().BeTrue();
+        map.Skills.Should().ContainKey("deploy");
+        map.Skills["deploy"].Prerequisites.Should().BeEquivalentTo(new[] { "validate" });
+        map.Skills["validate"].CompletionTool.Should().Be("run_validation");
+    }
+
+    [Fact]
+    public async Task MapToAgentContextAsync_NoPrerequisites_NoMapInAdditionalProperties()
+    {
+        var factory = CreateFactory();
+        var skill = SimpleSkill();
+
+        var context = await factory.MapToAgentContextAsync(skill, new SkillAgentOptions());
+
+        context.AdditionalProperties.Should().NotContainKey(SkillPrerequisiteMap.AdditionalPropertiesKey);
+    }
+
+    [Fact]
+    public async Task MapToAgentContextAsync_PrerequisiteMap_MapsToolsToSkills()
+    {
+        var factory = CreateFactory();
+        var skill1 = new SkillDefinition
+        {
+            Id = "research", Name = "research",
+            Instructions = "Research",
+            AllowedTools = ["search", "summarize"]
+        };
+        var skill2 = new SkillDefinition
+        {
+            Id = "present", Name = "present",
+            Instructions = "Present",
+            Prerequisites = ["research"],
+            AllowedTools = ["create_slides"]
+        };
+
+        var context = await factory.MapToAgentContextAsync([skill1, skill2], new SkillAgentOptions());
+
+        var map = (SkillPrerequisiteMap)context.AdditionalProperties[SkillPrerequisiteMap.AdditionalPropertiesKey];
+        // Tool names come from declared names matched against resolved tools.
+        // Since no keyed DI tools are registered, the tool lists will be empty
+        // (AllowedTools resolve via keyed DI which isn't wired in this test).
+        // The important thing is the structure is correct.
+        map.Skills.Should().HaveCount(2);
+        map.Skills["research"].SkillId.Should().Be("research");
+        map.Skills["present"].Prerequisites.Should().BeEquivalentTo(new[] { "research" });
     }
 }

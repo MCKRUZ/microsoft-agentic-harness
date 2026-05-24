@@ -5,6 +5,7 @@ using Application.AI.Common.Interfaces.Resilience;
 using Application.AI.Common.Interfaces.Skills;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Interfaces.Traces;
+using Application.AI.Common.Models;
 using Application.AI.Common.OpenTelemetry.Metrics;
 using Domain.AI.Agents;
 using Domain.AI.Skills;
@@ -134,6 +135,11 @@ public class AgentExecutionContextFactory
         }
 
         var additionalProps = BuildAdditionalProperties(primarySkill, options);
+
+        // Compute prerequisite map for middleware consumption
+        var prerequisiteMap = BuildPrerequisiteMap(skills, tools);
+        if (prerequisiteMap.HasAnyPrerequisites)
+            additionalProps[SkillPrerequisiteMap.AdditionalPropertiesKey] = prerequisiteMap;
 
         // Expose candidate skill content provider so evaluation contexts can inject candidate content
         if (_skillContentProvider != null)
@@ -508,6 +514,45 @@ public class AgentExecutionContextFactory
         }
 
         return props;
+    }
+
+    /// <summary>
+    /// Builds the prerequisite metadata map from the resolved skills and their tools.
+    /// Maps each skill to its prerequisites, completion tool, and owned tool names.
+    /// </summary>
+    private static SkillPrerequisiteMap BuildPrerequisiteMap(
+        IReadOnlyList<SkillDefinition> skills,
+        IReadOnlyList<AITool> allTools)
+    {
+        var entries = new Dictionary<string, SkillPrerequisiteEntry>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var skill in skills)
+        {
+            // Collect tool names declared by this skill (from all declaration sources)
+            var declaredNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (skill.AllowedTools?.Count > 0)
+                foreach (var t in skill.AllowedTools) declaredNames.Add(t);
+            if (skill.ToolDeclarations?.Count > 0)
+                foreach (var td in skill.ToolDeclarations) declaredNames.Add(td.Name);
+            if (skill.Tools?.Count > 0)
+                foreach (var t in skill.Tools) declaredNames.Add(t.Name);
+
+            // Match against the actual resolved tools
+            var skillToolNames = allTools
+                .Where(t => declaredNames.Contains(t.Name))
+                .Select(t => t.Name)
+                .ToList();
+
+            entries[skill.Id] = new SkillPrerequisiteEntry
+            {
+                SkillId = skill.Id,
+                Prerequisites = skill.Prerequisites.ToList(),
+                CompletionTool = skill.CompletionTool,
+                ToolNames = skillToolNames
+            };
+        }
+
+        return new SkillPrerequisiteMap { Skills = entries };
     }
 
     private static string ToAgentName(string skillName)
