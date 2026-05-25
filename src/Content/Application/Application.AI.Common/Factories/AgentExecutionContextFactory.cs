@@ -377,8 +377,7 @@ public class AgentExecutionContextFactory
         // Injected mode: plugin skill with no tool declarations gets all available MCP tools passed through.
         // Managed mode (has AllowedTools, ToolDeclarations, or pre-created Tools) falls through to the
         // standard resolution path below.
-        if (skill.IsPluginSkill && !skill.HasToolDeclarations && !skill.HasToolRestrictions
-            && skill.Tools is not { Count: > 0 } && _mcpToolProvider != null)
+        if (skill.Mode == SkillMode.Injected && _mcpToolProvider != null)
         {
             var allMcpTools = await _mcpToolProvider.GetAllToolsAsync();
             foreach (var serverTools in allMcpTools.Values)

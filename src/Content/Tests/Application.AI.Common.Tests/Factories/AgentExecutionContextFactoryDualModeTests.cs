@@ -120,6 +120,39 @@ public class AgentExecutionContextFactoryDualModeTests
     }
 
     [Fact]
+    public async Task MapToAgentContextAsync_InjectedMode_DeduplicatesToolsByName()
+    {
+        _mcpToolProvider
+            .Setup(p => p.GetAllToolsAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Dictionary<string, IList<AITool>>
+            {
+                ["server-a"] = new List<AITool>
+                {
+                    AIFunctionFactory.Create(() => "a", "read_file"),
+                    AIFunctionFactory.Create(() => "a", "write_file")
+                },
+                ["server-b"] = new List<AITool>
+                {
+                    AIFunctionFactory.Create(() => "b", "read_file"),
+                    AIFunctionFactory.Create(() => "b", "search")
+                }
+            });
+
+        var skill = new SkillDefinition
+        {
+            Id = "dup-test",
+            Name = "dup-test",
+            Instructions = "Test dedup",
+            PluginSource = "test-plugin"
+        };
+
+        var context = await _factory.MapToAgentContextAsync(skill, new SkillAgentOptions());
+
+        context.Tools.Should().HaveCount(3);
+        context.Tools.Select(t => t.Name).Should().OnlyHaveUniqueItems();
+    }
+
+    [Fact]
     public async Task MapToAgentContextAsync_MixedManagedAndInjected_MergesTools()
     {
         _mcpToolProvider

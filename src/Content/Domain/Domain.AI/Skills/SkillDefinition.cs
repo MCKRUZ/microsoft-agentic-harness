@@ -276,6 +276,16 @@ public class SkillDefinition
 	/// <summary>Whether this skill was loaded from a plugin.</summary>
 	public bool IsPluginSkill => !string.IsNullOrEmpty(PluginSource);
 
+	/// <summary>
+	/// Determines how tools are resolved for this skill.
+	/// Injected: plugin skill with no tool declarations — receives all available MCP tools.
+	/// Managed: explicit tool declarations or restrictions — standard resolution.
+	/// </summary>
+	public SkillMode Mode => IsPluginSkill && !HasToolDeclarations && !HasToolRestrictions
+		&& Tools is not { Count: > 0 }
+		? SkillMode.Injected
+		: SkillMode.Managed;
+
 	/// <summary>Whether this skill has prerequisite dependencies.</summary>
 	public bool HasPrerequisites => Prerequisites.Count > 0;
 
