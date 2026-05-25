@@ -1,6 +1,7 @@
 using Application.AI.Common.Helpers;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Context;
+using Application.AI.Common.Interfaces.Plugins;
 using Application.AI.Common.Interfaces.Resilience;
 using Application.AI.Common.Interfaces.Skills;
 using Application.AI.Common.Interfaces.Tools;
@@ -12,6 +13,7 @@ using Domain.AI.Skills;
 using Domain.AI.Telemetry.Conventions;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
+using Domain.Common.Config.AI.Plugins;
 using Domain.Common.MetaHarness;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
@@ -383,6 +385,12 @@ public class AgentExecutionContextFactory
             foreach (var serverTools in allMcpTools.Values)
                 tools.AddRange(serverTools);
 
+            // Apply plugin-boundary governance filtering
+            var pluginRegistry = _serviceProvider.GetService<IPluginRegistry>();
+            var loadedPlugin = pluginRegistry?.GetPlugin(skill.PluginSource!);
+            if (loadedPlugin != null)
+                tools = ApplyPluginToolBoundary(tools, loadedPlugin.Declaration);
+
             _logger.LogInformation(
                 "Injected mode: skill {SkillId} from plugin {Plugin} received {Count} MCP tools",
                 skill.Id, skill.PluginSource, tools.Count);
@@ -428,6 +436,28 @@ public class AgentExecutionContextFactory
         // Deduplicate by name — ToolDeclarations and AllowedTools can resolve the same tool
         var seen2 = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         return tools.Where(t => seen2.Add(t.Name)).ToList();
+    }
+
+    /// <summary>
+    /// Filters an Injected-mode tool list using plugin boundary declarations.
+    /// AllowedTools is applied first (whitelist), then DeniedTools (blacklist).
+    /// DeniedTools wins when a tool name appears in both lists.
+    /// </summary>
+    private static List<AITool> ApplyPluginToolBoundary(List<AITool> tools, PluginDeclaration declaration)
+    {
+        if (declaration.AllowedTools is { Count: > 0 } allowed)
+        {
+            var allowSet = new HashSet<string>(allowed, StringComparer.OrdinalIgnoreCase);
+            tools = tools.Where(t => allowSet.Contains(t.Name)).ToList();
+        }
+
+        if (declaration.DeniedTools is { Count: > 0 } denied)
+        {
+            var denySet = new HashSet<string>(denied, StringComparer.OrdinalIgnoreCase);
+            tools = tools.Where(t => !denySet.Contains(t.Name)).ToList();
+        }
+
+        return tools;
     }
 
     private async Task<IEnumerable<AITool>?> ProvisionToolAsync(Domain.AI.Tools.ToolDeclaration declaration)
