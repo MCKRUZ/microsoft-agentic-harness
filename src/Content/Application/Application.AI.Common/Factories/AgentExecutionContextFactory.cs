@@ -386,10 +386,13 @@ public class AgentExecutionContextFactory
                 tools.AddRange(serverTools);
 
             // Apply plugin-boundary governance filtering
-            var pluginRegistry = _serviceProvider.GetService<IPluginRegistry>();
-            var loadedPlugin = pluginRegistry?.GetPlugin(skill.PluginSource!);
-            if (loadedPlugin != null)
-                tools = ApplyPluginToolBoundary(tools, loadedPlugin.Declaration);
+            if (!string.IsNullOrEmpty(skill.PluginSource))
+            {
+                var pluginRegistry = _serviceProvider.GetService<IPluginRegistry>();
+                var loadedPlugin = pluginRegistry?.GetPlugin(skill.PluginSource);
+                if (loadedPlugin != null)
+                    tools = ApplyPluginToolBoundary(tools, loadedPlugin.Declaration);
+            }
 
             _logger.LogInformation(
                 "Injected mode: skill {SkillId} from plugin {Plugin} received {Count} MCP tools",

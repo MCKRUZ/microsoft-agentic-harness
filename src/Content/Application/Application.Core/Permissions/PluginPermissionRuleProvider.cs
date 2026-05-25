@@ -58,6 +58,8 @@ public sealed class PluginPermissionRuleProvider : IPermissionRuleProvider
                 continue;
             }
 
+            // Both Restricted and Supervised map to Ask — differentiation is via per-tool
+            // overrides in AutonomyTierRuleProvider config, not at the plugin boundary.
             var defaultBehavior = autonomyLevel switch
             {
                 AutonomyLevel.Autonomous => PermissionBehaviorType.Allow,
