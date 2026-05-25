@@ -45,6 +45,9 @@ public static class DependencyInjection
 		// Autonomy tier rule provider — generates baseline permission rules from agent tier
 		services.AddSingleton<IPermissionRuleProvider, AutonomyTierRuleProvider>();
 
+		// Plugin-boundary rule provider — generates permission rules from plugin governance config
+		services.AddSingleton<IPermissionRuleProvider, PluginPermissionRuleProvider>();
+
 		// Approval strategies — keyed by ApprovalStrategyType for IEscalationService to resolve
 		services.AddKeyedSingleton<IApprovalStrategy>(ApprovalStrategyType.AnyOf, (_, _) => new AnyOfApprovalStrategy());
 		services.AddKeyedSingleton<IApprovalStrategy>(ApprovalStrategyType.AllOf, (_, _) => new AllOfApprovalStrategy());
