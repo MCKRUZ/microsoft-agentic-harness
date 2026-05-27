@@ -5212,7 +5212,8 @@
       {"highlight":"flow-actor-4","label":"Escalation fires: SSE EscalationRequestedEvent reaches the human on duty.","packet":true,"from":"actor-3","to":"actor-4"},
       {"highlight":"flow-actor-4","label":"Human votes Deny with a reason: &ldquo;agent confused timezones again&rdquo;."},
       {"highlight":"flow-actor-5","label":"That reason is captured as a new Learning, decay class = Stable.","packet":true,"from":"actor-4","to":"actor-5"},
-      {"highlight":"flow-actor-1","label":"Next time the agent runs, the learning is in its retrieval context. Quality scores recover.","packet":true,"from":"actor-5","to":"actor-1"}
+      {"highlight":"flow-actor-1","label":"Next time the agent runs, the learning is in its retrieval context. Quality scores recover.","packet":true,"from":"actor-5","to":"actor-1"},
+      {"highlight":"flow-actor-6","label":"Offline: the harness-proposer reads this run&rsquo;s traces.jsonl + decisions.jsonl, proposes a prompt edit, evaluator scores it &mdash; the playbook itself gets rewritten.","packet":true,"from":"actor-1","to":"actor-6"}
     ]'>
       <div class="flow-actors">
         <div class="flow-actor" id="flow-actor-1">
@@ -5234,6 +5235,10 @@
         <div class="flow-actor" id="flow-actor-5">
           <div class="flow-actor-icon" style="background: var(--color-actor-5)">L</div>
           <span>Learnings</span>
+        </div>
+        <div class="flow-actor" id="flow-actor-6">
+          <div class="flow-actor-icon" style="background: var(--color-accent); color: var(--color-surface)">P</div>
+          <span>Proposer</span>
         </div>
       </div>
 
@@ -5339,17 +5344,233 @@
       <button class="quiz-reset-btn" onclick="resetQuiz('quiz-module8-final')">Try Again</button>
     </div>
 
-    <!-- Closer -->
+  </div>
+
+  <!-- ============================================================
+       SCREEN 7 — Two Loops Forward (Reinforcement + Proposer)
+       ============================================================ -->
+  <div class="screen" id="screen-8-7">
+    <h2 class="screen-title">Two Loops Forward &mdash; Reinforcement &amp; the Proposer</h2>
+    <p class="screen-subtitle">Decay shows how learnings <em>fade</em>. This screen shows how they <em>grow stronger</em> &mdash; and how a second, offline loop edits the harness itself when the online loop alone isn&rsquo;t enough.</p>
+
+    <p>Screen 5 covered one half of the learnings story: <strong>freshness decay</strong>, the age-based score that lets old wisdom expire. The other half is <span class="term" data-definition="In the harness, reinforcement is the act of nudging a learning&rsquo;s FeedbackWeight up (or down) based on a quality score from the most recent time the agent used it. Implemented with an exponential moving average so each new score has bounded influence on the cumulative weight.">reinforcement</span>: every time a learning is used and rated, its <code>FeedbackWeight</code> moves toward the new signal via an exponential moving average. Decay is what time does to a learning if nobody touches it; reinforcement is what feedback does when somebody does.</p>
+
+    <p>And one level above the online loop, a second loop runs offline: the <strong>harness-proposer</strong> meta-agent reads execution traces from prior runs and proposes <em>structural</em> edits &mdash; to skill files, prompts, or config &mdash; that an evaluator then scores against a benchmark. The online loop tunes weights. The offline loop edits the harness.</p>
+
+    <h3 style="margin-top: var(--space-10);">Online loop &mdash; <code>ImproveLearningCommandHandler</code></h3>
+    <p>When a turn finishes and the user (or an evaluator) supplies a feedback score from 1 to 5, the harness sends an <code>ImproveLearningCommand</code> for each learning that influenced the answer. The handler normalizes the score to <code>[0, 1]</code> and folds it into the existing weight with an EMA.</p>
+
+    <div class="translation-block animate-in">
+      <div class="translation-code">
+        <span class="translation-label">CODE</span>
+        <pre><code>
+<span class="code-line"><span class="code-keyword">var</span> config = _options.CurrentValue.AI.Learnings;</span>
+<span class="code-line"><span class="code-keyword">var</span> alpha = config.FeedbackAlpha;</span>
+<span class="code-line"><span class="code-keyword">var</span> normalized = (request.FeedbackScore - 1.0) / 4.0;</span>
+<span class="code-line"><span class="code-keyword">var</span> newWeight = alpha * normalized + (1 - alpha) * learning.FeedbackWeight;</span>
+<span class="code-line"></span>
+<span class="code-line"><span class="code-keyword">if</span> (config.BiasCorrection &amp;&amp; learning.UpdateCount &lt; 5)</span>
+<span class="code-line">{</span>
+<span class="code-line">    <span class="code-keyword">var</span> correctionFactor = 1.0 / (1.0 - Math.<span class="code-function">Pow</span>(1.0 - alpha, learning.UpdateCount + 1));</span>
+<span class="code-line">    newWeight = Math.<span class="code-function">Clamp</span>(newWeight * correctionFactor, 0.0, 1.0);</span>
+<span class="code-line">}</span>
+<span class="code-line"></span>
+<span class="code-line"><span class="code-keyword">var</span> updated = learning <span class="code-keyword">with</span></span>
+<span class="code-line">{</span>
+<span class="code-line">    FeedbackWeight = newWeight,</span>
+<span class="code-line">    UpdateCount = learning.UpdateCount + 1,</span>
+<span class="code-line">    LastReinforcedAt = _timeProvider.<span class="code-function">GetUtcNow</span>(),</span>
+<span class="code-line">    Content = request.ReinforcementContent ?? learning.Content</span>
+<span class="code-line">};</span>
+<span class="code-line"></span>
+<span class="code-line"><span class="code-keyword">var</span> updateResult = <span class="code-keyword">await</span> _store.<span class="code-function">UpdateAsync</span>(updated, ct);</span>
+<span class="code-line"><span class="code-keyword">var</span> bridgeResult = <span class="code-keyword">await</span> _driftBridge.<span class="code-function">CheckAndAdjustBaselineAsync</span>(updated, ct);</span>
+<span class="code-line">LearningsMetrics.Improved.<span class="code-function">Add</span>(1);</span>
+        </code></pre>
+      </div>
+      <div class="translation-english">
+        <span class="translation-label">PLAIN ENGLISH</span>
+        <div class="translation-lines">
+          <p class="tl">Pull the learnings config &mdash; alpha controls how much each new score moves the weight.</p>
+          <p class="tl">Typical alpha is small (0.1&ndash;0.3), so weights move smoothly rather than snapping to every rating.</p>
+          <p class="tl">Convert a 1&ndash;5 score into a 0&ndash;1 signal. A 5 maps to 1.0, a 1 maps to 0.0, a 3 maps to 0.5.</p>
+          <p class="tl">The EMA step: the new weight blends the latest signal (alpha) with the existing weight (1 - alpha).</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Bias-correction guard: the first few updates are biased toward zero because the weight starts at zero.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Standard EMA bias-correction factor: <code>1 / (1 - (1 - alpha)^t)</code>.</p>
+          <p class="tl">Apply it and clamp so we don&rsquo;t overshoot [0, 1] on a strong early signal.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Build a new immutable learning record with the updated values.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">The new weight after EMA + correction.</p>
+          <p class="tl">Bump the update counter &mdash; future calls won&rsquo;t apply bias correction past 5.</p>
+          <p class="tl">Reset the freshness clock: this learning has just been reinforced.</p>
+          <p class="tl">Optionally update the natural-language content if the caller passed a refinement.</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">&nbsp;</p>
+          <p class="tl">Persist via the configured ILearningsStore (in-memory or graph-backed).</p>
+          <p class="tl">Notify the drift bridge &mdash; if this learning&rsquo;s domain matches an EWMA baseline, the baseline may adjust.</p>
+          <p class="tl">Increment the OpenTelemetry counter for observability dashboards.</p>
+          <p class="tl">&nbsp;</p>
+        </div>
+      </div>
+    </div>
+
+    <h3 style="margin-top: var(--space-10);">Worked example &mdash; four 5-star updates on a fresh learning</h3>
+    <p>Take alpha = 0.2, starting weight 0.0, and feed four perfect (5-star &rArr; normalized 1.0) ratings. With bias correction, here is the trajectory:</p>
+
+    <div class="badge-list">
+      <div class="badge-item">
+        <code class="badge-code">t=1</code>
+        <span class="badge-desc">raw = 0.2, corrected = 0.2 / (1 - 0.8<sup>1</sup>) = <strong>1.000</strong> &mdash; one perfect signal is enough at first</span>
+      </div>
+      <div class="badge-item">
+        <code class="badge-code">t=2</code>
+        <span class="badge-desc">raw = 0.2&middot;1 + 0.8&middot;1.0 = 1.0, corrected = 1.0 / (1 - 0.64) = <strong>1.000</strong> (clamped)</span>
+      </div>
+      <div class="badge-item">
+        <code class="badge-code">t=3</code>
+        <span class="badge-desc">raw = 1.0, corrected and clamped = <strong>1.000</strong> &mdash; the learning is now fully reinforced</span>
+      </div>
+      <div class="badge-item">
+        <code class="badge-code">t=4</code>
+        <span class="badge-desc">raw = 1.0, corrected and clamped = <strong>1.000</strong></span>
+      </div>
+    </div>
+    <p>Now imagine the fifth turn produces a 2-star rating (normalized = 0.25). Past <code>UpdateCount = 5</code> the correction stops; the EMA cleanly absorbs the signal: <code>0.2 &middot; 0.25 + 0.8 &middot; 1.0 = 0.85</code>. The learning is still trusted &mdash; but a sustained run of low scores would erode the weight smoothly. No single bad turn flips the bit.</p>
+
+    <div class="callout callout-info">
+      <div class="callout-icon">&#x1F4A1;</div>
+      <div class="callout-content">
+        <strong class="callout-title">Why EMA + bias correction</strong>
+        <p>Plain EMA on a weight that starts at zero severely underweights the first few updates &mdash; a brand-new learning would never reach its true weight, no matter how good the feedback is. Bias correction (the same trick Adam uses for gradient moments) lifts the early updates back to where they would be in steady state, then quietly retires after 5 updates so the long-run behavior is pure EMA. The harness disables correction via <code>config.BiasCorrection = false</code> if you want strict EMA.</p>
+      </div>
+    </div>
+
+    <h3 style="margin-top: var(--space-12);">The drift bridge &mdash; reinforcement feeds the canary</h3>
+    <p>After every successful weight update, <code>ImproveLearningCommandHandler</code> calls <code>ILearningsDriftBridge.CheckAndAdjustBaselineAsync</code>. The bridge asks: <em>does this newly reinforced learning belong to a domain that has an EWMA baseline?</em> If yes, and if the cumulative reinforcement crosses a threshold, the baseline mean is shifted. Drift detection (Screen 5) keeps comparing the live EWMA against a baseline that now reflects the team&rsquo;s accumulated corrections &mdash; rather than a baseline frozen at launch day.</p>
+
+    <p>Bridge failure is non-critical. The learning update always succeeds independently; a failed bridge call is logged at <code>Warning</code> level and the loop continues. The bridge is an enrichment, not a gate.</p>
+
+    <h3 style="margin-top: var(--space-12);">Offline loop &mdash; the <code>harness-proposer</code> meta-agent</h3>
+    <p>Reinforcement tunes <em>weights</em>. It cannot rewrite a bad system prompt or fix a misaligned skill. That is what the offline loop is for. The <code>harness-proposer</code> agent (in <code>agents/harness-proposer/AGENT.md</code>, mirrored by <code>OptimizeExample</code> in <code>Presentation.ConsoleUI</code>) is a meta-agent: it reads what other agents did, and proposes targeted edits to <em>their</em> configuration.</p>
+
+    <p>It expects three artifacts from a completed evaluation run, all newline-delimited JSON:</p>
+
+    <div class="step-cards" style="margin-top: var(--space-6);">
+      <div class="step-card" style="border-left-color: var(--color-actor-1)">
+        <div class="step-num" style="background: var(--color-actor-1)">T</div>
+        <div class="step-body">
+          <strong><code>traces.jsonl</code></strong>
+          <p>One line per turn &mdash; tool calls, intermediate thoughts, retrieval hits, final answer. The agent&rsquo;s playback tape.</p>
+        </div>
+      </div>
+      <div class="step-card" style="border-left-color: var(--color-actor-2)">
+        <div class="step-num" style="background: var(--color-actor-2)">D</div>
+        <div class="step-body">
+          <strong><code>decisions.jsonl</code></strong>
+          <p>Choice points: which skill the orchestrator picked, which tool was selected, which planner branch was taken. The proposer reads these to find <em>where</em> behavior could be steered.</p>
+        </div>
+      </div>
+      <div class="step-card" style="border-left-color: var(--color-actor-3)">
+        <div class="step-num" style="background: var(--color-actor-3)">C</div>
+        <div class="step-body">
+          <strong><code>candidates/index.jsonl</code></strong>
+          <p>The benchmark set &mdash; reference questions with expected answers. The proposer optimizes for pass rate against this set, not for any single conversation.</p>
+        </div>
+      </div>
+    </div>
+
+    <p style="margin-top: var(--space-8);">From these three inputs, it produces a list of proposed edits &mdash; targeted, small, and reviewable. A separate <em>evaluator</em> agent (or human) scores each proposal: apply, modify, or reject. The winner becomes the new baseline; traces from the next run feed the next iteration. Four phases per cycle: <strong>trace &rarr; propose &rarr; evaluate &rarr; apply</strong>.</p>
+
+    <div class="callout callout-accent">
+      <div class="callout-icon">&#x1F4A1;</div>
+      <div class="callout-content">
+        <strong class="callout-title">Why the proposer is a separate agent, not a service</strong>
+        <p>Making the optimizer an agent buys two things at once. First, the proposer can use the same skill, tool, and governance machinery the rest of the harness already enforces &mdash; including escalation, audit, and content safety on its own edits. Second, the proposer is itself replaceable: ship a smarter proposer (or a different optimization strategy) by swapping the skill, not by rewriting infrastructure. The four-phase loop stays the same; the brain inside it can evolve.</p>
+      </div>
+    </div>
+
+    <h3 style="margin-top: var(--space-12);">Online vs offline &mdash; side by side</h3>
+    <div class="pattern-cards" style="margin-top: var(--space-6);">
+      <div class="pattern-card" style="border-top: 3px solid var(--color-actor-5)">
+        <div class="pattern-icon" style="background: var(--color-actor-5)">&#x21BB;</div>
+        <h4 class="pattern-title">Online &mdash; Reinforcement</h4>
+        <p class="pattern-desc"><strong>When:</strong> on every feedback event.<br/>
+        <strong>What changes:</strong> a single learning&rsquo;s <code>FeedbackWeight</code>.<br/>
+        <strong>Risk:</strong> low &mdash; bounded by EMA + clamp.<br/>
+        <strong>Human in the loop:</strong> implicit (feedback score).<br/>
+        <strong>Mental model:</strong> nudging the dials.</p>
+      </div>
+      <div class="pattern-card" style="border-top: 3px solid var(--color-actor-3)">
+        <div class="pattern-icon" style="background: var(--color-actor-3)">&#x270E;</div>
+        <h4 class="pattern-title">Offline &mdash; Proposer</h4>
+        <p class="pattern-desc"><strong>When:</strong> after a benchmark run completes.<br/>
+        <strong>What changes:</strong> skill files, prompts, config.<br/>
+        <strong>Risk:</strong> higher &mdash; structural edits.<br/>
+        <strong>Human in the loop:</strong> explicit (evaluator phase).<br/>
+        <strong>Mental model:</strong> rewriting the playbook.</p>
+      </div>
+    </div>
+
+    <h3 style="margin-top: var(--space-10);">Quick check</h3>
+    <div class="quiz-container" id="quiz-module8-two-loops">
+
+      <div class="quiz-question-block"
+           data-correct="opt-r2"
+           data-explanation-right="Right. The EMA step blends the new signal with the existing weight at rate alpha. A single bad rating shifts the weight by at most alpha, then the bias-correction guard only fires for the first 5 updates &mdash; after that it&rsquo;s pure EMA. Sustained bad ratings will erode the weight, but no single turn can flip it."
+           data-explanation-wrong="Look at the EMA step again: newWeight = alpha &middot; normalized + (1 - alpha) &middot; currentWeight. With alpha around 0.2, a single low rating moves the weight by ~0.2 &mdash; not enough to discard a well-established learning.">
+        <h3 class="quiz-question">A well-established learning (weight 1.0) gets a single 1-star rating. What happens?</h3>
+        <div class="quiz-options">
+          <button class="quiz-option" data-value="opt-r1" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div><span>The learning is immediately deleted</span>
+          </button>
+          <button class="quiz-option" data-value="opt-r2" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div><span>Weight moves toward 0 by ~alpha (e.g. ~0.2). Sustained bad ratings would erode it; one is not enough</span>
+          </button>
+          <button class="quiz-option" data-value="opt-r3" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div><span>Nothing &mdash; weights only change on positive feedback</span>
+          </button>
+        </div>
+        <div class="quiz-feedback"></div>
+      </div>
+
+      <div class="quiz-question-block"
+           data-correct="opt-p2"
+           data-explanation-right="Right. Reinforcement only tunes the relative weight of learnings the agent already has. A broken system prompt is a structural problem &mdash; weights cannot fix it. The proposer reads traces, sees the consistent failure mode, and proposes a prompt edit. The evaluator validates it against the benchmark set before it goes live."
+           data-explanation-wrong="Reinforcement nudges weights on existing learnings. It cannot rewrite a system prompt. Structural changes are the proposer&rsquo;s job &mdash; trace, propose, evaluate, apply.">
+        <h3 class="quiz-question">An agent&rsquo;s system prompt has a subtle bug that causes it to misroute 20% of requests. Which loop fixes this?</h3>
+        <div class="quiz-options">
+          <button class="quiz-option" data-value="opt-p1" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div><span>The online reinforcement loop &mdash; bad ratings will erode the weights and behavior will self-correct</span>
+          </button>
+          <button class="quiz-option" data-value="opt-p2" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div><span>The offline harness-proposer loop &mdash; it reads traces and proposes a prompt edit, evaluator validates against the benchmark</span>
+          </button>
+          <button class="quiz-option" data-value="opt-p3" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div><span>Neither &mdash; system prompts can only be edited by hand</span>
+          </button>
+        </div>
+        <div class="quiz-feedback"></div>
+      </div>
+
+      <button class="quiz-check-btn" onclick="checkQuiz('quiz-module8-two-loops')">Check Answers</button>
+      <button class="quiz-reset-btn" onclick="resetQuiz('quiz-module8-two-loops')">Try Again</button>
+    </div>
+
+    <!-- Closer (relocated from screen 8-6) -->
     <div class="animate-in" style="margin-top: var(--space-12); padding: var(--space-8); background: linear-gradient(135deg, var(--color-accent-light), var(--color-surface)); border-radius: var(--radius-md); border-left: 4px solid var(--color-accent); text-align: center;">
       <h2 style="margin-top: 0;">The loop closes here &mdash; for now.</h2>
       <p>
-        You&rsquo;ve seen the harness as it stands today: <strong>seven modules</strong> covering what it is, who&rsquo;s in the cast, how a conversation flows, how skills load, how tools fire safely, how the system watches itself, and how to trace any of it end-to-end in the code. <strong>This eighth module</strong> shows what changes when those same systems start learning from their own behavior.
+        You&rsquo;ve seen the harness as it stands today: <strong>seven modules</strong> covering what it is, who&rsquo;s in the cast, how a conversation flows, how skills load, how tools fire safely, how the system watches itself, and how to trace any of it end-to-end in the code. <strong>This eighth module</strong> shows what changes when those same systems start learning from their own behavior &mdash; on two timescales.
       </p>
       <p>
-        Drift detection plus learnings is the harness&rsquo;s answer to the hardest question in production AI: <em>is my agent getting worse, and can I prove it?</em> The answer is yes &mdash; with five tightly-coupled subsystems and one feedback loop.
+        The <strong>online loop</strong> &mdash; governance &rarr; escalation &rarr; learnings, with EMA reinforcement and drift-bridged baselines &mdash; tunes the harness continuously, one rating at a time. The <strong>offline loop</strong> &mdash; the harness-proposer reading traces and editing skills &mdash; rewrites the playbook when tuning isn&rsquo;t enough. Together they answer the hardest question in production AI: <em>is my agent getting worse, and can I prove it?</em>
       </p>
       <p style="font-weight: 600; color: var(--color-accent);">
-        Now go put a real agent through this loop. Watch the EWMA scores in the Quality dashboard. Trigger an escalation and resolve it. Create a learning. See it surface on the next run. That&rsquo;s when the patterns from these modules become muscle memory.
+        Now go put a real agent through both loops. Watch the EWMA scores in the Quality dashboard. Trigger an escalation and resolve it. Create a learning and reinforce it across a few turns. Then run the proposer over the traces and read what it suggests. That&rsquo;s when the patterns from these modules become muscle memory.
       </p>
     </div>
 
