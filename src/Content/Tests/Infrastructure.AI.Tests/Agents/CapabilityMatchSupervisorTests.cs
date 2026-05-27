@@ -2,6 +2,8 @@ using Application.AI.Common.Factories;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Agents;
 using Application.AI.Common.Interfaces.Governance;
+using Application.AI.Common.Interfaces.Skills;
+using Application.AI.Common.Interfaces.Tools;
 using Domain.AI.Agents;
 using Domain.AI.Governance;
 using Domain.AI.Orchestration;
@@ -77,7 +79,9 @@ public sealed class CapabilityMatchSupervisorTests : IDisposable
             NullLogger<AgentExecutionContextFactory>.Instance,
             _options,
             Mock.Of<IServiceProvider>(),
-            NullLoggerFactory.Instance);
+            NullLoggerFactory.Instance,
+            Mock.Of<IToolChainBuilder>(),
+            Mock.Of<ISkillPrerequisiteResolver>());
 
         SetupDefaults();
 

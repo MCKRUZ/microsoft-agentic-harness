@@ -85,6 +85,12 @@ public static class DependencyInjection
         // AI telemetry configurator — registers AI SDK OTel sources and processors
         services.AddSingleton<ITelemetryConfigurator, AiTelemetryConfigurator>();
 
+        // Tool chain builder — resolves and assembles tools via MCP + keyed DI
+        services.AddSingleton<IToolChainBuilder, ToolChainBuilder>();
+
+        // Skill prerequisite resolver — builds prerequisite maps from skills and tools
+        services.AddSingleton<ISkillPrerequisiteResolver, SkillPrerequisiteResolver>();
+
         // Agent factories — context mapping and agent creation
         services.AddSingleton<AgentExecutionContextFactory>();
         services.AddSingleton<IAgentFactory, AgentFactory>();

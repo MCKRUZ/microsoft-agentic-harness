@@ -1,5 +1,9 @@
 using Application.AI.Common.Factories;
 using Application.AI.Common.Interfaces;
+using Application.AI.Common.Interfaces.Skills;
+using Application.AI.Common.Interfaces.Tools;
+using Application.AI.Common.Services.Skills;
+using Application.AI.Common.Services.Tools;
 using Domain.AI.Agents;
 using Domain.AI.Skills;
 using Domain.Common.Config;
@@ -7,6 +11,7 @@ using Domain.Common.Config.AI;
 using FluentAssertions;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Moq;
@@ -41,12 +46,19 @@ public class AgentExecutionContextFactoryDualModeTests
 
         _mcpToolProvider = new Mock<IMcpToolProvider>();
 
+        var sp = new ServiceCollection().BuildServiceProvider();
+        var toolChainBuilder = new ToolChainBuilder(
+            NullLogger<ToolChainBuilder>.Instance,
+            sp,
+            mcpToolProvider: _mcpToolProvider.Object);
+
         _factory = new AgentExecutionContextFactory(
             NullLogger<AgentExecutionContextFactory>.Instance,
             monitor,
-            new ServiceCollection().BuildServiceProvider(),
+            sp,
             NullLoggerFactory.Instance,
-            mcpToolProvider: _mcpToolProvider.Object);
+            toolChainBuilder,
+            new SkillPrerequisiteResolver());
     }
 
     [Fact]

@@ -2,9 +2,11 @@ using Application.AI.Common;
 using Application.AI.Common.Factories;
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Context;
+using Application.AI.Common.Interfaces.Skills;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Services.Agent;
 using Application.AI.Common.Services.Context;
+using Application.AI.Common.Services.Skills;
 using Application.AI.Common.Services.Tools;
 using Application.Common.Interfaces.Telemetry;
 using FluentAssertions;
@@ -91,6 +93,28 @@ public class DependencyInjectionTests
 
         behaviors.Should().HaveCount(11);
         behaviors.Should().OnlyContain(d => d.Lifetime == ServiceLifetime.Transient);
+    }
+
+    [Fact]
+    public void AddApplicationAIDependencies_RegistersToolChainBuilder_AsSingleton()
+    {
+        var services = CreateServicesWithAIDependencies();
+
+        var descriptor = services.FirstOrDefault(d => d.ServiceType == typeof(IToolChainBuilder));
+        descriptor.Should().NotBeNull();
+        descriptor!.Lifetime.Should().Be(ServiceLifetime.Singleton);
+        descriptor.ImplementationType.Should().Be(typeof(ToolChainBuilder));
+    }
+
+    [Fact]
+    public void AddApplicationAIDependencies_RegistersSkillPrerequisiteResolver_AsSingleton()
+    {
+        var services = CreateServicesWithAIDependencies();
+
+        var descriptor = services.FirstOrDefault(d => d.ServiceType == typeof(ISkillPrerequisiteResolver));
+        descriptor.Should().NotBeNull();
+        descriptor!.Lifetime.Should().Be(ServiceLifetime.Singleton);
+        descriptor.ImplementationType.Should().Be(typeof(SkillPrerequisiteResolver));
     }
 
     [Fact]

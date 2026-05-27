@@ -1,7 +1,6 @@
 using Application.AI.Common.Helpers;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Context;
-using Application.AI.Common.Interfaces.Plugins;
 using Application.AI.Common.Interfaces.Resilience;
 using Application.AI.Common.Interfaces.Skills;
 using Application.AI.Common.Interfaces.Tools;
@@ -13,11 +12,9 @@ using Domain.AI.Skills;
 using Domain.AI.Telemetry.Conventions;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
-using Domain.Common.Config.AI.Plugins;
 using Domain.Common.MetaHarness;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -25,9 +22,10 @@ namespace Application.AI.Common.Factories;
 
 /// <summary>
 /// Bridges declarative skill definitions (SKILL.md) to runtime <see cref="AgentExecutionContext"/>.
-/// Handles tool provisioning (MCP-first, keyed DI fallback), instruction assembly, middleware
-/// resolution, and wiring of <see cref="AgentSkillsProvider"/> for progressive skill disclosure.
-/// Supports merging multiple skills into a single context with deduplication and AllowedTools filtering.
+/// Delegates tool provisioning to <see cref="IToolChainBuilder"/> and prerequisite resolution
+/// to <see cref="ISkillPrerequisiteResolver"/>. Handles instruction assembly, middleware
+/// resolution, budget tracking, and wiring of <see cref="AgentSkillsProvider"/> for progressive
+/// skill disclosure.
 /// </summary>
 public class AgentExecutionContextFactory
 {
@@ -39,8 +37,8 @@ public class AgentExecutionContextFactory
     private readonly IOptionsMonitor<AppConfig> _appConfig;
     private readonly IServiceProvider _serviceProvider;
     private readonly ILoggerFactory _loggerFactory;
-    private readonly IToolConverter? _toolConverter;
-    private readonly IMcpToolProvider? _mcpToolProvider;
+    private readonly IToolChainBuilder _toolChainBuilder;
+    private readonly ISkillPrerequisiteResolver _prerequisiteResolver;
     private readonly IContextBudgetTracker? _budgetTracker;
     private readonly IExecutionTraceStore? _traceStore;
     private readonly ISkillContentProvider? _skillContentProvider;
@@ -52,8 +50,8 @@ public class AgentExecutionContextFactory
         IOptionsMonitor<AppConfig> appConfig,
         IServiceProvider serviceProvider,
         ILoggerFactory loggerFactory,
-        IToolConverter? toolConverter = null,
-        IMcpToolProvider? mcpToolProvider = null,
+        IToolChainBuilder toolChainBuilder,
+        ISkillPrerequisiteResolver prerequisiteResolver,
         IContextBudgetTracker? budgetTracker = null,
         IExecutionTraceStore? traceStore = null,
         ISkillContentProvider? skillContentProvider = null,
@@ -64,8 +62,8 @@ public class AgentExecutionContextFactory
         _appConfig = appConfig;
         _serviceProvider = serviceProvider;
         _loggerFactory = loggerFactory;
-        _toolConverter = toolConverter;
-        _mcpToolProvider = mcpToolProvider;
+        _toolChainBuilder = toolChainBuilder;
+        _prerequisiteResolver = prerequisiteResolver;
         _budgetTracker = budgetTracker;
         _traceStore = traceStore;
         _skillContentProvider = skillContentProvider;
@@ -100,7 +98,7 @@ public class AgentExecutionContextFactory
         var deploymentName = ResolveDeploymentName(primarySkill, options);
         var agentName = options.AgentNameOverride ?? ToAgentName(primarySkill.Name);
         var instruction = BuildMergedInstruction(skills, options);
-        var tools = await BuildMergedToolsAsync(skills, options, allowedTools);
+        var tools = await _toolChainBuilder.BuildMergedToolsAsync(skills, options, allowedTools);
         var middlewareTypes = ResolveMiddlewareTypes(primarySkill, options);
         var aiContextProviders = BuildMergedAIContextProviders(skills, options);
         var frameworkType = options.FrameworkType
@@ -139,7 +137,7 @@ public class AgentExecutionContextFactory
         var additionalProps = BuildAdditionalProperties(primarySkill, options);
 
         // Compute prerequisite map for middleware consumption
-        var prerequisiteMap = BuildPrerequisiteMap(skills, tools);
+        var prerequisiteMap = _prerequisiteResolver.BuildPrerequisiteMap(skills, tools);
         if (prerequisiteMap.HasAnyPrerequisites)
             additionalProps[SkillPrerequisiteMap.AdditionalPropertiesKey] = prerequisiteMap;
 
@@ -196,7 +194,7 @@ public class AgentExecutionContextFactory
             (options.Temperature ?? 0.7).ToString("0.##"),
             tools?.Count ?? 0,
             aiContextProviders?.Count ?? 0,
-            _mcpToolProvider != null ? 1 : 0);
+            _toolChainBuilder is not null ? 1 : 0);
 
         _logger.LogInformation(
             "Mapped {SkillCount} skill(s) to agent context {AgentName} with {ToolCount} tools and {ProviderCount} context providers",
@@ -248,7 +246,6 @@ public class AgentExecutionContextFactory
 
     private string ResolveDeploymentName(SkillDefinition skill, SkillAgentOptions options)
     {
-        // Priority: options > skill metadata > config default
         if (!string.IsNullOrEmpty(options.DeploymentName))
             return options.DeploymentName;
 
@@ -288,37 +285,6 @@ public class AgentExecutionContextFactory
     }
 
     /// <summary>
-    /// Merges tools from all skills, deduplicates by name (first occurrence wins),
-    /// and applies an optional AllowedTools whitelist.
-    /// </summary>
-    private async Task<List<AITool>> BuildMergedToolsAsync(
-        IReadOnlyList<SkillDefinition> skills,
-        SkillAgentOptions options,
-        IReadOnlyList<string>? allowedTools = null)
-    {
-        var allTools = new List<AITool>();
-
-        foreach (var skill in skills)
-        {
-            var skillTools = await BuildToolsAsync(skill, options);
-            allTools.AddRange(skillTools);
-        }
-
-        // Deduplicate by name across all skills — first occurrence wins
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var deduplicated = allTools.Where(t => seen.Add(t.Name)).ToList();
-
-        // Apply agent-level AllowedTools whitelist
-        if (allowedTools is { Count: > 0 })
-        {
-            var allowed = new HashSet<string>(allowedTools, StringComparer.OrdinalIgnoreCase);
-            deduplicated = deduplicated.Where(t => allowed.Contains(t.Name)).ToList();
-        }
-
-        return deduplicated;
-    }
-
-    /// <summary>
     /// Unions context providers from all skills. Skill paths are resolved once (from options or config).
     /// AllowedTools constraints from all skills are merged into a single <see cref="Services.Agent.ToolPermissionFilter"/>.
     /// </summary>
@@ -328,7 +294,6 @@ public class AgentExecutionContextFactory
     {
         var providers = new List<AIContextProvider>();
 
-        // Resolve skill paths once — they come from options or config, not per-skill
         var skillPaths = ResolveSkillPaths(options);
 
         if (skillPaths.Count > 0)
@@ -342,7 +307,6 @@ public class AgentExecutionContextFactory
             _logger.LogDebug("Wired AgentSkillsProvider with {PathCount} path(s)", skillPaths.Count);
         }
 
-        // Union AllowedTools from all skills for the permission filter
         var allAllowedTools = skills
             .Where(s => s.AllowedTools?.Count > 0)
             .SelectMany(s => s.AllowedTools!)
@@ -372,172 +336,13 @@ public class AgentExecutionContextFactory
             .ToList();
     }
 
-    private async Task<List<AITool>> BuildToolsAsync(SkillDefinition skill, SkillAgentOptions options)
-    {
-        var tools = new List<AITool>();
-
-        // Injected mode: plugin skill with no tool declarations gets all available MCP tools passed through.
-        // Managed mode (has AllowedTools, ToolDeclarations, or pre-created Tools) falls through to the
-        // standard resolution path below.
-        if (skill.Mode == SkillMode.Injected && _mcpToolProvider != null)
-        {
-            var allMcpTools = await _mcpToolProvider.GetAllToolsAsync();
-            foreach (var serverTools in allMcpTools.Values)
-                tools.AddRange(serverTools);
-
-            if (options.AdditionalTools?.Count > 0)
-                tools.AddRange(options.AdditionalTools);
-
-            // Apply plugin-boundary governance filtering after all tools are collected
-            // (including AdditionalTools) so denied tools can't bypass via that path.
-            if (!string.IsNullOrEmpty(skill.PluginSource))
-            {
-                var pluginRegistry = _serviceProvider.GetService<IPluginRegistry>();
-                var loadedPlugin = pluginRegistry?.GetPlugin(skill.PluginSource);
-                if (loadedPlugin != null)
-                    tools = ApplyPluginToolBoundary(tools, loadedPlugin.Declaration);
-            }
-
-            _logger.LogInformation(
-                "Injected mode: skill {SkillId} from plugin {Plugin} received {Count} MCP tools",
-                skill.Id, skill.PluginSource, tools.Count);
-
-            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            return tools.Where(t => seen.Add(t.Name)).ToList();
-        }
-
-        // 1. Pre-created tools from skill definition
-        if (skill.Tools?.Count > 0)
-            tools.AddRange(skill.Tools);
-
-        // 2. Tools from declarations (MCP-first, keyed DI fallback) — resolved in parallel
-        if (skill.ToolDeclarations?.Count > 0)
-        {
-            var provisionTasks = skill.ToolDeclarations.Select(ProvisionToolAsync);
-            var results = await Task.WhenAll(provisionTasks);
-            foreach (var provisioned in results)
-            {
-                if (provisioned != null)
-                    tools.AddRange(provisioned);
-            }
-        }
-
-        // 3. Tools from AllowedTools list (simple name-based resolution)
-        if (skill.AllowedTools?.Count > 0)
-        {
-            foreach (var toolName in skill.AllowedTools)
-            {
-                var resolved = ResolveToolByName(toolName);
-                if (resolved != null)
-                    tools.AddRange(resolved);
-            }
-        }
-
-        // 4. Additional tools from options
-        if (options.AdditionalTools?.Count > 0)
-            tools.AddRange(options.AdditionalTools);
-
-        // Deduplicate by name — ToolDeclarations and AllowedTools can resolve the same tool
-        var seen2 = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        return tools.Where(t => seen2.Add(t.Name)).ToList();
-    }
-
-    /// <summary>
-    /// Filters an Injected-mode tool list using plugin boundary declarations.
-    /// AllowedTools is applied first (whitelist), then DeniedTools (blacklist).
-    /// DeniedTools wins when a tool name appears in both lists.
-    /// </summary>
-    private static List<AITool> ApplyPluginToolBoundary(List<AITool> tools, PluginDeclaration declaration)
-    {
-        if (declaration.AllowedTools is { Count: > 0 } allowed)
-        {
-            var allowSet = new HashSet<string>(allowed, StringComparer.OrdinalIgnoreCase);
-            tools = tools.Where(t => allowSet.Contains(t.Name)).ToList();
-        }
-
-        if (declaration.DeniedTools is { Count: > 0 } denied)
-        {
-            var denySet = new HashSet<string>(denied, StringComparer.OrdinalIgnoreCase);
-            tools = tools.Where(t => !denySet.Contains(t.Name)).ToList();
-        }
-
-        return tools;
-    }
-
-    private async Task<IEnumerable<AITool>?> ProvisionToolAsync(Domain.AI.Tools.ToolDeclaration declaration)
-    {
-        // Try MCP first
-        if (_mcpToolProvider != null)
-        {
-            try
-            {
-                var mcpTools = await _mcpToolProvider.GetToolsAsync(declaration.Name);
-                if (mcpTools?.Count > 0)
-                {
-                    _logger.LogDebug("Resolved tool {ToolName} from MCP server", declaration.Name);
-                    return mcpTools;
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogDebug(ex, "MCP resolution failed for {ToolName}, trying keyed DI", declaration.Name);
-            }
-        }
-
-        // Fallback to keyed DI
-        var resolved = ResolveToolByName(declaration.Name);
-        if (resolved != null)
-            return resolved;
-
-        // Try fallback tool
-        if (declaration.HasFallback && !declaration.FallbackIsManual)
-        {
-            resolved = ResolveToolByName(declaration.Fallback!);
-            if (resolved != null)
-            {
-                _logger.LogInformation("Using fallback tool {Fallback} for {ToolName}",
-                    declaration.Fallback, declaration.Name);
-                return resolved;
-            }
-        }
-
-        if (!declaration.Optional && !declaration.FallbackIsManual)
-        {
-            throw new InvalidOperationException(
-                $"Required tool '{declaration.Name}' could not be resolved. " +
-                "Ensure the tool is registered via keyed DI or available from an MCP server. " +
-                "Mark the tool declaration as Optional = true if the skill can function without it.");
-        }
-
-        return null;
-    }
-
-    private IEnumerable<AITool>? ResolveToolByName(string toolName)
-    {
-        var tool = _serviceProvider.GetKeyedService<ITool>(toolName);
-        if (tool == null)
-            return null;
-
-        if (_toolConverter != null)
-        {
-            var converted = _toolConverter.Convert(tool);
-            if (converted != null)
-                return [converted];
-        }
-
-        _logger.LogWarning("Tool {ToolName} found in keyed DI but no IToolConverter available to convert it", toolName);
-        return [];
-    }
-
     private List<Type>? ResolveMiddlewareTypes(SkillDefinition skill, SkillAgentOptions options)
     {
         var types = new List<Type>();
 
-        // Default middleware from config
         types.Add(typeof(Middleware.ObservabilityMiddleware));
         types.Add(typeof(Middleware.ToolDiagnosticsMiddleware));
 
-        // Additional from options
         if (options.MiddlewareTypes?.Count > 0)
             types.AddRange(options.MiddlewareTypes);
 
@@ -575,48 +380,8 @@ public class AgentExecutionContextFactory
         return props;
     }
 
-    /// <summary>
-    /// Builds the prerequisite metadata map from the resolved skills and their tools.
-    /// Maps each skill to its prerequisites, completion tool, and owned tool names.
-    /// </summary>
-    private static SkillPrerequisiteMap BuildPrerequisiteMap(
-        IReadOnlyList<SkillDefinition> skills,
-        IReadOnlyList<AITool> allTools)
-    {
-        var entries = new Dictionary<string, SkillPrerequisiteEntry>(StringComparer.OrdinalIgnoreCase);
-
-        foreach (var skill in skills)
-        {
-            // Collect tool names declared by this skill (from all declaration sources)
-            var declaredNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            if (skill.AllowedTools?.Count > 0)
-                foreach (var t in skill.AllowedTools) declaredNames.Add(t);
-            if (skill.ToolDeclarations?.Count > 0)
-                foreach (var td in skill.ToolDeclarations) declaredNames.Add(td.Name);
-            if (skill.Tools?.Count > 0)
-                foreach (var t in skill.Tools) declaredNames.Add(t.Name);
-
-            // Match against the actual resolved tools
-            var skillToolNames = allTools
-                .Where(t => declaredNames.Contains(t.Name))
-                .Select(t => t.Name)
-                .ToList();
-
-            entries[skill.Id] = new SkillPrerequisiteEntry
-            {
-                SkillId = skill.Id,
-                Prerequisites = skill.Prerequisites.ToList(),
-                CompletionTool = skill.CompletionTool,
-                ToolNames = skillToolNames
-            };
-        }
-
-        return new SkillPrerequisiteMap { Skills = entries };
-    }
-
     private static string ToAgentName(string skillName)
     {
-        // Convert "research-agent" to "ResearchAgent"
         var parts = skillName.Split(['-', '_', ' '], StringSplitOptions.RemoveEmptyEntries);
         var pascal = string.Concat(parts.Select(p =>
             char.ToUpperInvariant(p[0]) + p[1..]));

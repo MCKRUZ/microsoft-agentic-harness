@@ -5,6 +5,8 @@ using Application.AI.Common.Interfaces.Skills;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Interfaces.Traces;
 using Application.AI.Common.Models;
+using Application.AI.Common.Services.Skills;
+using Application.AI.Common.Services.Tools;
 using Domain.AI.Skills;
 using Domain.AI.Tools;
 using Domain.Common.Config;
@@ -13,6 +15,7 @@ using Domain.Common.MetaHarness;
 using FluentAssertions;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Moq;
@@ -53,13 +56,19 @@ public class AgentExecutionContextFactoryTests
         var monitor = Mock.Of<IOptionsMonitor<AppConfig>>(m => m.CurrentValue == appConfig);
         var services = serviceProvider ?? new ServiceCollection().BuildServiceProvider();
 
+        var toolChainBuilder = new ToolChainBuilder(
+            NullLogger<ToolChainBuilder>.Instance,
+            services,
+            toolConverter,
+            mcpToolProvider);
+
         return new AgentExecutionContextFactory(
             NullLogger<AgentExecutionContextFactory>.Instance,
             monitor,
             services,
             NullLoggerFactory.Instance,
-            toolConverter: toolConverter,
-            mcpToolProvider: mcpToolProvider,
+            toolChainBuilder,
+            new SkillPrerequisiteResolver(),
             budgetTracker: budgetTracker,
             traceStore: traceStore,
             skillContentProvider: skillContentProvider);
@@ -104,11 +113,14 @@ public class AgentExecutionContextFactoryTests
     {
         var appConfig = new AppConfig { AI = new AIConfig { AgentFramework = new AgentFrameworkConfig() } };
         var monitor = Mock.Of<IOptionsMonitor<AppConfig>>(m => m.CurrentValue == appConfig);
+        var sp = new ServiceCollection().BuildServiceProvider();
         var factory = new AgentExecutionContextFactory(
             NullLogger<AgentExecutionContextFactory>.Instance,
             monitor,
-            new ServiceCollection().BuildServiceProvider(),
-            NullLoggerFactory.Instance);
+            sp,
+            NullLoggerFactory.Instance,
+            new ToolChainBuilder(NullLogger<ToolChainBuilder>.Instance, sp),
+            new SkillPrerequisiteResolver());
 
         var context = await factory.MapToAgentContextAsync(SimpleSkill(), new SkillAgentOptions());
 

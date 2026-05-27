@@ -1,6 +1,10 @@
 using Application.AI.Common.Factories;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Plugins;
+using Application.AI.Common.Interfaces.Skills;
+using Application.AI.Common.Interfaces.Tools;
+using Application.AI.Common.Services.Skills;
+using Application.AI.Common.Services.Tools;
 using Domain.AI.Skills;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
@@ -8,6 +12,7 @@ using Domain.Common.Config.AI.Plugins;
 using FluentAssertions;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Moq;
@@ -41,13 +46,20 @@ public sealed class AgentExecutionContextFactoryGovernanceTests
 
         var services = new ServiceCollection();
         services.AddSingleton(_pluginRegistry.Object);
+        var sp = services.BuildServiceProvider();
+
+        var toolChainBuilder = new ToolChainBuilder(
+            NullLogger<ToolChainBuilder>.Instance,
+            sp,
+            mcpToolProvider: _mcpToolProvider.Object);
 
         return new AgentExecutionContextFactory(
             NullLogger<AgentExecutionContextFactory>.Instance,
             monitor,
-            services.BuildServiceProvider(),
+            sp,
             NullLoggerFactory.Instance,
-            mcpToolProvider: _mcpToolProvider.Object);
+            toolChainBuilder,
+            new SkillPrerequisiteResolver());
     }
 
     private void SetupMcpTools(params (string server, string[] tools)[] servers)
