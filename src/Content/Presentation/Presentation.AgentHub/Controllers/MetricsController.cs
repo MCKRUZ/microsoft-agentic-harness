@@ -1,3 +1,4 @@
+using Application.Common.Models;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Presentation.AgentHub.DTOs;
@@ -16,10 +17,14 @@ namespace Presentation.AgentHub.Controllers;
 public sealed class MetricsController : ControllerBase
 {
     private readonly IPrometheusQueryService _prometheus;
+    private readonly ISloEvaluator _sloEvaluator;
 
     /// <summary>Initialises the controller with its dependencies.</summary>
-    public MetricsController(IPrometheusQueryService prometheus) =>
+    public MetricsController(IPrometheusQueryService prometheus, ISloEvaluator sloEvaluator)
+    {
         _prometheus = prometheus;
+        _sloEvaluator = sloEvaluator;
+    }
 
     /// <summary>
     /// Executes a PromQL instant query against the configured Prometheus server.
@@ -99,6 +104,21 @@ public sealed class MetricsController : ControllerBase
     {
         var result = await _prometheus.GetHealthAsync(cancellationToken);
         return result.Healthy ? Ok(result) : StatusCode(503, result);
+    }
+
+    /// <summary>
+    /// Returns the current status of all configured SLO targets.
+    /// Each target is evaluated via a Prometheus instant query and compared against
+    /// its configured threshold to produce a Met/AtRisk/Breached verdict.
+    /// Returns an empty array when SLO tracking is disabled.
+    /// </summary>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    [HttpGet("slo")]
+    public async Task<ActionResult<IReadOnlyList<SloStatus>>> GetSloStatus(
+        CancellationToken cancellationToken = default)
+    {
+        var result = await _sloEvaluator.EvaluateAllAsync(cancellationToken);
+        return Ok(result);
     }
 
     /// <summary>

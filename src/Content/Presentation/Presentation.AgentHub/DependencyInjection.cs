@@ -174,6 +174,9 @@ public static class DependencyInjection
             });
         }
 
+        // SLO evaluator — evaluates configured SLO targets against Prometheus
+        services.AddSingleton<ISloEvaluator, SloEvaluationService>();
+
         // NullMcpPromptProvider is the default when no real implementation is registered.
         // Real implementations (e.g. from Infrastructure) override this via AddSingleton<IMcpPromptProvider, T>
         // registered after this call, since TryAdd only sets if not already present.

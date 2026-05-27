@@ -1,1 +1,0 @@
-import{t as e}from"./index-DgoLab9t.js";async function t(t=50,n=0,r,i,a){let o={limit:t,offset:n};r&&(o.status=r),i&&(o.since=i),a&&(o.until=a);let{data:s}=await e.get(`/api/sessions`,{params:o});return s}async function n(t){let{data:n}=await e.get(`/api/sessions/${t}`);return n}export{t as n,n as t};

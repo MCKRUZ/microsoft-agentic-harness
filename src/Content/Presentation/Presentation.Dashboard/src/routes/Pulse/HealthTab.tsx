@@ -4,6 +4,7 @@ import { PanelCard } from '@/components/panels/PanelCard';
 import { PanelGrid } from '@/components/panels/PanelGrid';
 import { LoadingSkeleton } from '@/components/panels/LoadingSkeleton';
 import { Section } from '@/components/primitives/Section';
+import { SloBoard } from './SloBoard';
 import { CheckCircle, AlertTriangle, Info } from 'lucide-react';
 import { useMetric, latestValue, computeDelta, formatKpi, primarySeries } from './pulse-helpers';
 import { cn } from '@/lib/utils';
@@ -178,14 +179,9 @@ export function HealthTab() {
         </PanelGrid>
       </Section>
 
-      {/* SLO Board — placeholder */}
+      {/* SLO Board */}
       <Section title="SLO Board" subtitle="service-level objectives" kicker="02">
-        <PanelCard title="Service-Level Objectives">
-          <p className="text-xs text-otel-text-mute py-6 text-center">
-            SLO tracking requires configuration. Define targets in
-            appsettings.json.
-          </p>
-        </PanelCard>
+        <SloBoard />
       </Section>
 
       {/* Recent Incidents — placeholder */}

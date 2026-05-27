@@ -9,12 +9,13 @@ namespace Domain.Common.Config.Observability;
 /// Configuration hierarchy:
 /// <code>
 /// AppConfig.Observability
-/// ├── Sampling     — Tail-based sampling policies (keep errors, slow, agent spans)
-/// ├── PiiFiltering — Attribute scrubbing rules (delete, hash)
-/// ├── RateLimiting — Span throughput throttling
+/// ├── Sampling        — Tail-based sampling policies (keep errors, slow, agent spans)
+/// ├── PiiFiltering    — Attribute scrubbing rules (delete, hash)
+/// ├── RateLimiting    — Span throughput throttling
 /// ├── Exporters       — Multi-backend export targets (OTLP, Azure Monitor, Prometheus)
 /// ├── LlmPricing      — Per-model token pricing for cost estimation
-/// └── BudgetTracking  — Cost budget thresholds and alerting state machine
+/// ├── BudgetTracking  — Cost budget thresholds and alerting state machine
+/// └── Slo             — Service Level Objective targets and evaluation
 /// </code>
 /// </para>
 /// <para>
@@ -53,6 +54,12 @@ public class ObservabilityConfig
     /// Gets or sets the cost budget tracking configuration for automated alerting.
     /// </summary>
     public BudgetTrackingConfig BudgetTracking { get; set; } = new();
+
+    /// <summary>
+    /// Gets or sets the SLO (Service Level Objective) evaluation configuration.
+    /// Defines operational health targets evaluated against live Prometheus metrics.
+    /// </summary>
+    public SloConfig Slo { get; set; } = new();
 
     /// <summary>
     /// Gets or sets the PostgreSQL connection string for persisting observability data
