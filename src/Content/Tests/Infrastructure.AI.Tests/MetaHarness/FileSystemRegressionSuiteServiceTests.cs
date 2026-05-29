@@ -20,7 +20,7 @@ public sealed class FileSystemRegressionSuiteServiceTests : IDisposable
         _tempDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
         Directory.CreateDirectory(_tempDir);
 
-        var config = new MetaHarnessConfig { RegressionSuiteThreshold = 0.8 };
+        var config = new MetaHarnessConfig { RegressionSuiteThreshold = 0.8, TraceDirectoryRoot = Path.GetTempPath() };
         var opts = Mock.Of<IOptionsMonitor<MetaHarnessConfig>>(m => m.CurrentValue == config);
         _sut = new FileSystemRegressionSuiteService(opts, NullLogger<FileSystemRegressionSuiteService>.Instance);
     }

@@ -72,8 +72,15 @@ public sealed class MarkdownDocumentParser : IDocumentParser
         var normalizedTarget = Path.GetFullPath(fullPath);
         foreach (var basePath in allowedPaths)
         {
+            if (!Path.IsPathRooted(basePath))
+                throw new InvalidOperationException(
+                    $"AllowedBasePaths must be absolute. Found: '{basePath}'");
+
             var normalizedBase = Path.GetFullPath(basePath);
-            if (normalizedTarget.StartsWith(normalizedBase, StringComparison.OrdinalIgnoreCase))
+            var baseWithSep = normalizedBase.TrimEnd(Path.DirectorySeparatorChar)
+                              + Path.DirectorySeparatorChar;
+            if (normalizedTarget.StartsWith(baseWithSep, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(normalizedTarget, normalizedBase, StringComparison.OrdinalIgnoreCase))
                 return;
         }
 

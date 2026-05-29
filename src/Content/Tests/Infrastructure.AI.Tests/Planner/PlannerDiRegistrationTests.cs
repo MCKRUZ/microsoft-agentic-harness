@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Attestation;
+using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Planner;
 using Application.AI.Common.Interfaces.Sandbox;
 using Docker.DotNet;
@@ -141,6 +142,7 @@ public sealed class PlannerDiRegistrationTests : IDisposable
         services.AddSingleton<ISender>(new Mock<ISender>().Object);
         services.AddSingleton<IPlanProgressNotifier>(new Mock<IPlanProgressNotifier>().Object);
         services.AddSingleton<ICapabilityEnforcer>(new Mock<ICapabilityEnforcer>().Object);
+        services.AddSingleton<ICompositeResponseSanitizer>(new Mock<ICompositeResponseSanitizer>().Object);
         services.AddSingleton<IDockerClient>(new Mock<IDockerClient>().Object);
 
         // Knowledge graph (required by drift/learnings already in AddInfrastructureAIDependencies)

@@ -3,6 +3,7 @@ using Application.AI.Common.Interfaces;
 using Domain.Common.Config;
 using Infrastructure.AI.MCPServer.Extensions;
 using Infrastructure.AI.Skills;
+using Infrastructure.Common.Middleware.Security;
 
 namespace Infrastructure.AI.MCPServer;
 
@@ -26,7 +27,7 @@ public static class Program
             .Get<AppConfig>() ?? new AppConfig();
 
         builder.Services.AddMcpServerServices(appConfig);
-        builder.Services.AddMcpAuthentication(appConfig, builder.Configuration);
+        builder.Services.AddMcpAuthentication(appConfig, builder.Configuration, builder.Environment);
 
         // Skill catalog — discovered from the configured skills directory
         builder.Services.AddSingleton<SkillMetadataParser>();
@@ -47,8 +48,10 @@ public static class Program
         var app = builder.Build();
 
         // Middleware pipeline
+        app.UseMiddleware<SecurityHeadersMiddleware>();
         if (!app.Environment.IsDevelopment())
             app.UseHsts();
+        app.UseHttpsRedirection();
 
         app.UseAuthentication();
         app.UseAuthorization();

@@ -44,13 +44,13 @@ namespace Infrastructure.Common.Middleware.ExceptionHandling;
 /// </remarks>
 public sealed class GlobalExceptionMiddleware
 {
-    private static readonly Dictionary<Type, int> ExceptionStatusMap = new()
+    private static readonly Dictionary<Type, (int StatusCode, string SafeMessage)> ExceptionStatusMap = new()
     {
-        [typeof(BadRequestException)] = StatusCodes.Status400BadRequest,
-        [typeof(UnauthorizedAccessException)] = StatusCodes.Status401Unauthorized,
-        [typeof(ForbiddenAccessException)] = StatusCodes.Status403Forbidden,
-        [typeof(EntityNotFoundException)] = StatusCodes.Status404NotFound,
-        [typeof(DatabaseInteractionException)] = StatusCodes.Status422UnprocessableEntity,
+        [typeof(BadRequestException)] = (StatusCodes.Status400BadRequest, "The request was invalid."),
+        [typeof(UnauthorizedAccessException)] = (StatusCodes.Status401Unauthorized, "Access denied."),
+        [typeof(ForbiddenAccessException)] = (StatusCodes.Status403Forbidden, "Forbidden."),
+        [typeof(EntityNotFoundException)] = (StatusCodes.Status404NotFound, "The requested resource was not found."),
+        [typeof(DatabaseInteractionException)] = (StatusCodes.Status422UnprocessableEntity, "A data processing error occurred."),
     };
 
     private readonly RequestDelegate _next;
@@ -110,9 +110,10 @@ public sealed class GlobalExceptionMiddleware
             return;
         }
 
-        if (ExceptionStatusMap.TryGetValue(exceptionType, out var statusCode))
+        if (ExceptionStatusMap.TryGetValue(exceptionType, out var mapped))
         {
-            await WriteErrorResponseAsync(context, statusCode, ex.Message);
+            var message = _env.IsDevelopment() ? ex.Message : mapped.SafeMessage;
+            await WriteErrorResponseAsync(context, mapped.StatusCode, message);
             return;
         }
 

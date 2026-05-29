@@ -1,9 +1,11 @@
 using Application.AI.Common.Interfaces.Attestation;
+using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Planner;
 using Application.AI.Common.Interfaces.Sandbox;
 using Domain.AI.Attestation;
 using Domain.AI.Governance;
 using Domain.AI.Planner;
+using Domain.Common.Config.AI;
 using Domain.AI.Sandbox;
 using Infrastructure.AI.Planner.StepExecutors;
 using Microsoft.Extensions.DependencyInjection;
@@ -17,6 +19,7 @@ public sealed class ToolUseStepExecutorTests
 {
     private readonly Mock<ICapabilityEnforcer> _capabilityEnforcer = new();
     private readonly Mock<IAttestationService> _attestationService = new();
+    private readonly Mock<ICompositeResponseSanitizer> _responseSanitizer = new();
     private readonly Mock<IPlanProgressNotifier> _notifier = new();
     private readonly Mock<ISandboxExecutor> _sandboxExecutor = new();
     private readonly PlanExecutionContext _context = new() { CurrentPlanId = new PlanId(Guid.NewGuid()) };
@@ -35,6 +38,9 @@ public sealed class ToolUseStepExecutorTests
         _capabilityEnforcer.Setup(c => c.ResolveProfileAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new ToolPermissionProfile { RequiredCapabilities = ToolCapability.FileRead });
 
+        _responseSanitizer.Setup(s => s.Sanitize(It.IsAny<string>(), It.IsAny<string?>()))
+            .Returns<string, string?>((content, _) => SanitizationResult.Clean(content));
+
         var services = new ServiceCollection();
         services.AddKeyedSingleton<ISandboxExecutor>(SandboxIsolationLevel.Process, _sandboxExecutor.Object);
         services.AddKeyedSingleton<ISandboxExecutor>(SandboxIsolationLevel.Container, _sandboxExecutor.Object);
@@ -44,6 +50,7 @@ public sealed class ToolUseStepExecutorTests
             _capabilityEnforcer.Object,
             sp,
             _attestationService.Object,
+            _responseSanitizer.Object,
             _notifier.Object,
             _context,
             NullLogger<ToolUseStepExecutor>.Instance);

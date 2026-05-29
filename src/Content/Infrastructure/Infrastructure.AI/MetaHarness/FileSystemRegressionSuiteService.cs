@@ -40,7 +40,8 @@ public sealed class FileSystemRegressionSuiteService : IRegressionSuiteService
     /// <inheritdoc/>
     public async Task<RegressionSuite> LoadAsync(string runDirectoryPath, CancellationToken ct = default)
     {
-        var path = Path.Combine(runDirectoryPath, FileName);
+        var resolvedDir = ResolveAndValidateRunDirectory(runDirectoryPath);
+        var path = Path.Combine(resolvedDir, FileName);
         if (!File.Exists(path))
             return EmptySuite();
 
@@ -98,6 +99,7 @@ public sealed class FileSystemRegressionSuiteService : IRegressionSuiteService
         string runDirectoryPath,
         CancellationToken ct = default)
     {
+        var resolvedDir = ResolveAndValidateRunDirectory(runDirectoryPath);
         HashSet<string> newlyFixed;
 
         if (previousBestResults is null)
@@ -134,7 +136,7 @@ public sealed class FileSystemRegressionSuiteService : IRegressionSuiteService
             LastUpdatedAt = DateTimeOffset.UtcNow,
         };
 
-        var filePath = Path.Combine(runDirectoryPath, FileName);
+        var filePath = Path.Combine(resolvedDir, FileName);
         var tmp = filePath + ".tmp";
         var json = JsonSerializer.Serialize(updated, JsonOptions);
         await File.WriteAllTextAsync(tmp, json, ct);
@@ -145,6 +147,23 @@ public sealed class FileSystemRegressionSuiteService : IRegressionSuiteService
             newlyFixed.Count, updated.TaskIds.Count);
 
         return updated;
+    }
+
+    private string ResolveAndValidateRunDirectory(string runDirectoryPath)
+    {
+        var traceRoot = Path.GetFullPath(_config.CurrentValue.TraceDirectoryRoot);
+        var resolved = Path.GetFullPath(runDirectoryPath);
+        var rootWithSep = traceRoot.TrimEnd(Path.DirectorySeparatorChar)
+                          + Path.DirectorySeparatorChar;
+
+        if (!resolved.StartsWith(rootWithSep, StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(resolved, traceRoot, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new UnauthorizedAccessException(
+                $"Run directory '{resolved}' is outside the trace root '{traceRoot}'.");
+        }
+
+        return resolved;
     }
 
     private RegressionSuite EmptySuite() => new()

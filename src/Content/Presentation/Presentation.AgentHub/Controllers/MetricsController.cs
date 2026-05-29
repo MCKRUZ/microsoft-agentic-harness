@@ -122,13 +122,25 @@ public sealed class MetricsController : ControllerBase
     }
 
     /// <summary>
-    /// Basic PromQL injection prevention — blocks shell metacharacters and SQL-style injection.
-    /// Prometheus itself validates the query syntax; this is an additional defense-in-depth layer.
+    /// PromQL allowlist validation — only permits characters valid in PromQL expressions.
+    /// Shell metacharacters (<c>;</c>, <c>$</c>, <c>`</c>, <c>&amp;</c>) are implicitly
+    /// blocked by the allowlist. Length-capped to limit query complexity.
+    /// Prometheus itself validates query syntax; this is defense-in-depth.
     /// </summary>
+    private const int MaxPromQlLength = 500;
+    private const string AllowedPromQlSymbols = "_:.-+*/%^(){}[],\"'=!~<>@ \t\\|";
+
     private static bool IsValidPromQl(string query)
     {
-        var blocked = new[] { ";", "&&", "||", "`", "$(" };
-        return !blocked.Any(query.Contains);
+        if (query.Length > MaxPromQlLength) return false;
+
+        foreach (var c in query)
+        {
+            if (!char.IsLetterOrDigit(c) && !AllowedPromQlSymbols.Contains(c))
+                return false;
+        }
+
+        return true;
     }
 }
 

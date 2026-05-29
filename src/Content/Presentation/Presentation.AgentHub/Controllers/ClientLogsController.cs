@@ -29,6 +29,7 @@ public sealed class ClientLogsController : ControllerBase
 
     /// <summary>Accepts a batch of browser log entries and projects them onto the server logger.</summary>
     [HttpPost]
+    [Consumes("application/json")]
     public IActionResult Post([FromBody] IReadOnlyList<ClientLogEntry>? entries)
     {
         if (entries is null || entries.Count == 0)

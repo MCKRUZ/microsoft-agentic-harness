@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text.Json;
 using Application.AI.Common.Interfaces.Attestation;
+using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Planner;
 using Application.AI.Common.Interfaces.Sandbox;
 using Domain.AI.Governance;
@@ -20,6 +21,7 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
     private readonly ICapabilityEnforcer _capabilityEnforcer;
     private readonly IServiceProvider _serviceProvider;
     private readonly IAttestationService _attestationService;
+    private readonly ICompositeResponseSanitizer _responseSanitizer;
     private readonly IPlanProgressNotifier _notifier;
     private readonly PlanExecutionContext _executionContext;
     private readonly ILogger<ToolUseStepExecutor> _logger;
@@ -28,6 +30,7 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
         ICapabilityEnforcer capabilityEnforcer,
         IServiceProvider serviceProvider,
         IAttestationService attestationService,
+        ICompositeResponseSanitizer responseSanitizer,
         IPlanProgressNotifier notifier,
         PlanExecutionContext executionContext,
         ILogger<ToolUseStepExecutor> logger)
@@ -35,6 +38,7 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
         _capabilityEnforcer = capabilityEnforcer;
         _serviceProvider = serviceProvider;
         _attestationService = attestationService;
+        _responseSanitizer = responseSanitizer;
         _notifier = notifier;
         _executionContext = executionContext;
         _logger = logger;
@@ -115,10 +119,17 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
 
         if (sandboxResult.Success)
         {
+            var sanitizedOutput = sandboxResult.Output;
+            if (!string.IsNullOrEmpty(sanitizedOutput))
+            {
+                var sanitizationResult = _responseSanitizer.Sanitize(sanitizedOutput, config.ToolName);
+                sanitizedOutput = sanitizationResult.SanitizedContent;
+            }
+
             return new StepExecutionResult
             {
                 Status = StepExecutionStatus.Completed,
-                Output = sandboxResult.Output,
+                Output = sanitizedOutput,
                 Duration = sw.Elapsed,
                 Attestation = sandboxResult.Attestation
             };

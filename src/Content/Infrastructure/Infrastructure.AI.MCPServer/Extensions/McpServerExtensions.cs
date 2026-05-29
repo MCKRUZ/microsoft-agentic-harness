@@ -3,6 +3,7 @@ using Domain.Common.Config;
 using Domain.Common.Config.AI.MCP;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
+using Microsoft.Extensions.Hosting;
 using ModelContextProtocol;
 using ModelContextProtocol.AspNetCore;
 using ModelContextProtocol.Protocol;
@@ -55,13 +56,18 @@ public static class McpServerExtensions
     /// Configures JWT Bearer authentication for the MCP server.
     /// </summary>
     public static IServiceCollection AddMcpAuthentication(
-        this IServiceCollection services, AppConfig appConfig, IConfiguration configuration)
+        this IServiceCollection services, AppConfig appConfig, IConfiguration configuration,
+        IHostEnvironment environment)
     {
         var auth = appConfig.AI.MCP.Auth;
 
         if (!auth.IsConfigured)
         {
-            // No auth configured — allow anonymous for development
+            if (!environment.IsDevelopment())
+                throw new InvalidOperationException(
+                    "MCP server authentication must be configured in non-Development environments. " +
+                    "Set AppConfig:AI:MCP:Auth in appsettings or User Secrets.");
+
             services.AddAuthentication();
             services.AddAuthorization(options =>
             {

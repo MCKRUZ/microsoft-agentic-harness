@@ -55,7 +55,7 @@ public static partial class PromptTemplateHelper
         {
             var key = match.Groups[1].Value.Trim();
             return lookup.TryGetValue(key, out var value)
-                ? value
+                ? SanitizeVariableValue(value)
                 : match.Value; // Leave unresolved placeholders as-is
         });
     }
@@ -94,4 +94,20 @@ public static partial class PromptTemplateHelper
 
     [GeneratedRegex(@"\{\{\s*([\w.\-]+)\s*\}\}", RegexOptions.None)]
     private static partial Regex PlaceholderRegex();
+
+    [GeneratedRegex(@"(?i)(^|\n)\s*(system|assistant|user)\s*:", RegexOptions.None)]
+    private static partial Regex RoleSwitchPattern();
+
+    private static string SanitizeVariableValue(string value)
+    {
+        if (string.IsNullOrEmpty(value))
+            return value;
+
+        return RoleSwitchPattern().Replace(value, match =>
+        {
+            var prefix = match.Groups[1].Value;
+            var role = match.Groups[2].Value;
+            return $"{prefix}{role}";
+        });
+    }
 }

@@ -1,4 +1,6 @@
 using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Application.AI.Common.Interfaces.DriftDetection;
@@ -66,7 +68,9 @@ public sealed class JsonlDriftAuditStore : IDriftAuditStore, IDisposable
         ArgumentNullException.ThrowIfNull(record);
 
         var filePath = GetFilePath(record.RecordedAt);
-        var line = JsonSerializer.Serialize(record, SerializeOptions) + "\n";
+        var json = JsonSerializer.Serialize(record, SerializeOptions);
+        var hash = ComputeIntegrityHash(json);
+        var line = $"{json}\t{hash}\n";
 
         await _semaphore.WaitAsync(ct);
         try
@@ -122,7 +126,16 @@ public sealed class JsonlDriftAuditStore : IDriftAuditStore, IDisposable
 
                     try
                     {
-                        var record = JsonSerializer.Deserialize<DriftAuditRecord>(line, DeserializeOptions);
+                        var (json, valid) = VerifyIntegrity(line);
+                        if (!valid)
+                        {
+                            _logger.LogWarning(
+                                "Integrity check failed for drift audit record at {FilePath}:{LineNumber}",
+                                filePath, lineNumber);
+                            continue;
+                        }
+
+                        var record = JsonSerializer.Deserialize<DriftAuditRecord>(json, DeserializeOptions);
                         if (record is not null)
                             records.Add(record);
                     }
@@ -202,5 +215,20 @@ public sealed class JsonlDriftAuditStore : IDriftAuditStore, IDisposable
         var fileName = Path.GetFileNameWithoutExtension(filePath);
         return DateTime.TryParseExact(fileName, "yyyy-MM-dd", CultureInfo.InvariantCulture,
             DateTimeStyles.None, out var date) ? date : DateTime.MaxValue;
+    }
+
+    private static string ComputeIntegrityHash(string json) =>
+        Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(json)));
+
+    private static (string Json, bool Valid) VerifyIntegrity(string line)
+    {
+        var tabIndex = line.LastIndexOf('\t');
+        if (tabIndex < 0)
+            return (line, false);
+
+        var json = line[..tabIndex];
+        var storedHash = line[(tabIndex + 1)..];
+        var computedHash = ComputeIntegrityHash(json);
+        return (json, string.Equals(storedHash, computedHash, StringComparison.OrdinalIgnoreCase));
     }
 }

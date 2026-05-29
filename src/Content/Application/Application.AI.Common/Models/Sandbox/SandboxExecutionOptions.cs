@@ -35,10 +35,11 @@ public sealed class ContainerSandboxOptions
     public int StopGracePeriodSeconds { get; init; } = 10;
 
     /// <summary>
-    /// Allowed image registry prefixes. Empty list means all images are allowed.
-    /// When non-empty, only images starting with one of these prefixes can be used.
+    /// Allowed image registry prefixes. Only images starting with one of these
+    /// prefixes can be used. Defaults to Microsoft Container Registry only.
+    /// Add additional prefixes in appsettings to allow other registries.
     /// </summary>
-    public IReadOnlyList<string> AllowedImagePrefixes { get; init; } = [];
+    public IReadOnlyList<string> AllowedImagePrefixes { get; init; } = ["mcr.microsoft.com/"];
 }
 
 /// <summary>

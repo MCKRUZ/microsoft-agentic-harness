@@ -100,7 +100,7 @@
     <PackageVersion Include="OpenTelemetry.Instrumentation.Runtime" Version="1.11.0" />
 
     <!-- Presentation.ConsoleUI / Presentation.LoggerUI -->
-    <PackageVersion Include="Spectre.Console" Version="0.54.1-alpha.0.31" />
+    <PackageVersion Include="Spectre.Console" Version="0.55.2" />
 
     <!-- Structured file logging (Presentation.AgentHub) -->
     <PackageVersion Include="Serilog.AspNetCore" Version="9.0.0" />

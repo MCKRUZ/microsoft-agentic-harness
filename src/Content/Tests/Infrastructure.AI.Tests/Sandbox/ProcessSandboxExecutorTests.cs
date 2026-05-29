@@ -2,9 +2,11 @@ using Application.AI.Common.Interfaces.Attestation;
 using Application.AI.Common.Interfaces.Sandbox;
 using Domain.AI.Attestation;
 using Domain.AI.Sandbox;
+using Domain.Common.Config.AI.Sandbox;
 using FluentAssertions;
 using Infrastructure.AI.Sandbox;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Moq;
 using Xunit;
 
@@ -20,7 +22,7 @@ public class ProcessSandboxExecutorTests : IDisposable
 
     public ProcessSandboxExecutorTests()
     {
-        _limiter.Setup(x => x.IsSupported).Returns(false);
+        _limiter.Setup(x => x.IsSupported).Returns(true);
 
         _attestation
             .Setup(x => x.SignAsync(
@@ -36,11 +38,15 @@ public class ProcessSandboxExecutorTests : IDisposable
             .ReturnsAsync((string tool, string _, string reason, CancellationToken ___) =>
                 CreateAttestation(tool, isFailure: true, failureReason: reason));
 
+        var sandboxConfig = new Mock<IOptionsMonitor<SandboxConfig>>();
+        sandboxConfig.Setup(x => x.CurrentValue).Returns(new SandboxConfig());
+
         _sut = new ProcessSandboxExecutor(
             _limiter.Object,
             _attestation.Object,
             Mock.Of<ILogger<ProcessSandboxExecutor>>(),
-            TimeProvider.System);
+            TimeProvider.System,
+            sandboxConfig.Object);
     }
 
     public void Dispose()
@@ -56,7 +62,7 @@ public class ProcessSandboxExecutorTests : IDisposable
     [Fact]
     public async Task ExecuteAsync_SuccessfulExecution_ReturnsOutputAndAttestation()
     {
-        var request = CreateRequest(command: "cmd.exe", arguments: "/c echo hello");
+        var request = CreateRequest(command: "cmd.exe", argumentList: ["/c", "echo", "hello"]);
 
         var result = await _sut.ExecuteAsync(request, CancellationToken.None);
 
@@ -71,7 +77,7 @@ public class ProcessSandboxExecutorTests : IDisposable
     {
         var request = CreateRequest(
             command: "cmd.exe",
-            arguments: "/c ping -n 60 127.0.0.1",
+            argumentList: ["/c", "ping", "-n", "60", "127.0.0.1"],
             timeout: TimeSpan.FromSeconds(2));
 
         var result = await _sut.ExecuteAsync(request, CancellationToken.None);
@@ -85,7 +91,7 @@ public class ProcessSandboxExecutorTests : IDisposable
     [Fact]
     public async Task ExecuteAsync_ProcessCrash_ReturnsFailureAttestation()
     {
-        var request = CreateRequest(command: "cmd.exe", arguments: "/c exit 1");
+        var request = CreateRequest(command: "cmd.exe", argumentList: ["/c", "exit", "1"]);
 
         var result = await _sut.ExecuteAsync(request, CancellationToken.None);
 
@@ -101,7 +107,7 @@ public class ProcessSandboxExecutorTests : IDisposable
         var inputJson = "{\"key\":\"value\"}";
         var request = CreateRequest(
             command: "cmd.exe",
-            arguments: "/c more",
+            argumentList: ["/c", "more"],
             input: inputJson);
 
         var result = await _sut.ExecuteAsync(request, CancellationToken.None);
@@ -124,7 +130,7 @@ public class ProcessSandboxExecutorTests : IDisposable
             return dir;
         };
 
-        var request = CreateRequest(command: "cmd.exe", arguments: "/c echo done");
+        var request = CreateRequest(command: "cmd.exe", argumentList: ["/c", "echo", "done"]);
 
         await _sut.ExecuteAsync(request, CancellationToken.None);
 
@@ -134,7 +140,7 @@ public class ProcessSandboxExecutorTests : IDisposable
 
     private static SandboxExecutionRequest CreateRequest(
         string command = "cmd.exe",
-        string arguments = "/c echo test",
+        string[]? argumentList = null,
         string input = "{}",
         TimeSpan? timeout = null) => new()
     {
@@ -147,7 +153,7 @@ public class ProcessSandboxExecutorTests : IDisposable
             AllowedPrograms = [command]
         },
         Command = command,
-        Arguments = arguments,
+        ArgumentList = argumentList ?? ["/c", "echo", "test"],
         Timeout = timeout ?? TimeSpan.FromSeconds(10)
     };
 

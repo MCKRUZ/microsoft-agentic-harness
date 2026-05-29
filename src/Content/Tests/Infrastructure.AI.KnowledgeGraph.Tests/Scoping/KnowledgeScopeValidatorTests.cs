@@ -51,12 +51,12 @@ public sealed class KnowledgeScopeValidatorTests
     }
 
     [Fact]
-    public void ValidateAccess_NullTargetTenant_Allows()
+    public void ValidateAccess_NullTargetTenant_DeniesWhenIsolationEnabled()
     {
         var validator = CreateValidator(isolationEnabled: true);
         var scope = CreateScope(tenantId: "t1");
 
-        validator.ValidateAccess(scope, null).Should().BeTrue();
+        validator.ValidateAccess(scope, null).Should().BeFalse();
     }
 
     [Fact]

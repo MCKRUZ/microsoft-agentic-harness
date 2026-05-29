@@ -2,7 +2,9 @@ using System.Diagnostics;
 using Application.AI.Common.Interfaces.Attestation;
 using Application.AI.Common.Interfaces.Sandbox;
 using Domain.AI.Sandbox;
+using Domain.Common.Config.AI.Sandbox;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace Infrastructure.AI.Sandbox;
 
@@ -18,25 +20,33 @@ public sealed class ProcessSandboxExecutor : ISandboxExecutor
     private readonly IAttestationService _attestationService;
     private readonly ILogger<ProcessSandboxExecutor> _logger;
     private readonly TimeProvider _timeProvider;
+    private readonly IOptionsMonitor<SandboxConfig> _sandboxConfig;
 
     public ProcessSandboxExecutor(
         IProcessResourceLimiter resourceLimiter,
         IAttestationService attestationService,
         ILogger<ProcessSandboxExecutor> logger,
-        TimeProvider timeProvider)
+        TimeProvider timeProvider,
+        IOptionsMonitor<SandboxConfig> sandboxConfig)
     {
         _resourceLimiter = resourceLimiter;
         _attestationService = attestationService;
         _logger = logger;
         _timeProvider = timeProvider;
+        _sandboxConfig = sandboxConfig;
+        CreateWorkspaceDirectory = CreateDefaultWorkspace;
     }
 
-    internal Func<string> CreateWorkspaceDirectory { get; set; } = () =>
+    internal Func<string> CreateWorkspaceDirectory { get; set; }
+
+    private string CreateDefaultWorkspace()
     {
-        var dir = Path.Combine(Path.GetTempPath(), $"sandbox-{Guid.NewGuid():N}");
+        var root = _sandboxConfig.CurrentValue.WorkspaceRoot;
+        var baseDir = !string.IsNullOrEmpty(root) ? root : Path.GetTempPath();
+        var dir = Path.Combine(baseDir, $"sandbox-{Guid.NewGuid():N}");
         Directory.CreateDirectory(dir);
         return dir;
-    };
+    }
 
     public async Task<SandboxExecutionResult> ExecuteAsync(
         SandboxExecutionRequest request, CancellationToken ct)
@@ -131,10 +141,6 @@ public sealed class ProcessSandboxExecutor : ISandboxExecutor
             foreach (var arg in request.ArgumentList)
                 psi.ArgumentList.Add(arg);
         }
-        else if (!string.IsNullOrEmpty(request.Arguments))
-        {
-            psi.Arguments = request.Arguments;
-        }
 
         var process = new Process { StartInfo = psi };
         process.Start();
@@ -144,7 +150,17 @@ public sealed class ProcessSandboxExecutor : ISandboxExecutor
     private void ApplyResourceLimits(Process process, ResourceLimits limits)
     {
         if (!_resourceLimiter.Apply(process, limits))
+        {
+            if (!_resourceLimiter.IsSupported)
+            {
+                KillProcess(process);
+                throw new PlatformNotSupportedException(
+                    "Process resource limits are not available on this platform. " +
+                    "Use container isolation (SandboxIsolationLevel.Container) for cross-platform enforcement.");
+            }
+
             _logger.LogWarning("Failed to apply resource limits to process {ProcessId}", process.Id);
+        }
     }
 
     private void KillProcess(Process process)

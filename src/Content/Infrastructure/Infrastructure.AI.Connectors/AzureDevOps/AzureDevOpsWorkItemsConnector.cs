@@ -37,6 +37,10 @@ public sealed partial class AzureDevOpsWorkItemsConnector : ConnectorClientBase
     [GeneratedRegex(@"^[\w\s\-\.]{1,64}$")]
     private static partial Regex SafeProjectNameRegex();
 
+    [GeneratedRegex(@"\b(INSERT|UPDATE|DELETE|DROP|ALTER|TRUNCATE|CREATE|EXEC|EXECUTE|DESTROY)\b",
+        RegexOptions.IgnoreCase)]
+    private static partial Regex WiqlMutationPattern();
+
     #endregion
 
     #region Constructor
@@ -144,6 +148,15 @@ public sealed partial class AzureDevOpsWorkItemsConnector : ConnectorClientBase
             ConfigureHttpClient(httpClient);
 
             var query = wiql;
+            if (!string.IsNullOrWhiteSpace(query))
+            {
+                if (WiqlMutationPattern().IsMatch(query))
+                    return ConnectorOperationResult.Failure("WIQL query rejected: only SELECT statements are allowed.");
+
+                if (!query.TrimStart().StartsWith("SELECT", StringComparison.OrdinalIgnoreCase))
+                    return ConnectorOperationResult.Failure("WIQL query must start with SELECT.");
+            }
+
             if (string.IsNullOrWhiteSpace(query))
             {
                 query = $"SELECT TOP {top} [System.Id], [System.Title], [System.State], " +

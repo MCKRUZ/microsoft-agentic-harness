@@ -2,6 +2,7 @@ using Application.Core.CQRS.Agents.RunConversation;
 using MediatR;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Hosting;
 
 namespace Presentation.AgentHub.Controllers;
 
@@ -17,7 +18,7 @@ namespace Presentation.AgentHub.Controllers;
 /// </remarks>
 [ApiController]
 [Route("api/test")]
-[AllowAnonymous]
+[Authorize]
 public sealed class TestConversationsController : ControllerBase
 {
 	private readonly IMediator _mediator;

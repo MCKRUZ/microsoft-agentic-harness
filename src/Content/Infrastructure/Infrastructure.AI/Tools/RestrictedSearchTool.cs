@@ -48,7 +48,14 @@ public sealed class RestrictedSearchTool : ITool
         };
 
     private static readonly string[] ForbiddenMetacharacters =
-        [";", "|", "&&", "||", ">", "<", "`", "$(", "\n"];
+        [";", "|", "&&", "||", ">", "<", "`", "$(", "\n", "\r", "%0a", "%0d"];
+
+    private static readonly IReadOnlyDictionary<string, IReadOnlySet<string>> DangerousFlagsPerBinary =
+        new Dictionary<string, IReadOnlySet<string>>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["find"] = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "-exec", "-execdir", "-delete", "-ok" },
+            ["jq"] = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "--rawfile", "--argjson", "--slurpfile" },
+        };
 
     private readonly IOptionsMonitor<MetaHarnessConfig> _config;
     private readonly ILogger<RestrictedSearchTool> _logger;
@@ -125,6 +132,17 @@ public sealed class RestrictedSearchTool : ITool
                 return ToolResult.Fail($"Command contains forbidden metacharacter: '{meta}'.");
         }
 
+        // Step 2b: Per-binary dangerous flag rejection
+        if (DangerousFlagsPerBinary.TryGetValue(binary, out var dangerousFlags))
+        {
+            var args = command.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            foreach (var arg in args)
+            {
+                if (dangerousFlags.Contains(arg))
+                    return ToolResult.Fail($"Flag '{arg}' is not permitted for '{binary}'.");
+            }
+        }
+
         // Step 3: Working directory path validation
         string resolvedWorkingDir;
         string resolvedRoot;
@@ -151,7 +169,6 @@ public sealed class RestrictedSearchTool : ITool
         var psi = new ProcessStartInfo
         {
             FileName = binary,
-            Arguments = ExtractArguments(command),
             UseShellExecute = false,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
@@ -159,10 +176,13 @@ public sealed class RestrictedSearchTool : ITool
             CreateNoWindow = true
         };
 
+        foreach (var arg in ExtractArgumentList(command))
+            psi.ArgumentList.Add(arg);
+
         // Isolated environment: clear inherited vars (no credential leaks), keep a minimal PATH
         psi.Environment.Clear();
         psi.Environment["PATH"] = OperatingSystem.IsWindows()
-            ? (Environment.GetEnvironmentVariable("PATH") ?? string.Empty)
+            ? @"C:\Windows\System32;C:\Windows"
             : "/usr/local/bin:/usr/bin:/bin";
 
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -215,10 +235,10 @@ public sealed class RestrictedSearchTool : ITool
     private static string ExtractBinary(string command) =>
         command.Split(' ', StringSplitOptions.RemoveEmptyEntries)[0];
 
-    private static string ExtractArguments(string command)
+    private static string[] ExtractArgumentList(string command)
     {
-        var idx = command.IndexOf(' ');
-        return idx < 0 ? string.Empty : command[(idx + 1)..];
+        var parts = command.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        return parts.Length > 1 ? parts[1..] : [];
     }
 
     private static bool IsPathSafe(string resolvedPath, string resolvedRoot)

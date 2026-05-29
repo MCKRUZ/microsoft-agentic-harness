@@ -199,12 +199,20 @@ public sealed class AgentTelemetryHub : Hub
     }
 
     /// <summary>
-    /// Invokes a named tool through the agent pipeline by synthesising a user message.
+    /// Invokes a named tool through the agent pipeline using a structured tool
+    /// invocation marker that the agent framework parses as a direct tool call,
+    /// not as natural language input (prevents prompt injection via tool parameters).
     /// </summary>
     public async Task InvokeToolViaAgent(string conversationId, string toolName, string inputJson)
     {
-        var userMessage = $"Please invoke the tool '{toolName}' with the following input: {inputJson}";
-        await SendMessage(conversationId, Guid.NewGuid(), userMessage);
+        if (string.IsNullOrWhiteSpace(toolName) || toolName.Length > 128)
+            throw new HubException("Invalid tool name.");
+
+        if (inputJson is not null && inputJson.Length > 32_768)
+            throw new HubException("Input too large.");
+
+        var structuredMessage = $"[TOOL_INVOKE:{Uri.EscapeDataString(toolName)}]{inputJson}";
+        await SendMessage(conversationId, Guid.NewGuid(), structuredMessage);
     }
 
     // -------------------------------------------------------------------------
@@ -230,8 +238,22 @@ public sealed class AgentTelemetryHub : Hub
     }
 
     /// <summary>Removes this connection from the conversation's SignalR group.</summary>
-    public Task LeaveConversationGroup(string conversationId) =>
-        Groups.RemoveFromGroupAsync(Context.ConnectionId, ConversationGroup(conversationId), Context.ConnectionAborted);
+    public async Task LeaveConversationGroup(string conversationId)
+    {
+        var ct = Context.ConnectionAborted;
+        var callerId = GetCallerId();
+
+        try
+        {
+            await _orchestrator.ValidateAccessAsync(conversationId, callerId, ct);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or UnauthorizedAccessException)
+        {
+            throw new HubException(ex is UnauthorizedAccessException ? "Access denied." : "Conversation not found.");
+        }
+
+        await Groups.RemoveFromGroupAsync(Context.ConnectionId, ConversationGroup(conversationId), ct);
+    }
 
     // -------------------------------------------------------------------------
     // Hub methods — global trace firehose

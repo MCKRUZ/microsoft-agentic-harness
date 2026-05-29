@@ -200,12 +200,22 @@ public sealed class SqliteFts5Store : IBm25Store
         1.0 / (1.0 + Math.Abs(rank));
 
     /// <summary>
-    /// Escapes special FTS5 characters to prevent query syntax errors.
-    /// Wraps each token in double quotes for exact matching.
+    /// Escapes user input for safe FTS5 MATCH queries. Each token is quoted for exact
+    /// matching; prefix operators (<c>*</c>, <c>^</c>) are stripped to prevent unintended FTS5 behavior.
     /// </summary>
     private static string EscapeFts5Query(string query)
     {
         var tokens = query.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        return string.Join(" OR ", tokens.Select(t => $"\"{t.Replace("\"", "\"\"")}\""));
+        if (tokens.Length == 0) return "\"_empty\"";
+
+        return string.Join(" OR ", tokens.Select(t =>
+        {
+            var sanitized = t
+                .Replace("\"", "\"\"")
+                .Replace("*", "")
+                .Replace("^", "");
+            if (string.IsNullOrWhiteSpace(sanitized)) sanitized = "_empty";
+            return $"\"{sanitized}\"";
+        }));
     }
 }

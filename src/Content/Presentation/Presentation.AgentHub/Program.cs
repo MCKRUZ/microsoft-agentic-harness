@@ -17,16 +17,25 @@ builder.Services.AddAgentHubServices(builder.Configuration, builder.Environment)
 
 // MemoizedPromptComposer (singleton) → IPromptSectionProvider (transient) → IAgentExecutionContext (scoped)
 // creates a captive dependency that ASP.NET Core rejects by default. Scope validation is suppressed
-// here to match ConsoleUI behaviour. The root cause is tracked as a deferred refactor item.
-builder.Host.UseDefaultServiceProvider(options =>
+// in Development only. Production runs with validation enabled to catch data leakage between requests.
+if (builder.Environment.IsDevelopment())
 {
-    options.ValidateScopes = false;
-    options.ValidateOnBuild = false;
-});
+    builder.Host.UseDefaultServiceProvider(options =>
+    {
+        options.ValidateScopes = false;
+        options.ValidateOnBuild = false;
+    });
+}
 
 var app = builder.Build();
 
 // Middleware pipeline — order is not negotiable.
+// Security headers and exception handling run before routing so every response is covered.
+app.UseSecurityHeadersMiddleware();
+app.UseGlobalExceptionMiddleware();
+if (!app.Environment.IsDevelopment())
+    app.UseHsts();
+app.UseHttpsRedirection();
 // UseCors must precede UseAuthentication so CORS preflight (OPTIONS) is answered
 // before the auth middleware can reject with 401.
 app.UseRouting();
@@ -37,7 +46,7 @@ app.UseRateLimiter();
 app.MapControllers();
 app.MapHub<AgentTelemetryHub>("/hubs/agent");
 app.MapAgUiEndpoints();
-app.MapPrometheusScrapingEndpoint();
+app.MapPrometheusScrapingEndpoint().RequireAuthorization();
 app.AddHealthCheckEndpoint("/api");
 
 app.Run();

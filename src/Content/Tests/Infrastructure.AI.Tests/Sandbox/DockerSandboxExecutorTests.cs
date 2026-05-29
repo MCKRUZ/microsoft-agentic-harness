@@ -258,7 +258,7 @@ public class DockerSandboxExecutorTests
             .ReturnsAsync(new CreateContainerResponse { ID = "test-id" });
 
         var request = CreateRequest();
-        request = request with { Command = "python", Arguments = "script.py" };
+        request = request with { Command = "python", ArgumentList = ["script.py"] };
 
         await _sut.ExecuteAsync(request, CancellationToken.None);
 
@@ -279,7 +279,7 @@ public class DockerSandboxExecutorTests
         {
             ToolOverrides = new Dictionary<string, ToolSandboxOverride>
             {
-                ["test_tool"] = new ToolSandboxOverride { ContainerImage = "custom-image:latest" }
+                ["test_tool"] = new ToolSandboxOverride { ContainerImage = "mcr.microsoft.com/custom-image:latest" }
             }
         };
         _options.Setup(x => x.CurrentValue).Returns(options);
@@ -289,7 +289,7 @@ public class DockerSandboxExecutorTests
         await _sut.ExecuteAsync(request, CancellationToken.None);
 
         captured.Should().NotBeNull();
-        captured!.Image.Should().Be("custom-image:latest");
+        captured!.Image.Should().Be("mcr.microsoft.com/custom-image:latest");
     }
 
     [Fact]

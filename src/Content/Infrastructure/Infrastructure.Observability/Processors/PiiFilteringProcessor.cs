@@ -38,6 +38,7 @@ public sealed class PiiFilteringProcessor : BaseProcessor<Activity>
     private readonly PiiFilteringConfig _config;
     private readonly HashSet<string> _deleteAttributes;
     private readonly HashSet<string> _hashAttributes;
+    private readonly byte[]? _hmacKey;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="PiiFilteringProcessor"/> class.
@@ -51,14 +52,26 @@ public sealed class PiiFilteringProcessor : BaseProcessor<Activity>
         _logger = logger;
         _config = appConfig.Value.Observability.PiiFiltering;
 
-        // Case-insensitive matching since OTel attribute casing varies across SDKs
         _deleteAttributes = new HashSet<string>(_config.DeleteAttributes, StringComparer.OrdinalIgnoreCase);
         _hashAttributes = new HashSet<string>(_config.HashAttributes, StringComparer.OrdinalIgnoreCase);
 
+        if (!string.IsNullOrEmpty(_config.HmacKey))
+        {
+            _hmacKey = Convert.FromBase64String(_config.HmacKey);
+        }
+        else if (_hashAttributes.Count > 0)
+        {
+            _logger.LogWarning(
+                "PII filtering has {HashCount} hash attributes but no HmacKey — " +
+                "using plain SHA-256. Set Observability:PiiFiltering:HmacKey for production",
+                _hashAttributes.Count);
+        }
+
         _logger.LogInformation(
-            "PII filtering initialized: {DeleteCount} delete rules, {HashCount} hash rules",
+            "PII filtering initialized: {DeleteCount} delete, {HashCount} hash, HMAC={HmacEnabled}",
             _deleteAttributes.Count,
-            _hashAttributes.Count);
+            _hashAttributes.Count,
+            _hmacKey is not null);
     }
 
     /// <inheritdoc />
@@ -94,9 +107,12 @@ public sealed class PiiFilteringProcessor : BaseProcessor<Activity>
         }
     }
 
-    private static string HashValue(string value)
+    private string HashValue(string value)
     {
-        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(value));
+        var input = Encoding.UTF8.GetBytes(value);
+        var bytes = _hmacKey is not null
+            ? HMACSHA256.HashData(_hmacKey, input)
+            : SHA256.HashData(input);
         return Convert.ToHexStringLower(bytes);
     }
 }

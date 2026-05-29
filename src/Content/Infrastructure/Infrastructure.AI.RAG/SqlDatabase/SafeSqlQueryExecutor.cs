@@ -21,9 +21,12 @@ internal sealed partial class SafeSqlQueryExecutor(
         RegexOptions.IgnoreCase)]
     private static partial Regex MutationPattern();
 
+    [GeneratedRegex(@";\s*\S", RegexOptions.None)]
+    private static partial Regex MultiStatementPattern();
+
     /// <summary>
     /// Executes a read-only <paramref name="sql"/> query against the configured database.
-    /// Throws <see cref="InvalidOperationException"/> if the query contains any mutation keyword.
+    /// Rejects queries containing mutation keywords, multiple statements, or non-SELECT roots.
     /// Results are capped at the configured <c>MaxRows</c> limit.
     /// </summary>
     public async Task<SqlRetrievalResult> ExecuteAsync(
@@ -32,6 +35,15 @@ internal sealed partial class SafeSqlQueryExecutor(
         if (MutationPattern().IsMatch(sql))
             throw new InvalidOperationException(
                 "SQL query rejected: only read-only SELECT statements are allowed. Query contained a mutation keyword.");
+
+        if (!sql.TrimStart().StartsWith("SELECT", StringComparison.OrdinalIgnoreCase)
+            && !sql.TrimStart().StartsWith("WITH", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException(
+                "SQL query rejected: query must start with SELECT or WITH (CTE).");
+
+        if (MultiStatementPattern().IsMatch(sql))
+            throw new InvalidOperationException(
+                "SQL query rejected: multiple statements are not allowed.");
 
         var config = configMonitor.CurrentValue.AI.Rag.SqlDatabase;
 

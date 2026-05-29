@@ -38,8 +38,9 @@ public class PiiFilteringConfig
     ];
 
     /// <summary>
-    /// Gets or sets the attribute keys whose values are replaced with a SHA-256 hash.
+    /// Gets or sets the attribute keys whose values are replaced with a keyed hash.
     /// Preserves cardinality for analytics without exposing PII.
+    /// Uses HMAC-SHA256 when <see cref="HmacKey"/> is configured, plain SHA-256 otherwise.
     /// </summary>
     /// <value>Default: user email, end-user ID.</value>
     public List<string> HashAttributes { get; set; } =
@@ -47,4 +48,13 @@ public class PiiFilteringConfig
         "user.email",
         "enduser.id"
     ];
+
+    /// <summary>
+    /// Gets or sets the base64-encoded HMAC key for hashing PII attribute values.
+    /// When configured, HMAC-SHA256 replaces plain SHA-256 to prevent rainbow table
+    /// attacks on low-entropy values. Generate with:
+    /// <c>Convert.ToBase64String(RandomNumberGenerator.GetBytes(32))</c>.
+    /// </summary>
+    /// <value>Default: null (falls back to plain SHA-256 with a startup warning).</value>
+    public string? HmacKey { get; set; }
 }

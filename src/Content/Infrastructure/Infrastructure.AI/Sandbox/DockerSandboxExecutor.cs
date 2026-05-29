@@ -156,8 +156,6 @@ public sealed class DockerSandboxExecutor : ISandboxExecutor
             cmd = [request.Command];
             if (request.ArgumentList is { Count: > 0 })
                 cmd.AddRange(request.ArgumentList);
-            else if (!string.IsNullOrEmpty(request.Arguments))
-                cmd.Add(request.Arguments);
         }
 
         return new CreateContainerParameters

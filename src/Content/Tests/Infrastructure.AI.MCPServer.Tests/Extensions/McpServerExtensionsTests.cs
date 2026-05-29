@@ -6,6 +6,8 @@ using FluentAssertions;
 using Infrastructure.AI.MCPServer.Extensions;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Moq;
 using Xunit;
 
 namespace Infrastructure.AI.MCPServer.Tests.Extensions;
@@ -16,6 +18,13 @@ namespace Infrastructure.AI.MCPServer.Tests.Extensions;
 /// </summary>
 public sealed class McpServerExtensionsTests
 {
+    private static IHostEnvironment CreateDevelopmentEnvironment()
+    {
+        var mock = new Mock<IHostEnvironment>();
+        mock.Setup(e => e.EnvironmentName).Returns("Development");
+        return mock.Object;
+    }
+
     private static AppConfig CreateAppConfig(
         string serverName = "test-harness",
         string serverVersion = "1.0.0",
@@ -94,7 +103,7 @@ public sealed class McpServerExtensionsTests
         var appConfig = CreateAppConfig();
         var configuration = new ConfigurationBuilder().Build();
 
-        services.AddMcpAuthentication(appConfig, configuration);
+        services.AddMcpAuthentication(appConfig, configuration, CreateDevelopmentEnvironment());
 
         services.Any(d => d.ServiceType.Name.Contains("Authentication")).Should().BeTrue();
     }
@@ -112,7 +121,7 @@ public sealed class McpServerExtensionsTests
         var appConfig = CreateAppConfig(auth: auth);
         var configuration = new ConfigurationBuilder().Build();
 
-        services.AddMcpAuthentication(appConfig, configuration);
+        services.AddMcpAuthentication(appConfig, configuration, CreateDevelopmentEnvironment());
 
         services.Any(d => d.ServiceType.Name.Contains("Authentication")).Should().BeTrue();
     }
@@ -124,7 +133,7 @@ public sealed class McpServerExtensionsTests
         var appConfig = CreateAppConfig();
         var configuration = new ConfigurationBuilder().Build();
 
-        services.AddMcpAuthentication(appConfig, configuration);
+        services.AddMcpAuthentication(appConfig, configuration, CreateDevelopmentEnvironment());
 
         services.Any(d => d.ServiceType.Name.Contains("Authorization")).Should().BeTrue();
     }
@@ -136,7 +145,9 @@ public sealed class McpServerExtensionsTests
         var appConfig = CreateAppConfig();
         var configuration = new ConfigurationBuilder().Build();
 
-        var result = services.AddMcpAuthentication(appConfig, configuration);
+        var environment = CreateDevelopmentEnvironment();
+
+        var result = services.AddMcpAuthentication(appConfig, configuration, environment);
 
         result.Should().BeSameAs(services);
     }

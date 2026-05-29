@@ -40,8 +40,10 @@ public sealed class KnowledgeScopeValidator : IKnowledgeScopeValidator
         if (!_configMonitor.CurrentValue.AI.Rag.GraphRag.MultiTenantIsolation)
             return true;
 
+        // Null target tenant means the node/edge has no tenant metadata — deny access
+        // when isolation is enabled, since "unknown tenant" is not "any tenant".
         if (targetTenantId is null)
-            return true;
+            return false;
 
         if (scope.TenantId is null)
             return false;
@@ -60,8 +62,10 @@ public sealed class KnowledgeScopeValidator : IKnowledgeScopeValidator
         if (string.Equals(scope.UserId, datasetOwnerId, StringComparison.OrdinalIgnoreCase))
             return true;
 
-        if (scope.TenantId is not null && scope.DatasetOwnerId is not null)
-            return string.Equals(scope.TenantId, scope.DatasetOwnerId, StringComparison.OrdinalIgnoreCase);
+        // Compare the scope's tenant against the target dataset owner's tenant,
+        // not the scope's own DatasetOwnerId (which was a self-reference bug).
+        if (scope.TenantId is not null)
+            return string.Equals(scope.TenantId, datasetOwnerId, StringComparison.OrdinalIgnoreCase);
 
         return false;
     }

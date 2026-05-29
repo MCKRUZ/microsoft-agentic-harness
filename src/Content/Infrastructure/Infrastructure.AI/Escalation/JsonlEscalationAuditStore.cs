@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Application.AI.Common.Interfaces.Escalation;
@@ -130,7 +132,16 @@ public sealed class JsonlEscalationAuditStore : IEscalationAuditStore, IDisposab
 
                 try
                 {
-                    var record = JsonSerializer.Deserialize<EscalationAuditRecord>(line, DeserializeOptions);
+                    var (json, valid) = VerifyIntegrity(line);
+                    if (!valid)
+                    {
+                        _logger.LogWarning(
+                            "Integrity check failed for escalation audit record at {FilePath}:{LineNumber}",
+                            _filePath, lineNumber);
+                        continue;
+                    }
+
+                    var record = JsonSerializer.Deserialize<EscalationAuditRecord>(json, DeserializeOptions);
                     if (record is not null && record.EscalationId == escalationId)
                         records.Add(record);
                 }
@@ -161,7 +172,9 @@ public sealed class JsonlEscalationAuditStore : IEscalationAuditStore, IDisposab
     /// </summary>
     private async Task AppendRecordAsync(EscalationAuditRecord record, CancellationToken ct)
     {
-        var line = JsonSerializer.Serialize(record, SerializeOptions) + "\n";
+        var json = JsonSerializer.Serialize(record, SerializeOptions);
+        var hash = ComputeIntegrityHash(json);
+        var line = $"{json}\t{hash}\n";
 
         await _semaphore.WaitAsync(ct);
         try
@@ -187,5 +200,20 @@ public sealed class JsonlEscalationAuditStore : IEscalationAuditStore, IDisposab
         var dir = Path.GetDirectoryName(filePath);
         if (dir is not null)
             Directory.CreateDirectory(dir);
+    }
+
+    private static string ComputeIntegrityHash(string json) =>
+        Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(json)));
+
+    private static (string Json, bool Valid) VerifyIntegrity(string line)
+    {
+        var tabIndex = line.LastIndexOf('\t');
+        if (tabIndex < 0)
+            return (line, false);
+
+        var json = line[..tabIndex];
+        var storedHash = line[(tabIndex + 1)..];
+        var computedHash = ComputeIntegrityHash(json);
+        return (json, string.Equals(storedHash, computedHash, StringComparison.OrdinalIgnoreCase));
     }
 }
