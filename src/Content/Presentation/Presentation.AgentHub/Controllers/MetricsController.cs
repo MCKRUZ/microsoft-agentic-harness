@@ -127,8 +127,8 @@ public sealed class MetricsController : ControllerBase
     /// blocked by the allowlist. Length-capped to limit query complexity.
     /// Prometheus itself validates query syntax; this is defense-in-depth.
     /// </summary>
-    private const int MaxPromQlLength = 500;
-    private const string AllowedPromQlSymbols = "_:.-+*/%^(){}[],\"'=!~<>@ \t\\|";
+    private const int MaxPromQlLength = 300;
+    private const string AllowedPromQlSymbols = "_:.-+*/%^(){}[],\"'=!~<>@ |";
 
     private static bool IsValidPromQl(string query)
     {

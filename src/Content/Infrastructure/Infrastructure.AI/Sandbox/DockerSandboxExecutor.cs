@@ -42,6 +42,8 @@ public sealed class DockerSandboxExecutor : ISandboxExecutor
 
         var workspaceDir = Path.Combine(Path.GetTempPath(), $"docker-sandbox-{Guid.NewGuid():N}");
         Directory.CreateDirectory(workspaceDir);
+        if (!OperatingSystem.IsWindows())
+            File.SetUnixFileMode(workspaceDir, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         string? containerId = null;
 
         try

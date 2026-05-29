@@ -179,11 +179,17 @@ public sealed class RestrictedSearchTool : ITool
         foreach (var arg in ExtractArgumentList(command))
             psi.ArgumentList.Add(arg);
 
-        // Isolated environment: clear inherited vars (no credential leaks), keep a minimal PATH
         psi.Environment.Clear();
-        psi.Environment["PATH"] = OperatingSystem.IsWindows()
-            ? @"C:\Windows\System32;C:\Windows"
-            : "/usr/local/bin:/usr/bin:/bin";
+        if (OperatingSystem.IsWindows())
+        {
+            psi.Environment["PATH"] = @"C:\Windows\System32;C:\Windows";
+            psi.Environment["PATHEXT"] = ".COM;.EXE";
+            psi.Environment["SYSTEMROOT"] = @"C:\Windows";
+        }
+        else
+        {
+            psi.Environment["PATH"] = "/usr/local/bin:/usr/bin:/bin";
+        }
 
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         cts.CancelAfter(_commandTimeout);

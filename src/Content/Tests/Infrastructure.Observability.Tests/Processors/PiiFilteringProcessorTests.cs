@@ -14,6 +14,8 @@ namespace Infrastructure.Observability.Tests.Processors;
 
 public sealed class PiiFilteringProcessorTests : IDisposable
 {
+    private static readonly byte[] TestHmacKey = new byte[32];
+    private static readonly string TestHmacKeyBase64 = Convert.ToBase64String(TestHmacKey);
     private readonly ActivitySource _source = new("test.pii-filtering");
     private readonly ActivityListener _listener;
 
@@ -39,6 +41,8 @@ public sealed class PiiFilteringProcessorTests : IDisposable
         var appConfig = new AppConfig();
         if (config is not null)
             appConfig.Observability.PiiFiltering = config;
+
+        appConfig.Observability.PiiFiltering.HmacKey ??= TestHmacKeyBase64;
 
         var options = Options.Create(appConfig);
         return new PiiFilteringProcessor(
@@ -71,7 +75,7 @@ public sealed class PiiFilteringProcessorTests : IDisposable
     }
 
     [Fact]
-    public void OnEnd_UserEmail_HashedWithSha256()
+    public void OnEnd_UserEmail_HashedWithHmacSha256()
     {
         var processor = CreateProcessor();
         using var activity = _source.StartActivity("test-op")!;
@@ -85,12 +89,12 @@ public sealed class PiiFilteringProcessorTests : IDisposable
         result.Should().NotBe(email);
 
         var expectedHash = Convert.ToHexStringLower(
-            SHA256.HashData(Encoding.UTF8.GetBytes(email)));
+            HMACSHA256.HashData(TestHmacKey, Encoding.UTF8.GetBytes(email)));
         result.Should().Be(expectedHash);
     }
 
     [Fact]
-    public void OnEnd_EndUserId_HashedWithSha256()
+    public void OnEnd_EndUserId_HashedWithHmacSha256()
     {
         var processor = CreateProcessor();
         using var activity = _source.StartActivity("test-op")!;
@@ -104,7 +108,7 @@ public sealed class PiiFilteringProcessorTests : IDisposable
         result.Should().NotBe(userId);
 
         var expectedHash = Convert.ToHexStringLower(
-            SHA256.HashData(Encoding.UTF8.GetBytes(userId)));
+            HMACSHA256.HashData(TestHmacKey, Encoding.UTF8.GetBytes(userId)));
         result.Should().Be(expectedHash);
     }
 
@@ -173,7 +177,7 @@ public sealed class PiiFilteringProcessorTests : IDisposable
         result.Should().NotBe("test@test.com");
 
         var expectedHash = Convert.ToHexStringLower(
-            SHA256.HashData(Encoding.UTF8.GetBytes("test@test.com")));
+            HMACSHA256.HashData(TestHmacKey, Encoding.UTF8.GetBytes("test@test.com")));
         result.Should().Be(expectedHash);
     }
 }

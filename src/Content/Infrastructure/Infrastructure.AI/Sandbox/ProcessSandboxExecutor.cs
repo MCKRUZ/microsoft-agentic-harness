@@ -43,9 +43,21 @@ public sealed class ProcessSandboxExecutor : ISandboxExecutor
     {
         var root = _sandboxConfig.CurrentValue.WorkspaceRoot;
         var baseDir = !string.IsNullOrEmpty(root) ? root : Path.GetTempPath();
+
+        if (!Path.IsPathRooted(baseDir))
+            throw new InvalidOperationException(
+                $"SandboxConfig.WorkspaceRoot must be an absolute path. Found: '{baseDir}'");
+
         var dir = Path.Combine(baseDir, $"sandbox-{Guid.NewGuid():N}");
         Directory.CreateDirectory(dir);
+        SetRestrictivePermissions(dir);
         return dir;
+    }
+
+    private static void SetRestrictivePermissions(string path)
+    {
+        if (!OperatingSystem.IsWindows())
+            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
     }
 
     public async Task<SandboxExecutionResult> ExecuteAsync(

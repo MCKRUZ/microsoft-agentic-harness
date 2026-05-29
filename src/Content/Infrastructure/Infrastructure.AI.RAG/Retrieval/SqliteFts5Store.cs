@@ -213,7 +213,12 @@ public sealed class SqliteFts5Store : IBm25Store
             var sanitized = t
                 .Replace("\"", "\"\"")
                 .Replace("*", "")
-                .Replace("^", "");
+                .Replace("^", "")
+                .Replace(":", "")
+                .Replace("(", "")
+                .Replace(")", "")
+                .Replace("{", "")
+                .Replace("}", "");
             if (string.IsNullOrWhiteSpace(sanitized)) sanitized = "_empty";
             return $"\"{sanitized}\"";
         }));

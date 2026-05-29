@@ -6,6 +6,8 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using OpenTelemetry;
 
+#pragma warning disable CA5394 // RandomNumberGenerator used, not Random
+
 namespace Infrastructure.Observability.Processors;
 
 /// <summary>
@@ -61,9 +63,11 @@ public sealed class PiiFilteringProcessor : BaseProcessor<Activity>
         }
         else if (_hashAttributes.Count > 0)
         {
+            _hmacKey = RandomNumberGenerator.GetBytes(32);
             _logger.LogWarning(
                 "PII filtering has {HashCount} hash attributes but no HmacKey — " +
-                "using plain SHA-256. Set Observability:PiiFiltering:HmacKey for production",
+                "using ephemeral random key (hashes change on restart). " +
+                "Set Observability:PiiFiltering:HmacKey for stable production hashing",
                 _hashAttributes.Count);
         }
 
@@ -110,9 +114,7 @@ public sealed class PiiFilteringProcessor : BaseProcessor<Activity>
     private string HashValue(string value)
     {
         var input = Encoding.UTF8.GetBytes(value);
-        var bytes = _hmacKey is not null
-            ? HMACSHA256.HashData(_hmacKey, input)
-            : SHA256.HashData(input);
+        var bytes = HMACSHA256.HashData(_hmacKey!, input);
         return Convert.ToHexStringLower(bytes);
     }
 }
