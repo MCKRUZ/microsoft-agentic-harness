@@ -36,6 +36,12 @@ public static class PromptRegistryDependencyInjection
         services.AddSingleton<IPromptRenderer, ScribanPromptRenderer>();
         services.AddSingleton<IPromptUsageRecorder, OtelPromptUsageRecorder>();
 
+        // Request-scoped accumulator for MediatR's PromptUsageTrackingBehavior. Scoped so
+        // every request gets a fresh bag; cross-request state never leaks. Services that
+        // record directly (e.g. ConversationFactExtractor) do NOT touch the bag — they call
+        // IPromptUsageRecorder themselves and stay out of the auto-record pipeline.
+        services.AddScoped<IPromptUsageBag, InMemoryPromptUsageBag>();
+
         return services;
     }
 }

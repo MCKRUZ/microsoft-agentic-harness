@@ -74,7 +74,8 @@ public static class DependencyInjection
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(RetrievalAuditBehavior<,>))
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(ResponseSanitizationBehavior<,>))
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(ToolOutputCompressionBehavior<,>))
-            .AddTransient(typeof(IPipelineBehavior<,>), typeof(KnowledgeExtractionBehavior<,>));
+            .AddTransient(typeof(IPipelineBehavior<,>), typeof(KnowledgeExtractionBehavior<,>))
+            .AddTransient(typeof(IPipelineBehavior<,>), typeof(PromptUsageTrackingBehavior<,>));
 
         // Sandbox capability enforcement — profile resolution and enforcement
         services.AddOptions<SandboxConfig>();
