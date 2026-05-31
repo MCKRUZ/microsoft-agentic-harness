@@ -1,4 +1,7 @@
 using Application.AI.Common.Prompts.Interfaces;
+using Domain.Common.Config.AI;
+using Infrastructure.AI.Prompts.Persistence;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
@@ -11,9 +14,15 @@ public static class PromptRegistryDependencyInjection
 {
     /// <summary>
     /// Registers <see cref="IPromptRegistry"/> (file-backed at <paramref name="promptsRootPath"/>),
-    /// <see cref="IPromptRenderer"/> (Scriban, variable-only), and <see cref="IPromptUsageRecorder"/>
-    /// (OTel-stamping). Idempotent — safe to call from any composition root.
+    /// <see cref="IPromptRenderer"/> (Scriban, variable-only), <see cref="IPromptUsageRecorder"/>
+    /// (OTel-stamping), and <see cref="IPromptUsageBag"/> (request-scoped accumulator for the
+    /// auto-tracking MediatR behavior).
     /// </summary>
+    /// <remarks>
+    /// Persistence-only-overload — durable SQLite usage history is OFF. Call the
+    /// <see cref="AddPromptRegistry(IServiceCollection, string, PromptUsageOptions)"/>
+    /// overload to opt in.
+    /// </remarks>
     /// <param name="services">The service collection.</param>
     /// <param name="promptsRootPath">
     /// Absolute or process-cwd-relative path to the <c>prompts/</c> folder. When the
@@ -24,9 +33,29 @@ public static class PromptRegistryDependencyInjection
     public static IServiceCollection AddPromptRegistry(
         this IServiceCollection services,
         string promptsRootPath)
+        => AddPromptRegistry(services, promptsRootPath, new PromptUsageOptions());
+
+    /// <summary>
+    /// Registers the prompt registry pipeline with optional SQLite persistence.
+    /// </summary>
+    /// <param name="services">The service collection.</param>
+    /// <param name="promptsRootPath">Absolute or process-cwd-relative path to the <c>prompts/</c> folder.</param>
+    /// <param name="usageOptions">
+    /// Persistence configuration. When <see cref="PromptUsageOptions.PersistenceEnabled"/>
+    /// is <c>true</c>, the public <see cref="IPromptUsageRecorder"/> becomes a
+    /// <see cref="CompositePromptUsageRecorder"/> fanning out to OTel + SQLite, the
+    /// <see cref="PromptUsageDbContext"/> is registered with the supplied connection
+    /// string, and the schema is ensured-created on first resolution.
+    /// </param>
+    /// <returns>The service collection, for chaining.</returns>
+    public static IServiceCollection AddPromptRegistry(
+        this IServiceCollection services,
+        string promptsRootPath,
+        PromptUsageOptions usageOptions)
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentException.ThrowIfNullOrWhiteSpace(promptsRootPath);
+        ArgumentNullException.ThrowIfNull(usageOptions);
 
         services.AddSingleton<IPromptRegistry>(sp =>
             new FilePromptRegistry(
@@ -34,7 +63,6 @@ public static class PromptRegistryDependencyInjection
                 sp.GetRequiredService<ILogger<FilePromptRegistry>>()));
 
         services.AddSingleton<IPromptRenderer, ScribanPromptRenderer>();
-        services.AddSingleton<IPromptUsageRecorder, OtelPromptUsageRecorder>();
 
         // Request-scoped accumulator for MediatR's PromptUsageTrackingBehavior. Scoped so
         // every request gets a fresh bag; cross-request state never leaks. Services that
@@ -42,6 +70,54 @@ public static class PromptRegistryDependencyInjection
         // IPromptUsageRecorder themselves and stay out of the auto-record pipeline.
         services.AddScoped<IPromptUsageBag, InMemoryPromptUsageBag>();
 
+        if (!usageOptions.PersistenceEnabled)
+        {
+            // Default path: OTel-only recorder. Zero infrastructure dependencies.
+            services.AddSingleton<IPromptUsageRecorder, OtelPromptUsageRecorder>();
+            return services;
+        }
+
+        // Persistence enabled: register the DbContext factory, the store, the persistence
+        // recorder, and the composite that fans out to both Otel + Persistence.
+        services.AddDbContextFactory<PromptUsageDbContext>(opts =>
+            opts.UseSqlite(usageOptions.ConnectionString));
+
+        services.AddSingleton<IPromptUsageStore, EfCorePromptUsageStore>();
+
+        // Ensure the schema is created the first time the store is needed. Idempotent.
+        services.AddSingleton<PromptUsageSchemaInitializer>();
+
+        // Register the two inner recorders as concrete singletons, then build the composite
+        // that fans out to both. The public IPromptUsageRecorder is the composite.
+        services.AddSingleton<OtelPromptUsageRecorder>();
+        services.AddSingleton<PersistencePromptUsageRecorder>();
+        services.AddSingleton<IPromptUsageRecorder>(sp =>
+        {
+            // Touch the initializer so the DB is migrated before first record.
+            _ = sp.GetRequiredService<PromptUsageSchemaInitializer>();
+            return new CompositePromptUsageRecorder(
+                inner: [sp.GetRequiredService<OtelPromptUsageRecorder>(),
+                        sp.GetRequiredService<PersistencePromptUsageRecorder>()],
+                logger: sp.GetRequiredService<ILogger<CompositePromptUsageRecorder>>());
+        });
+
         return services;
+    }
+}
+
+/// <summary>
+/// Singleton initializer that ensures the prompt-usage SQLite schema exists. Resolved
+/// once during the composite recorder construction so the first append never races a
+/// missing-table error.
+/// </summary>
+internal sealed class PromptUsageSchemaInitializer
+{
+    /// <summary>
+    /// Initializes a new instance and creates the schema if it does not already exist.
+    /// </summary>
+    public PromptUsageSchemaInitializer(IDbContextFactory<PromptUsageDbContext> contextFactory)
+    {
+        using var context = contextFactory.CreateDbContext();
+        context.Database.EnsureCreated();
     }
 }
