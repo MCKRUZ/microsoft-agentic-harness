@@ -1,7 +1,10 @@
 using Application.AI.Common.Interfaces;
+using Domain.AI.Context;
 using Domain.AI.Observability.Models;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Presentation.AgentHub.DTOs;
+using Presentation.AgentHub.Extensions;
 
 namespace Presentation.AgentHub.Controllers;
 
@@ -31,9 +34,17 @@ public sealed class SessionsController : ControllerBase
     /// <param name="since">Optional Unix epoch seconds lower bound on started_at.</param>
     /// <param name="until">Optional Unix epoch seconds upper bound on started_at.</param>
     /// <param name="ct">Cancellation token.</param>
-    /// <returns>Read-only list of <see cref="SessionRecord"/>.</returns>
+    /// <returns>
+    /// Read-only list of session rows. Each row carries the
+    /// <see cref="CategoryBreakdownDto"/> from the conversation's latest
+    /// Foresight context snapshot (PR 3) — sessions without snapshots omit
+    /// the field. Populated via a single batched
+    /// <see cref="IObservabilityStore.GetLatestBreakdownsAsync"/> call, not
+    /// N+1.
+    /// </returns>
     [HttpGet]
-    public async Task<ActionResult<IReadOnlyList<SessionRecord>>> GetSessions(
+    [ProducesResponseType(typeof(IReadOnlyList<SessionListRowDto>), StatusCodes.Status200OK)]
+    public async Task<ActionResult<IReadOnlyList<SessionListRowDto>>> GetSessions(
         [FromQuery] int limit = 50,
         [FromQuery] int offset = 0,
         [FromQuery] string? status = null,
@@ -52,7 +63,38 @@ public sealed class SessionsController : ControllerBase
             : null;
 
         var sessions = await _store.GetSessionsAsync(limit, offset, status, sinceDto, untilDto, ct);
-        return Ok(sessions);
+
+        // Single batched lookup: one DB hit for the whole page. Rows without a
+        // snapshot are omitted by the store, so missing keys mean "no breakdown
+        // yet" — the DTO carries null in that case and the frontend hides the
+        // mini-bar.
+        var conversationIds = sessions
+            .Select(s => s.ConversationId)
+            .Where(id => !string.IsNullOrEmpty(id))
+            .Distinct()
+            .ToArray();
+
+        IReadOnlyDictionary<string, CategoryBreakdown> breakdowns =
+            conversationIds.Length == 0
+                ? new Dictionary<string, CategoryBreakdown>()
+                : await _store.GetLatestBreakdownsAsync(conversationIds, ct);
+
+        // SessionListRowDto.From mirrors every SessionRecord property by name —
+        // a future SessionRecord rename surfaces as a compile error here rather
+        // than a silent wire shape drift. The dictionary lookup guards null
+        // ConversationId at the projection (TryGetValue on a Dictionary<string>
+        // throws on a null key — defence-in-depth even though SessionRecord
+        // declares ConversationId as required).
+        var rows = sessions
+            .Select(s => SessionListRowDto.From(
+                s,
+                !string.IsNullOrEmpty(s.ConversationId)
+                    && breakdowns.TryGetValue(s.ConversationId, out var b)
+                        ? b.ToDto()
+                        : null))
+            .ToArray();
+
+        return Ok(rows);
     }
 
     /// <summary>
@@ -76,15 +118,23 @@ public sealed class SessionsController : ControllerBase
         var messagesTask = _store.GetSessionMessagesAsync(id, ct);
         var toolsTask = _store.GetSessionToolExecutionsAsync(id, ct);
         var safetyTask = _store.GetSessionSafetyEventsAsync(id, ct);
+        var snapshotsTask = _store.GetSnapshotsAsync(session.ConversationId, ct);
 
-        await Task.WhenAll(messagesTask, toolsTask, safetyTask);
+        await Task.WhenAll(messagesTask, toolsTask, safetyTask, snapshotsTask);
+
+        var snapshots = snapshotsTask.Result.Select(s => s.ToDto()).ToArray();
+        var breakdown = snapshots.Length > 0
+            ? snapshots[^1].CtxAfter
+            : null;
 
         return Ok(new
         {
             session,
             messages = messagesTask.Result,
             tools = toolsTask.Result,
-            safetyEvents = safetyTask.Result
+            safetyEvents = safetyTask.Result,
+            snapshots,
+            breakdown,
         });
     }
 }

@@ -209,6 +209,13 @@ public static class DependencyInjection
             Application.AI.Common.Evaluation.Interfaces.IEvalRunNotifier,
             Notifications.SignalREvalRunNotifier>();
 
+        // Override the no-op IContextSnapshotNotifier wired by GetServices() with the
+        // SignalR + observability-store-backed implementation. Singleton matches
+        // SignalREvalRunNotifier and IObservabilityStore lifetimes.
+        services.AddSingleton<
+            Application.AI.Common.Interfaces.Context.IContextSnapshotNotifier,
+            Notifications.SignalRContextSnapshotNotifier>();
+
         // Scoped: AgUiRunHandler takes per-request dependencies (ClaimsPrincipal, CancellationToken).
         services.AddScoped<AgUi.AgUiRunHandler>();
 

@@ -50,6 +50,15 @@ public sealed class AgentTelemetryHub : Hub
     /// </summary>
     public const string EventEvalRunCompleted = "EvalRunCompleted";
 
+    /// <summary>
+    /// Emitted after each completed agent turn with the Foresight context-window
+    /// breakdown for that turn (PR 3). Broadcast to
+    /// <see cref="ConversationGroup"/> — only clients already authorised on the
+    /// conversation receive it. Payload shape is pinned by
+    /// <c>SignalRContextSnapshotNotifierTests</c>.
+    /// </summary>
+    public const string EventContextSnapshot = "ContextSnapshot";
+
     /// <summary>SignalR group that receives <see cref="EventEvalRunCompleted"/> broadcasts.</summary>
     public const string EvalDashboardGroup = "eval-dashboard";
 
@@ -63,6 +72,14 @@ public sealed class AgentTelemetryHub : Hub
 
     /// <summary>App role required to subscribe to <see cref="EventEvalRunCompleted"/> broadcasts.</summary>
     internal const string EvalDashboardRole = "AgentHub.EvalDashboard.Read";
+
+    /// <summary>
+    /// App role required to subscribe to <see cref="EventContextSnapshot"/> broadcasts
+    /// as a read-only observer (Foresight dashboard). Conversation owners get the
+    /// events automatically via <see cref="JoinConversationGroup"/>; observers without
+    /// ownership use <see cref="SubscribeToConversationSnapshots"/> gated by this role.
+    /// </summary>
+    internal const string ForesightObserverRole = "AgentHub.Foresight.Observe";
 
     // -------------------------------------------------------------------------
     // Dependencies
@@ -313,6 +330,44 @@ public sealed class AgentTelemetryHub : Hub
     /// <summary>Unsubscribes this connection from eval-dashboard broadcasts.</summary>
     public Task LeaveEvalDashboard() =>
         Groups.RemoveFromGroupAsync(Context.ConnectionId, EvalDashboardGroup, Context.ConnectionAborted);
+
+    // -------------------------------------------------------------------------
+    // Hub methods — Foresight read-only conversation observer
+    // -------------------------------------------------------------------------
+
+    /// <summary>
+    /// Subscribes this connection to <see cref="EventContextSnapshot"/> broadcasts
+    /// for <paramref name="conversationId"/> as a read-only observer. Used by the
+    /// Foresight dashboard SPA where the connected user is NOT the conversation
+    /// owner — the owner-gated <see cref="JoinConversationGroup"/> would reject.
+    /// Requires the <see cref="ForesightObserverRole"/> app role.
+    /// </summary>
+    /// <remarks>
+    /// Broadcasts carry per-turn token breakdowns and loaded artifact names that
+    /// could leak prompt structure to unauthorized observers; the role gate is
+    /// the access boundary. Mirrors the <see cref="JoinEvalDashboard"/> pattern.
+    /// </remarks>
+    public async Task SubscribeToConversationSnapshots(string conversationId)
+    {
+        if (string.IsNullOrWhiteSpace(conversationId) || conversationId.Length > 256)
+            throw new HubException("Invalid conversationId.");
+
+        if (!Context.User!.IsInRole(ForesightObserverRole))
+            throw new HubException($"The {ForesightObserverRole} role is required to observe conversation snapshots.");
+
+        await Groups.AddToGroupAsync(Context.ConnectionId, ConversationGroup(conversationId), Context.ConnectionAborted);
+        _logger.LogInformation("Connection {ConnectionId} subscribed to snapshots for conversation {ConversationId}.",
+            Context.ConnectionId, conversationId);
+    }
+
+    /// <summary>Unsubscribes this observer connection from snapshots for the given conversation.</summary>
+    public Task UnsubscribeFromConversationSnapshots(string conversationId)
+    {
+        if (string.IsNullOrWhiteSpace(conversationId) || conversationId.Length > 256)
+            throw new HubException("Invalid conversationId.");
+
+        return Groups.RemoveFromGroupAsync(Context.ConnectionId, ConversationGroup(conversationId), Context.ConnectionAborted);
+    }
 
     // -------------------------------------------------------------------------
     // Private helpers

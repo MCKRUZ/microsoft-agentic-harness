@@ -1,4 +1,5 @@
 import { apiClient } from './client';
+import { useSessionSnapshotsStore } from '@/stores/sessionSnapshotsStore';
 import type { SessionRecord, SessionDetail } from './types';
 
 export async function fetchSessions(
@@ -18,5 +19,17 @@ export async function fetchSessions(
 
 export async function fetchSessionDetail(id: string): Promise<SessionDetail> {
   const { data } = await apiClient.get<SessionDetail>(`/api/sessions/${id}`);
+
+  // PR 3: hydrate the per-session snapshot buffer from the persisted timeline
+  // so a page refresh during a live conversation replays the Foresight
+  // context-window timeline. Subsequent SignalR `ContextSnapshot` events
+  // append on top via the same store. Hydrate keyed by conversationId — the
+  // SignalR event payloads use the same key.
+  if (data.session?.conversationId && data.snapshots) {
+    useSessionSnapshotsStore
+      .getState()
+      .hydrateSession(data.session.conversationId, data.snapshots);
+  }
+
   return data;
 }

@@ -60,7 +60,7 @@ public sealed partial class PostgresObservabilityStore
                 .Select(li => new LoadedItemWire(
                     li.What,
                     li.Tokens,
-                    SerializeCategory(li.Category),
+                    li.Category.ToWire(),
                     li.Reference))
                 .ToArray();
             var loadedJson = JsonSerializer.Serialize(loadedWire, s_loadedJson);
@@ -229,32 +229,10 @@ public sealed partial class PostgresObservabilityStore
         var loadedWire = JsonSerializer.Deserialize<LoadedItemWire[]>(loadedJson, s_loadedJson)
                          ?? Array.Empty<LoadedItemWire>();
         var loaded = loadedWire
-            .Select(w => new LoadedItem(w.what, w.tokens, DeserializeCategory(w.cat), w.@ref))
+            .Select(w => new LoadedItem(w.what, w.tokens, ContextCategoryWireExtensions.FromWire(w.cat), w.@ref))
             .ToList();
 
         return new ContextSnapshot(
             conversationId, turnIndex, turnId, ctxAfter, loaded, capturedAt);
     }
-
-    private static string SerializeCategory(ContextCategory cat) => cat switch
-    {
-        ContextCategory.System => "system",
-        ContextCategory.Agents => "agents",
-        ContextCategory.Skills => "skills",
-        ContextCategory.Tools => "tools",
-        ContextCategory.Mcp => "mcp",
-        ContextCategory.Messages => "messages",
-        _ => "system",
-    };
-
-    private static ContextCategory DeserializeCategory(string cat) => cat switch
-    {
-        "system" => ContextCategory.System,
-        "agents" => ContextCategory.Agents,
-        "skills" => ContextCategory.Skills,
-        "tools" => ContextCategory.Tools,
-        "mcp" => ContextCategory.Mcp,
-        "messages" => ContextCategory.Messages,
-        _ => ContextCategory.System,
-    };
 }

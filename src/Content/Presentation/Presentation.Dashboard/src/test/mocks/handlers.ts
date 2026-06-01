@@ -1,5 +1,11 @@
 import { http, HttpResponse } from 'msw';
-import type { MetricsQueryResponse, SessionRecord, SessionDetail, PrometheusHealthResponse } from '@/api/types';
+import type {
+  MetricsQueryResponse,
+  SessionRecord,
+  SessionDetail,
+  PrometheusHealthResponse,
+  ContextSnapshotEvent,
+} from '@/api/types';
 
 const now = Math.floor(Date.now() / 1000);
 
@@ -120,6 +126,14 @@ const mockSessions: SessionRecord[] = [
     status: 'completed',
     errorMessage: null,
     createdAt: new Date(Date.now() - 3600000).toISOString(),
+    breakdown: {
+      system: 4200,
+      agents: 0,
+      skills: 0,
+      tools: 0,
+      mcp: 0,
+      messages: 40800,
+    },
   },
   {
     id: '22222222-2222-2222-2222-222222222222',
@@ -141,6 +155,14 @@ const mockSessions: SessionRecord[] = [
     status: 'active',
     errorMessage: null,
     createdAt: new Date(Date.now() - 1800000).toISOString(),
+    breakdown: {
+      system: 2100,
+      agents: 0,
+      skills: 0,
+      tools: 0,
+      mcp: 0,
+      messages: 19900,
+    },
   },
   {
     id: '33333333-3333-3333-3333-333333333333',
@@ -162,6 +184,28 @@ const mockSessions: SessionRecord[] = [
     status: 'completed',
     errorMessage: null,
     createdAt: new Date(Date.now() - 7200000).toISOString(),
+    breakdown: null,
+  },
+];
+
+const mockSnapshotsConv1: ContextSnapshotEvent[] = [
+  {
+    conversationId: 'conv-1',
+    turnIndex: 0,
+    turnId: 't-00',
+    ctxAfter: { system: 4200, agents: 0, skills: 0, tools: 0, mcp: 0, messages: 150 },
+    loaded: [{ what: 'User message', tokens: 150, cat: 'messages' }],
+    capturedAtUtc: new Date(Date.now() - 3600000).toISOString(),
+  },
+  {
+    conversationId: 'conv-1',
+    turnIndex: 1,
+    turnId: 't-01',
+    ctxAfter: { system: 4200, agents: 0, skills: 0, tools: 0, mcp: 0, messages: 40800 },
+    loaded: [
+      { what: 'Assistant response', tokens: 40650, cat: 'messages' },
+    ],
+    capturedAtUtc: new Date(Date.now() - 3500000).toISOString(),
   },
 ];
 
@@ -241,6 +285,8 @@ const mockSessionDetail: SessionDetail = {
       createdAt: new Date(Date.now() - 3500000).toISOString(),
     },
   ],
+  snapshots: mockSnapshotsConv1,
+  breakdown: mockSnapshotsConv1[mockSnapshotsConv1.length - 1]!.ctxAfter,
 };
 
 export const handlers = [

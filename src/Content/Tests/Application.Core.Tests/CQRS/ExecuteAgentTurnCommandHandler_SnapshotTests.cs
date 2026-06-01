@@ -24,6 +24,7 @@ public class ExecuteAgentTurnCommandHandler_SnapshotTests
     private readonly Mock<IAgentConversationCache> _agentCache = new();
     private readonly Mock<IAgentMetadataRegistry> _agentRegistry = new();
     private readonly Mock<IContextSnapshotNotifier> _notifier = new();
+    private readonly Mock<IObservabilityStore> _store = new();
 
     private ExecuteAgentTurnCommandHandler BuildHandler(IContextSnapshotNotifier notifier)
     {
@@ -47,7 +48,7 @@ public class ExecuteAgentTurnCommandHandler_SnapshotTests
         return new ExecuteAgentTurnCommandHandler(
             _agentCache.Object,
             _agentRegistry.Object,
-            new Mock<IObservabilityStore>().Object,
+            _store.Object,
             usageCapture.Object,
             new DefaultContextSnapshotComputer(),
             notifier,
@@ -107,6 +108,38 @@ public class ExecuteAgentTurnCommandHandler_SnapshotTests
         captured!.ConversationId.Should().Be("conv-42");
         captured.TurnIndex.Should().Be(7);
         captured.TurnId.Should().Be("t-07");
+    }
+
+    [Fact]
+    public async Task Handle_OnSuccess_PersistsSnapshotViaStore_Once()
+    {
+        SetupAgent();
+        var handler = BuildHandler(_notifier.Object);
+
+        var result = await handler.Handle(Command(turn: 3), CancellationToken.None);
+
+        result.Success.Should().BeTrue();
+        _store.Verify(
+            s => s.RecordContextSnapshotAsync(
+                It.Is<ContextSnapshot>(snap => snap.TurnIndex == 3 && snap.ConversationId == "conv-1"),
+                It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task Handle_StorePersistThrows_DoesNotFailTurn()
+    {
+        SetupAgent("agent text");
+        _store
+            .Setup(s => s.RecordContextSnapshotAsync(It.IsAny<ContextSnapshot>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("db down"));
+
+        var handler = BuildHandler(_notifier.Object);
+        var result = await handler.Handle(Command(), CancellationToken.None);
+
+        result.Success.Should().BeTrue();
+        result.Response.Should().Be("agent text");
+        result.Error.Should().BeNull();
     }
 
     [Fact]

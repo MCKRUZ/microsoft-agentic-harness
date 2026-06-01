@@ -150,10 +150,12 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 				new(ChatRole.Assistant, responseText)
 			};
 
-			// Foresight: compute + notify the per-turn context snapshot.
-			// Failures inside the notifier are swallowed per IContextSnapshotNotifier's
-			// contract, but the wrapping try/catch is belt-and-braces so a bug in the
-			// computer (e.g. arg validation) can never fail the turn either.
+			// Foresight: compute, persist, and notify the per-turn context snapshot.
+			// Persistence + broadcast run concurrently because the broadcast does not
+			// depend on the persist result — live observers shouldn't wait on the
+			// DB round-trip, and a persist failure shouldn't suppress the broadcast.
+			// The wrapping try/catch is belt-and-braces so a bug in any of the three
+			// (compute, persist, notify) can never fail the turn.
 			try
 			{
 				var turnLoaded = BuildTurnLoadedItems(request.UserMessage, responseText, toolsInvoked);
@@ -166,7 +168,10 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 					turnLoaded: turnLoaded,
 					capturedAtUtc: _timeProvider.GetUtcNow());
 
-				await _snapshotNotifier.NotifyAsync(snapshot, cancellationToken).ConfigureAwait(false);
+				await Task.WhenAll(
+					_observabilityStore.RecordContextSnapshotAsync(snapshot, cancellationToken),
+					_snapshotNotifier.NotifyAsync(snapshot, cancellationToken))
+					.ConfigureAwait(false);
 			}
 			catch (Exception snapshotEx)
 			{

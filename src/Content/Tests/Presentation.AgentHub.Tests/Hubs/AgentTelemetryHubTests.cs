@@ -140,6 +140,61 @@ public sealed class AgentTelemetryHubTests : IClassFixture<TestWebApplicationFac
         }
     }
 
+    /// <summary>SubscribeToConversationSnapshots rejects callers without the Foresight observer role.</summary>
+    [Fact]
+    public async Task SubscribeToConversationSnapshots_WithoutRole_ThrowsHubException()
+    {
+        var connection = CreateConnection(roles: null);
+        await connection.StartAsync();
+        try
+        {
+            var ex = await Assert.ThrowsAsync<HubException>(() =>
+                connection.InvokeAsync("SubscribeToConversationSnapshots", "conv-123"));
+            ex.Message.Should().Contain("AgentHub.Foresight.Observe");
+        }
+        finally
+        {
+            await connection.StopAsync();
+            await connection.DisposeAsync();
+        }
+    }
+
+    /// <summary>SubscribeToConversationSnapshots succeeds when the caller carries the role.</summary>
+    [Fact]
+    public async Task SubscribeToConversationSnapshots_WithRole_Succeeds()
+    {
+        var connection = CreateConnection(roles: "AgentHub.Foresight.Observe");
+        await connection.StartAsync();
+        try
+        {
+            await connection.InvokeAsync("SubscribeToConversationSnapshots", "conv-abc");
+        }
+        finally
+        {
+            await connection.StopAsync();
+            await connection.DisposeAsync();
+        }
+    }
+
+    /// <summary>SubscribeToConversationSnapshots rejects a blank conversationId even with the role.</summary>
+    [Fact]
+    public async Task SubscribeToConversationSnapshots_BlankId_ThrowsHubException()
+    {
+        var connection = CreateConnection(roles: "AgentHub.Foresight.Observe");
+        await connection.StartAsync();
+        try
+        {
+            var ex = await Assert.ThrowsAsync<HubException>(() =>
+                connection.InvokeAsync("SubscribeToConversationSnapshots", "   "));
+            ex.Message.Should().Contain("conversationId");
+        }
+        finally
+        {
+            await connection.StopAsync();
+            await connection.DisposeAsync();
+        }
+    }
+
     // ── Ownership (IDOR) ──────────────────────────────────────────────────────
 
     /// <summary>StartConversation throws HubException when the conversation belongs to a different user.</summary>
