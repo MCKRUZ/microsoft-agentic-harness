@@ -1,3 +1,4 @@
+using Domain.AI.Context;
 using Domain.AI.Observability.Models;
 
 namespace Application.AI.Common.Interfaces;
@@ -167,5 +168,52 @@ public interface IObservabilityStore
     /// <param name="cancellationToken">Cancellation token.</param>
     Task<IReadOnlyList<SafetyEventRecord>> GetSessionSafetyEventsAsync(
         Guid sessionId,
+        CancellationToken cancellationToken = default);
+
+    // ── Context Snapshots (Foresight) ───────────────────────────────────
+
+    /// <summary>
+    /// Persists a single Foresight context snapshot for a turn. Idempotent on
+    /// <c>(ConversationId, TurnIndex)</c>: replays of the same turn overwrite
+    /// the prior row rather than creating duplicates.
+    /// </summary>
+    /// <param name="snapshot">The snapshot to persist.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    Task RecordContextSnapshotAsync(
+        ContextSnapshot snapshot,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Retrieves the most recent snapshot for a conversation (highest
+    /// <c>TurnIndex</c>). Used by the sessions-list aggregate to populate
+    /// <c>SessionRecord.Breakdown</c>. Returns <c>null</c> if no snapshots exist.
+    /// </summary>
+    /// <param name="conversationId">Stable conversation identifier.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    Task<ContextSnapshot?> GetLatestSnapshotAsync(
+        string conversationId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Retrieves all snapshots for a conversation ordered by <c>TurnIndex</c>.
+    /// Used by the session-detail endpoint to rehydrate the per-turn timeline
+    /// after a page refresh.
+    /// </summary>
+    /// <param name="conversationId">Stable conversation identifier.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    Task<IReadOnlyList<ContextSnapshot>> GetSnapshotsAsync(
+        string conversationId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Batched lookup: for each supplied conversation id, returns the
+    /// <see cref="CategoryBreakdown"/> from that conversation's latest snapshot.
+    /// Conversations with no snapshots are omitted from the result. Single query
+    /// implementation required — sessions-list paths must not be N+1.
+    /// </summary>
+    /// <param name="conversationIds">Conversation ids to look up.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    Task<IReadOnlyDictionary<string, CategoryBreakdown>> GetLatestBreakdownsAsync(
+        IEnumerable<string> conversationIds,
         CancellationToken cancellationToken = default);
 }

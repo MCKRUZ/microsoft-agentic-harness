@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces;
+using Domain.AI.Context;
 using Domain.AI.Observability.Models;
 
 namespace Infrastructure.Observability.Persistence;
@@ -85,4 +86,25 @@ public sealed class NullObservabilityStore : IObservabilityStore
     public Task<IReadOnlyList<SafetyEventRecord>> GetSessionSafetyEventsAsync(
         Guid sessionId, CancellationToken cancellationToken = default)
         => Task.FromResult<IReadOnlyList<SafetyEventRecord>>(Array.Empty<SafetyEventRecord>());
+
+    /// <inheritdoc />
+    public Task RecordContextSnapshotAsync(
+        ContextSnapshot snapshot, CancellationToken cancellationToken = default)
+        => Task.CompletedTask;
+
+    /// <inheritdoc />
+    public Task<ContextSnapshot?> GetLatestSnapshotAsync(
+        string conversationId, CancellationToken cancellationToken = default)
+        => Task.FromResult<ContextSnapshot?>(null);
+
+    /// <inheritdoc />
+    public Task<IReadOnlyList<ContextSnapshot>> GetSnapshotsAsync(
+        string conversationId, CancellationToken cancellationToken = default)
+        => Task.FromResult<IReadOnlyList<ContextSnapshot>>(Array.Empty<ContextSnapshot>());
+
+    /// <inheritdoc />
+    public Task<IReadOnlyDictionary<string, CategoryBreakdown>> GetLatestBreakdownsAsync(
+        IEnumerable<string> conversationIds, CancellationToken cancellationToken = default)
+        => Task.FromResult<IReadOnlyDictionary<string, CategoryBreakdown>>(
+            new Dictionary<string, CategoryBreakdown>());
 }
