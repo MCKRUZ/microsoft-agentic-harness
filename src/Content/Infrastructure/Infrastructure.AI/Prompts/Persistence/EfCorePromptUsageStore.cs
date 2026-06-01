@@ -73,6 +73,28 @@ public sealed class EfCorePromptUsageStore : IPromptUsageStore
         return rows.ConvertAll(ToRecord);
     }
 
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<PromptUsageRecord>> QueryByPromptNameAsync(
+        string promptName,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(promptName);
+
+        await using var context = await _contextFactory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        // Lowercase equality avoids LIKE-pattern wildcards (%, _) leaking through
+        // user-supplied prompt names. EF Core translates ToLower() to SQL lower()
+        // which is ASCII-correct on SQLite TEXT — prompt names are kebab-case slugs
+        // so non-ASCII handling is not a concern here.
+        var lowered = promptName.ToLowerInvariant();
+        var rows = await context.PromptUsages
+            .AsNoTracking()
+            .Where(e => e.PromptName.ToLower() == lowered)
+            .OrderBy(e => e.RecordedAtUtc)
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+        return rows.ConvertAll(ToRecord);
+    }
+
     private static PromptUsageRecord ToRecord(PromptUsageEntity e) => new()
     {
         Descriptor = new PromptDescriptor

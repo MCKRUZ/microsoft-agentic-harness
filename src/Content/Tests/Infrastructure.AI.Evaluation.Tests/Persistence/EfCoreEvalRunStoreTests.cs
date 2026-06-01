@@ -253,6 +253,73 @@ public sealed class EfCoreEvalRunStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task GetLatestAggregatedScoresAsync_returns_empty_for_empty_case_ids()
+    {
+        var result = await _sut.GetLatestAggregatedScoresAsync(
+            [], "exact_match", CancellationToken.None);
+
+        result.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task GetLatestAggregatedScoresAsync_returns_score_for_matching_case_metric()
+    {
+        var report = TestReportFactory.DeterministicReport();
+        await _sut.AppendAsync(report, ReceivedAt, CancellationToken.None);
+
+        var scores = await _sut.GetLatestAggregatedScoresAsync(
+            ["case-pass", "case-fail"],
+            "exact_match",
+            CancellationToken.None);
+
+        scores.Should().ContainKey("case-pass");
+        scores["case-pass"].Should().Be(1.0);
+        scores.Should().ContainKey("case-fail");
+        scores["case-fail"].Should().Be(0.0);
+    }
+
+    [Fact]
+    public async Task GetLatestAggregatedScoresAsync_picks_score_from_latest_run()
+    {
+        var template = TestReportFactory.DeterministicReport();
+        var earlier = template with
+        {
+            RunId = "earlier",
+            StartedAtUtc = new DateTimeOffset(2026, 5, 30, 12, 0, 0, TimeSpan.Zero),
+        };
+        var later = template with
+        {
+            RunId = "later",
+            StartedAtUtc = new DateTimeOffset(2026, 5, 31, 12, 0, 0, TimeSpan.Zero),
+            Results = template.Results
+                .Select(r => r.Case.Id == "case-pass"
+                    ? r with
+                    {
+                        AggregatedScores = new Dictionary<string, MetricScore>
+                        {
+                            ["exact_match"] = new()
+                            {
+                                MetricKey = "exact_match",
+                                Score = 0.42, // distinguishable from the earlier 1.0
+                                Verdict = Verdict.Fail,
+                            },
+                        },
+                    }
+                    : r)
+                .ToList(),
+        };
+        await _sut.AppendAsync(earlier, ReceivedAt, CancellationToken.None);
+        await _sut.AppendAsync(later, ReceivedAt, CancellationToken.None);
+
+        var scores = await _sut.GetLatestAggregatedScoresAsync(
+            ["case-pass"],
+            "exact_match",
+            CancellationToken.None);
+
+        scores["case-pass"].Should().Be(0.42, "the later run's score must win over the earlier one");
+    }
+
+    [Fact]
     public async Task GetRecentAsync_summary_pass_rate_matches_report()
     {
         var report = TestReportFactory.DeterministicReport();

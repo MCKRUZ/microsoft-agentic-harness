@@ -41,4 +41,19 @@ public interface IPromptUsageStore
     /// list when the case id is unknown.
     /// </summary>
     Task<IReadOnlyList<PromptUsageRecord>> QueryByCaseIdAsync(string caseId, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Returns every record for the supplied prompt name, across all versions and
+    /// cases, ordered by <see cref="PromptUsageRecord.RecordedAtUtc"/> ascending.
+    /// Returns an empty list when the prompt name is unknown.
+    /// </summary>
+    /// <remarks>
+    /// Powers Sub-phase 5.4.3's prompt-version comparison query: the dashboard
+    /// needs every (version, case_id, metric_key) tuple for a prompt so it can
+    /// aggregate eval scores per version. Case-insensitive match on
+    /// <see cref="Domain.AI.Prompts.PromptDescriptor.Name"/>.
+    /// </remarks>
+    Task<IReadOnlyList<PromptUsageRecord>> QueryByPromptNameAsync(
+        string promptName,
+        CancellationToken cancellationToken);
 }

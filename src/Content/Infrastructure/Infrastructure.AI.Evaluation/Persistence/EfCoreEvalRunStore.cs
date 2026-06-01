@@ -256,6 +256,64 @@ public sealed class EfCoreEvalRunStore : IEvalRunStore
         };
     }
 
+    /// <inheritdoc />
+    public async Task<IReadOnlyDictionary<string, double>> GetLatestAggregatedScoresAsync(
+        IReadOnlyCollection<string> caseIds,
+        string metricKey,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(caseIds);
+        ArgumentException.ThrowIfNullOrWhiteSpace(metricKey);
+
+        if (caseIds.Count == 0)
+        {
+            return new Dictionary<string, double>(StringComparer.Ordinal);
+        }
+
+        await using var context = await _contextFactory
+            .CreateDbContextAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        // Distinct set keeps the SQL IN clause minimal — duplicate case ids are common
+        // when the caller derives the list from multiple prompt-usage rows.
+        var distinctIds = caseIds.Distinct(StringComparer.Ordinal).ToList();
+
+        // Join metric scores against runs so we can pick the score from the most
+        // recent run per case id. SQLite handles the join efficiently because
+        // eval_runs is small (one row per run) and the (RunId, MetricKey) composite
+        // index on metric_scores serves the metric filter.
+        var rows = await context.EvalMetricScores
+            .AsNoTracking()
+            .Where(m => m.MetricKey == metricKey && distinctIds.Contains(m.CaseId))
+            .Join(
+                context.EvalRuns.AsNoTracking(),
+                m => m.RunId,
+                r => r.RunId,
+                (m, r) => new { m.CaseId, m.Score, r.StartedAtUtc })
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        // Latest-per-case in memory: the joined row count is bounded by the
+        // number of (case_id × runs-that-saw-it) pairs which is small for
+        // dashboard-scale data. Avoids a window function that SQLite supports
+        // but would couple the implementation to provider syntax.
+        var latestByCase = new Dictionary<string, (DateTimeOffset At, double Score)>(
+            StringComparer.Ordinal);
+        foreach (var row in rows)
+        {
+            if (!latestByCase.TryGetValue(row.CaseId, out var existing)
+                || row.StartedAtUtc > existing.At)
+            {
+                latestByCase[row.CaseId] = (row.StartedAtUtc, row.Score);
+            }
+        }
+
+        return latestByCase.ToDictionary(
+            kv => kv.Key,
+            kv => kv.Value.Score,
+            StringComparer.Ordinal);
+    }
+
     private static EvalRunSummary ToSummary(EvalRunEntity e) => new()
     {
         RunId = e.RunId,

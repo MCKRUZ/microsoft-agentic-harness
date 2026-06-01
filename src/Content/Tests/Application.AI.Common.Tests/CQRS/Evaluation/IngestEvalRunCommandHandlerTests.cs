@@ -1,6 +1,5 @@
 using Application.AI.Common.CQRS.Evaluation.IngestEvalRun;
 using Application.AI.Common.Evaluation.Interfaces;
-using Application.AI.Common.Evaluation.Models;
 using Domain.AI.Evaluation;
 using Domain.Common;
 using FluentAssertions;

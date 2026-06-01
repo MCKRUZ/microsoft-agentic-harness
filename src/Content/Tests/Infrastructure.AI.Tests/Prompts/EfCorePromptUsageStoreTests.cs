@@ -121,6 +121,40 @@ public sealed class EfCorePromptUsageStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task QueryByPromptNameAsync_returns_only_matching_rows_case_insensitive()
+    {
+        await _sut.AppendAsync(Record(name: "alpha", caseId: "case-1"), CancellationToken.None);
+        await _sut.AppendAsync(Record(name: "beta", caseId: "case-2"), CancellationToken.None);
+        await _sut.AppendAsync(Record(name: "ALPHA", caseId: "case-3"), CancellationToken.None);
+
+        var results = await _sut.QueryByPromptNameAsync("alpha", CancellationToken.None);
+
+        results.Should().HaveCount(2);
+        results.Select(r => r.CaseId).Should().BeEquivalentTo("case-1", "case-3");
+    }
+
+    [Fact]
+    public async Task QueryByPromptNameAsync_treats_underscore_as_literal_not_wildcard()
+    {
+        await _sut.AppendAsync(Record(name: "foo_bar", caseId: "literal"), CancellationToken.None);
+        await _sut.AppendAsync(Record(name: "fooxbar", caseId: "wildcard"), CancellationToken.None);
+
+        var results = await _sut.QueryByPromptNameAsync("foo_bar", CancellationToken.None);
+
+        results.Should().ContainSingle(r => r.CaseId == "literal");
+    }
+
+    [Fact]
+    public async Task QueryByPromptNameAsync_returns_empty_for_unknown_name()
+    {
+        await _sut.AppendAsync(Record(name: "known"), CancellationToken.None);
+
+        var results = await _sut.QueryByPromptNameAsync("nope", CancellationToken.None);
+
+        results.Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task AppendAsync_tolerates_concurrent_writes()
     {
         var tasks = Enumerable.Range(0, 32)

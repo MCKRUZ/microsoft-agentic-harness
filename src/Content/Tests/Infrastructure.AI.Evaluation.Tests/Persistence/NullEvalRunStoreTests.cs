@@ -53,4 +53,20 @@ public sealed class NullEvalRunStoreTests
         var act = () => _sut.GetRunDetailAsync("  ", CancellationToken.None);
         await act.Should().ThrowAsync<ArgumentException>();
     }
+
+    [Fact]
+    public async Task GetLatestAggregatedScoresAsync_returns_empty_dictionary()
+    {
+        var scores = await _sut.GetLatestAggregatedScoresAsync(
+            ["case-1"], "exact_match", CancellationToken.None);
+        scores.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task GetLatestAggregatedScoresAsync_validates_blank_metric_key()
+    {
+        var act = () => _sut.GetLatestAggregatedScoresAsync(
+            ["case-1"], "  ", CancellationToken.None);
+        await act.Should().ThrowAsync<ArgumentException>();
+    }
 }

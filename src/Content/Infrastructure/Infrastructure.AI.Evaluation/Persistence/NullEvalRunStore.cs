@@ -49,4 +49,16 @@ public sealed class NullEvalRunStore : IEvalRunStore
         ArgumentException.ThrowIfNullOrWhiteSpace(runId);
         return Task.FromResult<EvalRunReport?>(null);
     }
+
+    /// <inheritdoc />
+    public Task<IReadOnlyDictionary<string, double>> GetLatestAggregatedScoresAsync(
+        IReadOnlyCollection<string> caseIds,
+        string metricKey,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(caseIds);
+        ArgumentException.ThrowIfNullOrWhiteSpace(metricKey);
+        return Task.FromResult<IReadOnlyDictionary<string, double>>(
+            new Dictionary<string, double>(StringComparer.Ordinal));
+    }
 }

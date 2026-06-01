@@ -56,4 +56,27 @@ public interface IEvalRunStore
     /// <param name="runId">Natural identifier of the run.</param>
     /// <param name="cancellationToken">Cancellation.</param>
     Task<EvalRunReport?> GetRunDetailAsync(string runId, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Returns the aggregated metric scores for the supplied case ids on the
+    /// supplied metric key, indexed by case id. Cases unknown to the store are
+    /// absent from the returned dictionary.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Powers Sub-phase 5.4.3's prompt-version comparison query: given a set of
+    /// (case_id, metric_key) tuples (derived from prompt usage rows), look up the
+    /// aggregated score the run produced for each pairing. Equal case ids across
+    /// multiple runs yield the latest score (highest <c>RunId.StartedAtUtc</c>) so
+    /// dashboards aren't biased toward historical regressions when an updated run
+    /// exists.
+    /// </para>
+    /// </remarks>
+    /// <param name="caseIds">Case identifiers to look up. Duplicates are deduplicated.</param>
+    /// <param name="metricKey">Metric key to filter on (matches an <c>IEvalMetric</c> key).</param>
+    /// <param name="cancellationToken">Cancellation.</param>
+    Task<IReadOnlyDictionary<string, double>> GetLatestAggregatedScoresAsync(
+        IReadOnlyCollection<string> caseIds,
+        string metricKey,
+        CancellationToken cancellationToken);
 }
