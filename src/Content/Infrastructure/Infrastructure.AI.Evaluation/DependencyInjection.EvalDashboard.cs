@@ -1,6 +1,7 @@
 using Application.AI.Common.Evaluation.Interfaces;
 using Domain.Common.Config.AI;
 using Infrastructure.AI.Evaluation.Persistence;
+using Infrastructure.AI.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -50,31 +51,20 @@ public static class EvalDashboardDependencyInjection
             opts.UseSqlite(options.ConnectionString));
 
         // Ensure the schema exists the first time the store is needed. Idempotent.
-        services.AddSingleton<EvalDashboardSchemaInitializer>();
+        // SchemaInitializer<TContext> is the shared base — same lifecycle used by
+        // PromptUsage's persistence registration so future subsystems get the
+        // pattern for free.
+        services.AddSingleton<SchemaInitializer<EvalDashboardDbContext>>();
 
         // Factory wraps the store so resolving IEvalRunStore touches the initializer first,
         // guaranteeing schema-create runs exactly once before any AppendAsync hits the DB.
         services.AddSingleton<IEvalRunStore>(sp =>
         {
-            _ = sp.GetRequiredService<EvalDashboardSchemaInitializer>();
+            _ = sp.GetRequiredService<SchemaInitializer<EvalDashboardDbContext>>();
             return new EfCoreEvalRunStore(
                 sp.GetRequiredService<IDbContextFactory<EvalDashboardDbContext>>());
         });
 
         return services;
-    }
-}
-
-/// <summary>
-/// Singleton initializer that ensures the eval dashboard SQLite schema exists.
-/// Resolved at composition time so the first append never races a missing-table error.
-/// </summary>
-internal sealed class EvalDashboardSchemaInitializer
-{
-    /// <summary>Initializes a new instance and ensures the database is created.</summary>
-    public EvalDashboardSchemaInitializer(IDbContextFactory<EvalDashboardDbContext> contextFactory)
-    {
-        using var context = contextFactory.CreateDbContext();
-        context.Database.EnsureCreated();
     }
 }

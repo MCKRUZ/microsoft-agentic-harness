@@ -1,5 +1,5 @@
+using Infrastructure.AI.Persistence;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 namespace Infrastructure.AI.Prompts.Persistence;
 
@@ -30,12 +30,10 @@ public sealed class PromptUsageDbContext : DbContext
         entity.Property(e => e.PromptHash).IsRequired().HasMaxLength(64);
 
         // SQLite can't natively ORDER BY DateTimeOffset; round-trip through UTC ticks
-        // so range scans and ORDER BY on RecordedAtUtc work correctly. Preserves sort
-        // order for UTC moments without loss.
+        // so range scans and ORDER BY on RecordedAtUtc work correctly. Shared converter
+        // lives in Infrastructure.AI.Persistence so PromptUsage + EvalDashboard stay in sync.
         entity.Property(e => e.RecordedAtUtc)
-            .HasConversion(new ValueConverter<DateTimeOffset, long>(
-                v => v.UtcTicks,
-                v => new DateTimeOffset(v, TimeSpan.Zero)));
+            .HasConversion(SqliteValueConverters.DateTimeOffsetAsUtcTicks);
 
         entity.HasIndex(e => e.TraceId).HasDatabaseName("ix_prompt_usage_trace_id");
         entity.HasIndex(e => e.CaseId).HasDatabaseName("ix_prompt_usage_case_id");

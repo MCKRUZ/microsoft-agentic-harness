@@ -28,6 +28,13 @@
     <ProjectReference Include="..\..\Application\Application.AI.Common\Application.AI.Common.csproj" />
     <ProjectReference Include="..\..\Application\Application.Common\Application.Common.csproj" />
     <ProjectReference Include="..\..\Application\Application.Core\Application.Core.csproj" />
+    <!--
+      Infrastructure.AI reference is for the shared SqliteValueConverters +
+      SchemaInitializer<TContext> helpers in Infrastructure.AI.Persistence.
+      Both EvalDashboard and PromptUsage subsystems use them; sharing avoids
+      the divergence risk of copy-pasted ValueConverter lambdas.
+    -->
+    <ProjectReference Include="..\Infrastructure.AI\Infrastructure.AI.csproj" />
   </ItemGroup>
 
 </Project>

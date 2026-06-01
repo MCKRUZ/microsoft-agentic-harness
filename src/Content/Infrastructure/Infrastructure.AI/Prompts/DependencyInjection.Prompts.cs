@@ -1,5 +1,6 @@
 using Application.AI.Common.Prompts.Interfaces;
 using Domain.Common.Config.AI;
+using Infrastructure.AI.Persistence;
 using Infrastructure.AI.Prompts.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -85,7 +86,10 @@ public static class PromptRegistryDependencyInjection
         services.AddSingleton<IPromptUsageStore, EfCorePromptUsageStore>();
 
         // Ensure the schema is created the first time the store is needed. Idempotent.
-        services.AddSingleton<PromptUsageSchemaInitializer>();
+        // SchemaInitializer<TContext> is the shared base — same lifecycle used by
+        // EvalDashboard's persistence registration so future subsystems get the
+        // pattern for free.
+        services.AddSingleton<SchemaInitializer<PromptUsageDbContext>>();
 
         // Register the two inner recorders as concrete singletons, then build the composite
         // that fans out to both. The public IPromptUsageRecorder is the composite.
@@ -94,7 +98,7 @@ public static class PromptRegistryDependencyInjection
         services.AddSingleton<IPromptUsageRecorder>(sp =>
         {
             // Touch the initializer so the DB is migrated before first record.
-            _ = sp.GetRequiredService<PromptUsageSchemaInitializer>();
+            _ = sp.GetRequiredService<SchemaInitializer<PromptUsageDbContext>>();
             return new CompositePromptUsageRecorder(
                 inner: [sp.GetRequiredService<OtelPromptUsageRecorder>(),
                         sp.GetRequiredService<PersistencePromptUsageRecorder>()],
@@ -102,22 +106,5 @@ public static class PromptRegistryDependencyInjection
         });
 
         return services;
-    }
-}
-
-/// <summary>
-/// Singleton initializer that ensures the prompt-usage SQLite schema exists. Resolved
-/// once during the composite recorder construction so the first append never races a
-/// missing-table error.
-/// </summary>
-internal sealed class PromptUsageSchemaInitializer
-{
-    /// <summary>
-    /// Initializes a new instance and creates the schema if it does not already exist.
-    /// </summary>
-    public PromptUsageSchemaInitializer(IDbContextFactory<PromptUsageDbContext> contextFactory)
-    {
-        using var context = contextFactory.CreateDbContext();
-        context.Database.EnsureCreated();
     }
 }

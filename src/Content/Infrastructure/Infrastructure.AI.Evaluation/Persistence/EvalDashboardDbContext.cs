@@ -1,5 +1,5 @@
+using Infrastructure.AI.Persistence;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 namespace Infrastructure.AI.Evaluation.Persistence;
 
@@ -29,11 +29,10 @@ public sealed class EvalDashboardDbContext : DbContext
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         // SQLite can't natively ORDER BY DateTimeOffset; round-trip through UTC ticks
-        // so range scans and ORDER BY on timestamps work correctly. Same converter
-        // pattern as PromptUsageDbContext.
-        var dateTimeOffsetConverter = new ValueConverter<DateTimeOffset, long>(
-            v => v.UtcTicks,
-            v => new DateTimeOffset(v, TimeSpan.Zero));
+        // so range scans and ORDER BY on timestamps work correctly. Shared converter
+        // lives in Infrastructure.AI.Persistence so PromptUsage + EvalDashboard stay
+        // in sync — any precision/offset fix lands in one place.
+        var dateTimeOffsetConverter = SqliteValueConverters.DateTimeOffsetAsUtcTicks;
 
         var run = modelBuilder.Entity<EvalRunEntity>();
         run.ToTable("eval_runs");
