@@ -336,6 +336,48 @@ export const handlers = [
     );
   }),
 
+  // PR 6 deferreds: tool-invocation deep-link
+  http.get('/api/sessions/:id/tools/:invocationId', ({ params }) => {
+    const { id, invocationId } = params as { id: string; invocationId: string };
+    if (invocationId === '00000000-0000-0000-0000-000000000404') {
+      return new HttpResponse(null, { status: 404 });
+    }
+    return HttpResponse.json({
+      id: invocationId,
+      sessionId: id,
+      messageId: '11111111-2222-3333-4444-555555555555',
+      toolName: 'ReadFile',
+      toolSource: 'keyed_di',
+      durationMs: 42,
+      status: 'success',
+      errorType: null,
+      resultSize: 128,
+      callId: 'call-abc123',
+      args: '{"path":"src/app.tsx"}',
+      stdout: 'export default function App() { return <div />; }',
+      createdAt: '2026-06-02T14:00:00Z',
+    });
+  }),
+
+  // PR 6 deferreds: file-body deep-link
+  http.get('/api/sessions/:id/messages/:messageId', ({ params }) => {
+    const { id, messageId } = params as { id: string; messageId: string };
+    if (messageId === '00000000-0000-0000-0000-000000000404') {
+      return new HttpResponse(null, { status: 404 });
+    }
+    return HttpResponse.json({
+      id: messageId,
+      sessionId: id,
+      turnIndex: 2,
+      role: 'user',
+      source: 'user_message',
+      contentPreview: 'What does App.tsx do?',
+      contentFull: 'What does App.tsx do? Be detailed and step through every prop.',
+      model: null,
+      createdAt: '2026-06-02T14:00:00Z',
+    });
+  }),
+
   // --- Evals (Sub-phase 5.4) ---
   // PR 5: SessionsPage agent rail reads /api/agents to render the canonical
   // roster. Ids here line up with the agentName field on the seeded sessions
