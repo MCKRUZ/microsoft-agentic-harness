@@ -111,7 +111,50 @@ docker run -d --name jaeger \
                         (compliance, post-incident review, governance), the harness writes a structured record per
                         turn to PostgreSQL via <code>IObservabilityStore</code>. The connection string lives in
                         <code>AppConfig.Observability.PostgresConnectionString</code>. Schema includes turn-level
-                        token usage, cost, tool invocations, and message previews truncated to 500 chars.
+                        token usage, cost, tool invocations, message previews truncated to 500 chars, plus the
+                        original message body and the args + stdout for every captured tool call (PR 6 — see
+                        below).
+                    </p>
+
+                    <h3>Foresight deep-link endpoints (PR 6)</h3>
+                    <p>
+                        Two scoped endpoints on <code>SessionsController</code> let the Dashboard drill from a
+                        session row into the full payload behind any truncated preview:
+                    </p>
+                    <ul>
+                        <li>
+                            <code>GET /api/sessions/{id}/tools/{invocationId}</code> — returns
+                            <code>ToolInvocationDetailDto</code> with the JSON args the LLM passed to the tool, the
+                            full stdout returned to the model, the LLM-supplied <code>CallId</code>, plus the
+                            standard metrics (duration, status, error type, result size). Both
+                            <code>args</code> and <code>stdout</code> are populated by
+                            <code>ToolDiagnosticsMiddleware</code>, which intercepts
+                            <code>FunctionCallContent</code> + <code>FunctionResultContent</code> and pairs them
+                            by <code>CallId</code> through the scoped <code>ILlmUsageCapture</code>. Args pass
+                            through the optional <code>ISecretRedactor</code> before storage.
+                        </li>
+                        <li>
+                            <code>GET /api/sessions/{id}/messages/{messageId}</code> — returns
+                            <code>MessageBodyDto</code> with the full <code>content_full</code> body captured
+                            before the 500-char preview truncation. The list endpoints still return only the
+                            preview to keep payloads cheap; the detail endpoint serves the full body on demand.
+                        </li>
+                    </ul>
+                    <p>
+                        Both endpoints scope the lookup to <code>(sessionId, id)</code>, so a forged
+                        <code>invocationId</code> or <code>messageId</code> from a different session returns 404
+                        rather than leaking content across session boundaries. The Dashboard wires the deep-links
+                        from <code>ToolsTable</code> (tool name → <code>/sessions/:id/tools/:invocationId</code>)
+                        and <code>SessionTimeline</code> ("view full →" link → <code>/sessions/:id/files/:messageId</code>).
+                    </p>
+                    <p>
+                        Schema migration: existing observability databases need
+                        <code>psql -f Dashboards/init-db/03-message-and-tool-bodies.sql</code> to add the
+                        <code>content_full</code>, <code>call_id</code>, <code>args</code>, and
+                        <code>stdout</code> columns. Fresh installs pick the schema up automatically via the
+                        alphabetical Docker entrypoint order. Rows recorded before the migration return
+                        <code>contentFull: null</code>; the dashboard renders a banner explaining the preview
+                        fallback in that case.
                     </p>
 
                     <hr />
