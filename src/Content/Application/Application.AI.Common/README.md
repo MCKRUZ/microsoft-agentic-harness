@@ -172,7 +172,7 @@ The interface surface defines the contracts that Infrastructure must implement:
 | **Governance** | `IGovernancePolicyEngine`, `IGovernanceAuditService`, `IMcpSecurityScanner`, `IPromptInjectionScanner` | Policy enforcement and threat detection |
 | **Hooks** | `IHookExecutor`, `IHookRegistry` | Lifecycle event interception |
 | **KnowledgeGraph** | `IKnowledgeGraphStore`, `IKnowledgeMemory`, `IFeedbackStore`, `IProvenanceStamper` | Graph-backed cross-session memory |
-| **Memory** | `IAgentHistoryStore` | Conversation history persistence |
+| **Memory** | `IAgentHistoryStore` | Agent decision/audit log (tool-call/result/decision events) |
 | **MetaHarness** | `IEvaluationService`, `IHarnessProposer`, `ISnapshotBuilder` | Automated harness optimization |
 | **Permissions** | `IDenialTracker`, `IPatternMatcher`, `IPermissionRuleProvider`, `ISafetyGateRegistry` | Tool access control |
 | **Planner** | `IPlanExecutor`, `IPlanValidator`, `IPlanStateStore`, `IPlanProgressNotifier`, `IPlanStepExecutor`, `IPlanGenerator` | DAG-based plan execution, validation, persistence, and generation |

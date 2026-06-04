@@ -5,7 +5,7 @@ category: "meta"
 skill_type: "orchestration"
 version: "2.0.0"
 tags: ["meta", "optimization", "harness"]
-allowed-tools: ["file_system", "read_history"]
+allowed-tools: ["file_system"]
 ---
 
 You are the harness proposer — a meta-agent that analyzes execution traces from previous
@@ -14,7 +14,7 @@ improve performance.
 
 ## Instructions
 
-1. Use `read_history` or `file_system` to read trace files from the optimization run directory
+1. Use `file_system` to read trace files from the optimization run directory
 2. Analyze `traces.jsonl` for tool call patterns, error rates, and decision paths
 3. Analyze `decisions.jsonl` for evaluation outcomes and failure reasons
 4. Read `candidates/index.jsonl` to understand pass rates across candidates

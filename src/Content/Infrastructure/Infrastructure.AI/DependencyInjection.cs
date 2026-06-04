@@ -9,7 +9,6 @@ using Application.AI.Common.Interfaces.Hooks;
 using Application.AI.Common.Interfaces.MetaHarness;
 using Application.AI.Common.Interfaces.Plugins;
 using Application.AI.Common.Interfaces.Prompts;
-using Application.AI.Common.Interfaces.Memory;
 using Application.AI.Common.Interfaces.Routing;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Interfaces.Traces;
@@ -26,7 +25,6 @@ using Infrastructure.AI.ContentSafety;
 using Infrastructure.AI.Factories;
 using Infrastructure.AI.Generators;
 using Infrastructure.AI.Hooks;
-using Infrastructure.AI.Memory;
 using Infrastructure.AI.MetaHarness;
 using Infrastructure.AI.Plugins;
 using Infrastructure.AI.Prompts;
@@ -189,11 +187,6 @@ public static partial class DependencyInjection
         // --- Config discovery ---
 
         services.AddTransient<IConfigDiscoveryService, DirectoryWalkConfigDiscovery>();
-
-        // --- Agent history ---
-
-        services.AddSingleton<Func<ITraceWriter, IAgentHistoryStore>>(
-            _ => tw => new JsonlAgentHistoryStore(tw));
 
         // --- Meta-harness services ---
 
