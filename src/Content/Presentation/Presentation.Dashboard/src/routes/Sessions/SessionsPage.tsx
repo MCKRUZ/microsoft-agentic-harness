@@ -1,8 +1,6 @@
 import { useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { usePromQuery } from '@/hooks/usePromQuery';
-import { metricCatalog } from '@/config/metricCatalog';
 import { fetchSessions } from '@/api/sessions';
 import { fetchAgents } from '@/api/agents';
 import { useTimeRangeStore } from '@/stores/timeRangeStore';
@@ -19,10 +17,41 @@ import { SessionTableRow } from './SessionTableRow';
 import { formatDurationSeconds } from './format';
 import type { SessionRecord } from '@/api/types';
 
-function latestValue(data: ReturnType<typeof usePromQuery>['data']): number {
-  const dp = data?.series[0]?.dataPoints;
-  if (!dp || dp.length === 0) return 0;
-  return parseFloat(dp[dp.length - 1]!.value) || 0;
+interface SessionKpis {
+  total: number;
+  active: number;
+  avgTurns: number;
+  avgDurationSec: number;
+}
+
+/**
+ * Derives the four header KPIs from the same session list the table renders,
+ * so the numbers match what the user sees row-for-row. A Prometheus-backed
+ * derivation would split the source of truth and surface zeros whenever the
+ * metric pipeline lags or isn't configured.
+ */
+function deriveKpis(sessions: SessionRecord[]): SessionKpis {
+  if (sessions.length === 0) {
+    return { total: 0, active: 0, avgTurns: 0, avgDurationSec: 0 };
+  }
+  let active = 0;
+  let turnsSum = 0;
+  let durationMsSum = 0;
+  let durationCount = 0;
+  for (const s of sessions) {
+    if (s.status?.toLowerCase() === 'active' || s.endedAt === null) active++;
+    turnsSum += s.turnCount;
+    if (typeof s.durationMs === 'number') {
+      durationMsSum += s.durationMs;
+      durationCount++;
+    }
+  }
+  return {
+    total: sessions.length,
+    active,
+    avgTurns: turnsSum / sessions.length,
+    avgDurationSec: durationCount > 0 ? durationMsSum / durationCount / 1000 : 0,
+  };
 }
 
 export default function SessionsPage() {
@@ -35,11 +64,6 @@ export default function SessionsPage() {
     () => getRange(),
     [preset, customStart, customEnd, getRange],
   );
-
-  const sessionsTotal = usePromQuery(metricCatalog['sessions_total']!.query);
-  const sessionsActive = usePromQuery(metricCatalog['sessions_active']!.query);
-  const turnsAvg = usePromQuery(metricCatalog['sessions_turns_avg']!.query);
-  const durationAvg = usePromQuery(metricCatalog['sessions_duration_avg']!.query);
 
   const sessionsQuery = useQuery({
     queryKey: ['sessions-list', start, end],
@@ -66,7 +90,10 @@ export default function SessionsPage() {
 
   const filter = useSessionsFilter({ sessions, roster });
 
-  const isKpiLoading = sessionsTotal.isLoading;
+  // KPIs reflect the same per-agent scope the table shows: full list when
+  // "All agents" is active, filtered list when a tile is selected.
+  const kpis = useMemo(() => deriveKpis(filter.filteredSessions), [filter.filteredSessions]);
+  const isKpiLoading = sessionsQuery.isLoading;
 
   return (
     <div className="space-y-6">
@@ -81,26 +108,22 @@ export default function SessionsPage() {
           <KpiCard
             title="Total Sessions"
             description="Number of agent conversation sessions started in the selected time range. Shows 0 when no conversations have been initiated."
-            value={latestValue(sessionsTotal.data).toFixed(0)}
-            sparklineData={sessionsTotal.data?.series[0]?.dataPoints}
+            value={kpis.total.toFixed(0)}
           />
           <KpiCard
             title="Active Sessions"
             description="Sessions currently in progress with an open connection. Shows 0 when all sessions have completed or no agents are running."
-            value={latestValue(sessionsActive.data).toFixed(0)}
-            sparklineData={sessionsActive.data?.series[0]?.dataPoints}
+            value={kpis.active.toFixed(0)}
           />
           <KpiCard
             title="Avg Turns/Session"
             description="Mean number of user-agent exchange turns per session. Shows 0 when no completed sessions exist in the selected time range."
-            value={latestValue(turnsAvg.data).toFixed(1)}
-            sparklineData={turnsAvg.data?.series[0]?.dataPoints}
+            value={kpis.avgTurns.toFixed(1)}
           />
           <KpiCard
             title="Avg Duration"
             description="Mean wall-clock time from session start to session end. Shows 0 when no completed sessions exist in the selected time range."
-            value={formatDurationSeconds(latestValue(durationAvg.data))}
-            sparklineData={durationAvg.data?.series[0]?.dataPoints}
+            value={formatDurationSeconds(kpis.avgDurationSec)}
           />
         </PanelGrid>
       )}

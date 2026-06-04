@@ -25,6 +25,8 @@ internal sealed class DevAuthHandler(
             new Claim(ClaimTypes.Name, "Dev User"),
             new Claim("oid", "dev-user"),
             new Claim(ClaimTypes.Role, "AgentHub.Traces.ReadAll"),
+            new Claim(ClaimTypes.Role, "AgentHub.EvalDashboard.Read"),
+            new Claim(ClaimTypes.Role, "AgentHub.Foresight.Observe"),
         };
         var identity = new ClaimsIdentity(claims, Scheme.Name);
         var ticket = new AuthenticationTicket(new ClaimsPrincipal(identity), Scheme.Name);

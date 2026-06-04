@@ -99,14 +99,24 @@ internal static class LogEntryParser
             entry.Timestamp = ts;
         }
 
-        var levelMatch = Regex.Match(line, @"\[(trce|dbug|info|warn|error|fail|crit|fatal|trace|debug|information|warning|critical)\]", RegexOptions.IgnoreCase);
+        // Pipe format from NamedPipeLogger: "HH:mm:ss.fff LEVEL [Category] message".
+        // Capture the token sitting between the timestamp and the [Category] block so
+        // future short-level changes (TRCE/DBUG/INFO/WARN/ERR/CRIT/UNKN) stay in sync
+        // without touching this regex.
+        var levelMatch = Regex.Match(
+            line,
+            @"^(?:\d{4}-\d{2}-\d{2}[T ])?\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?\s+(?<level>\S+)\s+\[");
         if (!levelMatch.Success)
         {
-            levelMatch = Regex.Match(line, @"\b(TRCE|DBG|INFO|WARN|ERR|FAIL|CRIT|FATAL)\b");
+            levelMatch = Regex.Match(line, @"\[(?<level>trce|dbug|dbg|info|warn|error|err|fail|crit|fatal|trace|debug|information|warning|critical)\]", RegexOptions.IgnoreCase);
+        }
+        if (!levelMatch.Success)
+        {
+            levelMatch = Regex.Match(line, @"\b(?<level>TRCE|DBUG|DBG|INFO|WARN|ERR|FAIL|CRIT|FATAL)\b");
         }
         if (levelMatch.Success)
         {
-            entry.Level = levelMatch.Groups[1].Value.ToLower();
+            entry.Level = levelMatch.Groups["level"].Value.Trim().ToLower();
         }
 
         var messageMatch = Regex.Match(line, @"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?\s+\[[^\]]+\]\s+(.*)");

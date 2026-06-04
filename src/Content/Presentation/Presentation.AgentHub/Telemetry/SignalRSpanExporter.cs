@@ -122,9 +122,13 @@ public sealed class SignalRSpanExporter : BaseExporter<Activity>, IHostedService
             _ => "internal"
         };
 
+        // Activity.Tags can contain duplicate keys when multiple instrumentations
+        // tag the same span (e.g. openai.api.type set by both SDK and middleware).
+        // Last write wins, matching OTel attribute-set semantics.
         var tags = activity.Tags
             .Where(t => t.Value is not null)
-            .ToDictionary(t => t.Key, t => t.Value!)
+            .GroupBy(t => t.Key)
+            .ToDictionary(g => g.Key, g => g.Last().Value!)
             as IReadOnlyDictionary<string, string>
             ?? new Dictionary<string, string>();
 

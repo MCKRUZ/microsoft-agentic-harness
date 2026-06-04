@@ -36,6 +36,18 @@ internal static class LogEntryFormatter
     /// <summary>Display names for each minimum-level filter step, indexed by rank.</summary>
     private static readonly string[] FilterNames = { "ALL", "DEBUG+", "INFO+", "WARN+", "ERROR+", "CRIT only" };
 
+    /// <summary>Maximum number of parsed entries retained for filter-toggle replay.</summary>
+    private const int HistoryCapacity = 5000;
+
+    /// <summary>
+    /// Ring buffer of parsed entries used to redraw the scrollback when the filter changes.
+    /// All access is gated by <see cref="OutputLock"/> so writes and replay can't interleave.
+    /// </summary>
+    private static readonly Queue<(LogEntry Entry, string SourceTag)> History = new();
+
+    /// <summary>Cached pipe-name list so <see cref="Redraw"/> can reprint the header without plumbing args.</summary>
+    private static IReadOnlyList<string> _pipeNames = Array.Empty<string>();
+
     /// <summary>
     /// Minimum severity rank to display; entries below it are suppressed. 0 shows everything.
     /// <c>volatile</c> because the keyboard listener thread mutates it while reader threads read it.
@@ -45,22 +57,37 @@ internal static class LogEntryFormatter
     /// <summary>
     /// Toggles the warning filter: jumps straight to WARN+ from any other state, or back to ALL
     /// when already at WARN+. Bound to the <c>W</c> key for one-press "show me the warnings".
+    /// Redraws the scrollback so already-visible entries are re-evaluated against the new filter.
     /// </summary>
     internal static void ToggleWarningFilter()
     {
         _minLevelRank = _minLevelRank == 3 ? 0 : 3;
-        AnnounceFilter();
+        Redraw();
     }
 
-    /// <summary>Advances the minimum-level filter one step, wrapping back to ALL. Bound to <c>L</c>.</summary>
+    /// <summary>
+    /// Advances the minimum-level filter one step, wrapping back to ALL. Bound to <c>L</c>.
+    /// Redraws the scrollback so already-visible entries are re-evaluated against the new filter.
+    /// </summary>
     internal static void CycleLevelFilter()
     {
         _minLevelRank = (_minLevelRank + 1) % FilterNames.Length;
-        AnnounceFilter();
+        Redraw();
     }
 
-    private static void AnnounceFilter() =>
-        WriteStatusLine($"[bold]Filter:[/] showing [cyan]{FilterNames[_minLevelRank]}[/]");
+    /// <summary>
+    /// Clears both the visible scrollback and the in-memory history buffer.
+    /// Bound to the <c>C</c> key — subsequent filter toggles will only replay entries that arrive after the clear.
+    /// </summary>
+    internal static void HandleClearKey()
+    {
+        lock (OutputLock)
+        {
+            History.Clear();
+            try { Console.Clear(); } catch { /* terminal may not support clear */ }
+            PrintHeaderUnlocked(_pipeNames);
+        }
+    }
 
     private static bool PassesFilter(LogEntry entry)
     {
@@ -69,6 +96,30 @@ internal static class LogEntryFormatter
 
         var rank = entry.Level is not null && LevelRanks.TryGetValue(entry.Level, out var r) ? r : 2;
         return rank >= _minLevelRank;
+    }
+
+    /// <summary>
+    /// Clears the screen, reprints the header + active-filter banner, and replays
+    /// every retained history entry that passes the current filter. Holds
+    /// <see cref="OutputLock"/> for the whole operation so live reader threads
+    /// block until the redraw finishes — entries they emit afterwards are
+    /// already in the history buffer and render at the tail in order.
+    /// </summary>
+    private static void Redraw()
+    {
+        lock (OutputLock)
+        {
+            try { Console.Clear(); } catch { /* terminal may not support clear */ }
+            PrintHeaderUnlocked(_pipeNames);
+            try { AnsiConsole.MarkupLine($"● [bold]Filter:[/] showing [cyan]{FilterNames[_minLevelRank]}[/]"); }
+            catch { /* Ignore console errors */ }
+
+            foreach (var (entry, tag) in History)
+            {
+                if (PassesFilter(entry))
+                    RenderEntryUnlocked(entry, tag);
+            }
+        }
     }
 
     /// <summary>
@@ -84,16 +135,18 @@ internal static class LogEntryFormatter
 
     /// <summary>
     /// Processes and displays a single log line tagged with its source.
+    /// Appends to the replay history buffer and renders under a single lock acquisition
+    /// so a concurrent <see cref="Redraw"/> can't observe a half-appended state.
     /// </summary>
     internal static void ProcessLogLine(string line, string sourceTag, bool parseJson)
     {
         if (string.IsNullOrWhiteSpace(line))
             return;
 
+        LogEntry logEntry;
         try
         {
-            var logEntry = LogEntryParser.Parse(line, parseJson);
-            DisplayLogEntry(logEntry, sourceTag);
+            logEntry = LogEntryParser.Parse(line, parseJson);
         }
         catch
         {
@@ -102,6 +155,17 @@ internal static class LogEntryFormatter
                 try { Console.WriteLine(line); }
                 catch { /* swallow -- last-ditch fallback */ }
             }
+            return;
+        }
+
+        lock (OutputLock)
+        {
+            History.Enqueue((logEntry, sourceTag));
+            while (History.Count > HistoryCapacity)
+                History.Dequeue();
+
+            if (PassesFilter(logEntry))
+                RenderEntryUnlocked(logEntry, sourceTag);
         }
     }
 
@@ -119,9 +183,22 @@ internal static class LogEntryFormatter
 
     /// <summary>
     /// Prints the initial header banner listing all monitored pipes.
+    /// Caches the pipe-name list so <see cref="Redraw"/> and <see cref="HandleClearKey"/>
+    /// can reprint the header on demand without re-plumbing arguments.
     /// </summary>
     internal static void PrintHeader(IReadOnlyList<string> pipeNames)
     {
+        lock (OutputLock)
+        {
+            PrintHeaderUnlocked(pipeNames);
+        }
+    }
+
+    /// <summary>Header rendering body; assumes the caller already holds <see cref="OutputLock"/>.</summary>
+    private static void PrintHeaderUnlocked(IReadOnlyList<string> pipeNames)
+    {
+        _pipeNames = pipeNames;
+
         var heading = pipeNames.Count == 1
             ? $"[bold cornflowerblue]Log Viewer[/] - [cyan]{pipeNames[0]}[/]"
             : $"[bold cornflowerblue]Log Viewer[/] - [cyan]{pipeNames.Count} sources[/]";
@@ -141,13 +218,45 @@ internal static class LogEntryFormatter
     }
 
     /// <summary>
-    /// Displays a log entry with formatting, colors, and a source tag.
+    /// Renders a single entry to the console.
+    /// Assumes the caller already holds <see cref="OutputLock"/> — used by both the
+    /// live-append path in <see cref="ProcessLogLine"/> and the replay path in <see cref="Redraw"/>.
+    /// The main-line markup is computed once and cached on <see cref="LogEntry.RenderedMarkup"/>
+    /// so redraws skip regex highlighting and string interpolation; only the Spectre
+    /// markup-to-ANSI step still runs per render (unavoidable without a custom <c>IAnsiConsole</c>).
     /// </summary>
-    private static void DisplayLogEntry(LogEntry entry, string sourceTag)
+    private static void RenderEntryUnlocked(LogEntry entry, string sourceTag)
     {
-        if (!PassesFilter(entry))
-            return;
+        entry.RenderedMarkup ??= BuildEntryMarkup(entry, sourceTag);
 
+        try { AnsiConsole.MarkupLine(entry.RenderedMarkup); }
+        catch { /* malformed markup -- swallow rather than crash the viewer */ }
+
+        if (entry.IsStructured && entry.HasException)
+        {
+            try
+            {
+                var panel = new Panel(entry.Raw)
+                    .BorderColor(Color.Red)
+                    .Header("[red]Exception[/]")
+                    .RoundedBorder()
+                    .Collapse();
+                AnsiConsole.Write(panel);
+            }
+            catch
+            {
+                AnsiConsole.MarkupLine($"[red]{EscapeMarkup(entry.Raw)}[/]");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Builds the full Spectre markup string for an entry's main display line.
+    /// Pure function — same inputs always produce the same markup, which is why the
+    /// result is safe to cache on the entry and reuse across redraws.
+    /// </summary>
+    private static string BuildEntryMarkup(LogEntry entry, string sourceTag)
+    {
         var config = LogEntryParser.GetLogLevelConfig(entry.Level);
         var color = config.Color;
         var icon = config.Icon;
@@ -159,36 +268,13 @@ internal static class LogEntryFormatter
 
         var levelBadge = $"[{color}]{displayLevel}[/]";
 
-        var iconPart = !string.IsNullOrEmpty(icon) ? $"[{color}]{icon}[/] " : "";
+        var iconPart = entry.HasException
+            ? $"[{color}]✖[/] "
+            : (!string.IsNullOrEmpty(icon) ? $"[{color}]{icon}[/] " : "");
 
         var message = FormatMessageWithHighlight(entry);
 
-        if (entry.HasException)
-        {
-            iconPart = $"[{color}]✖[/] ";
-        }
-
-        lock (OutputLock)
-        {
-            AnsiConsole.MarkupLine($"{timestamp} {sourceTag} {levelBadge} {iconPart}{message}");
-
-            if (entry.IsStructured && entry.HasException)
-            {
-                try
-                {
-                    var panel = new Panel(entry.Raw)
-                        .BorderColor(Color.Red)
-                        .Header("[red]Exception[/]")
-                        .RoundedBorder()
-                        .Collapse();
-                    AnsiConsole.Write(panel);
-                }
-                catch
-                {
-                    AnsiConsole.MarkupLine($"[red]{EscapeMarkup(entry.Raw)}[/]");
-                }
-            }
-        }
+        return $"{timestamp} {sourceTag} {levelBadge} {iconPart}{message}";
     }
 
     /// <summary>

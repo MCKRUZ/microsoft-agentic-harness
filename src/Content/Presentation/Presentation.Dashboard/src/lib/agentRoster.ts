@@ -37,7 +37,7 @@ export function buildAgentRoster(
   agents: AgentSummary[],
   sessions: SessionRecord[],
 ): AgentRollup[] {
-  const byName = indexSessionsByAgentName(sessions);
+  const byKey = indexSessionsByAgentKey(sessions);
 
   if (agents.length > 0) {
     // Dedupe by display name: two distinct registry ids that share the
@@ -51,29 +51,63 @@ export function buildAgentRoster(
       seenNames.add(a.name);
       deduped.push(a);
     }
-    return deduped.map((a) =>
-      makeRollupFromRegistry(a, byName.get(a.name) ?? []),
-    );
+    // Sessions can be stored with the registry display name ("Default Agent")
+    // OR the slug/id ("default") depending on which path created them. Look
+    // both up so the tile session counts include all rows that belong to this
+    // agent regardless of which form was persisted.
+    return deduped.map((a) => {
+      const fromName = byKey.get(normalizeAgentKey(a.name)) ?? [];
+      const fromId = byKey.get(normalizeAgentKey(a.id)) ?? [];
+      const merged = mergeUnique(fromName, fromId);
+      return makeRollupFromRegistry(a, merged);
+    });
   }
 
   // Fallback path: registry is empty. Synthesise from sessions so the user
   // still sees the agents that exist in the data, just without descriptions.
-  return Array.from(byName.entries())
+  // Group by the raw agentName so the fallback tile labels match what's on
+  // the rows verbatim.
+  const byRawName = new Map<string, SessionRecord[]>();
+  for (const s of sessions) {
+    const lane = byRawName.get(s.agentName) ?? [];
+    lane.push(s);
+    byRawName.set(s.agentName, lane);
+  }
+  return Array.from(byRawName.entries())
     .map(([name, rows]) => makeRollupFromSessions(name, rows))
     // Stable order so the fallback rail doesn't reshuffle on every refetch.
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
-function indexSessionsByAgentName(
+/** Normalises an agent identifier for join: lowercase, trimmed, spaces collapsed. */
+function normalizeAgentKey(value: string): string {
+  return value.trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+function indexSessionsByAgentKey(
   sessions: SessionRecord[],
 ): Map<string, SessionRecord[]> {
-  const byName = new Map<string, SessionRecord[]>();
+  const byKey = new Map<string, SessionRecord[]>();
   for (const s of sessions) {
-    const lane = byName.get(s.agentName) ?? [];
+    const key = normalizeAgentKey(s.agentName);
+    const lane = byKey.get(key) ?? [];
     lane.push(s);
-    byName.set(s.agentName, lane);
+    byKey.set(key, lane);
   }
-  return byName;
+  return byKey;
+}
+
+function mergeUnique(a: SessionRecord[], b: SessionRecord[]): SessionRecord[] {
+  if (a.length === 0) return b;
+  if (b.length === 0) return a;
+  const seen = new Set<string>(a.map((s) => s.id));
+  const out = [...a];
+  for (const s of b) {
+    if (seen.has(s.id)) continue;
+    seen.add(s.id);
+    out.push(s);
+  }
+  return out;
 }
 
 function makeRollupFromRegistry(

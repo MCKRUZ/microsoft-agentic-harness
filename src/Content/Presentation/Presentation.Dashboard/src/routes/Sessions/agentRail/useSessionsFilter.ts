@@ -44,13 +44,21 @@ export function useSessionsFilter({
   const filteredSessions = useMemo(() => {
     // null id → no filter; full list passes through.
     if (selectedAgentId === null) return sessions;
-    const selectedName =
-      roster.find((a) => a.id === selectedAgentId)?.name ?? null;
+    const selected = roster.find((a) => a.id === selectedAgentId) ?? null;
     // Selection points at an id the roster doesn't know — return empty so
     // the user sees the empty state. The useEffect above will clear the
     // selection on the next paint.
-    if (selectedName === null) return [];
-    return sessions.filter((s) => s.agentName === selectedName);
+    if (selected === null) return [];
+    // Sessions may carry the agent's display name ("Default Agent") OR its
+    // slug/id ("default") depending on which code path persisted them.
+    // Normalise both sides and accept either form. Mirrors the join in
+    // buildAgentRoster so the tile count and the filtered list stay in sync.
+    const nameKey = normalizeKey(selected.name);
+    const idKey = normalizeKey(selected.id);
+    return sessions.filter((s) => {
+      const k = normalizeKey(s.agentName);
+      return k === nameKey || k === idKey;
+    });
   }, [sessions, selectedAgentId, roster]);
 
   const selectAgent = useCallback((id: string | null) => {
@@ -63,4 +71,8 @@ export function useSessionsFilter({
     filteredSessions,
     isFiltered: selectedAgentId !== null,
   };
+}
+
+function normalizeKey(value: string): string {
+  return value.trim().toLowerCase().replace(/\s+/g, ' ');
 }

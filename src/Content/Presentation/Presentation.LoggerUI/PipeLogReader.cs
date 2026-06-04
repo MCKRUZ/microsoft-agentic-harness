@@ -65,8 +65,7 @@ internal static class PipeLogReader
             }
             else if (key.Key == ConsoleKey.C)
             {
-                Console.Clear();
-                LogEntryFormatter.PrintHeader(pipeNames);
+                LogEntryFormatter.HandleClearKey();
             }
             else if (key.Key == ConsoleKey.W && key.Modifiers == 0)
             {

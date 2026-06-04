@@ -17,6 +17,13 @@ internal sealed class LogEntry
     public bool IsStructured { get; set; }
     public bool HasException { get; set; }
     public Dictionary<string, string> Properties { get; set; } = new();
+
+    /// <summary>
+    /// Cached Spectre markup string for the main display line (timestamp + source tag + level badge + message),
+    /// populated on first render and reused by filter-toggle redraws so the regex/property scan in
+    /// <c>FormatMessageWithHighlight</c> only runs once per entry.
+    /// </summary>
+    public string? RenderedMarkup { get; set; }
 }
 
 /// <summary>
