@@ -141,7 +141,6 @@ cases:
                     <p>
                         Defaults are <code>$0</code> so <code>MetricScore.CostUsd</code> and
                         <code>EvalRunReport.TotalCostUsd</code> stay at zero until rates are configured.
-                        Phase 5.4 will add a per-deployment rate table.
                     </p>
 
                     <h2>CI integration</h2>
@@ -154,7 +153,7 @@ cases:
                     <p>The workflow uploads two artifacts from a single CLI invocation:</p>
                     <ul>
                         <li><code>eval-results-junit</code> — JUnit XML for the Tests tab and report parsers.</li>
-                        <li><code>eval-results-json</code> — full JSON for dashboard ingestion (Sub-phase 5.4).</li>
+                        <li><code>eval-results-json</code> — full JSON for dashboard ingestion.</li>
                     </ul>
                     <p>
                         Both come from the same in-memory <code>EvalRunReport</code>, so the dashboard JSON

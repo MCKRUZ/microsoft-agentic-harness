@@ -159,32 +159,60 @@
 
                     <h3>3 · An AI provider account</h3>
                     <p>
-                        The agent calls a real Large Language Model — by default Azure OpenAI's GPT-4o, but the harness
-                        supports plain OpenAI as a fallback. You need <strong>one</strong> of the following:
+                        The agent calls a real Large Language Model. The harness ships pointed at
+                        <strong>OpenRouter</strong> &mdash; an OpenAI-compatible gateway that fronts most major model
+                        families behind one API &mdash; but the same code path works for Azure OpenAI, plain OpenAI,
+                        or Anthropic directly. Pick whichever fits your situation:
                     </p>
                     <ul>
                         <li>
-                            <strong>Azure OpenAI</strong> — an Azure subscription with the OpenAI service provisioned
-                            and a deployment created (most enterprise users land here). You'll need the
-                            <em>endpoint URL</em> and an <em>API key</em>.
+                            <strong>OpenRouter</strong> (recommended for local dev) &mdash; one API key from
+                            <a href="https://openrouter.ai/keys">openrouter.ai/keys</a> unlocks Anthropic, OpenAI,
+                            Google, Mistral, and more. Easiest path if you don't have an Azure subscription. Default
+                            model slug:
+                            <code>anthropic/claude-sonnet-4.6</code>.
                         </li>
                         <li>
-                            <strong>OpenAI</strong> — an API key from
-                            <a href="https://platform.openai.com">platform.openai.com</a>. Easiest to set up if you
-                            don't have Azure.
+                            <strong>Azure OpenAI</strong> &mdash; an Azure subscription with the OpenAI service
+                            provisioned and a deployment created (most enterprise users land here in production).
+                            You'll need the <em>endpoint URL</em> and an <em>API key</em>, or a managed identity if
+                            you're running on Azure compute.
+                        </li>
+                        <li>
+                            <strong>OpenAI</strong> &mdash; an API key from
+                            <a href="https://platform.openai.com">platform.openai.com</a>. Direct, no Azure layer.
+                        </li>
+                        <li>
+                            <strong>Anthropic</strong> &mdash; an API key from
+                            <a href="https://console.anthropic.com">console.anthropic.com</a>. Use this if your
+                            enterprise routes Claude calls through Anthropic directly rather than Azure AI Foundry.
                         </li>
                     </ul>
 
                     <div class="callout callout-info">
                         <span class="callout-icon">i</span>
                         <div class="callout-body">
-                            <div class="callout-title">"Deployment" in Azure OpenAI</div>
+                            <div class="callout-title">One switch, four providers</div>
                             <p style="margin: 0">
-                                In Azure OpenAI, a <strong>deployment</strong> is a named instance of a specific model
-                                (e.g. you might deploy GPT-4o under the name <code>gpt-4o</code> or
-                                <code>my-prod-model</code>). The harness needs that deployment name — not the model
-                                name. If you don't see deployments in your portal, you may need to create one in Azure
-                                AI Studio first.
+                                The <code>AI:AgentFramework:ClientType</code> setting picks the SDK path
+                                (<code>OpenAI</code> / <code>AzureOpenAI</code> / <code>Anthropic</code>);
+                                <code>Endpoint</code>, <code>DefaultDeployment</code>, and <code>ApiKey</code> point it
+                                at the chosen provider. Switching providers is a config change, not a code change.
+                                See <a href="../architecture/02-compute-and-ai.html">Architecture &middot; Compute
+                                &amp; AI</a> for the full provider matrix.
+                            </p>
+                        </div>
+                    </div>
+
+                    <div class="callout callout-info">
+                        <span class="callout-icon">i</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Embeddings are configured separately</div>
+                            <p style="margin: 0">
+                                OpenRouter does not currently offer an embeddings API. If you need RAG or the
+                                knowledge graph, point <code>AI:Embedding:*</code> at an OpenAI or Azure OpenAI
+                                embedding endpoint separately from your chat provider. For the 10-minute getting-started
+                                path you can skip this &mdash; the agent itself works without embeddings.
                             </p>
                         </div>
                     </div>

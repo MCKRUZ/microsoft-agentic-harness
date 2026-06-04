@@ -348,10 +348,12 @@
                         the East US region.
                     </p>
                     <p>
-                        The payload files below are the source of truth for the topology — edit them and re-POST to
-                        <code>http://localhost:3001/api/generate</code> to regenerate. The full DiagramState JSON
-                        (nodes, edges, layout, validationResults, costSummary) is saved by the generator under its
-                        own <code>generated/</code> directory; reference the file IDs from the table below.
+                        The payload files below are the source of truth for the topology &mdash; edit them and re-POST
+                        to the generator's <code>/api/generate</code> endpoint (port floats per restart; see the "How
+                        to regenerate" callout below this table for the current invocation) to refresh. The full
+                        DiagramState JSON (nodes, edges, layout, validationResults, costSummary) is saved by the
+                        generator under its own <code>generated/</code> directory; reference the file IDs from the
+                        table below.
                     </p>
 
                     <table>
@@ -399,17 +401,21 @@
                             <div class="callout-title">How to regenerate</div>
                             <p style="margin: 0">
                                 With the AzureCraft generator running locally
-                                (<code>npm run dev</code> in its <code>apps/web</code> folder, default port
-                                <code>3001</code>), POST any payload above to <code>/api/generate</code>:
+                                (<code>npm run dev</code> in its <code>apps/web</code> folder &mdash; the port floats;
+                                <code>3002</code> as of 2026-06-03), POST any payload above to
+                                <code>/api/generate</code>:
                             </p>
-<pre style="margin-top: 12px"><code>Invoke-RestMethod -Uri 'http://localhost:3001/api/generate' `
+<pre style="margin-top: 12px"><code>Invoke-RestMethod -Uri 'http://localhost:3002/api/generate' `
   -Method Post -ContentType 'application/json' `
   -InFile 'documentation/architecture/assets/diagrams/payloads/prod.json'</code></pre>
                             <p style="margin: 12px 0 0">
                                 The response includes a <code>report</code> summary, the full <code>diagram</code>
                                 state, and a <code>file</code> path under the generator's own
-                                <code>generated/</code> output. Re-run after any topology change to refresh the
-                                cost and validation numbers in this table.
+                                <code>generated/</code> output. A committed copy of the production diagram lives at
+                                <a href="assets/diagrams/generated/prod.json"><code>assets/diagrams/generated/prod.json</code></a>
+                                so reviewers can inspect node placement, edge routing, and per-service costs without
+                                running the generator. Re-run after any topology change to refresh both the table
+                                above and the committed diagram.
                             </p>
                         </div>
                     </div>

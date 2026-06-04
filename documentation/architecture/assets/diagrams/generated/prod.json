@@ -1,0 +1,718 @@
+{
+  "nodes": [
+    {
+      "id": "rg-main",
+      "type": "group",
+      "position": {
+        "x": 0,
+        "y": 0
+      },
+      "data": {
+        "displayName": "Resource Group",
+        "serviceType": "resource-group",
+        "groupType": "resource-group",
+        "status": "proposed",
+        "properties": {
+          "width": 1600,
+          "height": 1080
+        },
+        "category": "networking"
+      }
+    },
+    {
+      "id": "vnet-main",
+      "type": "group",
+      "position": {
+        "x": 460,
+        "y": 60
+      },
+      "data": {
+        "displayName": "VNet",
+        "serviceType": "resource-group",
+        "groupType": "virtual-network",
+        "subtitle": "10.0.0.0/16",
+        "logicalParent": "rg-main",
+        "status": "proposed",
+        "properties": {
+          "width": 1080,
+          "height": 960
+        },
+        "category": "networking"
+      }
+    },
+    {
+      "id": "subnet-app",
+      "type": "group",
+      "position": {
+        "x": 520,
+        "y": 120
+      },
+      "data": {
+        "displayName": "App Subnet",
+        "serviceType": "resource-group",
+        "groupType": "subnet",
+        "subtitle": "10.0.1.0/24",
+        "logicalParent": "vnet-main",
+        "status": "proposed",
+        "properties": {
+          "width": 400,
+          "height": 840
+        },
+        "category": "networking"
+      }
+    },
+    {
+      "id": "subnet-data",
+      "type": "group",
+      "position": {
+        "x": 1000,
+        "y": 120
+      },
+      "data": {
+        "displayName": "Data Subnet",
+        "serviceType": "resource-group",
+        "groupType": "subnet",
+        "subtitle": "10.0.2.0/24",
+        "logicalParent": "vnet-main",
+        "status": "proposed",
+        "properties": {
+          "width": 400,
+          "height": 400
+        },
+        "category": "networking"
+      }
+    },
+    {
+      "id": "1780505739938-xudpcyy",
+      "type": "azureService",
+      "position": {
+        "x": 60,
+        "y": 120
+      },
+      "data": {
+        "serviceType": "ddos-protection",
+        "displayName": "DDoS Protection",
+        "description": "Standard plan on the production VNet. Front Door Premium origins also benefit.",
+        "category": "security",
+        "status": "proposed",
+        "properties": {
+          "pricing": {
+            "tier": "network-protection",
+            "protectedIPs": 1
+          }
+        },
+        "monthlyCost": 2944,
+        "sku": "Network Protection",
+        "logicalParent": "rg-main"
+      }
+    },
+    {
+      "id": "1780505739938-fhvau4u",
+      "type": "azureService",
+      "position": {
+        "x": 60,
+        "y": 220
+      },
+      "data": {
+        "serviceType": "front-door",
+        "displayName": "Front Door (prod)",
+        "description": "Premium SKU. Global entry, WAF, TLS, private-link origins to AgentHub + Dashboard.",
+        "category": "networking",
+        "status": "proposed",
+        "properties": {
+          "pricing": {
+            "tier": "standard"
+          }
+        },
+        "monthlyCost": 335,
+        "sku": "Standard",
+        "logicalParent": "rg-main"
+      }
+    },
+    {
+      "id": "1780505739938-4vgt8ct",
+      "type": "azureService",
+      "position": {
+        "x": 580,
+        "y": 180
+      },
+      "data": {
+        "serviceType": "api-management",
+        "displayName": "APIM (prod)",
+        "description": "Standard v2 tier. Fronts MCP server with JWT validation, rate limit, quota policies, and version routing.",
+        "category": "integration",
+        "status": "proposed",
+        "properties": {
+          "pricing": {
+            "tier": "developer",
+            "millionCalls": 1,
+            "units": 1
+          }
+        },
+        "monthlyCost": 48.36,
+        "sku": "Developer",
+        "logicalParent": "subnet-app"
+      }
+    },
+    {
+      "id": "1780505739938-3v3sswy",
+      "type": "azureService",
+      "position": {
+        "x": 580,
+        "y": 280
+      },
+      "data": {
+        "serviceType": "container-apps",
+        "displayName": "AgentHub (prod)",
+        "description": "Web host. Multi-replica, KEDA autoscale on SignalR connections + plan executor queue depth.",
+        "category": "containers",
+        "status": "proposed",
+        "properties": {
+          "pricing": {
+            "plan": "consumption",
+            "vcpuSeconds": 2000000,
+            "gibSeconds": 4000000,
+            "replicas": 1
+          }
+        },
+        "monthlyCost": 54.6,
+        "sku": "Consumption",
+        "logicalParent": "subnet-app"
+      }
+    },
+    {
+      "id": "1780505739938-0hsiupm",
+      "type": "azureService",
+      "position": {
+        "x": 580,
+        "y": 372
+      },
+      "data": {
+        "serviceType": "container-apps",
+        "displayName": "MCP Server (prod)",
+        "description": "MCPServer Container App. Separate scaling profile from AgentHub.",
+        "category": "containers",
+        "status": "proposed",
+        "properties": {
+          "pricing": {
+            "plan": "consumption",
+            "vcpuSeconds": 2000000,
+            "gibSeconds": 4000000,
+            "replicas": 1
+          }
+        },
+        "monthlyCost": 54.6,
+        "sku": "Consumption",
+        "logicalParent": "subnet-app"
+      }
+    },
+    {
+      "id": "1780505739938-ngwtdo5",
+      "type": "azureService",
+      "position": {
+        "x": 580,
+        "y": 460
+      },
+      "data": {
+        "serviceType": "static-web-app",
+        "displayName": "Dashboard (prod)",
+        "description": "SPA served behind Front Door with private-link origin.",
+        "category": "web",
+        "status": "proposed",
+        "properties": {
+          "pricing": {
+            "tier": "free"
+          }
+        },
+        "monthlyCost": 0,
+        "sku": "Free",
+        "logicalParent": "subnet-app"
+      }
+    },
+    {
+      "id": "1780505739938-4277um2",
+      "type": "azureService",
+      "position": {
+        "x": 580,
+        "y": 552
+      },
+      "data": {
+        "serviceType": "azure-openai",
+        "displayName": "Azure OpenAI (prod)",
+        "description": "PTU primary + S1 burst. Polly circuit breaker + provider fallback chain. Private endpoint, public network disabled.",
+        "category": "ai-ml",
+        "status": "proposed",
+        "properties": {
+          "pricing": {
+            "model": "gpt-4o",
+            "millionInputTokens": 10,
+            "millionOutputTokens": 5
+          }
+        },
+        "monthlyCost": 75,
+        "sku": "GPT-4o",
+        "logicalParent": "subnet-app"
+      }
+    },
+    {
+      "id": "1780505739938-7tfsap8",
+      "type": "azureService",
+      "position": {
+        "x": 580,
+        "y": 640
+      },
+      "data": {
+        "serviceType": "ai-search",
+        "displayName": "AI Search (prod)",
+        "description": "Standard S2. Vector + BM25. Replicas for HA, partitions for scale.",
+        "category": "ai-ml",
+        "status": "proposed",
+        "properties": {
+          "pricing": {
+            "tier": "standard-s1",
+            "replicas": 1
+          }
+        },
+        "monthlyCost": 250.39,
+        "sku": "Standard S1",
+        "logicalParent": "subnet-app"
+      }
+    },
+    {
+      "id": "1780505739938-h389rhm",
+      "type": "azureService",
+      "position": {
+        "x": 580,
+        "y": 740
+      },
+      "data": {
+        "serviceType": "aks",
+        "displayName": "Neo4j / KG (prod)",
+        "description": "Neo4j Enterprise on AKS. Causal cluster, zone-redundant, persistent volumes for graph store. ComplianceAwareGraphStore + TenantIsolatedGraphStore on top.",
+        "category": "containers",
+        "status": "proposed",
+        "properties": {
+          "pricing": {
+            "clusterTier": "standard",
+            "nodeSize": "d4s-v5",
+            "nodeCount": 3
+          }
+        },
+        "monthlyCost": 493.48,
+        "sku": "Standard (3x)",
+        "logicalParent": "subnet-app"
+      }
+    },
+    {
+      "id": "1780505739938-mr28fm0",
+      "type": "azureService",
+      "position": {
+        "x": 1060,
+        "y": 180
+      },
+      "data": {
+        "serviceType": "azure-sql",
+        "displayName": "Azure SQL (prod)",
+        "description": "Plan state. Business Critical, zone-redundant, automated point-in-time restore.",
+        "category": "databases",
+        "status": "proposed",
+        "properties": {
+          "pricing": {
+            "model": "dtu",
+            "dtuTier": "standard-50dtu",
+            "vcoreTier": "general-purpose",
+            "vcores": 4,
+            "storageGB": 250
+          }
+        },
+        "monthlyCost": 73.6,
+        "sku": "DTU-based",
+        "logicalParent": "subnet-data"
+      }
+    },
+    {
+      "id": "1780505739938-34rt04l",
+      "type": "azureService",
+      "position": {
+        "x": 1060,
+        "y": 280
+      },
+      "data": {
+        "serviceType": "redis-cache",
+        "displayName": "Redis Cache (prod)",
+        "description": "AgentConversationCache + skill metadata + content safety result cache. Standard C1.",
+        "category": "databases",
+        "status": "proposed",
+        "properties": {
+          "pricing": {
+            "tier": "standard-c1",
+            "shards": 1
+          }
+        },
+        "monthlyCost": 80.3,
+        "sku": "Standard C1",
+        "logicalParent": "subnet-data"
+      }
+    },
+    {
+      "id": "1780505739938-62y15sp",
+      "type": "azureService",
+      "position": {
+        "x": 1060,
+        "y": 372
+      },
+      "data": {
+        "serviceType": "storage-account",
+        "displayName": "Storage (prod)",
+        "description": "Geo-redundant (RA-GRS) with lifecycle management auto-tiering ingestion staging to Cool after 30 days and Archive after 180. AG-UI artifacts, escalation JSONL audit, ErasureReceipt records.",
+        "category": "storage",
+        "status": "proposed",
+        "properties": {
+          "pricing": {
+            "accessTier": "hot",
+            "redundancy": "lrs",
+            "capacityGB": 500,
+            "transactions10K": 100
+          }
+        },
+        "monthlyCost": 9.44,
+        "sku": "Hot",
+        "logicalParent": "subnet-data"
+      }
+    },
+    {
+      "id": "1780505739938-siag5fv",
+      "type": "azureService",
+      "position": {
+        "x": 580,
+        "y": 832
+      },
+      "data": {
+        "serviceType": "key-vault",
+        "displayName": "Key Vault (prod)",
+        "description": "Premium (HSM-backed keys). Private endpoint, RBAC, soft delete + purge protection, customer-managed keys for storage + SQL.",
+        "category": "security",
+        "status": "proposed",
+        "properties": {
+          "pricing": {
+            "tier": "standard",
+            "operations10K": 100,
+            "certificates": 0,
+            "hsmKeys": 0
+          }
+        },
+        "monthlyCost": 3,
+        "sku": "Standard",
+        "logicalParent": "subnet-app"
+      }
+    },
+    {
+      "id": "1780505739938-stp49n1",
+      "type": "azureService",
+      "position": {
+        "x": 60,
+        "y": 312
+      },
+      "data": {
+        "serviceType": "entra-id",
+        "displayName": "Entra ID",
+        "description": "Identity. Conditional access, MFA enforced for approver roles in escalation flows.",
+        "category": "identity",
+        "status": "proposed",
+        "properties": {
+          "pricing": {
+            "tier": "free",
+            "users": 50
+          }
+        },
+        "monthlyCost": 0,
+        "sku": "Free",
+        "logicalParent": "rg-main"
+      }
+    },
+    {
+      "id": "1780505739938-azv9ibc",
+      "type": "azureService",
+      "position": {
+        "x": 60,
+        "y": 400
+      },
+      "data": {
+        "serviceType": "log-analytics",
+        "displayName": "Log Analytics (prod)",
+        "description": "Centralized observability workspace. 90-day retention, exported to long-term cold storage.",
+        "category": "management",
+        "status": "proposed",
+        "properties": {
+          "pricing": {
+            "ingestionGB": 50,
+            "retentionDays": 90
+          }
+        },
+        "monthlyCost": 134.2,
+        "sku": "",
+        "logicalParent": "rg-main"
+      }
+    },
+    {
+      "id": "1780505739938-0wv5xzy",
+      "type": "azureService",
+      "position": {
+        "x": 60,
+        "y": 492
+      },
+      "data": {
+        "serviceType": "application-insights",
+        "displayName": "App Insights (prod)",
+        "description": "OTel exporter target. Sampling tuned for prod cost. GenAi semconv attributes from GenAiSemconvRegistry.",
+        "category": "management",
+        "status": "proposed",
+        "properties": {
+          "pricing": {
+            "ingestionGB": 20
+          }
+        },
+        "monthlyCost": 41.4,
+        "sku": "",
+        "logicalParent": "rg-main"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e-1780505739938-xudpcyy-1780505739938-fhvau4u",
+      "source": "1780505739938-xudpcyy",
+      "target": "1780505739938-fhvau4u",
+      "data": {
+        "connectionType": "public",
+        "isEncrypted": true
+      }
+    },
+    {
+      "id": "e-1780505739938-fhvau4u-1780505739938-3v3sswy",
+      "source": "1780505739938-fhvau4u",
+      "target": "1780505739938-3v3sswy",
+      "data": {
+        "connectionType": "private-endpoint",
+        "isEncrypted": true
+      }
+    },
+    {
+      "id": "e-1780505739938-fhvau4u-1780505739938-ngwtdo5",
+      "source": "1780505739938-fhvau4u",
+      "target": "1780505739938-ngwtdo5",
+      "data": {
+        "connectionType": "private-endpoint",
+        "isEncrypted": true
+      }
+    },
+    {
+      "id": "e-1780505739938-fhvau4u-1780505739938-4vgt8ct",
+      "source": "1780505739938-fhvau4u",
+      "target": "1780505739938-4vgt8ct",
+      "data": {
+        "connectionType": "public",
+        "isEncrypted": true
+      }
+    },
+    {
+      "id": "e-1780505739938-4vgt8ct-1780505739938-0hsiupm",
+      "source": "1780505739938-4vgt8ct",
+      "target": "1780505739938-0hsiupm",
+      "data": {
+        "connectionType": "vnet-integration",
+        "isEncrypted": true
+      }
+    },
+    {
+      "id": "e-1780505739938-ngwtdo5-1780505739938-3v3sswy",
+      "source": "1780505739938-ngwtdo5",
+      "target": "1780505739938-3v3sswy",
+      "data": {
+        "connectionType": "private-endpoint",
+        "isEncrypted": true
+      }
+    },
+    {
+      "id": "e-1780505739938-3v3sswy-1780505739938-4277um2",
+      "source": "1780505739938-3v3sswy",
+      "target": "1780505739938-4277um2",
+      "data": {
+        "connectionType": "private-endpoint",
+        "isEncrypted": true
+      }
+    },
+    {
+      "id": "e-1780505739938-3v3sswy-1780505739938-7tfsap8",
+      "source": "1780505739938-3v3sswy",
+      "target": "1780505739938-7tfsap8",
+      "data": {
+        "connectionType": "private-endpoint",
+        "isEncrypted": true
+      }
+    },
+    {
+      "id": "e-1780505739938-3v3sswy-1780505739938-h389rhm",
+      "source": "1780505739938-3v3sswy",
+      "target": "1780505739938-h389rhm",
+      "data": {
+        "connectionType": "vnet-integration",
+        "isEncrypted": true
+      }
+    },
+    {
+      "id": "e-1780505739938-3v3sswy-1780505739938-mr28fm0",
+      "source": "1780505739938-3v3sswy",
+      "target": "1780505739938-mr28fm0",
+      "data": {
+        "connectionType": "private-endpoint",
+        "isEncrypted": true
+      }
+    },
+    {
+      "id": "e-1780505739938-3v3sswy-1780505739938-34rt04l",
+      "source": "1780505739938-3v3sswy",
+      "target": "1780505739938-34rt04l",
+      "data": {
+        "connectionType": "private-endpoint",
+        "isEncrypted": true
+      }
+    },
+    {
+      "id": "e-1780505739938-3v3sswy-1780505739938-62y15sp",
+      "source": "1780505739938-3v3sswy",
+      "target": "1780505739938-62y15sp",
+      "data": {
+        "connectionType": "private-endpoint",
+        "isEncrypted": true
+      }
+    },
+    {
+      "id": "e-1780505739938-3v3sswy-1780505739938-siag5fv",
+      "source": "1780505739938-3v3sswy",
+      "target": "1780505739938-siag5fv",
+      "data": {
+        "connectionType": "private-endpoint",
+        "isEncrypted": true
+      }
+    },
+    {
+      "id": "e-1780505739938-3v3sswy-1780505739938-stp49n1",
+      "source": "1780505739938-3v3sswy",
+      "target": "1780505739938-stp49n1",
+      "data": {
+        "connectionType": "public",
+        "isEncrypted": true
+      }
+    },
+    {
+      "id": "e-1780505739938-0hsiupm-1780505739938-4277um2",
+      "source": "1780505739938-0hsiupm",
+      "target": "1780505739938-4277um2",
+      "data": {
+        "connectionType": "private-endpoint",
+        "isEncrypted": true
+      }
+    },
+    {
+      "id": "e-1780505739938-0hsiupm-1780505739938-siag5fv",
+      "source": "1780505739938-0hsiupm",
+      "target": "1780505739938-siag5fv",
+      "data": {
+        "connectionType": "private-endpoint",
+        "isEncrypted": true
+      }
+    },
+    {
+      "id": "e-1780505739938-0hsiupm-1780505739938-stp49n1",
+      "source": "1780505739938-0hsiupm",
+      "target": "1780505739938-stp49n1",
+      "data": {
+        "connectionType": "public",
+        "isEncrypted": true
+      }
+    },
+    {
+      "id": "e-1780505739938-3v3sswy-1780505739938-0wv5xzy",
+      "source": "1780505739938-3v3sswy",
+      "target": "1780505739938-0wv5xzy",
+      "data": {
+        "connectionType": "vnet-integration",
+        "isEncrypted": true
+      }
+    },
+    {
+      "id": "e-1780505739938-0hsiupm-1780505739938-0wv5xzy",
+      "source": "1780505739938-0hsiupm",
+      "target": "1780505739938-0wv5xzy",
+      "data": {
+        "connectionType": "vnet-integration",
+        "isEncrypted": true
+      }
+    },
+    {
+      "id": "e-1780505739938-h389rhm-1780505739938-siag5fv",
+      "source": "1780505739938-h389rhm",
+      "target": "1780505739938-siag5fv",
+      "data": {
+        "connectionType": "private-endpoint",
+        "isEncrypted": true
+      }
+    },
+    {
+      "id": "e-1780505739938-h389rhm-1780505739938-0wv5xzy",
+      "source": "1780505739938-h389rhm",
+      "target": "1780505739938-0wv5xzy",
+      "data": {
+        "connectionType": "vnet-integration",
+        "isEncrypted": true
+      }
+    },
+    {
+      "id": "e-1780505739938-0wv5xzy-1780505739938-azv9ibc",
+      "source": "1780505739938-0wv5xzy",
+      "target": "1780505739938-azv9ibc",
+      "data": {
+        "connectionType": "public",
+        "isEncrypted": true
+      }
+    }
+  ],
+  "groups": [],
+  "selectedNodeId": null,
+  "selectedEdgeId": null,
+  "viewMode": "2d",
+  "zoom": 1,
+  "costSummary": {
+    "monthly": 4597.37,
+    "byService": {
+      "DDoS Protection": 2944,
+      "Front Door (prod)": 335,
+      "APIM (prod)": 48.36,
+      "AgentHub (prod)": 54.6,
+      "MCP Server (prod)": 54.6,
+      "Dashboard (prod)": 0,
+      "Azure OpenAI (prod)": 75,
+      "AI Search (prod)": 250.39,
+      "Neo4j / KG (prod)": 493.48,
+      "Azure SQL (prod)": 73.6,
+      "Redis Cache (prod)": 80.3,
+      "Storage (prod)": 9.44,
+      "Key Vault (prod)": 3,
+      "Entra ID": 0,
+      "Log Analytics (prod)": 134.2,
+      "App Insights (prod)": 41.4
+    },
+    "byResourceGroup": {
+      "Resource Group": 4597.37
+    }
+  },
+  "validationResults": [],
+  "suggestedOptimizations": [],
+  "discounts": {
+    "globalPercent": 0
+  },
+  "diagramName": "Agentic Harness — Production Tier",
+  "lastModified": "2026-06-03T16:55:39.940Z",
+  "version": 1
+}

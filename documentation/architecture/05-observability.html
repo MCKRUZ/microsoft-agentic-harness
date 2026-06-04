@@ -69,6 +69,22 @@
                         or the Grafana OSS stack, the harness exports the same traces, metrics, and logs.
                     </p>
 
+                    <div class="callout callout-info">
+                        <span class="callout-icon">i</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Authoritative blueprint</div>
+                            <p style="margin: 0">
+                                This page is the <em>operator's</em> view &mdash; how to wire each backend and what
+                                to look at first. The full instrumentation contract (span/metric/log names, GenAI
+                                semantic-convention mappings, resource attribute requirements, sampling policy) lives
+                                in <a href="../blueprints/agentic-harness-observability.md"><code>documentation/blueprints/agentic-harness-observability.md</code></a>
+                                (v1.2) and the single emit-point in
+                                <code>Infrastructure.AI.Observability/GenAiSemconvRegistry.cs</code>. When this page
+                                and the blueprint disagree, the blueprint wins.
+                            </p>
+                        </div>
+                    </div>
+
                     <!-- ==============================
                          Two Paths, Same Data
                          ============================== -->

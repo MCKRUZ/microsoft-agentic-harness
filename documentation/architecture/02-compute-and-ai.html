@@ -6,7 +6,7 @@
         <title>02 &middot; Compute &amp; AI Services &mdash; Agentic Harness Architecture Guide</title>
         <meta
             name="description"
-            content="Where the harness runs and how Azure OpenAI powers the agent. Covers hosting options, model deployment, and the configuration that connects code to cloud."
+            content="Where the harness runs and how it talks to large language models. Covers hosting options, the provider-agnostic AgentFramework client, and the configuration that connects code to cloud."
         />
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -65,8 +65,9 @@
                     <span class="eyebrow">Chapter 02 &middot; Infrastructure</span>
                     <h1 class="page-title">Compute &amp; AI Services</h1>
                     <p class="page-lead">
-                        Where the harness actually runs, and how Azure OpenAI powers the agent. This page covers hosting
-                        options, model deployment, and the configuration that connects code to cloud.
+                        Where the harness actually runs, and how it talks to large language models. The agent client
+                        is provider-agnostic &mdash; the same code path works against OpenRouter, Azure OpenAI, plain
+                        OpenAI, or any OpenAI-compatible gateway, selected by a single configuration switch.
                     </p>
 
                     <!-- ==================== Hosting options ==================== -->
@@ -240,109 +241,185 @@
 }</code></pre>
                     </div>
 
-                    <!-- ==================== Azure OpenAI ==================== -->
-                    <h2 id="azure-openai">Azure OpenAI</h2>
+                    <!-- ==================== AI providers ==================== -->
+                    <h2 id="ai-providers">AI providers</h2>
                     <p>
-                        The harness requires two model deployments in Azure OpenAI. They can live on the same resource
-                        or on separate resources if you need to isolate quota.
+                        The harness needs two model surfaces: a <strong>chat-completion model</strong> for the agent
+                        runtime, and an <strong>embedding model</strong> for the RAG pipeline. The chat surface is
+                        provider-agnostic &mdash; one configuration block (<code>AI:AgentFramework</code>) selects
+                        between OpenRouter, Azure OpenAI, plain OpenAI, Anthropic, or any OpenAI-compatible gateway.
+                        Embeddings use a separate block (<code>AI:Embedding</code>) and currently expect an OpenAI
+                        or Azure OpenAI endpoint.
                     </p>
 
-                    <h3 id="agent-model">Agent model</h3>
+                    <h3 id="agent-model">Agent model (chat completion)</h3>
                     <p>
-                        A <strong>chat completion model</strong> powers the agent runtime. It handles conversation,
-                        tool selection, and reasoning. This is the model that decides when to call tools, how to
-                        interpret results, and what to say to the user. Configure via
-                        <code>AppConfig.AI.AgentFramework.AzureOpenAI</code>.
+                        Powers conversation, tool selection, and reasoning &mdash; the model that decides when to call
+                        tools, how to interpret results, and what to respond. The <code>ClientType</code> switch picks
+                        the SDK path; everything else is just an endpoint, a model identifier, and credentials.
                     </p>
+
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Provider</th>
+                                <th><code>ClientType</code></th>
+                                <th><code>Endpoint</code></th>
+                                <th>Notes</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><strong>OpenRouter</strong> (default)</td>
+                                <td><code>OpenAI</code></td>
+                                <td><code>https://openrouter.ai/api/v1</code></td>
+                                <td>OpenAI-compatible gateway. <code>DefaultDeployment</code> is a slug like
+                                    <code>anthropic/claude-sonnet-4.6</code>. Single key unlocks ~100 model families.</td>
+                            </tr>
+                            <tr>
+                                <td>Azure OpenAI</td>
+                                <td><code>AzureOpenAI</code></td>
+                                <td>Your Azure OpenAI resource URL</td>
+                                <td><code>DefaultDeployment</code> is the deployment name from Azure AI Foundry, not
+                                    the model name. Supports managed identity.</td>
+                            </tr>
+                            <tr>
+                                <td>OpenAI (direct)</td>
+                                <td><code>OpenAI</code></td>
+                                <td><code>https://api.openai.com/v1</code></td>
+                                <td><code>DefaultDeployment</code> is the model id (<code>gpt-4o</code> etc.).</td>
+                            </tr>
+                            <tr>
+                                <td>Anthropic (direct)</td>
+                                <td><code>Anthropic</code></td>
+                                <td><code>https://api.anthropic.com</code></td>
+                                <td><code>DefaultDeployment</code> is the model id (e.g.
+                                    <code>claude-sonnet-4-6</code>).</td>
+                            </tr>
+                        </tbody>
+                    </table>
 
                     <h3 id="embedding-model">Embedding model</h3>
                     <p>
-                        An <strong>embedding model</strong> generates vector representations for document chunks
-                        and queries in the RAG pipeline. Used during both ingestion (indexing documents) and retrieval
-                        (embedding the user's query for similarity search). Configure the deployment name and dimensions
-                        via <code>AppConfig.AI.Rag.Embeddings</code>.
+                        Generates vector representations for document chunks during ingestion and queries during
+                        retrieval. Configured separately from the chat client and currently expects an OpenAI or Azure
+                        OpenAI endpoint &mdash; OpenRouter does not yet expose an embeddings surface, so even with
+                        OpenRouter selected as the chat provider you still need an OpenAI-style embedding endpoint
+                        if you want RAG or the knowledge graph.
                     </p>
 
                     <h3 id="configuration-mapping">Configuration mapping</h3>
                     <p>
-                        Each code-level config path maps to a specific Azure resource or setting. Use this table to trace
-                        from <code>appsettings.json</code> to the Azure portal.
+                        Each code-level config path maps to a specific resource or setting. Use this table to trace
+                        from <code>appsettings.json</code> (or user-secrets) to the upstream provider.
                     </p>
 
                     <table class="config-map">
                         <thead>
                             <tr>
                                 <th>Code Config Path</th>
-                                <th>Azure Resource</th>
+                                <th>Upstream</th>
                                 <th>What It Controls</th>
                             </tr>
                         </thead>
                         <tbody>
                             <tr>
-                                <td><code>AI:AgentFramework:AzureOpenAI:Endpoint</code></td>
-                                <td>Azure OpenAI resource endpoint</td>
-                                <td>Agent LLM calls</td>
+                                <td><code>AI:AgentFramework:ClientType</code></td>
+                                <td>Selector &mdash; <code>OpenAI</code> / <code>AzureOpenAI</code> /
+                                    <code>Anthropic</code></td>
+                                <td>Which SDK path the chat client takes</td>
                             </tr>
                             <tr>
-                                <td><code>AI:AgentFramework:AzureOpenAI:DeploymentName</code></td>
-                                <td>Chat completion deployment</td>
-                                <td>Model selection</td>
+                                <td><code>AI:AgentFramework:Endpoint</code></td>
+                                <td>Provider URL</td>
+                                <td>Where chat completions are sent</td>
                             </tr>
                             <tr>
-                                <td><code>AI:AgentFramework:AzureOpenAI:ApiKey</code></td>
-                                <td>Azure OpenAI API key (or use managed identity)</td>
+                                <td><code>AI:AgentFramework:DefaultDeployment</code></td>
+                                <td>Model identifier or deployment name</td>
+                                <td>Which model is invoked</td>
+                            </tr>
+                            <tr>
+                                <td><code>AI:AgentFramework:ApiKey</code></td>
+                                <td>Provider API key (or managed identity for Azure OpenAI)</td>
                                 <td>Authentication</td>
                             </tr>
                             <tr>
-                                <td><code>AI:Rag:Embeddings:Endpoint</code></td>
-                                <td>Same or separate OpenAI resource</td>
+                                <td><code>AI:Embedding:Endpoint</code></td>
+                                <td>OpenAI or Azure OpenAI resource endpoint</td>
                                 <td>Embedding generation</td>
                             </tr>
                             <tr>
-                                <td><code>AI:Rag:Embeddings:DeploymentName</code></td>
-                                <td>Embedding deployment</td>
+                                <td><code>AI:Embedding:DeploymentName</code></td>
+                                <td>Embedding deployment / model id</td>
                                 <td>Embedding model</td>
                             </tr>
                             <tr>
-                                <td><code>AI:Rag:Embeddings:Dimensions</code></td>
+                                <td><code>AI:Embedding:Dimensions</code></td>
                                 <td>N/A (client-side config)</td>
-                                <td>Vector dimensions (1536/3072)</td>
+                                <td>Vector dimensions (1536 / 3072)</td>
                             </tr>
                         </tbody>
                     </table>
+
+                    <div class="callout callout-info">
+                        <span class="callout-icon">i</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Missing-credentials are surfaced, not silenced</div>
+                            <p style="margin: 0">
+                                When credentials aren't configured, the harness exposes the gap in three places: the
+                                <code>/api/config/status</code> endpoint (consumed by the WebUI banner), the
+                                <code>/health/ai</code> health check, and &mdash; in Development only &mdash; a
+                                surfaced chat error with the offending config keys. See
+                                <code>AiProviderStatus</code> and <code>AiProviderNotConfiguredException</code>.
+                            </p>
+                        </div>
+                    </div>
 
                     <div class="callout callout-warn">
                         <span class="callout-icon">!</span>
                         <div class="callout-body">
                             <div class="callout-title">Token limits matter</div>
                             <p>
-                                Most chat models have large context windows, but the harness uses a context budget system (see the
-                                <a href="../index.html">Developer Guide</a>) to stay well under. Plan your Azure OpenAI
-                                quota (TPM &mdash; Tokens Per Minute) based on expected concurrent users. A single agent
-                                turn can consume 4K&ndash;20K tokens depending on tool use and RAG context.
+                                Most chat models have large context windows, but the harness uses a context budget
+                                system (see the <a href="../index.html">Developer Guide</a>) to stay well under. Plan
+                                your provider quota (TPM &mdash; Tokens Per Minute) based on expected concurrent users.
+                                A single agent turn can consume 4K&ndash;20K tokens depending on tool use and RAG
+                                context. OpenRouter exposes a single account-wide credit pool; Azure OpenAI quotas are
+                                per-deployment.
                             </p>
                         </div>
                     </div>
 
-                    <!-- ==================== AI Foundry integration ==================== -->
-                    <h2 id="ai-foundry-integration">AI Foundry integration</h2>
+                    <!-- ==================== Azure-specific patterns ==================== -->
+                    <h2 id="azure-specific-patterns">Azure-specific patterns</h2>
                     <p>
-                        Azure AI Foundry (formerly Azure AI Studio) provides a management layer for model deployments,
-                        evaluations, and prompt flows. The harness connects to it via the standard Azure OpenAI
-                        endpoint &mdash; AI Foundry adds governance (content filters, usage tracking) on top. If you are
-                        using Anthropic models via AI Foundry, the endpoint shape changes slightly (see the
-                        <code>AppConfig.AI.AgentFramework.Anthropic</code> configuration section).
+                        When the chat provider is Azure OpenAI (directly or via Azure AI Foundry), two Azure-native
+                        controls apply that the third-party gateways don't expose.
                     </p>
 
                     <div class="callout callout-info">
                         <span class="callout-icon">i</span>
                         <div class="callout-body">
                             <div class="callout-title">Prefer managed identity</div>
-                            <p>
-                                Managed Identity is preferred over API keys for production. Set
-                                <code>AI:AgentFramework:AzureOpenAI:UseManagedIdentity: true</code> and assign the
+                            <p style="margin: 0">
+                                For Azure OpenAI in production, managed identity beats API keys. Set
+                                <code>AI:AgentFramework:UseManagedIdentity: true</code> and assign the
                                 <strong>Cognitive Services OpenAI User</strong> role to your Container App's managed
-                                identity.
+                                identity. The <code>ApiKey</code> field can then be left empty.
+                            </p>
+                        </div>
+                    </div>
+
+                    <div class="callout callout-info">
+                        <span class="callout-icon">i</span>
+                        <div class="callout-body">
+                            <div class="callout-title">"Deployment" in Azure OpenAI</div>
+                            <p style="margin: 0">
+                                In Azure OpenAI, a <strong>deployment</strong> is a named instance of a specific
+                                model. The harness's <code>DefaultDeployment</code> takes that deployment name &mdash;
+                                not the model name. If your Azure portal shows no deployments, create one in Azure AI
+                                Foundry first.
                             </p>
                         </div>
                     </div>
