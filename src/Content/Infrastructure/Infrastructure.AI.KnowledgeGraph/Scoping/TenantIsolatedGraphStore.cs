@@ -283,6 +283,18 @@ public sealed class TenantIsolatedGraphStore : IKnowledgeGraphStore
     /// </summary>
     private bool CanAccess(string? tenantId, string? ownerId, IKnowledgeScope scope)
     {
+        // Misconfiguration guard: this decorator is only wired when MultiTenantIsolation is on, so a
+        // non-system caller (scope present) with no TenantId means auth populated UserId but not the
+        // tenant claim. Such a caller keeps their own owned memory (owner match) but silently loses
+        // their tenant's shared corpus on every read. Surface it loudly rather than failing silent.
+        if (tenantId is not null && scope.UserId is not null && scope.TenantId is null)
+        {
+            _logger.LogWarning(
+                "Tenant isolation: caller User={UserId} has no TenantId while isolation is enabled — " +
+                "tenant-scoped records are being hidden. Ensure the tenant claim is wired into IKnowledgeScope.",
+                scope.UserId);
+        }
+
         var tenantOk = tenantId is null || _validator.ValidateAccess(scope, tenantId);
         var ownerOk = ownerId is null || _validator.CanAccessDataset(scope, ownerId);
         return tenantOk && ownerOk;
