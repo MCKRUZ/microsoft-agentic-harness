@@ -66,7 +66,7 @@ Key architectural concepts from the reference:
 - **Skill Training Loop**: `TrainSkillCommandHandler` chains the 6 stages on the same call stack (no MediatR re-entrance inner-loop); epoch-boundary mechanisms (SlowUpdate, MetaSkillUpdate) are separate CQRS commands dispatched via `IMediator` so they get the standard pipeline (validation, audit, telemetry)
 
 ## Documentation
-- **Developer Onboarding Guide**: `documentation/onboarding/` — 13-page guide for engineers (deployed at `/`)
+- **Developer Onboarding Guide**: `documentation/onboarding/` — 14-page guide for engineers (deployed at `/`)
 - **Architecture Guide**: `documentation/architecture/` — Azure infrastructure playbook (deployed at `/architecture/`)
 - **Interactive Course**: `documentation/agentic-harness-course/` — Visual course for non-technical audiences (deployed at `/agentic-harness-course/`)
 - GitHub Pages workflow: `.github/workflows/pages.yml` — deploys all three on push to main

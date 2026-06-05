@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>14 · Skill Training — Agentic Harness Developer Guide</title>
+        <meta name="description" content="SkillOpt-port loop that optimizes a single SKILL.md as if it were neural-net weights: bounded edits, validation-gated updates, no inference-time cost." />
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+        <link rel="stylesheet" href="assets/css/styles.css" />
+    </head>
+    <body>
+        <a href="#main" class="skip-link">Skip to content</a>
+        <div class="app">
+            <aside class="sidebar">
+                <div class="sidebar-header"><a class="sidebar-brand" href="index.html"><span class="sidebar-brand-mark">AH</span><span><span class="sidebar-brand-text">Agentic Harness</span><br /><span class="sidebar-brand-sub">Developer Guide</span></span></a></div>
+                <nav class="sidebar-nav" aria-label="Documentation navigation">
+                    <div class="sidebar-group"><div class="sidebar-group-title">Getting Started</div><a class="sidebar-link" href="index.html"><span class="sidebar-link-num">00</span> Welcome</a><a class="sidebar-link" href="01-get-running.html"><span class="sidebar-link-num">01</span> Get Running in 10 Minutes</a></div>
+                    <div class="sidebar-group"><div class="sidebar-group-title">Configuration</div><a class="sidebar-link" href="02-configuration.html"><span class="sidebar-link-num">02</span> Configuration Reference</a></div>
+                    <div class="sidebar-group"><div class="sidebar-group-title">Architecture</div><a class="sidebar-link" href="03-big-picture.html"><span class="sidebar-link-num">03</span> The Big Picture</a><a class="sidebar-link" href="04-message-journey.html"><span class="sidebar-link-num">04</span> A Message's Journey</a></div>
+                    <div class="sidebar-group"><div class="sidebar-group-title">Systems</div><a class="sidebar-link" href="05-skills.html"><span class="sidebar-link-num">05</span> Skills System</a><a class="sidebar-link" href="06-tools.html"><span class="sidebar-link-num">06</span> Tools &amp; Keyed DI</a><a class="sidebar-link" href="07-rag.html"><span class="sidebar-link-num">07</span> The RAG Pipeline</a><a class="sidebar-link" href="08-mcp.html"><span class="sidebar-link-num">08</span> MCP Server &amp; Client</a></div>
+                    <div class="sidebar-group"><div class="sidebar-group-title">Patterns</div><a class="sidebar-link" href="09-patterns.html"><span class="sidebar-link-num">09</span> Patterns You'll Use Daily</a><a class="sidebar-link" href="10-observability.html"><span class="sidebar-link-num">10</span> Observability &amp; Safety</a></div>
+                    <div class="sidebar-group"><div class="sidebar-group-title">Building</div><a class="sidebar-link" href="11-extending.html"><span class="sidebar-link-num">11</span> Extending the Harness</a></div>
+                    <div class="sidebar-group"><div class="sidebar-group-title">Quality</div><a class="sidebar-link" href="13-evaluation.html"><span class="sidebar-link-num">13</span> Evaluation Framework</a><a class="sidebar-link" href="14-skill-training.html"><span class="sidebar-link-num">14</span> Skill Training</a></div>
+                    <div class="sidebar-group"><div class="sidebar-group-title">Reference</div><a class="sidebar-link" href="12-reference.html"><span class="sidebar-link-num">12</span> Cheatsheet &amp; Glossary</a></div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Other Guides</div>
+                        <a class="sidebar-link" href="../architecture/index.html">&#8592; Architecture Guide</a>
+                        <a class="sidebar-link" href="../agentic-harness-course/index.html">&#8592; Interactive Course</a>
+                    </div>
+                </nav>
+            </aside>
+
+            <main id="main" class="content-wrap">
+                <div class="content">
+                    <span class="eyebrow">Chapter 14 · Quality</span>
+                    <h1 class="page-title">Skill Training</h1>
+                    <p class="page-lead">
+                        Where Chapter 13 measures skill quality, Chapter 14 improves it. The skill-training subsystem
+                        is a port of <a href="https://github.com/microsoft/SkillOpt">microsoft/SkillOpt</a> — it treats
+                        a single <code>SKILL.md</code> document as the trainable state of a frozen agent, and updates
+                        it with the discipline of weight-space optimization: bounded edits, validation gating, learning-rate
+                        schedules, and zero inference-time cost.
+                    </p>
+
+                    <h2>The 30-second tour</h2>
+                    <pre><code># From the repo root — runnable demo with deterministic stubs (no LLM calls).
+dotnet run --project src/Content/Presentation/Presentation.ConsoleUI -- --example skill-training</code></pre>
+
+                    <p>
+                        You get the per-step audit trail (rollout → reflect → aggregate → select → apply → gate) for a
+                        small 2-epoch × 3-step run, plus the final <code>BestSkill</code>, <code>BestScore</code>, and
+                        <code>HasAcceptedAny</code> flag. The demo uses stubs so the loop runs without an agent endpoint —
+                        the same orchestrator powers real training once an <code>IPatchProposer</code> and
+                        <code>IRolloutRunner</code> are plugged in.
+                    </p>
+
+                    <h2>The DL ↔ skill-training analogy</h2>
+                    <p>
+                        Every concept in the subsystem has a deep-learning counterpart. If you've trained a network
+                        before, you already know how to tune this loop.
+                    </p>
+                    <table>
+                        <thead><tr><th>Deep learning</th><th>Skill training</th><th>Where in code</th></tr></thead>
+                        <tbody>
+                            <tr><td>Model weights</td><td>Skill document (markdown)</td><td><code>currentSkill</code> string</td></tr>
+                            <tr><td>Forward pass</td><td>Rollout</td><td><code>IRolloutRunner.RunAsync</code></td></tr>
+                            <tr><td>Loss function</td><td>Eval metric (hard / soft)</td><td><code>RolloutBatchScorer</code></td></tr>
+                            <tr><td>Backpropagation</td><td>Reflect</td><td><code>IPatchProposer.ProposeAsync</code></td></tr>
+                            <tr><td>Gradients</td><td>Edit patches</td><td><code>Patch{Edits[], Reasoning}</code></td></tr>
+                            <tr><td>Gradient aggregation</td><td>Patch aggregation</td><td><code>IPatchAggregator</code></td></tr>
+                            <tr><td>Gradient clipping</td><td>Top-K edit selection</td><td><code>IEditSelector</code></td></tr>
+                            <tr><td>Learning rate</td><td>Edits per step</td><td><code>ILrScheduler.GetLearningRate</code></td></tr>
+                            <tr><td>LR scheduler</td><td>Cosine / Linear / Constant</td><td><code>Schedulers/</code></td></tr>
+                            <tr><td>SGD step</td><td>Skill update</td><td><code>PatchApplier.Apply</code></td></tr>
+                            <tr><td>Validation set</td><td>Selection split (val rollouts)</td><td><code>RolloutBatch{Split="val"}</code></td></tr>
+                            <tr><td>Early stopping</td><td>Patience-based reject counter</td><td><code>TrainSkillConfig.Patience</code></td></tr>
+                            <tr><td>Momentum</td><td>Slow update (longitudinal pair)</td><td><code>SlowUpdateCommand</code></td></tr>
+                            <tr><td>Meta-learning</td><td>Cross-epoch strategy memory</td><td><code>MetaSkillUpdateCommand</code> → <code>IKnowledgeMemory</code></td></tr>
+                            <tr><td>Checkpointing</td><td>Per-step snapshot</td><td><code>ISkillTrainingCheckpointStore</code></td></tr>
+                        </tbody>
+                    </table>
+
+                    <h2>The six stages, per step</h2>
+                    <pre><code>┌──────────────────────────────────────────────────────────────┐
+│  for epoch in 1..Epochs:                                     │
+│    for step in 1..StepsPerEpoch:                             │
+│      1. Rollout    — IRolloutRunner on train batch          │
+│      2. Reflect    — IPatchProposer turns failures into Patch│
+│      3. Aggregate  — dedup edits, sum SupportCount           │
+│      4. Select     — clip to LR budget                       │
+│      5. Apply      — PatchApplier walks edits over the doc   │
+│      6. Gate       — score candidate on val, decide          │
+│    Epoch boundary:                                           │
+│      • SlowUpdate longitudinal pair (anti-forgetting)        │
+│      • MetaSkillUpdate cross-epoch memory                    │
+└──────────────────────────────────────────────────────────────┘</code></pre>
+
+                    <p>
+                        All six stages run on the same call stack inside
+                        <code>TrainSkillCommandHandler</code> — no MediatR re-entrance inside the inner loop, which keeps
+                        per-step allocation low and the call trace easy to follow. The two epoch-boundary mechanisms
+                        <em>are</em> dispatched via <code>IMediator</code> so they participate in the standard pipeline
+                        (validation, audit, telemetry) on equal footing with every other CQRS command.
+                    </p>
+
+                    <h2>How it's wired</h2>
+                    <table>
+                        <thead><tr><th>Piece</th><th>Where</th><th>Role</th></tr></thead>
+                        <tbody>
+                            <tr><td><code>TrainSkillCommand</code></td><td>Application.AI.Common/CQRS/SkillTraining/TrainSkill</td><td>Orchestrator entry. Chains the six stages with patience-based early stop and per-step checkpointing.</td></tr>
+                            <tr><td><code>GateCandidateSkillCommand</code></td><td>…/GateCandidateSkill</td><td>Pure decision over pre-computed (hard, soft) scores; standalone if you score skills outside the orchestrator.</td></tr>
+                            <tr><td><code>ReflectOnFailuresCommand</code></td><td>…/ReflectOnFailures</td><td>Delegates to <code>IPatchProposer</code>; surfaces proposer failures as stable scrubbed Result.Fail codes (no exception text leaks).</td></tr>
+                            <tr><td><code>SlowUpdateCommand</code></td><td>…/SlowUpdate</td><td>Paired longitudinal classification + guidance synthesis at epoch boundary.</td></tr>
+                            <tr><td><code>MetaSkillUpdateCommand</code></td><td>…/MetaSkillUpdate</td><td>Persists cross-epoch memory via <code>IKnowledgeMemory</code> under <code>skill-training/meta/{skillId}/{runId}</code>.</td></tr>
+                            <tr><td><code>PatchApplier</code></td><td>Application.AI.Common/Services/SkillTraining</td><td>Pure four-op editor (<code>Append | InsertAfter | Replace | Delete</code>). First-occurrence match, per-edit success/failure report, no whitespace coercion.</td></tr>
+                            <tr><td><code>GateEvaluator</code></td><td>…/Services/SkillTraining</td><td>Strict-greater accept semantics, finite-checked, NaN/Infinity guard. Hard/Soft/Mixed projection.</td></tr>
+                            <tr><td><code>PatchAggregator</code></td><td>…/Services/SkillTraining</td><td>Dedup by (Op, Target, Content) with trailing-whitespace tolerance; sums SupportCount.</td></tr>
+                            <tr><td><code>TopKEditSelector</code></td><td>…/Services/SkillTraining</td><td>Stable rank by support → merge depth → insertion order.</td></tr>
+                            <tr><td><code>ILrScheduler</code> impls</td><td>…/Services/SkillTraining/Schedulers</td><td>CosineScheduler (default), LinearScheduler, ConstantScheduler. Shared <code>SchedulerArgs.Validate</code>.</td></tr>
+                            <tr><td><code>InMemorySkillTrainingCheckpointStore</code></td><td>…/Services/SkillTraining</td><td>Default: best + last 64 per run. Swap to EF Core for durability.</td></tr>
+                            <tr><td><code>NotConfigured*</code> defaults</td><td>…/Services/SkillTraining</td><td>Fail-fast stubs for <code>IPatchProposer</code> and <code>IRolloutRunner</code>. Replace with agent-backed Infrastructure impls before invoking <code>TrainSkillCommand</code>.</td></tr>
+                        </tbody>
+                    </table>
+
+                    <h2>The four edit ops</h2>
+                    <p>
+                        Edits are bounded by design — the optimizer cannot rewrite the document arbitrarily, only emit a
+                        sequence of these four operations. Every edit is auditable, reversible, and aggregable.
+                    </p>
+                    <table>
+                        <thead><tr><th>Op</th><th>Target required?</th><th>Behavior</th></tr></thead>
+                        <tbody>
+                            <tr><td><code>Append</code></td><td>No</td><td>Append <code>Content</code> to end. Empty doc → bare content; non-empty → <code>\n\n</code> separator.</td></tr>
+                            <tr><td><code>InsertAfter</code></td><td>Yes</td><td>Insert <code>Content</code> verbatim after first occurrence of <code>Target</code> — no injected separator. The optimizer carries any required leading newline in <code>Content</code>.</td></tr>
+                            <tr><td><code>Replace</code></td><td>Yes</td><td>Replace first occurrence of <code>Target</code> with <code>Content</code>. Empty <code>Content</code> is rejected — use <code>Delete</code> instead.</td></tr>
+                            <tr><td><code>Delete</code></td><td>Yes</td><td>Remove first occurrence of <code>Target</code>. <code>Content</code> ignored.</td></tr>
+                        </tbody>
+                    </table>
+                    <p>
+                        Edits that target text not present in the document are recorded in
+                        <code>PatchApplyReport.FailedEdits</code> with a reason string rather than thrown — the caller
+                        decides whether the residual partial patch is still worth gating.
+                    </p>
+
+                    <h2>Gate metrics</h2>
+                    <p>
+                        The gate compares the candidate against the current and the running best. Strict greater-than
+                        semantics — ties Reject — to avoid thrashing across statistically equivalent skills.
+                    </p>
+                    <table>
+                        <thead><tr><th>Metric</th><th>Projection</th><th>When to use</th></tr></thead>
+                        <tbody>
+                            <tr><td><code>Hard</code></td><td>exact-match accuracy in [0, 1]</td><td>Default. Large selection set, binary outcomes are sensitive enough to detect improvement.</td></tr>
+                            <tr><td><code>Soft</code></td><td>graded / partial-credit score</td><td>Small selection set where binary signal is too noisy.</td></tr>
+                            <tr><td><code>Mixed</code></td><td><code>(1 − w) · hard + w · soft</code></td><td>When neither pure metric is decisive on its own. <code>MixedWeight</code> ∈ [0, 1].</td></tr>
+                        </tbody>
+                    </table>
+
+                    <h2>Configuration knobs</h2>
+                    <p>
+                        Held as a strongly-typed <code>TrainSkillConfig</code> record (Domain.AI/SkillTraining), so the
+                        same configuration round-trips through checkpoint resume and across run-restarts.
+                    </p>
+                    <table>
+                        <thead><tr><th>Knob</th><th>Default</th><th>Meaning</th></tr></thead>
+                        <tbody>
+                            <tr><td><code>Epochs</code></td><td>3</td><td>Outer iterations. SkillOpt experience: 2–4 usually enough.</td></tr>
+                            <tr><td><code>StepsPerEpoch</code></td><td>5</td><td>Rollout/reflect/apply cycles per epoch.</td></tr>
+                            <tr><td><code>LrStart</code> / <code>LrMin</code></td><td>8 / 1</td><td>Maximum and floor edits applied per step.</td></tr>
+                            <tr><td><code>LrScheduler</code></td><td><code>"cosine"</code></td><td><code>"cosine"</code> · <code>"linear"</code> · <code>"constant"</code></td></tr>
+                            <tr><td><code>TrainBatchSize</code> / <code>ValBatchSize</code></td><td>8 / 16</td><td>Rollout batch sizes for the training and gate steps.</td></tr>
+                            <tr><td><code>GateMetric</code></td><td><code>Hard</code></td><td><code>Hard</code> · <code>Soft</code> · <code>Mixed</code></td></tr>
+                            <tr><td><code>MixedWeight</code></td><td><code>0.5</code></td><td>Soft weight when <code>GateMetric == Mixed</code>.</td></tr>
+                            <tr><td><code>Patience</code></td><td>6</td><td>Early stop after this many consecutive Rejects.</td></tr>
+                            <tr><td><code>UseSlowUpdate</code></td><td><code>true</code></td><td>Run the paired longitudinal analysis at each epoch boundary.</td></tr>
+                            <tr><td><code>UseMetaSkill</code></td><td><code>true</code></td><td>Maintain cross-epoch strategy memory via <code>IKnowledgeMemory</code>.</td></tr>
+                            <tr><td><code>Seed</code></td><td><code>0</code></td><td>Deterministic batch sampling when non-zero (required for SlowUpdate item-id overlap).</td></tr>
+                        </tbody>
+                    </table>
+
+                    <h2>Operational invariants worth knowing</h2>
+                    <ul>
+                        <li>
+                            <strong><code>Result.Fail</code> codes are stable, scrubbed strings.</strong>
+                            <code>skill_training.reflect.proposer_call_failed</code>,
+                            <code>skill_training.meta.persist_failed</code>, etc. Raw exception text only flows to
+                            structured logs — never into orchestrator surfaces. Defends against HTTP-backed proposers
+                            leaking SAS tokens via exception messages.
+                        </li>
+                        <li>
+                            <strong><code>HasChanges</code> is content equality, not applied-edit count.</strong>
+                            A <code>Replace</code> where Target equals Content is an applied no-op — it should not
+                            trigger spurious gating or checkpoint writes.
+                        </li>
+                        <li>
+                            <strong>Skill strings capped at 256 KB</strong> (<code>MaxSkillLength = 262_144</code>).
+                            Catches runaway-rewrite bugs before they triplicate into the GateResult and downstream
+                            audit log.
+                        </li>
+                        <li>
+                            <strong>Gate scores must be finite.</strong> <code>NaN</code> or <code>Infinity</code> at
+                            the gate boundary throws — a corrupted upstream aggregation should fail loudly, not silently
+                            push every candidate into Reject.
+                        </li>
+                        <li>
+                            <strong>Cross-field validator: <code>BestStep ≤ GlobalStep</code>.</strong> Catches
+                            checkpoint-resume bugs that reset <code>GlobalStep</code> without resetting
+                            <code>BestStep</code>.
+                        </li>
+                        <li>
+                            <strong>FP determinism note.</strong> The orchestrator re-projects current and best scores
+                            via <code>IGateEvaluator.SelectGateScore</code> on every gate call rather than persisting
+                            projected values — a checkpoint round-trip (REAL → text → REAL) can flip Accept/Reject by
+                            1 ULP otherwise.
+                        </li>
+                        <li>
+                            <strong><code>HasAcceptedAny</code> on the run result.</strong> When false, the run made no
+                            progress; <code>BestSkill</code> equals the initial skill and <code>BestScore</code> is 0.
+                            Surfaced explicitly so a Reject-only run doesn't masquerade as having a meaningful "best".
+                        </li>
+                    </ul>
+
+                    <h2>Plugging in real proposer + runner</h2>
+                    <p>
+                        The two seams the subsystem leaves open are the agent-backed implementations of
+                        <code>IPatchProposer</code> (the "optimizer" role — reads trajectories, emits a JSON
+                        <code>Patch</code>) and <code>IRolloutRunner</code> (runs a candidate skill against an
+                        eval-style item batch). Skeleton outline:
+                    </p>
+                    <pre><code>// Infrastructure.AI/SkillTraining/AgentPatchProposer.cs
+public sealed class AgentPatchProposer : IPatchProposer
+{
+    private readonly IMediator _mediator;
+    // ...
+    public async Task&lt;Patch&gt; ProposeAsync(ReflectionInput input, CancellationToken ct)
+    {
+        var result = await _mediator.Send(new RunOrchestratedTaskCommand
+        {
+            OrchestratorName = "skill-optimizer",
+            TaskDescription  = BuildOptimizerPrompt(input),
+            // ...
+        }, ct);
+        return ParsePatchJson(result.FinalSynthesis);  // tolerate prose + balanced-braces
+    }
+}</code></pre>
+                    <p>
+                        Authoring a <code>skill-optimizer</code> SKILL.md with a JSON-schema-constrained output is the
+                        natural follow-up — it lets you swap optimizer model deployments without touching code.
+                        For <code>IRolloutRunner</code>, wrap the existing <code>IAgentInvoker</code> with a
+                        skill-content override hook so the candidate skill content lands in the system prompt for
+                        each invocation.
+                    </p>
+
+                    <h2>Where to go next</h2>
+                    <ul>
+                        <li>Read <code>src/Content/Application/Application.AI.Common/README.md</code> — Skill Training CQRS section lists every command, validator rule, and pure component.</li>
+                        <li>Run the demo: <code>dotnet run --project src/Content/Presentation/Presentation.ConsoleUI -- --example skill-training</code> — deterministic stubs, no LLM cost.</li>
+                        <li>Cross-reference Chapter <a href="13-evaluation.html">13 — Evaluation Framework</a>: the eval framework is where rollouts come from in production wiring.</li>
+                        <li>Or jump to Chapter <a href="11-extending.html">11 — Extending the Harness</a> to author a <code>skill-optimizer</code> SKILL.md and wire a real <code>AgentPatchProposer</code>.</li>
+                        <li>Upstream methodology paper and code: <a href="https://github.com/microsoft/SkillOpt">microsoft/SkillOpt</a>.</li>
+                    </ul>
+                </div>
+            </main>
+        </div>
+    </body>
+</html>
