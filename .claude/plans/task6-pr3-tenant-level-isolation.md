@@ -4,7 +4,17 @@
 **Date:** 2026-06-05
 **Scope chosen by user:** Option B — fix everything now. Tenant isolation must actually work on all three backends, not just in-memory.
 
-**STATUS: COMPLETE (2026-06-05).** Commits on `feat/task6-tenant-level-isolation`: `34f76e3` (model + default backend), `77355cb` (Neo4j), `aee659a` (Postgres), + docs. All 5 steps done; full suite green incl. 8 Docker-backed Neo4j/Postgres integration tests (179 KG tests total). Verified against real neo4j:5.20 + postgres:16 containers.
+**STATUS: COMPLETE (2026-06-05).** Commits on `feat/task6-tenant-level-isolation`: `34f76e3` (model + default backend), `77355cb` (Neo4j), `aee659a` (Postgres), `04de890` (docs), `3c3555e` (code-review hardening). All 5 steps done; full suite green incl. 9 Docker-backed Neo4j/Postgres integration tests (180 KG tests total). Verified against real neo4j:5.20 + postgres:16 containers.
+
+## Follow-up findings (from PR 3 code review — NOT blocking; memory isolation is airtight)
+
+These concern the **corpus/entity dimension** only. Conversation-memory isolation is complete and unaffected (memory ids are `memory:{tenant}:{user}:{key}`-namespaced + owner+tenant stamped). Captured here as deliberate follow-ups:
+
+1. **Shared entity ids across tenants (design).** Corpus entity nodes use content-derived ids (hash of name+type), so two tenants ingesting the same entity collide on one physical node; an upsert can merge properties or reassign the tenant. True per-tenant corpus needs tenant-namespaced entity ids at ingestion (RAG pipeline) + tenant-aware edge references, OR an explicit "shared global entity" model. Documented as a known limitation in `TenantIsolatedGraphStore` remarks. **Decision needed:** namespace corpus by tenant vs. accept shared global entities.
+2. **Null-tenant = global is fail-open.** A node that ends up untenanted (background ingestion that loses ambient scope, or a future writer that forgets to stamp) is readable by every tenant. Memory is hardened (explicit `TenantId` on the writer). **Decision needed:** keep fail-open (global reference data is a feature) or move to fail-closed (untenanted ⇒ system/null-scope only) + an explicit global marker.
+3. **Misconfig lockout (DX).** With `MultiTenantIsolation` ON but a caller's `IKnowledgeScope.TenantId` unpopulated (partial auth wiring), the caller keeps their own owner-stamped memory but silently loses their tenant's shared corpus on recall. **Suggested:** fail-fast / loud-log when isolation is on and a non-system caller has a null `TenantId`.
+
+Lower-severity notes: Postgres `GetNeighborsAsync` recursive CTE filters tenant/owner only in the final projection, not inside the walk (defense-in-depth/perf — push predicates into the CTE); `DeleteEdgeAsync` remains unfiltered (no get-edge-by-id primitive).
 
 ## Why this is bigger than "add a field"
 
