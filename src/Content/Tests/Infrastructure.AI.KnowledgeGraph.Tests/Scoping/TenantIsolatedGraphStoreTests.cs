@@ -1,166 +1,203 @@
+using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Domain.AI.KnowledgeGraph.Models;
+using Domain.Common.Config;
 using FluentAssertions;
 using Infrastructure.AI.KnowledgeGraph.InMemory;
 using Infrastructure.AI.KnowledgeGraph.Scoping;
-using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Moq;
 using Xunit;
 
 namespace Infrastructure.AI.KnowledgeGraph.Tests.Scoping;
 
 /// <summary>
-/// Tests for <see cref="TenantIsolatedGraphStore"/> — decorator that blocks
-/// cross-tenant access to the underlying graph store.
+/// Tests for <see cref="TenantIsolatedGraphStore"/> — the decorator that filters every graph
+/// record against the current caller's <see cref="IKnowledgeScope"/>. Verifies per-record owner
+/// isolation (a user never sees another user's owned nodes), shared-corpus visibility (unowned
+/// nodes are visible to everyone), and full system access when no request scope is in flight.
+/// Drives the <em>real</em> <see cref="KnowledgeScopeValidator"/> so the test proves end-to-end
+/// isolation rather than a mocked gate.
 /// </summary>
 public sealed class TenantIsolatedGraphStoreTests
 {
+    private const string UserA = "user-a";
+    private const string UserB = "user-b";
+
     private readonly InMemoryGraphStore _innerStore;
-    private readonly Mock<IKnowledgeScope> _scope;
-    private readonly Mock<IKnowledgeScopeValidator> _validator;
+    private readonly KnowledgeScopeValidator _validator;
 
     public TenantIsolatedGraphStoreTests()
     {
         _innerStore = new InMemoryGraphStore(NullLogger<InMemoryGraphStore>.Instance);
-        _scope = new Mock<IKnowledgeScope>();
-        _scope.Setup(s => s.TenantId).Returns("t1");
-        _scope.Setup(s => s.DatasetId).Returns("d1");
-        _validator = new Mock<IKnowledgeScopeValidator>();
+
+        var config = new AppConfig();
+        config.AI.Rag.GraphRag.MultiTenantIsolation = true;
+        _validator = new KnowledgeScopeValidator(
+            Mock.Of<IOptionsMonitor<AppConfig>>(m => m.CurrentValue == config));
     }
 
     [Fact]
-    public async Task AddNodes_AccessAllowed_DelegatesToInner()
+    public async Task GetNode_OwnedByCaller_ReturnsNode()
     {
-        AllowAccess();
-        var store = CreateStore();
-        var node = new GraphNode { Id = "n1", Name = "Test", Type = "Entity" };
+        await SeedNode("n1", owner: UserA);
+        var store = StoreFor(UserA);
 
-        await store.AddNodesAsync([node]);
-
-        (await _innerStore.GetNodeCountAsync()).Should().Be(1);
+        (await store.GetNodeAsync("n1")).Should().NotBeNull();
     }
 
     [Fact]
-    public async Task AddNodes_AccessDenied_SkipsSilently()
+    public async Task GetNode_OwnedByAnotherUser_ReturnsNull()
     {
-        DenyAccess();
-        var store = CreateStore();
-        var node = new GraphNode { Id = "n1", Name = "Test", Type = "Entity" };
+        // The core isolation guarantee: User A must never read User B's owned node.
+        await SeedNode("n1", owner: UserB);
+        var store = StoreFor(UserA);
 
-        await store.AddNodesAsync([node]);
-
-        (await _innerStore.GetNodeCountAsync()).Should().Be(0);
+        (await store.GetNodeAsync("n1")).Should().BeNull();
     }
 
     [Fact]
-    public async Task GetNode_AccessAllowed_ReturnsNode()
+    public async Task GetNode_Unowned_ReturnsNode()
     {
-        AllowAccess();
-        var store = CreateStore();
-        await _innerStore.AddNodesAsync([new GraphNode { Id = "n1", Name = "Test", Type = "Entity" }]);
+        // Unowned (null-owner) nodes are shared corpus — visible to every caller.
+        await SeedNode("n1", owner: null);
+        var store = StoreFor(UserA);
 
-        var result = await store.GetNodeAsync("n1");
-
-        result.Should().NotBeNull();
-        result!.Name.Should().Be("Test");
+        (await store.GetNodeAsync("n1")).Should().NotBeNull();
     }
 
     [Fact]
-    public async Task GetNode_AccessDenied_ReturnsNull()
+    public async Task GetNode_NoAmbientScope_ReturnsForeignNode()
     {
-        await _innerStore.AddNodesAsync([new GraphNode { Id = "n1", Name = "Test", Type = "Entity" }]);
-        DenyAccess();
-        var store = CreateStore();
+        // Background/system work runs outside any request scope and has full access.
+        await SeedNode("n1", owner: UserB);
+        var store = SystemStore();
 
-        var result = await store.GetNodeAsync("n1");
-
-        result.Should().BeNull();
+        (await store.GetNodeAsync("n1")).Should().NotBeNull();
     }
 
     [Fact]
-    public async Task GetNodeCount_AccessDenied_ReturnsZero()
+    public async Task GetAllNodes_ReturnsOnlyCallerOwnedAndShared()
     {
-        await _innerStore.AddNodesAsync([new GraphNode { Id = "n1", Name = "Test", Type = "Entity" }]);
-        DenyAccess();
-        var store = CreateStore();
+        await SeedNode("own", owner: UserA);
+        await SeedNode("other", owner: UserB);
+        await SeedNode("shared", owner: null);
+        var store = StoreFor(UserA);
 
-        (await store.GetNodeCountAsync()).Should().Be(0);
+        var ids = (await store.GetAllNodesAsync()).Select(n => n.Id).ToList();
+
+        ids.Should().BeEquivalentTo(["own", "shared"]);
     }
 
     [Fact]
-    public async Task NodeExists_AccessDenied_ReturnsFalse()
+    public async Task GetNodeCount_ReflectsOnlyVisibleNodes()
     {
-        await _innerStore.AddNodesAsync([new GraphNode { Id = "n1", Name = "Test", Type = "Entity" }]);
-        DenyAccess();
-        var store = CreateStore();
+        await SeedNode("own", owner: UserA);
+        await SeedNode("other", owner: UserB);
+        var store = StoreFor(UserA);
+
+        (await store.GetNodeCountAsync()).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task NodeExists_ForeignNode_ReturnsFalse()
+    {
+        await SeedNode("n1", owner: UserB);
+        var store = StoreFor(UserA);
 
         (await store.NodeExistsAsync("n1")).Should().BeFalse();
     }
 
     [Fact]
-    public async Task DeleteNode_AccessDenied_DoesNotDelete()
+    public async Task AddNodes_ForeignOwner_IsRejected()
     {
-        AllowAccess();
-        await _innerStore.AddNodesAsync([new GraphNode { Id = "n1", Name = "Test", Type = "Entity" }]);
-        DenyAccess();
-        var store = CreateStore();
+        var store = StoreFor(UserA);
 
-        await store.DeleteNodeAsync("n1");
+        await store.AddNodesAsync([new GraphNode { Id = "n1", Name = "X", Type = "Fact", OwnerId = UserB }]);
 
-        // Verify inner store still has the node (use inner directly)
+        (await _innerStore.GetNodeAsync("n1")).Should().BeNull();
+    }
+
+    [Fact]
+    public async Task AddNodes_UnownedFreshNode_IsWritten()
+    {
+        // Fresh nodes arrive unowned and are stamped downstream — they must pass the write filter.
+        var store = StoreFor(UserA);
+
+        await store.AddNodesAsync([new GraphNode { Id = "n1", Name = "X", Type = "Fact" }]);
+
         (await _innerStore.GetNodeAsync("n1")).Should().NotBeNull();
     }
 
     [Fact]
-    public async Task GetNeighbors_AccessDenied_ReturnsEmpty()
+    public async Task DeleteNode_ForeignNode_IsBlocked()
     {
-        DenyAccess();
-        var store = CreateStore();
+        await SeedNode("n1", owner: UserB);
+        var store = StoreFor(UserA);
 
-        var result = await store.GetNeighborsAsync("n1");
+        await store.DeleteNodeAsync("n1");
 
-        result.Should().BeEmpty();
+        (await _innerStore.GetNodeAsync("n1")).Should().NotBeNull();
     }
 
     [Fact]
-    public async Task GetTriplets_AccessDenied_ReturnsEmpty()
+    public async Task DeleteNode_OwnedNode_IsDeleted()
     {
-        DenyAccess();
-        var store = CreateStore();
+        await SeedNode("n1", owner: UserA);
+        var store = StoreFor(UserA);
 
-        var result = await store.GetTripletsAsync(["n1"]);
+        await store.DeleteNodeAsync("n1");
 
-        result.Should().BeEmpty();
+        (await _innerStore.GetNodeAsync("n1")).Should().BeNull();
     }
 
     [Fact]
-    public async Task AddEdges_AccessDenied_SkipsSilently()
+    public async Task GetNeighbors_ForeignSeed_ReturnsEmpty()
     {
-        DenyAccess();
-        var store = CreateStore();
-        var edge = new GraphEdge
+        // The seed node is never in the result set, so a foreign seed must be blocked outright —
+        // otherwise the caller learns which shared entities another user's private node connects to.
+        await SeedNode("seed", owner: UserB);
+        await SeedNode("nbr", owner: null);
+        await SeedEdge("seed", "nbr");
+        var store = StoreFor(UserA);
+
+        (await store.GetNeighborsAsync("seed")).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task GetNeighbors_OwnSeed_ReturnsVisibleNeighbors()
+    {
+        await SeedNode("seed", owner: UserA);
+        await SeedNode("nbr", owner: null);
+        await SeedEdge("seed", "nbr");
+        var store = StoreFor(UserA);
+
+        (await store.GetNeighborsAsync("seed")).Select(n => n.Id).Should().Contain("nbr");
+    }
+
+    private Task SeedNode(string id, string? owner) =>
+        _innerStore.AddNodesAsync([new GraphNode { Id = id, Name = id, Type = "Fact", OwnerId = owner }]);
+
+    private Task SeedEdge(string source, string target) =>
+        _innerStore.AddEdgesAsync([new GraphEdge
         {
-            Id = "e1", SourceNodeId = "n1", TargetNodeId = "n2",
-            Predicate = "uses", ChunkId = "c1"
-        };
+            Id = $"{source}->{target}", SourceNodeId = source, TargetNodeId = target,
+            Predicate = "relates_to", ChunkId = "c1"
+        }]);
 
-        await store.AddEdgesAsync([edge]);
-
-        (await _innerStore.GetEdgeCountAsync()).Should().Be(0);
+    private TenantIsolatedGraphStore StoreFor(string userId)
+    {
+        var scope = Mock.Of<IKnowledgeScope>(s => s.UserId == userId);
+        var services = new ServiceCollection();
+        services.AddSingleton(scope);
+        var ambient = Mock.Of<IAmbientRequestScope>(a => a.Current == services.BuildServiceProvider());
+        return new TenantIsolatedGraphStore(
+            _innerStore, ambient, _validator, NullLogger<TenantIsolatedGraphStore>.Instance);
     }
 
-    private TenantIsolatedGraphStore CreateStore() =>
-        new(_innerStore, _scope.Object, _validator.Object,
+    private TenantIsolatedGraphStore SystemStore() =>
+        new(_innerStore, Mock.Of<IAmbientRequestScope>(), _validator,
             NullLogger<TenantIsolatedGraphStore>.Instance);
-
-    private void AllowAccess() =>
-        _validator
-            .Setup(v => v.ValidateAccess(It.IsAny<IKnowledgeScope>(), It.IsAny<string?>(), It.IsAny<string?>()))
-            .Returns(true);
-
-    private void DenyAccess() =>
-        _validator
-            .Setup(v => v.ValidateAccess(It.IsAny<IKnowledgeScope>(), It.IsAny<string?>(), It.IsAny<string?>()))
-            .Returns(false);
 }

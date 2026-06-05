@@ -14,6 +14,7 @@ using Infrastructure.AI.KnowledgeGraph.Provenance;
 using Infrastructure.AI.KnowledgeGraph.Scoping;
 using Infrastructure.AI.KnowledgeGraph.Skills;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -56,12 +57,52 @@ public static class DependencyInjection
         services.AddKeyedSingleton<IKnowledgeGraphStore>("managed_code", (sp, _) =>
             sp.GetRequiredKeyedService<IKnowledgeGraphStore>("in_memory"));
 
-        // Default resolution from config
+        // The decorator chain below resolves the caller's scope per-op via IAmbientRequestScope.
+        // The composition root registers it from Application.AI.Common; TryAdd keeps this layer's
+        // graph store self-sufficient when wired in isolation (e.g. infra-only DI tests), deferring
+        // to the canonical registration when both run.
+        services.TryAddSingleton<
+            Application.AI.Common.Interfaces.IAmbientRequestScope,
+            Application.AI.Common.Services.AmbientRequestScope>();
+
+        // Default resolution from config, wrapped in the tenant-isolation + compliance decorator
+        // chain: backend -> TenantIsolatedGraphStore (per-record owner filtering) ->
+        // ComplianceAwareGraphStore (temporal stamping, expiry filtering, audit), i.e. Compliance is
+        // outermost. This order is deliberate: Tenant sits closest to the backend so it (a) reads a
+        // node's owner directly without triggering Compliance's Recall audit, (b) sees the owner
+        // already stamped by Compliance on writes so write-side enforcement is meaningful, and
+        // (c) lets Compliance emit Recall audits only for nodes the caller is actually allowed to see.
+        // Both decorators are singletons that resolve the caller's scope per-op via
+        // IAmbientRequestScope, so they neither capture a scoped dependency nor force the store to
+        // become scoped (GraphLearningsStore and RetentionEnforcementService are singletons that
+        // inject IKnowledgeGraphStore).
         services.AddSingleton<IKnowledgeGraphStore>(sp =>
         {
             var config = sp.GetRequiredService<IOptionsMonitor<AppConfig>>().CurrentValue;
             var provider = config.AI.Rag.GraphRag.GraphProvider;
-            return sp.GetRequiredKeyedService<IKnowledgeGraphStore>(provider);
+            IKnowledgeGraphStore store = sp.GetRequiredKeyedService<IKnowledgeGraphStore>(provider);
+
+            if (config.AI.Rag.GraphRag.MultiTenantIsolation)
+            {
+                store = new TenantIsolatedGraphStore(
+                    store,
+                    sp.GetRequiredService<Application.AI.Common.Interfaces.IAmbientRequestScope>(),
+                    sp.GetRequiredService<IKnowledgeScopeValidator>(),
+                    sp.GetRequiredService<ILogger<TenantIsolatedGraphStore>>());
+            }
+
+            if (config.AI.Rag.GraphRag.ComplianceEnabled)
+            {
+                store = new ComplianceAwareGraphStore(
+                    store,
+                    sp.GetRequiredService<IMemoryAuditSink>(),
+                    sp.GetRequiredService<Application.AI.Common.Interfaces.IAmbientRequestScope>(),
+                    sp.GetRequiredService<IRetentionPolicyProvider>(),
+                    sp.GetService<TimeProvider>() ?? TimeProvider.System,
+                    sp.GetRequiredService<ILogger<ComplianceAwareGraphStore>>());
+            }
+
+            return store;
         });
 
         // Provenance stamping

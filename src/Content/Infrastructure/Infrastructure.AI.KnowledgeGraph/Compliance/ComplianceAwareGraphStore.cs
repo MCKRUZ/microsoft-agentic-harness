@@ -1,6 +1,8 @@
+using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Domain.AI.KnowledgeGraph;
 using Domain.AI.KnowledgeGraph.Models;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
 namespace Infrastructure.AI.KnowledgeGraph.Compliance;
@@ -10,11 +12,21 @@ namespace Infrastructure.AI.KnowledgeGraph.Compliance;
 /// stamps temporal metadata on writes, filters expired nodes on reads,
 /// and emits audit events for all operations.
 /// </summary>
+/// <remarks>
+/// Registered as a <c>Singleton</c> wrapping the singleton backend store, so it cannot
+/// capture the scoped <see cref="IKnowledgeScope"/> at construction. Instead it resolves
+/// the caller's scope <em>per operation</em> from <see cref="IAmbientRequestScope"/>, which
+/// the MediatR pipeline establishes for the in-flight request (see
+/// <c>AmbientRequestScopeBehavior</c>). When no request scope is in flight — background
+/// retention/learnings work or the post-turn knowledge flush running after scope disposal —
+/// <see cref="CurrentUserId"/> is <see langword="null"/>, and the existing <c>?? "system"</c>
+/// / <c>?? ownerId</c> fallbacks attribute the operation to the system actor.
+/// </remarks>
 public sealed class ComplianceAwareGraphStore : IKnowledgeGraphStore
 {
     private readonly IKnowledgeGraphStore _inner;
     private readonly IMemoryAuditSink _auditSink;
-    private readonly IKnowledgeScope _scope;
+    private readonly IAmbientRequestScope _ambientScope;
     private readonly IRetentionPolicyProvider _retentionProvider;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<ComplianceAwareGraphStore> _logger;
@@ -22,25 +34,32 @@ public sealed class ComplianceAwareGraphStore : IKnowledgeGraphStore
     public ComplianceAwareGraphStore(
         IKnowledgeGraphStore inner,
         IMemoryAuditSink auditSink,
-        IKnowledgeScope scope,
+        IAmbientRequestScope ambientScope,
         IRetentionPolicyProvider retentionProvider,
         TimeProvider timeProvider,
         ILogger<ComplianceAwareGraphStore> logger)
     {
         ArgumentNullException.ThrowIfNull(inner);
         ArgumentNullException.ThrowIfNull(auditSink);
-        ArgumentNullException.ThrowIfNull(scope);
+        ArgumentNullException.ThrowIfNull(ambientScope);
         ArgumentNullException.ThrowIfNull(retentionProvider);
         ArgumentNullException.ThrowIfNull(timeProvider);
         ArgumentNullException.ThrowIfNull(logger);
 
         _inner = inner;
         _auditSink = auditSink;
-        _scope = scope;
+        _ambientScope = ambientScope;
         _retentionProvider = retentionProvider;
         _timeProvider = timeProvider;
         _logger = logger;
     }
+
+    /// <summary>
+    /// The user ID of the caller in flight on the current async context, or
+    /// <see langword="null"/> for background/system work outside any request scope.
+    /// </summary>
+    private string? CurrentUserId =>
+        _ambientScope.Current?.GetService<IKnowledgeScope>()?.UserId;
 
     /// <inheritdoc />
     public async Task AddNodesAsync(
@@ -48,8 +67,8 @@ public sealed class ComplianceAwareGraphStore : IKnowledgeGraphStore
         CancellationToken cancellationToken = default)
     {
         var now = _timeProvider.GetUtcNow();
-        var ownerId = _scope.UserId;
-        var stamped = nodes.Select(n => StampNode(n, now, ownerId)).ToList();
+        var ownerId = CurrentUserId;
+        var stamped = nodes.Select(n => StampNode(n, now)).ToList();
 
         await _inner.AddNodesAsync(stamped, cancellationToken);
 
@@ -70,11 +89,9 @@ public sealed class ComplianceAwareGraphStore : IKnowledgeGraphStore
         CancellationToken cancellationToken = default)
     {
         var now = _timeProvider.GetUtcNow();
-        var ownerId = _scope.UserId;
         var stamped = edges.Select(e => e with
         {
-            CreatedAt = e.CreatedAt ?? now,
-            OwnerId = e.OwnerId ?? ownerId
+            CreatedAt = e.CreatedAt ?? now
         }).ToList();
 
         await _inner.AddEdgesAsync(stamped, cancellationToken);
@@ -131,9 +148,9 @@ public sealed class ComplianceAwareGraphStore : IKnowledgeGraphStore
         {
             EventId = Guid.NewGuid().ToString(),
             Action = MemoryAuditAction.Forget,
-            ActorId = _scope.UserId ?? "system",
+            ActorId = CurrentUserId ?? "system",
             Timestamp = _timeProvider.GetUtcNow(),
-            ScopeId = _scope.UserId ?? "system",
+            ScopeId = CurrentUserId ?? "system",
             AffectedNodeIds = [nodeId]
         }, cancellationToken);
     }
@@ -149,9 +166,9 @@ public sealed class ComplianceAwareGraphStore : IKnowledgeGraphStore
         {
             EventId = Guid.NewGuid().ToString(),
             Action = MemoryAuditAction.Forget,
-            ActorId = _scope.UserId ?? "system",
+            ActorId = CurrentUserId ?? "system",
             Timestamp = _timeProvider.GetUtcNow(),
-            ScopeId = _scope.UserId ?? "system",
+            ScopeId = CurrentUserId ?? "system",
             AffectedEdgeIds = [edgeId]
         }, cancellationToken);
     }
@@ -175,14 +192,18 @@ public sealed class ComplianceAwareGraphStore : IKnowledgeGraphStore
         CancellationToken cancellationToken = default)
         => _inner.GetAllNodesAsync(cancellationToken);
 
-    private GraphNode StampNode(GraphNode node, DateTimeOffset now, string? ownerId)
+    // Stamps temporal metadata only. OwnerId is intentionally NOT defaulted here: ownership is
+    // authoritative from the writer (KnowledgeMemoryService sets OwnerId = the user; shared
+    // subsystems — corpus ingestion, learnings, skill memory — leave it null on purpose so the
+    // records stay globally visible). Defaulting a null owner to the current user would silently
+    // privatize shared knowledge once TenantIsolatedGraphStore is active.
+    private GraphNode StampNode(GraphNode node, DateTimeOffset now)
     {
         var policy = _retentionProvider.GetPolicy(node.Type);
         return node with
         {
             CreatedAt = node.CreatedAt ?? now,
-            ExpiresAt = node.ExpiresAt ?? (policy.AllowIndefinite ? null : now + policy.RetentionPeriod),
-            OwnerId = node.OwnerId ?? ownerId
+            ExpiresAt = node.ExpiresAt ?? (policy.AllowIndefinite ? null : now + policy.RetentionPeriod)
         };
     }
 
@@ -195,9 +216,9 @@ public sealed class ComplianceAwareGraphStore : IKnowledgeGraphStore
         {
             EventId = Guid.NewGuid().ToString(),
             Action = MemoryAuditAction.Recall,
-            ActorId = _scope.UserId ?? "system",
+            ActorId = CurrentUserId ?? "system",
             Timestamp = _timeProvider.GetUtcNow(),
-            ScopeId = _scope.UserId ?? "system",
+            ScopeId = CurrentUserId ?? "system",
             AffectedNodeIds = nodes.Select(n => n.Id).ToList(),
             ResultCount = nodes.Count
         }, ct);

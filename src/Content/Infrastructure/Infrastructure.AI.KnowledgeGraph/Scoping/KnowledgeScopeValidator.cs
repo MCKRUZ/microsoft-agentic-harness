@@ -59,14 +59,11 @@ public sealed class KnowledgeScopeValidator : IKnowledgeScopeValidator
         if (!_configMonitor.CurrentValue.AI.Rag.GraphRag.MultiTenantIsolation)
             return true;
 
-        if (string.Equals(scope.UserId, datasetOwnerId, StringComparison.OrdinalIgnoreCase))
-            return true;
-
-        // Compare the scope's tenant against the target dataset owner's tenant,
-        // not the scope's own DatasetOwnerId (which was a self-reference bug).
-        if (scope.TenantId is not null)
-            return string.Equals(scope.TenantId, datasetOwnerId, StringComparison.OrdinalIgnoreCase);
-
-        return false;
+        // Owner-level isolation: the owner id is a user id, so access is granted only when the
+        // caller is that user. We deliberately do NOT compare scope.TenantId against the owner id —
+        // that conflates two distinct id namespaces (a tenant id is not a user id) and would grant
+        // cross-user access on any string collision. Tenant-level sharing requires a real TenantId
+        // on the node model and is deferred to the tenant-isolation follow-up.
+        return string.Equals(scope.UserId, datasetOwnerId, StringComparison.OrdinalIgnoreCase);
     }
 }

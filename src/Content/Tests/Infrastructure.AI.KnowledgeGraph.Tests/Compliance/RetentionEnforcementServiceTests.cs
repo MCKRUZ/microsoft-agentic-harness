@@ -3,6 +3,7 @@ using Domain.AI.KnowledgeGraph.Models;
 using FluentAssertions;
 using Infrastructure.AI.KnowledgeGraph.Compliance;
 using Infrastructure.AI.KnowledgeGraph.InMemory;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Moq;
 using Xunit;
@@ -43,7 +44,7 @@ public sealed class RetentionEnforcementServiceTests
 
         var service = new RetentionEnforcementService(
             store,
-            erasureOrchestrator.Object,
+            ScopeFactoryFor(erasureOrchestrator.Object),
             Mock.Of<ILogger<RetentionEnforcementService>>());
 
         await service.EnforceRetentionAsync(now, CancellationToken.None);
@@ -69,7 +70,7 @@ public sealed class RetentionEnforcementServiceTests
 
         var service = new RetentionEnforcementService(
             store,
-            erasureOrchestrator.Object,
+            ScopeFactoryFor(erasureOrchestrator.Object),
             Mock.Of<ILogger<RetentionEnforcementService>>());
 
         await service.EnforceRetentionAsync(DateTimeOffset.UtcNow, CancellationToken.None);
@@ -77,5 +78,16 @@ public sealed class RetentionEnforcementServiceTests
         erasureOrchestrator.Verify(
             e => e.EraseByNodeIdsAsync(It.IsAny<IReadOnlyList<string>>(), It.IsAny<CancellationToken>()),
             Times.Never);
+    }
+
+    /// <summary>
+    /// Builds a real <see cref="IServiceScopeFactory"/> that resolves the given orchestrator from a
+    /// fresh scope, mirroring how the singleton hosted service obtains the scoped dependency at runtime.
+    /// </summary>
+    private static IServiceScopeFactory ScopeFactoryFor(IErasureOrchestrator orchestrator)
+    {
+        var services = new ServiceCollection();
+        services.AddScoped(_ => orchestrator);
+        return services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
     }
 }

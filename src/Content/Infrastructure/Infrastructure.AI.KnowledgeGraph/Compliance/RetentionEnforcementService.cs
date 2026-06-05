@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Domain.AI.KnowledgeGraph.Models;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
@@ -21,26 +22,29 @@ namespace Infrastructure.AI.KnowledgeGraph.Compliance;
 public sealed class RetentionEnforcementService : BackgroundService
 {
     private readonly IKnowledgeGraphStore _graphStore;
-    private readonly IErasureOrchestrator _erasureOrchestrator;
+    private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<RetentionEnforcementService> _logger;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="RetentionEnforcementService"/> class.
     /// </summary>
     /// <param name="graphStore">The graph store to scan for expired nodes.</param>
-    /// <param name="erasureOrchestrator">Orchestrates cascading deletion across all storage layers.</param>
+    /// <param name="scopeFactory">
+    /// Creates a DI scope per enforcement run to resolve the scoped <see cref="IErasureOrchestrator"/>.
+    /// This service is a singleton hosted service, so it must not capture a scoped dependency directly.
+    /// </param>
     /// <param name="logger">Logger for recording enforcement activity.</param>
     public RetentionEnforcementService(
         IKnowledgeGraphStore graphStore,
-        IErasureOrchestrator erasureOrchestrator,
+        IServiceScopeFactory scopeFactory,
         ILogger<RetentionEnforcementService> logger)
     {
         ArgumentNullException.ThrowIfNull(graphStore);
-        ArgumentNullException.ThrowIfNull(erasureOrchestrator);
+        ArgumentNullException.ThrowIfNull(scopeFactory);
         ArgumentNullException.ThrowIfNull(logger);
 
         _graphStore = graphStore;
-        _erasureOrchestrator = erasureOrchestrator;
+        _scopeFactory = scopeFactory;
         _logger = logger;
     }
 
@@ -85,7 +89,9 @@ public sealed class RetentionEnforcementService : BackgroundService
 
         if (expiredIds.Count > 0)
         {
-            var receipt = await _erasureOrchestrator.EraseByNodeIdsAsync(expiredIds, cancellationToken);
+            await using var scope = _scopeFactory.CreateAsyncScope();
+            var erasureOrchestrator = scope.ServiceProvider.GetRequiredService<IErasureOrchestrator>();
+            var receipt = await erasureOrchestrator.EraseByNodeIdsAsync(expiredIds, cancellationToken);
             _logger.LogInformation(
                 "Retention enforcement: purged {Nodes} expired nodes",
                 receipt.NodesDeleted);

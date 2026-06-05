@@ -1,3 +1,4 @@
+using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Domain.AI.KnowledgeGraph;
 using Domain.AI.KnowledgeGraph.Models;
@@ -5,6 +6,7 @@ using FluentAssertions;
 using Infrastructure.AI.KnowledgeGraph.Audit;
 using Infrastructure.AI.KnowledgeGraph.Compliance;
 using Infrastructure.AI.KnowledgeGraph.InMemory;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Moq;
 using Xunit;
@@ -35,18 +37,26 @@ public sealed class ComplianceAwareGraphStoreTests
             });
         _timeProvider = new FakeTimeProvider(new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero));
 
+        // The decorator resolves IKnowledgeScope per-op from the ambient request scope.
+        var scopeServices = new ServiceCollection();
+        scopeServices.AddSingleton(_scope.Object);
+        var ambient = Mock.Of<IAmbientRequestScope>(a => a.Current == scopeServices.BuildServiceProvider());
+
         _store = new ComplianceAwareGraphStore(
             _innerStore,
             _auditSink.Object,
-            _scope.Object,
+            ambient,
             _retentionProvider.Object,
             _timeProvider,
             Mock.Of<ILogger<ComplianceAwareGraphStore>>());
     }
 
     [Fact]
-    public async Task AddNodes_StampsCreatedAtAndExpiresAtAndOwnerId()
+    public async Task AddNodes_StampsCreatedAtAndExpiresAt_DoesNotStampOwner()
     {
+        // Owner is authoritative from the writer. An unowned (shared) node must stay unowned —
+        // the decorator must not privatize it to the current user, or shared corpus/learnings
+        // would become invisible to other users once tenant isolation is active.
         var node = new GraphNode { Id = "n1", Name = "Test", Type = "Fact" };
 
         await _store.AddNodesAsync([node]);
@@ -54,7 +64,17 @@ public sealed class ComplianceAwareGraphStoreTests
         var stored = await _innerStore.GetNodeAsync("n1");
         stored!.CreatedAt.Should().Be(_timeProvider.GetUtcNow());
         stored.ExpiresAt.Should().Be(_timeProvider.GetUtcNow().AddDays(365));
-        stored.OwnerId.Should().Be("user-1");
+        stored.OwnerId.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task AddNodes_PreservesExplicitOwnerId()
+    {
+        var node = new GraphNode { Id = "n1", Name = "Test", Type = "Fact", OwnerId = "owner-x" };
+
+        await _store.AddNodesAsync([node]);
+
+        (await _innerStore.GetNodeAsync("n1"))!.OwnerId.Should().Be("owner-x");
     }
 
     [Fact]
