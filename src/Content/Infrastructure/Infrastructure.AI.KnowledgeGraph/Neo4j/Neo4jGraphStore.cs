@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Text.Json;
 using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Domain.AI.KnowledgeGraph.Models;
@@ -44,9 +45,12 @@ public sealed class Neo4jGraphStore : IKnowledgeGraphStore, IAsyncDisposable
 
         var uri = new Uri(connString);
         var userInfo = uri.UserInfo.Split(':');
+        // The Bolt driver rejects a URI that carries a userinfo component, so pass a clean
+        // scheme://host:port and supply credentials separately as an auth token.
+        var boltUri = $"{uri.Scheme}://{uri.Host}:{uri.Port}";
         _driver = userInfo.Length == 2
-            ? GraphDatabase.Driver(connString, AuthTokens.Basic(userInfo[0], userInfo[1]))
-            : GraphDatabase.Driver(connString);
+            ? GraphDatabase.Driver(boltUri, AuthTokens.Basic(userInfo[0], userInfo[1]))
+            : GraphDatabase.Driver(boltUri);
         _logger = logger;
     }
 
@@ -65,7 +69,9 @@ public sealed class Neo4jGraphStore : IKnowledgeGraphStore, IAsyncDisposable
             {
                 await tx.RunAsync("""
                     MERGE (n:Entity {id: $id})
-                    SET n.name = $name, n.type = $type, n.properties = $props
+                    SET n.name = $name, n.type = $type, n.properties = $props,
+                        n.owner_id = $owner_id, n.tenant_id = $tenant_id,
+                        n.created_at = $created_at, n.expires_at = $expires_at, n.provenance = $prov
                     WITH n
                     UNWIND $chunks AS chunkId
                     WITH n, collect(DISTINCT chunkId) + coalesce(n.chunk_ids, []) AS allChunks
@@ -75,7 +81,14 @@ public sealed class Neo4jGraphStore : IKnowledgeGraphStore, IAsyncDisposable
                     {
                         id = node.Id, name = node.Name, type = node.Type,
                         props = JsonSerializer.Serialize(node.Properties, JsonOptions),
-                        chunks = node.ChunkIds.ToList()
+                        chunks = node.ChunkIds.ToList(),
+                        owner_id = node.OwnerId,
+                        tenant_id = node.TenantId,
+                        created_at = node.CreatedAt?.ToString("O"),
+                        expires_at = node.ExpiresAt?.ToString("O"),
+                        prov = node.Provenance is not null
+                            ? JsonSerializer.Serialize(node.Provenance, JsonOptions)
+                            : null
                     });
             }, x => x.WithMetadata(new Dictionary<string, object?>()));
         }
@@ -99,14 +112,24 @@ public sealed class Neo4jGraphStore : IKnowledgeGraphStore, IAsyncDisposable
                 await tx.RunAsync("""
                     MATCH (s:Entity {id: $source}), (t:Entity {id: $target})
                     MERGE (s)-[r:RELATES {id: $id}]->(t)
-                    SET r.predicate = $pred, r.properties = $props, r.chunk_id = $chunk
+                    SET r.predicate = $pred, r.properties = $props, r.chunk_id = $chunk,
+                        r.source = $source, r.target = $target,
+                        r.owner_id = $owner_id, r.tenant_id = $tenant_id,
+                        r.created_at = $created_at, r.expires_at = $expires_at, r.provenance = $prov
                     """,
                     new
                     {
                         id = edge.Id, source = edge.SourceNodeId,
                         target = edge.TargetNodeId, pred = edge.Predicate,
                         props = JsonSerializer.Serialize(edge.Properties, JsonOptions),
-                        chunk = edge.ChunkId
+                        chunk = edge.ChunkId,
+                        owner_id = edge.OwnerId,
+                        tenant_id = edge.TenantId,
+                        created_at = edge.CreatedAt?.ToString("O"),
+                        expires_at = edge.ExpiresAt?.ToString("O"),
+                        prov = edge.Provenance is not null
+                            ? JsonSerializer.Serialize(edge.Provenance, JsonOptions)
+                            : null
                     });
             }, x => x.WithMetadata(new Dictionary<string, object?>()));
         }
@@ -249,24 +272,38 @@ public sealed class Neo4jGraphStore : IKnowledgeGraphStore, IAsyncDisposable
     }
 
     /// <inheritdoc />
-    public Task<IReadOnlyList<GraphNode>> GetNodesByOwnerAsync(
+    public async Task<IReadOnlyList<GraphNode>> GetNodesByOwnerAsync(
         string ownerId,
         CancellationToken cancellationToken = default)
     {
-        // TODO: When Neo4j driver is wired, use Cypher:
-        // MATCH (n) WHERE n.ownerId = $ownerId RETURN n
-        _logger.LogWarning("GetNodesByOwnerAsync not yet implemented for Neo4j backend");
-        return Task.FromResult<IReadOnlyList<GraphNode>>([]);
+        await using var session = _driver.AsyncSession();
+        return await session.ExecuteReadAsync(async tx =>
+        {
+            var cursor = await tx.RunAsync(
+                "MATCH (n:Entity) WHERE n.owner_id = $ownerId RETURN n",
+                new { ownerId });
+
+            var results = new List<GraphNode>();
+            while (await cursor.FetchAsync())
+                results.Add(MapNode(cursor.Current["n"].As<INode>()));
+            return (IReadOnlyList<GraphNode>)results;
+        });
     }
 
     /// <inheritdoc />
-    public Task<IReadOnlyList<GraphNode>> GetAllNodesAsync(
+    public async Task<IReadOnlyList<GraphNode>> GetAllNodesAsync(
         CancellationToken cancellationToken = default)
     {
-        // TODO: When Neo4j driver is wired, use Cypher:
-        // MATCH (n:Entity) RETURN n
-        _logger.LogWarning("GetAllNodesAsync not yet implemented for Neo4j backend");
-        return Task.FromResult<IReadOnlyList<GraphNode>>([]);
+        await using var session = _driver.AsyncSession();
+        return await session.ExecuteReadAsync(async tx =>
+        {
+            var cursor = await tx.RunAsync("MATCH (n:Entity) RETURN n");
+
+            var results = new List<GraphNode>();
+            while (await cursor.FetchAsync())
+                results.Add(MapNode(cursor.Current["n"].As<INode>()));
+            return (IReadOnlyList<GraphNode>)results;
+        });
     }
 
     /// <inheritdoc cref="IAsyncDisposable.DisposeAsync"/>
@@ -292,7 +329,12 @@ public sealed class Neo4jGraphStore : IKnowledgeGraphStore, IAsyncDisposable
             Name = neo4jNode.Properties["name"].As<string>(),
             Type = neo4jNode.Properties["type"].As<string>(),
             Properties = props,
-            ChunkIds = chunks
+            ChunkIds = chunks,
+            OwnerId = ReadString(neo4jNode.Properties, "owner_id"),
+            TenantId = ReadString(neo4jNode.Properties, "tenant_id"),
+            CreatedAt = ReadDate(neo4jNode.Properties, "created_at"),
+            ExpiresAt = ReadDate(neo4jNode.Properties, "expires_at"),
+            Provenance = ReadProvenance(neo4jNode.Properties)
         };
     }
 
@@ -310,7 +352,29 @@ public sealed class Neo4jGraphStore : IKnowledgeGraphStore, IAsyncDisposable
             TargetNodeId = rel.Properties.TryGetValue("target", out var t) ? t.As<string>() : "",
             Predicate = rel.Properties["predicate"].As<string>(),
             Properties = props,
-            ChunkId = rel.Properties["chunk_id"].As<string>()
+            ChunkId = rel.Properties["chunk_id"].As<string>(),
+            OwnerId = ReadString(rel.Properties, "owner_id"),
+            TenantId = ReadString(rel.Properties, "tenant_id"),
+            CreatedAt = ReadDate(rel.Properties, "created_at"),
+            ExpiresAt = ReadDate(rel.Properties, "expires_at"),
+            Provenance = ReadProvenance(rel.Properties)
         };
+    }
+
+    private static string? ReadString(IReadOnlyDictionary<string, object> props, string key)
+        => props.TryGetValue(key, out var v) && v is not null ? v.As<string>() : null;
+
+    private static DateTimeOffset? ReadDate(IReadOnlyDictionary<string, object> props, string key)
+    {
+        var s = ReadString(props, key);
+        return s is null
+            ? null
+            : DateTimeOffset.Parse(s, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind);
+    }
+
+    private static ProvenanceStamp? ReadProvenance(IReadOnlyDictionary<string, object> props)
+    {
+        var s = ReadString(props, "provenance");
+        return s is null ? null : JsonSerializer.Deserialize<ProvenanceStamp>(s, JsonOptions);
     }
 }
