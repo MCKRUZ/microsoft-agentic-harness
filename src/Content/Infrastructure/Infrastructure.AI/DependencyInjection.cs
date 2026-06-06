@@ -194,6 +194,10 @@ public static partial class DependencyInjection
         services.AddScoped<IEvaluationService, AgentEvaluationService>();
         services.AddScoped<IRegressionSuiteService, FileSystemRegressionSuiteService>();
 
+        // --- Agent identity (credential providers, resolver, RBAC validator) ---
+
+        RegisterIdentityServices(services);
+
         // --- Governance (permissions, escalation, resilience) ---
 
         RegisterGovernanceServices(services);

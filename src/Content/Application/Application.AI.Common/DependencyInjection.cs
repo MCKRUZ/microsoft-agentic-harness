@@ -80,6 +80,9 @@ public static class DependencyInjection
             // context providers (e.g. memory recall) resolve the correct request-scoped services.
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(AmbientRequestScopeBehavior<,>))
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(AgentContextPropagationBehavior<,>))
+            // Identity resolution runs after the propagation behavior so the agent id is set
+            // before identity acquisition begins. No-op when AppConfig.AI.Identity.Enabled is false.
+            .AddTransient(typeof(IPipelineBehavior<,>), typeof(AgentIdentityResolutionBehavior<,>))
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(AuditTrailBehavior<,>))
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(ContentSafetyBehavior<,>))
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(ToolPermissionBehavior<,>))
