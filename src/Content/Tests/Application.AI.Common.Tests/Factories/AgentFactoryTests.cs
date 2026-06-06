@@ -1,12 +1,17 @@
 using Application.AI.Common.Factories;
 using Application.AI.Common.Interfaces;
+using Application.AI.Common.Interfaces.Agent;
+using Application.AI.Common.Interfaces.Identity;
 using Application.AI.Common.Interfaces.Skills;
 using Application.AI.Common.Services.Skills;
 using Application.AI.Common.Tests.Fakes;
 using Domain.AI.Agents;
+using Domain.AI.Identity;
 using Domain.AI.Skills;
+using Domain.Common;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
+using Domain.Common.Config.AI.Identity;
 using FluentAssertions;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Caching.Distributed;
@@ -16,6 +21,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Moq;
 using Xunit;
+using ScopedAgentExecutionContext = Application.AI.Common.Services.Agent.AgentExecutionContext;
 
 namespace Application.AI.Common.Tests.Factories;
 
@@ -352,5 +358,244 @@ public class AgentFactoryTests
 
         // Should not throw
         await _factory.CreateAgentFromSkillsAsync(["simple"], new SkillAgentOptions());
+    }
+
+    // --- Agent identity wiring (PR-1 step 4) ---------------------------------
+
+    private AgentFactory BuildFactoryWithIdentityConfig(
+        AgentIdentityConfig identity,
+        IAgentIdentityResolver? resolver,
+        IAgentExecutionContext? executionContext)
+    {
+        var appConfig = new AppConfig
+        {
+            AI = new AIConfig
+            {
+                AgentFramework = new AgentFrameworkConfig
+                {
+                    DefaultDeployment = "gpt-4o",
+                    ClientType = AIAgentFrameworkClientType.AzureOpenAI
+                },
+                Identity = identity
+            }
+        };
+        var monitor = Mock.Of<IOptionsMonitor<AppConfig>>(m => m.CurrentValue == appConfig);
+
+        var services = new ServiceCollection();
+        if (resolver is not null) services.AddSingleton(resolver);
+        if (executionContext is not null) services.AddSingleton(executionContext);
+        var serviceProvider = services.BuildServiceProvider();
+
+        return new AgentFactory(
+            NullLogger<AgentFactory>.Instance,
+            monitor,
+            Mock.Of<IDistributedCache>(),
+            NullLoggerFactory.Instance,
+            _contextFactory.Object,
+            _skillRegistry.Object,
+            _chatClientFactory.Object,
+            serviceProvider,
+            new InMemorySkillCompletionTracker());
+    }
+
+    [Fact]
+    public async Task CreateAgentAsync_IdentityDisabled_DoesNotResolveIdentity()
+    {
+        var resolver = new Mock<IAgentIdentityResolver>(MockBehavior.Strict);
+        var execContext = new ScopedAgentExecutionContext();
+        var factory = BuildFactoryWithIdentityConfig(
+            new AgentIdentityConfig { Enabled = false },
+            resolver.Object,
+            execContext);
+
+        var context = new AgentExecutionContext
+        {
+            Name = "test-agent",
+            AIAgentFrameworkType = AIAgentFrameworkClientType.AzureOpenAI
+        };
+
+        await factory.CreateAgentAsync(context);
+
+        resolver.VerifyNoOtherCalls();
+        execContext.AgentIdentity.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task CreateAgentAsync_IdentityEnabled_NoResolver_ThrowsInvalidOperation()
+    {
+        var factory = BuildFactoryWithIdentityConfig(
+            new AgentIdentityConfig { Enabled = true, DefaultAudience = "api://x" },
+            resolver: null,
+            executionContext: new ScopedAgentExecutionContext());
+
+        var context = new AgentExecutionContext
+        {
+            Name = "test-agent",
+            AIAgentFrameworkType = AIAgentFrameworkClientType.AzureOpenAI
+        };
+
+        var act = () => factory.CreateAgentAsync(context);
+
+        await act.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*IAgentIdentityResolver is*registered*");
+    }
+
+    [Fact]
+    public async Task CreateAgentAsync_IdentityEnabled_NoExecutionContext_ThrowsInvalidOperation()
+    {
+        var resolver = new Mock<IAgentIdentityResolver>();
+        resolver
+            .Setup(r => r.ResolveAsync(It.IsAny<CredentialContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<AgentIdentity>.Success(new AgentIdentity
+            {
+                Id = "agent-1",
+                Kind = AgentIdentityKind.ManagedIdentity
+            }));
+
+        var factory = BuildFactoryWithIdentityConfig(
+            new AgentIdentityConfig { Enabled = true, DefaultAudience = "api://x" },
+            resolver.Object,
+            executionContext: null);
+
+        var context = new AgentExecutionContext
+        {
+            Name = "test-agent",
+            AIAgentFrameworkType = AIAgentFrameworkClientType.AzureOpenAI
+        };
+
+        var act = () => factory.CreateAgentAsync(context);
+
+        await act.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*IAgentExecutionContext is*registered*");
+    }
+
+    [Fact]
+    public async Task CreateAgentAsync_IdentityEnabled_ResolverSucceeds_StampsIdentityOnContext()
+    {
+        var resolvedIdentity = new AgentIdentity
+        {
+            Id = "agent-1",
+            Kind = AgentIdentityKind.ManagedIdentity,
+            TenantId = "tenant-a"
+        };
+        var resolver = new Mock<IAgentIdentityResolver>();
+        resolver
+            .Setup(r => r.ResolveAsync(It.IsAny<CredentialContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<AgentIdentity>.Success(resolvedIdentity));
+
+        var execContext = new ScopedAgentExecutionContext();
+        var factory = BuildFactoryWithIdentityConfig(
+            new AgentIdentityConfig { Enabled = true, DefaultAudience = "api://x" },
+            resolver.Object,
+            execContext);
+
+        var context = new AgentExecutionContext
+        {
+            Name = "test-agent",
+            AIAgentFrameworkType = AIAgentFrameworkClientType.AzureOpenAI
+        };
+
+        await factory.CreateAgentAsync(context);
+
+        execContext.AgentIdentity.Should().Be(resolvedIdentity);
+    }
+
+    [Fact]
+    public async Task CreateAgentAsync_IdentityEnabled_ResolverFails_ThrowsWithErrors()
+    {
+        var resolver = new Mock<IAgentIdentityResolver>();
+        resolver
+            .Setup(r => r.ResolveAsync(It.IsAny<CredentialContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<AgentIdentity>.Fail("agent_identity.no_provider_succeeded"));
+
+        var factory = BuildFactoryWithIdentityConfig(
+            new AgentIdentityConfig { Enabled = true, DefaultAudience = "api://x" },
+            resolver.Object,
+            executionContext: new ScopedAgentExecutionContext());
+
+        var context = new AgentExecutionContext
+        {
+            Name = "test-agent",
+            AIAgentFrameworkType = AIAgentFrameworkClientType.AzureOpenAI
+        };
+
+        var act = () => factory.CreateAgentAsync(context);
+
+        await act.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*resolution failed*")
+            .WithMessage("*agent_identity.no_provider_succeeded*")
+            .WithMessage("*test-agent*");
+    }
+
+    [Fact]
+    public async Task CreateAgentAsync_IdentityEnabled_PassesAudienceAndScopesFromConfig()
+    {
+        CredentialContext? capturedContext = null;
+        var resolver = new Mock<IAgentIdentityResolver>();
+        resolver
+            .Setup(r => r.ResolveAsync(It.IsAny<CredentialContext>(), It.IsAny<CancellationToken>()))
+            .Callback<CredentialContext, CancellationToken>((ctx, _) => capturedContext = ctx)
+            .ReturnsAsync(Result<AgentIdentity>.Success(new AgentIdentity
+            {
+                Id = "agent-1",
+                Kind = AgentIdentityKind.ManagedIdentity
+            }));
+
+        var factory = BuildFactoryWithIdentityConfig(
+            new AgentIdentityConfig
+            {
+                Enabled = true,
+                DefaultAudience = "api://my-agent",
+                DefaultScopes = ["api://my-agent/.default", "https://graph.microsoft.com/.default"]
+            },
+            resolver.Object,
+            new ScopedAgentExecutionContext());
+
+        var context = new AgentExecutionContext
+        {
+            Name = "test-agent",
+            AIAgentFrameworkType = AIAgentFrameworkClientType.AzureOpenAI
+        };
+
+        await factory.CreateAgentAsync(context);
+
+        capturedContext.Should().NotBeNull();
+        capturedContext!.Audience.Should().Be("api://my-agent");
+        capturedContext.Scopes.Should().HaveCount(2);
+        capturedContext.Scopes.Should().Contain("api://my-agent/.default");
+        capturedContext.Scopes.Should().Contain("https://graph.microsoft.com/.default");
+    }
+
+    [Fact]
+    public async Task CreateAgentAsync_IdentityEnabled_TwiceWithSameIdentity_DoesNotThrow()
+    {
+        // Re-entrant agent construction (e.g. CreateAgentFromSkillsAsync calls CreateAgentAsync)
+        // must not trip the identity-conflict guard when the resolver returns the same value.
+        var resolvedIdentity = new AgentIdentity
+        {
+            Id = "agent-1",
+            Kind = AgentIdentityKind.ManagedIdentity
+        };
+        var resolver = new Mock<IAgentIdentityResolver>();
+        resolver
+            .Setup(r => r.ResolveAsync(It.IsAny<CredentialContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<AgentIdentity>.Success(resolvedIdentity));
+
+        var execContext = new ScopedAgentExecutionContext();
+        var factory = BuildFactoryWithIdentityConfig(
+            new AgentIdentityConfig { Enabled = true, DefaultAudience = "api://x" },
+            resolver.Object,
+            execContext);
+
+        var context = new AgentExecutionContext
+        {
+            Name = "test-agent",
+            AIAgentFrameworkType = AIAgentFrameworkClientType.AzureOpenAI
+        };
+
+        await factory.CreateAgentAsync(context);
+        await factory.CreateAgentAsync(context);
+
+        execContext.AgentIdentity.Should().Be(resolvedIdentity);
     }
 }

@@ -1,8 +1,11 @@
 using Application.AI.Common.Interfaces;
+using Application.AI.Common.Interfaces.Agent;
+using Application.AI.Common.Interfaces.Identity;
 using Application.AI.Common.Interfaces.Routing;
 using Application.AI.Common.Interfaces.Skills;
 using Application.AI.Common.Models;
 using Domain.AI.Agents;
+using Domain.AI.Identity;
 using Domain.AI.Routing.Models;
 using Domain.AI.Skills;
 using Domain.Common.Config;
@@ -78,6 +81,11 @@ public class AgentFactory : IAgentFactory
     /// <inheritdoc />
     public async Task<AIAgent> CreateAgentAsync(AgentExecutionContext agentContext, CancellationToken cancellationToken = default)
     {
+        // Resolve the agent's workload identity first when the subsystem is enabled.
+        // Fail-loud on misconfig (resolver missing) and on resolution failure — opting
+        // into identity is a binary security guarantee, not best-effort.
+        await ResolveAndStampIdentityAsync(agentContext, cancellationToken);
+
         var clientType = agentContext.AIAgentFrameworkType;
 
         if (!_chatClientFactory.IsAvailable(clientType))
@@ -320,6 +328,68 @@ public class AgentFactory : IAgentFactory
         var clientType = _appConfig.CurrentValue.AI?.AgentFramework?.ClientType
             ?? AIAgentFrameworkClientType.AzureOpenAI;
         return await _chatClientFactory.GetChatClientAsync(clientType, deployment, ct);
+    }
+
+    /// <summary>
+    /// Resolves the agent's workload identity via <see cref="IAgentIdentityResolver"/>
+    /// and stamps it onto the scoped <see cref="IAgentExecutionContext"/>. No-op when
+    /// <see cref="AppConfig.AI.Identity.Enabled"/> is <c>false</c>.
+    /// </summary>
+    /// <remarks>
+    /// Fail-loud failure modes when the flag is enabled:
+    /// <list type="bullet">
+    ///   <item>resolver not registered in DI → <see cref="InvalidOperationException"/></item>
+    ///   <item>scoped context not registered in DI → <see cref="InvalidOperationException"/></item>
+    ///   <item>resolver returns a failure result → <see cref="InvalidOperationException"/>
+    ///     with the result's error list</item>
+    /// </list>
+    /// Re-set is idempotent because <see cref="IAgentExecutionContext.SetIdentity"/>
+    /// early-returns on value-equality, so re-entrant agent construction (e.g. via
+    /// <c>CreateAgentFromSkillsAsync</c>) does not throw.
+    /// </remarks>
+    private async Task ResolveAndStampIdentityAsync(
+        AgentExecutionContext agentContext,
+        CancellationToken cancellationToken)
+    {
+        var identityConfig = _appConfig.CurrentValue.AI?.Identity;
+        if (identityConfig is null || !identityConfig.Enabled)
+            return;
+
+        var resolver = _serviceProvider.GetService<IAgentIdentityResolver>()
+            ?? throw new InvalidOperationException(
+                "AppConfig.AI.Identity.Enabled is true but no IAgentIdentityResolver is " +
+                "registered. Register a resolver in Infrastructure DI before enabling the " +
+                "identity subsystem.");
+
+        var executionContext = _serviceProvider.GetService<IAgentExecutionContext>()
+            ?? throw new InvalidOperationException(
+                "AppConfig.AI.Identity.Enabled is true but no IAgentExecutionContext is " +
+                "registered (scoped). The harness composition root must register the " +
+                "execution context to consume agent identity.");
+
+        var credentialContext = new CredentialContext
+        {
+            Audience = identityConfig.DefaultAudience,
+            Scopes = [.. identityConfig.DefaultScopes]
+        };
+
+        var resolution = await resolver.ResolveAsync(credentialContext, cancellationToken);
+        if (!resolution.IsSuccess || resolution.Value is null)
+        {
+            var errors = resolution.Errors.Count == 0
+                ? "no error details"
+                : string.Join("; ", resolution.Errors);
+            throw new InvalidOperationException(
+                $"Agent identity resolution failed for agent '{agentContext.Name}': {errors}. " +
+                "AppConfig.AI.Identity.Enabled is true so this is fatal — check credential " +
+                "provider configuration.");
+        }
+
+        executionContext.SetIdentity(resolution.Value);
+
+        _logger.LogInformation(
+            "Stamped agent identity {IdentityId} ({Kind}) onto execution context for agent {AgentName}",
+            resolution.Value.Id, resolution.Value.Kind, agentContext.Name);
     }
 
     /// <summary>

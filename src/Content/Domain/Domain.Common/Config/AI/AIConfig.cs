@@ -3,6 +3,7 @@ using Domain.Common.Config.AI.AIFoundry;
 using Domain.Common.Config.AI.ContextManagement;
 using Domain.Common.Config.AI.DriftDetection;
 using Domain.Common.Config.AI.Hooks;
+using Domain.Common.Config.AI.Identity;
 using Domain.Common.Config.AI.Learnings;
 using Domain.Common.Config.AI.MCP;
 using Domain.Common.Config.AI.Orchestration;
@@ -181,6 +182,14 @@ public class AIConfig
     /// and MCP server discovery from external directories.
     /// </summary>
     public PluginsConfig Plugins { get; set; } = new();
+
+    /// <summary>
+    /// Agent identity subsystem configuration (PR-1). Off by default — when
+    /// enabled, <c>AgentFactory</c> resolves an <c>AgentIdentity</c> via the
+    /// registered <c>IAgentIdentityResolver</c> at agent construction and stamps
+    /// it onto <c>IAgentExecutionContext</c> for outbound RBAC checks.
+    /// </summary>
+    public AgentIdentityConfig Identity { get; set; } = new();
 
     /// <summary>
     /// Eval dashboard persistence configuration (Sub-phase 5.4). Off by default;
