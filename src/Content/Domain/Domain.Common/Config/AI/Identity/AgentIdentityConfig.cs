@@ -44,4 +44,28 @@ public class AgentIdentityConfig
     /// fallback honoured only when the host environment is Development.
     /// </summary>
     public DevelopmentProviderConfig Development { get; set; } = new();
+
+    /// <summary>
+    /// Configuration for the Azure Managed Identity provider. When unconfigured
+    /// (AgentId empty), the provider reports itself unavailable and the resolver
+    /// moves to the next kind in the hierarchy.
+    /// </summary>
+    public ManagedIdentityProviderConfig ManagedIdentity { get; set; } = new();
+
+    /// <summary>
+    /// Configuration for the federated workload-identity (OIDC) provider — preferred
+    /// over all other kinds when available because no secret is stored.
+    /// </summary>
+    public FederatedProviderConfig FederatedCredential { get; set; } = new();
+
+    /// <summary>
+    /// Configuration for the X.509 client-certificate provider.
+    /// </summary>
+    public CertificateProviderConfig Certificate { get; set; } = new();
+
+    /// <summary>
+    /// Configuration for the client-secret provider — explicit last-resort. Emits a
+    /// startup warning when used outside Development.
+    /// </summary>
+    public ClientSecretProviderConfig ClientSecret { get; set; } = new();
 }
