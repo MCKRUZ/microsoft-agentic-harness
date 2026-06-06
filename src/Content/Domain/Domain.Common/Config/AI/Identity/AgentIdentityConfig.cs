@@ -68,4 +68,11 @@ public class AgentIdentityConfig
     /// startup warning when used outside Development.
     /// </summary>
     public ClientSecretProviderConfig ClientSecret { get; set; } = new();
+
+    /// <summary>
+    /// Per-agent tool-invocation allowlist consumed by
+    /// <c>IAgentIdentityValidator</c>. Fail-closed by default — an agent not present
+    /// in the allowlist is denied every tool. Wildcard <c>"*"</c> grants all tools.
+    /// </summary>
+    public ToolAuthorizationConfig ToolAuthorization { get; set; } = new();
 }
