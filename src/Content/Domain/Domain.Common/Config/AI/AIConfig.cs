@@ -196,4 +196,11 @@ public class AIConfig
     /// host opts in to durable ingest by setting <see cref="EvalDashboardOptions.PersistenceEnabled"/>.
     /// </summary>
     public EvalDashboardOptions EvalDashboard { get; set; } = new();
+
+    /// <summary>
+    /// ChangeProposal pipeline configuration (PR-2). Off by default — when
+    /// enabled the orchestrator defaults to Shadow mode so a misconfigured
+    /// rollout never silently applies real changes.
+    /// </summary>
+    public ChangesConfig Changes { get; set; } = new();
 }
