@@ -160,60 +160,19 @@ public sealed class ChangeProposalOrchestrator : IChangeProposalOrchestrator
         var validationGates = ValidationGates(proposal.RequiredGates);
         var hasApproval = proposal.RequiredGates.Contains(WellKnownGateKeys.Approval, StringComparer.Ordinal);
 
-        // Skip gates already completed in this status (resumption after a Defer).
-        var startIndex = CompletedGateCount(proposal, validationGates);
-        for (var i = startIndex; i < validationGates.Count; i++)
+        var outcome = await RunGatesAsync(
+            proposal,
+            validationGates,
+            selfLoopOnDefer: ChangeProposalStatus.Validating,
+            mode,
+            correlationId,
+            maxDefers,
+            cancellationToken).ConfigureAwait(false);
+        if (outcome.Kind != PhaseOutcomeKind.Completed)
         {
-            var gateKey = validationGates[i];
-            var attempt = ConsecutiveDeferAttempts(proposal, gateKey) + 1;
-            if (attempt > maxDefers)
-            {
-                return await TransitionAsync(
-                    proposal,
-                    ChangeProposalStatus.Rejected,
-                    new GateDecision
-                    {
-                        Timestamp = _time.GetUtcNow(),
-                        GateKey = gateKey,
-                        Action = GateAction.Fail,
-                        Reason = $"defer budget exhausted ({maxDefers} consecutive Defers).",
-                        DurationMs = 0
-                    },
-                    mode,
-                    correlationId,
-                    cancellationToken).ConfigureAwait(false);
-            }
-
-            var (decision, terminate) = await EvaluateGateAsync(proposal, gateKey, mode, attempt, correlationId, cancellationToken)
-                .ConfigureAwait(false);
-
-            if (terminate)
-            {
-                return await TransitionAsync(
-                    proposal,
-                    ChangeProposalStatus.Rejected,
-                    decision,
-                    mode,
-                    correlationId,
-                    cancellationToken).ConfigureAwait(false);
-            }
-
-            if (decision.Action == GateAction.Defer)
-            {
-                return await TransitionAsync(
-                    proposal,
-                    ChangeProposalStatus.Validating,  // self-loop
-                    decision,
-                    mode,
-                    correlationId,
-                    cancellationToken).ConfigureAwait(false);
-            }
-
-            // Pass — record but don't transition yet; we batch the validation
-            // transition at the end of the phase.
-            proposal = await AppendHistoryAndSaveAsync(proposal, decision, mode, correlationId, cancellationToken)
-                .ConfigureAwait(false);
+            return outcome.Proposal;
         }
+        proposal = outcome.Proposal;
 
         // Validation phase complete. The transition depends on whether the
         // proposal carries an approval gate:
@@ -337,56 +296,21 @@ public sealed class ChangeProposalOrchestrator : IChangeProposalOrchestrator
     {
         var mergeGates = MergeGates(proposal.RequiredGates);
 
-        var startIndex = CompletedGateCount(proposal, mergeGates);
-        for (var i = startIndex; i < mergeGates.Count; i++)
+        // Merging does not legally self-loop in the state machine, so a Defer
+        // records history without a status transition (selfLoopOnDefer: null).
+        var outcome = await RunGatesAsync(
+            proposal,
+            mergeGates,
+            selfLoopOnDefer: null,
+            mode,
+            correlationId,
+            maxDefers,
+            cancellationToken).ConfigureAwait(false);
+        if (outcome.Kind != PhaseOutcomeKind.Completed)
         {
-            var gateKey = mergeGates[i];
-            var attempt = ConsecutiveDeferAttempts(proposal, gateKey) + 1;
-            if (attempt > maxDefers)
-            {
-                return await TransitionAsync(
-                    proposal,
-                    ChangeProposalStatus.Rejected,
-                    new GateDecision
-                    {
-                        Timestamp = _time.GetUtcNow(),
-                        GateKey = gateKey,
-                        Action = GateAction.Fail,
-                        Reason = $"defer budget exhausted ({maxDefers} consecutive Defers).",
-                        DurationMs = 0
-                    },
-                    mode,
-                    correlationId,
-                    cancellationToken).ConfigureAwait(false);
-            }
-
-            var (decision, terminate) = await EvaluateGateAsync(proposal, gateKey, mode, attempt, correlationId, cancellationToken)
-                .ConfigureAwait(false);
-
-            if (terminate)
-            {
-                return await TransitionAsync(
-                    proposal,
-                    ChangeProposalStatus.Rejected,
-                    decision,
-                    mode,
-                    correlationId,
-                    cancellationToken).ConfigureAwait(false);
-            }
-
-            if (decision.Action == GateAction.Defer)
-            {
-                // Note: Merging does not legally self-loop in the state machine;
-                // record the defer at the current status without transition by
-                // appending history only. Caller schedules retry.
-                proposal = await AppendHistoryAndSaveAsync(proposal, decision, mode, correlationId, cancellationToken)
-                    .ConfigureAwait(false);
-                return proposal;
-            }
-
-            proposal = await AppendHistoryAndSaveAsync(proposal, decision, mode, correlationId, cancellationToken)
-                .ConfigureAwait(false);
+            return outcome.Proposal;
         }
+        proposal = outcome.Proposal;
 
         return await TransitionAsync(
             proposal,
@@ -405,6 +329,96 @@ public sealed class ChangeProposalOrchestrator : IChangeProposalOrchestrator
             correlationId,
             cancellationToken).ConfigureAwait(false);
     }
+
+    /// <summary>
+    /// Iterate a sequence of gate keys, resuming from the first not-yet-passed
+    /// gate. Returns one of three outcomes:
+    /// <list type="bullet">
+    ///   <item><description><see cref="PhaseOutcomeKind.Completed"/> — all gates Passed; caller runs the phase-specific terminal transition.</description></item>
+    ///   <item><description><see cref="PhaseOutcomeKind.Paused"/> — a gate returned <c>Defer</c>; the proposal is saved (transitioned per <paramref name="selfLoopOnDefer"/> or history-only) and the caller returns it as-is for an upstream retry.</description></item>
+    ///   <item><description><see cref="PhaseOutcomeKind.Terminated"/> — a gate returned <c>Fail</c> or defer budget was exhausted; the proposal is transitioned to <c>Rejected</c>.</description></item>
+    /// </list>
+    /// </summary>
+    /// <param name="selfLoopOnDefer">
+    /// When non-null, a Defer causes a TransitionTo to this status (the validation
+    /// phase passes <see cref="ChangeProposalStatus.Validating"/> to record the
+    /// legal self-loop). When null, a Defer appends history without transition
+    /// (the merge phase has no legal self-loop on <see cref="ChangeProposalStatus.Merging"/>).
+    /// </param>
+    private async Task<PhaseOutcome> RunGatesAsync(
+        ChangeProposal proposal,
+        IReadOnlyList<string> gates,
+        ChangeProposalStatus? selfLoopOnDefer,
+        OrchestratorMode mode,
+        string correlationId,
+        int maxDefers,
+        CancellationToken cancellationToken)
+    {
+        var startIndex = CompletedGateCount(proposal, gates);
+        for (var i = startIndex; i < gates.Count; i++)
+        {
+            var gateKey = gates[i];
+            var attempt = ConsecutiveDeferAttempts(proposal, gateKey) + 1;
+            if (attempt > maxDefers)
+            {
+                var rejected = await TransitionAsync(
+                    proposal,
+                    ChangeProposalStatus.Rejected,
+                    new GateDecision
+                    {
+                        Timestamp = _time.GetUtcNow(),
+                        GateKey = gateKey,
+                        Action = GateAction.Fail,
+                        Reason = $"defer budget exhausted ({maxDefers} consecutive Defers).",
+                        DurationMs = 0
+                    },
+                    mode,
+                    correlationId,
+                    cancellationToken).ConfigureAwait(false);
+                return new PhaseOutcome(PhaseOutcomeKind.Terminated, rejected);
+            }
+
+            var (decision, terminate) = await EvaluateGateAsync(proposal, gateKey, mode, attempt, correlationId, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (terminate)
+            {
+                var rejected = await TransitionAsync(
+                    proposal,
+                    ChangeProposalStatus.Rejected,
+                    decision,
+                    mode,
+                    correlationId,
+                    cancellationToken).ConfigureAwait(false);
+                return new PhaseOutcome(PhaseOutcomeKind.Terminated, rejected);
+            }
+
+            if (decision.Action == GateAction.Defer)
+            {
+                var deferred = selfLoopOnDefer.HasValue
+                    ? await TransitionAsync(proposal, selfLoopOnDefer.Value, decision, mode, correlationId, cancellationToken).ConfigureAwait(false)
+                    : await AppendHistoryAndSaveAsync(proposal, decision, mode, correlationId, cancellationToken).ConfigureAwait(false);
+                return new PhaseOutcome(PhaseOutcomeKind.Paused, deferred);
+            }
+
+            proposal = await AppendHistoryAndSaveAsync(proposal, decision, mode, correlationId, cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        return new PhaseOutcome(PhaseOutcomeKind.Completed, proposal);
+    }
+
+    private enum PhaseOutcomeKind
+    {
+        /// <summary>Every gate in the sequence returned Pass.</summary>
+        Completed,
+        /// <summary>A gate returned Defer; the proposal is paused for retry.</summary>
+        Paused,
+        /// <summary>A gate Failed or the defer budget was exhausted; the proposal was transitioned to Rejected.</summary>
+        Terminated
+    }
+
+    private readonly record struct PhaseOutcome(PhaseOutcomeKind Kind, ChangeProposal Proposal);
 
     private async Task<(GateDecision Decision, bool Terminate)> EvaluateGateAsync(
         ChangeProposal proposal,

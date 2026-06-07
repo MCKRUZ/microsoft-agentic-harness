@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using Domain.AI.Identity;
+using Domain.Common.Helpers;
 
 namespace Domain.AI.Changes;
 
@@ -56,7 +57,7 @@ public static class ChangeProposalIdDeriver
 
         var canonical = Canonicalize(target, diff, submittedBy, submittedAt);
         var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(canonical));
-        return Base64Url(bytes);
+        return Base64UrlHelper.Encode(bytes);
     }
 
     /// <summary>
@@ -122,12 +123,5 @@ public static class ChangeProposalIdDeriver
             sb.Append(edit.Content.Length).Append(':').Append(edit.Content);
         }
         sb.Append(']');
-    }
-
-    private static string Base64Url(byte[] bytes)
-    {
-        var s = Convert.ToBase64String(bytes);
-        // Base64URL: + → -, / → _, drop = padding.
-        return s.Replace('+', '-').Replace('/', '_').TrimEnd('=');
     }
 }

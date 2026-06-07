@@ -57,37 +57,40 @@ public sealed class ApproveChangeProposalCommandHandler
                 "ChangeProposal pipeline is disabled. Set AppConfig.AI.Changes.Enabled = true to enable.");
         }
 
-        var proposal = await _store.GetAsync(request.ProposalId, cancellationToken).ConfigureAwait(false);
-        if (proposal is null)
-        {
-            return Result<ChangeProposal>.NotFound(
-                $"ChangeProposal '{request.ProposalId}' not found.");
-        }
-
-        if (proposal.Status != ChangeProposalStatus.AwaitingApproval)
-        {
-            return Result<ChangeProposal>.Fail(
-                $"Cannot approve proposal in status {proposal.Status} (must be AwaitingApproval).");
-        }
-
-        var decision = new GateDecision
-        {
-            Timestamp = _time.GetUtcNow(),
-            GateKey = ApprovalGateKey,
-            Action = GateAction.Pass,
-            Reason = string.IsNullOrEmpty(request.Reason) ? "approved" : request.Reason,
-            ReviewerId = request.ReviewerId,
-            DurationMs = 0
-        };
-
-        var approved = proposal.TransitionTo(ChangeProposalStatus.Approved, decision);
-        await _store.SaveAsync(approved, cancellationToken).ConfigureAwait(false);
-
-        // Drive the orchestrator inline so Approved → Merging → Merged (or
-        // Rejected on apply failure) happens before the command returns.
         var mode = ParseMode(changesConfig.DefaultMode);
-        var processed = await _orchestrator.ProcessAsync(approved.Id, mode, cancellationToken).ConfigureAwait(false);
-        return Result<ChangeProposal>.Success(processed ?? approved);
+
+        return await ChangeProposalCommandHelper.ApplyDecisionAsync(
+            _store,
+            request.ProposalId,
+            statusGuard: p => p.Status != ChangeProposalStatus.AwaitingApproval
+                ? Result<ChangeProposal>.Fail(
+                    $"Cannot approve proposal in status {p.Status} (must be AwaitingApproval).")
+                : null,
+            decisionFactory: () => new GateDecision
+            {
+                Timestamp = _time.GetUtcNow(),
+                GateKey = ApprovalGateKey,
+                Action = GateAction.Pass,
+                Reason = string.IsNullOrEmpty(request.Reason) ? "approved" : request.Reason,
+                ReviewerId = request.ReviewerId,
+                DurationMs = 0
+            },
+            targetStatus: ChangeProposalStatus.Approved,
+            postSave: async (approved, ct) =>
+            {
+                // Drive the orchestrator inline so Approved → Merging → Merged
+                // (or Rejected on apply failure) happens before the command
+                // returns. ProcessAsync returns null only when the store lost
+                // the proposal between our Save and its Get — surface as
+                // NotFound rather than returning the stale Approved snapshot,
+                // which would lie about the merge phase having completed.
+                var processed = await _orchestrator.ProcessAsync(approved.Id, mode, ct).ConfigureAwait(false);
+                return processed is null
+                    ? Result<ChangeProposal>.NotFound(
+                        $"ChangeProposal '{approved.Id}' was deleted before the orchestrator could process it.")
+                    : Result<ChangeProposal>.Success(processed);
+            },
+            cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
     private static OrchestratorMode ParseMode(string raw) =>

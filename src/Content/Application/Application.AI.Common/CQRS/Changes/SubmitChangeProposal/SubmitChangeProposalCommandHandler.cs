@@ -113,7 +113,19 @@ public sealed class SubmitChangeProposalCommandHandler
         // Merged, or Rejected depending on what the gates decide).
         var mode = ParseMode(changesConfig.DefaultMode);
         var processed = await _orchestrator.ProcessAsync(proposal.Id, mode, cancellationToken).ConfigureAwait(false);
-        return Result<ChangeProposal>.Success(processed ?? proposal);
+        if (processed is null)
+        {
+            // ProcessAsync returns null only when the store lost the proposal
+            // between our Save and its Get — a tiny race window with an external
+            // deletion. Surface as NotFound rather than returning the stale Draft
+            // snapshot, which would lie about the pipeline having advanced.
+            _logger.LogWarning(
+                "Orchestrator returned null for just-saved ChangeProposal {ProposalId}; treating as NotFound.",
+                proposal.Id);
+            return Result<ChangeProposal>.NotFound(
+                $"ChangeProposal '{proposal.Id}' was deleted before the orchestrator could process it.");
+        }
+        return Result<ChangeProposal>.Success(processed);
     }
 
     private static OrchestratorMode ParseMode(string raw) =>

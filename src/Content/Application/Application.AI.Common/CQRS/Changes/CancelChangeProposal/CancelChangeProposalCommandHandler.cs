@@ -37,39 +37,36 @@ public sealed class CancelChangeProposalCommandHandler
         ArgumentNullException.ThrowIfNull(request);
         cancellationToken.ThrowIfCancellationRequested();
 
-        var proposal = await _store.GetAsync(request.ProposalId, cancellationToken).ConfigureAwait(false);
-        if (proposal is null)
-        {
-            return Result<ChangeProposal>.NotFound(
-                $"ChangeProposal '{request.ProposalId}' not found.");
-        }
-
-        if (proposal.IsTerminal)
-        {
-            return Result<ChangeProposal>.Fail(
-                $"Cannot cancel proposal in terminal status {proposal.Status}.");
-        }
-
-        if (proposal.Status == ChangeProposalStatus.Merging)
-        {
-            return Result<ChangeProposal>.Fail(
-                "Cannot cancel proposal while merge is in progress.");
-        }
-
-        var decision = new GateDecision
-        {
-            Timestamp = _time.GetUtcNow(),
-            GateKey = CancellationGateKey,
-            Action = GateAction.Fail,
-            Reason = string.IsNullOrEmpty(request.Reason)
-                ? $"cancelled by {request.CancelledBy}"
-                : request.Reason,
-            ReviewerId = request.CancelledBy,
-            DurationMs = 0
-        };
-
-        var cancelled = proposal.TransitionTo(ChangeProposalStatus.Cancelled, decision);
-        await _store.SaveAsync(cancelled, cancellationToken).ConfigureAwait(false);
-        return Result<ChangeProposal>.Success(cancelled);
+        return await ChangeProposalCommandHelper.ApplyDecisionAsync(
+            _store,
+            request.ProposalId,
+            statusGuard: p =>
+            {
+                if (p.IsTerminal)
+                {
+                    return Result<ChangeProposal>.Fail(
+                        $"Cannot cancel proposal in terminal status {p.Status}.");
+                }
+                if (p.Status == ChangeProposalStatus.Merging)
+                {
+                    return Result<ChangeProposal>.Fail(
+                        "Cannot cancel proposal while merge is in progress.");
+                }
+                return null;
+            },
+            decisionFactory: () => new GateDecision
+            {
+                Timestamp = _time.GetUtcNow(),
+                GateKey = CancellationGateKey,
+                Action = GateAction.Fail,
+                Reason = string.IsNullOrEmpty(request.Reason)
+                    ? $"cancelled by {request.CancelledBy}"
+                    : request.Reason,
+                ReviewerId = request.CancelledBy,
+                DurationMs = 0
+            },
+            targetStatus: ChangeProposalStatus.Cancelled,
+            postSave: null,
+            cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 }

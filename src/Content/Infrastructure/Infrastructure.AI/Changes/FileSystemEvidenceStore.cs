@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using Application.AI.Common.Interfaces.Changes;
 using Domain.Common.Config;
+using Domain.Common.Helpers;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -45,7 +46,7 @@ public sealed class FileSystemEvidenceStore : IEvidenceStore
         CancellationToken cancellationToken)
     {
         var hashBytes = SHA256.HashData(content.Span);
-        var hash = HashPrefix + Base64Url(hashBytes);
+        var hash = HashPrefix + Base64UrlHelper.Encode(hashBytes);
         var path = PathFor(hash);
 
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
@@ -147,10 +148,4 @@ public sealed class FileSystemEvidenceStore : IEvidenceStore
 
     /// <summary>32 raw bytes → 43 Base64URL chars (no padding). Constant for the format check.</summary>
     private const int Base64UrlSha256Length = 43;
-
-    private static string Base64Url(byte[] bytes)
-    {
-        var s = Convert.ToBase64String(bytes);
-        return s.Replace('+', '-').Replace('/', '_').TrimEnd('=');
-    }
 }

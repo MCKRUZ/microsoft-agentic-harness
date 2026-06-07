@@ -36,31 +36,24 @@ public sealed class RejectChangeProposalCommandHandler
         ArgumentNullException.ThrowIfNull(request);
         cancellationToken.ThrowIfCancellationRequested();
 
-        var proposal = await _store.GetAsync(request.ProposalId, cancellationToken).ConfigureAwait(false);
-        if (proposal is null)
-        {
-            return Result<ChangeProposal>.NotFound(
-                $"ChangeProposal '{request.ProposalId}' not found.");
-        }
-
-        if (proposal.Status != ChangeProposalStatus.AwaitingApproval)
-        {
-            return Result<ChangeProposal>.Fail(
-                $"Cannot reject proposal in status {proposal.Status} (must be AwaitingApproval).");
-        }
-
-        var decision = new GateDecision
-        {
-            Timestamp = _time.GetUtcNow(),
-            GateKey = ApproveChangeProposalCommandHandler.ApprovalGateKey,
-            Action = GateAction.Fail,
-            Reason = request.Reason,
-            ReviewerId = request.ReviewerId,
-            DurationMs = 0
-        };
-
-        var rejected = proposal.TransitionTo(ChangeProposalStatus.Rejected, decision);
-        await _store.SaveAsync(rejected, cancellationToken).ConfigureAwait(false);
-        return Result<ChangeProposal>.Success(rejected);
+        return await ChangeProposalCommandHelper.ApplyDecisionAsync(
+            _store,
+            request.ProposalId,
+            statusGuard: p => p.Status != ChangeProposalStatus.AwaitingApproval
+                ? Result<ChangeProposal>.Fail(
+                    $"Cannot reject proposal in status {p.Status} (must be AwaitingApproval).")
+                : null,
+            decisionFactory: () => new GateDecision
+            {
+                Timestamp = _time.GetUtcNow(),
+                GateKey = ApproveChangeProposalCommandHandler.ApprovalGateKey,
+                Action = GateAction.Fail,
+                Reason = request.Reason,
+                ReviewerId = request.ReviewerId,
+                DurationMs = 0
+            },
+            targetStatus: ChangeProposalStatus.Rejected,
+            postSave: null,
+            cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 }

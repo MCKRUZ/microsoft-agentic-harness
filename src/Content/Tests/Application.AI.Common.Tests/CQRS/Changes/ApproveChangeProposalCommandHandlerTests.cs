@@ -77,4 +77,27 @@ public sealed class ApproveChangeProposalCommandHandlerTests
 
         result.IsSuccess.Should().BeFalse();
     }
+
+    [Fact]
+    public async Task Handle_OrchestratorReturnsNull_ReturnsNotFoundInsteadOfStaleApproved()
+    {
+        // Race: orchestrator returns null when the store lost the proposal
+        // between Approve's Save and the orchestrator's Get. Don't return the
+        // stale Approved snapshot — surface as NotFound.
+        var store = new InMemoryChangeProposalStore();
+        var pending = TestHelpers.NewProposal(ChangeProposalStatus.AwaitingApproval);
+        await store.SaveAsync(pending, CancellationToken.None);
+        var orchestrator = new TestHelpers.StubOrchestrator(storeForPassThrough: null);
+        var sut = new ApproveChangeProposalCommandHandler(
+            store, orchestrator, TestHelpers.EnabledConfigMonitor(), TimeProvider.System);
+
+        var result = await sut.Handle(
+            new ApproveChangeProposalCommand { ProposalId = pending.Id, ReviewerId = "user-42" },
+            CancellationToken.None);
+
+        result.IsSuccess.Should().BeFalse();
+        result.FailureType.Should().Be(ResultFailureType.NotFound);
+        result.Errors.Should().ContainSingle().Which.Should().Contain("deleted before");
+        orchestrator.InvocationCount.Should().Be(1);
+    }
 }

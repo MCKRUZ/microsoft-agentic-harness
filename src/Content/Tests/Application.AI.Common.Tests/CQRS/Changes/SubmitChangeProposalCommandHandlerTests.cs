@@ -108,4 +108,25 @@ public sealed class SubmitChangeProposalCommandHandlerTests
         result.IsSuccess.Should().BeTrue();
         result.Value!.RequiredGates.Should().Equal("custom_gate");
     }
+
+    [Fact]
+    public async Task Handle_OrchestratorReturnsNull_ReturnsNotFoundInsteadOfStaleDraft()
+    {
+        // Race window: the orchestrator returns null only when the store loses
+        // the proposal between our Save and its Get. Surface as NotFound so the
+        // caller doesn't get a stale Draft snapshot pretending the pipeline ran.
+        var store = new InMemoryChangeProposalStore();
+        var context = new TestHelpers.StubAgentContext(TestHelpers.DefaultIdentity);
+        // Orchestrator with no pass-through store → ProcessAsync returns null
+        // even though the handler successfully Saved.
+        var orchestrator = new TestHelpers.StubOrchestrator(storeForPassThrough: null);
+        var sut = NewSut(store, context, orchestrator: orchestrator);
+
+        var result = await sut.Handle(DefaultCommand(), CancellationToken.None);
+
+        result.IsSuccess.Should().BeFalse();
+        result.FailureType.Should().Be(ResultFailureType.NotFound);
+        result.Errors.Should().ContainSingle().Which.Should().Contain("deleted before");
+        orchestrator.InvocationCount.Should().Be(1);
+    }
 }
