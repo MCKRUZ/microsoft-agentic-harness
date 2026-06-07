@@ -15,11 +15,15 @@ public sealed class SubmitChangeProposalCommandHandlerTests
         InMemoryChangeProposalStore store,
         TestHelpers.StubAgentContext context,
         TestHelpers.StubGateResolver? resolver = null,
-        TimeProvider? time = null) =>
+        TimeProvider? time = null,
+        Microsoft.Extensions.Options.IOptionsMonitor<Domain.Common.Config.AppConfig>? config = null,
+        TestHelpers.StubOrchestrator? orchestrator = null) =>
         new(
             store,
             resolver ?? new TestHelpers.StubGateResolver(),
+            orchestrator ?? new TestHelpers.StubOrchestrator(store),
             context,
+            config ?? TestHelpers.EnabledConfigMonitor(),
             time ?? TimeProvider.System,
             NullLogger<SubmitChangeProposalCommandHandler>.Instance);
 

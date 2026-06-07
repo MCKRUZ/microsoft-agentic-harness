@@ -198,6 +198,11 @@ public static partial class DependencyInjection
 
         RegisterIdentityServices(services);
 
+        // --- ChangeProposal pipeline (orchestrator, audit, evidence, 4 gates,
+        //     NotConfigured defaults). Inert until AppConfig.AI.Changes.Enabled. ---
+
+        RegisterChangesServices(services);
+
         // --- Governance (permissions, escalation, resilience) ---
 
         RegisterGovernanceServices(services);

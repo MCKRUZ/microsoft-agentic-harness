@@ -2,14 +2,18 @@ using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Changes;
 using Domain.AI.Changes;
 using Domain.Common;
+using Domain.Common.Config;
 using MediatR;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace Application.AI.Common.CQRS.Changes.SubmitChangeProposal;
 
 /// <summary>
 /// Handles <see cref="SubmitChangeProposalCommand"/>: resolves required gates, derives
-/// the deterministic id, and persists the proposal. Idempotent — a duplicate submission
+/// the deterministic id, persists the proposal in Draft, and (when the pipeline is
+/// Enabled) inline-drives the orchestrator so the proposal lands at AwaitingApproval,
+/// Merged, or Rejected before the command returns. Idempotent — a duplicate submission
 /// within the same id-bucket returns the prior proposal verbatim instead of creating
 /// a parallel pipeline.
 /// </summary>
@@ -18,7 +22,9 @@ public sealed class SubmitChangeProposalCommandHandler
 {
     private readonly IChangeProposalStore _store;
     private readonly IChangeProposalGateResolver _gateResolver;
+    private readonly IChangeProposalOrchestrator _orchestrator;
     private readonly IAgentExecutionContext _agentContext;
+    private readonly IOptionsMonitor<AppConfig> _config;
     private readonly TimeProvider _time;
     private readonly ILogger<SubmitChangeProposalCommandHandler> _logger;
 
@@ -26,19 +32,25 @@ public sealed class SubmitChangeProposalCommandHandler
     public SubmitChangeProposalCommandHandler(
         IChangeProposalStore store,
         IChangeProposalGateResolver gateResolver,
+        IChangeProposalOrchestrator orchestrator,
         IAgentExecutionContext agentContext,
+        IOptionsMonitor<AppConfig> config,
         TimeProvider time,
         ILogger<SubmitChangeProposalCommandHandler> logger)
     {
         ArgumentNullException.ThrowIfNull(store);
         ArgumentNullException.ThrowIfNull(gateResolver);
+        ArgumentNullException.ThrowIfNull(orchestrator);
         ArgumentNullException.ThrowIfNull(agentContext);
+        ArgumentNullException.ThrowIfNull(config);
         ArgumentNullException.ThrowIfNull(time);
         ArgumentNullException.ThrowIfNull(logger);
 
         _store = store;
         _gateResolver = gateResolver;
+        _orchestrator = orchestrator;
         _agentContext = agentContext;
+        _config = config;
         _time = time;
         _logger = logger;
     }
@@ -50,6 +62,13 @@ public sealed class SubmitChangeProposalCommandHandler
     {
         ArgumentNullException.ThrowIfNull(request);
         cancellationToken.ThrowIfCancellationRequested();
+
+        var changesConfig = _config.CurrentValue.AI.Changes;
+        if (!changesConfig.Enabled)
+        {
+            return Result<ChangeProposal>.Forbidden(
+                "ChangeProposal pipeline is disabled. Set AppConfig.AI.Changes.Enabled = true to enable.");
+        }
 
         var identity = _agentContext.AgentIdentity;
         if (identity is null)
@@ -88,6 +107,15 @@ public sealed class SubmitChangeProposalCommandHandler
         }
 
         await _store.SaveAsync(proposal, cancellationToken).ConfigureAwait(false);
-        return Result<ChangeProposal>.Success(proposal);
+
+        // Drive the orchestrator inline so the command returns the post-pipeline
+        // proposal (Validating-deferred, AwaitingApproval, Approved, Merging,
+        // Merged, or Rejected depending on what the gates decide).
+        var mode = ParseMode(changesConfig.DefaultMode);
+        var processed = await _orchestrator.ProcessAsync(proposal.Id, mode, cancellationToken).ConfigureAwait(false);
+        return Result<ChangeProposal>.Success(processed ?? proposal);
     }
+
+    private static OrchestratorMode ParseMode(string raw) =>
+        Enum.TryParse<OrchestratorMode>(raw, ignoreCase: true, out var mode) ? mode : OrchestratorMode.Shadow;
 }

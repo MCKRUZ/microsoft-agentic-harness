@@ -11,7 +11,7 @@ namespace Application.AI.Common.Tests.CQRS.Changes;
 public sealed class ApproveChangeProposalCommandHandlerTests
 {
     private static ApproveChangeProposalCommandHandler NewSut(InMemoryChangeProposalStore store) =>
-        new(store, TimeProvider.System);
+        new(store, new TestHelpers.StubOrchestrator(store), TestHelpers.EnabledConfigMonitor(), TimeProvider.System);
 
     [Fact]
     public async Task Handle_AwaitingApproval_TransitionsToApprovedAndPersists()

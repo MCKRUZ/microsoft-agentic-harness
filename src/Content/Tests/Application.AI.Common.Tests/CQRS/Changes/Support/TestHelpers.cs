@@ -2,6 +2,8 @@ using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Changes;
 using Domain.AI.Changes;
 using Domain.AI.Identity;
+using Domain.Common.Config;
+using Microsoft.Extensions.Options;
 using EditOp = Domain.AI.SkillTraining.EditOp;
 
 namespace Application.AI.Common.Tests.CQRS.Changes.Support;
@@ -51,6 +53,49 @@ internal static class TestHelpers
 
         public IReadOnlyList<string> Resolve(ChangeTargetKind targetKind, BlastRadius blastRadius)
             => ResolvedGates;
+    }
+
+    public sealed class StubOrchestrator : IChangeProposalOrchestrator
+    {
+        private readonly InMemoryChangeProposalStore? _store;
+        public ChangeProposal? PassThrough { get; set; }
+        public int InvocationCount { get; private set; }
+
+        public StubOrchestrator(InMemoryChangeProposalStore? storeForPassThrough = null)
+        {
+            _store = storeForPassThrough;
+        }
+
+        public Task<ChangeProposal?> ProcessAsync(string proposalId, OrchestratorMode mode, CancellationToken cancellationToken)
+        {
+            InvocationCount++;
+            if (PassThrough is not null) return Task.FromResult<ChangeProposal?>(PassThrough);
+            if (_store is null) return Task.FromResult<ChangeProposal?>(null);
+            return _store.GetAsync(proposalId, cancellationToken);
+        }
+    }
+
+    public static IOptionsMonitor<AppConfig> EnabledConfigMonitor(string mode = "Live")
+    {
+        var cfg = new AppConfig();
+        cfg.AI.Changes.Enabled = true;
+        cfg.AI.Changes.DefaultMode = mode;
+        return new StaticOptionsMonitor<AppConfig>(cfg);
+    }
+
+    public static IOptionsMonitor<AppConfig> DisabledConfigMonitor()
+    {
+        var cfg = new AppConfig();
+        cfg.AI.Changes.Enabled = false;
+        return new StaticOptionsMonitor<AppConfig>(cfg);
+    }
+
+    public sealed class StaticOptionsMonitor<T> : IOptionsMonitor<T>
+    {
+        public StaticOptionsMonitor(T value) { CurrentValue = value; }
+        public T CurrentValue { get; }
+        public T Get(string? name) => CurrentValue;
+        public IDisposable? OnChange(Action<T, string?> listener) => null;
     }
 
     public sealed class StubAgentContext : IAgentExecutionContext
