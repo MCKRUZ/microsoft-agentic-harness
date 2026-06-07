@@ -37,6 +37,12 @@ public static partial class DependencyInjection
 
         // Autonomy tier resolution — reads tier from SubagentDefinition or falls back to config
         services.AddSingleton<IAutonomyTierResolver, DefaultAutonomyTierResolver>();
+
+        // PR-4: graded-autonomy startup validator — refuses to boot when
+        // GradedAutonomy.Enabled is true and the config is internally
+        // inconsistent (Critical→AutoApprove, Prod→High→AutoApprove, per-skill
+        // tier looser than baseline, etc.). No-ops when GradedAutonomy is off.
+        services.AddHostedService<AutonomyConfigValidator>();
     }
 
     /// <summary>

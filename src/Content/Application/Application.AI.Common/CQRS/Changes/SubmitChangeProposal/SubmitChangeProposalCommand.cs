@@ -49,4 +49,29 @@ public sealed record SubmitChangeProposalCommand : IRequest<Result<ChangeProposa
     /// reads <c>TimeProvider.GetUtcNow</c>. Used for tests and replay tooling.
     /// </summary>
     public DateTimeOffset? SubmittedAt { get; init; }
+
+    /// <summary>
+    /// Optional skill key for graded-autonomy resolution (PR-4). When provided the
+    /// <c>IAutonomyDecisionEvaluator</c> applies per-skill overrides and consults
+    /// <c>GradedAutonomyConfig.StateChangerOptIns</c> for the state-change dual-key
+    /// check. Null means the proposal is not skill-attributable — the evaluator
+    /// applies environment + tier rules only.
+    /// </summary>
+    public string? SkillKey { get; init; }
+
+    /// <summary>
+    /// True when the proposal mutates state (writes a file, applies a deployment,
+    /// runs a migration). Drives the graded-autonomy state-change safety default
+    /// — even an Autonomous tier configured to auto-approve at this blast radius
+    /// will be forced to <c>RequiresApproval</c> unless the skill is in
+    /// <c>StateChangerOptIns</c>.
+    /// </summary>
+    /// <remarks>
+    /// Defaults to <c>true</c> — the safe assumption is that any proposal is a
+    /// state change unless the caller explicitly says otherwise. Mistakenly
+    /// marking a non-state-change as a state-change costs a human approval
+    /// round-trip; the inverse silently bypasses the safety check, which is
+    /// strictly worse.
+    /// </remarks>
+    public bool IsStateChange { get; init; } = true;
 }

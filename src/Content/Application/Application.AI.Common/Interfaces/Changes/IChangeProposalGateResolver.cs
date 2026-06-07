@@ -1,4 +1,5 @@
 using Domain.AI.Changes;
+using Domain.AI.Governance;
 
 namespace Application.AI.Common.Interfaces.Changes;
 
@@ -27,10 +28,37 @@ public interface IChangeProposalGateResolver
 {
     /// <summary>
     /// Compute the ordered gate-key list for a proposal with the given target kind
-    /// and blast radius.
+    /// and blast radius. Pre-PR-4 entry point — equivalent to calling
+    /// <see cref="ResolveWithDecision"/> with a null decision, which forces the
+    /// resolver into its "no graded-autonomy input" fallback path.
     /// </summary>
     /// <param name="targetKind">The proposal's target kind.</param>
     /// <param name="blastRadius">The proposal's estimated blast radius.</param>
     /// <returns>An ordered list of gate keys to be assigned to <c>ChangeProposal.RequiredGates</c>. Must not be empty.</returns>
     IReadOnlyList<string> Resolve(ChangeTargetKind targetKind, BlastRadius blastRadius);
+
+    /// <summary>
+    /// PR-4 entry point: compute the ordered gate-key list with an attached
+    /// <see cref="AutonomyDecisionResult"/> the resolver may consult to decide
+    /// whether to include the approval gate.
+    /// </summary>
+    /// <param name="targetKind">The proposal's target kind.</param>
+    /// <param name="blastRadius">The proposal's estimated blast radius.</param>
+    /// <param name="decision">
+    /// Pre-computed graded-autonomy decision. May be null when the caller has
+    /// not (or could not) compute one — in that case the resolver behaves
+    /// exactly as if <see cref="Resolve(ChangeTargetKind, BlastRadius)"/> were
+    /// called.
+    /// </param>
+    /// <returns>An ordered list of gate keys. Must not be empty.</returns>
+    /// <remarks>
+    /// Default implementation forwards to the non-decision overload so existing
+    /// resolvers (including test stubs) keep working without modification. New
+    /// resolvers that want to honour the decision override this method.
+    /// </remarks>
+    IReadOnlyList<string> ResolveWithDecision(
+        ChangeTargetKind targetKind,
+        BlastRadius blastRadius,
+        AutonomyDecisionResult? decision)
+        => Resolve(targetKind, blastRadius);
 }
