@@ -71,4 +71,19 @@ public sealed class ChangesConfig
     /// <c>IChangeApprovalRouter</c> implementation.
     /// </summary>
     public List<string> DefaultApprovers { get; set; } = [];
+
+    /// <summary>
+    /// When false (default), the registered startup validator refuses to boot
+    /// if the pipeline is <see cref="Enabled"/>, the active
+    /// <c>IChangeProposalStore</c> is the in-memory implementation, and
+    /// <c>IHostEnvironment</c> is not Development. Set true only when the
+    /// consumer has accepted that proposal state is lost across host restarts
+    /// (e.g. single-process trials, integration test rigs).
+    /// </summary>
+    /// <remarks>
+    /// In-memory state loss in production silently strands proposals at
+    /// <c>AwaitingApproval</c> across deploys, which the escalation system
+    /// can't surface. Fail-fast at boot is louder than fail-quiet at restart.
+    /// </remarks>
+    public bool AllowInMemoryStoreOutsideDevelopment { get; set; }
 }

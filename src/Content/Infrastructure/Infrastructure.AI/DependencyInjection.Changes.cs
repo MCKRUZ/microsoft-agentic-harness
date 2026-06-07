@@ -95,5 +95,12 @@ public static partial class DependencyInjection
 
         // --- The orchestrator itself ---
         services.AddSingleton<IChangeProposalOrchestrator, ChangeProposalOrchestrator>();
+
+        // --- Startup-time validator ---
+        // Refuses to boot when Changes.Enabled = true and the registered store
+        // is in-memory in a non-Development environment, or when the default
+        // approval router has no configured approvers. See
+        // ChangeProposalStartupValidator for the full rule set.
+        services.AddHostedService<ChangeProposalStartupValidator>();
     }
 }
