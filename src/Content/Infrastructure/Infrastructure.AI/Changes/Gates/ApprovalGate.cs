@@ -50,6 +50,9 @@ public sealed class ApprovalGate : IChangeProposalGate
     public string Key => WellKnownGateKeys.Approval;
 
     /// <inheritdoc />
+    public GatePhase Phase => GatePhase.Approval;
+
+    /// <inheritdoc />
     public async Task<GateResult> EvaluateAsync(
         ChangeProposal proposal,
         GateContext context,

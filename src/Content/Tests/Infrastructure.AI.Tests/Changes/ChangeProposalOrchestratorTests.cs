@@ -63,9 +63,14 @@ public sealed class ChangeProposalOrchestratorTests : IDisposable
         var proposal = TestProposals.NewProposal();
         await _store.SaveAsync(proposal, CancellationToken.None);
 
+        // Merge gate registered but never reached — approval defers before
+        // the merge phase runs. Required because phase-based partition reads
+        // each gate's declared Phase via DI; an unregistered key defaults to
+        // Validation, which would silently misclassify "merge" if omitted.
         var sut = BuildSut(
             new TestProposals.StubGate(WellKnownGateKeys.SelfValidation, GateResult.Pass()),
-            new TestProposals.StubGate(WellKnownGateKeys.Approval, GateResult.Defer("queued for human", TimeSpan.FromMinutes(5))));
+            new TestProposals.StubGate(WellKnownGateKeys.Approval, GateResult.Defer("queued for human", TimeSpan.FromMinutes(5))),
+            new TestProposals.StubGate(WellKnownGateKeys.Merge, GateResult.Pass()));
 
         var result = await sut.ProcessAsync(proposal.Id, OrchestratorMode.Live, CancellationToken.None);
 
@@ -97,13 +102,21 @@ public sealed class ChangeProposalOrchestratorTests : IDisposable
         var proposal = TestProposals.NewProposal();
         await _store.SaveAsync(proposal, CancellationToken.None);
 
+        // Merge gate registered but never reached — approval Fail terminates
+        // the pipeline before the merge phase. Required for the same partition
+        // reason as the approval-defer test above.
         var sut = BuildSut(
             new TestProposals.StubGate(WellKnownGateKeys.SelfValidation, GateResult.Pass()),
-            new TestProposals.StubGate(WellKnownGateKeys.Approval, GateResult.Fail("blocked by policy")));
+            new TestProposals.StubGate(WellKnownGateKeys.Approval, GateResult.Fail("blocked by policy")),
+            new TestProposals.StubGate(WellKnownGateKeys.Merge, GateResult.Pass()));
 
         var result = await sut.ProcessAsync(proposal.Id, OrchestratorMode.Live, CancellationToken.None);
 
         result!.Status.Should().Be(ChangeProposalStatus.Rejected);
+        // Assert the rejection came from the approval gate, not from a
+        // misclassified missing-merge-gate failure.
+        result.History.Last().GateKey.Should().Be(WellKnownGateKeys.Approval);
+        result.History.Last().Reason.Should().Contain("blocked by policy");
     }
 
     [Fact]

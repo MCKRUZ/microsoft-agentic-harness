@@ -38,6 +38,17 @@ public interface IChangeProposalGate
     string Key { get; }
 
     /// <summary>
+    /// The orchestrator phase this gate runs in. The orchestrator partitions a
+    /// proposal's <c>RequiredGates</c> by querying each gate's <see cref="Phase"/>;
+    /// gate keys whose phase is <see cref="GatePhase.Validation"/> run in the
+    /// validation loop, <see cref="GatePhase.Approval"/> drives the
+    /// AwaitingApproval transition, and <see cref="GatePhase.Merge"/> runs in
+    /// the merge loop. Declared on the gate so a custom gate added by a skill
+    /// pack can never silently land in the wrong phase.
+    /// </summary>
+    GatePhase Phase { get; }
+
+    /// <summary>
     /// Evaluate the proposal against this gate's responsibility.
     /// </summary>
     /// <param name="proposal">The proposal under evaluation. Must not be mutated.</param>

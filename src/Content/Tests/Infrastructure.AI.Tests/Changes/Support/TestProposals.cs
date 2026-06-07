@@ -34,17 +34,34 @@ internal static class TestProposals
             },
             submittedAt: DefaultTime);
 
+    /// <summary>
+    /// Infer the gate phase from a well-known key so existing tests that pass
+    /// <c>WellKnownGateKeys.Approval</c> or <c>WellKnownGateKeys.Merge</c> don't
+    /// have to pass the phase explicitly. Unknown keys default to
+    /// <see cref="GatePhase.Validation"/>, matching the orchestrator's
+    /// no-gate-registered fallback.
+    /// </summary>
+    internal static GatePhase InferPhase(string key) => key switch
+    {
+        WellKnownGateKeys.Approval => GatePhase.Approval,
+        WellKnownGateKeys.Merge => GatePhase.Merge,
+        _ => GatePhase.Validation,
+    };
+
     public sealed class StubGate : IChangeProposalGate
     {
         private readonly Queue<GateResult> _scripted;
-        public StubGate(string key, GateResult single) : this(key, new[] { single }) { }
-        public StubGate(string key, IEnumerable<GateResult> scripted)
+        public StubGate(string key, GateResult single, GatePhase? phase = null)
+            : this(key, new[] { single }, phase) { }
+        public StubGate(string key, IEnumerable<GateResult> scripted, GatePhase? phase = null)
         {
             Key = key;
+            Phase = phase ?? InferPhase(key);
             _scripted = new Queue<GateResult>(scripted);
         }
 
         public string Key { get; }
+        public GatePhase Phase { get; }
         public int InvocationCount { get; private set; }
 
         public Task<GateResult> EvaluateAsync(ChangeProposal proposal, GateContext context, CancellationToken cancellationToken)
@@ -55,9 +72,10 @@ internal static class TestProposals
         }
     }
 
-    public sealed class ThrowingGate(string key) : IChangeProposalGate
+    public sealed class ThrowingGate(string key, GatePhase? phase = null) : IChangeProposalGate
     {
         public string Key { get; } = key;
+        public GatePhase Phase { get; } = phase ?? InferPhase(key);
         public Task<GateResult> EvaluateAsync(ChangeProposal proposal, GateContext context, CancellationToken cancellationToken)
             => throw new InvalidOperationException("gate exploded");
     }

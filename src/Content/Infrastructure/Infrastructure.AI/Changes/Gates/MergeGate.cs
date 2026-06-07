@@ -53,6 +53,9 @@ public sealed class MergeGate : IChangeProposalGate
     public string Key => WellKnownGateKeys.Merge;
 
     /// <inheritdoc />
+    public GatePhase Phase => GatePhase.Merge;
+
+    /// <inheritdoc />
     public async Task<GateResult> EvaluateAsync(
         ChangeProposal proposal,
         GateContext context,

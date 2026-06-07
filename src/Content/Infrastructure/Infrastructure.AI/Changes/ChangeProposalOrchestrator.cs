@@ -157,8 +157,8 @@ public sealed class ChangeProposalOrchestrator : IChangeProposalOrchestrator
         int maxDefers,
         CancellationToken cancellationToken)
     {
-        var validationGates = ValidationGates(proposal.RequiredGates);
-        var hasApproval = proposal.RequiredGates.Contains(WellKnownGateKeys.Approval, StringComparer.Ordinal);
+        var validationGates = GatesForPhase(proposal.RequiredGates, GatePhase.Validation);
+        var approvalGateKey = FindApprovalGateKey(proposal.RequiredGates);
 
         var outcome = await RunGatesAsync(
             proposal,
@@ -175,7 +175,7 @@ public sealed class ChangeProposalOrchestrator : IChangeProposalOrchestrator
         proposal = outcome.Proposal;
 
         // Validation phase complete. The transition depends on whether the
-        // proposal carries an approval gate:
+        // proposal carries an approval-phase gate:
         //  - Has approval gate: invoke it; gate returns Pass / Fail / Defer.
         //    Defer → transition to AwaitingApproval (wait for human via the
         //    Approve/Reject CQRS commands). Pass → synthetic transit through
@@ -184,9 +184,9 @@ public sealed class ChangeProposalOrchestrator : IChangeProposalOrchestrator
         //  - No approval gate (e.g. Trivial blast radius): transit through
         //    AwaitingApproval to Approved with a synthetic "auto-approver"
         //    audit entry so the trail records exactly what happened.
-        if (hasApproval)
+        if (approvalGateKey is not null)
         {
-            var attempt = ConsecutiveDeferAttempts(proposal, WellKnownGateKeys.Approval) + 1;
+            var attempt = ConsecutiveDeferAttempts(proposal, approvalGateKey) + 1;
             if (attempt > maxDefers)
             {
                 return await TransitionAsync(
@@ -195,7 +195,7 @@ public sealed class ChangeProposalOrchestrator : IChangeProposalOrchestrator
                     new GateDecision
                     {
                         Timestamp = _time.GetUtcNow(),
-                        GateKey = WellKnownGateKeys.Approval,
+                        GateKey = approvalGateKey,
                         Action = GateAction.Fail,
                         Reason = $"approval defer budget exhausted ({maxDefers} consecutive Defers).",
                         DurationMs = 0
@@ -206,7 +206,7 @@ public sealed class ChangeProposalOrchestrator : IChangeProposalOrchestrator
             }
 
             var (approvalDecision, terminate) = await EvaluateGateAsync(
-                proposal, WellKnownGateKeys.Approval, mode, attempt, correlationId, cancellationToken)
+                proposal, approvalGateKey, mode, attempt, correlationId, cancellationToken)
                 .ConfigureAwait(false);
 
             if (terminate)
@@ -294,7 +294,7 @@ public sealed class ChangeProposalOrchestrator : IChangeProposalOrchestrator
         int maxDefers,
         CancellationToken cancellationToken)
     {
-        var mergeGates = MergeGates(proposal.RequiredGates);
+        var mergeGates = GatesForPhase(proposal.RequiredGates, GatePhase.Merge);
 
         // Merging does not legally self-loop in the state machine, so a Defer
         // records history without a status transition (selfLoopOnDefer: null).
@@ -526,24 +526,61 @@ public sealed class ChangeProposalOrchestrator : IChangeProposalOrchestrator
         return withHistory;
     }
 
-    private static IReadOnlyList<string> ValidationGates(IReadOnlyList<string> required) =>
-        required
-            .TakeWhile(k => !string.Equals(k, WellKnownGateKeys.Approval, StringComparison.Ordinal))
-            .ToList();
-
-    private static IReadOnlyList<string> MergeGates(IReadOnlyList<string> required)
+    /// <summary>
+    /// Filter <paramref name="required"/> to keys whose registered gate declares
+    /// <paramref name="phase"/>. Order is preserved from <paramref name="required"/>
+    /// so gates within a phase run in the order the proposal specified.
+    /// </summary>
+    /// <remarks>
+    /// A key with no registered gate is treated as <see cref="GatePhase.Validation"/>
+    /// so the "no gate registered for key" failure surfaces during validation rather
+    /// than after a synthetic auto-approval. The orchestrator's
+    /// <see cref="EvaluateGateAsync"/> Fail path then transitions the proposal to
+    /// Rejected with a directive message — same behaviour as before phase
+    /// metadata existed.
+    /// </remarks>
+    private IReadOnlyList<string> GatesForPhase(IReadOnlyList<string> required, GatePhase phase)
     {
-        var afterApproval = required
-            .SkipWhile(k => !string.Equals(k, WellKnownGateKeys.Approval, StringComparison.Ordinal))
-            .Skip(1)  // skip the approval gate itself
-            .ToList();
-        return afterApproval.Count > 0
-            ? afterApproval
-            // No approval gate in the pipeline → everything after validation gates is the merge phase.
-            : required
-                .SkipWhile(k => string.Equals(k, WellKnownGateKeys.SelfValidation, StringComparison.Ordinal)
-                             || string.Equals(k, WellKnownGateKeys.Policy, StringComparison.Ordinal))
-                .ToList();
+        var result = new List<string>(required.Count);
+        for (var i = 0; i < required.Count; i++)
+        {
+            var key = required[i];
+            if (ResolvePhase(key) == phase)
+            {
+                result.Add(key);
+            }
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Return the first key in <paramref name="required"/> whose registered gate
+    /// declares <see cref="GatePhase.Approval"/>, or null if the proposal carries
+    /// no approval-phase gate. The orchestrator uses the null case to trigger
+    /// auto-approve-by-omission (typically for Trivial blast radius proposals).
+    /// </summary>
+    /// <remarks>
+    /// "First approval-phase gate" — a quorum-style multi-approval setup that
+    /// registered two approval-phase gates would have only the first one invoked.
+    /// Future work if a real consumer needs quorum: extend the orchestrator to
+    /// iterate all approval-phase gates and aggregate their results.
+    /// </remarks>
+    private string? FindApprovalGateKey(IReadOnlyList<string> required)
+    {
+        for (var i = 0; i < required.Count; i++)
+        {
+            if (ResolvePhase(required[i]) == GatePhase.Approval)
+            {
+                return required[i];
+            }
+        }
+        return null;
+    }
+
+    private GatePhase ResolvePhase(string gateKey)
+    {
+        var gate = _services.GetKeyedService<IChangeProposalGate>(gateKey);
+        return gate?.Phase ?? GatePhase.Validation;
     }
 
     /// <summary>

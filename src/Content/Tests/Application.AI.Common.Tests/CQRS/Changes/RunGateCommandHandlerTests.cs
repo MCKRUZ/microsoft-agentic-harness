@@ -19,6 +19,7 @@ public sealed class RunGateCommandHandlerTests
     private sealed class StubGate(GateResult result) : IChangeProposalGate
     {
         public string Key => GateKey;
+        public GatePhase Phase => GatePhase.Validation;
         public Task<GateResult> EvaluateAsync(ChangeProposal proposal, GateContext context, CancellationToken cancellationToken)
             => Task.FromResult(result);
     }
@@ -26,6 +27,7 @@ public sealed class RunGateCommandHandlerTests
     private sealed class ThrowingGate : IChangeProposalGate
     {
         public string Key => GateKey;
+        public GatePhase Phase => GatePhase.Validation;
         public Task<GateResult> EvaluateAsync(ChangeProposal proposal, GateContext context, CancellationToken cancellationToken)
             => throw new InvalidOperationException("gate exploded");
     }
@@ -139,6 +141,7 @@ public sealed class RunGateCommandHandlerTests
     private sealed class CancellingGate : IChangeProposalGate
     {
         public string Key => GateKey;
+        public GatePhase Phase => GatePhase.Validation;
         public Task<GateResult> EvaluateAsync(ChangeProposal proposal, GateContext context, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();

@@ -39,6 +39,9 @@ public sealed class SelfValidationGate : IChangeProposalGate
     public string Key => WellKnownGateKeys.SelfValidation;
 
     /// <inheritdoc />
+    public GatePhase Phase => GatePhase.Validation;
+
+    /// <inheritdoc />
     public async Task<GateResult> EvaluateAsync(
         ChangeProposal proposal,
         GateContext context,

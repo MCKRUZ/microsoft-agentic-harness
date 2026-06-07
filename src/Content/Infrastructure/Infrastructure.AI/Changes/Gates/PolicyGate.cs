@@ -51,6 +51,9 @@ public sealed class PolicyGate : IChangeProposalGate
     public string Key => WellKnownGateKeys.Policy;
 
     /// <inheritdoc />
+    public GatePhase Phase => GatePhase.Validation;
+
+    /// <inheritdoc />
     public async Task<GateResult> EvaluateAsync(
         ChangeProposal proposal,
         GateContext context,
