@@ -45,7 +45,8 @@ namespace Domain.Common.Config.AI;
 /// ├── Planner           — Plan execution: concurrency, timeouts, persistence
 /// ├── Sandbox           — Sandbox execution: resource limits, isolation, containers
 /// ├── ToolOutputCompression — Tool output compression: thresholds, LLM fallback, strategies
-/// └── Plugins              — Local plugin declarations for external skill/MCP discovery
+/// ├── Plugins              — Local plugin declarations for external skill/MCP discovery
+/// └── Egress               — Per-skill outbound egress allowlist + SSRF defense
 /// </code>
 /// </para>
 /// </remarks>
@@ -203,4 +204,14 @@ public class AIConfig
     /// rollout never silently applies real changes.
     /// </summary>
     public ChangesConfig Changes { get; set; } = new();
+
+    /// <summary>
+    /// Per-skill outbound egress layer configuration (PR-3b). Off by default —
+    /// when enabled the named <c>HttpClient</c> ("egress") composes the
+    /// harness's allowlist <c>DelegatingHandler</c> above a
+    /// <c>Microsoft.Security.AntiSSRF</c> handler so RFC 1918 / link-local /
+    /// loopback / IMDS denies and connect-time DNS validation are enforced
+    /// alongside the per-skill hostname allowlist.
+    /// </summary>
+    public EgressConfig Egress { get; set; } = new();
 }
