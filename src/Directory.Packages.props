@@ -57,6 +57,7 @@
     <PackageVersion Include="Azure.AI.OpenAI" Version="2.8.0-beta.1" />
     <PackageVersion Include="Microsoft.Agents.AI.OpenAI" Version="1.9.0" />
     <PackageVersion Include="Microsoft.Extensions.AI.AzureAIInference" Version="10.0.0-preview.1.25559.3" />
+    <PackageVersion Include="Microsoft.Security.AntiSSRF" Version="1.0.0" />
 
     <!-- Infrastructure.AI.Evaluation -->
     <PackageVersion Include="YamlDotNet" Version="16.3.0" />

@@ -55,6 +55,7 @@ namespace Infrastructure.AI;
 ///   <item><description><c>DependencyInjection.Governance.cs</c> — permissions, escalation, resilience</description></item>
 ///   <item><description><c>DependencyInjection.Planner.cs</c> — planner DB, step executors, sandbox</description></item>
 ///   <item><description><c>DependencyInjection.Quality.cs</c> — drift detection and learnings</description></item>
+///   <item><description><c>DependencyInjection.Egress.cs</c> — per-skill egress policy + AntiSSRF</description></item>
 /// </list>
 /// </para>
 /// Called from the Presentation composition root after Application dependencies:
@@ -202,6 +203,12 @@ public static partial class DependencyInjection
         //     NotConfigured defaults). Inert until AppConfig.AI.Changes.Enabled. ---
 
         RegisterChangesServices(services);
+
+        // --- Egress layer (per-skill allowlist policy + AntiSSRF terminal
+        //     handler + JSONL audit + named HttpClient "egress"). Inert until
+        //     AppConfig.AI.Egress.Enabled. ---
+
+        RegisterEgressServices(services);
 
         // --- Governance (permissions, escalation, resilience) ---
 
