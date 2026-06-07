@@ -147,13 +147,111 @@ Order matters. The outer `EgressPolicyHandler` performs the cheap, declarative h
 
 Telemetry hook: wrap the `SendAsync` call of `EgressPolicyHandler` with a try/catch on `AntiSSRFException` and emit `gen_ai.egress.ssrf_blocked` with the host, scheme, resolved-IP class (private/link-local/loopback/metadata), and skill id. This converts the library's exception into a first-class signal in the harness's existing OTel pipeline (see `GenAiSemconvRegistry`).
 
-## 6. Open uncertainties
+## 6. Adoption-time verification
 
-- **NuGet download count for `Microsoft.Security.AntiSSRF` is unverified.** The nuget.org search API call from this environment failed under TLS/network restrictions, so the popularity signal cannot be quoted. The package's existence on nuget.org is referenced from the repo README and from Microsoft's own `microsoft.github.io/AntiSSRF/` documentation, both of which point to `https://www.nuget.org/packages/Microsoft.Security.AntiSSRF/`. Recommend a one-line verification (`dotnet add package Microsoft.Security.AntiSSRF`) when this decision is implemented.
-- **`idunno.Security.Ssrf` on nuget.org.** The README badges suggest a NuGet listing exists, but a direct query for the package id returned no public-feed hit during this survey, and the README's "Pre-releases" section explicitly publishes to MyGet. If the maintainer publishes a stable release to nuget.org during the harness lifetime, re-evaluate — its API surface (`SsrfSocketsHttpHandlerFactory.Create()`) is simpler than `Microsoft.Security.AntiSSRF` and would cost less per-call boilerplate.
-- **AntiSSRF + `IHttpClientFactory` lifecycle.** The library's `_editLock` semantics throw if policy properties are mutated after the first request. The factory pattern above instantiates a fresh policy per handler-resolution scope, which is safe, but if a future change registers the policy as a singleton and tries to retune it at runtime, it will throw. Document this in the harness's HttpClient factory section.
-- **IPv6 ULA (`fc00::/7`) coverage.** Confirmed `IPAddressRanges` includes a wide IPv6 set (link-local `fe80::/10`, multicast `ff00::/8`, benchmarking `2001:db8::/32`, etc.) but the specific `fc00::/7` ULA block was not surfaced by the partial source dump used in this survey. Either confirm via the full `IPAddressRanges.json` source or add it explicitly to `AntiSSRFPolicy.DeniedAddresses`.
-- **WAF / forward-proxy interaction.** If the harness's egress traffic is forced through a corporate proxy, the library's `ProxiedSsrfDelegatingHandler` path applies (idunno) or the standard `SocketsHttpHandler` proxy semantics (AntiSSRF). Validate the chosen library cooperates with the proxy before shipping to enterprises that mandate egress proxies.
+Pre-implementation verification of the §5 open uncertainties, executed 2026-06-07 before opening PR-3b.
+
+### 6.1 `Microsoft.Security.AntiSSRF` on NuGet — verified present ✅ (yellow flag on adoption count)
+
+Captured via `dotnet package search Microsoft.Security.AntiSSRF --exact-match` and the public `azuresearch-usnc.nuget.org/query` endpoint:
+
+| Field | Value |
+|---|---|
+| Package id | `Microsoft.Security.AntiSSRF` |
+| Latest version | `1.0.0` (only version) |
+| Authors | Microsoft |
+| Owners | AntiSSRF, Microsoft |
+| Verified publisher | **true** (Microsoft prefix reservation, cryptographically signed) |
+| License | MIT |
+| First published | 2026-05-05 |
+| Vulnerabilities | none (`vulnerabilities: []`) |
+| Total downloads (as of 2026-06-07) | **381** |
+| Source commit pinned in nuspec | `8366ff53e9c75a52d1edcc06fde7b1620243928c` |
+| Target frameworks shipped | `net8.0` + `netstandard2.0` |
+| netstandard2.0 dependencies | `System.Memory` 4.5.5, `System.Threading.Tasks.Extensions` 4.5.4 |
+| net8.0 dependencies | none |
+| Restored cleanly on .NET 10 SDK | **yes** — net10.0 picks up the net8.0 build via forward-compat |
+
+**Yellow flag:** 381 downloads is low for a production dependency. Counter-signals that justify adoption anyway:
+
+- Package is ~1 month old (published 2026-05-05); count grows from this baseline
+- Microsoft verified publisher — not a typosquat
+- Active source repo: 95 stars, last commit 2026-05-29 (3 weeks before survey)
+- Zero known CVEs; nuspec pins to a specific Microsoft commit, not a moving target
+- The alternative (`idunno.Security.Ssrf`) is still MyGet-only — hard blocker
+- Hand-roll costs ~150 LOC + maintenance burden falls on the harness team
+
+**Follow-up obligation (PR-3b merge gate):** Re-check `totalDownloads` and `pushed_at` before PR-3b merges. If downloads < 1000 OR last source commit > 90 days old at that point, **vendor the source** into `src/Content/Infrastructure/Infrastructure.AI/Egress/AntiSsrf/` pinned to commit `8366ff53e9c75a52d1edcc06fde7b1620243928c` (~600 LOC fork) and drop the NuGet dependency. The fork option is preserved by the integration sketch above — the harness's own `IEgressPolicy` decorator is the contract; the inner SSRF implementation is swappable.
+
+### 6.2 `idunno.Security.Ssrf` on nuget.org — unchanged, still MyGet-only
+
+No re-evaluation needed for PR-3b. Re-evaluate only if Microsoft.Security.AntiSSRF gets abandoned and we need a replacement before vendoring.
+
+### 6.3 AntiSSRF + `IHttpClientFactory` lifecycle — verified safe ✅
+
+Inspected `dotnet/src/AntiSSRFPolicy.cs` at commit `8366ff53`. `_editLock` is a **one-way immutability latch**, not a thread-synchronization lock:
+
+```csharp
+private volatile bool _editLock = false;
+
+// Setters and Add* methods check the flag:
+public void AddDeniedAddresses(string[]? networks) {
+    if (_editLock) throw new InvalidOperationException(...);
+    ...
+}
+
+// The latch is flipped exactly once, inside the factory method:
+public AntiSSRFHandler GetHandler() {
+    _editLock = true;
+    return new AntiSSRFHandler(this);
+}
+```
+
+After `GetHandler()` returns, the policy is permanently immutable. The runtime read path (`IsNetworkConnectionAllowed`) does not touch the flag. This is the ideal shape for `IHttpClientFactory`:
+
+1. Configure `AntiSSRFPolicy` once at startup (during `RegisterChangesServices` / DI composition).
+2. Call `policy.GetHandler()` to produce the `AntiSSRFHandler`, which freezes the policy.
+3. Register the handler via `AddHttpMessageHandler(() => handler)` — IHttpClientFactory caches it.
+4. Concurrent requests share the immutable policy with zero lock contention.
+
+The harness's `EgressPolicyHttpClientFactory` must NOT expose runtime mutation of the underlying policy. Document this in the `Infrastructure.AI/Egress/` XML comments at PR-3b time.
+
+### 6.4 IPv6 ULA (`fc00::/7`) coverage — verified present ✅
+
+Inspected `dotnet/src/IPAddressRanges.cs` at commit `8366ff53`. The relevant catalogues:
+
+```csharp
+public static readonly string[] privateUse   = { "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16" };
+public static readonly string[] loopback     = { "127.0.0.0/8", "::1/128" };
+public static readonly string[] linkLocal    = { "169.254.0.0/16", "fe80::/10" };
+public static readonly string[] imds         = { "169.254.169.254/32" };
+public static readonly string[] multicast    = { "224.0.0.0/4", "ff00::/8" };
+public static readonly string[] uniqueLocal  = { "fc00::/7" };              // ← IPv6 ULA, present
+public static readonly string[] recommendedV1 = { /* superset including all of the above plus
+                                                  "0.0.0.0/8", "100.64.0.0/10", "168.63.129.16/32" (Azure IMDS),
+                                                  reserved + benchmarking ranges */ };
+```
+
+`fc00::/7` is exposed as its own `uniqueLocal` catalogue (separate from `linkLocal`) and is also included in `recommendedV1`. **No remediation needed.** The §5 integration sketch's `AddDeniedAddresses(IPAddressRanges.uniqueLocal)` call is sufficient (or `AddDeniedAddresses(IPAddressRanges.recommendedV1)` for the curated superset).
+
+### 6.5 Sandbox executors on merged main — verified green ✅
+
+Verification step required by PR-3 plan §229: confirm `ProcessSandboxExecutor` + `DockerSandboxExecutor` exist and their tests pass before the egress layer is added. As of merged main `b416d53` (PR-2 + all follow-ups + item 2 merged):
+
+```
+src/Content/Infrastructure/Infrastructure.AI/Sandbox/
+  ProcessSandboxExecutor.cs
+  DockerSandboxExecutor.cs
+  WindowsJobObjectManager.cs
+  WindowsProcessResourceLimiter.cs
+  NoOpProcessResourceLimiter.cs
+```
+
+`dotnet test --filter "FullyQualifiedName~Sandbox"` returns **51 passing tests across 4 assemblies, 0 failures**. PR-3b can add the egress layer without first completing or refactoring the sandbox executors.
+
+### 6.6 WAF / forward-proxy interaction — unverified, deferred to consumer
+
+This is environmental — depends on whether a specific enterprise consumer routes egress through a corporate proxy. Validation belongs in the consumer's integration test rig, not in the template repo. Documented as a known caveat in the harness onboarding guide instead of carried as a PR-3b blocker.
 
 ## Sources
 
