@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Application.AI.Common.Interfaces.Telemetry;
 using Domain.AI.Telemetry.Conventions;
 
 namespace Infrastructure.AI.Orchestration.Magentic;
@@ -222,6 +223,149 @@ public sealed class MagenticSpanEmitter : IDisposable
             workflowSpan.SetStatus(ActivityStatusCode.Error, errorMessage);
         }
         workflowSpan.Dispose();
+    }
+
+    /// <summary>
+    /// Conditionally attaches the <see cref="MagenticConventions.PlanContent"/>
+    /// attribute to the manager span's <see cref="MagenticConventions.EventPlanCreated"/>
+    /// event when the content-capture policy permits.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The plan text is recorded as a span event tag at observation time so
+    /// the captured content lands on the exact event the rest of the schema
+    /// docs anchor to. When <paramref name="policy"/> reports
+    /// <see cref="IContentCapturePolicy.ShouldCaptureMagenticPlanContent"/>
+    /// false this method records the bare event (matching the PR-6 default)
+    /// and skips the filter call entirely.
+    /// </para>
+    /// </remarks>
+    public static void RecordPlanCreatedWithContent(
+        Activity? managerSpan,
+        int planVersion,
+        string? planText,
+        IContentCapturePolicy policy,
+        IContentRedactionFilter filter)
+    {
+        ArgumentNullException.ThrowIfNull(policy);
+        ArgumentNullException.ThrowIfNull(filter);
+
+        managerSpan?.SetTag(MagenticConventions.PlanVersion, planVersion);
+        var evt = BuildPlanEvent(
+            MagenticConventions.EventPlanCreated,
+            planText,
+            policy,
+            filter);
+        managerSpan?.AddEvent(evt);
+    }
+
+    /// <summary>
+    /// Conditionally attaches the <see cref="MagenticConventions.PlanContent"/>
+    /// attribute to the manager span's <see cref="MagenticConventions.EventReplanned"/>
+    /// event when the content-capture policy permits.
+    /// </summary>
+    public static void RecordReplannedWithContent(
+        Activity? managerSpan,
+        int planVersion,
+        string? planText,
+        IContentCapturePolicy policy,
+        IContentRedactionFilter filter)
+    {
+        ArgumentNullException.ThrowIfNull(policy);
+        ArgumentNullException.ThrowIfNull(filter);
+
+        managerSpan?.SetTag(MagenticConventions.PlanVersion, planVersion);
+        var evt = BuildPlanEvent(
+            MagenticConventions.EventReplanned,
+            planText,
+            policy,
+            filter);
+        managerSpan?.AddEvent(evt);
+    }
+
+    /// <summary>
+    /// Conditionally stamps the
+    /// <see cref="MagenticConventions.ReplanReason"/> attribute on a reset
+    /// span when the content-capture policy permits.
+    /// </summary>
+    public static void RecordResetReason(
+        Activity? resetSpan,
+        string? replanReason,
+        IContentCapturePolicy policy,
+        IContentRedactionFilter filter)
+    {
+        ArgumentNullException.ThrowIfNull(policy);
+        ArgumentNullException.ThrowIfNull(filter);
+        if (resetSpan is null) return;
+        if (string.IsNullOrEmpty(replanReason)) return;
+        if (!policy.ShouldCaptureMagenticReplanReason()) return;
+
+        resetSpan.SetTag(
+            MagenticConventions.ReplanReason,
+            filter.Redact(replanReason, policy.Categories));
+    }
+
+    /// <summary>
+    /// Conditionally stamps the
+    /// <see cref="MagenticConventions.ProgressInstructionOrQuestion"/>
+    /// attribute on a round span when the content-capture policy permits.
+    /// </summary>
+    public static void RecordRoundInstruction(
+        Activity? roundSpan,
+        string? instructionOrQuestion,
+        IContentCapturePolicy policy,
+        IContentRedactionFilter filter)
+    {
+        ArgumentNullException.ThrowIfNull(policy);
+        ArgumentNullException.ThrowIfNull(filter);
+        if (roundSpan is null) return;
+        if (string.IsNullOrEmpty(instructionOrQuestion)) return;
+        if (!policy.ShouldCaptureMagenticProgressContent()) return;
+
+        roundSpan.SetTag(
+            MagenticConventions.ProgressInstructionOrQuestion,
+            filter.Redact(instructionOrQuestion, policy.Categories));
+    }
+
+    /// <summary>
+    /// Conditionally stamps the
+    /// <see cref="MagenticConventions.PlanReviewFeedback"/> attribute on a
+    /// plan-review span when the content-capture policy permits.
+    /// </summary>
+    public static void RecordPlanReviewFeedback(
+        Activity? planReviewSpan,
+        string? revisionFeedback,
+        IContentCapturePolicy policy,
+        IContentRedactionFilter filter)
+    {
+        ArgumentNullException.ThrowIfNull(policy);
+        ArgumentNullException.ThrowIfNull(filter);
+        if (planReviewSpan is null) return;
+        if (string.IsNullOrEmpty(revisionFeedback)) return;
+        if (!policy.ShouldCaptureMagenticPlanReviewFeedback()) return;
+
+        planReviewSpan.SetTag(
+            MagenticConventions.PlanReviewFeedback,
+            filter.Redact(revisionFeedback, policy.Categories));
+    }
+
+    private static ActivityEvent BuildPlanEvent(
+        string eventName,
+        string? planText,
+        IContentCapturePolicy policy,
+        IContentRedactionFilter filter)
+    {
+        if (string.IsNullOrEmpty(planText) || !policy.ShouldCaptureMagenticPlanContent())
+        {
+            return new ActivityEvent(eventName);
+        }
+
+        var redacted = filter.Redact(planText, policy.Categories);
+        var tags = new ActivityTagsCollection
+        {
+            { MagenticConventions.PlanContent, redacted },
+        };
+        return new ActivityEvent(eventName, tags: tags);
     }
 
     /// <summary>Disposes the underlying <see cref="ActivitySource"/>.</summary>

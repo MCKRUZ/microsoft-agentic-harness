@@ -16,6 +16,7 @@ using Domain.Common.Config.AI.RAG;
 using Domain.Common.Config.AI.Resilience;
 using Domain.Common.Config.AI.Routing;
 using Domain.Common.Config.AI.Sandbox;
+using Domain.Common.Config.AI.Telemetry;
 
 namespace Domain.Common.Config.AI;
 
@@ -234,4 +235,12 @@ public class AIConfig
     /// skill at runtime.
     /// </summary>
     public GitOpsConfig GitOps { get; set; } = new();
+
+    /// <summary>
+    /// Telemetry-layer configuration (PR-11). Wraps the OTel GenAI
+    /// content-capture toggles; OFF by default so a fresh consumer never
+    /// silently emits prompt / tool / Magentic content into traces. See
+    /// <see cref="TelemetryConfig.ContentCapture"/>.
+    /// </summary>
+    public TelemetryConfig Telemetry { get; set; } = new();
 }

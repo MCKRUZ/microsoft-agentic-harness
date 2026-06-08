@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Application.AI.Common.Interfaces.Orchestration.Magentic;
+using Application.AI.Common.Interfaces.Telemetry;
 using Domain.AI.Telemetry.Conventions;
 using Infrastructure.AI.Orchestration.Magentic;
 using MediatR;
@@ -83,7 +84,9 @@ internal static class MagenticTestHelpers
     public static MagenticEventSubscriber BuildSubscriber(
         out Mock<IMagenticPlanReviewBridge> bridge,
         out Mock<IMediator> mediator,
-        MagenticSpanEmitter? emitter = null)
+        MagenticSpanEmitter? emitter = null,
+        IContentCapturePolicy? capturePolicy = null,
+        IContentRedactionFilter? redactionFilter = null)
     {
         bridge = new Mock<IMagenticPlanReviewBridge>();
         mediator = new Mock<IMediator>();
@@ -92,6 +95,10 @@ internal static class MagenticTestHelpers
             emitter ?? new MagenticSpanEmitter(),
             bridge.Object,
             router,
+            // Default to capture-off mocks so pre-content-capture tests are
+            // unaffected; ShouldCapture* on a bare mock returns false.
+            capturePolicy ?? Mock.Of<IContentCapturePolicy>(),
+            redactionFilter ?? Mock.Of<IContentRedactionFilter>(),
             NullLogger<MagenticEventSubscriber>.Instance);
     }
 

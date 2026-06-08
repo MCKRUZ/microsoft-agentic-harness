@@ -283,6 +283,82 @@ Adobe's locked sidecar: it must redact before emit, not after observe.
 - The dashboard subscription enforces tenant/user scope via the existing
   `IKnowledgeScopeValidator` chain. The exporter never bypasses it.
 
+#### Content Capture Policy (PR-11)
+
+The OTel GenAI conventions allow attaching full prompt / output / tool /
+orchestration content to spans for debugging and audit. This is **OFF by
+default** and gated behind a closed-by-default policy so a fresh
+`appsettings.json` never silently surfaces user content in traces.
+
+**Stability opt-in is mandatory when capture is on.** Content keys live in the
+experimental GenAI SemConv tier. When capture is enabled the
+`OTEL_SEMCONV_STABILITY_OPT_IN` environment variable **must** equal
+`gen_ai_latest_experimental`
+(`GenAiSemconvRegistry.SemconvStabilityOptInValue`). The hosted
+`ContentCaptureStartupValidator` reads this at boot and **fails the host**
+when capture is on but the variable is unset or wrong, and again if no
+`IContentRedactionFilter` is registered — content can only leave the domain
+through a redaction filter.
+
+**Two-level gate.** A master `Enabled` flag is the single operator decision;
+per-attribute toggles then opt individual attributes in. When the master flag
+is off, every `ShouldCapture*` check on `IContentCapturePolicy` returns false
+regardless of a stale per-attribute toggle. The `ContentCaptureConfigValidator`
+(FluentValidation, auto-discovered) enforces that, when enabled,
+`RedactionCategories` is non-empty and every entry maps to a known
+`RedactionCategory`.
+
+**Redaction before emit.** Every captured string passes through
+`DefaultContentRedactionFilter` (a fixed, over-redactive regex rule set) before
+it is attached. The eight `RedactionCategory` values:
+
+| Category | Masks |
+|---|---|
+| `Email` | Email addresses (RFC 5322 simplified) |
+| `Phone` | E.164 + North-American phone numbers |
+| `Ssn` | US Social Security Numbers |
+| `CreditCard` | Credit-card PANs (broad, Luhn-ish) |
+| `IpAddress` | IPv4 / IPv6 addresses |
+| `AwsKey` | AWS access-key ids (`AKIA…`, `ASIA…`, …) |
+| `JwtToken` | JWT tokens (`header.payload.signature`) |
+| `Generic` | Catch-all: `Bearer …`, `AccountKey=`, `api_key=`, … |
+
+The filter is intentionally noisy: a false positive that masks a benign string
+is acceptable; a false negative that leaks a credit-card number into a span is
+not.
+
+**Schema** — bind from `AppConfig.AI.Telemetry.ContentCapture`:
+
+```jsonc
+{
+  "AI": {
+    "Telemetry": {
+      "ContentCapture": {
+        "Enabled": false,                    // master toggle — OFF by default
+        "CapturePromptContent": false,       // gen_ai.input.messages
+        "CaptureOutputContent": false,       // gen_ai.output.messages
+        "CaptureToolCallArguments": false,   // gen_ai.tool.call.arguments
+        "CaptureToolCallResult": false,      // gen_ai.tool.call.result
+        "CaptureMagenticPlanContent": false, // ...magentic.plan.content
+        "CaptureMagenticReplanReason": false,// ...magentic.replan.reason
+        "CaptureMagenticProgressContent": false,
+        "CaptureMagenticPlanReviewFeedback": false,
+        "RedactionCategories": [
+          "Email", "Phone", "Ssn", "CreditCard",
+          "IpAddress", "AwsKey", "JwtToken", "Generic"
+        ]
+      }
+    }
+  }
+}
+```
+
+To turn capture on in an environment: set the env var
+(`OTEL_SEMCONV_STABILITY_OPT_IN=gen_ai_latest_experimental`), flip `Enabled`
+to `true`, and enable only the specific per-attribute toggles you need. Leave
+`RedactionCategories` at the full list unless you have a deliberate,
+reviewed reason to shrink it.
+
 ### G9 — Convention upgrades happen on a fixed cadence
 
 Skyscanner's biggest pain was 6-month upgrade gaps that batched breaking
@@ -455,6 +531,14 @@ Following the OTel pattern of explicit overlap / extends / relates-to:
 
 ## Change log
 
+- 2026-06-08 — v1.3. PR-11 content capture. Added the "Content Capture Policy
+  (PR-11)" subsection under G8: `OTEL_SEMCONV_STABILITY_OPT_IN` requirement,
+  the `AppConfig.AI.Telemetry.ContentCapture` schema (master `Enabled` +
+  per-attribute toggles + `RedactionCategories`), the eight redaction
+  categories, the OFF-by-default safety stance, and an appsettings.json
+  example. Backed by `ContentCaptureConfigValidator`,
+  `DefaultContentRedactionFilter`, `ContentCapturePolicy`, and
+  `ContentCaptureStartupValidator`.
 - 2026-06-03 — v1 draft. Initial blueprint, lessons-learned table from
   Adobe / Mastodon / Skyscanner reference implementations, mapping to
   existing harness code.

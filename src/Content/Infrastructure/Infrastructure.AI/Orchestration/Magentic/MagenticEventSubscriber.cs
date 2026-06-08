@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Application.AI.Common.Interfaces.Orchestration.Magentic;
+using Application.AI.Common.Interfaces.Telemetry;
 using Domain.AI.Telemetry.Conventions;
 using Microsoft.Agents.AI.Workflows;
 using Microsoft.Agents.AI.Workflows.Specialized.Magentic;
@@ -38,6 +39,8 @@ public sealed class MagenticEventSubscriber : IDisposable
     private readonly MagenticSpanEmitter _emitter;
     private readonly IMagenticPlanReviewBridge _planReviewBridge;
     private readonly MagenticChangeProposalRouter _changeProposalRouter;
+    private readonly IContentCapturePolicy _contentCapturePolicy;
+    private readonly IContentRedactionFilter _contentRedactionFilter;
     private readonly ILogger<MagenticEventSubscriber> _logger;
 
     private Activity? _workflowSpan;
@@ -76,11 +79,15 @@ public sealed class MagenticEventSubscriber : IDisposable
         MagenticSpanEmitter emitter,
         IMagenticPlanReviewBridge planReviewBridge,
         MagenticChangeProposalRouter changeProposalRouter,
+        IContentCapturePolicy contentCapturePolicy,
+        IContentRedactionFilter contentRedactionFilter,
         ILogger<MagenticEventSubscriber> logger)
     {
         _emitter = emitter;
         _planReviewBridge = planReviewBridge;
         _changeProposalRouter = changeProposalRouter;
+        _contentCapturePolicy = contentCapturePolicy;
+        _contentRedactionFilter = contentRedactionFilter;
         _logger = logger;
     }
 

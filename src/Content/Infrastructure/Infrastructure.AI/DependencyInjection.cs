@@ -230,6 +230,12 @@ public static partial class DependencyInjection
 
         RegisterIncidentResponseServices(services);
 
+        // --- Content capture (PR-11). Per-attribute capture policy, default
+        //     regex redaction filter, startup validator. Inert until the
+        //     consumer flips AppConfig.AI.Telemetry.ContentCapture.Enabled. ---
+
+        RegisterContentCaptureServices(services);
+
         // --- Magentic orchestration (PR-6). Span emitter + HITL bridge +
         //     change-proposal router. Inert until IMagenticOrchestrator.RunAsync
         //     is invoked. ---
