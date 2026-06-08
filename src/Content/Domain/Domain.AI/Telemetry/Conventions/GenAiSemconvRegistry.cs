@@ -293,4 +293,38 @@ public static class GenAiSemconvRegistry
     /// Re-exported from <see cref="MagenticConventions.ActivitySourceName"/>.
     /// </summary>
     public const string MagenticActivitySourceName = MagenticConventions.ActivitySourceName;
+
+    // ────────────────────────────────────────────────────────────────────
+    // A2A — Agent-to-Agent (re-exported from A2AConventions)
+    // ────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Operation value used on both client and server A2A spans.
+    /// Re-exported from <see cref="A2AConventions.OperationInvokeA2A"/>.
+    /// </summary>
+    public const string OperationInvokeA2A = A2AConventions.OperationInvokeA2A;
+
+    /// <summary>
+    /// Caller agent identifier on A2A spans.
+    /// Re-exported from <see cref="A2AConventions.CallerId"/>.
+    /// </summary>
+    public const string A2ACallerId = A2AConventions.CallerId;
+
+    /// <summary>
+    /// Callee agent identifier on A2A spans.
+    /// Re-exported from <see cref="A2AConventions.CalleeId"/>.
+    /// </summary>
+    public const string A2ACalleeId = A2AConventions.CalleeId;
+
+    /// <summary>
+    /// Correlation id shared by caller and callee A2A spans.
+    /// Re-exported from <see cref="A2AConventions.CorrelationId"/>.
+    /// </summary>
+    public const string A2ACorrelationId = A2AConventions.CorrelationId;
+
+    /// <summary>
+    /// Name of the OTel <c>ActivitySource</c> for A2A client/server spans.
+    /// Re-exported from <see cref="A2AConventions.ActivitySourceName"/>.
+    /// </summary>
+    public const string A2AActivitySourceName = A2AConventions.ActivitySourceName;
 }
