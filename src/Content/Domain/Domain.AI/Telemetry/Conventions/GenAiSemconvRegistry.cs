@@ -247,4 +247,50 @@ public static class GenAiSemconvRegistry
     /// Re-exported from <see cref="ToolConventions.HarnessIteration"/>. Harness-vendored.
     /// </summary>
     public const string HarnessIteration = ToolConventions.HarnessIteration;
+
+    // ────────────────────────────────────────────────────────────────────
+    // Magentic orchestration (re-exported from MagenticConventions)
+    // ────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Operation value used on the root Magentic workflow span.
+    /// Re-exported from <see cref="MagenticConventions.OperationInvokeWorkflow"/>.
+    /// </summary>
+    public const string OperationInvokeWorkflow = MagenticConventions.OperationInvokeWorkflow;
+
+    /// <summary>
+    /// Workflow name attribute on the root Magentic workflow span.
+    /// Re-exported from <see cref="MagenticConventions.WorkflowName"/>.
+    /// </summary>
+    public const string WorkflowName = MagenticConventions.WorkflowName;
+
+    /// <summary>
+    /// Magentic orchestration role discriminator (<c>manager</c> | <c>participant</c>).
+    /// Re-exported from <see cref="MagenticConventions.Role"/>.
+    /// </summary>
+    public const string MagenticRole = MagenticConventions.Role;
+
+    /// <summary>
+    /// Monotonic Magentic plan version on the manager span.
+    /// Re-exported from <see cref="MagenticConventions.PlanVersion"/>.
+    /// </summary>
+    public const string MagenticPlanVersion = MagenticConventions.PlanVersion;
+
+    /// <summary>
+    /// Magentic round number on the per-round span.
+    /// Re-exported from <see cref="MagenticConventions.RoundNumber"/>.
+    /// </summary>
+    public const string MagenticRoundNumber = MagenticConventions.RoundNumber;
+
+    /// <summary>
+    /// Magentic reset number on the reset span.
+    /// Re-exported from <see cref="MagenticConventions.ResetNumber"/>.
+    /// </summary>
+    public const string MagenticResetNumber = MagenticConventions.ResetNumber;
+
+    /// <summary>
+    /// Name of the OTel <c>ActivitySource</c> for Magentic orchestration spans.
+    /// Re-exported from <see cref="MagenticConventions.ActivitySourceName"/>.
+    /// </summary>
+    public const string MagenticActivitySourceName = MagenticConventions.ActivitySourceName;
 }
