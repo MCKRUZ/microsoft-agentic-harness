@@ -222,6 +222,13 @@ public static partial class DependencyInjection
 
         RegisterMagenticServices(services);
 
+        // --- A2A surface (PR-7). Caller + callee dispatch, identity
+        //     propagation, OTel span linking, and pluggable auth
+        //     (in-process vs cross-process mTLS+JWT). Transport selected by
+        //     AppConfig.AI.A2A.Surface.Transport. ---
+
+        RegisterA2AServices(services);
+
         // --- Governance (permissions, escalation, resilience) ---
 
         RegisterGovernanceServices(services);

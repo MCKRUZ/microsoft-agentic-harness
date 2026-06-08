@@ -22,6 +22,66 @@ public class A2AConfig
 
     /// <summary>Whether A2A is configured with at least one remote agent.</summary>
     public bool HasRemoteAgents => RemoteAgents.Count > 0;
+
+    /// <summary>
+    /// PR-7 surface configuration. Controls which transport
+    /// (in-process vs cross-process) the harness A2A client/server use, and
+    /// the auth settings for the cross-process transport.
+    /// </summary>
+    public A2ASurfaceConfig Surface { get; set; } = new();
+}
+
+/// <summary>
+/// PR-7 A2A surface configuration. Bound from <c>AppConfig:AI:A2A:Surface</c>.
+/// </summary>
+public class A2ASurfaceConfig
+{
+    /// <summary>
+    /// Transport selector. <c>InProcess</c> routes calls through the in-process
+    /// bridge; <c>Http</c> routes calls over HTTP with mutual TLS and a workload
+    /// identity JWT bearer. Default is <c>InProcess</c> so the example demo
+    /// works out of the box without external setup.
+    /// </summary>
+    public A2ATransport Transport { get; set; } = A2ATransport.InProcess;
+
+    /// <summary>
+    /// Required audience claim ("aud") for inbound JWTs on the cross-process
+    /// server. Typically this agent's Entra application uri. Null when the
+    /// transport is <see cref="A2ATransport.InProcess"/>.
+    /// </summary>
+    public string? ExpectedAudience { get; set; }
+
+    /// <summary>
+    /// Expected issuer claim ("iss") for inbound JWTs. Typically the harness
+    /// identity provider's discovery endpoint. Null in the in-process transport.
+    /// </summary>
+    public string? ExpectedIssuer { get; set; }
+
+    /// <summary>
+    /// Clock skew tolerance in seconds when validating JWT expiry. Set to 0 on
+    /// the cross-process path per the security playbook — never widen this
+    /// without a recorded design decision.
+    /// </summary>
+    public int ClockSkewSeconds { get; set; }
+
+    /// <summary>
+    /// Maximum number of extension headers permitted on a single envelope. Caps
+    /// the server's deserialisation work and shields against malicious payload
+    /// inflation. Defaults to 16.
+    /// </summary>
+    public int MaxExtensionHeaders { get; set; } = 16;
+}
+
+/// <summary>
+/// Transport selector for the PR-7 A2A surface.
+/// </summary>
+public enum A2ATransport
+{
+    /// <summary>Same-process dispatch via the in-process bridge.</summary>
+    InProcess = 0,
+
+    /// <summary>Cross-process dispatch over HTTP with mTLS + workload-identity JWT.</summary>
+    Http = 1
 }
 
 /// <summary>
