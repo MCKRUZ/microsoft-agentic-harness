@@ -18,6 +18,7 @@ using Infrastructure.AI.Agents;
 using Infrastructure.AI.Audit;
 using Infrastructure.AI.Compaction;
 using Infrastructure.AI.Compaction.Strategies;
+using Infrastructure.AI.Tools.Workspace;
 using Infrastructure.AI.Compression;
 using Infrastructure.AI.Compression.Strategies;
 using Infrastructure.AI.Config;
@@ -118,6 +119,12 @@ public static partial class DependencyInjection
             .Distinct();
 
         RegisterToolServices(services, appConfig, allowedBasePaths);
+
+        // Workspace skill pack — read_file, write_file (submits ChangeProposal), list_files,
+        // run_tests, run_lint. Ambient IWorkspaceContextAccessor flows the sandbox-injected
+        // working-copy path. Registered unconditionally so any consumer that enables the
+        // workspace-skill plugin sees the keyed-DI tool entries available.
+        services.AddWorkspaceSkillTools();
 
         // Chat client factory — creates IChatClient from Azure OpenAI / OpenAI / AI Inference / Persistent Agents
         services.AddSingleton<IChatClientFactory, ChatClientFactory>();
