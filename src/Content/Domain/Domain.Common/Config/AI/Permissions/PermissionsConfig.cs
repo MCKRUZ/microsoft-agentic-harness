@@ -50,4 +50,12 @@ public class PermissionsConfig
     /// Each entry defines the default behavior and tool overrides for that tier.
     /// </summary>
     public Dictionary<string, AutonomyTierPolicyConfig> TierPolicies { get; set; } = new();
+
+    /// <summary>
+    /// Graded autonomy configuration (PR-4) layered on top of <see cref="TierPolicies"/>.
+    /// Off by default — when enabled, the gate resolver consults
+    /// <c>IAutonomyDecisionEvaluator</c> for per-environment and per-skill rules
+    /// instead of using the static PR-2 mapping.
+    /// </summary>
+    public GradedAutonomyConfig GradedAutonomy { get; set; } = new();
 }

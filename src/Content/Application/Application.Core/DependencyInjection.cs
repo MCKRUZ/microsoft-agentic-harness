@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces.Escalation;
+using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Permissions;
 using Application.Core.Escalation.Strategies;
 using Application.Core.Permissions;
@@ -47,6 +48,12 @@ public static class DependencyInjection
 
 		// Plugin-boundary rule provider — generates permission rules from plugin governance config
 		services.AddSingleton<IPermissionRuleProvider, PluginPermissionRuleProvider>();
+
+		// Graded autonomy decision evaluator (PR-4) — consulted by the ChangeProposal
+		// gate resolver to decide whether the approval gate is included in a proposal's
+		// frozen gate list. When AppConfig.AI.Permissions.GradedAutonomy.Enabled is false
+		// the evaluator returns the PR-2 fallback unchanged.
+		services.AddSingleton<IAutonomyDecisionEvaluator, AutonomyDecisionEvaluator>();
 
 		// Approval strategies — keyed by ApprovalStrategyType for IEscalationService to resolve
 		services.AddKeyedSingleton<IApprovalStrategy>(ApprovalStrategyType.AnyOf, (_, _) => new AnyOfApprovalStrategy());

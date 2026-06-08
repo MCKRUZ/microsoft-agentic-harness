@@ -1,6 +1,9 @@
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Changes;
+using Application.AI.Common.Interfaces.Governance;
+using Domain.AI.Agents;
 using Domain.AI.Changes;
+using Domain.AI.Governance;
 using Domain.Common;
 using Domain.Common.Config;
 using MediatR;
@@ -47,11 +50,20 @@ public sealed class SubmitChangeProposalCommandHandler
     private readonly IChangeProposalGateResolver _gateResolver;
     private readonly IChangeProposalDispatchQueue _dispatchQueue;
     private readonly IAgentExecutionContext _agentContext;
+    private readonly IAutonomyDecisionEvaluator? _autonomyEvaluator;
+    private readonly IAutonomyTierResolver? _tierResolver;
     private readonly IOptionsMonitor<AppConfig> _config;
     private readonly TimeProvider _time;
     private readonly ILogger<SubmitChangeProposalCommandHandler> _logger;
 
     /// <summary>Initializes a new <see cref="SubmitChangeProposalCommandHandler"/>.</summary>
+    /// <remarks>
+    /// <paramref name="autonomyEvaluator"/> and <paramref name="tierResolver"/> are
+    /// optional (PR-4 graded autonomy). When either is missing the handler skips
+    /// the per-blast-radius decision computation and falls back to the gate
+    /// resolver's pre-PR-4 behaviour — preserving PR-2's contract for consumers
+    /// who haven't wired the new evaluator.
+    /// </remarks>
     public SubmitChangeProposalCommandHandler(
         IChangeProposalStore store,
         IChangeProposalGateResolver gateResolver,
@@ -59,7 +71,9 @@ public sealed class SubmitChangeProposalCommandHandler
         IAgentExecutionContext agentContext,
         IOptionsMonitor<AppConfig> config,
         TimeProvider time,
-        ILogger<SubmitChangeProposalCommandHandler> logger)
+        ILogger<SubmitChangeProposalCommandHandler> logger,
+        IAutonomyDecisionEvaluator? autonomyEvaluator = null,
+        IAutonomyTierResolver? tierResolver = null)
     {
         ArgumentNullException.ThrowIfNull(store);
         ArgumentNullException.ThrowIfNull(gateResolver);
@@ -73,6 +87,8 @@ public sealed class SubmitChangeProposalCommandHandler
         _gateResolver = gateResolver;
         _dispatchQueue = dispatchQueue;
         _agentContext = agentContext;
+        _autonomyEvaluator = autonomyEvaluator;
+        _tierResolver = tierResolver;
         _config = config;
         _time = time;
         _logger = logger;
@@ -102,7 +118,39 @@ public sealed class SubmitChangeProposalCommandHandler
         }
 
         var submittedAt = request.SubmittedAt ?? _time.GetUtcNow();
-        var gates = request.RequiredGates ?? _gateResolver.Resolve(request.Target.Kind, request.BlastRadius);
+
+        // PR-4 graded autonomy: compute the per-blast-radius decision when the
+        // evaluator + tier resolver are wired and the caller hasn't supplied an
+        // explicit RequiredGates override. The decision flows into the resolver
+        // and decides whether the approval gate appears in the frozen gate list.
+        AutonomyDecisionResult? decision = null;
+        if (request.RequiredGates is null
+            && _autonomyEvaluator is not null
+            && _tierResolver is not null)
+        {
+            var tier = ResolveTier(identity);
+            decision = _autonomyEvaluator.Evaluate(
+                tier,
+                request.BlastRadius,
+                request.Target.Kind,
+                request.IsStateChange,
+                request.SkillKey);
+
+            if (decision.Decision == AutonomyDecision.Forbidden)
+            {
+                _logger.LogWarning(
+                    "ChangeProposal forbidden by graded-autonomy policy: tier={Tier} radius={Radius} " +
+                    "target={TargetKind} stateChange={StateChange} skill={Skill} reason={Reason}",
+                    decision.Tier, decision.BlastRadius, decision.TargetKind,
+                    decision.IsStateChange, decision.SkillKey ?? "<none>", decision.Reason);
+
+                return Result<ChangeProposal>.Forbidden(
+                    $"Graded autonomy policy forbids this proposal: {decision.Reason}");
+            }
+        }
+
+        var gates = request.RequiredGates
+            ?? _gateResolver.ResolveWithDecision(request.Target.Kind, request.BlastRadius, decision);
 
         if (gates.Count == 0)
         {
@@ -136,5 +184,36 @@ public sealed class SubmitChangeProposalCommandHandler
         // subscribes for the post-pipeline status.
         await _dispatchQueue.EnqueueAsync(proposal.Id, cancellationToken).ConfigureAwait(false);
         return Result<ChangeProposal>.Success(proposal);
+    }
+
+    /// <summary>
+    /// Best-effort tier resolution for graded autonomy. Tries to parse the agent
+    /// identity's id as a <see cref="SubagentType"/>; falls back to the configured
+    /// <c>PermissionsConfig.DefaultAutonomyLevel</c>; falls back finally to
+    /// <see cref="AutonomyLevel.Supervised"/> (the safe-middle default).
+    /// </summary>
+    private AutonomyLevel ResolveTier(Domain.AI.Identity.AgentIdentity identity)
+    {
+        if (_tierResolver is null)
+        {
+            return AutonomyLevel.Supervised;
+        }
+
+        if (Enum.TryParse<SubagentType>(identity.Id, ignoreCase: true, out var subagentType))
+        {
+            return _tierResolver.Resolve(subagentType);
+        }
+
+        var permissions = _config.CurrentValue.AI.Permissions;
+        if (Enum.TryParse<AutonomyLevel>(permissions.DefaultAutonomyLevel, ignoreCase: true, out var configured))
+        {
+            return configured;
+        }
+
+        _logger.LogWarning(
+            "Could not parse '{Id}' as SubagentType and PermissionsConfig.DefaultAutonomyLevel " +
+            "'{Default}' is invalid — falling back to Supervised for graded-autonomy evaluation.",
+            identity.Id, permissions.DefaultAutonomyLevel);
+        return AutonomyLevel.Supervised;
     }
 }
