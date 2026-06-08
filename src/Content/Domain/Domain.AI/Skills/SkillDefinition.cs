@@ -213,6 +213,14 @@ public class SkillDefinition
 	/// </summary>
 	public IList<ToolDeclaration>? ToolDeclarations { get; set; }
 
+	/// <summary>
+	/// Per-skill outbound egress allowlist parsed from the <c>egress.allowlist</c>
+	/// block of SKILL.md frontmatter. Null when the section is absent — the skill
+	/// inherits the global <c>EgressConfig.DefaultAllowlist</c> with no additions.
+	/// When non-null, entries are ADDITIVE to the default at policy-resolve time.
+	/// </summary>
+	public EgressManifest? Egress { get; set; }
+
 	#endregion
 
 	#region Hierarchy

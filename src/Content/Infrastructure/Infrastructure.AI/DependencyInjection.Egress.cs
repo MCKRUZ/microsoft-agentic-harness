@@ -1,8 +1,10 @@
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Egress;
+using Application.AI.Common.Interfaces.Skills;
 using Domain.AI.Egress;
 using Domain.Common.Config;
 using Infrastructure.AI.Egress;
+using Infrastructure.AI.Skills;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -48,7 +50,10 @@ public static partial class DependencyInjection
             return new DefaultEgressPolicy(entries, logger, timeProvider);
         });
 
-        services.AddSingleton<IEgressPolicyResolver, DefaultEgressPolicyResolver>();
+        // --- Per-skill resolver (PR-3c) replaces the PR-3b default resolver ---
+        // ICurrentSkillAccessor is AsyncLocal-backed → singleton (per-flow, not per-scope).
+        services.AddSingleton<ICurrentSkillAccessor, CurrentSkillAccessor>();
+        services.AddSingleton<IEgressPolicyResolver, SkillManifestEgressPolicyResolver>();
 
         // --- AntiSSRF terminal handler factory ---
         services.AddSingleton<AntiSsrfHandlerFactory>();
