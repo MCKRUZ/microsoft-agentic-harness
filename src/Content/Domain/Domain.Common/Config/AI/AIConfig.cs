@@ -2,6 +2,7 @@ using Domain.Common.Config.AI.A2A;
 using Domain.Common.Config.AI.AIFoundry;
 using Domain.Common.Config.AI.ContextManagement;
 using Domain.Common.Config.AI.DriftDetection;
+using Domain.Common.Config.AI.GitOps;
 using Domain.Common.Config.AI.Hooks;
 using Domain.Common.Config.AI.Identity;
 using Domain.Common.Config.AI.IncidentResponse;
@@ -223,4 +224,14 @@ public class AIConfig
     /// behaves identically to a host with no incident concept at all.
     /// </summary>
     public IncidentResponsePlanConfig IncidentResponse { get; set; } = new();
+
+    /// <summary>
+    /// GitOps skill pack configuration (PR-9). Off by default — when enabled,
+    /// the startup validator requires <c>ActiveController</c> to be set,
+    /// a configured K8sGPT MCP server entry under <c>McpServers.Servers</c>,
+    /// and the active controller's API base URL. No graceful degradation:
+    /// misconfiguration fails-loud at boot rather than shipping a half-working
+    /// skill at runtime.
+    /// </summary>
+    public GitOpsConfig GitOps { get; set; } = new();
 }
