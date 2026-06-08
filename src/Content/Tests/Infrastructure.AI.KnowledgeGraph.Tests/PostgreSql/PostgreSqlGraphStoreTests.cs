@@ -14,15 +14,22 @@ namespace Infrastructure.AI.KnowledgeGraph.Tests.PostgreSql;
 /// <summary>
 /// Shared PostgreSQL container + store for the integration tests. Using a single container per test
 /// class (via <see cref="IClassFixture{T}"/>) avoids spinning up one container per test method, which
-/// both speeds the suite up and sidesteps the postgres image's init-then-restart readiness race.
+/// speeds the suite up.
 /// </summary>
 public sealed class PostgreSqlStoreFixture : IAsyncLifetime
 {
+    // The postgres:16 image boots a temporary init server to run init scripts, shuts it down, then
+    // starts the real server. A bare pg_isready (or a log-match on "ready to accept connections") can
+    // satisfy against the init server; the test's TCP connection then races the shutdown + restart.
+    // Compound wait: "PostgreSQL init process complete; ready for start up." only appears after the
+    // init server has already shut down, so when both conditions are satisfied (that message present AND
+    // pg_isready passes), the real server is the one answering.
     private readonly IContainer _postgres = new ContainerBuilder()
         .WithImage("postgres:16")
         .WithEnvironment("POSTGRES_PASSWORD", "postgres")
         .WithPortBinding(5432, true)
         .WithWaitStrategy(Wait.ForUnixContainer()
+            .UntilMessageIsLogged("PostgreSQL init process complete; ready for start up.")
             .UntilCommandIsCompleted("pg_isready", "-U", "postgres"))
         .Build();
 
