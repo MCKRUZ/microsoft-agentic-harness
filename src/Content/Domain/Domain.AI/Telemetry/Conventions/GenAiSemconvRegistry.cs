@@ -327,4 +327,72 @@ public static class GenAiSemconvRegistry
     /// Re-exported from <see cref="A2AConventions.ActivitySourceName"/>.
     /// </summary>
     public const string A2AActivitySourceName = A2AConventions.ActivitySourceName;
+
+    // ────────────────────────────────────────────────────────────────────
+    // Content capture (PR-11) — OFF by default. PR-6 declared the Magentic
+    // content keys on MagenticConventions; the standard OTel content keys
+    // and the global toggle are owned here.
+    // ────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Name of the OTel environment variable that pins the GenAI semantic-
+    /// convention stability tier the harness emits against. The harness emits
+    /// against the experimental GenAI conventions; consumers MUST set the
+    /// variable to <see cref="SemconvStabilityOptInValue"/> in any environment
+    /// where content-capture is enabled, otherwise upstream Collectors may
+    /// silently drop or rename attributes when a future SemConv release flips
+    /// stability.
+    /// </summary>
+    /// <remarks>
+    /// The <see cref="Infrastructure"/>'s content-capture startup validator
+    /// reads this env var and refuses to boot when content-capture is on but
+    /// the variable is unset or wrong.
+    /// </remarks>
+    public const string SemconvStabilityOptInEnvVar = "OTEL_SEMCONV_STABILITY_OPT_IN";
+
+    /// <summary>
+    /// Pinned value of <see cref="SemconvStabilityOptInEnvVar"/>. Matches the
+    /// OTel-GenAI experimental opt-in token. Update in lockstep with a
+    /// deliberate SDK + semconv NuGet bump (see blueprint G9).
+    /// </summary>
+    public const string SemconvStabilityOptInValue = "gen_ai_latest_experimental";
+
+    /// <summary>
+    /// Opt-in: full request prompt messages on the chat / agent span.
+    /// OFF by default per OTel GenAI content-capture guidance. PR-11 owns the
+    /// toggle (<see cref="Domain.Common.Config.AI.Telemetry.ContentCaptureConfig"/>).
+    /// </summary>
+    public const string InputMessages = "gen_ai.input.messages";
+
+    /// <summary>
+    /// Opt-in: full response message content on the chat / agent span.
+    /// OFF by default — PR-11 owns the toggle.
+    /// </summary>
+    public const string OutputMessages = "gen_ai.output.messages";
+
+    /// <summary>
+    /// Opt-in: full <c>gen_ai.orchestration.magentic.plan.content</c> attribute.
+    /// Re-exported from <see cref="MagenticConventions.PlanContent"/>.
+    /// OFF by default — PR-11 owns the toggle.
+    /// </summary>
+    public const string MagenticPlanContent = MagenticConventions.PlanContent;
+
+    /// <summary>
+    /// Opt-in: full Magentic replan reason. Re-exported from
+    /// <see cref="MagenticConventions.ReplanReason"/>. OFF by default.
+    /// </summary>
+    public const string MagenticReplanReason = MagenticConventions.ReplanReason;
+
+    /// <summary>
+    /// Opt-in: per-round instruction-or-question content. Re-exported from
+    /// <see cref="MagenticConventions.ProgressInstructionOrQuestion"/>.
+    /// OFF by default.
+    /// </summary>
+    public const string MagenticProgressInstructionOrQuestion = MagenticConventions.ProgressInstructionOrQuestion;
+
+    /// <summary>
+    /// Opt-in: Magentic plan-review revision feedback. Re-exported from
+    /// <see cref="MagenticConventions.PlanReviewFeedback"/>. OFF by default.
+    /// </summary>
+    public const string MagenticPlanReviewFeedback = MagenticConventions.PlanReviewFeedback;
 }
