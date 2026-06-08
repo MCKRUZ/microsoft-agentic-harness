@@ -21,22 +21,29 @@ public sealed class DockerSandboxExecutor : ISandboxExecutor
     private readonly IAttestationService _attestationService;
     private readonly IOptionsMonitor<SandboxExecutionOptions> _options;
     private readonly ILogger<DockerSandboxExecutor> _logger;
+    private readonly ISandboxEgressPreflight? _egressPreflight;
 
     public DockerSandboxExecutor(
         IDockerClient dockerClient,
         IAttestationService attestationService,
         IOptionsMonitor<SandboxExecutionOptions> options,
-        ILogger<DockerSandboxExecutor> logger)
+        ILogger<DockerSandboxExecutor> logger,
+        ISandboxEgressPreflight? egressPreflight = null)
     {
         _dockerClient = dockerClient;
         _attestationService = attestationService;
         _options = options;
         _logger = logger;
+        _egressPreflight = egressPreflight;
     }
 
     public async Task<SandboxExecutionResult> ExecuteAsync(
         SandboxExecutionRequest request, CancellationToken ct)
     {
+        var egress = await RunEgressPreflightAsync(request, ct);
+        if (egress.Blocked is { } block)
+            return block;
+
         if (!await IsDockerAvailableAsync(ct))
             return await HandleDockerUnavailableAsync(request, ct);
 
@@ -70,22 +77,22 @@ public sealed class DockerSandboxExecutor : ISandboxExecutor
             }
             catch (OperationCanceledException) when (!ct.IsCancellationRequested)
             {
-                return await HandleTimeoutAsync(containerId, request, ct);
+                return await HandleTimeoutAsync(containerId, request, egress.Digest, ct);
             }
 
             var logs = await GetContainerLogsAsync(containerId, ct);
             var output = await ReadWorkspaceOutputAsync(workspaceDir, ct);
 
             if (waitResponse.StatusCode != 0)
-                return await BuildCrashResultAsync(waitResponse.StatusCode, output, logs, request, ct);
+                return await BuildCrashResultAsync(waitResponse.StatusCode, output, logs, request, egress.Digest, ct);
 
-            return await BuildSuccessResultAsync(output ?? logs, request, ct);
+            return await BuildSuccessResultAsync(output ?? logs, request, egress.Digest, ct);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogError(ex, "Docker execution failed for tool {ToolName}", request.ToolName);
-            var attestation = await _attestationService.SignFailureAsync(
-                request.ToolName, request.Input, $"Docker error: {ex.Message}", ct);
+            var attestation = await SignFailureAsync(
+                request.ToolName, request.Input, $"Docker error: {ex.Message}", egress.Digest, ct);
             return new SandboxExecutionResult
             {
                 Success = false,
@@ -230,7 +237,7 @@ public sealed class DockerSandboxExecutor : ISandboxExecutor
     }
 
     private async Task<SandboxExecutionResult> HandleTimeoutAsync(
-        string containerId, SandboxExecutionRequest request, CancellationToken ct)
+        string containerId, SandboxExecutionRequest request, string? egressDigest, CancellationToken ct)
     {
         var gracePeriod = _options.CurrentValue.Container.StopGracePeriodSeconds;
         _logger.LogWarning("Container {ContainerId} timed out, stopping with {GracePeriod}s grace period",
@@ -246,9 +253,9 @@ public sealed class DockerSandboxExecutor : ISandboxExecutor
             _logger.LogDebug(ex, "Stop container after timeout failed (may already be removed)");
         }
 
-        var attestation = await _attestationService.SignFailureAsync(
+        var attestation = await SignFailureAsync(
             request.ToolName, request.Input,
-            $"Container timed out after {request.Timeout}", ct);
+            $"Container timed out after {request.Timeout}", egressDigest, ct);
 
         return new SandboxExecutionResult
         {
@@ -288,13 +295,13 @@ public sealed class DockerSandboxExecutor : ISandboxExecutor
 
     private async Task<SandboxExecutionResult> BuildCrashResultAsync(
         long exitCode, string? output, string logs,
-        SandboxExecutionRequest request, CancellationToken ct)
+        SandboxExecutionRequest request, string? egressDigest, CancellationToken ct)
     {
         _logger.LogWarning("Container exited with code {ExitCode}", exitCode);
 
-        var attestation = await _attestationService.SignFailureAsync(
+        var attestation = await SignFailureAsync(
             request.ToolName, request.Input,
-            $"Container exited with code {exitCode}: {logs}", ct);
+            $"Container exited with code {exitCode}: {logs}", egressDigest, ct);
 
         return new SandboxExecutionResult
         {
@@ -307,10 +314,10 @@ public sealed class DockerSandboxExecutor : ISandboxExecutor
     }
 
     private async Task<SandboxExecutionResult> BuildSuccessResultAsync(
-        string output, SandboxExecutionRequest request, CancellationToken ct)
+        string output, SandboxExecutionRequest request, string? egressDigest, CancellationToken ct)
     {
-        var attestation = await _attestationService.SignAsync(
-            request.ToolName, request.Input, output, ct);
+        var attestation = await SignSuccessAsync(
+            request.ToolName, request.Input, output, egressDigest, ct);
 
         return new SandboxExecutionResult
         {
@@ -319,6 +326,58 @@ public sealed class DockerSandboxExecutor : ISandboxExecutor
             ExitCode = 0,
             Attestation = attestation
         };
+    }
+
+    private async Task<(SandboxExecutionResult? Blocked, string? Digest)> RunEgressPreflightAsync(
+        SandboxExecutionRequest request, CancellationToken ct)
+    {
+        if (_egressPreflight is null || request.EgressPrecheckTargets is not { Count: > 0 } targets)
+        {
+            return (null, null);
+        }
+
+        var decisions = await _egressPreflight.EvaluateAsync(targets, ct);
+        var digest = _egressPreflight.ComputeDigest(decisions);
+
+        var denied = decisions.FirstOrDefault(d => !d.Allowed);
+        if (denied is not null)
+        {
+            _logger.LogWarning(
+                "Docker sandbox refused to spawn container for tool {ToolName}: egress preflight denied '{Host}'",
+                request.ToolName, denied.Target.Host);
+
+            var attestation = await _attestationService.SignFailureWithEgressAsync(
+                request.ToolName,
+                request.Input,
+                $"Egress preflight denied: {denied.Target} ({denied.Reason})",
+                digest,
+                ct);
+
+            return (new SandboxExecutionResult
+            {
+                Success = false,
+                ErrorMessage = $"Egress preflight denied: {denied.Target}",
+                Attestation = attestation
+            }, digest);
+        }
+
+        return (null, digest);
+    }
+
+    private Task<Domain.AI.Attestation.ToolExecutionAttestation> SignFailureAsync(
+        string toolName, string input, string failureReason, string? egressDigest, CancellationToken ct)
+    {
+        return egressDigest is null
+            ? _attestationService.SignFailureAsync(toolName, input, failureReason, ct)
+            : _attestationService.SignFailureWithEgressAsync(toolName, input, failureReason, egressDigest, ct);
+    }
+
+    private Task<Domain.AI.Attestation.ToolExecutionAttestation> SignSuccessAsync(
+        string toolName, string input, string output, string? egressDigest, CancellationToken ct)
+    {
+        return egressDigest is null
+            ? _attestationService.SignAsync(toolName, input, output, ct)
+            : _attestationService.SignWithEgressAsync(toolName, input, output, egressDigest, ct);
     }
 
     private async Task RemoveContainerSafeAsync(string? containerId, CancellationToken ct)

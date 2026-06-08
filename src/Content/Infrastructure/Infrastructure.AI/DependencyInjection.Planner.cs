@@ -79,6 +79,12 @@ public static partial class DependencyInjection
         services.AddScoped<ProcessSandboxExecutor>();
         services.AddScoped<DockerSandboxExecutor>();
 
+        // PR-3c: sandbox-side egress preflight gate. Optional injection on the
+        // executors; the executor falls back to legacy attestation when no
+        // preflight is registered. Activated unconditionally here so the
+        // sandbox cannot bypass policy by default in any composed host.
+        services.AddScoped<Application.AI.Common.Interfaces.Sandbox.ISandboxEgressPreflight, Infrastructure.AI.Sandbox.SandboxEgressPreflight>();
+
         services.AddSingleton<Docker.DotNet.IDockerClient>(_ =>
             new Docker.DotNet.DockerClientConfiguration().CreateClient());
 

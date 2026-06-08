@@ -96,6 +96,93 @@ public sealed class HmacAttestationService : IAttestationService
     }
 
     /// <inheritdoc />
+    public Task<ToolExecutionAttestation> SignWithEgressAsync(
+        string toolName,
+        string input,
+        string output,
+        string egressDigest,
+        CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(egressDigest);
+
+        var options = _optionsMonitor.CurrentValue;
+        var currentKey = GetKey(options, options.CurrentKeyVersion);
+        try
+        {
+            var timestamp = _timeProvider.GetUtcNow();
+            var inputHash = ComputeSha256Hex(input);
+            var outputHash = ComputeSha256Hex(output);
+            // Payload schema extended (egress trailing field). Algorithm and
+            // key derivation unchanged — HMAC-SHA256 over UTF-8 of the payload
+            // string. PR-3a's existing payload shape is preserved by the
+            // SignAsync overload; new callers opt in to the extended shape
+            // explicitly.
+            var payload = $"{toolName}|{inputHash}|{outputHash}|{timestamp:O}|egress:{egressDigest}";
+            var signature = ComputeHmac(currentKey, payload);
+
+            var attestation = new ToolExecutionAttestation
+            {
+                ToolName = toolName,
+                InputHash = inputHash,
+                OutputHash = outputHash,
+                Timestamp = timestamp,
+                Signature = signature,
+                KeyVersion = options.CurrentKeyVersion,
+                IsFailureAttestation = false,
+                FailureReason = null,
+                EgressDigest = egressDigest
+            };
+
+            return Task.FromResult(attestation);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(currentKey);
+        }
+    }
+
+    /// <inheritdoc />
+    public Task<ToolExecutionAttestation> SignFailureWithEgressAsync(
+        string toolName,
+        string input,
+        string failureReason,
+        string egressDigest,
+        CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(egressDigest);
+
+        var options = _optionsMonitor.CurrentValue;
+        var currentKey = GetKey(options, options.CurrentKeyVersion);
+        try
+        {
+            var timestamp = _timeProvider.GetUtcNow();
+            var inputHash = ComputeSha256Hex(input);
+            var failureHash = ComputeSha256Hex(failureReason);
+            var payload = $"{toolName}|{inputHash}|null|{failureHash}|{timestamp:O}|egress:{egressDigest}";
+            var signature = ComputeHmac(currentKey, payload);
+
+            var attestation = new ToolExecutionAttestation
+            {
+                ToolName = toolName,
+                InputHash = inputHash,
+                OutputHash = null,
+                Timestamp = timestamp,
+                Signature = signature,
+                KeyVersion = options.CurrentKeyVersion,
+                IsFailureAttestation = true,
+                FailureReason = failureReason,
+                EgressDigest = egressDigest
+            };
+
+            return Task.FromResult(attestation);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(currentKey);
+        }
+    }
+
+    /// <inheritdoc />
     public Task<bool> VerifyAsync(ToolExecutionAttestation attestation, CancellationToken ct)
     {
         var options = _optionsMonitor.CurrentValue;
@@ -137,15 +224,26 @@ public sealed class HmacAttestationService : IAttestationService
 
     private static string BuildVerificationPayload(ToolExecutionAttestation attestation)
     {
+        // Two payload shapes coexist: the PR-3a baseline (no egress digest) and
+        // the PR-3c extended shape (egress digest trailing). The discriminator
+        // is the presence of EgressDigest on the record. The baseline shape
+        // is preserved verbatim so PR-3a attestations remain verifiable after
+        // the PR-3c upgrade.
         if (attestation.IsFailureAttestation)
         {
             var failureHash = attestation.FailureReason is not null
                 ? ComputeSha256Hex(attestation.FailureReason)
                 : ComputeSha256Hex(string.Empty);
-            return $"{attestation.ToolName}|{attestation.InputHash}|null|{failureHash}|{attestation.Timestamp:O}";
+            var baselineFailure = $"{attestation.ToolName}|{attestation.InputHash}|null|{failureHash}|{attestation.Timestamp:O}";
+            return attestation.EgressDigest is null
+                ? baselineFailure
+                : $"{baselineFailure}|egress:{attestation.EgressDigest}";
         }
 
-        return $"{attestation.ToolName}|{attestation.InputHash}|{attestation.OutputHash}|{attestation.Timestamp:O}";
+        var baselineSuccess = $"{attestation.ToolName}|{attestation.InputHash}|{attestation.OutputHash}|{attestation.Timestamp:O}";
+        return attestation.EgressDigest is null
+            ? baselineSuccess
+            : $"{baselineSuccess}|egress:{attestation.EgressDigest}";
     }
 
     private void ValidateOptions(AttestationKeyOptions options)

@@ -30,4 +30,13 @@ public sealed record ToolExecutionAttestation
 
     /// <summary>Reason for failure. Populated only when <see cref="IsFailureAttestation"/> is true.</summary>
     public string? FailureReason { get; init; }
+
+    /// <summary>
+    /// SHA-256 digest of the egress decisions recorded for this execution (the
+    /// destinations the harness permitted or denied during sandbox preflight).
+    /// Null for baseline attestations produced before egress enforcement; its
+    /// presence is the discriminator that selects the extended HMAC payload
+    /// shape during verification, so baseline attestations remain verifiable.
+    /// </summary>
+    public string? EgressDigest { get; init; }
 }
