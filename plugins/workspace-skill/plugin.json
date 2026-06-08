@@ -1,0 +1,18 @@
+{
+  "name": "workspace-skill",
+  "description": "Workspace skill pack: read/write/list files and run tests/lint against a sandbox-injected working copy. Writes go through ChangeProposal — never direct mutation.",
+  "version": "1.0.0",
+  "author": {
+    "name": "Microsoft Agentic Harness",
+    "url": "https://github.com/MCKRUZ/microsoft-agentic-harness"
+  },
+  "license": "MIT",
+  "keywords": [
+    "workspace",
+    "files",
+    "change-proposal",
+    "sandbox",
+    "devops"
+  ],
+  "skills": "./skills/"
+}
