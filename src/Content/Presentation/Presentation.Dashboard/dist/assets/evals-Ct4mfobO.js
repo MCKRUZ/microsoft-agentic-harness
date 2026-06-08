@@ -1,1 +1,0 @@
-import{t as e}from"./index-BwjRjn4e.js";async function t(t=50){let{data:n}=await e.get(`/api/evals/runs`,{params:{take:t}});return n}async function n(t){let{data:n}=await e.get(`/api/evals/runs/${encodeURIComponent(t)}`);return n}export{t as n,n as t};

@@ -1,1 +1,0 @@
-function e(e){return e>=.9?`critical`:e>=.75?`warning`:`ok`}export{e as t};
