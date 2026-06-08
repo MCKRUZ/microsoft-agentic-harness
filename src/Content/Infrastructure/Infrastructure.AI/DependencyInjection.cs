@@ -216,6 +216,12 @@ public static partial class DependencyInjection
 
         RegisterIncidentResponseServices(services);
 
+        // --- Magentic orchestration (PR-6). Span emitter + HITL bridge +
+        //     change-proposal router. Inert until IMagenticOrchestrator.RunAsync
+        //     is invoked. ---
+
+        RegisterMagenticServices(services);
+
         // --- Governance (permissions, escalation, resilience) ---
 
         RegisterGovernanceServices(services);
