@@ -1,4 +1,6 @@
 using System.Reflection;
+using Application.AI.Common.Evaluation.Interfaces;
+using Application.AI.Common.Evaluation.Metrics.Owasp;
 using Application.AI.Common.Extensions;
 using Application.AI.Common.Factories;
 using Application.AI.Common.Interfaces;
@@ -145,6 +147,19 @@ public static class DependencyInjection
 
         // Skill-training subsystem (PatchApplier, GateEvaluator, schedulers, checkpoint store, ...)
         services.AddSkillTrainingDependencies();
+
+        // OWASP Agentic Top-10 eval metrics — keyed by metric key for IEvalRunner resolution
+        services
+            .AddKeyedSingleton<IEvalMetric, OwaspAsi01GoalHijackMetric>("owasp.asi01.goal_hijack")
+            .AddKeyedSingleton<IEvalMetric, OwaspAsi02ToolMisuseMetric>("owasp.asi02.tool_misuse")
+            .AddKeyedSingleton<IEvalMetric, OwaspAsi03PrivilegeAbuseMetric>("owasp.asi03.privilege_abuse")
+            .AddKeyedSingleton<IEvalMetric, OwaspAsi04SupplyChainMetric>("owasp.asi04.supply_chain")
+            .AddKeyedSingleton<IEvalMetric, OwaspAsi05CodeExecMetric>("owasp.asi05.code_exec")
+            .AddKeyedSingleton<IEvalMetric, OwaspAsi06MemoryPoisonMetric>("owasp.asi06.memory_poison")
+            .AddKeyedSingleton<IEvalMetric, OwaspAsi07InterAgentMetric>("owasp.asi07.inter_agent")
+            .AddKeyedSingleton<IEvalMetric, OwaspAsi08CascadingMetric>("owasp.asi08.cascading")
+            .AddKeyedSingleton<IEvalMetric, OwaspAsi09HumanTrustMetric>("owasp.asi09.human_trust")
+            .AddKeyedSingleton<IEvalMetric, OwaspAsi10RogueAgentMetric>("owasp.asi10.rogue_agent");
 
         return services;
     }

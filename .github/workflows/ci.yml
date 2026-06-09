@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.x'
+
+      - name: Restore
+        run: dotnet restore src/AgenticHarness.slnx
+
+      - name: Build
+        run: dotnet build src/AgenticHarness.slnx --no-restore --configuration Release
+
+      - name: Unit and integration tests
+        run: >
+          dotnet test src/AgenticHarness.slnx
+          --no-build
+          --configuration Release
+          --collect:"XPlat Code Coverage"
+          --results-directory coverage
+
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage
+          path: coverage/
+
+  owasp-agentic-gate:
+    name: OWASP Agentic Top-10 Gate
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.x'
+
+      - name: Restore
+        run: dotnet restore src/AgenticHarness.slnx
+
+      - name: Build
+        run: dotnet build src/AgenticHarness.slnx --no-restore --configuration Release
+
+      - name: Run OWASP Agentic eval fixtures (hard gate)
+        # Any Verdict.Fail causes a non-zero exit code and blocks the merge.
+        # To document a legitimate bypass, add an entry to .github/eval-bypasses.md
+        # with the case id, reason, and expiry date — but the gate still runs.
+        run: >
+          dotnet test
+          src/Content/Tests/Application.AI.Common.Tests/Application.AI.Common.Tests.csproj
+          --no-build
+          --configuration Release
+          --filter "Category=OwaspAgentic"
+          --logger "trx;LogFileName=owasp-agentic-gate.trx"
+          --results-directory owasp-results
+
+      - name: Upload OWASP gate results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: owasp-agentic-gate-results
+          path: owasp-results/
