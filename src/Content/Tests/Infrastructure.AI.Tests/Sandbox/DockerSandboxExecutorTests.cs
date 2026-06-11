@@ -4,6 +4,7 @@ using Docker.DotNet;
 using Docker.DotNet.Models;
 using Domain.AI.Attestation;
 using Domain.AI.Sandbox;
+using Domain.Common.Config.AI.Sandbox;
 using FluentAssertions;
 using Infrastructure.AI.Sandbox;
 using Microsoft.Extensions.Logging;
@@ -70,10 +71,14 @@ public class DockerSandboxExecutorTests
 
         _options.Setup(x => x.CurrentValue).Returns(new SandboxExecutionOptions());
 
+        var sandboxConfig = new Mock<IOptionsMonitor<SandboxConfig>>();
+        sandboxConfig.Setup(x => x.CurrentValue).Returns(new SandboxConfig { Enabled = true });
+
         _sut = new DockerSandboxExecutor(
             _dockerClient.Object,
             _attestation.Object,
             _options.Object,
+            sandboxConfig.Object,
             Mock.Of<ILogger<DockerSandboxExecutor>>());
     }
 

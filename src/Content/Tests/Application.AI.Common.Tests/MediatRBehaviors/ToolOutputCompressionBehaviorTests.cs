@@ -1,3 +1,4 @@
+using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Compression;
 using Application.AI.Common.Interfaces.Context;
@@ -21,12 +22,19 @@ public sealed class ToolOutputCompressionBehaviorTests
     private readonly Mock<IToolOutputCompressor> _compressor = new();
     private readonly Mock<IToolResultStore> _resultStore = new();
     private readonly Mock<IAgentExecutionContext> _executionContext = new();
+    private readonly Mock<ISecretRedactor> _secretRedactor = new();
     private readonly Mock<ILogger<ToolOutputCompressionBehavior<ToolTestRequest, Result<ToolTestResponse>>>> _logger = new();
     private readonly ToolOutputCompressionConfig _config = new()
     {
         Enabled = true,
         DefaultTokenThreshold = 2000
     };
+
+    public ToolOutputCompressionBehaviorTests()
+    {
+        // Pass-through redactor so existing assertions observe unmodified tool output.
+        _secretRedactor.Setup(r => r.Redact(It.IsAny<string?>())).Returns((string? s) => s);
+    }
 
     private ToolOutputCompressionBehavior<ToolTestRequest, Result<ToolTestResponse>> CreateBehavior(
         ToolOutputCompressionConfig? config = null)
@@ -37,6 +45,7 @@ public sealed class ToolOutputCompressionBehaviorTests
             _compressor.Object,
             _resultStore.Object,
             _executionContext.Object,
+            _secretRedactor.Object,
             options,
             _logger.Object);
     }
@@ -48,6 +57,7 @@ public sealed class ToolOutputCompressionBehaviorTests
             _compressor.Object,
             _resultStore.Object,
             _executionContext.Object,
+            _secretRedactor.Object,
             Options.Create(_config),
             Mock.Of<ILogger<ToolOutputCompressionBehavior<NonToolRequest, string>>>());
 

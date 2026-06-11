@@ -1,6 +1,8 @@
+using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Application.AI.Common.MediatRBehaviors;
 using Application.Core.CQRS.Agents.ExecuteAgentTurn;
+using Microsoft.Extensions.DependencyInjection;
 using Domain.AI.KnowledgeGraph.Models;
 using Domain.Common.Config.AI;
 using FluentAssertions;
@@ -227,12 +229,36 @@ public class KnowledgeExtractionBehaviorTests
             i.Arguments.Count > 0 &&
             (i.Arguments[0] as string) == "conv-1:1:1");
 
+    // The behavior resolves IConversationFactExtractor and IKnowledgeMemory from a fresh DI
+    // scope (created per background extraction). Build a scope factory whose provider returns
+    // the same mocks so the existing assertions on _mockExtractor/_mockMemory still hold.
+    private IServiceScopeFactory BuildScopeFactory()
+    {
+        var provider = new Mock<IServiceProvider>();
+        provider.Setup(p => p.GetService(typeof(IConversationFactExtractor))).Returns(_mockExtractor.Object);
+        provider.Setup(p => p.GetService(typeof(IKnowledgeMemory))).Returns(_mockMemory.Object);
+
+        var scope = new Mock<IServiceScope>();
+        scope.SetupGet(s => s.ServiceProvider).Returns(provider.Object);
+
+        var factory = new Mock<IServiceScopeFactory>();
+        factory.Setup(f => f.CreateScope()).Returns(scope.Object);
+        return factory.Object;
+    }
+
+    private static IAmbientRequestScope BuildAmbientScope()
+    {
+        var ambient = new Mock<IAmbientRequestScope>();
+        ambient.Setup(a => a.BeginScope(It.IsAny<IServiceProvider>())).Returns(Mock.Of<IDisposable>());
+        return ambient.Object;
+    }
+
     private KnowledgeExtractionBehavior<TRequest, TResponse> CreateBehavior<TRequest, TResponse>()
         where TRequest : notnull
     {
         return new KnowledgeExtractionBehavior<TRequest, TResponse>(
-            _mockExtractor.Object,
-            _mockMemory.Object,
+            BuildScopeFactory(),
+            BuildAmbientScope(),
             Options.Create(_config),
             NullLogger<KnowledgeExtractionBehavior<TRequest, TResponse>>.Instance);
     }
@@ -240,8 +266,8 @@ public class KnowledgeExtractionBehaviorTests
     private KnowledgeExtractionBehavior<ExecuteAgentTurnCommand, AgentTurnResult> CreateAgentTurnBehavior()
     {
         return new KnowledgeExtractionBehavior<ExecuteAgentTurnCommand, AgentTurnResult>(
-            _mockExtractor.Object,
-            _mockMemory.Object,
+            BuildScopeFactory(),
+            BuildAmbientScope(),
             Options.Create(_config),
             NullLogger<KnowledgeExtractionBehavior<ExecuteAgentTurnCommand, AgentTurnResult>>.Instance);
     }

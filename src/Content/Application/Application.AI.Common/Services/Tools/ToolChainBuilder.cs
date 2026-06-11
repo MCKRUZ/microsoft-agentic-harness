@@ -35,22 +35,23 @@ public class ToolChainBuilder : IToolChainBuilder
     }
 
     /// <inheritdoc />
-    public Task<List<AITool>> BuildToolsAsync(SkillDefinition skill, SkillAgentOptions options)
+    public Task<List<AITool>> BuildToolsAsync(SkillDefinition skill, SkillAgentOptions options, CancellationToken cancellationToken = default)
         // Public callers don't need MCP attribution — use a throwaway collector so
         // resolution paths still record where each tool came from but the result is
         // discarded.
-        => BuildToolsAsync(skill, options, new HashSet<string>(StringComparer.OrdinalIgnoreCase));
+        => BuildToolsAsync(skill, options, new HashSet<string>(StringComparer.OrdinalIgnoreCase), cancellationToken);
 
     private async Task<List<AITool>> BuildToolsAsync(
         SkillDefinition skill,
         SkillAgentOptions options,
-        ISet<string> mcpCollector)
+        ISet<string> mcpCollector,
+        CancellationToken cancellationToken = default)
     {
         var tools = new List<AITool>();
 
         if (skill.Mode == SkillMode.Injected && _mcpToolProvider != null)
         {
-            var allMcpTools = await _mcpToolProvider.GetAllToolsAsync();
+            var allMcpTools = await _mcpToolProvider.GetAllToolsAsync(cancellationToken);
             foreach (var serverTools in allMcpTools.Values)
             {
                 tools.AddRange(serverTools);
@@ -81,7 +82,7 @@ public class ToolChainBuilder : IToolChainBuilder
 
         if (skill.ToolDeclarations?.Count > 0)
         {
-            var provisionTasks = skill.ToolDeclarations.Select(d => ProvisionToolAsync(d, mcpCollector));
+            var provisionTasks = skill.ToolDeclarations.Select(d => ProvisionToolAsync(d, mcpCollector, cancellationToken));
             var results = await Task.WhenAll(provisionTasks);
             foreach (var provisioned in results)
             {
@@ -111,9 +112,10 @@ public class ToolChainBuilder : IToolChainBuilder
     public async Task<List<AITool>> BuildMergedToolsAsync(
         IReadOnlyList<SkillDefinition> skills,
         SkillAgentOptions options,
-        IReadOnlyList<string>? allowedTools = null)
+        IReadOnlyList<string>? allowedTools = null,
+        CancellationToken cancellationToken = default)
     {
-        var merged = await BuildMergedToolsWithSourcesAsync(skills, options, allowedTools);
+        var merged = await BuildMergedToolsWithSourcesAsync(skills, options, allowedTools, cancellationToken);
         return merged.Tools.ToList();
     }
 
@@ -121,7 +123,8 @@ public class ToolChainBuilder : IToolChainBuilder
     public async Task<MergedToolChain> BuildMergedToolsWithSourcesAsync(
         IReadOnlyList<SkillDefinition> skills,
         SkillAgentOptions options,
-        IReadOnlyList<string>? allowedTools = null)
+        IReadOnlyList<string>? allowedTools = null,
+        CancellationToken cancellationToken = default)
     {
         // MCP-sourced tool names accumulate as resolution happens — no extra round trip.
         // Injected-mode skills contribute every MCP tool; managed-mode skills contribute
@@ -131,7 +134,7 @@ public class ToolChainBuilder : IToolChainBuilder
         var allTools = new List<AITool>();
         foreach (var skill in skills)
         {
-            var skillTools = await BuildToolsAsync(skill, options, mcpCollector);
+            var skillTools = await BuildToolsAsync(skill, options, mcpCollector, cancellationToken);
             allTools.AddRange(skillTools);
         }
 
@@ -174,13 +177,14 @@ public class ToolChainBuilder : IToolChainBuilder
 
     private async Task<IEnumerable<AITool>?> ProvisionToolAsync(
         Domain.AI.Tools.ToolDeclaration declaration,
-        ISet<string> mcpCollector)
+        ISet<string> mcpCollector,
+        CancellationToken cancellationToken = default)
     {
         if (_mcpToolProvider != null)
         {
             try
             {
-                var mcpTools = await _mcpToolProvider.GetToolsAsync(declaration.Name);
+                var mcpTools = await _mcpToolProvider.GetToolsAsync(declaration.Name, cancellationToken);
                 if (mcpTools?.Count > 0)
                 {
                     _logger.LogDebug("Resolved tool {ToolName} from MCP server", declaration.Name);
