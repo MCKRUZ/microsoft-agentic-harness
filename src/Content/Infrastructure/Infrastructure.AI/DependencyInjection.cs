@@ -39,7 +39,9 @@ using Infrastructure.AI.StateManagement;
 using Infrastructure.AI.Routing;
 using Infrastructure.AI.Tools;
 using Infrastructure.AI.Traces;
+using Domain.Common.Config.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace Infrastructure.AI;
@@ -168,7 +170,14 @@ public static partial class DependencyInjection
         // --- State management ---
 
         services.AddSingleton<IStateMarkdownGenerator, StateMarkdownGenerator>();
-        services.AddSingleton<CompositeStateManager>();
+        // Use the self-contained 3-parameter constructor explicitly. CompositeStateManager also has
+        // a 4-parameter constructor that takes an IStateManager 'inner' (for manual decoration); the
+        // container's greedy selection would otherwise pick it and — because IStateManager is bound to
+        // CompositeStateManager below — recurse into itself, deadlocking the singleton on first resolve.
+        services.AddSingleton<CompositeStateManager>(sp => new CompositeStateManager(
+            sp.GetRequiredService<ILogger<CompositeStateManager>>(),
+            sp.GetRequiredService<IStateMarkdownGenerator>(),
+            sp.GetRequiredService<IOptionsMonitor<InfrastructureConfig>>()));
         services.AddSingleton<IStateManager>(sp => sp.GetRequiredService<CompositeStateManager>());
 
         // --- Hooks ---
