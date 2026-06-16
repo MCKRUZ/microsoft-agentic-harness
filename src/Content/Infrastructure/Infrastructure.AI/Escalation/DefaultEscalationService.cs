@@ -232,7 +232,11 @@ public sealed class DefaultEscalationService : IEscalationService, IDisposable
 
 	private async Task ResolveEscalationAsync(EscalationState state, EscalationOutcome outcome)
 	{
-		if (!state.Completion.TrySetResult(outcome))
+		// Idempotency / teardown guard: if the completion was already settled
+		// (e.g. the service was disposed and cancelled it), don't re-run cleanup.
+		// Each caller (SubmitDecision/Cancel/Timeout) sets IsResolved under the
+		// state lock before calling here, so this runs at most once per escalation.
+		if (state.Completion.Task.IsCompleted)
 			return;
 
 		state.TimeoutCts.Cancel();
@@ -245,6 +249,11 @@ public sealed class DefaultEscalationService : IEscalationService, IDisposable
 			"Escalation {EscalationId} resolved: {ResolutionType}, approved={IsApproved}",
 			outcome.EscalationId, outcome.ResolutionType, outcome.IsApproved);
 
+		// Record the audit outcome and notify BEFORE releasing the caller awaiting
+		// Completion.Task. This guarantees that when RequestEscalationAsync returns an
+		// outcome (notably on the timeout path), that outcome has already been durably
+		// audited — a caller can never observe a resolved escalation that has not yet
+		// been recorded for compliance.
 		await SafeExecuteAsync(
 			() => _auditStore.RecordOutcomeAsync(outcome, CancellationToken.None),
 			"record outcome", outcome.EscalationId);
@@ -252,6 +261,8 @@ public sealed class DefaultEscalationService : IEscalationService, IDisposable
 		await SafeExecuteAsync(
 			() => _notifier.NotifyEscalationResolvedAsync(outcome, CancellationToken.None),
 			"notify resolution", outcome.EscalationId);
+
+		state.Completion.TrySetResult(outcome);
 	}
 
 	private async Task RunTimeoutAsync(EscalationState state)
