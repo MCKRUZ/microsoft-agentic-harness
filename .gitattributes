@@ -1,0 +1,13 @@
+# Line-ending normalization for the delivery rails.
+#
+# Files that execute on the Linux CI runner MUST stay LF regardless of a
+# contributor's core.autocrlf: a CRLF in a shell script or a workflow `run:`
+# block breaks bash on the runner ("$'\r': command not found", bad interpreter).
+*.sh    text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+
+# Windows-side scripts keep CRLF.
+*.ps1   text eol=crlf
+*.cmd   text eol=crlf
+*.bat   text eol=crlf

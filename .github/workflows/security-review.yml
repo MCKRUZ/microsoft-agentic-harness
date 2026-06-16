@@ -1,0 +1,128 @@
+name: Security Review
+
+# The security rail (the-rails.md §3): the security-reviewer agent, path-triggered.
+#
+# Design note — why this is a REQUIRED check that runs on EVERY PR:
+# A required status check must report a conclusion on every PR or the merge stays
+# stuck "pending". So this job runs on all PRs but short-circuits to success when
+# no gated path changed. When a gated path IS touched (or the `risk:high` label is
+# present) it runs the security-reviewer and FAILS on a HIGH finding — that failure
+# is what blocks the merge. Add the check name `security-review` to the main-branch
+# ruleset's required checks (already done in main-branch-protection.json).
+#
+# Fail-safe: a gated change whose review cannot complete (e.g. missing
+# ANTHROPIC_API_KEY before go-live) BLOCKS rather than passes. Set up the secret
+# and the Claude GitHub App before relying on this gate — see .github/RAILS.md.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: security-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  security-review:
+    name: security-review
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect gated-path changes
+        id: detect
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          HAS_RISK_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'risk:high') }}
+        run: |
+          set -euo pipefail
+          # Full (non-shallow) fetch of the base so the merge-base exists; a
+          # `--depth=1` fetch leaves no common ancestor and breaks the diff.
+          git fetch --no-tags origin "$BASE_REF"
+          BASE_SHA="$(git merge-base FETCH_HEAD HEAD)"
+          CHANGED="$(git diff --name-only "$BASE_SHA" HEAD)"
+          echo "Base: $BASE_SHA"
+          echo "Changed files:"; echo "$CHANGED"
+
+          # Gated paths — keep in sync with .github/CODEOWNERS and the rubric.
+          # Every segment is slash-anchored so it matches a directory component
+          # consistently (e.g. /SecurityAttributes/, not a bare substring).
+          GATED_RE='(^\.github/|/Auth/|/Identity/|/Security/|/SecurityAttributes/|/Migrations/|^infra/)'
+          if echo "$CHANGED" | grep -Eq "$GATED_RE"; then
+            GATED=true
+          else
+            GATED=false
+          fi
+
+          if [ "$GATED" = "true" ] || [ "$HAS_RISK_LABEL" = "true" ]; then
+            echo "review_required=true" >> "$GITHUB_OUTPUT"
+            echo "Security review REQUIRED (gated=$GATED, risk:high=$HAS_RISK_LABEL)."
+          else
+            echo "review_required=false" >> "$GITHUB_OUTPUT"
+            echo "No gated paths changed and no risk:high label — security review not required."
+          fi
+
+      # Clear any verdict file that a PR may have COMMITTED into the tree. The
+      # verdict must come from this run, not from attacker-supplied content; we
+      # also write/read it under the runner temp dir (outside the workspace) so a
+      # committed security-verdict.txt can never satisfy the gate.
+      - name: Reset verdict
+        if: steps.detect.outputs.review_required == 'true'
+        run: rm -f "${{ runner.temp }}/security-verdict.txt" security-verdict.txt
+
+      - name: Run security-reviewer
+        if: steps.detect.outputs.review_required == 'true'
+        continue-on-error: true
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          prompt: |
+            You are running as the security-reviewer for PR #${{ github.event.pull_request.number }}.
+            Read the rubric at .github/security-review-rubric.md and follow it exactly.
+            Review the PR diff (base is origin/${{ github.base_ref }}), focusing on the
+            gated files that triggered this run. POST your findings as a PR comment AND
+            write the machine verdict to the absolute path ${{ runner.temp }}/security-verdict.txt
+            (its first line must be exactly "SECURITY_VERDICT: PASS" or "SECURITY_VERDICT: BLOCK").
+          claude_args: |
+            --model opus
+            --max-turns 25
+            --allowedTools Bash,Read,Grep,Glob,Write,Edit
+
+      - name: Enforce verdict (block on HIGH)
+        if: steps.detect.outputs.review_required == 'true'
+        env:
+          VERDICT_FILE: ${{ runner.temp }}/security-verdict.txt
+        run: |
+          set -euo pipefail
+          if [ ! -f "$VERDICT_FILE" ]; then
+            echo "::error::Security review did not produce a verdict on a gated change. Failing closed."
+            echo "If ANTHROPIC_API_KEY / the Claude GitHub App are not yet configured, see .github/RAILS.md."
+            exit 1
+          fi
+          echo "Verdict file:"; cat "$VERDICT_FILE"
+          # Exact prefix match on the first line — a model that buries the token in
+          # prose, or attacker text like "PASS (1 BLOCK pending)", must not pass.
+          FIRST="$(head -n1 "$VERDICT_FILE" || true)"
+          case "$FIRST" in
+            "SECURITY_VERDICT: BLOCK"*)
+              echo "::error::Security review found HIGH severity issue(s). Resolve them or record a named accepted-risk sign-off."
+              exit 1 ;;
+            "SECURITY_VERDICT: PASS"*)
+              echo "Security review passed (no HIGH findings)."
+              exit 0 ;;
+            *)
+              echo "::error::Unrecognized security verdict ('$FIRST'). Failing closed."
+              exit 1 ;;
+          esac
+
+      - name: No review required
+        if: steps.detect.outputs.review_required != 'true'
+        run: echo "No gated paths changed — security-review check passes trivially."
