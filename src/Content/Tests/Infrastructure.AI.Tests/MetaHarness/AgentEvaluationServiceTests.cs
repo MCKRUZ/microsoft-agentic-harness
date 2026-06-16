@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.MetaHarness;
 using Application.AI.Common.Interfaces.Traces;
@@ -11,6 +10,7 @@ using Infrastructure.AI.Security;
 using Infrastructure.AI.Tests.Helpers;
 using Infrastructure.AI.Traces;
 using Microsoft.Agents.AI;
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Moq;
@@ -188,15 +188,37 @@ public class AgentEvaluationServiceTests : IAsyncDisposable
     }
 
     /// <summary>
-    /// With MaxEvalParallelism=2 and 4 tasks each with 50ms delay,
-    /// total elapsed time should be ~100ms (2 batches), not ~200ms (sequential).
+    /// With MaxEvalParallelism=2 and 4 tasks, exactly two tasks must be in flight at the
+    /// peak. Asserted via an observed-concurrency counter rather than wall-clock elapsed
+    /// time: a timing ceiling flakes on loaded CI runners (it was seen failing at ~505ms
+    /// against a 500ms bound). The counter tests the real property — concurrency level —
+    /// deterministically: peak == 2 proves it is neither sequential (>=2) nor uncapped (&lt;=2).
     /// </summary>
     [Fact]
     public async Task EvaluateAsync_WithParallelism2_RunsTasksConcurrently()
     {
+        var current = 0;
+        var peak = 0;
+        var peakLock = new object();
+
         _agentFactoryMock
             .Setup(f => f.CreateAgentAsync(It.IsAny<AgentExecutionContext>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(() => TestableAIAgent.WithDelay("ok", TimeSpan.FromMilliseconds(50)));
+            .ReturnsAsync(() => new TestableAIAgent(async (_, ct) =>
+            {
+                var inFlight = Interlocked.Increment(ref current);
+                lock (peakLock) { peak = Math.Max(peak, inFlight); }
+                try
+                {
+                    // The delay widens the overlap window so two tasks are genuinely
+                    // concurrent; the assertion is on the counter, not on the clock.
+                    await Task.Delay(TimeSpan.FromMilliseconds(50), ct);
+                    return new AgentResponse(new ChatMessage(ChatRole.Assistant, "ok"));
+                }
+                finally
+                {
+                    Interlocked.Decrement(ref current);
+                }
+            }));
 
         var cfg = new MetaHarnessConfig
         {
@@ -209,16 +231,10 @@ public class AgentEvaluationServiceTests : IAsyncDisposable
             .Select(i => BuildTask($"t{i}", $"prompt {i}", pattern: null))
             .ToArray();
 
-        var sw = Stopwatch.StartNew();
         var result = await sut.EvaluateAsync(candidate, tasks);
-        sw.Stop();
 
         Assert.Equal(1.0, result.PassRate);
-        // 2 parallel x 2 batches = ~100ms; allow generous tolerance for CI/loaded machines
-        Assert.True(sw.ElapsedMilliseconds < 500,
-            $"Expected <500ms with parallelism=2 but took {sw.ElapsedMilliseconds}ms");
-        Assert.True(sw.ElapsedMilliseconds >= 70,
-            $"Expected >=70ms (2 batches) but took {sw.ElapsedMilliseconds}ms");
+        Assert.Equal(2, peak);
     }
 
     /// <summary>
