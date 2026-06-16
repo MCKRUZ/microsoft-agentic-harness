@@ -30,9 +30,11 @@ public class ProcessResourceLimiterTests
         mock.Object.GetUsage()!.MemoryBytes.Should().Be(1024);
     }
 
-    [Fact]
+    [SkippableFact]
     public void NoOpProcessResourceLimiter_Apply_ReturnsFalseAndLogsWarning()
     {
+        Skip.IfNot(OperatingSystem.IsWindows(), "Windows-only: starts cmd.exe to exercise the limiter.");
+
         var logger = new Mock<ILogger<NoOpProcessResourceLimiter>>();
         using var limiter = new NoOpProcessResourceLimiter(logger.Object);
 
