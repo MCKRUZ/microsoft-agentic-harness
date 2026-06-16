@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>15 · Delivery &amp; CI Governance — Agentic Harness Developer Guide</title>
+        <meta name="description" content="The delivery rails: the agentic CI/CD gates that govern every change to this repo — build, OWASP eval, security review, grader, and the local Stop hook. The agent proposes; a gate disposes." />
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+        <link rel="stylesheet" href="assets/css/styles.css" />
+    </head>
+    <body>
+        <a href="#main" class="skip-link">Skip to content</a>
+        <div class="app">
+            <aside class="sidebar">
+                <div class="sidebar-header"><a class="sidebar-brand" href="index.html"><span class="sidebar-brand-mark">AH</span><span><span class="sidebar-brand-text">Agentic Harness</span><br /><span class="sidebar-brand-sub">Developer Guide</span></span></a></div>
+                <nav class="sidebar-nav" aria-label="Documentation navigation">
+                    <div class="sidebar-group"><div class="sidebar-group-title">Getting Started</div><a class="sidebar-link" href="index.html"><span class="sidebar-link-num">00</span> Welcome</a><a class="sidebar-link" href="01-get-running.html"><span class="sidebar-link-num">01</span> Get Running in 10 Minutes</a></div>
+                    <div class="sidebar-group"><div class="sidebar-group-title">Configuration</div><a class="sidebar-link" href="02-configuration.html"><span class="sidebar-link-num">02</span> Configuration Reference</a></div>
+                    <div class="sidebar-group"><div class="sidebar-group-title">Architecture</div><a class="sidebar-link" href="03-big-picture.html"><span class="sidebar-link-num">03</span> The Big Picture</a><a class="sidebar-link" href="04-message-journey.html"><span class="sidebar-link-num">04</span> A Message's Journey</a></div>
+                    <div class="sidebar-group"><div class="sidebar-group-title">Systems</div><a class="sidebar-link" href="05-skills.html"><span class="sidebar-link-num">05</span> Skills System</a><a class="sidebar-link" href="06-tools.html"><span class="sidebar-link-num">06</span> Tools &amp; Keyed DI</a><a class="sidebar-link" href="07-rag.html"><span class="sidebar-link-num">07</span> The RAG Pipeline</a><a class="sidebar-link" href="08-mcp.html"><span class="sidebar-link-num">08</span> MCP Server &amp; Client</a></div>
+                    <div class="sidebar-group"><div class="sidebar-group-title">Patterns</div><a class="sidebar-link" href="09-patterns.html"><span class="sidebar-link-num">09</span> Patterns You'll Use Daily</a><a class="sidebar-link" href="10-observability.html"><span class="sidebar-link-num">10</span> Observability &amp; Safety</a></div>
+                    <div class="sidebar-group"><div class="sidebar-group-title">Building</div><a class="sidebar-link" href="11-extending.html"><span class="sidebar-link-num">11</span> Extending the Harness</a></div>
+                    <div class="sidebar-group"><div class="sidebar-group-title">Quality</div><a class="sidebar-link" href="13-evaluation.html"><span class="sidebar-link-num">13</span> Evaluation Framework</a><a class="sidebar-link" href="14-skill-training.html"><span class="sidebar-link-num">14</span> Skill Training</a></div>
+                    <div class="sidebar-group"><div class="sidebar-group-title">Delivery</div><a class="sidebar-link" href="15-delivery-governance.html"><span class="sidebar-link-num">15</span> Delivery &amp; CI Governance</a></div>
+                    <div class="sidebar-group"><div class="sidebar-group-title">Reference</div><a class="sidebar-link" href="12-reference.html"><span class="sidebar-link-num">12</span> Cheatsheet &amp; Glossary</a></div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Other Guides</div>
+                        <a class="sidebar-link" href="../architecture/index.html">&#8592; Architecture Guide</a>
+                        <a class="sidebar-link" href="../agentic-harness-course/index.html">&#8592; Interactive Course</a>
+                    </div>
+                </nav>
+            </aside>
+
+            <main id="main" class="content-wrap">
+                <div class="content">
+                    <span class="eyebrow">Chapter 15 · Delivery</span>
+                    <h1 class="page-title">Delivery &amp; CI Governance</h1>
+                    <p class="page-lead">
+                        Chapters 13 and 14 are about the quality of the <em>agent</em>. This chapter is about the quality
+                        of the <em>changes you make to the harness itself</em>. The repo ships with a set of CI/CD
+                        gates — the <strong>delivery rails</strong> — built to the Intent Driven Development delivery
+                        standard. One rule underpins all of them: <strong>the agent proposes, a gate disposes.</strong>
+                        An AI (or a human) can author any change it likes; nothing reaches <code>main</code> until a
+                        mechanical or human gate has had its say.
+                    </p>
+
+                    <div class="callout callout-info">
+                        <span class="callout-icon">i</span>
+                        <div class="callout-body">
+                            <div class="callout-title">The operator's guide lives in the repo</div>
+                            <p style="margin: 0">
+                                This page is the developer-facing tour. The authoritative operator's runbook — exact
+                                go-live steps, residual-risk analysis, and the shakedown procedure — is
+                                <code>.github/RAILS.md</code>. The delivery standard it implements is
+                                <code>delivery-standard/docs/the-rails.md</code>. When this page and
+                                <code>RAILS.md</code> disagree, <code>RAILS.md</code> wins.
+                            </p>
+                        </div>
+                    </div>
+
+                    <h2>The five gates</h2>
+                    <p>
+                        Four gates run in GitHub Actions on every pull request; one runs locally before an agent can
+                        even finish its turn. Three of the CI gates <strong>block</strong> the merge; the grader only
+                        <strong>advises</strong>.
+                    </p>
+                    <table>
+                        <thead><tr><th>Gate</th><th>Where</th><th>Fires on</th><th>Blocks or advises</th></tr></thead>
+                        <tbody>
+                            <tr><td><code>build-and-test</code></td><td><code>.github/workflows/ci.yml</code></td><td>Every PR + push to main</td><td><strong>Blocks</strong> — build must compile, full xUnit suite must pass.</td></tr>
+                            <tr><td><code>OWASP Agentic Top-10 Gate</code></td><td><code>.github/workflows/ci.yml</code></td><td>Every PR (after build)</td><td><strong>Blocks</strong> — any <code>Verdict.Fail</code> in the 10-row eval pack fails the merge.</td></tr>
+                            <tr><td><code>security-review</code></td><td><code>.github/workflows/security-review.yml</code></td><td>Every PR; <em>reviews</em> only when a gated path or <code>risk:high</code> label is present</td><td><strong>Blocks on HIGH</strong> — the security-reviewer agent writes a <code>PASS</code>/<code>BLOCK</code> verdict; HIGH fails closed.</td></tr>
+                            <tr><td><code>grader</code></td><td><code>.github/workflows/grader.yml</code></td><td>Every non-draft PR</td><td><strong>Advises</strong> — a fresh agent grades the diff against the PR's stated intent and comments. Never blocks.</td></tr>
+                            <tr><td>Stop gate</td><td><code>.claude/hooks/stop-build-gate.ps1</code></td><td>An agent tries to end a Claude Code turn locally</td><td><strong>Blocks</strong> a red build before it ever becomes a commit.</td></tr>
+                        </tbody>
+                    </table>
+
+                    <h2>Blocking vs advising — and why the split matters</h2>
+                    <p>
+                        A <strong>blocking</strong> gate is a mechanical or agentic check whose verdict the branch
+                        protection ruleset trusts to gate merge. An <strong>advising</strong> gate produces a signal
+                        for a human reviewer (the "Checker") to weigh, but cannot itself stop a merge. The grader is
+                        deliberately advisory: "the grader ran" is what the methodology requires; <em>what it said</em>
+                        is the human's call. Making a judgment-heavy LLM verdict a hard gate would either rubber-stamp
+                        or block-at-random — neither is honest.
+                    </p>
+                    <p>
+                        Branch protection (<code>.github/rulesets/main-branch-protection.json</code>) makes exactly the
+                        three blocking CI checks mandatory and additionally requires a non-author approval plus a
+                        code-owner review. The required check contexts are:
+                    </p>
+                    <pre><code>build-and-test
+OWASP Agentic Top-10 Gate
+security-review</code></pre>
+                    <p>
+                        The grader is intentionally <strong>not</strong> in that list.
+                    </p>
+
+                    <h2>How a change flows</h2>
+                    <pre><code>┌─────────────────────────────────────────────────────────────────┐
+│  LOCAL (your machine)                                            │
+│    edit code ──▶ agent tries to finish its turn                  │
+│                   └▶ Stop gate: build must be green, else REFUSE │
+│    commit ──▶ push branch ──▶ open PR                            │
+├─────────────────────────────────────────────────────────────────┤
+│  CI (GitHub Actions, on the PR)                                  │
+│    build-and-test ──────────────▶ blocks on red build/test      │
+│    OWASP Agentic Top-10 Gate ───▶ blocks on any eval Fail        │
+│    security-review ─────────────▶ blocks on HIGH (gated paths)   │
+│    grader ──────────────────────▶ comments a verdict (advisory)  │
+├─────────────────────────────────────────────────────────────────┤
+│  MERGE                                                           │
+│    branch protection: 3 required checks green                   │
+│                     + non-author approval + code-owner review   │
+└─────────────────────────────────────────────────────────────────┘</code></pre>
+
+                    <h2>The two agentic gates</h2>
+                    <p>
+                        The grader and security-review gates run a Claude agent inside CI via
+                        <code>anthropics/claude-code-action@v1</code>. Each reads a committed rubric and follows it
+                        exactly — the rubric is the contract, version-controlled alongside the code it judges:
+                    </p>
+                    <table>
+                        <thead><tr><th>Gate</th><th>Rubric</th><th>What it checks</th></tr></thead>
+                        <tbody>
+                            <tr><td>grader</td><td><code>.github/grader-rubric.md</code></td><td>Does the diff do what the PR description claims? Scope creep, standards (file length, XML docs, <code>Result&lt;T&gt;</code>, keyed-DI tools, exception handling).</td></tr>
+                            <tr><td>security-review</td><td><code>.github/security-review-rubric.md</code></td><td>Injection, broken access control, secret leakage, unsafe crypto on the gated files (Auth / Identity / Security / Migrations / <code>infra/</code> / <code>.github/</code>).</td></tr>
+                        </tbody>
+                    </table>
+                    <p>
+                        The security-review gate is a <em>required</em> check that runs on every PR, but only
+                        <em>reviews</em> when a gated path changed (or the <code>risk:high</code> label is set). On a
+                        non-gated PR it short-circuits to success so the required check still reports a conclusion;
+                        on a gated PR that cannot complete its review — for example before the API key is configured —
+                        it <strong>fails closed</strong> rather than waving the change through.
+                    </p>
+
+                    <h2>The local gate: the Stop hook</h2>
+                    <p>
+                        The cheapest place to catch a broken build is before it leaves your machine. The Stop hook
+                        (<code>.claude/hooks/stop-build-gate.ps1</code>) runs when an agent attempts to end a Claude
+                        Code turn: if the solution does not build, the hook refuses and hands the build error back to
+                        the agent. The agent fixes it and tries again. By the time a commit exists, it already builds —
+                        so CI's <code>build-and-test</code> is a backstop, not the first line of defence.
+                    </p>
+
+                    <h2>Taking the rails live</h2>
+                    <p>
+                        The rails are wired but <strong>dormant by default</strong> — the two agentic gates need
+                        credentials a human must provision. These are deliberate, outward-facing actions; nothing in
+                        the repo performs them for you. (Until they're done, the security-review gate fails closed on
+                        gated PRs by design, and the grader stays green as a no-op.)
+                    </p>
+                    <ol>
+                        <li>
+                            <strong>Install the Claude GitHub App</strong> on the repo — run
+                            <code>/install-github-app</code> in Claude Code, or install from
+                            <a href="https://github.com/apps/claude">github.com/apps/claude</a>. Repo admin required.
+                        </li>
+                        <li>
+                            <strong>Add the <code>ANTHROPIC_API_KEY</code> repository secret</strong> (Settings →
+                            Secrets and variables → Actions). The grader and security-review steps call the Claude API;
+                            there is a real per-PR token cost.
+                        </li>
+                        <li>
+                            <strong>Apply branch protection</strong> from the version-controlled ruleset — never by
+                            hand-editing rules in the GitHub UI:
+                            <pre><code>scripts/rails/apply-branch-protection.sh --dry-run   # review the plan
+scripts/rails/apply-branch-protection.sh             # apply (prompts to confirm)</code></pre>
+                            Edit the JSON, re-run the script — that is the only sanctioned path to changing protection.
+                        </li>
+                    </ol>
+
+                    <div class="callout callout-warn">
+                        <span class="callout-icon">!</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Solo-repo accommodation</div>
+                            <p style="margin: 0">
+                                GitHub forbids approving your own PR, so on a single-maintainer repo the "non-author
+                                approval" rule can't be self-satisfied. The ruleset ships <strong>armed with a
+                                repo-admin owner bypass</strong> set to <code>bypass_mode: pull_request</code> — you can
+                                self-merge today, but even the owner cannot push <em>directly</em> to <code>main</code>
+                                skipping CI. The moment a second collaborator (or a review bot) joins, <strong>remove
+                                the bypass actor</strong> from <code>main-branch-protection.json</code> and re-apply.
+                            </p>
+                        </div>
+                    </div>
+
+                    <h2>Gate integrity (known residual risk)</h2>
+                    <p>
+                        These workflows trigger on <code>pull_request</code>, which runs the PR's <em>own copy</em> of
+                        the workflow, the rubric, and the gated-path regex. A same-repo branch could in principle try to
+                        weaken its own gate. Two mitigations are in place, plus one real closure:
+                    </p>
+                    <ul>
+                        <li>The security verdict file is written and read <strong>outside the working tree</strong>, and any copy a PR committed into the tree is deleted before review — so a planted <code>PASS</code> can't satisfy the gate.</li>
+                        <li>Changes to <code>.github/**</code> are themselves a gated path, so weakening a rail requires code-owner review.</li>
+                        <li>The real closure is a <strong>non-author review of rails changes</strong> — exactly what branch protection enforces once a second reviewer exists.</li>
+                    </ul>
+                    <div class="callout callout-danger">
+                        <span class="callout-icon">✕</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Never use <code>pull_request_target</code> for these gates</div>
+                            <p style="margin: 0">
+                                It would expose repository secrets and the write token to forked-PR code. The gates run
+                                on <code>pull_request</code> on purpose; keep them there.
+                            </p>
+                        </div>
+                    </div>
+
+                    <h2>Prove the rails — the shakedown</h2>
+                    <p>
+                        A pipeline that has never caught anything is not proven, only present. Before trusting the
+                        rails, force each one to fail and confirm it's caught:
+                    </p>
+                    <table>
+                        <thead><tr><th>Gate</th><th>How to break it on purpose</th><th>Expected</th></tr></thead>
+                        <tbody>
+                            <tr><td>Stop gate</td><td>Break a <code>.cs</code> file under <code>src/</code>, then try to end a turn.</td><td>Hook refuses, hands back the build error.</td></tr>
+                            <tr><td>grader</td><td>Open a PR whose description claims something the diff does not do.</td><td>Grader comment calls out the mismatch.</td></tr>
+                            <tr><td>security-review</td><td>Throwaway PR touching a gated path (e.g. a comment under <code>**/Auth/</code>) with a planted HIGH issue.</td><td>Check goes red. Close it unmerged.</td></tr>
+                            <tr><td>CI / OWASP</td><td>Already exercised by every real PR.</td><td>—</td></tr>
+                        </tbody>
+                    </table>
+
+                    <h2>The docs have a rail too</h2>
+                    <p>
+                        Documentation drifts faster than anything else in a template repo, so it gets its own rail.
+                        <code>.github/workflows/docs-drift-check.yml</code> runs on every push to <code>main</code>
+                        (path-filtered to code, workflow, and governance changes). It hands the merge diff to a Claude
+                        agent that checks the change against the documentation map in
+                        <code>.github/docs-drift-rubric.md</code>; when a shipped change isn't reflected in the docs,
+                        it opens a pull request with the doc updates for a human to review and merge. Like the other
+                        agentic gates it is dormant until the Claude GitHub App and <code>ANTHROPIC_API_KEY</code> are
+                        configured. This is an <strong>advising</strong> rail — it proposes a doc PR; a human still
+                        disposes.
+                    </p>
+
+                    <h2>What's deferred (and where to read about it)</h2>
+                    <p>
+                        The rails govern <em>getting a change onto <code>main</code></em>. They deliberately do
+                        <strong>not</strong> cover deploy/promotion, rollback rehearsal, IaC apply with what-if/policy
+                        funnels, or production secret rotation — there is no cloud deployment yet. That target topology
+                        (Container Apps, Bicep, canary promotion, cost tiers) is documented as the forward plan in the
+                        <a href="../architecture/06-operations.html">Architecture Guide → Operations &amp; Cost</a>
+                        page; it describes what a consumer would build on Azure, not what this repo ships today.
+                    </p>
+
+                    <h2>Where to go next</h2>
+                    <ul>
+                        <li>Read <code>.github/RAILS.md</code> — the operator's runbook this page summarizes.</li>
+                        <li>Cross-reference Chapter <a href="13-evaluation.html">13 — Evaluation Framework</a>: the OWASP Agentic gate runs an eval pack through that same harness.</li>
+                        <li>See Chapter <a href="10-observability.html">10 — Observability &amp; Safety</a> for the <em>runtime</em> governance (content safety, autonomy tiers) the rails complement at delivery time.</li>
+                        <li>The Architecture Guide's <a href="../architecture/06-operations.html">Operations &amp; Cost</a> page covers the deferred cloud delivery topology.</li>
+                    </ul>
+
+                    <div class="page-nav">
+                        <a class="page-nav-link page-nav-prev" href="14-skill-training.html">
+                            <div class="page-nav-label">← Previous</div>
+                            <div class="page-nav-title">14 · Skill Training</div>
+                        </a>
+                        <a class="page-nav-link page-nav-next" href="12-reference.html">
+                            <div class="page-nav-label">Next →</div>
+                            <div class="page-nav-title">12 · Cheatsheet &amp; Glossary</div>
+                        </a>
+                    </div>
+                </div>
+            </main>
+        </div>
+    </body>
+</html>

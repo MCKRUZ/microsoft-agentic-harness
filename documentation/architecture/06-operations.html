@@ -371,6 +371,24 @@
 
                     <!-- ==================== CI/CD pipeline ==================== -->
                     <h2 id="cicd-pipeline">CI/CD pipeline</h2>
+
+                    <div class="callout callout-info">
+                        <span class="callout-icon">i</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Target topology, not what the repo ships today</div>
+                            <p style="margin: 0">
+                                The five-stage deploy pipeline below is the <em>recommended</em> delivery flow for a
+                                consumer running this harness on Azure &mdash; it is forward-looking and not yet built
+                                (per <code>.github/RAILS.md</code>, no cloud deployment exists). What the repo
+                                <strong>actually runs today</strong> is its PR-time governance: build/test, the OWASP
+                                Agentic eval gate, security review, and the grader. For those live rails see the
+                                Developer Guide's
+                                <a href="../onboarding/15-delivery-governance.html">Delivery &amp; CI Governance</a>
+                                chapter.
+                            </p>
+                        </div>
+                    </div>
+
                     <p>
                         The deployment pipeline runs on GitHub Actions and progresses through five stages. Each
                         stage gates the next &mdash; failures halt the pipeline and notify the team.

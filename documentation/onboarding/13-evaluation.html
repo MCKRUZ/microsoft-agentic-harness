@@ -23,6 +23,7 @@
                     <div class="sidebar-group"><div class="sidebar-group-title">Patterns</div><a class="sidebar-link" href="09-patterns.html"><span class="sidebar-link-num">09</span> Patterns You'll Use Daily</a><a class="sidebar-link" href="10-observability.html"><span class="sidebar-link-num">10</span> Observability &amp; Safety</a></div>
                     <div class="sidebar-group"><div class="sidebar-group-title">Building</div><a class="sidebar-link" href="11-extending.html"><span class="sidebar-link-num">11</span> Extending the Harness</a></div>
                     <div class="sidebar-group"><div class="sidebar-group-title">Quality</div><a class="sidebar-link" href="13-evaluation.html"><span class="sidebar-link-num">13</span> Evaluation Framework</a><a class="sidebar-link" href="14-skill-training.html"><span class="sidebar-link-num">14</span> Skill Training</a></div>
+                    <div class="sidebar-group"><div class="sidebar-group-title">Delivery</div><a class="sidebar-link" href="15-delivery-governance.html"><span class="sidebar-link-num">15</span> Delivery &amp; CI Governance</a></div>
                     <div class="sidebar-group"><div class="sidebar-group-title">Reference</div><a class="sidebar-link" href="12-reference.html"><span class="sidebar-link-num">12</span> Cheatsheet &amp; Glossary</a></div>
                     <div class="sidebar-group">
                         <div class="sidebar-group-title">Other Guides</div>
@@ -159,6 +160,23 @@ cases:
                         Both come from the same in-memory <code>EvalRunReport</code>, so the dashboard JSON
                         always agrees with the JUnit gate verdict — no double LLM cost, no aggregate drift.
                     </p>
+
+                    <div class="callout callout-info">
+                        <span class="callout-icon">i</span>
+                        <div class="callout-body">
+                            <div class="callout-title">The eval gate that <em>does</em> block: OWASP Agentic Top-10</div>
+                            <p style="margin: 0">
+                                <code>eval-suite.yml</code> above is opt-in and advisory. A second, always-on gate in
+                                <code>.github/workflows/ci.yml</code> — the <strong>OWASP Agentic Top-10 Gate</strong> —
+                                runs the agentic-safety eval fixtures (<code>Category=OwaspAgentic</code>) on every PR
+                                and <strong>blocks the merge on any failed case</strong>. It is a required status
+                                check. See Chapter <a href="15-delivery-governance.html">15 — Delivery &amp; CI
+                                Governance</a> for how it sits alongside the other rails, and
+                                <code>documentation/security/owasp-agentic-top-10-evals.md</code> for the row-by-row
+                                control mapping.
+                            </p>
+                        </div>
+                    </div>
 
                     <h2>Where to go next</h2>
                     <ul>

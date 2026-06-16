@@ -1236,7 +1236,8 @@ await _store.SaveAsync(attestation, ct);</code></pre>
                         <li><strong>Identity</strong> — Microsoft Entra ID (Azure AD)</li>
                         <li><strong>Secrets</strong> — User Secrets (dev), Azure Key Vault (prod)</li>
                         <li><strong>IaC</strong> — Bicep (planned for the validated topology)</li>
-                        <li><strong>Deployment</strong> — GitHub Actions (<code>.github/workflows/pages.yml</code> publishes the three docs sites on push to main)</li>
+                        <li><strong>Docs deployment</strong> — GitHub Actions (<code>.github/workflows/pages.yml</code> publishes the four docs sites — onboarding, architecture, course, reference — on push to main)</li>
+                        <li><strong>Delivery rails</strong> — agentic CI/CD governance: <code>ci.yml</code> (build/test + the blocking OWASP Agentic Top-10 gate), <code>security-review.yml</code> (path-gated security reviewer, blocks on HIGH), and <code>grader.yml</code> (advisory spec grader). See the Developer Guide's <a href="../onboarding/15-delivery-governance.html">Delivery &amp; CI Governance</a> chapter.</li>
                     </ul>
 
                     <hr />

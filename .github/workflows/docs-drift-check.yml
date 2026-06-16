@@ -1,0 +1,82 @@
+name: Docs Drift Check
+
+# The docs rail (RAILS.md / the-rails.md §3): after a change lands on main, a fresh
+# agent checks whether the documentation still tells the truth — and if not, opens a
+# PR with the fix.
+#
+# ADVISES, never blocks. This runs POST-merge (push to main), so it cannot gate a
+# merge; its output is a proposed doc PR for a human to review and merge. "The check
+# ran" is what the methodology asks for; whether to take the doc PR is the human's call.
+#
+# Trigger: push to main, path-filtered to the things that make docs go stale — source,
+# workflows, governance rubrics/rulesets. Docs-only and chore commits skip it (and the
+# doc PR this workflow opens touches only documentation/**, so merging it never
+# re-triggers this workflow).
+#
+# Prerequisites to go live (see .github/RAILS.md):
+#   * Claude GitHub App installed on the repo.
+#   * ANTHROPIC_API_KEY repository secret set.
+# Until then the Claude step no-ops on the missing key (continue-on-error keeps the
+# workflow green so it never adds false red to main).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - '.github/workflows/**'
+      - '.github/*.md'
+      - '.github/rulesets/**'
+  workflow_dispatch:
+
+# Least privilege: read the code, write a branch + open a PR. Nothing else.
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: docs-drift-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  docs-drift:
+    name: docs-drift
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check docs against the change and open a fix PR
+        id: drift
+        continue-on-error: true
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          prompt: |
+            You are the documentation-drift checker. A change just landed on main.
+            Read the rubric at .github/docs-drift-rubric.md and follow it EXACTLY.
+
+            The change to assess is the diff between the previous main and the new one:
+              git diff ${{ github.event.before }}..${{ github.sha }}
+            (On a manual run where ${{ github.event.before }} is unavailable or all-zeros,
+            inspect the most recent commit: git show --stat HEAD.)
+
+            Decide whether any documentation in documentation/** (the GitHub Pages sites)
+            is now stale or missing coverage because of this change, per the rubric's doc
+            map. If — and only if — you find real drift:
+              1. Create a branch: docs/drift-sync-${{ github.sha }} (shorten the sha to 7 chars).
+              2. Make the MINIMAL doc edits that fix the drift. Touch only documentation/**.
+                 Do not edit source, tests, or workflows. Match each page's existing
+                 structure, tone, and nav exactly (see the rubric).
+              3. Commit, push the branch, and open ONE pull request targeting main with
+                 title "docs: sync docs after ${{ github.sha }}" (7-char sha) and a body
+                 that lists, per file, what drifted and what you changed.
+            If you find NO drift, do not open a PR. Write a one-line "no drift" note to the
+            job summary ($GITHUB_STEP_SUMMARY) and stop. Never open an empty PR.
+          claude_args: |
+            --model opus
+            --max-turns 30
+            --allowedTools Bash,Read,Grep,Glob,Write,Edit

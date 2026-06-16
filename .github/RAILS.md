@@ -15,6 +15,7 @@ them live, and how to prove they actually catch things.
 | **OWASP Agentic Top-10 Gate** | `workflows/ci.yml` | every PR | **Blocks** (hard gate) |
 | **security-review** | `workflows/security-review.yml` | every PR; reviews on gated paths / `risk:high` | **Blocks on HIGH** |
 | **grader** | `workflows/grader.yml` | every PR | **Advises** — never blocks |
+| **docs-drift** | `workflows/docs-drift-check.yml` | push to main (code / CI / governance paths) | **Advises** — opens a doc-sync PR |
 | **Stop gate** | `../.claude/hooks/stop-build-gate.ps1` | agent tries to finish locally | **Blocks** a red build |
 
 Branch protection (`rulesets/main-branch-protection.json`) makes the three
@@ -26,7 +27,7 @@ These are deliberate, outward-facing actions. Nothing in this PR performs them.
 
 1. **Install the Claude GitHub App** on the repo: run `/install-github-app` in
    Claude Code, or install from <https://github.com/apps/claude>. Needed for the
-   grader and security-review workflows. (Repo admin required.)
+   grader, security-review, and docs-drift workflows. (Repo admin required.)
 2. **Add the `ANTHROPIC_API_KEY` repository secret** (Settings → Secrets and
    variables → Actions). The grader and security-review steps call the Claude API;
    there is a real per-PR token cost. Until this is set, the security-review gate

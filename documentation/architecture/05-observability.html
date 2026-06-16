@@ -85,6 +85,21 @@
                         </div>
                     </div>
 
+                    <div class="callout callout-warn">
+                        <span class="callout-icon">!</span>
+                        <div class="callout-body">
+                            <div class="callout-title">GenAI semantic conventions are still evolving</div>
+                            <p style="margin: 0">
+                                The OpenTelemetry GenAI semantic conventions this harness emits are marked
+                                <em>Development</em> upstream and are gated behind the
+                                <code>OTEL_SEMCONV_STABILITY_OPT_IN=gen_ai_latest_experimental</code> opt-in. Attribute
+                                and span names under <code>gen_ai.*</code> may change in a future OTel release &mdash;
+                                pin your collector mappings and re-validate on SDK upgrades. The current pinned version
+                                is tracked in <code>documentation/architecture/magentic-spans.md</code>.
+                            </p>
+                        </div>
+                    </div>
+
                     <!-- ==============================
                          Two Paths, Same Data
                          ============================== -->
