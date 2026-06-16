@@ -35,6 +35,9 @@ public class App
 	private readonly MultiSourceRetrievalExample _multiSourceRetrievalExample;
 	private readonly SandboxCapabilitiesExample _sandboxCapabilitiesExample;
 	private readonly PipelineBehaviorsExample _pipelineBehaviorsExample;
+	private readonly SkillTrainingExample _skillTrainingExample;
+	private readonly MagenticOrchestrationExample _magenticOrchestrationExample;
+	private readonly A2ASreToWorkspaceExample _a2aSreToWorkspaceExample;
 
 	public App(
 		IOptionsMonitor<AppConfig> appConfig,
@@ -58,7 +61,10 @@ public class App
 		ObservabilityBudgetExample observabilityBudgetExample,
 		MultiSourceRetrievalExample multiSourceRetrievalExample,
 		SandboxCapabilitiesExample sandboxCapabilitiesExample,
-		PipelineBehaviorsExample pipelineBehaviorsExample)
+		PipelineBehaviorsExample pipelineBehaviorsExample,
+		SkillTrainingExample skillTrainingExample,
+		MagenticOrchestrationExample magenticOrchestrationExample,
+		A2ASreToWorkspaceExample a2aSreToWorkspaceExample)
 	{
 		_appConfig = appConfig;
 		_loggerFactory = loggerFactory;
@@ -82,6 +88,9 @@ public class App
 		_multiSourceRetrievalExample = multiSourceRetrievalExample;
 		_sandboxCapabilitiesExample = sandboxCapabilitiesExample;
 		_pipelineBehaviorsExample = pipelineBehaviorsExample;
+		_skillTrainingExample = skillTrainingExample;
+		_magenticOrchestrationExample = magenticOrchestrationExample;
+		_a2aSreToWorkspaceExample = a2aSreToWorkspaceExample;
 	}
 
 	/// <summary>
@@ -165,6 +174,15 @@ public class App
 			case "pipeline-behaviors":
 				await _pipelineBehaviorsExample.RunAsync();
 				break;
+			case "skill-training":
+				await _skillTrainingExample.RunAsync();
+				break;
+			case "magentic":
+				await _magenticOrchestrationExample.RunAsync();
+				break;
+			case "a2a-sre-workspace":
+				await _a2aSreToWorkspaceExample.RunAsync();
+				break;
 			default:
 				ConsoleHelper.DisplayError($"Unknown example: {exampleName}");
 				break;
@@ -182,8 +200,10 @@ public class App
 				.AddChoiceGroup("[bold]Agents[/]",
 					"Research Agent (Standalone)",
 					"Orchestrator Agent (Multi-Agent)",
+					"Magentic Orchestration (Multi-Agent)",
 					"Persistent Agent (AI Foundry)",
-					"A2A Agent-to-Agent")
+					"A2A Agent-to-Agent",
+					"A2A SRE-to-Workspace")
 				.AddChoiceGroup("[bold]RAG & Retrieval[/]",
 					"RAG Pipeline Demo",
 					"Multi-Source Retrieval")
@@ -204,7 +224,8 @@ public class App
 					"Learnings Log",
 					"Budget & Health Tracking")
 				.AddChoiceGroup("[bold]Optimization[/]",
-					"Meta-Harness Optimizer")
+					"Meta-Harness Optimizer",
+					"Skill Training (SkillOpt)")
 				.AddChoiceGroup("[bold]Setup[/]",
 					"Setup User Secrets",
 					"Show Configuration")
@@ -222,12 +243,20 @@ public class App
 					await _orchestratorExample.RunAsync();
 					break;
 
+				case "Magentic Orchestration (Multi-Agent)":
+					await _magenticOrchestrationExample.RunAsync();
+					break;
+
 				case "Persistent Agent (AI Foundry)":
 					await _persistentAgentExample.RunAsync();
 					break;
 
 				case "A2A Agent-to-Agent":
 					await _a2aExample.RunAsync();
+					break;
+
+				case "A2A SRE-to-Workspace":
+					await _a2aSreToWorkspaceExample.RunAsync();
 					break;
 
 				case "RAG Pipeline Demo":
@@ -288,6 +317,10 @@ public class App
 
 				case "Meta-Harness Optimizer":
 					await _optimizeExample.RunAsync();
+					break;
+
+				case "Skill Training (SkillOpt)":
+					await _skillTrainingExample.RunAsync();
 					break;
 
 				case "Setup User Secrets":

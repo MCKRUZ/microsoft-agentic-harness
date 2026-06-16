@@ -14,11 +14,19 @@ namespace Infrastructure.AI.Changes;
 /// fan-out keeps directory entry counts manageable as evidence grows.
 /// </summary>
 /// <remarks>
-/// Reads use <c>FileShare.Read</c> so concurrent readers don't block; writes use
-/// <c>File.Exists</c>-then-write because content addressing makes the write
-/// pure (same content → same path). The race window is benign: two
-/// simultaneous writes of the same content both produce a file with the same
-/// bytes at the same path.
+/// Reads use plain <see cref="File.ReadAllBytesAsync(string, CancellationToken)"/>.
+/// Writes are <b>atomic</b>: content is streamed to a uniquely-named temporary
+/// file in the target directory and then moved into place with
+/// <see cref="File.Move(string, string, bool)"/>, which is an atomic rename on
+/// the same volume. This guarantees the content-addressed path only ever holds
+/// a complete blob — a crash, cancellation, or full disk mid-write leaves an
+/// orphan <c>.tmp</c> file rather than a truncated blob at the final path, so
+/// the integrity guarantee of the content-addressed store is preserved.
+/// Because content addressing makes the write pure (same content → same path),
+/// concurrent writes of identical content are idempotent: every writer produces
+/// byte-identical content and the final move simply overwrites with the same
+/// bytes, honoring the <c>IEvidenceStore</c> idempotency contract without ever
+/// throwing.
 /// </remarks>
 public sealed class FileSystemEvidenceStore : IEvidenceStore
 {
@@ -49,20 +57,126 @@ public sealed class FileSystemEvidenceStore : IEvidenceStore
         var hash = HashPrefix + Base64UrlHelper.Encode(hashBytes);
         var path = PathFor(hash);
 
-        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        var dir = Path.GetDirectoryName(path)!;
+        Directory.CreateDirectory(dir);
 
+        // Already present: content addressing makes the write pure, so an
+        // existing blob is byte-identical. Skip rewriting to avoid needless I/O
+        // while remaining idempotent.
         if (!File.Exists(path))
         {
-            await using var stream = new FileStream(
-                path,
-                FileMode.CreateNew,
-                FileAccess.Write,
-                FileShare.Read);
-            await stream.WriteAsync(content, cancellationToken).ConfigureAwait(false);
-            await File.WriteAllTextAsync(path + ".contenttype", contentType ?? string.Empty, cancellationToken).ConfigureAwait(false);
+            await WriteAtomicAsync(path, content, cancellationToken).ConfigureAwait(false);
+            await WriteAtomicTextAsync(path + ".contenttype", contentType ?? string.Empty, cancellationToken).ConfigureAwait(false);
         }
 
         return hash;
+    }
+
+    /// <summary>
+    /// Streams <paramref name="content"/> to a uniquely-named temporary file in
+    /// the target directory, then atomically moves it onto
+    /// <paramref name="targetPath"/> (overwriting). The unique temp name ensures
+    /// two concurrent writers of identical content never collide on the staging
+    /// file, and the final rename guarantees readers never observe a partial blob.
+    /// Orphan temp files (left only on crash/cancel) are best-effort cleaned up.
+    /// </summary>
+    private static async Task WriteAtomicAsync(
+        string targetPath,
+        ReadOnlyMemory<byte> content,
+        CancellationToken cancellationToken)
+    {
+        var tmp = targetPath + "." + Path.GetRandomFileName() + ".tmp";
+        try
+        {
+            await using (var stream = new FileStream(
+                tmp,
+                FileMode.CreateNew,
+                FileAccess.Write,
+                FileShare.None))
+            {
+                await stream.WriteAsync(content, cancellationToken).ConfigureAwait(false);
+                await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            MoveIntoPlace(tmp, targetPath);
+        }
+        catch
+        {
+            TryDeleteTemp(tmp);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Atomic-write variant for the small sidecar text file (content type hint).
+    /// </summary>
+    private static async Task WriteAtomicTextAsync(
+        string targetPath,
+        string content,
+        CancellationToken cancellationToken)
+    {
+        var tmp = targetPath + "." + Path.GetRandomFileName() + ".tmp";
+        try
+        {
+            await File.WriteAllTextAsync(tmp, content, cancellationToken).ConfigureAwait(false);
+            MoveIntoPlace(tmp, targetPath);
+        }
+        catch
+        {
+            TryDeleteTemp(tmp);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Renames the staged temp file onto its final content-addressed path, tolerating concurrent
+    /// writers. Because the path is content-addressed, two writers producing the same content target
+    /// the same path; on Windows their <see cref="File.Move(string, string, bool)"/> calls can race
+    /// and throw <see cref="IOException"/> or <see cref="UnauthorizedAccessException"/> while the
+    /// destination is briefly held. When the destination already exists the (identical) content is
+    /// already durably stored, so the race is benign — discard our temp and succeed. Otherwise retry
+    /// briefly to ride out the transient lock window.
+    /// </summary>
+    private static void MoveIntoPlace(string tmp, string targetPath)
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                File.Move(tmp, targetPath, overwrite: true);
+                return;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                if (File.Exists(targetPath))
+                {
+                    // A concurrent writer already produced this exact content-addressed file.
+                    TryDeleteTemp(tmp);
+                    return;
+                }
+
+                if (attempt >= 4)
+                    throw;
+
+                Thread.Sleep(15 * (attempt + 1));
+            }
+        }
+    }
+
+    private static void TryDeleteTemp(string tmp)
+    {
+        try
+        {
+            if (File.Exists(tmp))
+            {
+                File.Delete(tmp);
+            }
+        }
+        catch
+        {
+            // Best-effort cleanup; an orphan temp file is harmless and never
+            // served (it is not at the content-addressed path).
+        }
     }
 
     /// <inheritdoc />

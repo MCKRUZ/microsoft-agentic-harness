@@ -27,13 +27,16 @@ public sealed class AgUiRunHandlerTests
         new(new ClaimsIdentity([new Claim("oid", oid)], "test"));
 
     private static RunAgentInput MakeInput(string threadId, string userContent) =>
+        MakeInput(threadId, userContent, Guid.NewGuid().ToString());
+
+    private static RunAgentInput MakeInput(string threadId, string userContent, string userMessageId) =>
         new()
         {
             ThreadId = threadId,
             RunId = Guid.NewGuid().ToString(),
             Messages =
             [
-                new AgUiMessage { Id = Guid.NewGuid().ToString(), Role = "user", Content = userContent }
+                new AgUiMessage { Id = userMessageId, Role = "user", Content = userContent }
             ]
         };
 
@@ -317,6 +320,101 @@ public sealed class AgUiRunHandlerTests
             threadId,
             It.Is<ConversationMessage>(m => m.Role == MessageRole.Assistant),
             It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task HandleRunAsync_ClientSuppliesUserMessageId_PersistsUserMessageUnderThatId()
+    {
+        const string threadId = "conv-clientid";
+        const string userId = "user-clientid";
+        var clientUserId = Guid.NewGuid();
+
+        var mediator = new Mock<IMediator>();
+        var store = new Mock<IConversationStore>();
+        var appended = new List<ConversationMessage>();
+
+        store.Setup(s => s.GetAsync(threadId, It.IsAny<CancellationToken>()))
+             .ReturnsAsync(MakeRecord(threadId, userId));
+        store.Setup(s => s.GetHistoryForDispatch(threadId, It.IsAny<int>(), It.IsAny<CancellationToken>()))
+             .ReturnsAsync([]);
+        store.Setup(s => s.AppendMessageAsync(threadId, It.IsAny<ConversationMessage>(), It.IsAny<CancellationToken>()))
+             .Callback<string, ConversationMessage, CancellationToken>((_, m, _) => appended.Add(m))
+             .Returns(Task.CompletedTask);
+        mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(MakeSuccessResult("reply"));
+
+        var handler = BuildHandler(mediator, store);
+
+        using var ms = new MemoryStream();
+        await handler.HandleRunAsync(
+            MakeInput(threadId, "Hi", clientUserId.ToString()), new AgUiEventWriter(ms), MakeUser(userId));
+
+        var userMsg = appended.Single(m => m.Role == MessageRole.User);
+        userMsg.Id.Should().Be(clientUserId, "the server must persist the user message under the client-supplied id so retry/edit can reference it");
+    }
+
+    [Fact]
+    public async Task HandleRunAsync_ClientSuppliesNonGuidId_GeneratesServerSideId()
+    {
+        const string threadId = "conv-badid";
+        const string userId = "user-badid";
+
+        var mediator = new Mock<IMediator>();
+        var store = new Mock<IConversationStore>();
+        var appended = new List<ConversationMessage>();
+
+        store.Setup(s => s.GetAsync(threadId, It.IsAny<CancellationToken>()))
+             .ReturnsAsync(MakeRecord(threadId, userId));
+        store.Setup(s => s.GetHistoryForDispatch(threadId, It.IsAny<int>(), It.IsAny<CancellationToken>()))
+             .ReturnsAsync([]);
+        store.Setup(s => s.AppendMessageAsync(threadId, It.IsAny<ConversationMessage>(), It.IsAny<CancellationToken>()))
+             .Callback<string, ConversationMessage, CancellationToken>((_, m, _) => appended.Add(m))
+             .Returns(Task.CompletedTask);
+        mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(MakeSuccessResult("reply"));
+
+        var handler = BuildHandler(mediator, store);
+
+        using var ms = new MemoryStream();
+        await handler.HandleRunAsync(
+            MakeInput(threadId, "Hi", "not-a-guid"), new AgUiEventWriter(ms), MakeUser(userId));
+
+        var userMsg = appended.Single(m => m.Role == MessageRole.User);
+        userMsg.Id.Should().NotBe(Guid.Empty, "a non-GUID client id must fall back to a server-generated id");
+    }
+
+    [Fact]
+    public async Task HandleRunAsync_AssistantMessage_StreamedIdMatchesPersistedId()
+    {
+        const string threadId = "conv-asstid";
+        const string userId = "user-asstid";
+
+        var mediator = new Mock<IMediator>();
+        var store = new Mock<IConversationStore>();
+        var appended = new List<ConversationMessage>();
+
+        store.Setup(s => s.GetAsync(threadId, It.IsAny<CancellationToken>()))
+             .ReturnsAsync(MakeRecord(threadId, userId));
+        store.Setup(s => s.GetHistoryForDispatch(threadId, It.IsAny<int>(), It.IsAny<CancellationToken>()))
+             .ReturnsAsync([]);
+        store.Setup(s => s.AppendMessageAsync(threadId, It.IsAny<ConversationMessage>(), It.IsAny<CancellationToken>()))
+             .Callback<string, ConversationMessage, CancellationToken>((_, m, _) => appended.Add(m))
+             .Returns(Task.CompletedTask);
+        mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(MakeSuccessResult("assistant reply"));
+
+        var handler = BuildHandler(mediator, store);
+
+        using var ms = new MemoryStream();
+        await handler.HandleRunAsync(MakeInput(threadId, "Hi"), new AgUiEventWriter(ms), MakeUser(userId));
+
+        var frames = ParseSseFrames(ms);
+        var streamedId = frames.First(f => EventType(f) == AgUiEventType.TextMessageStart)
+                               .RootElement.GetProperty("messageId").GetString();
+        var persistedAssistant = appended.Single(m => m.Role == MessageRole.Assistant);
+
+        persistedAssistant.Id.ToString().Should().Be(
+            streamedId, "the streamed assistant message id must equal the persisted id so retry-from-assistant resolves");
     }
 
     [Fact]

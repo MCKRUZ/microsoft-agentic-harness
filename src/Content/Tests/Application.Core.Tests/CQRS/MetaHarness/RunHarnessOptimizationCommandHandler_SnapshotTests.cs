@@ -252,9 +252,12 @@ public sealed class RunHarnessOptimizationCommandHandler_SnapshotTests : IDispos
             .ReturnsAsync((HarnessCandidate c, IReadOnlyList<EvalTask> _, CancellationToken _) =>
                 new EvaluationResult(c.CandidateId, 0.8, 100, []));
 
-        _repository
-            .Setup(x => x.GetBestAsync(runId, It.IsAny<CancellationToken>()))
-            .ReturnsAsync((HarnessCandidate?)null);
+        // No candidate clears the regression gate, so none is promoted to best. The final output
+        // must be empty: the handler now snapshots only the gate-validated currentBestCandidate,
+        // never the repository's ungated PassRate pick (which could be a gate-failing regression).
+        _regressionService
+            .Setup(x => x.Check(It.IsAny<RegressionSuite>(), It.IsAny<EvaluationResult>()))
+            .Returns(new RegressionCheckResult { Passed = false, PassRate = 0.0, FailedTaskIds = ["t1"] });
 
         var handler = BuildHandler();
 

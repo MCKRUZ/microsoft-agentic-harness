@@ -14,10 +14,10 @@ public sealed class SessionWriteTests
         _fixture = fixture;
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task StartSessionAsync_NewConversation_InsertsRowAndReturnsId()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);
         var conversationId = _fixture.NewConversationId();
@@ -39,10 +39,10 @@ public sealed class SessionWriteTests
         Assert.Equal("AgentA", rows[0]["agent_name"]);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task StartSessionAsync_WithModel_PersistsModel()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);
         var conversationId = _fixture.NewConversationId();
@@ -55,10 +55,10 @@ public sealed class SessionWriteTests
         Assert.Equal("claude-3-5-sonnet", model);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task StartSessionAsync_NullModel_AllowsNull()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);
         var conversationId = _fixture.NewConversationId();
@@ -72,10 +72,10 @@ public sealed class SessionWriteTests
         Assert.Null(rows[0]["model"]);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task StartSessionAsync_DuplicateConversationId_UpdatesStartedAt()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);
         var conversationId = _fixture.NewConversationId();
@@ -101,10 +101,10 @@ public sealed class SessionWriteTests
         Assert.Equal(1, count);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task EndSessionAsync_SetsStatusAndEndedAt()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);
         var conversationId = _fixture.NewConversationId();
@@ -124,10 +124,10 @@ public sealed class SessionWriteTests
         Assert.True(Convert.ToInt64(rows[0]["duration_ms"]) >= 0);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task EndSessionAsync_EmptyGuid_NoOp()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);
 
@@ -135,10 +135,10 @@ public sealed class SessionWriteTests
         Assert.Null(ex);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task UpdateSessionMetricsAsync_PersistsAllFields()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);
         var conversationId = _fixture.NewConversationId();

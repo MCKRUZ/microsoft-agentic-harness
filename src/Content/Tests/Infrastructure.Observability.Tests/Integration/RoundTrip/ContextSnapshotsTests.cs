@@ -58,10 +58,10 @@ public sealed class ContextSnapshotsTests
             ],
             CapturedAtUtc: new DateTimeOffset(2026, 6, 1, 12, 0, turnIndex, TimeSpan.Zero));
 
-    [Fact]
+    [SkippableFact]
     public async Task RoundTrip_RecordThenGetLatest_ReturnsExactSnapshot()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
         await EnsureSchemaAsync();
 
         using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);
@@ -82,10 +82,10 @@ public sealed class ContextSnapshotsTests
         read.Loaded[1].Reference.Should().Be("t-04-assistant");
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task RoundTrip_TwoTurns_GetLatestReturnsHighestTurnIndex()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
         await EnsureSchemaAsync();
 
         using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);
@@ -100,10 +100,10 @@ public sealed class ContextSnapshotsTests
         latest.CtxAfter.Messages.Should().Be(800);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task RoundTrip_ReplayWithSameTurnIndex_OverwritesIdempotently()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
         await EnsureSchemaAsync();
 
         using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);
@@ -119,10 +119,10 @@ public sealed class ContextSnapshotsTests
         snapshots[0].CtxAfter.System.Should().Be(6000);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task GetSnapshots_OrdersByTurnIndexAscending()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
         await EnsureSchemaAsync();
 
         using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);
@@ -137,10 +137,10 @@ public sealed class ContextSnapshotsTests
         snapshots.Select(s => s.TurnIndex).Should().Equal(0, 1, 2);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task GetLatestBreakdowns_BatchedAcrossConversations_ReturnsLatestPerEach()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
         await EnsureSchemaAsync();
 
         using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);
@@ -162,10 +162,10 @@ public sealed class ContextSnapshotsTests
         result.Should().NotContainKey(convMissing);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task GetLatestSnapshot_UnknownConversation_ReturnsNull()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
         await EnsureSchemaAsync();
 
         using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);
@@ -176,10 +176,10 @@ public sealed class ContextSnapshotsTests
         result.Should().BeNull();
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task GetLatestBreakdowns_EmptyInput_ReturnsEmpty()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
         await EnsureSchemaAsync();
 
         using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);

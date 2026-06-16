@@ -40,7 +40,7 @@ apiClient.interceptors.response.use(
   (response) => response,
   async (error: unknown) => {
     const axiosError = axios.isAxiosError(error) ? error : null;
-    if (axiosError?.response?.status === 401 && !_redirecting) {
+    if (!IS_AUTH_DISABLED && axiosError?.response?.status === 401 && !_redirecting) {
       _redirecting = true;
       await _msalInstance?.loginRedirect(loginRequest);
     }

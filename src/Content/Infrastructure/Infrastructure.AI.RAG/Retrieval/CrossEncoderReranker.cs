@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using Application.AI.Common.Interfaces.RAG;
 using Application.AI.Common.Interfaces.Routing;
@@ -142,14 +143,14 @@ public sealed class CrossEncoderReranker : IReranker
 
         var trimmed = response.Trim();
 
-        if (double.TryParse(trimmed, out var score))
+        if (double.TryParse(trimmed, NumberStyles.Float, CultureInfo.InvariantCulture, out var score))
         {
             return Math.Clamp(score, 0.0, 1.0);
         }
 
         foreach (var token in trimmed.Split(' ', '\n', '\r', '\t'))
         {
-            if (double.TryParse(token, out var tokenScore))
+            if (double.TryParse(token, NumberStyles.Float, CultureInfo.InvariantCulture, out var tokenScore))
             {
                 return Math.Clamp(tokenScore, 0.0, 1.0);
             }

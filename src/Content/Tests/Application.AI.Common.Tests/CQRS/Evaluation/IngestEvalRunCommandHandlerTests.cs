@@ -83,7 +83,10 @@ public sealed class IngestEvalRunCommandHandlerTests
 
         result.IsSuccess.Should().BeFalse();
         result.FailureType.Should().Be(ResultFailureType.General);
-        result.Errors.Should().ContainSingle(e => e.Contains("disk full"));
+        // Raw exception text ("disk full") must NOT leak into the HTTP-facing Result;
+        // the handler emits the stable scrubbed code instead (finding 56).
+        result.Errors.Should().ContainSingle()
+              .Which.Should().Be(IngestEvalRunCommandHandler.PersistFailedCode);
     }
 
     [Fact]

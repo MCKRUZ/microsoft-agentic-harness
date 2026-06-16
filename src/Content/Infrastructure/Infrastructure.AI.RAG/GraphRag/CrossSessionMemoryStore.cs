@@ -172,11 +172,21 @@ public sealed class CrossSessionMemoryStore : ICrossSessionMemoryStore, IDisposa
         _logger.LogDebug("CrossSessionMemoryStore: syncing {Count} dirty entries to graph backend", dirtyIds.Count);
 
         var nodes = new List<GraphNode>(dirtyIds.Count);
+        var syncedIds = new List<string>(dirtyIds.Count);
         foreach (var id in dirtyIds)
         {
+            // Clear the dirty flag BEFORE snapshotting the record. A concurrent
+            // RememberAsync/ImproveAsync/RecallAsync that lands after this removal
+            // re-sets the flag and is picked up by the next flush; one that landed
+            // before is captured by the TryGetValue below. Clearing the flag after
+            // the read (the previous behavior) silently dropped writes interleaved
+            // between the read and the removal.
+            _dirty.TryRemove(id, out _);
+
             if (!_cache.TryGetValue(id, out var record))
                 continue;
 
+            syncedIds.Add(id);
             nodes.Add(new GraphNode
             {
                 Id = record.Id,
@@ -197,12 +207,15 @@ public sealed class CrossSessionMemoryStore : ICrossSessionMemoryStore, IDisposa
         try
         {
             await _graphBackend.AddNodesAsync(nodes).ConfigureAwait(false);
-
-            foreach (var id in dirtyIds)
-                _dirty.TryRemove(id, out _);
         }
         catch (Exception ex)
         {
+            // Re-dirty the records we attempted to flush so the next interval retries
+            // them. Use the non-overwriting setter (a concurrent writer may have set
+            // a fresher dirty flag in the meantime; we must not clobber that).
+            foreach (var id in syncedIds)
+                _dirty.TryAdd(id, true);
+
             _logger.LogError(ex, "CrossSessionMemoryStore: failed to sync dirty entries to graph backend");
         }
     }

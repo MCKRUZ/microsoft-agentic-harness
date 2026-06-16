@@ -1,4 +1,5 @@
 using Application.AI.Common.Helpers;
+using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Compression;
 using Application.AI.Common.Interfaces.Context;
@@ -33,6 +34,7 @@ public sealed class ToolOutputCompressionBehavior<TRequest, TResponse>
     private readonly IToolOutputCompressor _compressor;
     private readonly IToolResultStore _resultStore;
     private readonly IAgentExecutionContext _executionContext;
+    private readonly ISecretRedactor _secretRedactor;
     private readonly ToolOutputCompressionConfig _config;
     private readonly ILogger<ToolOutputCompressionBehavior<TRequest, TResponse>> _logger;
 
@@ -43,12 +45,14 @@ public sealed class ToolOutputCompressionBehavior<TRequest, TResponse>
         IToolOutputCompressor compressor,
         IToolResultStore resultStore,
         IAgentExecutionContext executionContext,
+        ISecretRedactor secretRedactor,
         IOptions<ToolOutputCompressionConfig> config,
         ILogger<ToolOutputCompressionBehavior<TRequest, TResponse>> logger)
     {
         _compressor = compressor;
         _resultStore = resultStore;
         _executionContext = executionContext;
+        _secretRedactor = secretRedactor;
         _config = config.Value;
         _logger = logger;
     }
@@ -104,15 +108,22 @@ public sealed class ToolOutputCompressionBehavior<TRequest, TResponse>
 
         var sessionId = _executionContext.ConversationId ?? "unknown";
 
+        // This behavior runs BEFORE ResponseSanitizationBehavior (registered outer), so the
+        // store write would otherwise persist raw, unsanitized tool output to disk — credentials
+        // and tokens included — even when the sanitizer later blocks the response. Redact secrets
+        // at this persistence boundary so they never land at rest. ISecretRedactor is idempotent,
+        // so the model-visible summary the sanitizer later scans is unaffected by also redacting here.
+        var redactedOutput = _secretRedactor.Redact(toolOutput) ?? toolOutput;
+
         var reference = await _resultStore.StoreIfLargeAsync(
             sessionId,
             toolRequest.ToolName,
             operation: null,
-            toolOutput,
+            redactedOutput,
             cancellationToken);
 
         var compressionResult = await _compressor.CompressAsync(
-            toolOutput,
+            redactedOutput,
             category: null,
             _config.DefaultTokenThreshold,
             cancellationToken);

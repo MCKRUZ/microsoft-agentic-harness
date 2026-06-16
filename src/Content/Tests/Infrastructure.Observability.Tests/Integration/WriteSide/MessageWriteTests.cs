@@ -14,10 +14,10 @@ public sealed class MessageWriteTests
         _fixture = fixture;
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task RecordMessageAsync_UserMessage_PersistsAllFields()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);
         var builder = new TestDataBuilder(_fixture);
@@ -58,10 +58,10 @@ public sealed class MessageWriteTests
         Assert.Equal(0.001m, Convert.ToDecimal(row["cost_usd"]));
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task RecordMessageAsync_AssistantWithToolNames_PersistsArray()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);
         var builder = new TestDataBuilder(_fixture);
@@ -93,10 +93,10 @@ public sealed class MessageWriteTests
         Assert.Equal(toolNames, persisted);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task RecordMessageAsync_NullOptionalFields_Allowed()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);
         var builder = new TestDataBuilder(_fixture);
@@ -129,10 +129,10 @@ public sealed class MessageWriteTests
         Assert.Null(rows[0]["tool_names"]);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task RecordMessageAsync_EmptySessionId_ReturnsEmpty()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);
 
@@ -154,7 +154,7 @@ public sealed class MessageWriteTests
         Assert.Equal(Guid.Empty, messageId);
     }
 
-    [Theory]
+    [SkippableTheory]
     [InlineData("user", "user_message")]
     [InlineData("assistant", "assistant_text")]
     [InlineData("assistant", "assistant_tool")]
@@ -164,7 +164,7 @@ public sealed class MessageWriteTests
     [InlineData("system", "hook_injection")]
     public async Task RecordMessageAsync_AllRolesAndSources_CheckConstraintsPassed(string role, string source)
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);
         var builder = new TestDataBuilder(_fixture);

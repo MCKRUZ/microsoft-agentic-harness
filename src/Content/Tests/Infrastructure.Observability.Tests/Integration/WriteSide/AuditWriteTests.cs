@@ -14,10 +14,10 @@ public sealed class AuditWriteTests
         _fixture = fixture;
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task RecordAuditAsync_WithMetadata_SerializesJsonb()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);
 
@@ -42,10 +42,10 @@ public sealed class AuditWriteTests
         Assert.Equal("delete_session", actionVal);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task RecordAuditAsync_NullSessionId_Allowed()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);
         var operation = $"op_{Guid.NewGuid():N}";
@@ -63,13 +63,13 @@ public sealed class AuditWriteTests
         Assert.Null(rows[0]["session_id"]);
     }
 
-    [Theory]
+    [SkippableTheory]
     [InlineData("harness")]
     [InlineData("api")]
     [InlineData("system")]
     public async Task RecordAuditAsync_AllSourceValues_CheckConstraintPassed(string source)
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);
         var operation = $"op_{source}_{Guid.NewGuid():N}";
@@ -86,10 +86,10 @@ public sealed class AuditWriteTests
         Assert.Equal(source, persistedSource);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task RecordAuditAsync_NullMetadata_Allowed()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);
         var operation = $"op_{Guid.NewGuid():N}";

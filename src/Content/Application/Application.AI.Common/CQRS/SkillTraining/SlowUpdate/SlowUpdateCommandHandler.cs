@@ -19,8 +19,12 @@ public sealed class SlowUpdateCommandHandler
         ArgumentNullException.ThrowIfNull(request);
         cancellationToken.ThrowIfCancellationRequested();
 
-        var priorById = request.PriorRollouts.ToDictionary(r => r.ItemId);
-        var currById = request.CurrentRollouts.ToDictionary(r => r.ItemId);
+        // IRolloutRunner is a consumer-implemented boundary; batch sampling with
+        // replacement can legitimately produce duplicate ItemIds. ToDictionary would
+        // throw and abort the entire training run at the epoch boundary, so group by
+        // ItemId and keep the last rollout per item (the most recent observation wins).
+        var priorById = ToLastWinsById(request.PriorRollouts);
+        var currById = ToLastWinsById(request.CurrentRollouts);
 
         int improved = 0, regressed = 0, persistentFail = 0, stableSuccess = 0;
         foreach (var id in priorById.Keys.Intersect(currById.Keys))
@@ -48,6 +52,16 @@ public sealed class SlowUpdateCommandHandler
             StableSuccess = stableSuccess,
             Guidance = guidance
         }));
+    }
+
+    private static Dictionary<string, RolloutResult> ToLastWinsById(IReadOnlyList<RolloutResult> rollouts)
+    {
+        var byId = new Dictionary<string, RolloutResult>();
+        foreach (var rollout in rollouts)
+        {
+            byId[rollout.ItemId] = rollout;
+        }
+        return byId;
     }
 
     private static string BuildGuidance(int improved, int regressed, int persistentFail, int stable, int total)

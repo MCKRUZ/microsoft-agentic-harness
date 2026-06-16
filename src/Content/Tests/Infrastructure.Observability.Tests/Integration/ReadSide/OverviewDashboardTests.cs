@@ -13,10 +13,10 @@ public sealed class OverviewDashboardTests
         _fixture = fixture;
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task TotalSessions_ReturnsAtLeastTwo()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         var builder = new TestDataBuilder(_fixture);
         await builder.CreateSessionAsync(agentName: "OverviewAgentA", status: "completed");
@@ -33,10 +33,10 @@ public sealed class OverviewDashboardTests
         Assert.True(count >= 2);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task TotalCost_ReturnsSumOfSeededCosts()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         var builder = new TestDataBuilder(_fixture);
         await builder.CreateSessionAsync(agentName: "OverviewCostA", costUsd: 0.50m);
@@ -53,10 +53,10 @@ public sealed class OverviewDashboardTests
         Assert.True(total >= 1.50m);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task TotalTokens_ReturnsSumOfSeededTokens()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         var builder = new TestDataBuilder(_fixture);
         await builder.CreateSessionAsync(inputTokens: 2000, outputTokens: 1000);
@@ -73,10 +73,10 @@ public sealed class OverviewDashboardTests
         Assert.True(total >= 7500);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task AvgCacheHit_ReturnsNonZero()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         var builder = new TestDataBuilder(_fixture);
         await builder.CreateSessionAsync(cacheHitRate: 0.40m);
@@ -92,10 +92,10 @@ public sealed class OverviewDashboardTests
         Assert.True(avg > 0m);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task ErrorRate_WithOneError_ReturnsNonZero()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         var builder = new TestDataBuilder(_fixture);
         await builder.CreateSessionAsync(agentName: "OverviewErrOk", status: "completed");
@@ -112,10 +112,10 @@ public sealed class OverviewDashboardTests
         Assert.True(rate > 0m);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task SessionsOverTime_ReturnsAtLeastOneTimeBucket()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         var builder = new TestDataBuilder(_fixture);
         await builder.CreateSessionAsync();
@@ -131,10 +131,10 @@ public sealed class OverviewDashboardTests
         Assert.True(rows.Count >= 1);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task CostOverTime_AfterMvRefresh_ReturnsRows()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         var builder = new TestDataBuilder(_fixture);
         await builder.CreateSessionAsync(costUsd: 0.75m);
@@ -151,10 +151,10 @@ public sealed class OverviewDashboardTests
         Assert.True(rows.Count >= 1);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task TokenDistribution_ReturnsAllFourFields()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         var builder = new TestDataBuilder(_fixture);
         await builder.CreateSessionAsync(
@@ -176,10 +176,10 @@ public sealed class OverviewDashboardTests
         Assert.True(row.ContainsKey("cache_write"));
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task RecentSessions_ReturnsOrderedRows()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         var builder = new TestDataBuilder(_fixture);
         await builder.CreateSessionAsync(agentName: "OverviewRecentA");
@@ -204,10 +204,10 @@ public sealed class OverviewDashboardTests
         }
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task CostByModel_ReturnsGroupedRows()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         var builder = new TestDataBuilder(_fixture);
         await builder.CreateSessionAsync(model: "gpt-4o", costUsd: 0.30m);

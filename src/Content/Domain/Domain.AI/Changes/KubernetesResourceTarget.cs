@@ -1,3 +1,5 @@
+using System.Text;
+
 namespace Domain.AI.Changes;
 
 /// <summary>
@@ -60,12 +62,53 @@ public sealed class KubernetesResourceTarget : ChangeTarget
 
     /// <inheritdoc/>
     /// <remarks>
-    /// Canonical form: <c>k8s:{clusterContext}/{apiVersion}/{namespace|cluster}/{resourceKind}/{resourceName}</c>.
+    /// <para>
+    /// Canonical form: <c>k8s:{len}:{clusterContext}/{len}:{apiVersion}/{len}:{namespace}/{len}:{resourceKind}/{len}:{resourceName}</c>,
+    /// where each <c>{len}:</c> prefix is the UTF-16 length of the field that follows.
+    /// </para>
+    /// <para>
+    /// Every addressing field is length-prefixed before being joined. The fields are
+    /// free-form and several of them legally contain the <c>/</c> separator — most
+    /// notably <see cref="ApiVersion"/> (e.g. <c>apps/v1</c>) and <see cref="ClusterContext"/>
+    /// (GitOps overlay paths). Without the length prefix, a positional join is ambiguous:
+    /// <c>(clusterContext: "prod", apiVersion: "apps/v1")</c> and
+    /// <c>(clusterContext: "prod/apps", apiVersion: "v1")</c> would produce the same key,
+    /// causing two genuinely different targets to collide in the deterministic proposal-id
+    /// hash and silently dedupe one of the proposals away. The length prefix makes the
+    /// boundary between fields unambiguous regardless of the characters inside them, so
+    /// the contract on <see cref="ChangeTarget.CanonicalKey"/> ("two targets that mean
+    /// different things must not collide") holds. This mirrors the length-prefixing
+    /// already applied to diff edits in <c>ChangeProposalIdDeriver</c>.
+    /// </para>
+    /// <para>
+    /// An empty <see cref="Namespace"/> (cluster-scoped resources) is encoded as a
+    /// zero-length field (<c>0:</c>), which is distinct from a namespace literally named
+    /// <c>cluster</c> — the old sentinel-string approach collided those two cases.
+    /// </para>
     /// </remarks>
     public override string CanonicalKey()
     {
-        var scope = string.IsNullOrEmpty(Namespace) ? "cluster" : Namespace;
-        return $"k8s:{ClusterContext}/{ApiVersion}/{scope}/{ResourceKind}/{ResourceName}";
+        var sb = new StringBuilder("k8s:");
+        AppendField(sb, ClusterContext);
+        sb.Append('/');
+        AppendField(sb, ApiVersion);
+        sb.Append('/');
+        AppendField(sb, Namespace);
+        sb.Append('/');
+        AppendField(sb, ResourceKind);
+        sb.Append('/');
+        AppendField(sb, ResourceName);
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Append a single addressing field to the canonical key as <c>{length}:{value}</c>.
+    /// The length prefix guarantees the field boundary is unambiguous even when the
+    /// value contains the <c>/</c> separator used to join fields.
+    /// </summary>
+    private static void AppendField(StringBuilder sb, string value)
+    {
+        sb.Append(value.Length).Append(':').Append(value);
     }
 
     private static string BuildDisplayName(string clusterContext, string resourceKind, string @namespace, string resourceName)

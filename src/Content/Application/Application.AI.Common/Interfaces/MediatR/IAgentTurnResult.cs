@@ -12,4 +12,10 @@ public interface IAgentTurnResult
 
     /// <summary>Gets the assistant's response text. Empty string on failure.</summary>
     string Response { get; }
+
+    /// <summary>Gets the input (prompt) tokens consumed across the LLM calls in this turn.</summary>
+    int InputTokens { get; }
+
+    /// <summary>Gets the output (completion) tokens produced across the LLM calls in this turn.</summary>
+    int OutputTokens { get; }
 }

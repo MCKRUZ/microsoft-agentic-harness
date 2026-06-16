@@ -18,7 +18,7 @@ public class ProcessResourceLimiterTests
         var mock = new Mock<IProcessResourceLimiter>();
         mock.Setup(x => x.IsSupported).Returns(true);
         mock.Setup(x => x.Apply(It.IsAny<Process>(), It.IsAny<ResourceLimits>())).Returns(true);
-        mock.Setup(x => x.GetUsage()).Returns(new ResourceUsage
+        mock.Setup(x => x.GetUsage(It.IsAny<int>())).Returns(new ResourceUsage
         {
             MemoryBytes = 1024,
             CpuTimeSeconds = 0.5
@@ -26,8 +26,8 @@ public class ProcessResourceLimiterTests
 
         mock.Object.IsSupported.Should().BeTrue();
         mock.Object.Apply(null!, new ResourceLimits()).Should().BeTrue();
-        mock.Object.GetUsage().Should().NotBeNull();
-        mock.Object.GetUsage()!.MemoryBytes.Should().Be(1024);
+        mock.Object.GetUsage(1234).Should().NotBeNull();
+        mock.Object.GetUsage(1234)!.MemoryBytes.Should().Be(1024);
     }
 
     [SkippableFact]
@@ -53,7 +53,7 @@ public class ProcessResourceLimiterTests
             var applied = limiter.Apply(process, new ResourceLimits());
 
             applied.Should().BeFalse();
-            limiter.GetUsage().Should().BeNull();
+            limiter.GetUsage(process.Id).Should().BeNull();
 
             logger.Verify(
                 x => x.Log(

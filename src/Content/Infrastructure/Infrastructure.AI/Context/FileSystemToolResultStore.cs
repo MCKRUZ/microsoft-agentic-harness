@@ -43,9 +43,10 @@ public sealed class FileSystemToolResultStore : IToolResultStore
         ArgumentException.ThrowIfNullOrWhiteSpace(toolName);
         ArgumentNullException.ThrowIfNull(fullOutput);
 
-        // H-1: Prevent path traversal via sessionId
-        if (sessionId != Path.GetFileName(sessionId))
-            throw new ArgumentException("Session ID must not contain path separators.", nameof(sessionId));
+        // H-1: sessionId must be a single safe path segment. Path.GetFileName equality
+        // alone is insufficient — it lets "." and ".." through (GetFileName(("..")) == "..")
+        // which Path.Combine then resolves to a parent directory, escaping the storage root.
+        var safeSessionId = SanitizeSessionSegment(sessionId);
 
         var config = _options.CurrentValue.AI.ContextManagement.ToolResultStorage;
         var resultId = Guid.NewGuid().ToString("N");
@@ -69,7 +70,7 @@ public sealed class FileSystemToolResultStore : IToolResultStore
             };
         }
 
-        var storagePath = Path.Combine(config.StoragePath, sessionId, "tool-results", $"{resultId}.json");
+        var storagePath = Path.Combine(config.StoragePath, safeSessionId, "tool-results", $"{resultId}.json");
         var directory = Path.GetDirectoryName(storagePath)!;
         Directory.CreateDirectory(directory);
 
@@ -110,5 +111,39 @@ public sealed class FileSystemToolResultStore : IToolResultStore
         _logger.LogDebug("Retrieving full content for result {ResultId} from {Path}", resultId, filePath);
 
         return await File.ReadAllTextAsync(filePath, cancellationToken);
+    }
+
+    /// <summary>
+    /// Reduces <paramref name="sessionId"/> to a single safe path segment for use in
+    /// <see cref="Path.Combine(string, string)"/>, rejecting any value that could escape
+    /// the storage root via path traversal.
+    /// </summary>
+    /// <param name="sessionId">The caller-supplied session identifier.</param>
+    /// <returns>The validated session identifier, guaranteed to be a single path segment.</returns>
+    /// <exception cref="ArgumentException">
+    /// Thrown when <paramref name="sessionId"/> contains path separators, is rooted, or is a
+    /// relative directory reference ("." or "..").
+    /// </exception>
+    private static string SanitizeSessionSegment(string sessionId)
+    {
+        // Reject any path separator from EITHER platform, a rooted path, or a relative
+        // directory reference. Path.GetFileName / Path.IsPathRooted are OS-specific — on
+        // Linux '\' is an ordinary character, so a Windows-style "..\escape" slips through
+        // GetFileName unchanged. Check both separators explicitly so the guard behaves
+        // identically on every platform.
+        if (sessionId.Contains('/') || sessionId.Contains('\\') || Path.IsPathRooted(sessionId))
+        {
+            throw new ArgumentException(
+                "Session ID must be a single path segment without separators.", nameof(sessionId));
+        }
+
+        // "." and ".." resolve to the storage root or a parent when combined, so reject them.
+        if (sessionId is "." or "..")
+        {
+            throw new ArgumentException(
+                "Session ID must not be a relative directory reference.", nameof(sessionId));
+        }
+
+        return sessionId;
     }
 }

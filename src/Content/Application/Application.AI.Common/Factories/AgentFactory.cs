@@ -23,6 +23,17 @@ namespace Application.AI.Common.Factories;
 /// </summary>
 public class AgentFactory : IAgentFactory
 {
+    /// <summary>
+    /// Key under which the per-conversation scope identifier is expected in
+    /// <see cref="AgentExecutionContext.AdditionalProperties"/>. This value scopes
+    /// skill-completion tracking (<see cref="ISkillCompletionTracker"/>) so that
+    /// prerequisite unlock/relock state survives the lifetime of a single conversation.
+    /// The caller that builds the agent (e.g. the conversation cache) must flow the real
+    /// conversation identifier in under this key whenever the agent declares skill
+    /// prerequisites; otherwise the prerequisite middleware has no stable scope.
+    /// </summary>
+    public const string ConversationIdPropertyKey = "conversationId";
+
     private readonly ILogger<AgentFactory> _logger;
     private readonly IOptionsMonitor<AppConfig> _appConfig;
     private readonly IDistributedCache _distributedCache;
@@ -127,9 +138,7 @@ public class AgentFactory : IAgentFactory
             && prereqObj is SkillPrerequisiteMap prereqMap
             && prereqMap.HasAnyPrerequisites)
         {
-            var conversationId = agentContext.AdditionalProperties.TryGetValue("conversationId", out var convId)
-                ? convId?.ToString() ?? Guid.NewGuid().ToString()
-                : Guid.NewGuid().ToString();
+            var conversationId = ResolvePrerequisiteScope(agentContext);
 
             chatClientBuilder = chatClientBuilder.Use(inner =>
                 new Middleware.SkillPrerequisiteMiddleware(
@@ -320,6 +329,46 @@ public class AgentFactory : IAgentFactory
         var clientType = _appConfig.CurrentValue.AI?.AgentFramework?.ClientType
             ?? AIAgentFrameworkClientType.AzureOpenAI;
         return await _chatClientFactory.GetChatClientAsync(clientType, deployment, ct);
+    }
+
+    /// <summary>
+    /// Resolves the conversation scope used to key per-conversation skill-completion tracking
+    /// for the prerequisite middleware.
+    /// </summary>
+    /// <param name="agentContext">The execution context whose additional properties carry the scope.</param>
+    /// <returns>The non-empty conversation identifier supplied by the caller.</returns>
+    /// <remarks>
+    /// The prerequisite middleware records skill completions against this scope. The scope MUST be a
+    /// stable conversation identifier supplied by the caller via
+    /// <see cref="AgentExecutionContext.AdditionalProperties"/>[<see cref="ConversationIdPropertyKey"/>].
+    /// A synthetic per-build identifier is deliberately NOT generated here: it would silently reset
+    /// unlock state every time the cached agent is rebuilt (e.g. on sliding-expiration eviction) and
+    /// would leak tracker entries keyed by throwaway identifiers that no eviction path can ever clear.
+    /// Missing wiring is therefore treated as a construction-time error and surfaced loudly — matching
+    /// how this factory already rejects every other construction-time misconfiguration — rather than
+    /// degrading the prerequisite-gating feature into a subtly-broken state.
+    /// </remarks>
+    /// <exception cref="InvalidOperationException">
+    /// Thrown when no non-empty conversation scope is present in the context's additional properties.
+    /// </exception>
+    private static string ResolvePrerequisiteScope(AgentExecutionContext agentContext)
+    {
+        if (agentContext.AdditionalProperties is not null
+            && agentContext.AdditionalProperties.TryGetValue(ConversationIdPropertyKey, out var convId)
+            && convId?.ToString() is { Length: > 0 } scope
+            && !string.IsNullOrWhiteSpace(scope))
+        {
+            return scope;
+        }
+
+        throw new InvalidOperationException(
+            $"Agent '{agentContext.Name}' declares skill prerequisites but no conversation scope was " +
+            $"supplied in AgentExecutionContext.AdditionalProperties[\"{ConversationIdPropertyKey}\"]. " +
+            "The caller that builds the agent must flow the real conversation identifier in under that " +
+            "key (e.g. via SkillAgentOptions.AdditionalProperties) so that prerequisite completion state " +
+            "is scoped to the conversation and can be cleared when the conversation is evicted. A " +
+            "synthetic identifier is not generated here because it would silently reset unlocked skills " +
+            "whenever the cached agent is rebuilt and leak unclearable tracker entries.");
     }
 
     /// <summary>

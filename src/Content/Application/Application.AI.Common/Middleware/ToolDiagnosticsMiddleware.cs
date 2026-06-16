@@ -57,9 +57,11 @@ public sealed class ToolDiagnosticsMiddleware : DelegatingChatClient
         var toolsWereConfigured = options?.Tools is { Count: > 0 };
         LogToolsInOptions(options, nameof(GetResponseAsync));
 
-        // Trace any function results being submitted to the LLM (i.e., tool calls that completed)
-        if (_traceWriter != null)
-            await AppendFunctionResultTracesAsync(messages, cancellationToken);
+        // Record tool stdout against the matching call id for the per-invocation
+        // observability page, and (when a trace writer is wired) append trace records.
+        // AppendFunctionResultTracesAsync null-checks the writer internally, so this
+        // must run unconditionally — otherwise RecordToolResult never fires.
+        await AppendFunctionResultTracesAsync(messages, cancellationToken);
 
         try
         {
@@ -149,8 +151,9 @@ public sealed class ToolDiagnosticsMiddleware : DelegatingChatClient
         options = DeduplicateTools(options);
         LogToolsInOptions(options, nameof(GetStreamingResponseAsync));
 
-        if (_traceWriter != null)
-            await AppendFunctionResultTracesAsync(messages, cancellationToken);
+        // Unconditional: records tool stdout via LlmUsageCapture even when the trace
+        // writer is null (the writer is null-checked inside the method).
+        await AppendFunctionResultTracesAsync(messages, cancellationToken);
 
         await foreach (var chunk in base.GetStreamingResponseAsync(messages, options, cancellationToken))
         {

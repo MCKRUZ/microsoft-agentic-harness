@@ -181,7 +181,10 @@ public sealed class PrometheusQueryServiceTests
         var result = await service.GetHealthAsync();
 
         result.Healthy.Should().BeFalse();
-        result.Error.Should().Contain("Connection refused");
+        // Health errors are scrubbed before reaching the client; the raw transport message
+        // (which can leak internal endpoints) must not surface.
+        result.Error.Should().NotContain("Connection refused");
+        result.Error.Should().Be("Prometheus health check failed. See server logs for details.");
     }
 
     [Fact]

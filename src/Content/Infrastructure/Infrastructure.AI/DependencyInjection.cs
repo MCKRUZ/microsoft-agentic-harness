@@ -14,6 +14,7 @@ using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Interfaces.Traces;
 using Application.Common.Factories;
 using Domain.Common.Config;
+using Domain.Common.Workflow;
 using Infrastructure.AI.Agents;
 using Infrastructure.AI.Audit;
 using Infrastructure.AI.Compaction;
@@ -35,11 +36,12 @@ using Infrastructure.AI.Prompts.Sections;
 using Infrastructure.AI.Security;
 using Infrastructure.AI.Skills;
 using Infrastructure.AI.StateManagement;
-using Infrastructure.AI.StateManagement.Checkpoints;
 using Infrastructure.AI.Routing;
 using Infrastructure.AI.Tools;
 using Infrastructure.AI.Traces;
+using Domain.Common.Config.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace Infrastructure.AI;
@@ -160,6 +162,24 @@ public static partial class DependencyInjection
         services.AddSingleton<IPluginManifestReader, PluginManifestReader>();
         services.AddSingleton<IPluginRegistry, PluginRegistry>();
 
+        // PluginLoader mutates the SkillsConfig / McpServersConfig it is given. To make those
+        // mutations observable, it must be handed the SAME instances the downstream consumers
+        // read at runtime:
+        //   - SkillMetadataRegistry reads IOptionsMonitor<AppConfig>.CurrentValue.AI.Skills
+        //   - McpConnectionManager is built from IOptionsMonitor<AIConfig>.CurrentValue.McpServers
+        // These two monitors bind independent object graphs (AppConfig vs the AppConfig:AI section
+        // bound as AIConfig), so the loader is wired to the live instance behind each monitor.
+        // OptionsMonitor caches CurrentValue per name until a config reload, so in-place mutation
+        // of the cached instance is seen by every later reader of the same monitor.
+        services.AddSingleton<IPluginLoader>(sp => new PluginLoader(
+            sp.GetRequiredService<IOptionsMonitor<AppConfig>>().CurrentValue.AI.Skills,
+            sp.GetRequiredService<IOptionsMonitor<Domain.Common.Config.AI.AIConfig>>().CurrentValue.McpServers,
+            sp.GetRequiredService<ILogger<PluginLoader>>()));
+
+        // Startup driver: resolves every declared plugin into the live config + registry before
+        // the first (lazy) skill/MCP discovery. Empty Packages list is a clean no-op.
+        services.AddHostedService<PluginStartupLoader>();
+
         // --- Tool execution ---
 
         services.AddSingleton<IToolConcurrencyClassifier, ToolConcurrencyClassifier>();
@@ -168,8 +188,15 @@ public static partial class DependencyInjection
         // --- State management ---
 
         services.AddSingleton<IStateMarkdownGenerator, StateMarkdownGenerator>();
-        services.AddSingleton<JsonCheckpointStateManager>();
-        services.AddSingleton<CompositeStateManager>();
+        // Use the self-contained 3-parameter constructor explicitly. CompositeStateManager also has
+        // a 4-parameter constructor that takes an IStateManager 'inner' (for manual decoration); the
+        // container's greedy selection would otherwise pick it and — because IStateManager is bound to
+        // CompositeStateManager below — recurse into itself, deadlocking the singleton on first resolve.
+        services.AddSingleton<CompositeStateManager>(sp => new CompositeStateManager(
+            sp.GetRequiredService<ILogger<CompositeStateManager>>(),
+            sp.GetRequiredService<IStateMarkdownGenerator>(),
+            sp.GetRequiredService<IOptionsMonitor<InfrastructureConfig>>()));
+        services.AddSingleton<IStateManager>(sp => sp.GetRequiredService<CompositeStateManager>());
 
         // --- Hooks ---
 

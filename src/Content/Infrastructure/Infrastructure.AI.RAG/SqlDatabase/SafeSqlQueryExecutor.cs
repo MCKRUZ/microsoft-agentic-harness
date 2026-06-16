@@ -1,6 +1,6 @@
-using System.Data.Common;
 using System.Text.RegularExpressions;
 using Application.AI.Common.Interfaces.RAG;
+using Application.Common.Interfaces.Data;
 using Domain.AI.RAG.Models;
 using Domain.Common.Config;
 using Microsoft.Extensions.Logging;
@@ -12,12 +12,20 @@ namespace Infrastructure.AI.RAG.SqlDatabase;
 /// Executes SQL queries with safety guardrails: read-only enforcement, row limits, and query timeout.
 /// Rejects any SQL containing mutation keywords before execution.
 /// </summary>
+/// <remarks>
+/// A fresh <see cref="System.Data.Common.DbConnection"/> is created via
+/// <see cref="ISqlConnectionFactory"/>, opened, and disposed per call. This keeps the
+/// executor safe to register as a singleton even though the underlying provider connection
+/// is not thread-safe, and matches the short-lived-connection convention used elsewhere in
+/// the codebase (e.g. <c>IDbContextFactory</c>).
+/// </remarks>
 internal sealed partial class SafeSqlQueryExecutor(
-    DbConnection connection,
+    ISqlConnectionFactory connectionFactory,
     IOptionsMonitor<AppConfig> configMonitor,
     ILogger<SafeSqlQueryExecutor> logger) : ISqlQueryExecutor
 {
-    [GeneratedRegex(@"\b(INSERT|UPDATE|DELETE|DROP|ALTER|TRUNCATE|CREATE|EXEC|EXECUTE|GRANT|REVOKE)\b",
+    [GeneratedRegex(
+        @"\b(INSERT|UPDATE|DELETE|DROP|ALTER|TRUNCATE|CREATE|EXEC|EXECUTE|GRANT|REVOKE|INTO|MERGE)\b",
         RegexOptions.IgnoreCase)]
     private static partial Regex MutationPattern();
 
@@ -46,6 +54,9 @@ internal sealed partial class SafeSqlQueryExecutor(
                 "SQL query rejected: multiple statements are not allowed.");
 
         var config = configMonitor.CurrentValue.AI.Rag.SqlDatabase;
+
+        await using var connection = connectionFactory.CreateConnection();
+        await connection.OpenAsync(cancellationToken);
 
         using var cmd = connection.CreateCommand();
         cmd.CommandText = sql; // nosemgrep: csharp.lang.security.sqli.csharp-sqli.csharp-sqli -- pre-validated by MutationPattern; user values bind via cmd.Parameters

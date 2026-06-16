@@ -1,3 +1,4 @@
+using System.Net.Sockets;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Logging;
 using Npgsql;
@@ -16,9 +17,32 @@ public sealed class PostgresFixture : IAsyncLifetime
     public ILogger<Infrastructure.Observability.Persistence.PostgresObservabilityStore> StoreLogger { get; }
         = NullLogger<Infrastructure.Observability.Persistence.PostgresObservabilityStore>.Instance;
 
+    /// <summary>
+    /// True when the connection string was supplied explicitly via the
+    /// <c>OBSERVABILITY_TEST_CONN</c> environment variable rather than falling back to the
+    /// localhost default. When set, the operator (or CI) is asserting that Postgres is provisioned,
+    /// so any connectivity failure is a real defect that must surface loudly rather than silently
+    /// disabling the suite.
+    /// </summary>
+    private static bool IsConnectionExplicitlyConfigured =>
+        !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("OBSERVABILITY_TEST_CONN"));
+
     public string ConnectionString { get; } =
         Environment.GetEnvironmentVariable("OBSERVABILITY_TEST_CONN") ?? DefaultConnectionString;
 
+    /// <summary>
+    /// Probes the target Postgres server and sets <see cref="IsAvailable"/>.
+    /// <para>
+    /// A server that is simply not listening on the default localhost endpoint (connection refused
+    /// — i.e. a developer machine with no Postgres running) sets <see cref="IsAvailable"/> to
+    /// <c>false</c> so the integration tests can opt out. Every other failure — a reachable server
+    /// that rejects the probe (wrong password, missing database, schema drift) or ANY failure when
+    /// the connection was configured explicitly via <c>OBSERVABILITY_TEST_CONN</c> — is rethrown so
+    /// the fixture fails loudly. This prevents the ~100 integration tests in this collection from
+    /// reporting green when Postgres is misconfigured or unreachable in an environment that expected
+    /// it to be present (e.g. CI).
+    /// </para>
+    /// </summary>
     public async Task InitializeAsync()
     {
         try
@@ -28,11 +52,52 @@ public sealed class PostgresFixture : IAsyncLifetime
             await cmd.ExecuteScalarAsync();
             IsAvailable = true;
         }
-        catch
+        catch (Exception ex) when (!IsConnectionExplicitlyConfigured && IsServerAbsent(ex))
         {
+            // No Postgres listening on the default localhost endpoint and none was demanded via
+            // OBSERVABILITY_TEST_CONN — treat as "not provisioned" so local dev runs can skip.
             IsAvailable = false;
         }
     }
+
+    /// <summary>
+    /// Returns <c>true</c> only when the failure indicates no server is listening at all
+    /// (connection refused / host unreachable). A reachable server that rejects the probe for any
+    /// other reason — authentication, missing database, schema problems — is NOT "absent" and must
+    /// not be masked as an unavailable fixture.
+    /// </summary>
+    private static bool IsServerAbsent(Exception ex)
+    {
+        for (var current = ex; current is not null; current = current.InnerException)
+        {
+            if (current is SocketException socket &&
+                (socket.SocketErrorCode is SocketError.ConnectionRefused
+                    or SocketError.HostNotFound
+                    or SocketError.HostUnreachable
+                    or SocketError.NetworkUnreachable
+                    or SocketError.TimedOut))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Skips the calling test (reported as <em>skipped</em>, not passed) when Postgres is not
+    /// available. Tests in this collection must call this instead of an early <c>return</c>: a bare
+    /// <c>if (!IsAvailable) return;</c> makes xUnit report the test as a green PASS with zero
+    /// assertions executed, so an entire integration suite silently goes green when Postgres is
+    /// unreachable and any regression in the persistence layer becomes invisible. Routing the guard
+    /// through <c>Skip.IfNot</c> (Xunit.SkippableFact) instead surfaces the opt-out honestly as
+    /// a skipped test, keeping the green count meaningful. Callers must be <c>[SkippableFact]</c>.
+    /// </summary>
+    public void SkipIfUnavailable() =>
+        Skip.IfNot(
+            IsAvailable,
+            "Postgres is not provisioned for this run (set OBSERVABILITY_TEST_CONN or start a local " +
+            "Postgres on localhost:5432). The test is skipped rather than reported as a silent pass.");
 
     public string NewConversationId() => $"{RunTag}-{Guid.NewGuid():N}";
 

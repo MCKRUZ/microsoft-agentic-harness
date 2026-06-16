@@ -22,9 +22,23 @@ namespace Infrastructure.AI.Iac;
 /// cache and a plan file; bicep emits an ARM template), <see cref="ToolCapability.Subprocess"/>
 /// (the CLIs spawn provider plugins / language servers), and
 /// <see cref="ToolCapability.NetworkAccess"/> scoped to the provider/module
-/// registries via <see cref="ToolPermissionProfile.AllowedHosts"/>. The egress is
-/// the registry allowlist from <c>AppConfig.AI.Iac.RegistryAllowlist</c>; the
+/// registries via <see cref="ToolPermissionProfile.AllowedHosts"/>. The
 /// filesystem scope is the single module directory.
+/// </para>
+/// <para>
+/// Egress enforcement is the registry allowlist from
+/// <c>AppConfig.AI.Iac.RegistryAllowlist</c>. Because the IaC generators dispatch
+/// directly through the keyed sandbox executor (bypassing the MediatR
+/// <c>ToolPermissionBehavior</c>/<c>CapabilityEnforcer</c> pipeline), the only
+/// active sandbox-side egress gate is the preflight: each allowlisted registry host
+/// is surfaced as a <see cref="SandboxExecutionRequest.EgressPrecheckTargets"/>
+/// entry so the executor runs every declared destination through the active
+/// per-skill <c>IEgressPolicy</c> BEFORE the CLI subprocess is spawned. A policy
+/// denial aborts the run with a signed failure attestation; allowed decisions are
+/// recorded into the egress audit. This is a declared-target / policy control, not a
+/// network namespace — process isolation does not sandbox the subprocess's actual
+/// socket connections, so it does not stop a CLI that ignores the declared hosts.
+/// Container isolation with a network policy is required for that.
 /// </para>
 /// </remarks>
 public static class IacSandboxRunner
@@ -81,9 +95,52 @@ public static class IacSandboxRunner
             ArgumentList = arguments,
             Limits = new ResourceLimits(),
             PermissionProfile = profile,
-            Timeout = timeout ?? TimeSpan.FromMinutes(5)
+            Timeout = timeout ?? TimeSpan.FromMinutes(5),
+            EgressPrecheckTargets = BuildEgressPrecheckTargets(registryAllowlist)
         };
 
         return await executor.ExecuteAsync(request, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Projects the bare-hostname registry allowlist into concrete
+    /// <see cref="Uri"/> targets so the sandbox egress preflight evaluates each
+    /// declared registry against the active per-skill <c>IEgressPolicy</c> before the
+    /// CLI subprocess is spawned. Without this projection the preflight short-circuits
+    /// (it only runs when <see cref="SandboxExecutionRequest.EgressPrecheckTargets"/>
+    /// is non-empty) and the documented registry allowlist is never enforced.
+    /// </summary>
+    /// <param name="registryAllowlist">The provider/module-registry hosts the run may reach.</param>
+    /// <returns>
+    /// One <c>https://{host}/</c> target per valid host, deduplicated by host. Entries
+    /// that are blank or already absolute URIs are normalized to their host; entries
+    /// that cannot be parsed as a host are skipped (the startup validator rejects a
+    /// malformed allowlist before any run reaches here).
+    /// </returns>
+    private static IReadOnlyList<Uri> BuildEgressPrecheckTargets(IReadOnlyList<string> registryAllowlist)
+    {
+        var targets = new List<Uri>(registryAllowlist.Count);
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var entry in registryAllowlist)
+        {
+            if (string.IsNullOrWhiteSpace(entry))
+            {
+                continue;
+            }
+
+            var candidate = entry.Contains("://", StringComparison.Ordinal)
+                ? entry
+                : $"https://{entry.Trim()}/";
+
+            if (Uri.TryCreate(candidate, UriKind.Absolute, out var uri)
+                && !string.IsNullOrEmpty(uri.Host)
+                && seen.Add(uri.Host))
+            {
+                targets.Add(new Uri($"{uri.Scheme}://{uri.Host}/"));
+            }
+        }
+
+        return targets;
     }
 }

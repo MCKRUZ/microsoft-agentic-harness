@@ -66,17 +66,24 @@ public static class DependencyInjection
 	}
 
 	/// <summary>
-	/// Registers MAF workflow instances as keyed singletons, built lazily from
+	/// Registers MAF workflow instances as keyed services, built lazily from
 	/// DI-resolved services. Each workflow is keyed by its logical name for
 	/// selective resolution.
 	/// </summary>
 	/// <remarks>
-	/// <para>Workflow keys:</para>
+	/// <para>Workflow keys (singleton unless noted):</para>
 	/// <list type="bullet">
 	///   <item><c>"rag-pipeline"</c> — RAG retrieval pipeline with CRAG evaluation</item>
 	///   <item><c>"kg-ingestion"</c> — Knowledge graph entity extraction and storage</item>
 	///   <item><c>"governance-approval"</c> — Human-in-the-loop approval with <see cref="RequestPort"/></item>
-	///   <item><c>"optimization-iteration"</c> — Single meta-harness propose-evaluate-score iteration</item>
+	///   <item>
+	///     <c>"optimization-iteration"</c> — Single meta-harness propose-evaluate-score iteration.
+	///     Registered <b>scoped</b> (not singleton) because its build resolves scoped services
+	///     (<c>IHarnessProposer</c>, <c>IEvaluationService</c>). Resolve it from a created scope's
+	///     provider, e.g.
+	///     <c>scope.ServiceProvider.GetRequiredKeyedService&lt;Workflow&gt;("optimization-iteration")</c>,
+	///     never from the root provider.
+	///   </item>
 	/// </list>
 	/// <para>
 	/// The multi-agent orchestration workflow (<see cref="Workflows.Orchestration.MultiAgentWorkflow"/>)
@@ -105,7 +112,15 @@ public static class DependencyInjection
 		services.AddKeyedSingleton<RequestPort>("governance-approval",
 			(sp, _) => sp.GetRequiredService<GovernanceApprovalComponents>().ApprovalPort);
 
-		services.AddKeyedSingleton<Workflow>("optimization-iteration",
+		// Registered as KEYED SCOPED, not singleton, because OptimizationIterationWorkflow.Build
+		// resolves IHarnessProposer and IEvaluationService, both of which are registered SCOPED in
+		// Infrastructure.AI. A keyed-singleton factory receives the root provider; resolving scoped
+		// services from it throws under scope validation and captures them for the process lifetime
+		// otherwise. A scoped registration hands Build the consumer's scoped provider so the scoped
+		// dependencies resolve correctly. The other three workflow keys remain singletons because
+		// their dependencies are all singletons. The workflow is cheap to rebuild per scope (it only
+		// wires stateless executors).
+		services.AddKeyedScoped<Workflow>("optimization-iteration",
 			(sp, _) => OptimizationIterationWorkflow.Build(sp));
 
 		return services;

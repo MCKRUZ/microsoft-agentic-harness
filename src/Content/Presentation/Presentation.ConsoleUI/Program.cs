@@ -17,6 +17,9 @@ namespace Presentation.ConsoleUI;
 ///   <item><c>--example tool-converter</c> — Run the tool converter demo non-interactively</item>
 ///   <item><c>--example persistent-agent</c> — Run the persistent agent demo non-interactively</item>
 ///   <item><c>--example a2a</c> — Run the A2A agent-to-agent demo non-interactively</item>
+///   <item><c>--example a2a-sre-workspace</c> — Run the A2A SRE-to-workspace demo non-interactively</item>
+///   <item><c>--example magentic</c> — Run the Magentic orchestration demo non-interactively</item>
+///   <item><c>--example skill-training</c> — Run the skill-training (SkillOpt) demo non-interactively</item>
 ///   <item><c>--example setup-secrets</c> — Run the user secrets setup wizard</item>
 ///   <item><c>--example optimize</c> — Run the meta-harness optimization loop</item>
 ///   <item>(no args) — Interactive menu mode</item>
@@ -53,25 +56,56 @@ public class Program
 		services.AddTransient<MultiSourceRetrievalExample>();
 		services.AddTransient<SandboxCapabilitiesExample>();
 		services.AddTransient<PipelineBehaviorsExample>();
+		services.AddTransient<SkillTrainingExample>();
+		services.AddTransient<MagenticOrchestrationExample>();
+		services.AddTransient<A2ASreToWorkspaceExample>();
 		services.AddTransient<App>();
 
-		var serviceProvider = services.BuildServiceProvider();
+		// `await using` guarantees the container (and every IDisposable/IAsyncDisposable
+		// singleton it owns — named-pipe logger provider, JSONL audit writers, EF Core
+		// resources) is flushed and disposed on exit, mirroring Presentation.EvalRunner.
+		await using var serviceProvider = services.BuildServiceProvider();
 
-		// Start hosted services (skill seeding, etc.) — required because
-		// the console app doesn't use IHost which would start them automatically
-		foreach (var hostedService in serviceProvider.GetServices<IHostedService>())
-			await hostedService.StartAsync(CancellationToken.None);
+		// Track only the services we actually started so a mid-startup failure on service N
+		// doesn't leave us calling StopAsync on services that never started.
+		var allHostedServices = serviceProvider.GetServices<IHostedService>().ToList();
+		var startedHostedServices = new List<IHostedService>(allHostedServices.Count);
 
-		var app = serviceProvider.GetRequiredService<App>();
+		// Bound the shutdown wait so a hung hosted service can't pin the process forever.
+		var shutdownTimeout = TimeSpan.FromSeconds(15);
 
-		// Route based on command-line arguments
-		if (args.Length >= 2 && args[0].Equals("--example", StringComparison.OrdinalIgnoreCase))
+		try
 		{
-			await app.RunExampleAsync(args[1]);
+			// Start hosted services (skill seeding, etc.) — required because the console app
+			// doesn't use IHost which would start (and later stop) them automatically.
+			foreach (var hostedService in allHostedServices)
+			{
+				await hostedService.StartAsync(CancellationToken.None);
+				startedHostedServices.Add(hostedService);
+			}
+
+			var app = serviceProvider.GetRequiredService<App>();
+
+			// Route based on command-line arguments
+			if (args.Length >= 2 && args[0].Equals("--example", StringComparison.OrdinalIgnoreCase))
+			{
+				await app.RunExampleAsync(args[1]);
+			}
+			else
+			{
+				await app.RunAsync();
+			}
 		}
-		else
+		finally
 		{
-			await app.RunAsync();
+			// Gracefully stop background services so in-flight work drains and buffered state
+			// (retry-queue requests, audit writes) is flushed before the provider is disposed.
+			using var stopCts = new CancellationTokenSource(shutdownTimeout);
+			foreach (var hostedService in startedHostedServices)
+			{
+				try { await hostedService.StopAsync(stopCts.Token); }
+				catch { /* best-effort; we're shutting down */ }
+			}
 		}
 	}
 }

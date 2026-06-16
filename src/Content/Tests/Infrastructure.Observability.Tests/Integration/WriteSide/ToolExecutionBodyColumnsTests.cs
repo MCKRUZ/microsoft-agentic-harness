@@ -19,10 +19,10 @@ public sealed class ToolExecutionBodyColumnsTests
         _fixture = fixture;
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task RecordToolExecutionAsync_WithBodyColumns_PersistsAllNewFields()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);
         var builder = new TestDataBuilder(_fixture);
@@ -52,10 +52,10 @@ public sealed class ToolExecutionBodyColumnsTests
         Assert.Equal("file contents here", rows[0]["stdout"]);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task GetToolExecutionByIdAsync_ExistingInvocation_ReturnsFullBody()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);
         var builder = new TestDataBuilder(_fixture);
@@ -81,10 +81,10 @@ public sealed class ToolExecutionBodyColumnsTests
         Assert.Equal("ok", record.Stdout);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task GetToolExecutionByIdAsync_DifferentSession_Returns404()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);
         var builder = new TestDataBuilder(_fixture);
@@ -108,10 +108,10 @@ public sealed class ToolExecutionBodyColumnsTests
         Assert.Null(record);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task RecordToolExecutionAsync_NullBodyColumns_RoundTripCleanly()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);
         var builder = new TestDataBuilder(_fixture);

@@ -294,7 +294,7 @@ internal static class LogEntryFormatter
                     var json = JsonDocument.Parse(entry.Raw);
                     var root = json.RootElement;
 
-                    string[] templateProps = { "MessageTemplate", "messageTemplate", "@t", "template" };
+                    string[] templateProps = { "MessageTemplate", "messageTemplate", "@mt", "template" };
                     foreach (var prop in templateProps)
                     {
                         if (root.TryGetProperty(prop, out var templateElement) &&

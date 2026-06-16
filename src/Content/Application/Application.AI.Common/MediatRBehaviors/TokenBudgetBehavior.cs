@@ -21,9 +21,11 @@ namespace Application.AI.Common.MediatRBehaviors;
 /// a <see cref="TokenBudgetExceededException"/> is thrown and the handler is never called.
 /// </para>
 /// <para>
-/// This behavior performs the pre-flight check only. Actual token usage must be recorded
-/// after the LLM call via <see cref="ITokenBudgetTracker.RecordUsage"/> — typically in the
-/// handler or a post-processing behavior that has access to the completion result.
+/// After the handler returns, this behavior records actual token usage centrally: when the
+/// response implements <see cref="IAgentTurnResult"/>, the combined
+/// <see cref="IAgentTurnResult.InputTokens"/> + <see cref="IAgentTurnResult.OutputTokens"/>
+/// are decremented from the budget via <see cref="ITokenBudgetTracker.RecordUsage"/>. Responses
+/// that do not expose token counts leave the budget unchanged.
 /// </para>
 /// </remarks>
 /// <typeparam name="TRequest">The MediatR request type.</typeparam>
@@ -72,6 +74,17 @@ public sealed class TokenBudgetBehavior<TRequest, TResponse>
             _budgetTracker.RemainingBudget,
             _budgetTracker.TotalBudget);
 
-        return await next();
+        var response = await next();
+
+        // Record actual usage centrally so the scoped budget reflects real consumption
+        // rather than the pre-flight estimate. Only turn results expose token counts.
+        if (response is IAgentTurnResult turnResult)
+        {
+            var actualTokens = turnResult.InputTokens + turnResult.OutputTokens;
+            if (actualTokens > 0)
+                _budgetTracker.RecordUsage(actualTokens);
+        }
+
+        return response;
     }
 }

@@ -22,7 +22,9 @@ namespace Application.AI.Common.CQRS.Evaluation.IngestEvalRun;
 /// </para>
 /// <para>
 /// Store failures other than <see cref="OperationCanceledException"/> are
-/// translated into <see cref="Result{T}.Fail(string[])"/>. Successful ingest
+/// translated into <see cref="Result{T}.Fail(string[])"/> carrying the stable,
+/// scrubbed <see cref="PersistFailedCode"/> — the raw exception is logged via
+/// structured logging only and never returned to the caller. Successful ingest
 /// returns the <see cref="IngestEvalRunResult"/> with <c>Inserted</c> matching
 /// the store's idempotency outcome.
 /// </para>
@@ -30,6 +32,15 @@ namespace Application.AI.Common.CQRS.Evaluation.IngestEvalRun;
 public sealed class IngestEvalRunCommandHandler
     : IRequestHandler<IngestEvalRunCommand, Result<IngestEvalRunResult>>
 {
+    /// <summary>
+    /// Stable, scrubbed failure code returned when the eval-run store throws while persisting.
+    /// The raw exception (which can embed absolute file paths, SQLite/EF provider internals,
+    /// or connection details) is sent only to structured logging — never to the HTTP-facing
+    /// <see cref="Result{T}.Fail(string[])"/> surfaced to the ingest caller, dashboards, or
+    /// AG-UI notifications.
+    /// </summary>
+    public const string PersistFailedCode = "eval.ingest.persist_failed";
+
     private readonly IEvalRunStore _store;
     private readonly IEvalRunNotifier _notifier;
     private readonly TimeProvider _timeProvider;
@@ -79,8 +90,7 @@ public sealed class IngestEvalRunCommandHandler
                 ex,
                 "Failed to persist eval run {RunId} into the dashboard store.",
                 request.Report.RunId);
-            return Result<IngestEvalRunResult>.Fail(
-                $"Failed to persist eval run: {ex.Message}");
+            return Result<IngestEvalRunResult>.Fail(PersistFailedCode);
         }
 
         if (inserted)

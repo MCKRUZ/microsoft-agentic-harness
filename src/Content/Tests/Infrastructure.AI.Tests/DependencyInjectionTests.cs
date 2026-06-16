@@ -30,6 +30,11 @@ public sealed class DependencyInjectionTests
         services.AddSingleton(TimeProvider.System);
         services.AddSingleton<IOptionsMonitor<AppConfig>>(
             new OptionsMonitorStub(config));
+        // Infrastructure.AI consumers (MCP connection manager, plugin loader) read the
+        // AppConfig:AI section bound as IOptionsMonitor<AIConfig>. The real composition root
+        // registers both monitors; mirror that here so hosted-service enumeration can resolve.
+        services.AddSingleton<IOptionsMonitor<Domain.Common.Config.AI.AIConfig>>(
+            new AIConfigMonitorStub(config.AI));
         services.AddSingleton<ISender>(new Mock<ISender>().Object);
         services.AddKnowledgeGraphDependencies(config);
 
@@ -207,5 +212,16 @@ public sealed class DependencyInjectionTests
         public AppConfig CurrentValue { get; }
         public AppConfig Get(string? name) => CurrentValue;
         public IDisposable? OnChange(Action<AppConfig, string?> listener) => null;
+    }
+
+    /// <summary>
+    /// Minimal IOptionsMonitor stub for the AppConfig:AI section bound as AIConfig.
+    /// </summary>
+    private sealed class AIConfigMonitorStub : IOptionsMonitor<Domain.Common.Config.AI.AIConfig>
+    {
+        public AIConfigMonitorStub(Domain.Common.Config.AI.AIConfig value) => CurrentValue = value;
+        public Domain.Common.Config.AI.AIConfig CurrentValue { get; }
+        public Domain.Common.Config.AI.AIConfig Get(string? name) => CurrentValue;
+        public IDisposable? OnChange(Action<Domain.Common.Config.AI.AIConfig, string?> listener) => null;
     }
 }

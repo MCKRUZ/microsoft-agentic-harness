@@ -1,5 +1,6 @@
 using Application.Common.Interfaces.Idempotency;
 using Application.Common.Interfaces.MediatR;
+using Domain.Common;
 using MediatR;
 using Microsoft.Extensions.Logging;
 
@@ -11,9 +12,13 @@ namespace Application.Common.MediatRBehaviors;
 /// Non-idempotent requests pass through unchanged.
 /// </summary>
 /// <remarks>
-/// Pipeline position: register early (after tracing, before validation) so duplicate
-/// requests are rejected before validation and handler execution.
-/// Requires <see cref="IIdempotencyStore"/> to be registered in the DI container.
+/// Pipeline position: registered as the outermost behavior in
+/// <c>AddApplicationCommonDependencies</c> so a duplicate request short-circuits to the
+/// cached response before validation and handler execution run. Successful responses are
+/// cached; failure <see cref="Result"/>s are deliberately not cached so legitimate retries
+/// after a transient failure still re-execute the handler.
+/// Requires <see cref="IIdempotencyStore"/> to be registered in the DI container — the default
+/// <c>InMemoryIdempotencyStore</c> is registered alongside this behavior.
 /// </remarks>
 /// <typeparam name="TRequest">The MediatR request type.</typeparam>
 /// <typeparam name="TResponse">The response type.</typeparam>
@@ -57,6 +62,18 @@ public sealed class IdempotencyBehavior<TRequest, TResponse>
         }
 
         var response = await next();
+
+        // Never cache expected failures: this codebase returns Result<T> for transient/expected
+        // errors rather than throwing. Caching a failure would replay it to every legitimate retry,
+        // defeating the purpose of idempotent re-execution. Only successful responses are cached.
+        if (response is Result { IsSuccess: false })
+        {
+            _logger.LogDebug(
+                "Idempotent miss for {RequestName} with key '{Key}' — failure result not cached",
+                typeof(TRequest).Name, key);
+
+            return response;
+        }
 
         await _store.SetAsync(key, response!, cancellationToken);
 

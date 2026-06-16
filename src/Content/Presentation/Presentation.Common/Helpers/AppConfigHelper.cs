@@ -56,9 +56,10 @@ public static class AppConfigHelper
     /// </param>
     /// <returns>A fully built <see cref="IConfiguration"/> containing merged settings from all sources.</returns>
     /// <remarks>
-    /// An initial configuration is bootstrapped from User Secrets first so that Azure
-    /// connection strings stored in <c>secrets.json</c> are available for Key Vault
-    /// and App Configuration providers.
+    /// An initial configuration is bootstrapped from the non-Azure sources
+    /// (appsettings, User Secrets, environment variables) first so that the Azure
+    /// Key Vault URI and App Configuration connection string are discoverable from
+    /// any of those documented channels before the Azure providers are added.
     /// </remarks>
     public static IConfiguration LoadAppConfig(Assembly? appAssembly = null)
     {
@@ -68,12 +69,6 @@ public static class AppConfigHelper
 #endif
 
         appAssembly ??= Assembly.GetEntryAssembly();
-
-        // Bootstrap an initial config so Azure connection strings from User Secrets
-        // are available before the full configuration is built.
-        var initialConfigBuilder = new ConfigurationBuilder();
-        initialConfigBuilder.AddUserSecrets(appAssembly!, optional: true);
-        var initialConfig = initialConfigBuilder.Build();
 
         var builder = new ConfigurationBuilder();
 
@@ -87,6 +82,13 @@ public static class AppConfigHelper
 
         builder.AddUserSecrets(appAssembly!, optional: true);
         builder.AddEnvironmentVariables();
+
+        // Bootstrap from the full set of non-Azure sources so the Key Vault URI is
+        // discoverable from ALL documented channels — appsettings.json, environment
+        // variables, and User Secrets — not just dev-only secrets.json. Production
+        // hosts supply AzureKeyVaultUri via env vars or appsettings, both of which
+        // must be present in this snapshot for the gate below to fire.
+        var initialConfig = builder.Build();
 
         if (!debug && initialConfig["AzureKeyVaultUri"] != null)
             AddAzureKeyVault(builder, initialConfig);

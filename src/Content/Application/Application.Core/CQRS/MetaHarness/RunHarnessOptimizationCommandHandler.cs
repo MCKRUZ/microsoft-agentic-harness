@@ -278,8 +278,15 @@ public sealed partial class RunHarnessOptimizationCommandHandler
             }
         }
 
-        var bestCandidate = await _candidateRepository.GetBestAsync(
-            command.OptimizationRunId, cancellationToken);
+        // Use the regression-gate-validated best, not the repository's ungated PassRate pick.
+        // _candidateRepository.GetBestAsync selects purely by PassRate among all Evaluated
+        // candidates and has no knowledge of regression-gate outcomes, so it can return a
+        // candidate whose regression check FAILED. currentBestCandidate is only advanced inside
+        // the passed-gate branch above, so it is the only selection consistent with the run
+        // manifest's bestCandidateId and the documented promotion contract. If no candidate ever
+        // cleared the gate, this stays null and no _proposed/ snapshot is written — the correct,
+        // safe outcome rather than emitting a gate-failing (regressive) artifact.
+        var bestCandidate = currentBestCandidate;
         var proposedDir = Path.Combine(runDir, "_proposed");
         WriteProposedSnapshot(proposedDir, bestCandidate);
         await WriteSummaryMarkdownAsync(runDir, command.OptimizationRunId, cancellationToken);

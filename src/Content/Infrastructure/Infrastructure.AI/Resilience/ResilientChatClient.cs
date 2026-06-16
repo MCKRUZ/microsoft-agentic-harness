@@ -135,12 +135,32 @@ public sealed class ResilientChatClient : IChatClient
 
             var succeeded = false;
 
-            IAsyncEnumerable<ChatResponseUpdate>? stream = null;
+            // Drive the FIRST network interaction (the real request) inside the resilience
+            // pipeline. IChatClient.GetStreamingResponseAsync only builds a lazy iterator and
+            // performs no I/O, so wrapping the bare call leaves retry/circuit-breaker/timeout
+            // observing only instant successes. Priming the enumerator here surfaces
+            // connection/auth/timeout failures to the pipeline and the health monitor.
+            IAsyncEnumerator<ChatResponseUpdate>? enumerator = null;
+            var hasFirst = false;
             try
             {
-                await provider.StreamPipeline.ExecuteAsync(async ct =>
+                await provider.StreamPipeline.ExecuteAsync(async _ =>
                 {
-                    stream = provider.Client.GetStreamingResponseAsync(messages, options, ct);
+                    // A retry re-invokes this delegate; dispose any enumerator from the prior attempt.
+                    if (enumerator is not null)
+                    {
+                        await enumerator.DisposeAsync();
+                        enumerator = null;
+                        hasFirst = false;
+                    }
+
+                    // Create the stream with the long-lived outer token, NOT Polly's per-attempt
+                    // token: that token's CancellationTokenSource is recycled once ExecuteAsync
+                    // returns, but the stream is enumerated afterwards in the yield loop below.
+                    enumerator = provider.Client
+                        .GetStreamingResponseAsync(messages, options, cancellationToken)
+                        .GetAsyncEnumerator(cancellationToken);
+                    hasFirst = await enumerator.MoveNextAsync();
                 }, cancellationToken);
             }
             catch (Exception ex)
@@ -148,39 +168,55 @@ public sealed class ResilientChatClient : IChatClient
                 lastException = ex;
                 _logger?.LogWarning(ex, "Stream initiation failed for provider {Provider}", provider.Name);
                 failedProviders.Add(provider.Name);
+                if (enumerator is not null)
+                {
+                    await enumerator.DisposeAsync();
+                }
                 continue;
             }
 
-            var enumerator = stream!.GetAsyncEnumerator(cancellationToken);
             try
             {
-                while (true)
+                if (hasFirst)
                 {
-                    bool hasNext;
-                    try
-                    {
-                        hasNext = await enumerator.MoveNextAsync();
-                    }
-                    catch (Exception ex)
-                    {
-                        lastException = ex;
-                        _logger?.LogWarning(ex, "Mid-stream failure for provider {Provider}", provider.Name);
-                        failedProviders.Add(provider.Name);
-                        break;
-                    }
+                    yield return enumerator!.Current;
 
-                    if (!hasNext)
+                    while (true)
                     {
-                        succeeded = true;
-                        break;
-                    }
+                        bool hasNext;
+                        try
+                        {
+                            hasNext = await enumerator!.MoveNextAsync();
+                        }
+                        catch (Exception ex)
+                        {
+                            lastException = ex;
+                            _logger?.LogWarning(ex, "Mid-stream failure for provider {Provider}", provider.Name);
+                            failedProviders.Add(provider.Name);
+                            break;
+                        }
 
-                    yield return enumerator.Current;
+                        if (!hasNext)
+                        {
+                            succeeded = true;
+                            break;
+                        }
+
+                        yield return enumerator!.Current;
+                    }
+                }
+                else
+                {
+                    // Pipeline-confirmed initiation with an empty stream is a success.
+                    succeeded = true;
                 }
             }
             finally
             {
-                await enumerator.DisposeAsync();
+                if (enumerator is not null)
+                {
+                    await enumerator.DisposeAsync();
+                }
             }
 
             if (succeeded)

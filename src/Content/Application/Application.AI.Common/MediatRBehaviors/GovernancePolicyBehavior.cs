@@ -168,7 +168,7 @@ public sealed class GovernancePolicyBehavior<TRequest, TResponse>
 
             throw new InvalidOperationException($"Escalation denied: {decision.Reason}");
         }
-        catch (Exception ex) when (ex is not InvalidOperationException)
+        catch (Exception ex) when (ex is not InvalidOperationException and not OperationCanceledException)
         {
             _logger.LogError(ex,
                 "Escalation service failed for agent {AgentId} tool {ToolName} — denying (fail-closed)",

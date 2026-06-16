@@ -291,7 +291,6 @@ Domain.AI/
 ├── Compaction/                  # CompactionStrategy, CompactionResult, BoundaryMessage, Trigger
 ├── Config/                      # ConfigScope (priority), DiscoveredConfigFile
 ├── Context/                     # TokenBudgetDecision, ToolResultReference
-├── Enums/                       # AgentDirectory (well-known paths)
 ├── Governance/                  # GovernanceDecision, PolicyAction, PolicyScope, InjectionScanResult
 ├── Hooks/                       # HookDefinition, HookEvent (16 events), HookResult, ExecutionContext
 ├── KnowledgeGraph/Models/       # GraphNode, GraphEdge, GraphTriplet, ProvenanceStamp, FeedbackWeights

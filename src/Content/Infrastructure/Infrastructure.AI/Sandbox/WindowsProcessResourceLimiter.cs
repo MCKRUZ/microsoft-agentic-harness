@@ -15,7 +15,6 @@ namespace Infrastructure.AI.Sandbox;
 public sealed class WindowsProcessResourceLimiter : IProcessResourceLimiter
 {
     private readonly ConcurrentDictionary<int, WindowsJobObjectManager> _managers = new();
-    private int _lastProcessId;
 
     /// <inheritdoc />
     public bool IsSupported => RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
@@ -41,21 +40,26 @@ public sealed class WindowsProcessResourceLimiter : IProcessResourceLimiter
             old.Dispose();
 
         _managers[process.Id] = manager;
-        Interlocked.Exchange(ref _lastProcessId, process.Id);
 
         return true;
     }
 
     /// <inheritdoc />
-    public ResourceUsage? GetUsage()
+    public ResourceUsage? GetUsage(int processId)
     {
-        var pid = Volatile.Read(ref _lastProcessId);
-        if (_managers.TryGetValue(pid, out var manager))
+        if (_managers.TryGetValue(processId, out var manager))
         {
             try { return manager.QueryUsage(); }
             catch { return null; }
         }
         return null;
+    }
+
+    /// <inheritdoc />
+    public void Release(int processId)
+    {
+        if (_managers.TryRemove(processId, out var manager))
+            manager.Dispose();
     }
 
     /// <inheritdoc />

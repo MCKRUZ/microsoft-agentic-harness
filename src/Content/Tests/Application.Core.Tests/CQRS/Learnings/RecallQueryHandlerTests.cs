@@ -8,6 +8,7 @@ using Domain.Common.Config.AI;
 using Domain.Common.Config.AI.Learnings;
 using FluentAssertions;
 using MediatR;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Time.Testing;
@@ -153,10 +154,18 @@ public sealed class RecallQueryHandlerTests
         _store.Object,
         _decayService.Object,
         _embeddingService.Object,
-        _mediator.Object,
+        CreateScopeFactory(_mediator.Object),
         CreateOptions(config ?? _config),
         _timeProvider,
         NullLogger<RecallQueryHandler>.Instance);
+
+    private static IServiceScopeFactory CreateScopeFactory(IMediator mediator)
+    {
+        var provider = new ServiceCollection()
+            .AddSingleton(mediator)
+            .BuildServiceProvider();
+        return provider.GetRequiredService<IServiceScopeFactory>();
+    }
 
     private void SetupStore(IReadOnlyList<LearningEntry> learnings)
     {

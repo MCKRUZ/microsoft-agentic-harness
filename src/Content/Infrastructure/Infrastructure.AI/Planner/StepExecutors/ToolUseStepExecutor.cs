@@ -160,6 +160,14 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
                 level = SandboxIsolationLevel.Container;
         }
 
+        // Floor None to Process: no ISandboxExecutor is keyed for None (only Process and
+        // Container are registered). A tool without a [ToolCapability] attribute resolves to
+        // a profile with MinimumIsolation = None, which would otherwise throw
+        // InvalidOperationException at keyed-service resolution. Process is the default
+        // subprocess executor and the safe minimum for "direct-execution" tools.
+        if (level < SandboxIsolationLevel.Process)
+            level = SandboxIsolationLevel.Process;
+
         return level;
     }
 

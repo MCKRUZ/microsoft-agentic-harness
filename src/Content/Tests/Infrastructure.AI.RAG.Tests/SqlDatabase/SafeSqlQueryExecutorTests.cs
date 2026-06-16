@@ -1,3 +1,5 @@
+using System.Data.Common;
+using Application.Common.Interfaces.Data;
 using Domain.Common.Config;
 using Domain.Common.Config.AI.RAG;
 using FluentAssertions;
@@ -12,14 +14,19 @@ namespace Infrastructure.AI.RAG.Tests.SqlDatabase;
 
 public sealed class SafeSqlQueryExecutorTests : IDisposable
 {
-    private readonly SqliteConnection _connection;
+    // A shared-cache in-memory database backed by a single keep-alive connection so the
+    // per-call connection factory can hand out fresh connections that observe the same data.
+    private const string SharedConnectionString =
+        "Data Source=SafeSqlQueryExecutorTests;Mode=Memory;Cache=Shared";
+
+    private readonly SqliteConnection _keepAlive;
 
     public SafeSqlQueryExecutorTests()
     {
-        _connection = new SqliteConnection("Data Source=:memory:");
-        _connection.Open();
+        _keepAlive = new SqliteConnection(SharedConnectionString);
+        _keepAlive.Open();
 
-        using var cmd = _connection.CreateCommand();
+        using var cmd = _keepAlive.CreateCommand();
         cmd.CommandText = """
             CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT, price REAL);
             INSERT INTO products VALUES (1, 'Widget', 9.99);
@@ -27,6 +34,11 @@ public sealed class SafeSqlQueryExecutorTests : IDisposable
             INSERT INTO products VALUES (3, 'Doohickey', 4.99);
         """;
         cmd.ExecuteNonQuery();
+    }
+
+    private sealed class SqliteConnectionFactory : ISqlConnectionFactory
+    {
+        public DbConnection CreateConnection() => new SqliteConnection(SharedConnectionString);
     }
 
     [Fact]
@@ -92,10 +104,10 @@ public sealed class SafeSqlQueryExecutorTests : IDisposable
         configMock.Setup(m => m.CurrentValue).Returns(appConfig);
 
         return new SafeSqlQueryExecutor(
-            _connection,
+            new SqliteConnectionFactory(),
             configMock.Object,
             NullLogger<SafeSqlQueryExecutor>.Instance);
     }
 
-    public void Dispose() => _connection.Dispose();
+    public void Dispose() => _keepAlive.Dispose();
 }

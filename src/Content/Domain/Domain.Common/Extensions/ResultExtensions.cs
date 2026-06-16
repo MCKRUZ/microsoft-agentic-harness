@@ -128,6 +128,9 @@ public static class ResultExtensions
             ResultFailureType.Forbidden => Result<TOut>.Forbidden(JoinErrors(errors)),
             ResultFailureType.ContentBlocked => Result<TOut>.ContentBlocked(JoinErrors(errors)),
             ResultFailureType.NotFound => Result<TOut>.NotFound(JoinErrors(errors)),
+            ResultFailureType.PermissionRequired => Result<TOut>.PermissionRequired(JoinErrors(errors)),
+            ResultFailureType.GovernanceBlocked => Result<TOut>.GovernanceBlocked(JoinErrors(errors)),
+            ResultFailureType.PendingApproval => Result<TOut>.PendingApproval(JoinErrors(errors)),
             _ => Result<TOut>.Fail(errors.ToArray())
         };
     }

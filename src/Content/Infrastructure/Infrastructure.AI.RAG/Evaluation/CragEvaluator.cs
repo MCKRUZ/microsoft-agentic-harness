@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Application.AI.Common.Interfaces.RAG;
 using Application.AI.Common.Interfaces.Routing;
 using Domain.AI.RAG.Enums;
@@ -184,6 +185,8 @@ public sealed class CragEvaluator : ICragEvaluator
         public string? Action { get; set; }
         public double Score { get; set; }
         public string? Reasoning { get; set; }
+
+        [JsonPropertyName("weak_chunk_ids")]
         public List<string>? WeakChunkIds { get; set; }
     }
 }

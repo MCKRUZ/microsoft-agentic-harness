@@ -373,6 +373,82 @@ public sealed class IServiceCollectionExtensionsTests
         learningsConfig.FeedbackAlpha.Should().Be(0.25);
     }
 
+    // -- SandboxConfig (capability enforcement) binding (regression for finding 0) --
+
+    [Fact]
+    public void RegisterConfigSections_BindsSandboxConfig_FromSandboxCapabilitiesSection()
+    {
+        // Arrange: operator overrides the least-privilege defaults under the
+        // AppConfig:AI:SandboxCapabilities path (distinct from AppConfig:AI:Sandbox,
+        // which binds the unrelated SandboxOptions class).
+        var services = new ServiceCollection();
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["AppConfig:AI:SandboxCapabilities:Enabled"] = "false",
+                ["AppConfig:AI:SandboxCapabilities:WorkspaceRoot"] = "/srv/sandbox",
+                ["AppConfig:AI:SandboxCapabilities:DefaultGrantedCapabilities:0"] = "FileRead",
+                ["AppConfig:AI:SandboxCapabilities:DefaultGrantedCapabilities:1"] = "FileWrite",
+            })
+            .Build();
+
+        // Act
+        services.RegisterConfigSections(config);
+        var provider = services.BuildServiceProvider();
+
+        // Assert: before the fix this resolved compiled defaults only (Enabled=true,
+        // WorkspaceRoot=null, [FileRead, LlmInvocation]) regardless of configuration.
+        var sandboxConfig = provider
+            .GetRequiredService<IOptionsMonitor<Domain.Common.Config.AI.Sandbox.SandboxConfig>>()
+            .CurrentValue;
+        sandboxConfig.Enabled.Should().BeFalse();
+        sandboxConfig.WorkspaceRoot.Should().Be("/srv/sandbox");
+        sandboxConfig.DefaultGrantedCapabilities.Should().Contain("FileWrite");
+    }
+
+    [Fact]
+    public void RegisterConfigSections_SandboxConfig_DefaultsWhenSectionAbsent()
+    {
+        // Arrange: no SandboxCapabilities section configured.
+        var services = new ServiceCollection();
+        var config = new ConfigurationBuilder().Build();
+
+        // Act
+        services.RegisterConfigSections(config);
+        var provider = services.BuildServiceProvider();
+
+        // Assert: least-privilege compiled defaults survive when nothing overrides them.
+        var sandboxConfig = provider
+            .GetRequiredService<IOptionsMonitor<Domain.Common.Config.AI.Sandbox.SandboxConfig>>()
+            .CurrentValue;
+        sandboxConfig.Enabled.Should().BeTrue();
+        sandboxConfig.DefaultGrantedCapabilities.Should().BeEquivalentTo("FileRead", "LlmInvocation");
+    }
+
+    // -- AppConfig tree exposes PromptUsage + SandboxCapabilities (findings 0 & 49) --
+
+    [Fact]
+    public void AIConfig_BindsPromptUsageOptions_FromAppConfigTree()
+    {
+        // Arrange: PromptUsageOptions is forwarded into AddPromptRegistry from the
+        // AppConfig tree, so PersistenceEnabled must be reachable through AppConfig:AI:PromptUsage.
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["AppConfig:AI:PromptUsage:PersistenceEnabled"] = "true",
+                ["AppConfig:AI:PromptUsage:ConnectionString"] = "Data Source=usage.db",
+            })
+            .Build();
+
+        // Act
+        var aiConfig = config.GetSection("AppConfig:AI").Get<AIConfig>();
+
+        // Assert
+        aiConfig.Should().NotBeNull();
+        aiConfig!.PromptUsage.PersistenceEnabled.Should().BeTrue();
+        aiConfig.PromptUsage.ConnectionString.Should().Be("Data Source=usage.db");
+    }
+
     [Fact]
     public void FallbackProviderConfig_BindsCapabilities()
     {

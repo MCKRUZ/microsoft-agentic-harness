@@ -87,16 +87,22 @@ public sealed class ChangeTargetTests
         var target = new KubernetesResourceTarget(
             "prod-eastus", "apps/v1", "Deployment", "payments", "api");
 
-        target.CanonicalKey().Should().Be("k8s:prod-eastus/apps/v1/payments/Deployment/api");
+        // Each field is length-prefixed ({len}:{value}) so that '/' inside a field
+        // (e.g. apps/v1) can never be confused with the field separator.
+        target.CanonicalKey().Should().Be(
+            "k8s:11:prod-eastus/7:apps/v1/8:payments/10:Deployment/3:api");
     }
 
     [Fact]
-    public void KubernetesResourceTarget_ClusterScopedResource_UsesClusterScopeLiteral()
+    public void KubernetesResourceTarget_ClusterScopedResource_EncodesEmptyNamespaceAsZeroLength()
     {
         var target = new KubernetesResourceTarget(
             "prod-eastus", "rbac.authorization.k8s.io/v1", "ClusterRole", "", "viewer");
 
-        target.CanonicalKey().Should().Contain("/cluster/");
+        // Empty namespace is encoded as a zero-length field (0:), distinct from a
+        // namespace literally named "cluster" — the display name still uses the
+        // human-readable "cluster" sentinel.
+        target.CanonicalKey().Should().Contain("/0:/");
         target.DisplayName.Should().Be("prod-eastus/cluster/ClusterRole/viewer");
     }
 

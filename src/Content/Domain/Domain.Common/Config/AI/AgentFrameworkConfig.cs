@@ -39,6 +39,20 @@ public class AgentFrameworkConfig
     public AIAgentFrameworkClientType ClientType { get; set; } = AIAgentFrameworkClientType.AzureOpenAI;
 
     /// <summary>
+    /// Gets or sets the default per-turn token budget enforced for a single agent execution
+    /// context (one agent turn or plan step). Seeds the request-scoped
+    /// <c>ITokenBudgetTracker</c> at the start of each request scope. A pre-flight check
+    /// rejects any token-consuming request whose estimated cost exceeds the remaining budget;
+    /// actual usage is decremented after the turn.
+    /// </summary>
+    /// <remarks>
+    /// Defaults to 200,000 tokens — a conservative ceiling that accommodates multi-step
+    /// tool-call chains on large-context models while still guarding against runaway loops.
+    /// Tune per deployment via <c>AppConfig:AI:AgentFramework:DefaultTokenBudget</c>.
+    /// </remarks>
+    public int DefaultTokenBudget { get; set; } = 200_000;
+
+    /// <summary>
     /// Returns true when minimum configuration is present to create a chat client.
     /// </summary>
     public bool IsConfigured => !string.IsNullOrWhiteSpace(ApiKey);

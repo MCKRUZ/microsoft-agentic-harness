@@ -36,6 +36,18 @@ namespace Infrastructure.AI.Changes.Gates;
 /// </remarks>
 public sealed class MergeGate : IChangeProposalGate
 {
+    /// <summary>
+    /// Stable, scrubbed reason code recorded when the resolved
+    /// <see cref="IChangeApplier"/> throws. Used in place of the raw exception
+    /// message so that the resulting <see cref="GateResult.Reason"/> — which the
+    /// orchestrator persists verbatim into the proposal's <c>History</c> and the
+    /// <c>changes.jsonl</c> audit file — never carries credentials embedded in
+    /// exception text. Appliers drive GitOps/IaC backends and cloud SDKs whose
+    /// exceptions routinely embed request URLs with SAS tokens or query-string
+    /// secrets. The full exception is always captured via structured logging.
+    /// </summary>
+    internal const string ApplierThrewReasonCode = "applier_threw";
+
     private readonly IServiceProvider _services;
     private readonly ILogger<MergeGate> _logger;
 
@@ -99,7 +111,14 @@ public sealed class MergeGate : IChangeProposalGate
                 "MergeGate applier threw for proposal {ProposalId} ({TargetKind}).",
                 proposal.Id,
                 proposal.Target.Kind);
-            return GateResult.Fail($"applier threw: {ex.GetType().Name}: {ex.Message}");
+            // Persist a stable scrubbed code plus the exception *type* only — never
+            // ex.Message. This Reason is copied verbatim into GateDecision.Reason,
+            // which is written to changes.jsonl and the proposal History returned to
+            // callers. Appliers drive GitOps/IaC backends and cloud SDKs whose
+            // exception text routinely embeds request URLs with SAS tokens or
+            // query-string credentials. The full exception is captured above via
+            // structured logging (correlatable by ProposalId/TargetKind).
+            return GateResult.Fail($"{ApplierThrewReasonCode}: {ex.GetType().Name}");
         }
 
         if (!result.Success)

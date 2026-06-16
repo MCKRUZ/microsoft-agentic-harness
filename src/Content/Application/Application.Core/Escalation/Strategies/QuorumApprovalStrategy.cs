@@ -17,17 +17,27 @@ public sealed class QuorumApprovalStrategy : IApprovalStrategy
         EscalationRequest request,
         IReadOnlyList<ApproverDecision> decisions)
     {
-        var deduplicated = DeduplicateByApprover(decisions);
+        var approverSet = request.Approvers.ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        // Only count decisions from identities that are actually listed as approvers.
+        // Votes from non-listed identities must not satisfy quorum nor corrupt the
+        // remaining-vote math (mirrors the membership filter used for `pending`).
+        var deduplicated = DeduplicateByApprover(decisions)
+            .Where(d => approverSet.Contains(d.ApproverName))
+            .ToArray();
         var respondedNames = deduplicated.Select(d => d.ApproverName).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var pending = request.Approvers.Where(a => !respondedNames.Contains(a)).ToArray();
 
         var quorumThreshold = request.QuorumThreshold;
         if (quorumThreshold <= 0)
         {
+            // Fail closed: a non-positive quorum threshold is a misconfigured gate
+            // (QuorumThreshold defaults to 0 and is not validated upstream). Governance
+            // code must never auto-approve on a default-valued field -- resolve as denied.
             return new ApprovalEvaluation
             {
                 IsResolved = true,
-                IsApproved = true,
+                IsApproved = false,
                 PendingApprovers = pending
             };
         }

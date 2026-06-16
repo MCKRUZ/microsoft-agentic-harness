@@ -92,20 +92,45 @@ public sealed class CapabilityEnforcer : ICapabilityEnforcer
             var normalized = NormalizePath(path);
 
             if (profile.DeniedPaths.Any(denied =>
-                normalized.StartsWith(NormalizePath(denied), StringComparison.OrdinalIgnoreCase)))
+                IsPathWithin(normalized, NormalizePath(denied))))
             {
                 return path;
             }
 
             if (profile.AllowedPaths.Count > 0 &&
                 !profile.AllowedPaths.Any(allowed =>
-                    normalized.StartsWith(NormalizePath(allowed), StringComparison.OrdinalIgnoreCase)))
+                    IsPathWithin(normalized, NormalizePath(allowed))))
             {
                 return path;
             }
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Determines whether <paramref name="candidate"/> is the same as, or a descendant of,
+    /// <paramref name="boundary"/>, comparing on path-segment boundaries rather than raw string
+    /// prefixes. This prevents sibling-directory bypass (e.g. boundary "C:/sandbox/work" must NOT
+    /// match "C:/sandbox/work-evil"). Both inputs are expected to be already normalized via
+    /// <see cref="NormalizePath"/> (slash-separated, no empty/relative segments, no trailing slash).
+    /// </summary>
+    /// <param name="candidate">The normalized requested path.</param>
+    /// <param name="boundary">The normalized allow/deny boundary path.</param>
+    /// <returns><c>true</c> when the candidate is the boundary itself or sits underneath it.</returns>
+    private static bool IsPathWithin(string candidate, string boundary)
+    {
+        // An empty boundary (e.g. root after normalization) confines everything.
+        if (boundary.Length == 0)
+            return true;
+
+        if (candidate.Equals(boundary, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        // Descendant must start with "boundary/" so the next character is a true segment boundary.
+        return candidate.Length > boundary.Length
+            && candidate[boundary.Length] == '/'
+            && candidate.StartsWith(boundary, StringComparison.OrdinalIgnoreCase);
     }
 
     private static string? ValidateHosts(

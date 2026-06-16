@@ -27,7 +27,6 @@ Files mirror the domain model namespace structure: `Agents/`, `Skills/`, `Hooks/
 | `DiscoveredConfigFileTests` | Config file discovery model | 3 | Unit |
 | `BudgetAssessmentTests` | Context budget assessment | 4 | Unit |
 | `ToolResultReferenceTests` | Tool result reference model | 3 | Unit |
-| `AgentDirectoryTests` | Agent directory enum | 2 | Unit |
 | `GovernanceDecisionTests` | Governance decision record | 5 | Unit |
 | `HookDefinitionTests` | Hook definition model | 4 | Unit |
 | `HookEventTests` | Hook event types | 3 | Unit |

@@ -92,7 +92,42 @@ public static class YamlFrontmatterHelper
         if (afterOpening <= 0)
             return false;
 
-        closingIndex = trimmed.IndexOf(Delimiter, afterOpening, StringComparison.Ordinal);
+        closingIndex = FindClosingDelimiter(trimmed, afterOpening);
         return closingIndex >= 0;
+    }
+
+    /// <summary>
+    /// Locates the closing <c>---</c> delimiter, requiring it to occupy its own line.
+    /// </summary>
+    /// <remarks>
+    /// The YAML frontmatter convention closes the block with a <c>---</c> line, not an
+    /// inline substring. Matching the literal <c>---</c> anywhere (e.g. inside a YAML value
+    /// such as <c>description: compare A --- B</c>) would truncate the frontmatter and leak
+    /// the real keys into the body. A line qualifies as the closing delimiter when, after
+    /// trimming trailing carriage returns and whitespace, it is exactly <c>---</c>.
+    /// </remarks>
+    /// <param name="trimmed">The left-trimmed markdown content.</param>
+    /// <param name="searchFrom">The index of the first character after the opening delimiter line.</param>
+    /// <returns>The index at which the closing delimiter line begins, or <c>-1</c> if none exists.</returns>
+    private static int FindClosingDelimiter(string trimmed, int searchFrom)
+    {
+        var lineStart = searchFrom;
+
+        while (lineStart <= trimmed.Length)
+        {
+            var newlineIndex = trimmed.IndexOf('\n', lineStart);
+            var lineEnd = newlineIndex >= 0 ? newlineIndex : trimmed.Length;
+            var line = trimmed[lineStart..lineEnd].TrimEnd();
+
+            if (line == Delimiter)
+                return lineStart;
+
+            if (newlineIndex < 0)
+                break;
+
+            lineStart = newlineIndex + 1;
+        }
+
+        return -1;
     }
 }

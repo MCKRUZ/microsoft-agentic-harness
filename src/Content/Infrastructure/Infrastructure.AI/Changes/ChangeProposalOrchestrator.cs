@@ -41,6 +41,15 @@ public sealed class ChangeProposalOrchestrator : IChangeProposalOrchestrator
     private readonly IIncidentContext? _incidentContext;
     private readonly IIncidentResponsePlanResolver? _incidentResolver;
 
+    /// <summary>
+    /// Stable, scrubbed reason code recorded when a gate's
+    /// <c>EvaluateAsync</c> throws. Used in place of the raw exception message so
+    /// that audit/history sinks never persist credentials embedded in exception
+    /// text (e.g. SAS tokens in <see cref="System.Net.Http.HttpRequestException"/>
+    /// URLs). The full exception is always available via structured logs.
+    /// </summary>
+    internal const string GateExceptionReasonCode = "gate_threw";
+
     /// <summary>Initializes a new <see cref="ChangeProposalOrchestrator"/>.</summary>
     /// <param name="store">Proposal persistence.</param>
     /// <param name="audit">Append-only audit sink for gate decisions.</param>
@@ -584,7 +593,14 @@ public sealed class ChangeProposalOrchestrator : IChangeProposalOrchestrator
                 Timestamp = _time.GetUtcNow(),
                 GateKey = gateKey,
                 Action = GateAction.Fail,
-                Reason = $"Gate threw: {ex.GetType().Name}: {ex.Message}",
+                // Persist a stable scrubbed code plus the exception *type* only — never
+                // ex.Message. This Reason is written to the changes.jsonl audit file and
+                // appended to proposal History (returned to callers via store/CQRS queries).
+                // Gates are extension points that call HTTP services and external tooling;
+                // their exception messages routinely embed full request URLs with SAS
+                // tokens or query-string credentials. The full exception is captured above
+                // via structured logging (correlatable by ProposalId/CorrelationId).
+                Reason = $"{GateExceptionReasonCode}: {ex.GetType().Name}",
                 DurationMs = sw.ElapsedMilliseconds
             };
             return (decision, Terminate: true);

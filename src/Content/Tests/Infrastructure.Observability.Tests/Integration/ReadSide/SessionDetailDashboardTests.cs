@@ -13,10 +13,10 @@ public sealed class SessionDetailDashboardTests
         _fixture = fixture;
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task AgentName_ReturnsSeededAgent()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         var builder = new TestDataBuilder(_fixture);
         var session = await builder.CreateSessionAsync(agentName: "DetailTestAgent");
@@ -28,10 +28,10 @@ public sealed class SessionDetailDashboardTests
         Assert.Equal("DetailTestAgent", result);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Model_ReturnsSeededModel()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         var builder = new TestDataBuilder(_fixture);
         var session = await builder.CreateSessionAsync(model: "claude-sonnet-4");
@@ -43,10 +43,10 @@ public sealed class SessionDetailDashboardTests
         Assert.Equal("claude-sonnet-4", result);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Status_ReturnsCompleted()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         var builder = new TestDataBuilder(_fixture);
         var session = await builder.CreateSessionAsync(status: "completed");
@@ -58,10 +58,10 @@ public sealed class SessionDetailDashboardTests
         Assert.Equal("completed", result);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Duration_ReturnsNonZero()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         var builder = new TestDataBuilder(_fixture);
         var session = await builder.CreateSessionAsync(status: "completed");
@@ -73,10 +73,10 @@ public sealed class SessionDetailDashboardTests
         Assert.True(result >= 0);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task TotalCost_ReturnsSeededCost()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         var builder = new TestDataBuilder(_fixture);
         var session = await builder.CreateSessionAsync(costUsd: 0.42m);
@@ -88,10 +88,10 @@ public sealed class SessionDetailDashboardTests
         Assert.Equal(0.42m, result);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task TotalTokens_ReturnsSumOfInputOutput()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         var builder = new TestDataBuilder(_fixture);
         var session = await builder.CreateSessionAsync(inputTokens: 1200, outputTokens: 800);
@@ -103,10 +103,10 @@ public sealed class SessionDetailDashboardTests
         Assert.Equal(2000, result);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task ToolCalls_ReturnsSeededCount()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         var builder = new TestDataBuilder(_fixture);
         var session = await builder.CreateSessionAsync(toolCallCount: 7);
@@ -118,10 +118,10 @@ public sealed class SessionDetailDashboardTests
         Assert.Equal(7, result);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task CacheHitRate_ReturnsSeededValue()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         var builder = new TestDataBuilder(_fixture);
         var session = await builder.CreateSessionAsync(cacheHitRate: 0.35m);
@@ -133,10 +133,10 @@ public sealed class SessionDetailDashboardTests
         Assert.Equal(0.35m, result);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task MessageTimeline_ReturnsOrderedMessages()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         var builder = new TestDataBuilder(_fixture);
         var session = await builder.CreateSessionAsync();
@@ -154,10 +154,10 @@ public sealed class SessionDetailDashboardTests
         Assert.Equal("user", (string?)rows[0]["role"]);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task ToolExecutions_ReturnsSeededTool()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         var builder = new TestDataBuilder(_fixture);
         var session = await builder.CreateSessionAsync();
@@ -173,10 +173,10 @@ public sealed class SessionDetailDashboardTests
         Assert.Contains(rows, r => (string?)r["tool_name"] == "code_search");
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task SafetyEvents_ReturnsSeededEvent()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         var builder = new TestDataBuilder(_fixture);
         var session = await builder.CreateSessionAsync();
@@ -192,10 +192,10 @@ public sealed class SessionDetailDashboardTests
         Assert.Contains(rows, r => (string?)r["outcome"] == "block");
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task VarSessionId_ReturnsRecentConversations()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         var builder = new TestDataBuilder(_fixture);
         var session = await builder.CreateSessionAsync();

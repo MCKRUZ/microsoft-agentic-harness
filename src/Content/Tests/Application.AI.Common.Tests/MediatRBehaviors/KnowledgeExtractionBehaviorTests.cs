@@ -1,6 +1,8 @@
+using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Application.AI.Common.MediatRBehaviors;
 using Application.Core.CQRS.Agents.ExecuteAgentTurn;
+using Microsoft.Extensions.DependencyInjection;
 using Domain.AI.KnowledgeGraph.Models;
 using Domain.Common.Config.AI;
 using FluentAssertions;
@@ -112,28 +114,48 @@ public class KnowledgeExtractionBehaviorTests
 
         result.Should().BeSameAs(response);
 
-        // Wait briefly for the fire-and-forget task to complete
-        await Task.Delay(200);
+        // The behavior persists facts on a fire-and-forget background task, so poll the mock
+        // until both facts land (or fail loudly on timeout) rather than racing a fixed delay.
+        await WaitForAsync(
+            () => MemoryInvocationCount() == 2,
+            TimeSpan.FromSeconds(2));
 
         _mockMemory.Verify(m => m.RememberAsync("conv-1:3:0", "User prefers PostgreSQL", "Preference", It.IsAny<CancellationToken>()), Times.Once);
         _mockMemory.Verify(m => m.RememberAsync("conv-1:3:1", "Deadline is June 15", "Decision", It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
-    public async Task Handle_ExtractorThrows_ResponseStillReturned()
+    public async Task Handle_ExtractorThrows_BackgroundFailureIsAbsorbedAndPersistenceSkipped()
     {
+        var extractorInvocations = 0;
         _mockExtractor
             .Setup(e => e.ExtractAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .Callback(() => Interlocked.Increment(ref extractorInvocations))
             .ThrowsAsync(new InvalidOperationException("LLM down"));
 
         var behavior = CreateAgentTurnBehavior();
         var command = CreateCommand("analyze this");
         var response = CreateSuccessResponse("Analysis complete.");
 
+        // The synchronous path must return the agent response immediately — extraction is
+        // fire-and-forget, so a throwing extractor must never surface here.
         var result = await behavior.Handle(command, () => Task.FromResult(response), CancellationToken.None);
-
         result.Should().BeSameAs(response);
-        // No exception propagated — fire-and-forget absorbed it
+
+        // Drive the assertion against the background task actually running: wait until the
+        // extractor has been invoked (proving the fire-and-forget body executed and threw),
+        // then prove the throw short-circuited persistence. Without polling, an assertion of
+        // "extractor was called" would be vacuous because the task may not have started yet.
+        await WaitForAsync(
+            () => Volatile.Read(ref extractorInvocations) == 1,
+            TimeSpan.FromSeconds(2));
+
+        // The extractor threw before yielding any facts, so nothing should be persisted, and
+        // the behavior's catch block must have absorbed the exception (no unobserved fault,
+        // no rethrow): the test process is still alive and RememberAsync was never reached.
+        _mockMemory.Verify(
+            m => m.RememberAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Never);
     }
 
     [Fact]
@@ -158,7 +180,12 @@ public class KnowledgeExtractionBehaviorTests
         var response = CreateSuccessResponse("resp");
 
         await behavior.Handle(command, () => Task.FromResult(response), CancellationToken.None);
-        await Task.Delay(200);
+
+        // Poll until the second fact's persistence is attempted (the first fact's RememberAsync
+        // throws); a fixed delay would race the background task under CI load.
+        await WaitForAsync(
+            () => SecondFactRemembered(),
+            TimeSpan.FromSeconds(2));
 
         // Second fact should still be remembered despite first one throwing
         _mockMemory.Verify(m => m.RememberAsync("conv-1:1:1", "Fact B", "Fact", It.IsAny<CancellationToken>()), Times.Once);
@@ -166,12 +193,72 @@ public class KnowledgeExtractionBehaviorTests
 
     // --- Helpers ---
 
+    /// <summary>
+    /// Polls <paramref name="predicate"/> until it returns <c>true</c> or <paramref name="timeout"/>
+    /// elapses, throwing <see cref="TimeoutException"/> on timeout. Replaces fixed delays so the
+    /// fire-and-forget background extraction is awaited deterministically rather than raced.
+    /// </summary>
+    private static async Task WaitForAsync(Func<bool> predicate, TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < deadline)
+        {
+            if (predicate()) return;
+            await Task.Delay(10);
+        }
+
+        throw new TimeoutException(
+            $"Predicate did not become true within {timeout.TotalMilliseconds}ms.");
+    }
+
+    /// <summary>
+    /// Counts how many times <see cref="IKnowledgeMemory.RememberAsync"/> has been invoked on the
+    /// mock so far. Reads Moq's thread-safe invocation log directly so it can be polled without
+    /// triggering the throwing behavior of <c>Verify</c> mid-wait.
+    /// </summary>
+    private int MemoryInvocationCount() =>
+        _mockMemory.Invocations.Count(i => i.Method.Name == nameof(IKnowledgeMemory.RememberAsync));
+
+    /// <summary>
+    /// Returns <c>true</c> once <see cref="IKnowledgeMemory.RememberAsync"/> has been invoked for the
+    /// second fact's key, used to poll for completion of the resilient persistence loop.
+    /// </summary>
+    private bool SecondFactRemembered() =>
+        _mockMemory.Invocations.Any(i =>
+            i.Method.Name == nameof(IKnowledgeMemory.RememberAsync) &&
+            i.Arguments.Count > 0 &&
+            (i.Arguments[0] as string) == "conv-1:1:1");
+
+    // The behavior resolves IConversationFactExtractor and IKnowledgeMemory from a fresh DI
+    // scope (created per background extraction). Build a scope factory whose provider returns
+    // the same mocks so the existing assertions on _mockExtractor/_mockMemory still hold.
+    private IServiceScopeFactory BuildScopeFactory()
+    {
+        var provider = new Mock<IServiceProvider>();
+        provider.Setup(p => p.GetService(typeof(IConversationFactExtractor))).Returns(_mockExtractor.Object);
+        provider.Setup(p => p.GetService(typeof(IKnowledgeMemory))).Returns(_mockMemory.Object);
+
+        var scope = new Mock<IServiceScope>();
+        scope.SetupGet(s => s.ServiceProvider).Returns(provider.Object);
+
+        var factory = new Mock<IServiceScopeFactory>();
+        factory.Setup(f => f.CreateScope()).Returns(scope.Object);
+        return factory.Object;
+    }
+
+    private static IAmbientRequestScope BuildAmbientScope()
+    {
+        var ambient = new Mock<IAmbientRequestScope>();
+        ambient.Setup(a => a.BeginScope(It.IsAny<IServiceProvider>())).Returns(Mock.Of<IDisposable>());
+        return ambient.Object;
+    }
+
     private KnowledgeExtractionBehavior<TRequest, TResponse> CreateBehavior<TRequest, TResponse>()
         where TRequest : notnull
     {
         return new KnowledgeExtractionBehavior<TRequest, TResponse>(
-            _mockExtractor.Object,
-            _mockMemory.Object,
+            BuildScopeFactory(),
+            BuildAmbientScope(),
             Options.Create(_config),
             NullLogger<KnowledgeExtractionBehavior<TRequest, TResponse>>.Instance);
     }
@@ -179,8 +266,8 @@ public class KnowledgeExtractionBehaviorTests
     private KnowledgeExtractionBehavior<ExecuteAgentTurnCommand, AgentTurnResult> CreateAgentTurnBehavior()
     {
         return new KnowledgeExtractionBehavior<ExecuteAgentTurnCommand, AgentTurnResult>(
-            _mockExtractor.Object,
-            _mockMemory.Object,
+            BuildScopeFactory(),
+            BuildAmbientScope(),
             Options.Create(_config),
             NullLogger<KnowledgeExtractionBehavior<ExecuteAgentTurnCommand, AgentTurnResult>>.Instance);
     }

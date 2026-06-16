@@ -17,9 +17,20 @@ namespace Presentation.AgentHub.Controllers;
 /// prompt-version comparison, regression diff, and replay. All endpoints
 /// dispatch via MediatR so behaviors (validation, auth, audit) wrap every call.
 /// </summary>
+/// <remarks>
+/// These endpoints expose <b>global, cross-user</b> evaluation data — run
+/// reports, prompt-version comparisons, regressed cases, and trace replays carry
+/// no caller identity, so any authenticated caller could otherwise enumerate and
+/// read every team's eval results and the prompt/trace bodies behind them
+/// (horizontal-privilege IDOR). The whole controller is therefore role-gated with
+/// <see cref="SessionsController.ObserverRole"/> — the same app role that gates
+/// the equivalent privileged session-observability surface
+/// (<see cref="SessionsController"/>) and SignalR global-traces push. A plain
+/// authenticated chat user (no role) gets 403 here, exactly as on those paths.
+/// </remarks>
 [ApiController]
 [Route("api/evals")]
-[Authorize]
+[Authorize(Roles = SessionsController.ObserverRole)]
 public sealed class EvalController : ControllerBase
 {
     private readonly IMediator _mediator;

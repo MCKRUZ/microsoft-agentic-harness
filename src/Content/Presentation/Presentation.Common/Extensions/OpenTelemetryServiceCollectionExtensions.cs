@@ -187,6 +187,12 @@ public static class OpenTelemetryServiceCollectionExtensions
             return builder.Build()!;
         });
 
+        // The TracerProvider/MeterProvider singletons above are lazy: their factories run
+        // only on first resolution, and nothing in a console/worker host resolves them, so
+        // the OTel SDK would never be built and all telemetry would be silently dropped.
+        // This hosted service forces both to materialize at host start.
+        services.AddHostedService<Telemetry.DesktopTelemetryHostedService>();
+
         return services;
     }
 

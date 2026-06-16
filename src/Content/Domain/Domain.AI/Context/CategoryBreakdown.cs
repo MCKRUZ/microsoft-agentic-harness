@@ -25,9 +25,12 @@ public sealed record CategoryBreakdown(
     public static CategoryBreakdown Empty { get; } = new(0, 0, 0, 0, 0, 0);
 
     /// <summary>
-    /// Sum of all six category totals. Implemented as a switch over the enum
-    /// so adding a category in <see cref="ContextCategory"/> forces an update
-    /// here at compile time rather than silently undercounting.
+    /// Sum of all six category totals. Each term routes through <see cref="Get"/>,
+    /// which throws <see cref="ArgumentOutOfRangeException"/> for any unmapped
+    /// <see cref="ContextCategory"/>. Adding a category therefore fails loudly at
+    /// runtime here (and in <see cref="Add"/>) rather than silently undercounting
+    /// or dropping tokens — mirroring <see cref="ContextCategoryWireExtensions.ToWire"/>.
+    /// The hardcoded six-term sum must also be extended when a category is added.
     /// </summary>
     public int Total => Get(ContextCategory.System)
                       + Get(ContextCategory.Agents)
@@ -45,7 +48,10 @@ public sealed record CategoryBreakdown(
         ContextCategory.Tools => Tools,
         ContextCategory.Mcp => Mcp,
         ContextCategory.Messages => Messages,
-        _ => 0,
+        _ => throw new ArgumentOutOfRangeException(
+            nameof(category),
+            category,
+            "Unknown ContextCategory — add a case to CategoryBreakdown.Get and the Total sum."),
     };
 
     /// <summary>
@@ -60,6 +66,9 @@ public sealed record CategoryBreakdown(
         ContextCategory.Tools => this with { Tools = Tools + tokens },
         ContextCategory.Mcp => this with { Mcp = Mcp + tokens },
         ContextCategory.Messages => this with { Messages = Messages + tokens },
-        _ => this,
+        _ => throw new ArgumentOutOfRangeException(
+            nameof(category),
+            category,
+            "Unknown ContextCategory — add a case to CategoryBreakdown.Add."),
     };
 }

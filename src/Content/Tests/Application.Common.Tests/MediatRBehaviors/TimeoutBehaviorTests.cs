@@ -105,4 +105,61 @@ public class TimeoutBehaviorTests
 
         await act.Should().ThrowAsync<OperationCanceledException>();
     }
+
+    [Fact]
+    public async Task Handle_Timeout_CancelsHandlerCooperativelyViaAmbientToken()
+    {
+        // Regression for solution-review finding #27: on timeout the behavior must CANCEL the
+        // running handler (cooperative cancellation), not merely abandon it and let it keep
+        // committing side effects. A handler that observes AmbientTimeoutToken must see cancellation
+        // when the configured 1s deadline elapses.
+        var behavior = new TimeoutBehavior<FastRequest, string>(
+            CreateConfigMonitor(timeoutSec: 1),
+            NullLogger<TimeoutBehavior<FastRequest, string>>.Instance);
+
+        // Signals the terminal state the handler actually reached, set deterministically inside the
+        // handler so the assertion does not race the abandoned continuation.
+        var handlerOutcome = new TaskCompletionSource<string>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var act = () => behavior.Handle(
+            new FastRequest(),
+            async () =>
+            {
+                var timeoutToken = TimeoutBehavior<FastRequest, string>.AmbientTimeoutToken;
+                try
+                {
+                    // Handler honors its timeout-aware token. When the deadline elapses the
+                    // behavior cancels it, so this await throws rather than running to completion.
+                    await Task.Delay(TimeSpan.FromSeconds(30), timeoutToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    handlerOutcome.TrySetResult("cancelled");
+                    throw;
+                }
+
+                // Only reached if the handler was abandoned (left running) instead of cancelled.
+                handlerOutcome.TrySetResult("side-effect-committed");
+                return "should-not-commit";
+            },
+            CancellationToken.None);
+
+        // The caller still sees the timeout surfaced.
+        await act.Should().ThrowAsync<TimeoutException>()
+            .WithMessage("*exceeded*timeout*");
+
+        // The handler was cooperatively cancelled, not left running to commit its side effect.
+        var outcome = await handlerOutcome.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        outcome.Should().Be("cancelled",
+            "the timed-out handler must observe cancellation via AmbientTimeoutToken rather than "
+            + "running past its deadline to commit side effects");
+    }
+
+    [Fact]
+    public void AmbientTimeoutToken_OutsideRequestScope_ReturnsNone()
+    {
+        TimeoutBehavior<FastRequest, string>.AmbientTimeoutToken
+            .Should().Be(CancellationToken.None);
+    }
 }

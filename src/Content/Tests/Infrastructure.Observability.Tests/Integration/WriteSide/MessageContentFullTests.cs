@@ -20,10 +20,10 @@ public sealed class MessageContentFullTests
         _fixture = fixture;
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task RecordMessageAsync_WithContentFull_PersistsBothPreviewAndFull()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);
         var builder = new TestDataBuilder(_fixture);
@@ -47,10 +47,10 @@ public sealed class MessageContentFullTests
         Assert.Equal(fullBody, rows[0]["content_full"]);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task GetMessageByIdAsync_ExistingMessage_ReturnsContentFull()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);
         var builder = new TestDataBuilder(_fixture);
@@ -70,10 +70,10 @@ public sealed class MessageContentFullTests
         Assert.Equal("the full body", record.ContentFull);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task GetMessageByIdAsync_DifferentSession_Returns404()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);
         var builder = new TestDataBuilder(_fixture);
@@ -94,10 +94,10 @@ public sealed class MessageContentFullTests
         Assert.Null(record);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task GetSessionMessagesAsync_ListPath_ReturnsNullContentFull()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);
         var builder = new TestDataBuilder(_fixture);

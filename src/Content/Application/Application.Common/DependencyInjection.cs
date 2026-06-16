@@ -1,8 +1,10 @@
 using Application.Common.Extensions;
 using Application.Common.Helpers;
+using Application.Common.Interfaces.Idempotency;
 using Application.Common.Interfaces.Telemetry;
 using Application.Common.MediatRBehaviors;
 using Application.Common.OpenTelemetry;
+using Application.Common.Services.Idempotency;
 using Domain.Common.Config;
 using FluentValidation;
 using MediatR;
@@ -25,6 +27,7 @@ namespace Application.Common;
 /// <para>
 /// <strong>MediatR Pipeline Behavior Order (outermost → innermost):</strong>
 /// <list type="number">
+///   <item><description><c>IdempotencyBehavior</c> — short-circuits duplicate <c>IIdempotentRequest</c> retries before validation/handler work</description></item>
 ///   <item><description><c>RequestValidationBehavior</c> — FluentValidation, returns Result failure</description></item>
 ///   <item><description><c>AuthorizationBehavior</c> — checks [Authorize] attributes</description></item>
 ///   <item><description><c>CachingBehavior</c> — hybrid memory/distributed cache</description></item>
@@ -57,9 +60,16 @@ public static class DependencyInjection
         services.AddMediatR(cfg =>
             cfg.RegisterServicesFromAssembly(assembly));
 
+        // Idempotency store — default in-process implementation. Replace with a distributed
+        // (Redis/database) implementation for multi-replica deployments. Required by
+        // IdempotencyBehavior; registered here so marking a command IIdempotentRequest works
+        // out of the box rather than throwing on an unresolvable constructor dependency.
+        services.AddSingleton<IIdempotencyStore, InMemoryIdempotencyStore>();
+
         // Pipeline behaviors — registration order = execution order (outermost first)
         // Agent-specific behaviors registered in Application.AI.Common.DependencyInjection
         services
+            .AddTransient(typeof(IPipelineBehavior<,>), typeof(IdempotencyBehavior<,>))
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(RequestValidationBehavior<,>))
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(AuthorizationBehavior<,>))
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(CachingBehavior<,>))

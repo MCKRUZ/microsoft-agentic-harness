@@ -13,10 +13,10 @@ public sealed class CostAnalyticsDashboardTests
         _fixture = fixture;
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task TotalSpend_ReturnsSumOfCosts()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         var builder = new TestDataBuilder(_fixture);
         await builder.CreateSessionAsync(agentName: "CostAgent1", costUsd: 0.50m);
@@ -35,10 +35,10 @@ public sealed class CostAnalyticsDashboardTests
         Assert.True(total >= 2.50m);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task DailyAverage_ReturnsNonZero()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         var builder = new TestDataBuilder(_fixture);
         await builder.CreateSessionAsync(costUsd: 1.00m);
@@ -55,10 +55,10 @@ public sealed class CostAnalyticsDashboardTests
         Assert.True(avg > 0);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task CostPerSession_ReturnsAverage()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         var builder = new TestDataBuilder(_fixture);
         await builder.CreateSessionAsync(costUsd: 0.40m);
@@ -75,10 +75,10 @@ public sealed class CostAnalyticsDashboardTests
         Assert.True(avg > 0m);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task DailyTrend_AfterMvRefresh_ReturnsRows()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         var builder = new TestDataBuilder(_fixture);
         await builder.CreateSessionAsync(costUsd: 0.80m);
@@ -96,10 +96,10 @@ public sealed class CostAnalyticsDashboardTests
         Assert.True(rows.Count >= 1);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task DailyTokenTrend_AfterMvRefresh_ReturnsRows()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         var builder = new TestDataBuilder(_fixture);
         await builder.CreateSessionAsync(inputTokens: 5000, outputTokens: 2000);
@@ -117,10 +117,10 @@ public sealed class CostAnalyticsDashboardTests
         Assert.True(rows.Count >= 1);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task CostByAgent_ReturnsGroupedRows()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         var builder = new TestDataBuilder(_fixture);
         await builder.CreateSessionAsync(agentName: "CostByAgentA", costUsd: 0.30m);
@@ -140,10 +140,10 @@ public sealed class CostAnalyticsDashboardTests
         Assert.Contains("CostByAgentB", agents);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task CostByModel_ReturnsGroupedRows()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         var builder = new TestDataBuilder(_fixture);
         await builder.CreateSessionAsync(model: "gpt-4o", costUsd: 0.20m);
@@ -161,10 +161,10 @@ public sealed class CostAnalyticsDashboardTests
         Assert.True(rows.Count >= 2);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task TokenBreakdown_ReturnsAllFourFields()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         var builder = new TestDataBuilder(_fixture);
         await builder.CreateSessionAsync(
@@ -189,10 +189,10 @@ public sealed class CostAnalyticsDashboardTests
         Assert.True((long)row["output"]! >= 400);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task TokenUsageOverTime_AfterMvRefresh_ReturnsRows()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         var builder = new TestDataBuilder(_fixture);
         await builder.CreateSessionAsync(inputTokens: 3000, outputTokens: 1500);
@@ -209,10 +209,10 @@ public sealed class CostAnalyticsDashboardTests
         Assert.True(rows.Count >= 1);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task TopExpensive_ReturnsOrderedByCost()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         var builder = new TestDataBuilder(_fixture);
         await builder.CreateSessionAsync(agentName: "CostExpensiveA", costUsd: 0.10m);
@@ -238,10 +238,10 @@ public sealed class CostAnalyticsDashboardTests
         }
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task VarAgentName_ReturnsDistinctAgents()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         var builder = new TestDataBuilder(_fixture);
         await builder.CreateSessionAsync(agentName: "CostVarAgent");

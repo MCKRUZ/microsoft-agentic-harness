@@ -33,6 +33,19 @@ public sealed class ApprovalGate : IChangeProposalGate
     /// <summary>Default retry interval reported on the Defer result. Orchestrator does not actually self-loop on the approval gate (it transitions to AwaitingApproval instead), so this is informational for downstream tools.</summary>
     public static readonly TimeSpan DefaultRetryInterval = TimeSpan.FromMinutes(5);
 
+    /// <summary>
+    /// Stable, scrubbed reason code recorded when the configured
+    /// <see cref="IChangeApprovalRouter"/> throws. Used in place of the raw
+    /// exception message so that the resulting <see cref="GateResult.Reason"/> —
+    /// which the orchestrator persists verbatim into the proposal's
+    /// <c>History</c> and the <c>changes.jsonl</c> audit file — never carries
+    /// credentials embedded in exception text (e.g. SAS tokens or query-string
+    /// secrets in <see cref="System.Net.Http.HttpRequestException"/> URLs raised
+    /// by the escalation/Slack/Teams router). The full exception is always
+    /// captured via structured logging.
+    /// </summary>
+    internal const string RoutingFailedReasonCode = "approval_routing_failed";
+
     private readonly IChangeApprovalRouter _router;
     private readonly ILogger<ApprovalGate> _logger;
 
@@ -76,8 +89,15 @@ public sealed class ApprovalGate : IChangeProposalGate
                 "ApprovalGate routing failed for proposal {ProposalId} (attempt {Attempt}).",
                 proposal.Id,
                 context.AttemptCount);
+            // Persist a stable scrubbed code plus the exception *type* only — never
+            // ex.Message. This Reason is copied verbatim into GateDecision.Reason,
+            // which is written to changes.jsonl and the proposal History returned to
+            // callers. The router calls escalation/Slack/Teams HTTP services whose
+            // exception text routinely embeds request URLs with SAS tokens or
+            // query-string credentials. The full exception is captured above via
+            // structured logging (correlatable by ProposalId/AttemptCount).
             return GateResult.Fail(
-                $"approval routing failed: {ex.GetType().Name}: {ex.Message}");
+                $"{RoutingFailedReasonCode}: {ex.GetType().Name}");
         }
 
         return GateResult.Defer(

@@ -76,11 +76,13 @@ public sealed class ProcessSandboxExecutor : ISandboxExecutor
 
         var workspaceDir = CreateWorkspaceDirectory();
         var startTimestamp = _timeProvider.GetTimestamp();
+        int? limitedProcessId = null;
 
         try
         {
             using var process = StartProcess(request, workspaceDir);
             ApplyResourceLimits(process, request.Limits);
+            limitedProcessId = process.Id;
 
             var stdoutTask = process.StandardOutput.ReadToEndAsync();
             var stderrTask = process.StandardError.ReadToEndAsync();
@@ -106,12 +108,12 @@ public sealed class ProcessSandboxExecutor : ISandboxExecutor
             var elapsed = _timeProvider.GetElapsedTime(startTimestamp);
 
             if (timedOut)
-                return await BuildTimeoutResultAsync(request, elapsed, egress.Digest, ct);
+                return await BuildTimeoutResultAsync(process.Id, request, elapsed, egress.Digest, ct);
 
             if (process.ExitCode != 0)
-                return await BuildCrashResultAsync(process.ExitCode, stdout, stderr, request, elapsed, egress.Digest, ct);
+                return await BuildCrashResultAsync(process.Id, process.ExitCode, stdout, stderr, request, elapsed, egress.Digest, ct);
 
-            return await BuildSuccessResultAsync(stdout, request, elapsed, egress.Digest, ct);
+            return await BuildSuccessResultAsync(process.Id, stdout, request, elapsed, egress.Digest, ct);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -129,6 +131,12 @@ public sealed class ProcessSandboxExecutor : ISandboxExecutor
         }
         finally
         {
+            // Release the Job Object handle for this process now that its usage has been read
+            // (BuildUsage runs inside the try, before this finally). Without this, every Windows
+            // sandbox execution leaks one kernel handle until host shutdown.
+            if (limitedProcessId is { } pid)
+                _resourceLimiter.Release(pid);
+
             CleanupWorkspace(workspaceDir);
         }
     }
@@ -264,7 +272,7 @@ public sealed class ProcessSandboxExecutor : ISandboxExecutor
     }
 
     private async Task<SandboxExecutionResult> BuildTimeoutResultAsync(
-        SandboxExecutionRequest request, TimeSpan elapsed, string? egressDigest, CancellationToken ct)
+        int processId, SandboxExecutionRequest request, TimeSpan elapsed, string? egressDigest, CancellationToken ct)
     {
         var attestation = await SignFailureAsync(
             request.ToolName, request.Input,
@@ -275,12 +283,12 @@ public sealed class ProcessSandboxExecutor : ISandboxExecutor
             Success = false,
             ErrorMessage = $"Process timed out after {request.Timeout}",
             Attestation = attestation,
-            ResourceUsage = BuildUsage(elapsed)
+            ResourceUsage = BuildUsage(processId, elapsed)
         };
     }
 
     private async Task<SandboxExecutionResult> BuildCrashResultAsync(
-        int exitCode, string stdout, string stderr,
+        int processId, int exitCode, string stdout, string stderr,
         SandboxExecutionRequest request, TimeSpan elapsed, string? egressDigest, CancellationToken ct)
     {
         _logger.LogWarning("Process exited with code {ExitCode}: {Stderr}", exitCode, stderr);
@@ -296,12 +304,12 @@ public sealed class ProcessSandboxExecutor : ISandboxExecutor
             ErrorMessage = stderr,
             ExitCode = exitCode,
             Attestation = attestation,
-            ResourceUsage = BuildUsage(elapsed)
+            ResourceUsage = BuildUsage(processId, elapsed)
         };
     }
 
     private async Task<SandboxExecutionResult> BuildSuccessResultAsync(
-        string stdout, SandboxExecutionRequest request,
+        int processId, string stdout, SandboxExecutionRequest request,
         TimeSpan elapsed, string? egressDigest, CancellationToken ct)
     {
         var attestation = await SignSuccessAsync(
@@ -313,13 +321,13 @@ public sealed class ProcessSandboxExecutor : ISandboxExecutor
             Output = stdout,
             ExitCode = 0,
             Attestation = attestation,
-            ResourceUsage = BuildUsage(elapsed)
+            ResourceUsage = BuildUsage(processId, elapsed)
         };
     }
 
-    private ResourceUsage BuildUsage(TimeSpan elapsed)
+    private ResourceUsage BuildUsage(int processId, TimeSpan elapsed)
     {
-        var limiterUsage = _resourceLimiter.GetUsage();
+        var limiterUsage = _resourceLimiter.GetUsage(processId);
         if (limiterUsage is not null)
             return limiterUsage with { WallClockDuration = elapsed };
 

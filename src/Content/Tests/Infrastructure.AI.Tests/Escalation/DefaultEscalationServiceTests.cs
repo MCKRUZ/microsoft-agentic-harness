@@ -119,6 +119,32 @@ public sealed class DefaultEscalationServiceTests : IDisposable
 					});
 	}
 
+	/// <summary>
+	/// Polls until the escalation is registered in the service, or fails fast on timeout.
+	/// </summary>
+	/// <remarks>
+	/// <see cref="DefaultEscalationService.RequestEscalationAsync"/> registers the escalation
+	/// synchronously before it begins awaiting the outcome, exposing it via
+	/// <see cref="DefaultEscalationService.GetPendingEscalationAsync"/>. A bare
+	/// <c>Task.Delay</c> can lose the race under thread-pool starvation, after which
+	/// <c>SubmitDecisionAsync</c> silently drops the decision and the test stalls for the
+	/// full request timeout. Polling the registration signal removes that race and fails in
+	/// seconds (not minutes) if registration genuinely never happens.
+	/// </remarks>
+	private async Task WaitForRegistrationAsync(Guid escalationId)
+	{
+		using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+		while (true)
+		{
+			var pending = await _sut.GetPendingEscalationAsync(escalationId, CancellationToken.None);
+			if (pending is not null)
+				return;
+
+			cts.Token.ThrowIfCancellationRequested();
+			await Task.Delay(10, cts.Token);
+		}
+	}
+
 	private void SetupStrategyNeverResolves(ApprovalStrategyType strategyType)
 	{
 		var mock = strategyType == ApprovalStrategyType.AllOf ? _allOfStrategy : _anyOfStrategy;
@@ -142,7 +168,7 @@ public sealed class DefaultEscalationServiceTests : IDisposable
 		SetupStrategyResolvesOnFirstApproval();
 
 		var task = Task.Run(() => _sut.RequestEscalationAsync(request, CancellationToken.None));
-		await Task.Delay(50);
+		await WaitForRegistrationAsync(request.EscalationId);
 
 		await _sut.SubmitDecisionAsync(request.EscalationId, CreateApproval(), CancellationToken.None);
 		var outcome = await task;
@@ -178,13 +204,41 @@ public sealed class DefaultEscalationServiceTests : IDisposable
 		SetupStrategyResolvesOnFirstApproval();
 
 		var task = Task.Run(() => _sut.RequestEscalationAsync(request, CancellationToken.None));
-		await Task.Delay(50);
+		await WaitForRegistrationAsync(request.EscalationId);
 
 		await _sut.SubmitDecisionAsync(request.EscalationId, CreateApproval(), CancellationToken.None);
 		await task;
 
 		_auditStore.Verify(
 			a => a.RecordRequestAsync(request, It.IsAny<CancellationToken>()),
+			Times.Once);
+	}
+
+	[Fact]
+	public async Task RequestEscalationAsync_AfterRegistrationSignal_DecisionIsRecordedNotDropped()
+	{
+		// Regression: the prior `Task.Delay(50)` could lose the registration race under
+		// thread-pool starvation, causing SubmitDecisionAsync to silently drop the decision
+		// (DefaultEscalationService.cs:88-92) and the request to resolve only via timeout.
+		// Waiting on the registration signal guarantees the escalation is in-flight before
+		// submitting, so the decision is recorded and resolves the escalation.
+		var request = CreateTestRequest();
+		SetupStrategyResolvesOnFirstApproval();
+
+		var task = Task.Run(() => _sut.RequestEscalationAsync(request, CancellationToken.None));
+		await WaitForRegistrationAsync(request.EscalationId);
+
+		var submitOutcome = await _sut.SubmitDecisionAsync(
+			request.EscalationId, CreateApproval(), CancellationToken.None);
+		var outcome = await task;
+
+		submitOutcome.Should().NotBeNull(
+			"the decision must hit a registered escalation, not be dropped as unknown");
+		outcome.ResolutionType.Should().Be(EscalationResolutionType.Approved,
+			"the escalation must resolve from the submitted approval, not from a timeout");
+		_auditStore.Verify(
+			a => a.RecordDecisionAsync(
+				request.EscalationId, It.IsAny<ApproverDecision>(), It.IsAny<CancellationToken>()),
 			Times.Once);
 	}
 

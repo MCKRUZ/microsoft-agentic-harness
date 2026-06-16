@@ -163,8 +163,20 @@ export function ChatPanel() {
 
   const handleEdit = (userMessageId: string, newContent: string): void => {
     if (!activeConversationId) return;
+    // The server truncates the old user message and persists the edited one under this id; the
+    // client originates the id so its optimistic re-insertion matches the stored record (and any
+    // later retry/edit keyed by it). Stage the replacement so the HistoryTruncated handler
+    // re-inserts it after truncation instead of leaving the transcript missing the edit.
+    const newUserMessageId = crypto.randomUUID();
+    useChatStore.getState().setPendingEditMessage({
+      id: newUserMessageId,
+      role: 'user',
+      content: newContent,
+      timestamp: new Date(),
+    });
     useChatStore.getState().startStreaming();
-    void editAndResubmit(activeConversationId, userMessageId, newContent).catch((err: unknown) => {
+    void editAndResubmit(activeConversationId, userMessageId, newUserMessageId, newContent).catch((err: unknown) => {
+      useChatStore.getState().setPendingEditMessage(null);
       useChatStore.getState().setError(err instanceof Error ? err.message : 'Edit failed');
     });
   };

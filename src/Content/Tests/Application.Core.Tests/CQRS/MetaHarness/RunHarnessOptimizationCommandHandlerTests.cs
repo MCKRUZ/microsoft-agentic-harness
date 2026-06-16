@@ -543,19 +543,18 @@ public sealed class RunHarnessOptimizationCommandHandlerTests : IDisposable
         CreateEvalTaskFile();
         SetupSeedCandidate(runId);
 
+        // The handler now snapshots the gate-validated currentBestCandidate produced by the loop —
+        // not the repository's ungated GetBestAsync pick (which could be a gate-failing regression).
+        // Drive a gate-passing candidate (score 0.9; the fixture's regression gate passes) whose
+        // snapshot carries the expected SKILL.md content.
         var skillContent = "# Best SKILL.md content";
-        var bestCandidate = BuildCandidate(runId, 1, HarnessCandidateStatus.Evaluated, 0.9, 100);
-        bestCandidate = bestCandidate with
-        {
-            Snapshot = BuildSnapshot(skillContent),
-        };
-
-        _repository
-            .Setup(x => x.GetBestAsync(runId, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(bestCandidate);
+        _snapshotBuilder
+            .Setup(x => x.BuildAsync(It.IsAny<string>(), It.IsAny<string>(),
+                It.IsAny<IReadOnlyDictionary<string, string>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(BuildSnapshot(skillContent));
         _repository
             .Setup(x => x.ListAsync(runId, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new[] { bestCandidate });
+            .ReturnsAsync(Array.Empty<HarnessCandidate>());
 
         _proposer
             .Setup(x => x.ProposeAsync(It.IsAny<HarnessProposerContext>(), It.IsAny<CancellationToken>()))

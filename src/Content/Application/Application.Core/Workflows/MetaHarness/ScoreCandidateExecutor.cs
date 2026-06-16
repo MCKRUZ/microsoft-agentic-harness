@@ -26,11 +26,15 @@ public sealed class ScoreCandidateExecutor(
         IWorkflowContext context,
         CancellationToken cancellationToken = default)
     {
-        await candidateRepository.SaveAsync(message.Candidate, cancellationToken);
-
+        // Fetch the prior best BEFORE persisting this candidate. Saving first would
+        // include the just-evaluated candidate in GetBestAsync's pool, so the
+        // improvement comparison below would always measure the candidate against
+        // itself and never report an improvement.
         var currentBest = await candidateRepository.GetBestAsync(
             message.Candidate.OptimizationRunId,
             cancellationToken);
+
+        await candidateRepository.SaveAsync(message.Candidate, cancellationToken);
 
         var score = message.Candidate.BestScore ?? 0.0;
         var bestScore = currentBest?.BestScore ?? 0.0;

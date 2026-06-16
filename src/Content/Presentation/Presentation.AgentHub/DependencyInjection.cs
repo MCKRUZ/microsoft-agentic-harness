@@ -89,6 +89,12 @@ public static class DependencyInjection
             // handlers such as OnTokenValidated and OnAuthenticationFailed.
             services.PostConfigure<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme, options =>
             {
+                // Project security standard (rules/security.md) mandates ClockSkew=Zero so an
+                // expired token is rejected at `exp` rather than the framework default 5-minute
+                // grace window. Microsoft.Identity.Web validates issuer/audience/lifetime/signing
+                // key by default but leaves ClockSkew at its 5-minute default — override it here.
+                options.TokenValidationParameters.ClockSkew = TimeSpan.Zero;
+
                 options.Events ??= new JwtBearerEvents();
                 var existingOnMessageReceived = options.Events.OnMessageReceived;
                 options.Events.OnMessageReceived = async context =>
@@ -109,6 +115,7 @@ public static class DependencyInjection
         services.AddAuthorization();
 
         services.AddSingleton<KnowledgeScopeHubFilter>();
+        services.AddSingleton<HubRateLimitFilter>();
         services.AddSignalR(options =>
             {
                 if (environment.IsDevelopment())
@@ -120,6 +127,12 @@ public static class DependencyInjection
                 // Establish per-invocation knowledge scope (user/tenant) from the authenticated
                 // caller — the SignalR-transport equivalent of KnowledgeScopeMiddleware.
                 options.AddFilter<KnowledgeScopeHubFilter>();
+
+                // Throttle the expensive agent-turn hub methods per caller. ASP.NET Core's
+                // UseRateLimiter middleware is HTTP-request-scoped and cannot partition individual
+                // SignalR hub-method invocations (they arrive over an already-established WebSocket),
+                // so a hub filter is the only mechanism that actually throttles per-invocation.
+                options.AddFilter<HubRateLimitFilter>();
             })
             .AddJsonProtocol(options =>
             {
@@ -149,16 +162,10 @@ public static class DependencyInjection
                 return RateLimitPartition.GetNoLimiter("none");
             });
 
-            // Token bucket for SignalR hub send messages — applied in section-04
-            // via [EnableRateLimiting("HubSendMessage")] on the hub method.
-            options.AddTokenBucketLimiter("HubSendMessage", o =>
-            {
-                o.TokenLimit = 10;
-                o.ReplenishmentPeriod = TimeSpan.FromMinutes(1);
-                o.TokensPerPeriod = 10;
-                o.AutoReplenishment = true;
-            });
-
+            // NOTE: SignalR agent-turn methods (SendMessage / RetryFromMessage / EditAndResubmit /
+            // InvokeToolViaAgent) are NOT throttled here. UseRateLimiter is HTTP-request-scoped and
+            // does not partition hub-method invocations over an established WebSocket. Per-invocation
+            // throttling lives in HubRateLimitFilter, added to the SignalR filter chain above.
             options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
         });
 

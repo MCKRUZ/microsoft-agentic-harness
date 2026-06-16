@@ -9,6 +9,30 @@ on:
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
+
+    # Provision Postgres so the Infrastructure.Observability integration tests actually
+    # execute instead of skipping. The credentials and database name match the fixture's
+    # DefaultConnectionString (Database/Username/Password = "observability"). Setting
+    # OBSERVABILITY_TEST_CONN below also flips the fixture into "explicitly configured"
+    # mode, so any connectivity failure surfaces as a hard error rather than a silent skip.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: observability
+          POSTGRES_USER: observability
+          POSTGRES_PASSWORD: observability
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U observability -d observability"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      OBSERVABILITY_TEST_CONN: "Host=localhost;Port=5432;Database=observability;Username=observability;Password=observability"
+
     steps:
       - uses: actions/checkout@v4
 
@@ -16,6 +40,18 @@ jobs:
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.x'
+
+      # The schema scripts are normally applied by docker-entrypoint-initdb.d, which is
+      # unavailable to GitHub Actions service containers. Apply them in lexical order via
+      # psql once the service is healthy so the observability tables exist before tests run.
+      - name: Apply observability schema
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+          for f in Dashboards/init-db/*.sql; do
+            echo "Applying $f"
+            PGPASSWORD=observability psql -h localhost -p 5432 -U observability -d observability -v ON_ERROR_STOP=1 -f "$f"
+          done
 
       - name: Restore
         run: dotnet restore src/AgenticHarness.slnx

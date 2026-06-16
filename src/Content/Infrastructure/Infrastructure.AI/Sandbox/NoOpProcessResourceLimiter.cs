@@ -33,7 +33,10 @@ public sealed class NoOpProcessResourceLimiter : IProcessResourceLimiter
     }
 
     /// <inheritdoc />
-    public ResourceUsage? GetUsage() => null;
+    public ResourceUsage? GetUsage(int processId) => null;
+
+    /// <inheritdoc />
+    public void Release(int processId) { }
 
     /// <inheritdoc />
     public void Dispose() { }

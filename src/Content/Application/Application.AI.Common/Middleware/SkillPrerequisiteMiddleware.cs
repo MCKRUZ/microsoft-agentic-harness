@@ -79,10 +79,25 @@ public sealed class SkillPrerequisiteMiddleware : DelegatingChatClient
     {
         options = FilterBlockedTools(options);
 
+        var invokedTools = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
         await foreach (var chunk in base.GetStreamingResponseAsync(messages, options, cancellationToken))
         {
+            foreach (var name in chunk.Contents
+                         .OfType<FunctionCallContent>()
+                         .Select(fc => fc.Name)
+                         .Where(name => !string.IsNullOrEmpty(name)))
+            {
+                invokedTools.Add(name);
+            }
+
             yield return chunk;
         }
+
+        // The streaming override must keep the same completion-detection semantics as the
+        // non-streaming path; otherwise a skill's CompletionTool invoked while streaming would
+        // never unlock its dependent skills for the life of the conversation.
+        MarkCompletedSkills(invokedTools);
     }
 
     private ChatOptions? FilterBlockedTools(ChatOptions? options)
@@ -146,6 +161,11 @@ public sealed class SkillPrerequisiteMiddleware : DelegatingChatClient
             .Where(name => !string.IsNullOrEmpty(name))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
+        MarkCompletedSkills(toolCalls);
+    }
+
+    private void MarkCompletedSkills(HashSet<string> toolCalls)
+    {
         if (toolCalls.Count == 0)
             return;
 

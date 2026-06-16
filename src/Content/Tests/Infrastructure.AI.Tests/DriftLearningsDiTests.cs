@@ -204,6 +204,10 @@ public sealed class DriftLearningsDiTests
         services.AddSingleton(NullLoggerFactory.Instance);
         services.AddSingleton(typeof(ILogger<>), typeof(NullLogger<>));
         services.AddSingleton<IOptionsMonitor<AppConfig>>(new OptionsMonitorStub(appConfig));
+        // Plugin loader (registered by AddInfrastructureAIDependencies) reads the AppConfig:AI
+        // section as IOptionsMonitor<AIConfig>; mirror the real composition root so enumerating
+        // IHostedService can construct PluginStartupLoader.
+        services.AddSingleton<IOptionsMonitor<AIConfig>>(new AIConfigMonitorStub(appConfig.AI));
         services.AddSingleton<IOptionsMonitor<LearningsConfig>>(
             new LearningsConfigMonitorStub(appConfig.AI.Learnings));
         services.AddSingleton<ISender>(new Mock<ISender>().Object);
@@ -229,5 +233,12 @@ public sealed class DriftLearningsDiTests
         public LearningsConfig CurrentValue => config;
         public LearningsConfig Get(string? name) => config;
         public IDisposable? OnChange(Action<LearningsConfig, string?> listener) => null;
+    }
+
+    private sealed class AIConfigMonitorStub(AIConfig config) : IOptionsMonitor<AIConfig>
+    {
+        public AIConfig CurrentValue => config;
+        public AIConfig Get(string? name) => config;
+        public IDisposable? OnChange(Action<AIConfig, string?> listener) => null;
     }
 }

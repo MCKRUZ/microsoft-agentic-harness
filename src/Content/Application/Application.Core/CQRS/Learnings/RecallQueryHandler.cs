@@ -6,6 +6,7 @@ using Domain.AI.Learnings;
 using Domain.Common;
 using Domain.Common.Config;
 using MediatR;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -25,7 +26,7 @@ public sealed class RecallQueryHandler : IRequestHandler<RecallQuery, Result<IRe
     private readonly ILearningsStore _store;
     private readonly ILearningDecayService _decayService;
     private readonly IEmbeddingService _embeddingService;
-    private readonly IMediator _mediator;
+    private readonly IServiceScopeFactory _scopeFactory;
     private readonly IOptionsMonitor<AppConfig> _options;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<RecallQueryHandler> _logger;
@@ -35,7 +36,7 @@ public sealed class RecallQueryHandler : IRequestHandler<RecallQuery, Result<IRe
         ILearningsStore store,
         ILearningDecayService decayService,
         IEmbeddingService embeddingService,
-        IMediator mediator,
+        IServiceScopeFactory scopeFactory,
         IOptionsMonitor<AppConfig> options,
         TimeProvider timeProvider,
         ILogger<RecallQueryHandler> logger)
@@ -43,7 +44,7 @@ public sealed class RecallQueryHandler : IRequestHandler<RecallQuery, Result<IRe
         _store = store;
         _decayService = decayService;
         _embeddingService = embeddingService;
-        _mediator = mediator;
+        _scopeFactory = scopeFactory;
         _options = options;
         _timeProvider = timeProvider;
         _logger = logger;
@@ -116,11 +117,24 @@ public sealed class RecallQueryHandler : IRequestHandler<RecallQuery, Result<IRe
         return Result<IReadOnlyList<WeightedLearning>>.Success(results);
     }
 
+    /// <summary>
+    /// Records access reinforcement for recalled learnings on a fresh DI scope.
+    /// </summary>
+    /// <remarks>
+    /// This runs fire-and-forget after the query returns, so it must not depend on the
+    /// request scope (which is disposed once the outer request completes). A dedicated
+    /// scope is created via <see cref="IServiceScopeFactory"/> and a fresh
+    /// <see cref="IMediator"/> resolved from it, so the dispatch survives request-scope
+    /// disposal in short-lived hosts (console one-shots, per-request API scopes).
+    /// Failures are swallowed at debug level — access reinforcement is best-effort.
+    /// </remarks>
     private async Task RecordAccessSafeAsync(List<WeightedLearning> results)
     {
         try
         {
-            await _mediator.Send(new RecordLearningAccessCommand
+            await using var scope = _scopeFactory.CreateAsyncScope();
+            var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
+            await mediator.Send(new RecordLearningAccessCommand
             {
                 LearningIds = results.Select(r => r.Learning.LearningId).ToList(),
                 AccessedAt = _timeProvider.GetUtcNow()

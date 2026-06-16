@@ -4,6 +4,7 @@ using Application.AI.Common.Evaluation.Metrics.Owasp;
 using Application.AI.Common.Extensions;
 using Application.AI.Common.Factories;
 using Application.AI.Common.Interfaces;
+using Application.AI.Common.Interfaces.AI;
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Context;
 using Application.AI.Common.Interfaces.Sandbox;
@@ -90,6 +91,10 @@ public static class DependencyInjection
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(ToolPermissionBehavior<,>))
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(GovernancePolicyBehavior<,>))
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(PromptInjectionBehavior<,>))
+            // Pre-flight token budget gate: short-circuits IConsumesTokens requests whose
+            // estimate exceeds the remaining scoped budget, then records actual usage post-turn.
+            // Placed after request-screening behaviors and before the LLM-invoking handler.
+            .AddTransient(typeof(IPipelineBehavior<,>), typeof(TokenBudgetBehavior<,>))
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(HookBehavior<,>))
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(RetrievalAuditBehavior<,>))
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(ResponseSanitizationBehavior<,>))
@@ -126,6 +131,11 @@ public static class DependencyInjection
 
         // LLM usage capture — scoped so middleware and handler share the same instance per turn
         services.AddScoped<ILlmUsageCapture, Services.LlmUsageCapture>();
+
+        // Per-turn token budget tracker — scoped so each request gets a fresh budget seeded
+        // from AppConfig.AI.AgentFramework.DefaultTokenBudget. Consulted by TokenBudgetBehavior
+        // for the pre-flight CanAfford check and the post-turn RecordUsage decrement.
+        services.AddScoped<ITokenBudgetTracker, Services.AI.TokenBudgetTracker>();
 
         // Per-conversation tracker of registrations (system prompt, skills, tools, MCP,
         // sub-agents) already emitted. Drives the per-turn context snapshot deltas so

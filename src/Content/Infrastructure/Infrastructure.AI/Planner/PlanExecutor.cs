@@ -23,7 +23,8 @@ public sealed partial class PlanExecutor : IPlanExecutor
     private static readonly Counter<long> StepExecutionsCounter = Meter.CreateCounter<long>("planner.step.executions");
     private static readonly Histogram<double> StepDurationHistogram = Meter.CreateHistogram<double>("planner.step.duration", "ms");
 
-    private static readonly ConcurrentDictionary<PlanId, SemaphoreSlim> PlanLocks = new();
+    private static readonly Dictionary<PlanId, RefCountedLock> PlanLocks = new();
+    private static readonly object PlanLocksGate = new();
 
     private readonly IPlanValidator _validator;
     private readonly IPlanStateStore _stateStore;
@@ -56,17 +57,24 @@ public sealed partial class PlanExecutor : IPlanExecutor
         if (context.Depth >= context.MaxDepth)
             return Result<PlanExecutionSummary>.Fail($"Maximum sub-plan depth {context.MaxDepth} exceeded at depth {context.Depth}.");
 
-        var planLock = PlanLocks.GetOrAdd(planId, _ => new SemaphoreSlim(1, 1));
-        await planLock.WaitAsync(ct);
+        var planLock = AcquirePlanLockHandle(planId);
+        try
+        {
+            await planLock.Semaphore.WaitAsync(ct);
+        }
+        catch
+        {
+            ReleasePlanLockHandle(planId, planLock);
+            throw;
+        }
+
         try
         {
             return await ExecuteCoreAsync(planId, context, ct);
         }
         finally
         {
-            planLock.Release();
-            if (planLock.CurrentCount == 1 && PlanLocks.TryRemove(planId, out var removed))
-                removed.Dispose();
+            ReleasePlanLock(planId, planLock);
         }
     }
 
@@ -74,8 +82,17 @@ public sealed partial class PlanExecutor : IPlanExecutor
     {
         _logger.LogInformation("Plan {PlanId} cancellation requested", planId);
 
-        var planLock = PlanLocks.GetOrAdd(planId, _ => new SemaphoreSlim(1, 1));
-        await planLock.WaitAsync(ct);
+        var planLock = AcquirePlanLockHandle(planId);
+        try
+        {
+            await planLock.Semaphore.WaitAsync(ct);
+        }
+        catch
+        {
+            ReleasePlanLockHandle(planId, planLock);
+            throw;
+        }
+
         try
         {
             var loadResult = await _stateStore.LoadStepStatesAsync(planId, ct);
@@ -119,9 +136,7 @@ public sealed partial class PlanExecutor : IPlanExecutor
         }
         finally
         {
-            planLock.Release();
-            if (planLock.CurrentCount == 1 && PlanLocks.TryRemove(planId, out var removed))
-                removed.Dispose();
+            ReleasePlanLock(planId, planLock);
         }
     }
 
@@ -129,8 +144,17 @@ public sealed partial class PlanExecutor : IPlanExecutor
     {
         _logger.LogInformation("Retry requested for step {StepId} in plan {PlanId}", stepId, planId);
 
-        var planLock = PlanLocks.GetOrAdd(planId, _ => new SemaphoreSlim(1, 1));
-        await planLock.WaitAsync(ct);
+        var planLock = AcquirePlanLockHandle(planId);
+        try
+        {
+            await planLock.Semaphore.WaitAsync(ct);
+        }
+        catch
+        {
+            ReleasePlanLockHandle(planId, planLock);
+            throw;
+        }
+
         try
         {
             var loadResult = await _stateStore.LoadStepStatesAsync(planId, ct);
@@ -170,10 +194,80 @@ public sealed partial class PlanExecutor : IPlanExecutor
         }
         finally
         {
-            planLock.Release();
-            if (planLock.CurrentCount == 1 && PlanLocks.TryRemove(planId, out var removed))
-                removed.Dispose();
+            ReleasePlanLock(planId, planLock);
         }
+    }
+
+    /// <summary>
+    /// Atomically obtains (or creates) the per-plan lock holder and registers this caller as a
+    /// holder by incrementing its reference count under <see cref="PlanLocksGate"/>. The returned
+    /// holder is guaranteed not to be disposed until the matching <see cref="ReleasePlanLock"/>
+    /// runs, which closes the check-remove-dispose TOCTOU window that a bare
+    /// <c>ConcurrentDictionary.GetOrAdd</c> + <c>SemaphoreSlim.Dispose</c> pattern exposes.
+    /// </summary>
+    private static RefCountedLock AcquirePlanLockHandle(PlanId planId)
+    {
+        lock (PlanLocksGate)
+        {
+            if (!PlanLocks.TryGetValue(planId, out var holder))
+            {
+                holder = new RefCountedLock();
+                PlanLocks[planId] = holder;
+            }
+
+            holder.RefCount++;
+            return holder;
+        }
+    }
+
+    /// <summary>
+    /// Releases the per-plan semaphore and decrements the holder's reference count under
+    /// <see cref="PlanLocksGate"/>. The holder is removed from the dictionary and disposed only
+    /// when the last holder releases it, so a concurrent <see cref="AcquirePlanLockHandle"/> can
+    /// never observe a half-disposed semaphore.
+    /// </summary>
+    private static void ReleasePlanLock(PlanId planId, RefCountedLock planLock)
+    {
+        planLock.Semaphore.Release();
+        ReleasePlanLockHandle(planId, planLock);
+    }
+
+    /// <summary>
+    /// Drops this caller's reference to the holder without releasing the semaphore. Used on the
+    /// acquisition-failure path (e.g. <see cref="SemaphoreSlim.WaitAsync(CancellationToken)"/>
+    /// cancelled before the lock was taken) so the reference count is not leaked, which would
+    /// otherwise permanently pin the dictionary entry and prevent disposal.
+    /// </summary>
+    private static void ReleasePlanLockHandle(PlanId planId, RefCountedLock planLock)
+    {
+        lock (PlanLocksGate)
+        {
+            planLock.RefCount--;
+            if (planLock.RefCount == 0)
+            {
+                PlanLocks.Remove(planId);
+                planLock.Semaphore.Dispose();
+            }
+        }
+    }
+
+    /// <summary>
+    /// A reference-counted wrapper around the per-plan <see cref="SemaphoreSlim"/>. The reference
+    /// count tracks how many callers currently hold or are waiting on the semaphore; the semaphore
+    /// is disposed exactly once, when the count returns to zero. All mutation of
+    /// <see cref="RefCount"/> and the owning dictionary happens under <see cref="PlanLocksGate"/>,
+    /// so lifetime transitions are atomic with acquisition.
+    /// </summary>
+    private sealed class RefCountedLock
+    {
+        /// <summary>The binary semaphore providing per-plan mutual exclusion.</summary>
+        public SemaphoreSlim Semaphore { get; } = new(1, 1);
+
+        /// <summary>
+        /// Number of callers that have acquired this holder and not yet released it. Guarded by
+        /// <see cref="PlanLocksGate"/>; never mutated outside the lock.
+        /// </summary>
+        public int RefCount { get; set; }
     }
 
     private async Task<Result<PlanExecutionSummary>> ExecuteCoreAsync(PlanId planId, PlanExecutionContext context, CancellationToken ct)

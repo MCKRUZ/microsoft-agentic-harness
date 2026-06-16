@@ -13,10 +13,10 @@ public sealed class SessionsDashboardTests
         _fixture = fixture;
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task SessionCount_WithSeededSession_ReturnsNonZero()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         var builder = new TestDataBuilder(_fixture);
         await builder.CreateSessionAsync();
@@ -34,10 +34,10 @@ public sealed class SessionsDashboardTests
         Assert.True(count >= 1);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task AvgDuration_WithEndedSession_ReturnsNonZero()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         var builder = new TestDataBuilder(_fixture);
         await builder.CreateSessionAsync(status: "completed");
@@ -55,10 +55,10 @@ public sealed class SessionsDashboardTests
         Assert.True(avg >= 0);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task AvgCost_WithSeededSession_ReturnsNonZero()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         var builder = new TestDataBuilder(_fixture);
         await builder.CreateSessionAsync(costUsd: 0.25m);
@@ -76,10 +76,10 @@ public sealed class SessionsDashboardTests
         Assert.True(avg > 0m);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task TotalToolCalls_WithSeededSession_ReturnsNonZero()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         var builder = new TestDataBuilder(_fixture);
         await builder.CreateSessionAsync(toolCallCount: 5);
@@ -97,10 +97,10 @@ public sealed class SessionsDashboardTests
         Assert.True(total >= 5);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task SessionList_WithSeededSession_ContainsConversationId()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         var builder = new TestDataBuilder(_fixture);
         var session = await builder.CreateSessionAsync();
@@ -118,10 +118,10 @@ public sealed class SessionsDashboardTests
         Assert.Contains(rows, r => (string?)r["conversation_id"] == session.ConversationId);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task AgentNameVariable_ReturnsDistinctAgents()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         var builder = new TestDataBuilder(_fixture);
         await builder.CreateSessionAsync(agentName: "SessionsDashboardAgent");

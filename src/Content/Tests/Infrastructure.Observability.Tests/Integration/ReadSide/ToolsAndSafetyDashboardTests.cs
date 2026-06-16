@@ -35,10 +35,10 @@ public sealed class ToolsAndSafetyDashboardTests
         return session;
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task TotalToolCalls_ReturnsThree()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         await SeedToolsAndSafetyDataAsync();
 
@@ -54,10 +54,10 @@ public sealed class ToolsAndSafetyDashboardTests
         Assert.True(count >= 3);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task ErrorRate_ReturnsAbout33Percent()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         await SeedToolsAndSafetyDataAsync();
 
@@ -73,10 +73,10 @@ public sealed class ToolsAndSafetyDashboardTests
         Assert.True(rate > 0m);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task AvgDuration_ReturnsNonZero()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         await SeedToolsAndSafetyDataAsync();
 
@@ -92,10 +92,10 @@ public sealed class ToolsAndSafetyDashboardTests
         Assert.True(avg > 0);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task UniqueTools_ReturnsTwo()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         await SeedToolsAndSafetyDataAsync();
 
@@ -110,10 +110,10 @@ public sealed class ToolsAndSafetyDashboardTests
         Assert.True(count >= 2);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task VolumeOverTime_ReturnsAtLeastOneBucket()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         await SeedToolsAndSafetyDataAsync();
 
@@ -128,10 +128,10 @@ public sealed class ToolsAndSafetyDashboardTests
         Assert.True(rows.Count >= 1);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task PerformanceTable_ReturnsGroupedByTool()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         await SeedToolsAndSafetyDataAsync();
 
@@ -149,10 +149,10 @@ public sealed class ToolsAndSafetyDashboardTests
         Assert.Contains("search", tools);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task StatusDistribution_ReturnsSuccessAndFailure()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         await SeedToolsAndSafetyDataAsync();
 
@@ -169,10 +169,10 @@ public sealed class ToolsAndSafetyDashboardTests
         Assert.Contains("failure", statuses);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task SourceBreakdown_ReturnsKeyedDiAndMcp()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         await SeedToolsAndSafetyDataAsync();
 
@@ -189,10 +189,10 @@ public sealed class ToolsAndSafetyDashboardTests
         Assert.Contains("mcp", sources);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task RecentErrors_ContainsFailedTool()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         await SeedToolsAndSafetyDataAsync();
 
@@ -209,10 +209,10 @@ public sealed class ToolsAndSafetyDashboardTests
                                  && (string?)r["error_type"] == "timeout");
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task ErrorRateByTool_ReturnsSearchOnly()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         await SeedToolsAndSafetyDataAsync();
 
@@ -227,10 +227,10 @@ public sealed class ToolsAndSafetyDashboardTests
         Assert.Contains(rows, r => (string?)r["tool_name"] == "search");
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task TotalSafetyEvents_ReturnsThree()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         await SeedToolsAndSafetyDataAsync();
 
@@ -245,10 +245,10 @@ public sealed class ToolsAndSafetyDashboardTests
         Assert.True(count >= 3);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task BlockRate_ReturnsAbout33Percent()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         await SeedToolsAndSafetyDataAsync();
 
@@ -263,10 +263,10 @@ public sealed class ToolsAndSafetyDashboardTests
         Assert.True(rate > 0m);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task OutcomeDistribution_ReturnsAllThreeOutcomes()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         await SeedToolsAndSafetyDataAsync();
 
@@ -284,10 +284,10 @@ public sealed class ToolsAndSafetyDashboardTests
         Assert.Contains("redact", outcomes);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task BlocksByCategory_ReturnsHateCategory()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         await SeedToolsAndSafetyDataAsync();
 
@@ -302,10 +302,10 @@ public sealed class ToolsAndSafetyDashboardTests
         Assert.Contains(rows, r => (string?)r["category"] == "hate");
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task RecentBlocks_ContainsNonPassEvents()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         await SeedToolsAndSafetyDataAsync();
 
@@ -321,10 +321,10 @@ public sealed class ToolsAndSafetyDashboardTests
         Assert.True(rows.All(r => (string?)r["outcome"] != "pass"));
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task VarToolName_ReturnsDistinctTools()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         await SeedToolsAndSafetyDataAsync();
 

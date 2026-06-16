@@ -2,8 +2,12 @@ using Application.AI.Common.Exceptions;
 using Application.AI.Common.Interfaces.AI;
 using Application.AI.Common.Interfaces.MediatR;
 using Application.AI.Common.MediatRBehaviors;
+using Application.AI.Common.Services.AI;
+using Domain.Common.Config;
+using Domain.Common.Config.AI;
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Moq;
 using Xunit;
 
@@ -142,6 +146,90 @@ public sealed class TokenBudgetBehaviorTests
     }
 
     // -------------------------------------------------------------------------
+    // Live tracker arithmetic — the real TokenBudgetTracker seeded from config
+    // -------------------------------------------------------------------------
+
+    [Fact]
+    public void Tracker_SeededFromConfig_ExposesTotalAndRemaining()
+    {
+        var tracker = BuildTracker(5_000);
+
+        tracker.TotalBudget.Should().Be(5_000);
+        tracker.RemainingBudget.Should().Be(5_000);
+    }
+
+    [Fact]
+    public void RecordUsage_DecrementsRemainingBudget_ByTokensUsed()
+    {
+        var tracker = BuildTracker(5_000);
+
+        tracker.RecordUsage(1_200);
+
+        tracker.RemainingBudget.Should().Be(3_800);
+    }
+
+    [Fact]
+    public void CanAfford_EstimateExceedsRemaining_ReturnsFalse()
+    {
+        var tracker = BuildTracker(1_000);
+        tracker.RecordUsage(800);
+
+        tracker.CanAfford(500).Should().BeFalse();
+        tracker.CanAfford(200).Should().BeTrue();
+    }
+
+    [Fact]
+    public void RecordUsage_OverDraws_ClampsRemainingAtZero()
+    {
+        var tracker = BuildTracker(1_000);
+
+        tracker.RecordUsage(5_000);
+
+        tracker.RemainingBudget.Should().Be(0);
+    }
+
+    // -------------------------------------------------------------------------
+    // Live path: behavior + real tracker. Estimate gate rejects; actual usage
+    // recorded post-turn from the IAgentTurnResult response.
+    // -------------------------------------------------------------------------
+
+    [Fact]
+    public async Task Handle_RealTracker_EstimateExceedsBudget_ShortCircuitsWithoutSpending()
+    {
+        var tracker = BuildTracker(100);
+        var sut = new TokenBudgetBehavior<TokenRequest, AgentResult>(
+            tracker, NullLogger<TokenBudgetBehavior<TokenRequest, AgentResult>>.Instance);
+        var handlerCalled = false;
+
+        var act = () => sut.Handle(
+            new TokenRequest(5_000),
+            () => { handlerCalled = true; return Task.FromResult(new AgentResult()); },
+            CancellationToken.None);
+
+        await act.Should().ThrowAsync<TokenBudgetExceededException>();
+        handlerCalled.Should().BeFalse();
+        tracker.RemainingBudget.Should().Be(100);
+    }
+
+    [Fact]
+    public async Task Handle_RealTracker_SuccessfulTurn_DecrementsByActualTokens()
+    {
+        var tracker = BuildTracker(10_000);
+        var sut = new TokenBudgetBehavior<TokenRequest, AgentResult>(
+            tracker, NullLogger<TokenBudgetBehavior<TokenRequest, AgentResult>>.Instance);
+        var result = new AgentResult { InputTokens = 300, OutputTokens = 1_200 };
+
+        var response = await sut.Handle(
+            new TokenRequest(500),
+            () => Task.FromResult(result),
+            CancellationToken.None);
+
+        response.Should().BeSameAs(result);
+        // Budget reflects actual usage (1,500), not the pre-flight estimate (500).
+        tracker.RemainingBudget.Should().Be(8_500);
+    }
+
+    // -------------------------------------------------------------------------
     // Helpers & test doubles
     // -------------------------------------------------------------------------
 
@@ -149,7 +237,23 @@ public sealed class TokenBudgetBehaviorTests
         where TRequest : notnull =>
         new(_tracker.Object, NullLogger<TokenBudgetBehavior<TRequest, TResponse>>.Instance);
 
+    private static TokenBudgetTracker BuildTracker(int defaultTokenBudget)
+    {
+        var cfg = new AppConfig();
+        cfg.AI.AgentFramework = new AgentFrameworkConfig { DefaultTokenBudget = defaultTokenBudget };
+        var monitor = Mock.Of<IOptionsMonitor<AppConfig>>(m => m.CurrentValue == cfg);
+        return new TokenBudgetTracker(monitor, NullLogger<TokenBudgetTracker>.Instance);
+    }
+
     private sealed record NonTokenRequest;
 
     private sealed record TokenRequest(int EstimatedTokenCost) : IConsumesTokens;
+
+    private sealed record AgentResult : IAgentTurnResult
+    {
+        public bool Success { get; init; } = true;
+        public string Response { get; init; } = string.Empty;
+        public int InputTokens { get; init; }
+        public int OutputTokens { get; init; }
+    }
 }

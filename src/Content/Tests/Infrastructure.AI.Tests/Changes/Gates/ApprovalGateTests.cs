@@ -61,7 +61,11 @@ public sealed class ApprovalGateTests
         var result = await sut.EvaluateAsync(TestProposals.NewProposal(), Ctx(), CancellationToken.None);
 
         result.Action.Should().Be(GateAction.Fail);
-        result.Reason.Should().Contain("escalation service down");
+        // The router's exception message ("escalation service down") must NOT reach
+        // the persisted Reason — only the scrubbed code + exception type survive.
+        result.Reason.Should().NotContain("escalation service down");
+        result.Reason.Should().Be(
+            $"{ApprovalGate.RoutingFailedReasonCode}: {nameof(InvalidOperationException)}");
     }
 
     [Fact]

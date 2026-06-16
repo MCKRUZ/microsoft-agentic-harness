@@ -110,7 +110,8 @@ public sealed class StepConfigValidatorTests
         var config = new HumanGateConfig
         {
             EscalationMessage = "Please approve this action.",
-            ApprovalStrategy = ApprovalStrategy.AnyOf
+            ApprovalStrategy = ApprovalStrategy.AnyOf,
+            Approvers = ["approver-1"]
         };
 
         var result = validator.Validate(config);

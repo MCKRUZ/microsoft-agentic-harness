@@ -11,10 +11,10 @@ public class EndToEndPipelineTests
 
     public EndToEndPipelineTests(PostgresFixture fixture) => _fixture = fixture;
 
-    [Fact]
+    [SkippableFact]
     public async Task FullChatSession_WriteThenQueryOverview_MatchesSeededMetrics()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);
         var convId = _fixture.NewConversationId();
@@ -64,10 +64,10 @@ public class EndToEndPipelineTests
         Assert.Contains(recent, r => r["conversation_id"]?.ToString() == convId);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task SingleSessionWithTools_AppearsInSessionDetail()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         var builder = new TestDataBuilder(_fixture);
         var session = await builder.CreateSessionAsync(
@@ -127,10 +127,10 @@ public class EndToEndPipelineTests
         Assert.Equal("pass", safety[0]["outcome"]?.ToString());
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task BlockedPromptFlow_AppearsInSafetyDashboard()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         var builder = new TestDataBuilder(_fixture);
         var session = await builder.CreateSessionAsync(agentName: "SafetyAgent");
@@ -173,10 +173,10 @@ public class EndToEndPipelineTests
         Assert.True(recentBlocks.Count >= 2);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task ConcurrentSessions_DoNotCrossContaminate()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         var builder = new TestDataBuilder(_fixture);
         var agentA = $"AgentA-{_fixture.RunTag[..8]}";
@@ -212,10 +212,10 @@ public class EndToEndPipelineTests
         Assert.Equal(3.00m, Convert.ToDecimal(agentCRow!["cost"]));
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task FailedTool_AppearsInToolErrorRate()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         var builder = new TestDataBuilder(_fixture);
         var session = await builder.CreateSessionAsync(agentName: "ToolErrorAgent");
@@ -255,10 +255,10 @@ public class EndToEndPipelineTests
             r["error_type"]?.ToString() == "ApiError");
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task MultiTurnConversation_AccumulatesMetricsAndRecordsAllMessages()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);
         var convId = _fixture.NewConversationId();
@@ -380,10 +380,10 @@ public class EndToEndPipelineTests
         Assert.Contains(tools, t => t.ToolName == "file_read");
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task MultiTurnConversation_MetricsMatchDashboardQueries()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);
         var convId = _fixture.NewConversationId();

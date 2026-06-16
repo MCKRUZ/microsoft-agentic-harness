@@ -51,8 +51,14 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 			request.ConversationId, request.AgentName, null, cancellationToken);
 
 		var agentTag = new KeyValuePair<string, object?>(AgentConventions.Name, request.AgentName);
+		var sessionTags = new TagList { { AgentConventions.Name, request.AgentName } };
 		SessionMetrics.SessionsStarted.Add(1, agentTag);
-		SessionMetrics.ActiveSessions.Add(1, new TagList { { AgentConventions.Name, request.AgentName } });
+		SessionMetrics.ActiveSessions.Add(1, sessionTags);
+
+		// Tracks whether the observability session has already been ended on a
+		// normal (success / turn-failure) return path, so the catch block does
+		// not double-end it when an exception escapes after those paths.
+		var sessionEnded = false;
 
 		try
 		{
@@ -91,10 +97,9 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 					_logger.LogError("Conversation turn {Turn} failed for {AgentName}: {Error}",
 						index + 1, request.AgentName, lastResult.Error);
 
-					SessionMetrics.ActiveSessions.Add(-1, new TagList { { AgentConventions.Name, request.AgentName } });
-
 					await _observabilityStore.EndSessionAsync(
 						dbSessionId, "error", lastResult.Error, cancellationToken);
+					sessionEnded = true;
 
 					return new ConversationResult
 					{
@@ -152,12 +157,12 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 			if (totalToolInvocations > 0)
 				OrchestrationMetrics.ToolCalls.Add(totalToolInvocations, agentTag);
 
-			SessionMetrics.ActiveSessions.Add(-1, new TagList { { AgentConventions.Name, request.AgentName } });
 			if (totalCostUsd > 0)
 				SessionMetrics.SessionCost.Record((double)totalCostUsd, agentTag);
 
 			await _observabilityStore.EndSessionAsync(
 				dbSessionId, "completed", null, cancellationToken);
+			sessionEnded = true;
 
 			return new ConversationResult
 			{
@@ -167,9 +172,54 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 				TotalToolInvocations = totalToolInvocations
 			};
 		}
+		catch (OperationCanceledException)
+		{
+			// Caller cancellation (e.g. client disconnect) is routine, not exceptional.
+			// End the session as cancelled using a non-cancelled token so the cleanup
+			// write still completes, then rethrow to preserve cancellation semantics.
+			await EndSessionSafelyAsync(dbSessionId, "cancelled", null, sessionEnded);
+			sessionEnded = true;
+			throw;
+		}
+		catch (Exception ex)
+		{
+			// Log the full exception via structured logging; never persist the raw
+			// message to the session row (it can leak internal detail). End the
+			// session with a stable scrubbed status code and rethrow.
+			_logger.LogError(ex, "Conversation with {AgentName} failed with an unhandled exception",
+				request.AgentName);
+			await EndSessionSafelyAsync(dbSessionId, "error", "conversation.unhandled_exception", sessionEnded);
+			sessionEnded = true;
+			throw;
+		}
 		finally
 		{
+			// Decrement the up-down gauge exactly once on every exit path so the
+			// ActiveSessions metric cannot skew permanently when the try block throws.
+			SessionMetrics.ActiveSessions.Add(-1, sessionTags);
 			_agentCache.Evict(request.ConversationId);
+		}
+	}
+
+	/// <summary>
+	/// Ends the observability session defensively during exception/cancellation
+	/// handling: skips the write if the session was already ended on a normal
+	/// return path, uses a non-cancelled token so cleanup completes even when the
+	/// caller's token is cancelled, and never lets a cleanup failure mask the
+	/// original exception being propagated.
+	/// </summary>
+	private async Task EndSessionSafelyAsync(Guid sessionId, string status, string? reason, bool alreadyEnded)
+	{
+		if (alreadyEnded)
+			return;
+
+		try
+		{
+			await _observabilityStore.EndSessionAsync(sessionId, status, reason, CancellationToken.None);
+		}
+		catch (Exception endEx)
+		{
+			_logger.LogError(endEx, "Failed to end observability session {SessionId} during cleanup", sessionId);
 		}
 	}
 }

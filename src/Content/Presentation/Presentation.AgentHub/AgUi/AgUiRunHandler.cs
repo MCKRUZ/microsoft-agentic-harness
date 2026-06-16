@@ -147,7 +147,7 @@ public sealed class AgUiRunHandler
         try
         {
             _writerAccessor.Writer = writer;
-            await ExecuteRunAsync(input, writer, record, userMessage.Content, callerId, observabilitySessionId, ct);
+            await ExecuteRunAsync(input, writer, record, userMessage, callerId, observabilitySessionId, ct);
         }
         catch (OperationCanceledException)
         {
@@ -173,14 +173,19 @@ public sealed class AgUiRunHandler
         RunAgentInput input,
         IAgUiEventWriter writer,
         ConversationRecord record,
-        string userMessageText,
+        AgUiMessage userMessage,
         string callerId,
         Guid observabilitySessionId,
         CancellationToken ct)
     {
-        // Append user message to the persisted conversation.
+        var userMessageText = userMessage.Content!;
+
+        // Persist the user message under the client-supplied id when present so the optimistic
+        // UI message and the server record share the same id. Retry/edit operations reference
+        // this id, so minting a fresh one here would silently desync the client and break them.
+        // Fall back to a server-generated id only when the client omits or sends an invalid id.
         var userMsg = new ConversationMessage(
-            Guid.NewGuid(),
+            ParseClientId(userMessage.Id),
             MessageRole.User,
             userMessageText,
             DateTimeOffset.UtcNow);
@@ -271,8 +276,11 @@ public sealed class AgUiRunHandler
             _logger.LogWarning(ex, "AG-UI run {RunId}: failed to persist session metrics.", input.RunId);
         }
 
-        // Stream the response as TEXT_MESSAGE_* events.
-        var messageId = Guid.NewGuid().ToString();
+        // Stream and persist the assistant response under a single stable id. The client
+        // references this id (via TEXT_MESSAGE_START) for retry-from-message, so the streamed
+        // id and the persisted id MUST match. All TEXT_MESSAGE_* events for this message share it.
+        var assistantId = Guid.NewGuid();
+        var messageId = assistantId.ToString();
         await writer.WriteAsync(new TextMessageStartEvent(messageId, "assistant"), ct);
 
         var response = result.Response;
@@ -284,9 +292,9 @@ public sealed class AgUiRunHandler
 
         await writer.WriteAsync(new TextMessageEndEvent(messageId), ct);
 
-        // Persist the assistant response.
+        // Persist the assistant response under the same id that was streamed to the client.
         var assistantMsg = new ConversationMessage(
-            Guid.NewGuid(),
+            assistantId,
             MessageRole.Assistant,
             response,
             DateTimeOffset.UtcNow);
@@ -309,6 +317,17 @@ public sealed class AgUiRunHandler
 
         return oid;
     }
+
+    /// <summary>
+    /// Parses a client-supplied message id into a <see cref="Guid"/>, falling back to a freshly
+    /// generated id when the client omits it or sends a value that is not a valid GUID. Preserving
+    /// the client id keeps the optimistic UI message and the persisted record in sync so that
+    /// retry/edit operations (keyed by message id) resolve to a stored message.
+    /// </summary>
+    private static Guid ParseClientId(string? clientId) =>
+        Guid.TryParse(clientId, out var parsed) && parsed != Guid.Empty
+            ? parsed
+            : Guid.NewGuid();
 
     private static IReadOnlyList<ChatMessage> ToMeaiHistory(IReadOnlyList<ConversationMessage> messages) =>
         messages.Select(m => new ChatMessage(ToChatRole(m.Role), m.Content)).ToList();

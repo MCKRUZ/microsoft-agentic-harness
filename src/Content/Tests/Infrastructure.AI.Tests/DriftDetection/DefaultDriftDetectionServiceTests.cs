@@ -49,7 +49,10 @@ public sealed class DefaultDriftDetectionServiceTests
                     EscalateThresholdSigma = escalateThreshold,
                     MinSamplesForBaseline = minSamples,
                     BaselineWindowDays = baselineWindowDays
-                }
+                },
+                // Drift-triggered escalations source their approver roster from here; without it
+                // the service refuses to queue a phantom no-approver escalation (fixed finding).
+                Changes = new ChangesConfig { DefaultApprovers = ["drift-approver"] }
             }
         };
 
@@ -351,21 +354,25 @@ public sealed class DefaultDriftDetectionServiceTests
     }
 
     [Fact]
-    public async Task EvaluateDrift_SeverityNone_NoNotification_NoGraphNode()
+    public async Task EvaluateDrift_SeverityNone_NoNotification_PersistsGraphNode()
     {
         SetupBaselineReturn(DriftScope.Skill, "code_review", CreateTestBaseline());
         SetupScorerReturns(deviation: 0.5);
         SetupAuditSuccess();
+        SetupGraphSuccess();
         var service = CreateService();
 
         var result = await service.EvaluateDriftAsync(CreateTestRequest(), CancellationToken.None);
 
         result.IsSuccess.Should().BeTrue();
         result.Value!.Severity.Should().Be(DriftSeverity.None);
+        // A healthy (severity-None) evaluation must NOT notify, but it MUST persist a DriftEvent
+        // node: the baseline is recomputed from this history, so healthy samples have to be
+        // recorded or the rolling baseline starves (the fixed solution-review finding).
         _notifierMock.Verify(n => n.NotifyDriftDetectedAsync(
             It.IsAny<DriftScore>(), It.IsAny<CancellationToken>()), Times.Never);
         _graphStoreMock.Verify(g => g.AddNodesAsync(
-            It.IsAny<IReadOnlyList<GraphNode>>(), It.IsAny<CancellationToken>()), Times.Never);
+            It.IsAny<IReadOnlyList<GraphNode>>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]

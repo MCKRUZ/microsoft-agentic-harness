@@ -177,8 +177,7 @@ public sealed class SqliteFts5Store : IBm25Store
                     id UNINDEXED,
                     document_id UNINDEXED,
                     content,
-                    section_path,
-                    content=''
+                    section_path
                 )
                 """;
             cmd.ExecuteNonQuery();

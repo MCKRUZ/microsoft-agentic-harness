@@ -13,11 +13,31 @@ namespace Presentation.AgentHub.Controllers;
 /// Provides paginated session lists and per-session detail views
 /// including messages, tool executions, and safety events.
 /// </summary>
+/// <remarks>
+/// These endpoints return <b>global, cross-user</b> observability data — the
+/// underlying <see cref="IObservabilityStore"/> queries carry no caller identity,
+/// so a single response can surface any user's conversation content, tool
+/// args/stdout, and composed prompt bodies. That is privileged observability
+/// data, not per-user data, so the whole controller is role-gated with
+/// <see cref="ObserverRole"/> — the same app role that gates the equivalent
+/// SignalR push (<c>AgentTelemetryHub.JoinGlobalTraces</c>). A plain
+/// authenticated chat user (no role) gets 403 here, exactly as they do over
+/// SignalR; without this gate any authenticated caller could enumerate and read
+/// every user's conversations (horizontal-privilege IDOR).
+/// </remarks>
 [ApiController]
 [Route("api/sessions")]
-[Authorize]
+[Authorize(Roles = ObserverRole)]
 public sealed class SessionsController : ControllerBase
 {
+    /// <summary>
+    /// App role required to read the global session observability surface. Mirrors
+    /// <c>AgentTelemetryHub.JoinGlobalTraces</c>'s <c>AgentHub.Traces.ReadAll</c>
+    /// requirement so the HTTP and SignalR views of the same cross-user data enforce
+    /// identical authorization.
+    /// </summary>
+    public const string ObserverRole = "AgentHub.Traces.ReadAll";
+
     private readonly IObservabilityStore _store;
 
     /// <summary>Initialises the controller with its dependencies.</summary>

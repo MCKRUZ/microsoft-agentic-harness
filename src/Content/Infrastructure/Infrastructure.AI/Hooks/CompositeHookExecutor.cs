@@ -167,7 +167,7 @@ public sealed class CompositeHookExecutor : IHookExecutor
         }
 
         // H-2: Block SSRF against internal/reserved networks
-        if (!IsAllowedWebhookUrl(hook.WebhookUrl))
+        if (!await IsAllowedWebhookUrlAsync(hook.WebhookUrl, cancellationToken))
         {
             _logger.LogWarning(
                 "Http hook {HookId} blocked: URL {Url} targets a reserved/internal network",
@@ -220,7 +220,15 @@ public sealed class CompositeHookExecutor : IHookExecutor
     /// Validates that a webhook URL does not target reserved/internal IP ranges.
     /// Blocks SSRF attacks against cloud metadata services and internal networks.
     /// </summary>
-    private static bool IsAllowedWebhookUrl(string url)
+    /// <remarks>
+    /// Fail-closed: any URL that cannot be parsed, uses a non-HTTP(S) scheme, names a
+    /// known-internal host, or resolves to (or is) a reserved address is rejected.
+    /// DNS hostnames are resolved and <em>every</em> returned address is checked so a
+    /// hostname whose A/AAAA record points at an internal/metadata address is blocked.
+    /// IPv6 literals — including IPv4-mapped (<c>::ffff:a.b.c.d</c>), loopback,
+    /// link-local (<c>fe80::/10</c>) and unique-local (<c>fc00::/7</c>) — are all covered.
+    /// </remarks>
+    private async Task<bool> IsAllowedWebhookUrlAsync(string url, CancellationToken cancellationToken)
     {
         if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
             return false;
@@ -235,26 +243,69 @@ public sealed class CompositeHookExecutor : IHookExecutor
         if (host is "localhost" or "metadata.google.internal")
             return false;
 
-        // Block reserved IP ranges (RFC 1918, link-local, cloud metadata)
-        if (System.Net.IPAddress.TryParse(host, out var ip))
+        // Literal IP host: validate directly, no DNS lookup required.
+        if (System.Net.IPAddress.TryParse(host, out var literalIp))
+            return !IsReservedAddress(literalIp);
+
+        // DNS hostname: resolve and reject if ANY resolved address is reserved.
+        // Resolution failure or an empty result fails closed (rejected).
+        System.Net.IPAddress[] resolved;
+        try
         {
-            var bytes = ip.GetAddressBytes();
-            if (bytes.Length == 4)
-            {
-                var blocked = bytes[0] switch
-                {
-                    10 => true,                                      // 10.0.0.0/8
-                    127 => true,                                     // 127.0.0.0/8
-                    169 when bytes[1] == 254 => true,                // 169.254.0.0/16 (link-local, cloud metadata)
-                    172 when bytes[1] >= 16 && bytes[1] <= 31 => true, // 172.16.0.0/12
-                    192 when bytes[1] == 168 => true,                // 192.168.0.0/16
-                    _ => false
-                };
-                if (blocked) return false;
-            }
+            resolved = await System.Net.Dns.GetHostAddressesAsync(host, cancellationToken);
+        }
+        catch (Exception ex) when (ex is System.Net.Sockets.SocketException or ArgumentException)
+        {
+            _logger.LogWarning(
+                "Webhook host {Host} could not be resolved for SSRF validation; blocking", host);
+            return false;
         }
 
-        return true;
+        if (resolved.Length == 0)
+            return false;
+
+        return resolved.All(ip => !IsReservedAddress(ip));
+    }
+
+    /// <summary>
+    /// Determines whether an IP address falls in a reserved/internal range that must not be
+    /// reachable from a webhook (RFC 1918, loopback, link-local incl. cloud metadata, and
+    /// the IPv6 equivalents). IPv4-mapped IPv6 addresses are normalized to IPv4 before checking.
+    /// </summary>
+    private static bool IsReservedAddress(System.Net.IPAddress ip)
+    {
+        // Normalize ::ffff:a.b.c.d so the IPv4 rules below apply.
+        if (ip.IsIPv4MappedToIPv6)
+            ip = ip.MapToIPv4();
+
+        if (System.Net.IPAddress.IsLoopback(ip))
+            return true;
+
+        if (ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
+        {
+            var bytes = ip.GetAddressBytes();
+            return bytes[0] switch
+            {
+                10 => true,                                       // 10.0.0.0/8
+                127 => true,                                      // 127.0.0.0/8
+                169 when bytes[1] == 254 => true,                 // 169.254.0.0/16 (link-local, cloud metadata)
+                172 when bytes[1] >= 16 && bytes[1] <= 31 => true, // 172.16.0.0/12
+                192 when bytes[1] == 168 => true,                 // 192.168.0.0/16
+                _ => false
+            };
+        }
+
+        if (ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6)
+        {
+            if (ip.IsIPv6LinkLocal)                               // fe80::/10
+                return true;
+
+            // Unique-local addresses fc00::/7 (first 7 bits == 1111110).
+            var bytes = ip.GetAddressBytes();
+            return (bytes[0] & 0xFE) == 0xFC;
+        }
+
+        return false;
     }
 
     private static readonly JsonSerializerOptions JsonOptions = new()

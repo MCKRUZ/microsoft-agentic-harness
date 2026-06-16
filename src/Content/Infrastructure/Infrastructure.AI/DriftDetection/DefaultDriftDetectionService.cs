@@ -121,11 +121,17 @@ public sealed class DefaultDriftDetectionService : IDriftDetectionService
             ScoredAt = now
         };
 
+        // Persist EVERY evaluation (including healthy, severity None) to the graph.
+        // GetDriftHistoryAsync reads these nodes and UpdateBaselineAsync computes the
+        // rolling baseline's mean/sigma from them. Persisting only Warn+ events would
+        // leave the history empty in the healthy steady state (baseline updates starve)
+        // and, once anomalies accumulate, bias the recomputed baseline toward the very
+        // drift the subsystem exists to detect.
+        await SafeExecuteAsync("graph persistence",
+            () => PersistDriftEventAsync(score, now, ct));
+
         if (severity >= DriftSeverity.Warn)
         {
-            await SafeExecuteAsync("graph persistence",
-                () => PersistDriftEventAsync(score, now, ct));
-
             if (severity == DriftSeverity.Escalate && config.EscalationEnabled)
                 await SafeExecuteAsync("escalation",
                     () => TriggerEscalationAsync(score, now, ct));
@@ -297,6 +303,23 @@ public sealed class DefaultDriftDetectionService : IDriftDetectionService
 
     private async Task TriggerEscalationAsync(DriftScore score, DateTimeOffset now, CancellationToken ct)
     {
+        // A drift escalation with no approvers is invisible to GetPendingEscalationsAsync
+        // (it filters by Approvers.Contains), so it would silently expire after the
+        // timeout as an auto-deny while DriftEscalationBridge falsely marks the event
+        // "resolved". Mirror EscalationServiceApprovalRouter: refuse to queue a
+        // no-approver escalation. Approvers are sourced from AppConfig.AI.Changes.DefaultApprovers,
+        // the only approver roster in configuration.
+        var approvers = _options.CurrentValue.AI.Changes.DefaultApprovers;
+        if (approvers.Count == 0)
+        {
+            _logger.LogError(
+                "Drift escalation suppressed for {Scope}:{ScopeIdentifier} (score {ScoreId}): " +
+                "no approvers configured. Configure AppConfig.AI.Changes.DefaultApprovers so drift " +
+                "escalations reach a human approver instead of silently auto-denying after timeout.",
+                score.Scope, score.ScopeIdentifier, score.ScoreId);
+            return;
+        }
+
         var driftedDimensions = score.Dimensions
             .Where(d => d.Value.Deviation >= _options.CurrentValue.AI.DriftDetection.WarnThresholdSigma)
             .Select(d => $"{d.Key}: {d.Value.Deviation:F2}σ");
@@ -316,7 +339,7 @@ public sealed class DefaultDriftDetectionService : IDriftDetectionService
             RiskLevel = RiskLevel.High,
             Priority = EscalationPriority.Blocking,
             ApprovalStrategy = ApprovalStrategyType.AnyOf,
-            Approvers = [],
+            Approvers = [.. approvers],
             RequestedAt = now
         };
 

@@ -4,6 +4,7 @@ using Application.AI.Common.Models.Sandbox;
 using Docker.DotNet;
 using Docker.DotNet.Models;
 using Domain.AI.Sandbox;
+using Domain.Common.Config.AI.Sandbox;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -20,6 +21,7 @@ public sealed class DockerSandboxExecutor : ISandboxExecutor
     private readonly IDockerClient _dockerClient;
     private readonly IAttestationService _attestationService;
     private readonly IOptionsMonitor<SandboxExecutionOptions> _options;
+    private readonly IOptionsMonitor<SandboxConfig> _sandboxConfig;
     private readonly ILogger<DockerSandboxExecutor> _logger;
     private readonly ISandboxEgressPreflight? _egressPreflight;
 
@@ -27,12 +29,14 @@ public sealed class DockerSandboxExecutor : ISandboxExecutor
         IDockerClient dockerClient,
         IAttestationService attestationService,
         IOptionsMonitor<SandboxExecutionOptions> options,
+        IOptionsMonitor<SandboxConfig> sandboxConfig,
         ILogger<DockerSandboxExecutor> logger,
         ISandboxEgressPreflight? egressPreflight = null)
     {
         _dockerClient = dockerClient;
         _attestationService = attestationService;
         _options = options;
+        _sandboxConfig = sandboxConfig;
         _logger = logger;
         _egressPreflight = egressPreflight;
     }
@@ -40,6 +44,9 @@ public sealed class DockerSandboxExecutor : ISandboxExecutor
     public async Task<SandboxExecutionResult> ExecuteAsync(
         SandboxExecutionRequest request, CancellationToken ct)
     {
+        if (!_sandboxConfig.CurrentValue.Enabled)
+            throw new InvalidOperationException("Sandbox execution is disabled by configuration (Sandbox:Enabled=false).");
+
         var egress = await RunEgressPreflightAsync(request, ct);
         if (egress.Blocked is { } block)
             return block;

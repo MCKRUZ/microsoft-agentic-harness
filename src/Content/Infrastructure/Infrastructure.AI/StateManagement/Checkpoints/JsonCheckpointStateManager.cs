@@ -227,21 +227,10 @@ public class JsonCheckpointStateManager : IStateManager
         if (node == null)
             return default;
 
-        if (!node.Metadata.TryGetValue(key, out var value))
-            return default;
-
-        if (value is T typed)
-            return typed;
-
-        // Try to convert
-        try
-        {
-            return (T)Convert.ChangeType(value, typeof(T));
-        }
-        catch
-        {
-            return default;
-        }
+        // Delegate to NodeState.GetMetadata, which correctly handles values that were
+        // deserialized as JsonElement after a JSON checkpoint reload (this manager's own
+        // LoadAsync produces exactly such values).
+        return node.GetMetadata<T>(key);
     }
 
     public async Task<Dictionary<string, object>> GetAllMetadataAsync(string workflowId, string nodeId, CancellationToken cancellationToken = default)

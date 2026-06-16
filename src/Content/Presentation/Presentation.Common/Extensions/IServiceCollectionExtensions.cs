@@ -91,6 +91,13 @@ public static class IServiceCollectionExtensions
             configuration.GetSection("AppConfig:AI:DriftDetection"));
         services.Configure<Domain.Common.Config.AI.Learnings.LearningsConfig>(
             configuration.GetSection("AppConfig:AI:Learnings"));
+        // Sandbox capability-enforcement knobs (SandboxConfig). Bound under a distinct
+        // path from AppConfig:AI:Sandbox (which binds the unrelated SandboxOptions class).
+        // Composes over the AddOptions<SandboxConfig>() defaults registered in
+        // Application.AI.Common so operator-set DefaultGrantedCapabilities / ToolOverrides /
+        // WorkspaceRoot / Enabled actually reach IOptionsMonitor<SandboxConfig> consumers.
+        services.Configure<Domain.Common.Config.AI.Sandbox.SandboxConfig>(
+            configuration.GetSection("AppConfig:AI:SandboxCapabilities"));
 
         return services;
     }
@@ -162,6 +169,11 @@ public static class IServiceCollectionExtensions
 
         // OTel pipeline (must be after project deps to pick up configurators)
         services.AddOpenTelemetry(appConfig);
+
+        // Fail-fast guard registered last: resolves critical options bindings and services
+        // at host start so a missing DI registration or config binding fails loudly at boot
+        // instead of silently doing nothing at runtime ("built-but-never-wired" defense).
+        services.AddHostedService<Startup.StartupRegistrationSmokeCheck>();
 
         return services;
     }
@@ -268,8 +280,13 @@ public static class IServiceCollectionExtensions
         // Prompt registry (Sub-phase 5.3) — locates the repo's top-level `prompts/`
         // folder by walking up from the process base directory. When not found, the
         // registry returns empty lookups (no exception) so hosts with no prompts boot
-        // cleanly.
-        services.AddPromptRegistry(promptsRootPath: LocatePromptsRoot());
+        // cleanly. PromptUsageOptions flows from the AppConfig tree
+        // (AppConfig:AI:PromptUsage) into the registry directly — the registry takes the
+        // options instance rather than resolving IOptions<PromptUsageOptions>, so this
+        // is the only path by which PersistenceEnabled can be turned on from config.
+        services.AddPromptRegistry(
+            promptsRootPath: LocatePromptsRoot(),
+            usageOptions: appConfig.AI?.PromptUsage ?? new PromptUsageOptions());
 
         // Eval framework (Infrastructure.AI.Evaluation runners + metrics + reporters)
         // is NOT registered here — it is opt-in for the EvalRunner CLI only. Web/console

@@ -14,10 +14,10 @@ public sealed class SafetyEventWriteTests
         _fixture = fixture;
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task RecordSafetyEventAsync_PromptBlock_Persists()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);
         var builder = new TestDataBuilder(_fixture);
@@ -44,10 +44,10 @@ public sealed class SafetyEventWriteTests
         Assert.Equal("azure_content_safety", row["filter_name"]);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task RecordSafetyEventAsync_ResponseRedact_Persists()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);
         var builder = new TestDataBuilder(_fixture);
@@ -69,10 +69,10 @@ public sealed class SafetyEventWriteTests
         Assert.Equal("redact", rows[0]["outcome"]);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task RecordSafetyEventAsync_PassOutcome_Persists()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);
         var builder = new TestDataBuilder(_fixture);
@@ -93,10 +93,10 @@ public sealed class SafetyEventWriteTests
         Assert.Equal("pass", rows[0]["outcome"]);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task RecordSafetyEventAsync_NullOptionalFields_Allowed()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);
         var builder = new TestDataBuilder(_fixture);

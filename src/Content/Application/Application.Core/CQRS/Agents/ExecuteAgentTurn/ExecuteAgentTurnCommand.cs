@@ -14,8 +14,15 @@ namespace Application.Core.CQRS.Agents.ExecuteAgentTurn;
 /// Uses a 5-minute timeout to accommodate multi-step tool call chains.
 /// The default 30s MediatR timeout is too short for agentic workloads.
 /// </remarks>
-public record ExecuteAgentTurnCommand : IRequest<AgentTurnResult>, IAgentTurnRequest, IHasTimeout, IContentScreenable, IHasObservabilitySession
+public record ExecuteAgentTurnCommand : IRequest<AgentTurnResult>, IAgentTurnRequest, IHasTimeout, IContentScreenable, IHasObservabilitySession, IConsumesTokens
 {
+	/// <summary>
+	/// Pre-flight token estimate: the user message at roughly 4 characters per token plus a
+	/// base allowance covering the system prompt, conversation history, and a single completion.
+	/// Deliberately conservative — actual usage is reconciled after the turn via the tracker.
+	/// </summary>
+	public int EstimatedTokenCost => (UserMessage.Length / 4) + 1_000;
+
 	/// <inheritdoc />
 	public string ContentToScreen => UserMessage;
 

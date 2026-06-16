@@ -97,12 +97,8 @@ public sealed class ToolPermissionBehavior<TRequest, TResponse>
                     if (Enum.TryParse<ToolCapability>(name, ignoreCase: true, out var cap))
                         grantedCapabilities |= cap;
                 }
-                var requestedPaths = (toolRequest as IResourceScopedToolRequest)?.RequestedPaths;
-                var requestedHosts = (toolRequest as IResourceScopedToolRequest)?.RequestedHosts;
-
                 var capResult = await _capabilityEnforcer.EnforceAsync(
-                    toolRequest.ToolName, grantedCapabilities,
-                    requestedPaths, requestedHosts, cancellationToken);
+                    toolRequest.ToolName, grantedCapabilities, ct: cancellationToken);
 
                 if (!capResult.IsSuccess)
                 {

@@ -84,6 +84,27 @@ public static class DependencyInjection
 
             if (config.AI.Rag.GraphRag.MultiTenantIsolation)
             {
+                // Coupling guard: TenantIsolatedGraphStore only *filters* reads/writes — it never
+                // stamps TenantId on write (by design it defers stamping to the inner
+                // ComplianceAwareGraphStore; see TenantIsolatedGraphStore.AddNodesAsync). When
+                // compliance is disabled, nothing stamps tenant on ingested corpus/learnings/skill
+                // writes, so those nodes persist with TenantId == null (= global) and become
+                // cross-tenant-visible (CanAccess treats null tenant as visible to everyone) even
+                // though isolation is nominally "on". Surface this misconfiguration loudly at
+                // composition time rather than failing silent, matching the read-side guard in
+                // TenantIsolatedGraphStore.CanAccess. Per-user memory stays isolated regardless
+                // (KnowledgeMemoryService self-stamps owner+tenant), so this is a corpus-side
+                // exposure, not a startup-blocking error.
+                if (!config.AI.Rag.GraphRag.ComplianceEnabled)
+                {
+                    sp.GetRequiredService<ILogger<TenantIsolatedGraphStore>>().LogWarning(
+                        "Multi-tenant isolation is enabled but ComplianceEnabled is false: " +
+                        "write-side TenantId stamping is performed only by ComplianceAwareGraphStore, " +
+                        "which is not registered. Ingested corpus/learnings/skill nodes will be written " +
+                        "with TenantId == null (global) and become cross-tenant-visible. Enable " +
+                        "AppConfig.AI.Rag.GraphRag.ComplianceEnabled to restore tenant write-side stamping.");
+                }
+
                 store = new TenantIsolatedGraphStore(
                     store,
                     sp.GetRequiredService<Application.AI.Common.Interfaces.IAmbientRequestScope>(),

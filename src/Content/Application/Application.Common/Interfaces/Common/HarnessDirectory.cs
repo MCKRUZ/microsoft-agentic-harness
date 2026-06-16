@@ -4,10 +4,6 @@ namespace Application.Common.Interfaces.Common;
 /// Well-known directory types used by any application built on this template.
 /// Consumed by <see cref="IDirectoryMapper"/> to resolve absolute paths.
 /// </summary>
-/// <remarks>
-/// AI-specific directories (Skills, Manifests, Mcp) are defined in
-/// <see cref="Domain.AI.Enums.AgentDirectory"/>.
-/// </remarks>
 public enum AppDirectory
 {
     /// <summary>Root directory for all application data.</summary>

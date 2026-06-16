@@ -118,6 +118,10 @@ public sealed class MergeGateTests
         var result = await sut.EvaluateAsync(TestProposals.NewProposal(), Ctx(OrchestratorMode.Live), CancellationToken.None);
 
         result.Action.Should().Be(GateAction.Fail);
-        result.Reason.Should().Contain("InvalidOperationException");
+        // The applier's exception message ("applier exploded") must NOT reach the
+        // persisted Reason — only the scrubbed code + exception type survive.
+        result.Reason.Should().NotContain("applier exploded");
+        result.Reason.Should().Be(
+            $"{MergeGate.ApplierThrewReasonCode}: {nameof(InvalidOperationException)}");
     }
 }

@@ -204,6 +204,25 @@ public class AIConfig
     public EvalDashboardOptions EvalDashboard { get; set; } = new();
 
     /// <summary>
+    /// Prompt-usage persistence configuration (Sub-phase 5.3). Off by default; host
+    /// opts in to durable SQLite usage history by setting
+    /// <see cref="PromptUsageOptions.PersistenceEnabled"/>. Forwarded into
+    /// <c>AddPromptRegistry</c> by the composition root, since the registry takes the
+    /// options instance directly rather than resolving <c>IOptions&lt;PromptUsageOptions&gt;</c>.
+    /// </summary>
+    public PromptUsageOptions PromptUsage { get; set; } = new();
+
+    /// <summary>
+    /// Sandbox capability-enforcement configuration: the default granted capability set,
+    /// the per-tool override (restrict-only) surface, the dedicated workspace root, and
+    /// the <see cref="SandboxConfig.Enabled"/> kill-switch. Distinct from <see cref="Sandbox"/>
+    /// (<c>SandboxOptions</c>), which carries resource limits, isolation defaults, and
+    /// container settings. Bound to <c>AppConfig:AI:SandboxCapabilities</c>; consumed via
+    /// <c>IOptionsMonitor&lt;SandboxConfig&gt;</c> by the capability enforcement pipeline.
+    /// </summary>
+    public SandboxConfig SandboxCapabilities { get; set; } = new();
+
+    /// <summary>
     /// ChangeProposal pipeline configuration (PR-2). Off by default — when
     /// enabled the orchestrator defaults to Shadow mode so a misconfigured
     /// rollout never silently applies real changes.

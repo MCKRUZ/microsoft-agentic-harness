@@ -14,10 +14,10 @@ public sealed class ToolExecutionWriteTests
         _fixture = fixture;
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task RecordToolExecutionAsync_Success_PersistsAllFields()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);
         var builder = new TestDataBuilder(_fixture);
@@ -51,10 +51,10 @@ public sealed class ToolExecutionWriteTests
         Assert.Equal(1024, Convert.ToInt32(row["result_size"]));
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task RecordToolExecutionAsync_Failure_PersistsErrorType()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);
         var builder = new TestDataBuilder(_fixture);
@@ -80,13 +80,13 @@ public sealed class ToolExecutionWriteTests
         Assert.Equal("mcp", rows[0]["tool_source"]);
     }
 
-    [Theory]
+    [SkippableTheory]
     [InlineData("success")]
     [InlineData("failure")]
     [InlineData("timeout")]
     public async Task RecordToolExecutionAsync_AllStatuses_CheckConstraintsPassed(string status)
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);
         var builder = new TestDataBuilder(_fixture);
@@ -109,10 +109,10 @@ public sealed class ToolExecutionWriteTests
         Assert.Single(rows);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task RecordToolExecutionAsync_NullMessageId_Allowed()
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);
         var builder = new TestDataBuilder(_fixture);
@@ -135,13 +135,13 @@ public sealed class ToolExecutionWriteTests
         Assert.Null(rows[0]["message_id"]);
     }
 
-    [Theory]
+    [SkippableTheory]
     [InlineData("keyed_di")]
     [InlineData("mcp")]
     [InlineData("semantic_kernel")]
     public async Task RecordToolExecutionAsync_AllSources_CheckConstraintsPassed(string toolSource)
     {
-        if (!_fixture.IsAvailable) return;
+        _fixture.SkipIfUnavailable();
 
         using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);
         var builder = new TestDataBuilder(_fixture);

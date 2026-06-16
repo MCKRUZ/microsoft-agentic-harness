@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces.RAG;
 using Application.AI.Common.Interfaces.Routing;
+using Application.Common.Interfaces.Data;
 using Azure;
 using Azure.Search.Documents;
 using Domain.Common.Config;
@@ -198,9 +199,11 @@ public static partial class DependencyInjection
     /// adapter keyed as "sql_database". Only registered when
     /// <see cref="SqlDatabaseConfig.Enabled"/> is <c>true</c>.
     /// <para>
-    /// <see cref="SafeSqlQueryExecutor"/> requires a <see cref="System.Data.Common.DbConnection"/>
-    /// registered in DI by the consuming application. If no connection is registered the
-    /// "sql_database" source will throw at resolution time, not at startup.
+    /// <see cref="SafeSqlQueryExecutor"/> requires an <see cref="ISqlConnectionFactory"/>
+    /// registered in DI by the consuming application (Infrastructure.Common provides a default
+    /// <c>SqlConnectionFactory</c>). The executor creates, opens, and disposes a fresh connection
+    /// per call rather than sharing one. If no factory is registered the "sql_database" source
+    /// will throw at resolution time, not at startup.
     /// </para>
     /// </summary>
     private static void AddRagSqlDatabase(IServiceCollection services, AppConfig appConfig)
@@ -219,12 +222,12 @@ public static partial class DependencyInjection
         services.AddSingleton<TextToSqlGenerator>(sp =>
             new TextToSqlGenerator(sp.GetRequiredService<IChatClient>()));
 
-        // DbConnection is opt-in — the consuming app must register one.
-        // SafeSqlQueryExecutor is resolved lazily so a missing DbConnection only fails
+        // ISqlConnectionFactory is opt-in — the consuming app must register one.
+        // SafeSqlQueryExecutor is resolved lazily so a missing factory only fails
         // at first retrieval, not at startup.
         services.AddSingleton<ISqlQueryExecutor>(sp =>
             new SafeSqlQueryExecutor(
-                sp.GetRequiredService<System.Data.Common.DbConnection>(),
+                sp.GetRequiredService<ISqlConnectionFactory>(),
                 sp.GetRequiredService<IOptionsMonitor<AppConfig>>(),
                 sp.GetRequiredService<ILogger<SafeSqlQueryExecutor>>()));
 

@@ -27,7 +27,9 @@ public static partial class DependencyInjection
         Directory.CreateDirectory(dataDir);
         var connectionString = $"DataSource={Path.Combine(AppContext.BaseDirectory, dbPath)}";
 
-        services.AddDbContextFactory<PlannerDbContext>(options => options.UseSqlite(connectionString));
+        services.AddDbContextFactory<PlannerDbContext>(options => options
+            .UseSqlite(connectionString)
+            .AddInterceptors(new SqliteVersionInterceptor()));
         services.AddScoped(sp => sp.GetRequiredService<IDbContextFactory<PlannerDbContext>>().CreateDbContext());
     }
 

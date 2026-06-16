@@ -13,6 +13,19 @@ namespace Presentation.AgentHub.Services;
 /// </summary>
 public sealed class PrometheusQueryService : IPrometheusQueryService
 {
+    /// <summary>
+    /// Generic, non-leaking error returned to callers when a Prometheus query fails
+    /// unexpectedly. The underlying exception (which may contain the Prometheus host/URL,
+    /// connection diagnostics, or deserialization internals) is logged but never surfaced.
+    /// </summary>
+    internal const string GenericQueryErrorMessage = "Metrics query failed. See server logs for details.";
+
+    /// <summary>
+    /// Generic, non-leaking error returned to callers when the Prometheus health check fails.
+    /// The underlying exception is logged but never surfaced to the client.
+    /// </summary>
+    internal const string GenericHealthErrorMessage = "Prometheus health check failed. See server logs for details.";
+
     private readonly HttpClient _httpClient;
     private readonly ILogger<PrometheusQueryService> _logger;
 
@@ -84,7 +97,7 @@ public sealed class PrometheusQueryService : IPrometheusQueryService
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Prometheus health check failed");
-            return new PrometheusHealthResponse { Healthy = false, Error = ex.Message };
+            return new PrometheusHealthResponse { Healthy = false, Error = GenericHealthErrorMessage };
         }
     }
 
@@ -138,7 +151,7 @@ public sealed class PrometheusQueryService : IPrometheusQueryService
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Prometheus query failed: {Url}", url);
-            return new MetricsQueryResponse { Success = false, Error = ex.Message };
+            return new MetricsQueryResponse { Success = false, Error = GenericQueryErrorMessage };
         }
     }
 

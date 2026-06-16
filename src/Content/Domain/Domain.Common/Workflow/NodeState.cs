@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 namespace Domain.Common.Workflow;
 
 /// <summary>
@@ -81,22 +83,53 @@ public class NodeState
     public Dictionary<string, object> Metadata { get; set; } = new();
 
     /// <summary>
-    /// Gets metadata value by key.
+    /// Gets metadata value by key, converting it to the requested type.
     /// </summary>
+    /// <remarks>
+    /// Metadata is stored as <see cref="object"/>, so values survive serialization differently
+    /// depending on the round-trip. After a System.Text.Json checkpoint reload the boxed value
+    /// is a <see cref="JsonElement"/> rather than the original primitive; this method deserializes
+    /// such elements into <typeparamref name="T"/> explicitly. Returns <paramref name="defaultValue"/>
+    /// only when the key is absent or the stored value cannot be represented as <typeparamref name="T"/>.
+    /// </remarks>
     public T? GetMetadata<T>(string key, T? defaultValue = default)
     {
-        if (!Metadata.TryGetValue(key, out var value))
+        if (!Metadata.TryGetValue(key, out var value) || value is null)
             return defaultValue;
 
         if (value is T typed)
             return typed;
 
-        // Try to convert
+        if (value is JsonElement jsonElement)
+            return ConvertJsonElement(jsonElement, defaultValue);
+
+        // Try to convert primitives that implement IConvertible (e.g. int -> long, double -> decimal).
+        if (value is IConvertible)
+        {
+            try
+            {
+                return (T)Convert.ChangeType(value, typeof(T));
+            }
+            catch (Exception ex) when (ex is InvalidCastException or FormatException or OverflowException)
+            {
+                return defaultValue;
+            }
+        }
+
+        return defaultValue;
+    }
+
+    /// <summary>
+    /// Converts a deserialized <see cref="JsonElement"/> into the requested type.
+    /// </summary>
+    private static T? ConvertJsonElement<T>(JsonElement element, T? defaultValue)
+    {
         try
         {
-            return (T)Convert.ChangeType(value, typeof(T));
+            var deserialized = element.Deserialize<T>();
+            return deserialized is null ? defaultValue : deserialized;
         }
-        catch
+        catch (JsonException)
         {
             return defaultValue;
         }
