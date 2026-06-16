@@ -123,7 +123,7 @@ This is a production template that enterprise consumers will clone. Corners cut 
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **microsoft-agentic-harness** (19048 symbols, 43061 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **microsoft-agentic-harness** (37816 symbols, 86770 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
