@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(dotnet build:*)",
+      "Bash(dotnet test:*)",
+      "Bash(dotnet restore:*)",
+      "Bash(dotnet run:*)",
+      "Bash(dotnet format:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git branch:*)",
+      "Bash(git fetch:*)",
+      "Bash(git stash list:*)",
+      "Bash(gh pr view:*)",
+      "Bash(gh pr list:*)",
+      "Bash(gh pr diff:*)",
+      "Bash(gh run list:*)",
+      "Bash(gh run view:*)",
+      "Bash(gh api repos/:*)"
+    ],
+    "ask": [
+      "Bash(git push:*)",
+      "Bash(gh api:*)",
+      "Bash(scripts/rails/apply-branch-protection.sh:*)",
+      "Edit(./.github/**)",
+      "Write(./.github/**)",
+      "Edit(./.claude/settings.json)",
+      "Write(./.claude/settings.json)",
+      "Edit(./.claude/hooks/**)",
+      "Write(./.claude/hooks/**)",
+      "Edit(./scripts/rails/**)",
+      "Write(./scripts/rails/**)",
+      "Edit(./**/Auth/**)",
+      "Write(./**/Auth/**)",
+      "Edit(./**/Identity/**)",
+      "Write(./**/Identity/**)",
+      "Edit(./**/Security/**)",
+      "Write(./**/Security/**)",
+      "Edit(./**/SecurityAttributes/**)",
+      "Write(./**/SecurityAttributes/**)",
+      "Edit(./**/Migrations/**)",
+      "Write(./**/Migrations/**)",
+      "Edit(./infra/**)",
+      "Write(./infra/**)"
+    ],
+    "deny": [
+      "Bash(git push --force:*)",
+      "Bash(git push --force-with-lease:*)",
+      "Bash(git push -f:*)",
+      "Read(./**/.env)",
+      "Read(./**/secrets/**)",
+      "Read(./**/*.pfx)",
+      "Read(./**/*.pem)"
+    ]
+  },
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "pwsh",
+            "args": [
+              "-NoProfile",
+              "-File",
+              "${CLAUDE_PROJECT_DIR}/.claude/hooks/stop-build-gate.ps1"
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

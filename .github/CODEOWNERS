@@ -1,0 +1,40 @@
+# CODEOWNERS — who must review before merge to main.
+#
+# Part of the delivery rails (see .github/RAILS.md and the methodology spec at
+# delivery-standard/docs/the-rails.md §4 "The merge bar").
+#
+# This file is only enforced when the main-branch ruleset has
+# pull_request.require_code_owner_review = true (see
+# .github/rulesets/main-branch-protection.json). On a solo repo the sole
+# code owner is also the author, so code-owner review cannot be self-satisfied
+# today — the rule is "armed" and becomes real the moment a second collaborator
+# joins. Until then the repository-admin bypass actor in the ruleset lets the
+# owner still merge. See RAILS.md "Solo-repo accommodation".
+#
+# Order matters: the LAST matching pattern wins for a given file.
+
+# Default owner for everything.
+*                                       @MCKRUZ
+
+# --- Gated paths: changes here always pull in the code owner, independent of
+#     a spec's risk tier (the-rails.md §3 "path-triggered, not just tier-triggered").
+#     The security-review workflow also fires on these same paths.
+
+# The rails themselves — the factory. A defect here ships in every change that
+# rides the rails afterward, so it is held to the tightest review.
+/.github/                               @MCKRUZ
+/.claude/settings.json                  @MCKRUZ
+/.claude/hooks/                         @MCKRUZ
+/scripts/rails/                         @MCKRUZ
+
+# Authentication, identity, and authorization surfaces.
+**/Auth/                                @MCKRUZ
+**/Identity/                            @MCKRUZ
+**/Security/                            @MCKRUZ
+**/SecurityAttributes/                  @MCKRUZ
+
+# Data migrations (none exist yet; armed for when EF Core migrations land).
+**/Migrations/                          @MCKRUZ
+
+# Infrastructure as code (none exists yet; armed for when cloud infra lands).
+/infra/                                 @MCKRUZ

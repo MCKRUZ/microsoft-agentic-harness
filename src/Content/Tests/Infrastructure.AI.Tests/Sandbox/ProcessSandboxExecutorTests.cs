@@ -59,9 +59,11 @@ public class ProcessSandboxExecutorTests : IDisposable
         }
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task ExecuteAsync_SuccessfulExecution_ReturnsOutputAndAttestation()
     {
+        Skip.IfNot(OperatingSystem.IsWindows(), "Windows-only: uses cmd.exe and Windows Job Object resource limits.");
+
         var request = CreateRequest(command: "cmd.exe", argumentList: ["/c", "echo", "hello"]);
 
         var result = await _sut.ExecuteAsync(request, CancellationToken.None);
@@ -72,9 +74,11 @@ public class ProcessSandboxExecutorTests : IDisposable
         result.ExitCode.Should().Be(0);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task ExecuteAsync_Timeout_KillsProcessAndReturnsFail()
     {
+        Skip.IfNot(OperatingSystem.IsWindows(), "Windows-only: uses cmd.exe and Windows Job Object resource limits.");
+
         var request = CreateRequest(
             command: "cmd.exe",
             argumentList: ["/c", "ping", "-n", "60", "127.0.0.1"],
@@ -88,9 +92,11 @@ public class ProcessSandboxExecutorTests : IDisposable
         result.Attestation!.IsFailureAttestation.Should().BeTrue();
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task ExecuteAsync_ProcessCrash_ReturnsFailureAttestation()
     {
+        Skip.IfNot(OperatingSystem.IsWindows(), "Windows-only: uses cmd.exe and Windows Job Object resource limits.");
+
         var request = CreateRequest(command: "cmd.exe", argumentList: ["/c", "exit", "1"]);
 
         var result = await _sut.ExecuteAsync(request, CancellationToken.None);
@@ -101,9 +107,11 @@ public class ProcessSandboxExecutorTests : IDisposable
         result.Attestation!.IsFailureAttestation.Should().BeTrue();
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task ExecuteAsync_StdinInput_PassedToProcess()
     {
+        Skip.IfNot(OperatingSystem.IsWindows(), "Windows-only: uses cmd.exe and Windows Job Object resource limits.");
+
         var inputJson = "{\"key\":\"value\"}";
         var request = CreateRequest(
             command: "cmd.exe",
@@ -117,9 +125,11 @@ public class ProcessSandboxExecutorTests : IDisposable
         result.Output.Should().Contain("value");
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task ExecuteAsync_WorkspaceCleanup_DeletesTempDir()
     {
+        Skip.IfNot(OperatingSystem.IsWindows(), "Windows-only: uses cmd.exe and Windows Job Object resource limits.");
+
         string? capturedDir = null;
         _sut.CreateWorkspaceDirectory = () =>
         {

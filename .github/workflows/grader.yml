@@ -1,0 +1,58 @@
+name: Grader
+
+# The grader rail (the-rails.md §3): a fresh agent reads the change against its
+# stated intent and posts a check-by-check verdict as a PR comment.
+#
+# ADVISES, never blocks. This workflow is intentionally NOT a required status
+# check — its verdict is an input to the human Checker, not a gate. "The grader
+# ran" is what the methodology asks for; what it said is the human's call.
+#
+# Prerequisites to go live (see .github/RAILS.md):
+#   * Claude GitHub App installed on the repo.
+#   * ANTHROPIC_API_KEY repository secret set.
+# Until then this workflow runs but the Claude step no-ops on the missing key
+# (continue-on-error keeps it green so it never adds false red to PRs).
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+# Least privilege: read the code, write a PR comment. Nothing else.
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: grader-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  grade:
+    name: grader
+    runs-on: ubuntu-latest
+    # Skip drafts; they aren't ready for a verdict.
+    if: github.event.pull_request.draft == false
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Grade the change against its spec
+        id: grade
+        continue-on-error: true
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          prompt: |
+            You are running as the grader for PR #${{ github.event.pull_request.number }}.
+            Read the grading rubric at .github/grader-rubric.md and follow it exactly.
+            The "spec" is this PR's description and any linked issue.
+            Inspect the PR diff (the base is origin/${{ github.base_ref }}) and the
+            changed files, then POST your verdict as a single PR comment. Update the
+            same comment on re-runs rather than stacking new ones.
+          claude_args: |
+            --model opus
+            --max-turns 20
+            --allowedTools Bash,Read,Grep,Glob
