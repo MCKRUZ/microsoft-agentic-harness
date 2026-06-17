@@ -8,6 +8,25 @@ Run these two skills in order:
 
 Do NOT skip these. Run them even when changes seem straightforward.
 
+## The review gate enforces this mechanically
+
+This cadence is not an honor system. A `PreToolUse` hook (`.claude/hooks/review-gate.ps1`, wired
+in `.claude/settings.json`) **blocks `git push` and `gh pr create`** when the branch's diff touches
+compilable source (`src/**`) unless `/code-review` **and** `/simplify` have been recorded against the
+exact `HEAD` commit being pushed.
+
+- **Recording a review:** pipe its summary to the helper, which binds the receipt to the current
+  commit:
+  `"<review summary>" | pwsh -NoProfile -File .claude/hooks/save-review-receipt.ps1 -Kind code-review`
+  (and again with `-Kind simplify`). Receipts live in the gitignored `.claude/.review-receipts/`.
+- **Re-arming:** amending or adding commits changes `HEAD`, so the gate demands a fresh review of the
+  final code. Run the reviews on the commit you actually push.
+- **Scope:** docs-, memory-, and config-only pushes pass without receipts.
+- **Coverage boundary:** the hook only fires for pushes made *through Claude Code* — a human pushing
+  from their own terminal is not gated (that is the server-side CI check's job). The hook stops the
+  *agent* from skipping review.
+- **Emergency bypass:** set `RAILS_SKIP_REVIEW_GATE=1` (auditable; use sparingly).
+
 ## After a Full Layer is Complete
 Run this additional skill:
 

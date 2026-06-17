@@ -75,6 +75,20 @@
             "command": "echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"additionalContext\":\"GitNexus project rule (CLAUDE.md): if this edit modifies an existing code symbol, first run gitnexus_impact({target, direction: upstream}) and report the blast radius, warning on HIGH or CRITICAL risk. Skip for docs, comments, config, or test-only edits.\"}}'"
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "pwsh",
+            "args": [
+              "-NoProfile",
+              "-File",
+              "${CLAUDE_PROJECT_DIR}/.claude/hooks/review-gate.ps1"
+            ]
+          }
+        ]
       }
     ],
     "Stop": [
