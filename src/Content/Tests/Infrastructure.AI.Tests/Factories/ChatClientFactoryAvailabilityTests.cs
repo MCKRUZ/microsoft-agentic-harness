@@ -134,18 +134,19 @@ public sealed class ChatClientFactoryAvailabilityTests : IDisposable
     }
 
     [Fact]
-    public void GetAvailableProviders_ReturnsAllSixTypes()
+    public void GetAvailableProviders_ReturnsAllSevenTypes()
     {
         using var factory = CreateFactory();
 
         var providers = factory.GetAvailableProviders();
 
-        providers.Should().HaveCount(6);
+        providers.Should().HaveCount(7);
         providers.Should().ContainKey(AIAgentFrameworkClientType.AzureOpenAI);
         providers.Should().ContainKey(AIAgentFrameworkClientType.OpenAI);
         providers.Should().ContainKey(AIAgentFrameworkClientType.AzureAIInference);
         providers.Should().ContainKey(AIAgentFrameworkClientType.PersistentAgents);
         providers.Should().ContainKey(AIAgentFrameworkClientType.Anthropic);
+        providers.Should().ContainKey(AIAgentFrameworkClientType.FoundryResponses);
         providers.Should().ContainKey(AIAgentFrameworkClientType.Echo);
     }
 
@@ -165,6 +166,7 @@ public sealed class ChatClientFactoryAvailabilityTests : IDisposable
         providers[AIAgentFrameworkClientType.AzureAIInference].Should().BeFalse();
         providers[AIAgentFrameworkClientType.PersistentAgents].Should().BeFalse();
         providers[AIAgentFrameworkClientType.Anthropic].Should().BeFalse();
+        providers[AIAgentFrameworkClientType.FoundryResponses].Should().BeFalse();
     }
 
     [Fact]

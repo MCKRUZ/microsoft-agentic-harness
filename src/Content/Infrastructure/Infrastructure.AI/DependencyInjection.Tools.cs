@@ -3,6 +3,7 @@ using Application.AI.Common.Interfaces.RAG;
 using Application.AI.Common.Interfaces.Tools;
 using Azure.AI.Agents.Persistent;
 using Azure.AI.OpenAI;
+using Azure.AI.Projects;
 using Application.Common.Factories;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
@@ -242,6 +243,13 @@ public static partial class DependencyInjection
             var credential = AzureCredentialFactory.CreateTokenCredential(appConfig.AI.AIFoundry.Entra);
             services.AddSingleton(new PersistentAgentsAdministrationClient(
                 appConfig.AI.AIFoundry.ProjectEndpoint, credential));
+
+            // Foundry Responses agent (direct inference) — AIProjectClient drives the project's
+            // Responses API; FoundryAgentProvider builds the non-versioned ChatClientAgent for the
+            // FoundryResponses client type. Both gated on the project endpoint being configured.
+            services.AddSingleton(new AIProjectClient(
+                new Uri(appConfig.AI.AIFoundry.ProjectEndpoint), credential));
+            services.AddSingleton<IFoundryAgentProvider, FoundryAgentProvider>();
         }
     }
 }

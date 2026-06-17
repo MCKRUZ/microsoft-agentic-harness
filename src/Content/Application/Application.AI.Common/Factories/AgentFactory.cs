@@ -112,10 +112,97 @@ public class AgentFactory : IAgentFactory
         _logger.LogInformation("Creating agent {AgentName} using {ClientType} with {Deployment}",
             agentContext.Name, clientType, deploymentOrAgentId);
 
+        if (agentContext.Tools?.Count > 0)
+        {
+            _logger.LogInformation("Agent {AgentName} configured with {ToolCount} tools",
+                agentContext.Name, agentContext.Tools.Count);
+        }
+
+        // Build agent options, wiring any AIContextProviders for progressive skill disclosure.
+        // Shared by every provider path.
+        var agentOptions = new ChatClientAgentOptions
+        {
+            Name = agentContext.Name,
+            Description = agentContext.Description,
+            ChatOptions = new ChatOptions
+            {
+                Instructions = agentContext.Instruction,
+                Tools = agentContext.Tools,
+                Temperature = agentContext.Temperature
+            },
+            AIContextProviders = agentContext.AIContextProviders?.Count > 0
+                ? agentContext.AIContextProviders
+                : null
+        };
+
+        // The Foundry Responses provider yields an AIAgent directly (no IChatClient surface), so it
+        // is built via IFoundryAgentProvider with the harness middleware injected through the
+        // client-factory hook. Every other provider returns an IChatClient we wrap into a
+        // ChatClientAgent. Both paths share the agent-level OpenTelemetry wrap below.
+        var agent = clientType == AIAgentFrameworkClientType.FoundryResponses
+            ? await CreateFoundryResponsesAgentAsync(agentContext, deploymentOrAgentId, agentOptions, cancellationToken)
+            : await CreateChatClientAgentAsync(agentContext, clientType, deploymentOrAgentId, agentOptions, cancellationToken);
+
+        // Wrap with agent-level OpenTelemetry (sensitive data off at this level)
+        return agent.AsBuilder()
+            .UseOpenTelemetry(configure: c => c.EnableSensitiveData = false)
+            .Build();
+    }
+
+    /// <summary>
+    /// Builds an agent from an <see cref="IChatClient"/> provider (Azure OpenAI, OpenAI, AI
+    /// Inference, Persistent Agents, Anthropic, Echo): resolves the chat client, wraps it in the
+    /// harness middleware pipeline, and constructs a <see cref="ChatClientAgent"/>.
+    /// </summary>
+    private async Task<AIAgent> CreateChatClientAgentAsync(
+        AgentExecutionContext agentContext,
+        AIAgentFrameworkClientType clientType,
+        string deploymentOrAgentId,
+        ChatClientAgentOptions agentOptions,
+        CancellationToken cancellationToken)
+    {
         var chatClient = await _chatClientFactory.GetChatClientAsync(
             clientType, deploymentOrAgentId, cancellationToken);
 
-        // Build ChatClient middleware pipeline
+        var middlewareEnabledChatClient = BuildMiddlewarePipeline(chatClient, agentContext);
+
+        return new ChatClientAgent(middlewareEnabledChatClient, agentOptions);
+    }
+
+    /// <summary>
+    /// Builds a Foundry Responses agent (direct inference) via <see cref="IFoundryAgentProvider"/>,
+    /// injecting the harness middleware pipeline through the provider's client-factory hook so the
+    /// Foundry path retains the same OpenTelemetry, function-invocation, observability, prerequisite,
+    /// and caching behaviour as the <see cref="IChatClient"/> providers.
+    /// </summary>
+    private async Task<AIAgent> CreateFoundryResponsesAgentAsync(
+        AgentExecutionContext agentContext,
+        string model,
+        ChatClientAgentOptions agentOptions,
+        CancellationToken cancellationToken)
+    {
+        var provider = _serviceProvider.GetService<IFoundryAgentProvider>()
+            ?? throw new InvalidOperationException(
+                "ClientType 'FoundryResponses' requires an IFoundryAgentProvider, which is registered " +
+                "only when AppConfig:AI:AIFoundry:ProjectEndpoint is configured. Set the Foundry project " +
+                "endpoint and Entra credentials, or choose a different ClientType.");
+
+        return await provider.CreateAgentAsync(
+            model,
+            agentOptions,
+            clientFactory: inner => BuildMiddlewarePipeline(inner, agentContext),
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// Wraps an inner <see cref="IChatClient"/> in the harness middleware pipeline:
+    /// OpenTelemetry → function invocation → observability → tool diagnostics →
+    /// (optional) skill-prerequisite gating → distributed cache. Shared by every provider path,
+    /// including the Foundry client-factory hook, so middleware behaviour is identical regardless of
+    /// how the agent is constructed.
+    /// </summary>
+    private IChatClient BuildMiddlewarePipeline(IChatClient chatClient, AgentExecutionContext agentContext)
+    {
         var chatClientBuilder = chatClient.AsBuilder()
             .UseOpenTelemetry(configure: c => c.EnableSensitiveData = true)
             .UseFunctionInvocation(configure: c =>
@@ -148,36 +235,7 @@ public class AgentFactory : IAgentFactory
 
         chatClientBuilder = chatClientBuilder.UseDistributedCache(_distributedCache);
 
-        var middlewareEnabledChatClient = chatClientBuilder.Build();
-
-        if (agentContext.Tools?.Count > 0)
-        {
-            _logger.LogInformation("Agent {AgentName} configured with {ToolCount} tools",
-                agentContext.Name, agentContext.Tools.Count);
-        }
-
-        // Build agent options, wiring any AIContextProviders for progressive skill disclosure
-        var agentOptions = new ChatClientAgentOptions
-        {
-            Name = agentContext.Name,
-            Description = agentContext.Description,
-            ChatOptions = new ChatOptions
-            {
-                Instructions = agentContext.Instruction,
-                Tools = agentContext.Tools,
-                Temperature = agentContext.Temperature
-            },
-            AIContextProviders = agentContext.AIContextProviders?.Count > 0
-                ? agentContext.AIContextProviders
-                : null
-        };
-
-        var agent = new ChatClientAgent(middlewareEnabledChatClient, agentOptions);
-
-        // Wrap with agent-level OpenTelemetry (sensitive data off at this level)
-        return agent.AsBuilder()
-            .UseOpenTelemetry(configure: c => c.EnableSensitiveData = false)
-            .Build();
+        return chatClientBuilder.Build();
     }
 
     /// <inheritdoc />

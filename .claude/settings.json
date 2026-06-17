@@ -57,6 +57,26 @@
     ]
   },
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -r '.tool_input.command // empty' | grep -qE \"^[[:space:]]*git[[:space:]]+commit\" && echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"additionalContext\":\"GitNexus project rule (CLAUDE.md): before this commit, run gitnexus_detect_changes() to confirm only the expected symbols and execution flows changed. If you have not already run it for the current diff, do so now and reconcile any surprises before committing.\"}}' || true"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"additionalContext\":\"GitNexus project rule (CLAUDE.md): if this edit modifies an existing code symbol, first run gitnexus_impact({target, direction: upstream}) and report the blast radius, warning on HIGH or CRITICAL risk. Skip for docs, comments, config, or test-only edits.\"}}'"
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "hooks": [

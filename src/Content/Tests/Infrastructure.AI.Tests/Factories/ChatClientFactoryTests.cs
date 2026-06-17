@@ -79,8 +79,9 @@ public sealed class ChatClientFactoryTests : IDisposable
         providers.Should().ContainKey(AIAgentFrameworkClientType.AzureAIInference);
         providers.Should().ContainKey(AIAgentFrameworkClientType.PersistentAgents);
         providers.Should().ContainKey(AIAgentFrameworkClientType.Anthropic);
+        providers.Should().ContainKey(AIAgentFrameworkClientType.FoundryResponses);
         providers.Should().ContainKey(AIAgentFrameworkClientType.Echo);
-        providers.Should().HaveCount(6);
+        providers.Should().HaveCount(7);
     }
 
     [Fact]

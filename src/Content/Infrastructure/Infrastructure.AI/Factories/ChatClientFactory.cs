@@ -102,6 +102,15 @@ public sealed partial class ChatClientFactory : IChatClientFactory, IDisposable
     /// </summary>
     private IReadOnlyList<string> ComputeMissingSettings(AIAgentFrameworkClientType clientType)
     {
+        // FoundryResponses authenticates via the Foundry project endpoint + Entra (not an API key),
+        // so its only required setting lives under AppConfig:AI:AIFoundry.
+        if (clientType == AIAgentFrameworkClientType.FoundryResponses)
+        {
+            return _appConfig.CurrentValue.AI.AIFoundry.IsConfigured
+                ? []
+                : ["AppConfig:AI:AIFoundry:ProjectEndpoint"];
+        }
+
         var framework = _appConfig.CurrentValue.AI.AgentFramework;
         var missing = new List<string>();
 
@@ -131,6 +140,10 @@ public sealed partial class ChatClientFactory : IChatClientFactory, IDisposable
             AIAgentFrameworkClientType.PersistentAgents => _adminClient != null,
             AIAgentFrameworkClientType.Anthropic => !string.IsNullOrWhiteSpace(_appConfig.CurrentValue.AI.AgentFramework.Endpoint)
                 && _appConfig.CurrentValue.AI.AgentFramework.IsConfigured,
+            // FoundryResponses yields an AIAgent (built by AgentFactory via IFoundryAgentProvider),
+            // not an IChatClient. Availability is reported here for consistency and health checks,
+            // and is gated on the Foundry project endpoint being configured.
+            AIAgentFrameworkClientType.FoundryResponses => _appConfig.CurrentValue.AI.AIFoundry.IsConfigured,
             AIAgentFrameworkClientType.Echo => true,
             _ => false
         };
@@ -149,6 +162,9 @@ public sealed partial class ChatClientFactory : IChatClientFactory, IDisposable
             AIAgentFrameworkClientType.AzureAIInference => await GetAzureAIInferenceChatClientAsync(deploymentOrAgentId, cancellationToken),
             AIAgentFrameworkClientType.PersistentAgents => await GetPersistentAgentChatClientAsync(deploymentOrAgentId, cancellationToken),
             AIAgentFrameworkClientType.Anthropic => GetAnthropicChatClient(deploymentOrAgentId),
+            AIAgentFrameworkClientType.FoundryResponses => throw new InvalidOperationException(
+                "ClientType 'FoundryResponses' does not expose an IChatClient — it produces an AIAgent. " +
+                "Build it through AgentFactory (which uses IFoundryAgentProvider), not IChatClientFactory.GetChatClientAsync."),
             AIAgentFrameworkClientType.Echo => new EchoChatClient(),
             _ => throw new ArgumentException($"Unsupported AI framework client type: {clientType}", nameof(clientType))
         };
@@ -164,6 +180,7 @@ public sealed partial class ChatClientFactory : IChatClientFactory, IDisposable
             { AIAgentFrameworkClientType.AzureAIInference, IsAvailable(AIAgentFrameworkClientType.AzureAIInference) },
             { AIAgentFrameworkClientType.PersistentAgents, IsAvailable(AIAgentFrameworkClientType.PersistentAgents) },
             { AIAgentFrameworkClientType.Anthropic, IsAvailable(AIAgentFrameworkClientType.Anthropic) },
+            { AIAgentFrameworkClientType.FoundryResponses, IsAvailable(AIAgentFrameworkClientType.FoundryResponses) },
             { AIAgentFrameworkClientType.Echo, IsAvailable(AIAgentFrameworkClientType.Echo) }
         };
     }

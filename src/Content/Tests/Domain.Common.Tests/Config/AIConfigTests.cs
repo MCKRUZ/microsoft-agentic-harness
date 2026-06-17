@@ -83,6 +83,7 @@ public class AIAgentFrameworkClientTypeTests
     [InlineData(AIAgentFrameworkClientType.PersistentAgents, 3)]
     [InlineData(AIAgentFrameworkClientType.Anthropic, 4)]
     [InlineData(AIAgentFrameworkClientType.Echo, 5)]
+    [InlineData(AIAgentFrameworkClientType.FoundryResponses, 6)]
     public void Value_HasExpectedInteger(AIAgentFrameworkClientType type, int expected)
     {
         ((int)type).Should().Be(expected);
@@ -92,7 +93,7 @@ public class AIAgentFrameworkClientTypeTests
     public void AllValues_AreDistinct()
     {
         Enum.GetValues<AIAgentFrameworkClientType>().Should().OnlyHaveUniqueItems();
-        Enum.GetValues<AIAgentFrameworkClientType>().Should().HaveCount(6);
+        Enum.GetValues<AIAgentFrameworkClientType>().Should().HaveCount(7);
     }
 
     [Fact]
