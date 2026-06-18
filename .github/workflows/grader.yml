@@ -38,6 +38,25 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Compute changed-line anchors
+        id: anchors
+        # The grader NEVER adds red to a PR (it advises). Anchors are a best-effort
+        # aid: if the fetch hiccups or the helper exits non-zero, swallow it and let
+        # the grade step fall back to inspecting the diff directly.
+        continue-on-error: true
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          # Full fetch of the base so the merge-base (and thus the diff) resolves.
+          git fetch --no-tags origin "$BASE_REF"
+          # Deterministic changed-line set, shared with the correctness rail, so
+          # the grader's evidence pins to exact lines instead of drifting prose.
+          ANCHORS_FILE="${RUNNER_TEMP}/grader-anchors.txt"
+          scripts/rails/diff-anchors.sh --base "$BASE_REF" > "$ANCHORS_FILE"
+          echo "anchors_file=${ANCHORS_FILE}" >> "$GITHUB_OUTPUT"
+          echo "Changed-line anchors:"; cat "$ANCHORS_FILE" || true
+
       - name: Grade the change against its spec
         id: grade
         continue-on-error: true
@@ -49,6 +68,9 @@ jobs:
             You are running as the grader for PR #${{ github.event.pull_request.number }}.
             Read the grading rubric at .github/grader-rubric.md and follow it exactly.
             The "spec" is this PR's description and any linked issue.
+            The changed-line anchor set is at ${{ steps.anchors.outputs.anchors_file }} —
+            cite a `path:line` from it as the evidence for each check, and treat it as
+            the authoritative list of what this PR changed.
             Inspect the PR diff (the base is origin/${{ github.base_ref }}) and the
             changed files, then POST your verdict as a single PR comment. Update the
             same comment on re-runs rather than stacking new ones.

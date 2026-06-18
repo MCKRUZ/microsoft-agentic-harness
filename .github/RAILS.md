@@ -14,6 +14,7 @@ them live, and how to prove they actually catch things.
 | **build-and-test** | `workflows/ci.yml` | every PR | **Blocks** (hard gate) |
 | **OWASP Agentic Top-10 Gate** | `workflows/ci.yml` | every PR | **Blocks** (hard gate) |
 | **security-review** | `workflows/security-review.yml` | every PR; reviews on gated paths / `risk:high` | **Blocks on HIGH** |
+| **correctness-review** | `workflows/correctness-review.yml` | every PR; reviews when `src/` changed | **Blocks on a high-confidence defect** (not yet a required check — see go-live) |
 | **grader** | `workflows/grader.yml` | every PR | **Advises** — never blocks |
 | **docs-drift** | `workflows/docs-drift-check.yml` | push to main (code / CI / governance paths) | **Advises** — opens a doc-sync PR |
 | **Stop gate** | `../.claude/hooks/stop-build-gate.ps1` | agent tries to finish locally | **Blocks** a red build |
@@ -29,9 +30,10 @@ These are deliberate, outward-facing actions. Nothing in this PR performs them.
    Claude Code, or install from <https://github.com/apps/claude>. Needed for the
    grader, security-review, and docs-drift workflows. (Repo admin required.)
 2. **Add the `ANTHROPIC_API_KEY` repository secret** (Settings → Secrets and
-   variables → Actions). The grader and security-review steps call the Claude API;
-   there is a real per-PR token cost. Until this is set, the security-review gate
-   **fails closed on gated PRs** (by design) and the grader stays green/no-op.
+   variables → Actions). The grader, security-review, and correctness-review steps
+   call the Claude API; there is a real per-PR token cost. Until this is set, the
+   security-review and correctness-review gates **fail closed on the PRs they
+   review** (by design) and the grader stays green/no-op.
 3. **Apply branch protection** once you've read the desired ruleset:
    ```bash
    scripts/rails/apply-branch-protection.sh --dry-run   # review the plan
@@ -39,6 +41,12 @@ These are deliberate, outward-facing actions. Nothing in this PR performs them.
    ```
    This is the only sanctioned way to change branch protection — edit the JSON,
    re-run the script. Do not hand-edit rules in the GitHub UI.
+4. **(Optional) Promote correctness-review to a required check.** It ships wired
+   and fail-closed but is intentionally **not** in the ruleset, so merging it does
+   not wedge every source PR before steps 1–2 are done. Once the Claude App + key
+   are live and you've watched it run on a few PRs, add `correctness-review` to the
+   `required_status_checks` array in `rulesets/main-branch-protection.json` and
+   re-run the apply script. Until then it advises (its red X does not block).
 
 ## Required status checks
 
@@ -94,6 +102,11 @@ Before trusting these, force each one to fail and confirm it's caught:
 - **security-review** — open a throwaway PR touching a gated path (e.g. add a
   comment in a file under `**/Auth/`) with a planted HIGH issue. The check must
   go red. Close it unmerged.
+- **correctness-review** — open a throwaway PR with a planted high-confidence
+  defect under `src/` (e.g. an inverted null check or an off-by-one that drops a
+  row). The check must go red with `CORRECTNESS_VERDICT: BLOCK`; then apply the
+  `accepted-risk:correctness` label and confirm it goes green. Close it unmerged.
+  Do this before promoting it to a required check (go-live step 4).
 - **CI / OWASP** — already exercised by every real PR.
 
 ## Deferred (not built — no cloud deployment exists yet)

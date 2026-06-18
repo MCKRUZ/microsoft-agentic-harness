@@ -17,12 +17,27 @@ as the spec, supplemented by any linked issue and the `CLAUDE.md` / `.claude/rul
 standards. If the PR description states no intent, say so plainly — an
 unspecified change cannot be graded against intent, and that itself is a finding.
 
+## The anchor set — pin your evidence to it
+
+The workflow gives you a **changed-line anchor set** (from
+`scripts/rails/diff-anchors.sh`): a list of `path:Lstart-Lend` ranges that are the
+*only* lines this PR changed. It is the authoritative answer to "what did this PR
+touch." Use it two ways:
+
+- **Evidence** for a met/partial check should cite a `path:line` from the anchor
+  set (or a test name) — not a vague "see the controller." Pinning to a changed
+  line makes the verdict reproducible and stops line-number drift.
+- **Scope** — a "hole" you raise must trace back to a changed line; the grader
+  judges *this change*, not pre-existing debt on untouched lines. (You may still
+  flag an omission — something the spec asked for that appears in *no* anchor — as
+  a not-met check; absence from the set is itself the evidence.)
+
 ## Produce, as a single PR comment
 
 1. **Intent** — one or two sentences: what this PR claims to do, in your words.
 2. **Check-by-check table** — one row per claim/acceptance-criterion you can
    extract from the spec. Columns: *Claim* · *Verdict* (✅ met / ⚠️ partial /
-   ❌ not met / ❓ can't tell) · *Evidence* (file:line or test name).
+   ❌ not met / ❓ can't tell) · *Evidence* (a `path:line` anchor or test name).
 3. **Holes** — anything the diff does that the spec did not ask for (scope
    creep), anything the spec asked for that the diff omits, and any risk the
    author may not have seen (missing tests, mutation of shared state, broken
