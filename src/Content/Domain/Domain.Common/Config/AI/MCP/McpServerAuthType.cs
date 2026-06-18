@@ -23,8 +23,10 @@ public enum McpServerAuthType
     Bearer,
 
     /// <summary>
-    /// Microsoft Entra ID (Azure AD) authentication.
-    /// Uses OAuth 2.0 client credentials flow to obtain access tokens.
+    /// Microsoft Entra ID (Azure AD) authentication. The harness mints its own
+    /// short-lived, auto-rotating access token per outbound request and never forwards
+    /// a caller's credential. Secure-by-default shape is managed identity (no stored
+    /// secret); client secret and certificate are supported as explicit fallbacks.
     /// </summary>
     Entra
 }

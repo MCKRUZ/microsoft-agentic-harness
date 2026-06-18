@@ -160,6 +160,33 @@ public class McpServerAuthConfigTests
     }
 
     [Fact]
+    public void IsValid_Entra_ManagedIdentity_ScopeOnly_ReturnsTrue()
+    {
+        // Secure-by-default shape: no stored secret or certificate, just the resource
+        // scope the harness mints a token for.
+        var auth = new McpServerAuthConfig
+        {
+            Type = McpServerAuthType.Entra,
+            Scopes = ["api://resource/.default"]
+        };
+
+        auth.IsValid.Should().BeTrue();
+    }
+
+    [Fact]
+    public void IsValid_Entra_UserAssignedManagedIdentity_ReturnsTrue()
+    {
+        var auth = new McpServerAuthConfig
+        {
+            Type = McpServerAuthType.Entra,
+            ClientId = "user-assigned-mi",
+            Scopes = ["api://resource/.default"]
+        };
+
+        auth.IsValid.Should().BeTrue();
+    }
+
+    [Fact]
     public void IsValid_Entra_WithClientSecret_ReturnsTrue()
     {
         var auth = new McpServerAuthConfig
@@ -167,7 +194,8 @@ public class McpServerAuthConfigTests
             Type = McpServerAuthType.Entra,
             TenantId = "tenant-1",
             ClientId = "client-1",
-            ClientSecret = "secret-1"
+            ClientSecret = "secret-1",
+            Scopes = ["api://resource/.default"]
         };
 
         auth.IsValid.Should().BeTrue();
@@ -181,18 +209,22 @@ public class McpServerAuthConfigTests
             Type = McpServerAuthType.Entra,
             TenantId = "tenant-1",
             ClientId = "client-1",
-            CertificatePath = "/certs/client.pfx"
+            CertificatePath = "/certs/client.pfx",
+            Scopes = ["api://resource/.default"]
         };
 
         auth.IsValid.Should().BeTrue();
     }
 
     [Fact]
-    public void IsValid_Entra_MissingTenantId_ReturnsFalse()
+    public void IsValid_Entra_NoScope_ReturnsFalse()
     {
+        // Without a scope there is no resource to mint a token for — reject rather than
+        // connect with no credential.
         var auth = new McpServerAuthConfig
         {
             Type = McpServerAuthType.Entra,
+            TenantId = "tenant-1",
             ClientId = "client-1",
             ClientSecret = "secret-1"
         };
@@ -201,13 +233,43 @@ public class McpServerAuthConfigTests
     }
 
     [Fact]
-    public void IsValid_Entra_MissingBothSecretAndCert_ReturnsFalse()
+    public void IsValid_Entra_SecretMissingTenantId_ReturnsFalse()
+    {
+        var auth = new McpServerAuthConfig
+        {
+            Type = McpServerAuthType.Entra,
+            ClientId = "client-1",
+            ClientSecret = "secret-1",
+            Scopes = ["api://resource/.default"]
+        };
+
+        auth.IsValid.Should().BeFalse();
+    }
+
+    [Fact]
+    public void IsValid_Entra_SecretMissingClientId_ReturnsFalse()
     {
         var auth = new McpServerAuthConfig
         {
             Type = McpServerAuthType.Entra,
             TenantId = "tenant-1",
-            ClientId = "client-1"
+            ClientSecret = "secret-1",
+            Scopes = ["api://resource/.default"]
+        };
+
+        auth.IsValid.Should().BeFalse();
+    }
+
+    [Fact]
+    public void IsValid_Entra_TenantIdWithoutSecretOrCert_ReturnsFalse()
+    {
+        // A TenantId with no secret/cert is a half-configured fallback (forgotten
+        // credential) — reject rather than silently fall back to an ambient identity.
+        var auth = new McpServerAuthConfig
+        {
+            Type = McpServerAuthType.Entra,
+            TenantId = "tenant-1",
+            Scopes = ["api://resource/.default"]
         };
 
         auth.IsValid.Should().BeFalse();

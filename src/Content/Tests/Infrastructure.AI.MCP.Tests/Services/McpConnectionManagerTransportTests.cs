@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+using System.Reflection;
 using Application.AI.Common.Exceptions;
 using Domain.Common.Config.AI.MCP;
 using FluentAssertions;
@@ -108,6 +110,118 @@ public sealed class McpConnectionManagerTransportTests
         var act = () => sut.GetClientAsync("bearer-server");
 
         await act.Should().ThrowAsync<McpConnectionException>();
+    }
+
+    [Fact]
+    public async Task GetClientAsync_HttpWithIncompleteEntraAuth_ThrowsWithClearMessage()
+    {
+        // Entra type selected but no scope — previously this silently connected with no
+        // credential. It must now fail loudly at transport build before any send.
+        var config = new McpServersConfig
+        {
+            Servers = new Dictionary<string, McpServerDefinition>
+            {
+                ["entra-no-scope"] = new()
+                {
+                    Enabled = true,
+                    Type = McpServerType.Http,
+                    Url = "http://localhost:19999/mcp",
+                    StartupTimeoutSeconds = 1,
+                    Auth = new McpServerAuthConfig
+                    {
+                        Type = McpServerAuthType.Entra
+                    }
+                }
+            }
+        };
+        var sut = CreateManager(config);
+
+        var act = () => sut.GetClientAsync("entra-no-scope");
+
+        await act.Should().ThrowAsync<McpConnectionException>()
+            .WithMessage("*incomplete*");
+    }
+
+    [Fact]
+    public async Task GetClientAsync_HttpWithIncompleteBearerAuth_ThrowsWithClearMessage()
+    {
+        // A configured-but-empty static credential must also fail loudly rather than
+        // connecting with no Authorization header.
+        var config = new McpServersConfig
+        {
+            Servers = new Dictionary<string, McpServerDefinition>
+            {
+                ["bearer-empty"] = new()
+                {
+                    Enabled = true,
+                    Type = McpServerType.Http,
+                    Url = "http://localhost:19999/mcp",
+                    StartupTimeoutSeconds = 1,
+                    Auth = new McpServerAuthConfig
+                    {
+                        Type = McpServerAuthType.Bearer,
+                        BearerToken = ""
+                    }
+                }
+            }
+        };
+        var sut = CreateManager(config);
+
+        var act = () => sut.GetClientAsync("bearer-empty");
+
+        await act.Should().ThrowAsync<McpConnectionException>()
+            .WithMessage("*incomplete*");
+    }
+
+    [Fact]
+    public async Task GetClientAsync_EntraServer_CachesPerServerClient_DisconnectRemovesIt()
+    {
+        // Drives the Entra happy-path branch at the manager level: a valid managed-identity
+        // Entra config builds and caches a per-server token-injecting client (this happens
+        // during transport construction, before any token call), and DisconnectAsync must
+        // release it. The connection itself fails (unreachable URL / SSRF) — we assert the
+        // lifecycle of the cached client, not a successful connect.
+        var config = new McpServersConfig
+        {
+            Servers = new Dictionary<string, McpServerDefinition>
+            {
+                ["entra-server"] = new()
+                {
+                    Enabled = true,
+                    Type = McpServerType.Http,
+                    Url = "http://localhost:19999/mcp",
+                    StartupTimeoutSeconds = 1,
+                    Auth = new McpServerAuthConfig
+                    {
+                        Type = McpServerAuthType.Entra,
+                        Scopes = ["api://resource/.default"]
+                    }
+                }
+            }
+        };
+        var sut = CreateManager(config);
+        var entraClients = GetEntraClients(sut);
+
+        using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15)))
+        {
+            var act = () => sut.GetClientAsync("entra-server", cts.Token);
+            await act.Should().ThrowAsync<McpConnectionException>();
+        }
+
+        // The per-server Entra client was created and cached even though the connect failed.
+        entraClients.Should().ContainKey("entra-server");
+
+        await sut.DisconnectAsync("entra-server");
+
+        // DisconnectAsync released it — the defended cleanup behavior, now guarded.
+        entraClients.Should().NotContainKey("entra-server");
+    }
+
+    private static ConcurrentDictionary<string, HttpClient> GetEntraClients(McpConnectionManager manager)
+    {
+        var field = typeof(McpConnectionManager)
+            .GetField("_entraClients", BindingFlags.NonPublic | BindingFlags.Instance);
+        return (ConcurrentDictionary<string, HttpClient>)field!.GetValue(manager)!;
     }
 
     // -- Concurrent GetClientAsync --

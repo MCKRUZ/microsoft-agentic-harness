@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using Application.AI.Common.Exceptions;
 using Domain.Common.Config.AI.MCP;
 using Infrastructure.AI.Egress;
+using Infrastructure.AI.Identity;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Client;
 
@@ -22,9 +23,11 @@ public sealed class McpConnectionManager : IAsyncDisposable
 {
     private readonly ILogger<McpConnectionManager> _logger;
     private readonly ILoggerFactory _loggerFactory;
+    private readonly HttpMessageHandler _antiSsrfHandler;
     private readonly HttpClient _httpClient;
     private readonly McpServersConfig _config;
     private readonly ConcurrentDictionary<string, McpClient> _clients = new();
+    private readonly ConcurrentDictionary<string, HttpClient> _entraClients = new();
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _connectionLocks = new();
     private bool _disposed;
 
@@ -56,9 +59,13 @@ public sealed class McpConnectionManager : IAsyncDisposable
     {
         _logger = logger;
         _loggerFactory = loggerFactory;
+        // The shared SSRF-guard terminal handler. Captured so Entra connections can wrap
+        // it with a per-server token-injecting handler while still routing through the
+        // same connect-time IP filter.
+        _antiSsrfHandler = antiSsrfHandlerFactory.GetOrCreate();
         // disposeHandler: false — the AntiSSRF handler is a shared singleton owned by
         // the factory; this client must not dispose it.
-        _httpClient = new HttpClient(antiSsrfHandlerFactory.GetOrCreate(), disposeHandler: false);
+        _httpClient = new HttpClient(_antiSsrfHandler, disposeHandler: false);
         _config = config;
     }
 
@@ -111,6 +118,15 @@ public sealed class McpConnectionManager : IAsyncDisposable
         {
             await client.DisposeAsync();
             _logger.LogInformation("Disconnected from MCP server '{ServerName}'", serverName);
+        }
+
+        // Release the per-server Entra client (and its pooled sockets) on explicit
+        // disconnect, mirroring the cleanup of _clients above. disposeHandler:false leaves
+        // the shared AntiSSRF handler intact; a later reconnect recreates a fresh
+        // token-injecting client.
+        if (_entraClients.TryRemove(serverName, out var entraClient))
+        {
+            entraClient.Dispose();
         }
     }
 
@@ -191,29 +207,61 @@ public sealed class McpConnectionManager : IAsyncDisposable
             Endpoint = uri
         };
 
-        // Apply auth headers from configuration
-        if (definition.Auth is { IsConfigured: true, IsValid: true } auth)
-        {
-            options.AdditionalHeaders = auth.Type switch
-            {
-                McpServerAuthType.ApiKey => new Dictionary<string, string>
-                {
-                    [auth.ApiKeyHeader] = auth.ApiKey!
-                },
-                McpServerAuthType.Bearer => new Dictionary<string, string>
-                {
-                    ["Authorization"] = $"Bearer {auth.BearerToken}"
-                },
-                _ => null
-            };
-        }
+        // Select the HTTP client carrying the right credential. Static schemes (ApiKey,
+        // Bearer) reuse the shared SSRF-guarded client with per-request headers; Entra
+        // gets a per-server client whose token-injecting handler mints a fresh, rotating
+        // token in front of the same SSRF guard. All paths still route through the
+        // connect-time IP filter, so a URL resolving to an internal/metadata address is
+        // refused at the socket. The transport does not own the supplied client.
+        var httpClient = ResolveTransportHttpClient(serverName, definition.Auth, options);
 
-        // Route the transport through the SSRF-guarded client. Its handler performs
-        // connect-time IP filtering and redirect re-validation, so a server URL that
-        // resolves to an internal/metadata address is refused at the socket — including
-        // the DNS-rebinding case a pre-flight host check cannot catch. The transport
-        // does not own the shared client.
-        return new HttpClientTransport(options, _httpClient, _loggerFactory);
+        return new HttpClientTransport(options, httpClient, _loggerFactory);
+    }
+
+    /// <summary>
+    /// Resolves the <see cref="HttpClient"/> for a server's transport and applies any
+    /// static auth headers to <paramref name="options"/>. Throws when auth is configured
+    /// but incomplete — a half-configured server must fail loudly rather than connect
+    /// with no credential.
+    /// </summary>
+    private HttpClient ResolveTransportHttpClient(
+        string serverName,
+        McpServerAuthConfig? auth,
+        HttpClientTransportOptions options)
+    {
+        if (auth is not { IsConfigured: true })
+            return _httpClient;
+
+        if (!auth.IsValid)
+            throw new McpConnectionException(
+                $"MCP server '{serverName}' has auth type {auth.Type} configured but its credential " +
+                "settings are incomplete. Provide the required fields for that auth type, or set the " +
+                "auth type to None.");
+
+        switch (auth.Type)
+        {
+            case McpServerAuthType.ApiKey:
+                options.AdditionalHeaders = new Dictionary<string, string> { [auth.ApiKeyHeader] = auth.ApiKey! };
+                return _httpClient;
+
+            case McpServerAuthType.Bearer:
+                options.AdditionalHeaders = new Dictionary<string, string> { ["Authorization"] = $"Bearer {auth.BearerToken}" };
+                return _httpClient;
+
+            case McpServerAuthType.Entra:
+                // Per-server client: EntraTokenAuthHandler mints a fresh, auto-rotating
+                // token per request and forwards to the shared SSRF-guard handler.
+                // disposeHandler:false (set in DisposeAsync's cleanup) keeps the shared
+                // terminal handler alive. Creation is serialized per server by the caller's
+                // connection lock, so GetOrAdd's factory runs at most once per server.
+                return _entraClients.GetOrAdd(
+                    serverName,
+                    _ => new HttpClient(EntraTokenAuthHandler.Create(auth, _antiSsrfHandler), disposeHandler: false));
+
+            default:
+                throw new McpConnectionException(
+                    $"MCP server '{serverName}' uses unsupported auth type '{auth.Type}'.");
+        }
     }
 
     private static readonly HashSet<string> BlockedHosts = new(StringComparer.OrdinalIgnoreCase)
@@ -250,6 +298,17 @@ public sealed class McpConnectionManager : IAsyncDisposable
         }
 
         _clients.Clear();
+
+        // Per-server Entra clients were built with disposeHandler:false, so disposing them
+        // releases the client wrapper without touching the shared AntiSSRF handler their
+        // token handlers wrap. The token handlers hold only a managed TokenCredential and
+        // are reclaimed by the GC.
+        foreach (var kvp in _entraClients)
+        {
+            kvp.Value.Dispose();
+        }
+
+        _entraClients.Clear();
 
         foreach (var kvp in _connectionLocks)
         {
