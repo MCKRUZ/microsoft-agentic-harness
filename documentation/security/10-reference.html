@@ -1,0 +1,487 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>10 · Security Cheatsheet — Agentic Harness Security Guide</title>
+        <meta
+            name="description"
+            content="The security pipeline order, every security configuration knob by layer, a pre-merge checklist, a glossary, and pointers to the deep-dive reference docs for the Microsoft Agentic Harness."
+        />
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+        <link
+            href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap"
+            rel="stylesheet"
+        />
+        <link rel="stylesheet" href="../assets/css/styles.css" />
+    </head>
+    <body>
+        <a href="#main" class="skip-link">Skip to content</a>
+        <div class="app">
+            <!-- ============ SIDEBAR ============ -->
+            <aside class="sidebar">
+                <div class="sidebar-header">
+                    <a class="sidebar-brand" href="index.html">
+                        <span class="sidebar-brand-mark">AH</span>
+                        <span>
+                            <span class="sidebar-brand-text">Agentic Harness</span><br />
+                            <span class="sidebar-brand-sub">Security Guide</span>
+                        </span>
+                    </a>
+                </div>
+                <nav class="sidebar-nav" aria-label="Documentation navigation">
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Foundations</div>
+                        <a class="sidebar-link" href="index.html"><span class="sidebar-link-num">00</span> Welcome</a>
+                        <a class="sidebar-link" href="01-threat-model.html"
+                            ><span class="sidebar-link-num">01</span> Threat Model &amp; Defense in Depth</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Access Control</div>
+                        <a class="sidebar-link" href="02-identity-and-access.html"
+                            ><span class="sidebar-link-num">02</span> Identity &amp; Access</a
+                        >
+                        <a class="sidebar-link" href="03-autonomy-and-governance.html"
+                            ><span class="sidebar-link-num">03</span> Autonomy &amp; Governance</a
+                        >
+                        <a class="sidebar-link" href="04-tools-and-permissions.html"
+                            ><span class="sidebar-link-num">04</span> Tools &amp; Permissions</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Execution Safety</div>
+                        <a class="sidebar-link" href="05-sandbox-and-execution.html"
+                            ><span class="sidebar-link-num">05</span> Sandbox &amp; Execution</a
+                        >
+                        <a class="sidebar-link" href="06-egress-and-ssrf.html"
+                            ><span class="sidebar-link-num">06</span> Egress &amp; SSRF Defense</a
+                        >
+                        <a class="sidebar-link" href="07-content-safety.html"
+                            ><span class="sidebar-link-num">07</span> Content Safety &amp; Injection</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Data &amp; Privacy</div>
+                        <a class="sidebar-link" href="08-data-protection.html"
+                            ><span class="sidebar-link-num">08</span> Data Protection &amp; Privacy</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Assurance</div>
+                        <a class="sidebar-link" href="09-owasp-evals.html"
+                            ><span class="sidebar-link-num">09</span> OWASP Agentic Evals</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Reference</div>
+                        <a class="sidebar-link" href="10-reference.html"
+                            ><span class="sidebar-link-num">10</span> Security Cheatsheet</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Other Guides</div>
+                        <a class="sidebar-link" href="../index.html">&#8592; Developer Guide</a>
+                        <a class="sidebar-link" href="../architecture/index.html">&#8592; Architecture Guide</a>
+                        <a class="sidebar-link" href="../agentic-harness-course/index.html">&#8592; Interactive Course</a>
+                    </div>
+                </nav>
+            </aside>
+
+            <!-- ============ MAIN ============ -->
+            <main id="main" class="content-wrap">
+                <div class="content">
+                    <span class="eyebrow">Chapter 10 &middot; Reference</span>
+                    <h1 class="page-title">Security Cheatsheet</h1>
+                    <p class="page-lead">
+                        The one-page lookup. The order security checks run in, the configuration knob behind each
+                        layer, a checklist to run before you ship, a glossary, and where to read deeper. Bookmark
+                        this page.
+                    </p>
+
+                    <h2 id="layers-at-a-glance">The seven layers at a glance</h2>
+                    <p>
+                        Each layer answers one question and is implemented by different code. This is the map; click
+                        through for the detail.
+                    </p>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>#</th>
+                                <th>Layer</th>
+                                <th>Answers</th>
+                                <th>Lives in</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>1</td>
+                                <td><a href="02-identity-and-access.html">Identity &amp; Access</a></td>
+                                <td>Who is calling?</td>
+                                <td><code>Infrastructure.AI.MCPServer</code>, <code>Infrastructure.AI/A2A</code>, <code>Presentation.AgentHub</code></td>
+                            </tr>
+                            <tr>
+                                <td>2</td>
+                                <td><a href="03-autonomy-and-governance.html">Autonomy &amp; Governance</a></td>
+                                <td>How much may it do alone?</td>
+                                <td><code>Domain.AI/Governance</code>, <code>Application.AI.Common/MediatRBehaviors</code></td>
+                            </tr>
+                            <tr>
+                                <td>3</td>
+                                <td><a href="04-tools-and-permissions.html">Tools &amp; Permissions</a></td>
+                                <td>Which tools, right now?</td>
+                                <td><code>Infrastructure.AI/Permissions</code>, <code>Application.Core/Permissions</code></td>
+                            </tr>
+                            <tr>
+                                <td>4</td>
+                                <td><a href="05-sandbox-and-execution.html">Sandbox &amp; Execution</a></td>
+                                <td>What can its code touch?</td>
+                                <td><code>Infrastructure.AI/Sandbox</code>, <code>Infrastructure.AI/Attestation</code></td>
+                            </tr>
+                            <tr>
+                                <td>5</td>
+                                <td><a href="06-egress-and-ssrf.html">Egress &amp; SSRF</a></td>
+                                <td>Where on the network?</td>
+                                <td><code>Infrastructure.AI/Egress</code>, <code>Infrastructure.AI.MCP/Services</code></td>
+                            </tr>
+                            <tr>
+                                <td>6</td>
+                                <td><a href="07-content-safety.html">Content Safety</a></td>
+                                <td>Is the text safe, in and out?</td>
+                                <td><code>Application.AI.Common/MediatRBehaviors</code>, <code>Infrastructure.AI.Governance</code></td>
+                            </tr>
+                            <tr>
+                                <td>7</td>
+                                <td><a href="08-data-protection.html">Data Protection</a></td>
+                                <td>What can it see and keep?</td>
+                                <td><code>Infrastructure.AI.KnowledgeGraph/Scoping</code>, <code>.../Compliance</code></td>
+                            </tr>
+                        </tbody>
+                    </table>
+
+                    <h2 id="pipeline-order">The security pipeline order</h2>
+                    <p>
+                        Most runtime security runs as <strong>MediatR pipeline behaviors</strong> — interceptors
+                        that wrap every command. The agent behaviors are registered in
+                        <code>src/Content/Application/Application.AI.Common/DependencyInjection.cs</code> and are
+                        deliberately registered first so they form the <em>outermost</em> wrapper. A request
+                        descends through them on the way in; the response climbs back out through them in reverse.
+                    </p>
+
+                    <div class="callout callout-jargon">
+                        <span class="callout-icon">¶</span>
+                        <div class="callout-body">
+                            <div class="callout-title">MediatR pipeline behavior</div>
+                            <p style="margin: 0">
+                                A wrapper that runs around a command handler — like middleware, but for in-process
+                                commands. Each behavior can inspect the request, short-circuit it (return early
+                                without calling the handler), or modify the response on the way out. Registration
+                                order is execution order, outer to inner.
+                            </p>
+                        </div>
+                    </div>
+
+                    <p>The security-relevant behaviors, in the order they execute (outer → inner):</p>
+                    <ol class="steps">
+                        <li class="step">
+                            <div class="step-meta">Inbound &middot; screening</div>
+                            <div class="step-title"><code>AuditTrail</code> → <code>ContentSafety</code> → <code>ToolPermission</code> → <code>GovernancePolicy</code> → <code>PromptInjection</code></div>
+                        </li>
+                        <li class="step">
+                            <div class="step-meta">Center</div>
+                            <div class="step-title">The command handler runs (the LLM turn / tool call)</div>
+                        </li>
+                        <li class="step">
+                            <div class="step-meta">Outbound &middot; sanitizing</div>
+                            <div class="step-title"><code>ResponseSanitization</code> acts on the result as it unwinds back out</div>
+                        </li>
+                    </ol>
+                    <p>
+                        So input is screened (<a href="07-content-safety.html">content safety</a>,
+                        <a href="04-tools-and-permissions.html">tool permission</a>,
+                        <a href="03-autonomy-and-governance.html">governance</a>, injection scan)
+                        <em>before</em> the handler ever calls the model, and tool output is sanitized
+                        <em>after</em> the handler, before it can re-enter the model's context. Two more
+                        Application-level behaviors —
+                        <code>RequestValidation</code> (FluentValidation at the boundary) and
+                        <code>Authorization</code> — run on the inner ring for every command.
+                    </p>
+
+                    <div class="callout callout-warn">
+                        <span class="callout-icon">!</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Order is load-bearing</div>
+                            <p style="margin: 0">
+                                If you add a new security behavior, where you register it decides what it can see.
+                                A check that must run before the LLM call belongs among the inbound screening
+                                behaviors; a check on model output belongs at or after
+                                <code>ResponseSanitization</code>. Registering it in the wrong place can silently
+                                make it a no-op.
+                            </p>
+                        </div>
+                    </div>
+
+                    <h2 id="config-knobs">Configuration knobs, by layer</h2>
+                    <p>
+                        The harness ships closed-by-default; opening it up is a set of deliberate config choices.
+                        These are the security-relevant settings and where they live. For the full configuration
+                        reference, see the
+                        <a href="../index.html">Developer Guide</a>'s Configuration page.
+                    </p>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Layer</th>
+                                <th>Knob</th>
+                                <th>What it controls</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>Identity</td>
+                                <td><code>MCP.Server.Authentication</code> (Authority / Audience / ValidIssuers)</td>
+                                <td>JWT validation for inbound MCP clients. Production requires it.</td>
+                            </tr>
+                            <tr>
+                                <td>Identity</td>
+                                <td><code>AgentHub:Cors:AllowedOrigins</code></td>
+                                <td>The CORS origin allowlist. Never wildcard in production.</td>
+                            </tr>
+                            <tr>
+                                <td>Identity</td>
+                                <td><code>Auth:Disabled</code> (Development only)</td>
+                                <td>Disables auth — only honored when <code>IsDevelopment()</code> is also true.</td>
+                            </tr>
+                            <tr>
+                                <td>Autonomy</td>
+                                <td>Autonomy tier (<code>TierPolicies</code> / agent <code>SubagentType</code>)</td>
+                                <td>Restricted / Supervised / Autonomous default posture per agent.</td>
+                            </tr>
+                            <tr>
+                                <td>Tools</td>
+                                <td>Plugin <code>AllowedTools</code> / <code>DeniedTools</code> / <code>AutonomyLevel</code></td>
+                                <td>Per-plugin tool boundary. <code>DeniedTools</code> is bypass-immune.</td>
+                            </tr>
+                            <tr>
+                                <td>Sandbox</td>
+                                <td><code>SandboxConfig</code> → <code>ResourceLimits</code></td>
+                                <td>Memory / CPU-time / subprocess / disk caps; isolation mode.</td>
+                            </tr>
+                            <tr>
+                                <td>Sandbox</td>
+                                <td><code>AttestationKeyOptions:HmacKeys</code> (User Secrets / Key Vault)</td>
+                                <td>HMAC signing keys for tool-result attestation. Never in appsettings.</td>
+                            </tr>
+                            <tr>
+                                <td>Egress</td>
+                                <td>Skill manifest <code>egress.allowlist</code></td>
+                                <td>Additive per-skill hostname allowlist over the frozen default-deny baseline.</td>
+                            </tr>
+                            <tr>
+                                <td>Content safety</td>
+                                <td><code>GovernanceConfig</code>: <code>Enabled</code>, <code>EnablePromptInjectionDetection</code>, <code>EnableResponseSanitization</code>, <code>InjectionBlockThreshold</code>, <code>ResponseBlockThreshold</code></td>
+                                <td>Toggles and thresholds for injection scanning and response sanitization.</td>
+                            </tr>
+                            <tr>
+                                <td>Data</td>
+                                <td><code>MultiTenantIsolation</code></td>
+                                <td>Enables per-tenant / per-owner record filtering. Off = single-tenant mode.</td>
+                            </tr>
+                            <tr>
+                                <td>Data</td>
+                                <td><code>GraphRag.ProvenanceEnabled</code></td>
+                                <td>Stamps source pipeline / task / timestamp on every graph write.</td>
+                            </tr>
+                            <tr>
+                                <td>Secrets</td>
+                                <td><code>AzureKeyVaultUri</code></td>
+                                <td>Loads secrets from Key Vault via managed identity (non-DEBUG builds).</td>
+                            </tr>
+                        </tbody>
+                    </table>
+
+                    <div class="callout callout-warn">
+                        <span class="callout-icon">!</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Verify key names against your build</div>
+                            <p style="margin: 0">
+                                Config keys are listed here by their conceptual path. Casing and nesting can drift
+                                between versions — confirm the exact key in your <code>appsettings.json</code> and
+                                the <code>AppConfig</code> hierarchy before relying on it. The layer pages link the
+                                class that reads each one.
+                            </p>
+                        </div>
+                    </div>
+
+                    <h2 id="pre-merge-checklist">Pre-merge security checklist</h2>
+                    <p>
+                        Before a change that touches agent behavior, tools, or data goes in, walk this list. The
+                        first item is enforced mechanically; the rest are judgment.
+                    </p>
+                    <ul>
+                        <li>
+                            <strong>OWASP Agentic evals pass.</strong> Run
+                            <code>dotnet test --filter "Category=OwaspAgentic"</code>. A failure blocks the merge by
+                            default. See <a href="09-owasp-evals.html">OWASP Agentic Evals</a>.
+                        </li>
+                        <li>
+                            <strong>No hardcoded secrets.</strong> Secrets come from User Secrets (dev) or Key Vault
+                            (prod) — never appsettings or source. Run
+                            <code>dotnet list package --vulnerable</code> when adding dependencies.
+                        </li>
+                        <li>
+                            <strong>New tool? It declares its capabilities</strong>
+                            (<code>[ToolCapabilityAttribute]</code>) and registers with a keyed-DI string key. By
+                            default it can touch nothing. See <a href="05-sandbox-and-execution.html">Sandbox</a>.
+                        </li>
+                        <li>
+                            <strong>New outbound host? It is on an egress allowlist.</strong> The default is
+                            deny-all; an un-allowlisted host is blocked at runtime. See
+                            <a href="06-egress-and-ssrf.html">Egress &amp; SSRF</a>.
+                        </li>
+                        <li>
+                            <strong>New command? It has a FluentValidation validator</strong> and the right
+                            <code>[Authorize]</code> / autonomy posture. Input is validated at the boundary, not
+                            inside the handler.
+                        </li>
+                        <li>
+                            <strong>New security behavior? It is registered in the correct pipeline position</strong>
+                            (see <a href="#pipeline-order">the pipeline order</a> above).
+                        </li>
+                        <li>
+                            <strong>Destructive or high-risk action? It is gated</strong> behind an autonomy tier or
+                            an escalation strategy — never auto-approved. See
+                            <a href="03-autonomy-and-governance.html">Autonomy &amp; Governance</a>.
+                        </li>
+                    </ul>
+
+                    <h2 id="glossary">Glossary</h2>
+                    <div class="def">
+                        <div class="def-term">Prompt injection</div>
+                        <div class="def-desc">
+                            Hostile instructions hidden in content the agent reads, meant to override its real task.
+                            <em>Direct</em> = in the user's prompt; <em>indirect</em> = planted in a page, document,
+                            or tool result the agent will later consume.
+                        </div>
+                    </div>
+                    <div class="def">
+                        <div class="def-term">SSRF (Server-Side Request Forgery)</div>
+                        <div class="def-desc">
+                            Tricking your own server into making a network request on the attacker's behalf —
+                            typically to reach an internal address or the cloud metadata service the attacker can't
+                            reach directly.
+                        </div>
+                    </div>
+                    <div class="def">
+                        <div class="def-term">DNS rebinding</div>
+                        <div class="def-desc">
+                            An attack where a hostname passes a name-based check, then its DNS record is flipped to an
+                            internal IP before the actual connection — defeated by checking the IP at connect time,
+                            not at URL-parse time.
+                        </div>
+                    </div>
+                    <div class="def">
+                        <div class="def-term">Capability model</div>
+                        <div class="def-desc">
+                            A permission scheme where code can do nothing unless it was explicitly granted a named
+                            capability (file read, network, subprocess, …). The harness's sandbox is
+                            closed-by-default: no capability means no access.
+                        </div>
+                    </div>
+                    <div class="def">
+                        <div class="def-term">HMAC attestation</div>
+                        <div class="def-desc">
+                            A keyed cryptographic signature over a tool execution's input/output hashes and timestamp.
+                            Only a holder of the secret key can produce or verify it, so a result can't be forged or
+                            tampered with after the fact.
+                        </div>
+                    </div>
+                    <div class="def">
+                        <div class="def-term">Bypass-immune</div>
+                        <div class="def-desc">
+                            A Deny rule that an auto-approve or Autonomous-tier setting cannot override. A plugin's
+                            <code>DeniedTools</code> and the sandbox safety gates are bypass-immune.
+                        </div>
+                    </div>
+                    <div class="def">
+                        <div class="def-term">Fail closed</div>
+                        <div class="def-desc">
+                            When a control errors or is misconfigured, it denies rather than allows. A quorum approval
+                            with a broken threshold denies; an egress request with no identity is refused.
+                        </div>
+                    </div>
+                    <div class="def">
+                        <div class="def-term">Memory poisoning</div>
+                        <div class="def-desc">
+                            Planting a false "fact" in the agent's persistent memory in one session to mislead a later
+                            one. Countered by provenance stamping and per-tenant/owner isolation.
+                        </div>
+                    </div>
+                    <div class="def">
+                        <div class="def-term">Confused deputy</div>
+                        <div class="def-desc">
+                            Tricking a privileged component (the agent) into misusing its authority on behalf of a
+                            less-privileged caller. Countered by carrying the real caller identity through every
+                            authorization check.
+                        </div>
+                    </div>
+
+                    <h2 id="deep-dives">Deep-dive references</h2>
+                    <p>Longer, code-level writeups that sit alongside this guide:</p>
+                    <ul>
+                        <li>
+                            <a href="ssrf-defense.md">SSRF Defense — threat model &amp; defense matrix</a>
+                            (Markdown source, <code>documentation/security/ssrf-defense.md</code>) — the complete
+                            egress threat model behind <a href="06-egress-and-ssrf.html">Chapter 06</a>.
+                        </li>
+                        <li>
+                            <a href="owasp-agentic-top-10-evals.md">OWASP Agentic Top-10 Evals — full spec</a>
+                            (Markdown source, <code>documentation/security/owasp-agentic-top-10-evals.md</code>) —
+                            fixture-by-fixture detail behind <a href="09-owasp-evals.html">Chapter 09</a>.
+                        </li>
+                        <li>
+                            <a href="../architecture/04-networking-and-security.html">Architecture Guide → Networking &amp; Security</a>
+                            — the deployment side: VNets, private endpoints, Key Vault, managed identity.
+                        </li>
+                        <li>
+                            <a href="../index.html">Developer Guide</a> — Configuration reference, the message
+                            journey, and how to extend the harness.
+                        </li>
+                    </ul>
+
+                    <div class="callout callout-tip">
+                        <span class="callout-icon">✓</span>
+                        <div class="callout-body">
+                            <div class="callout-title">The one sentence to remember</div>
+                            <p style="margin: 0">
+                                Everything the model reads or writes is untrusted; every capability is closed until
+                                granted; every control fails closed; and no control stands alone. If a change you're
+                                making violates one of those four, it's probably a security regression.
+                            </p>
+                        </div>
+                    </div>
+
+                    <!-- Footer nav -->
+                    <div class="page-nav">
+                        <a class="page-nav-link page-nav-prev" href="09-owasp-evals.html">
+                            <div class="page-nav-label">&larr; Previous</div>
+                            <div class="page-nav-title">09 &middot; OWASP Agentic Evals</div>
+                        </a>
+                        <a class="page-nav-link page-nav-next" href="index.html">
+                            <div class="page-nav-label">Back to start &rarr;</div>
+                            <div class="page-nav-title">00 &middot; Welcome</div>
+                        </a>
+                    </div>
+                </div>
+
+                <!-- TOC -->
+                <aside class="toc" aria-label="On this page">
+                    <div class="toc-title">On this page</div>
+                    <ul class="toc-list"></ul>
+                </aside>
+            </main>
+        </div>
+        <script src="../assets/js/main.js"></script>
+    </body>
+</html>

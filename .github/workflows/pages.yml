@@ -3,6 +3,7 @@ name: Deploy Documentation to GitHub Pages
 # Publishes sites to GitHub Pages:
 #   /                          → documentation/onboarding/        (Developer Onboarding Guide)
 #   /architecture/             → documentation/architecture/      (Architecture Guide)
+#   /security/                 → documentation/security/          (Security Guide)
 #   /agentic-harness-course/   → documentation/agentic-harness-course/ (Interactive Course)
 #   /reference/                → documentation/reference/         (Reference Catalogue)
 # This layout preserves the existing onboarding URL and matches the
@@ -23,6 +24,7 @@ on:
     paths:
       - 'documentation/onboarding/**'
       - 'documentation/architecture/**'
+      - 'documentation/security/**'
       - 'documentation/agentic-harness-course/**'
       - 'documentation/reference/**'
       - '.github/workflows/pages.yml'
@@ -60,6 +62,8 @@ jobs:
           cp -R documentation/onboarding/. _site/
           mkdir -p _site/architecture
           cp -R documentation/architecture/. _site/architecture/
+          mkdir -p _site/security
+          cp -R documentation/security/. _site/security/
           mkdir -p _site/agentic-harness-course
           cp -R documentation/agentic-harness-course/. _site/agentic-harness-course/
           mkdir -p _site/reference

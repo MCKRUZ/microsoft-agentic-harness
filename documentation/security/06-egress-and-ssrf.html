@@ -1,0 +1,442 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>06 · Egress &amp; SSRF Defense — Agentic Harness Security Guide</title>
+        <meta
+            name="description"
+            content="Layer 5: where on the network the agent may reach. A two-ring wall — an application allowlist of names plus a connect-time IP blocklist — stops the agent from being tricked into hitting internal services or stealing cloud credentials."
+        />
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+        <link
+            href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap"
+            rel="stylesheet"
+        />
+        <link rel="stylesheet" href="../assets/css/styles.css" />
+    </head>
+    <body>
+        <a href="#main" class="skip-link">Skip to content</a>
+        <div class="app">
+            <!-- ============ SIDEBAR ============ -->
+            <aside class="sidebar">
+                <div class="sidebar-header">
+                    <a class="sidebar-brand" href="index.html">
+                        <span class="sidebar-brand-mark">AH</span>
+                        <span>
+                            <span class="sidebar-brand-text">Agentic Harness</span><br />
+                            <span class="sidebar-brand-sub">Security Guide</span>
+                        </span>
+                    </a>
+                </div>
+                <nav class="sidebar-nav" aria-label="Documentation navigation">
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Foundations</div>
+                        <a class="sidebar-link" href="index.html"><span class="sidebar-link-num">00</span> Welcome</a>
+                        <a class="sidebar-link" href="01-threat-model.html"
+                            ><span class="sidebar-link-num">01</span> Threat Model &amp; Defense in Depth</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Access Control</div>
+                        <a class="sidebar-link" href="02-identity-and-access.html"
+                            ><span class="sidebar-link-num">02</span> Identity &amp; Access</a
+                        >
+                        <a class="sidebar-link" href="03-autonomy-and-governance.html"
+                            ><span class="sidebar-link-num">03</span> Autonomy &amp; Governance</a
+                        >
+                        <a class="sidebar-link" href="04-tools-and-permissions.html"
+                            ><span class="sidebar-link-num">04</span> Tools &amp; Permissions</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Execution Safety</div>
+                        <a class="sidebar-link" href="05-sandbox-and-execution.html"
+                            ><span class="sidebar-link-num">05</span> Sandbox &amp; Execution</a
+                        >
+                        <a class="sidebar-link" href="06-egress-and-ssrf.html"
+                            ><span class="sidebar-link-num">06</span> Egress &amp; SSRF Defense</a
+                        >
+                        <a class="sidebar-link" href="07-content-safety.html"
+                            ><span class="sidebar-link-num">07</span> Content Safety &amp; Injection</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Data &amp; Privacy</div>
+                        <a class="sidebar-link" href="08-data-protection.html"
+                            ><span class="sidebar-link-num">08</span> Data Protection &amp; Privacy</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Assurance</div>
+                        <a class="sidebar-link" href="09-owasp-evals.html"
+                            ><span class="sidebar-link-num">09</span> OWASP Agentic Evals</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Reference</div>
+                        <a class="sidebar-link" href="10-reference.html"
+                            ><span class="sidebar-link-num">10</span> Security Cheatsheet</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Other Guides</div>
+                        <a class="sidebar-link" href="../index.html">&#8592; Developer Guide</a>
+                        <a class="sidebar-link" href="../architecture/index.html">&#8592; Architecture Guide</a>
+                        <a class="sidebar-link" href="../agentic-harness-course/index.html">&#8592; Interactive Course</a>
+                    </div>
+                </nav>
+            </aside>
+
+            <!-- ============ MAIN ============ -->
+            <main id="main" class="content-wrap">
+                <div class="content">
+                    <span class="eyebrow">Chapter 06 &middot; Execution Safety</span>
+                    <h1 class="page-title">Egress &amp; SSRF Defense</h1>
+                    <p class="page-lead">
+                        This is layer 5: <strong>where on the network the agent may reach.</strong> Once an agent can
+                        run code and make HTTP calls, the network itself becomes an attack surface — and the agent
+                        chooses its own URLs from untrusted content. A two-ring wall stops it from being tricked into
+                        hitting internal services or stealing cloud credentials: an outer ring that allowlists the
+                        <em>names</em> it may talk to, and an inner ring that blocklists the <em>addresses</em> nobody
+                        may talk to.
+                    </p>
+
+                    <div class="callout callout-jargon">
+                        <span class="callout-icon">¶</span>
+                        <div class="callout-body">
+                            <div class="callout-title">SSRF — Server-Side Request Forgery</div>
+                            <p style="margin: 0">
+                                Tricking your own server into making a network request on the attacker's behalf,
+                                typically to reach an internal address — a database, an admin panel, or the cloud
+                                metadata service — that the attacker can't reach directly. For an agent this is acute
+                                because the agent <strong>decides its own URLs from untrusted content</strong>: a web
+                                page, a retrieved document, or a tool result can hand it a URL, and "fetch this for me"
+                                is exactly the kind of request agents are built to honor.
+                            </p>
+                        </div>
+                    </div>
+
+                    <h2 id="canonical-attack">The canonical attack</h2>
+                    <p>
+                        The most damaging SSRF target in a cloud deployment is the
+                        <strong>instance metadata service</strong> at <code>169.254.169.254</code>. Any process that
+                        can reach it can read the credentials the cloud assigns to the running container — and those
+                        credentials are usually enough to read storage, query databases, or escalate further.
+                    </p>
+
+                    <div class="callout callout-danger">
+                        <span class="callout-icon">✕</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Attack scenario: "fetch this URL for me"</div>
+                            <p>
+                                A user (or an injected instruction hidden in a document) tells the agent:
+                                <em>"Summarize the page at this link for me,"</em> where the link points at
+                                <code>http://169.254.169.254/latest/meta-data/iam/security-credentials/</code>. To the
+                                agent this is an ordinary fetch. Without an egress wall, the agent's own HTTP client
+                                dutifully connects to the metadata endpoint, reads back the container's cloud
+                                credentials, and folds them into its answer — which the attacker then exfiltrates.
+                            </p>
+                            <p style="margin-bottom: 0">
+                                No code was injected and no credential was phished. The agent was simply
+                                <em>helpful</em> with an address it should never have been allowed to reach. The
+                                two-ring wall below makes that fetch impossible at two independent points.
+                            </p>
+                        </div>
+                    </div>
+
+                    <h2 id="two-ring-model">The two-ring model</h2>
+                    <p>
+                        Every outbound HTTP request from agent or tool code passes through
+                        <strong>two independent rings</strong>. They check different things, in different places, and
+                        neither trusts the other. Defeating one still leaves the other standing.
+                    </p>
+
+                    <table>
+                        <thead>
+                            <tr>
+                                <th></th>
+                                <th>Ring 1 — Application policy</th>
+                                <th>Ring 2 — Network</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><strong>Checks</strong></td>
+                                <td>The <em>name</em> (hostname) you asked for</td>
+                                <td>The <em>address</em> (resolved IP) you actually connect to</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Model</strong></td>
+                                <td>Allowlist — only names you're permitted to talk to</td>
+                                <td>Blocklist — addresses nobody may talk to</td>
+                            </tr>
+                            <tr>
+                                <td><strong>When</strong></td>
+                                <td>Before DNS resolution, on the URL the agent chose</td>
+                                <td>At socket-connect time, on the real IP (and again on each redirect)</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Where</strong></td>
+                                <td><code>EgressPolicyDelegatingHandler</code></td>
+                                <td><code>Microsoft.Security.AntiSSRF</code> handler</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Stops</strong></td>
+                                <td>Calls to hosts you never authorized; unauthenticated background calls</td>
+                                <td>Calls to internal/private/metadata IPs, including DNS-rebinding swaps</td>
+                            </tr>
+                        </tbody>
+                    </table>
+
+                    <div class="callout callout-info">
+                        <span class="callout-icon">i</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Names versus addresses — why both</div>
+                            <p style="margin: 0">
+                                Ring 1 is an allowlist of <strong>names</strong> you're permitted to talk to. Ring 2 is
+                                a blocklist of <strong>addresses</strong> nobody may talk to. They are orthogonal: a
+                                name can pass the allowlist and still resolve to a forbidden address, and a forbidden
+                                address can be reached by a name that was never on any allowlist. Each ring closes the
+                                gap the other can't see.
+                            </p>
+                        </div>
+                    </div>
+
+                    <h2 id="ring-1">Ring 1 — the application allowlist</h2>
+                    <p>
+                        The outer ring is a <code>DelegatingHandler</code> that sits in the HTTP pipeline and inspects
+                        every request before it leaves —
+                        <code>src/Content/Infrastructure/Infrastructure.AI/Egress/EgressPolicyDelegatingHandler.cs</code>.
+                        For each outbound call it:
+                    </p>
+                    <ul>
+                        <li>
+                            resolves the per-identity <code>IEgressPolicy</code> from
+                            <code>IAmbientRequestScope.Current</code> — so the rules in force are the ones that belong
+                            to <em>this</em> agent identity, not a global default;
+                        </li>
+                        <li>
+                            enforces a hostname allowlist <strong>before DNS resolution</strong> — the name is checked
+                            against the policy first, so a denied host never even gets looked up;
+                        </li>
+                        <li>
+                            <strong>denies any request that has no agent identity attached</strong> — there are no
+                            unauthenticated background calls; if nothing is on the ambient scope, the request is
+                            refused rather than allowed through anonymously;
+                        </li>
+                        <li>
+                            audits every allow/deny decision to JSONL via <code>IEgressAuditWriter</code>, so the full
+                            record of what the agent tried to reach is on disk; and
+                        </li>
+                        <li>
+                            throws <code>EgressBlockedException</code> on a deny, turning a blocked egress into a clear,
+                            catchable failure rather than a silent drop.
+                        </li>
+                    </ul>
+
+                    <div class="callout callout-warn">
+                        <span class="callout-icon">!</span>
+                        <div class="callout-body">
+                            <div class="callout-title">No identity, no egress</div>
+                            <p style="margin: 0">
+                                The deny-on-missing-identity rule is deliberate and easy to overlook. A background job
+                                or a stray code path that fires an HTTP request <em>without</em> establishing an agent
+                                identity on the ambient scope is denied — not given a permissive fallback. This closes
+                                the gap where an unattended call could quietly bypass the per-identity policy.
+                            </p>
+                        </div>
+                    </div>
+
+                    <h2 id="ring-2">Ring 2 — the connect-time IP blocklist</h2>
+                    <p>
+                        The inner ring is wired in
+                        <code>src/Content/Infrastructure/Infrastructure.AI/DependencyInjection.Egress.cs</code> using
+                        the <code>Microsoft.Security.AntiSSRF</code> handler (a NuGet package). Its defining property is
+                        <strong>connect-time IP filtering</strong>: it checks the <em>actual resolved IP at the moment
+                        the socket connects</em>, not the IP implied when the URL was first parsed. That timing is the
+                        whole point — it defeats DNS rebinding, where the address behind a name changes after the name
+                        was approved.
+                    </p>
+                    <p>It blocks, with no override, the address ranges that have no business being reached from agent code:</p>
+
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Category</th>
+                                <th>Ranges blocked</th>
+                                <th>Why it matters</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><strong>Private (RFC 1918)</strong></td>
+                                <td><code>10.0.0.0/8</code>, <code>172.16.0.0/12</code>, <code>192.168.0.0/16</code></td>
+                                <td>Internal services, databases, admin panels on the private network</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Loopback</strong></td>
+                                <td><code>127.0.0.0/8</code>, <code>::1</code></td>
+                                <td>Services bound to localhost on the same host as the agent</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Link-local</strong></td>
+                                <td><code>169.254.0.0/16</code>, <code>fe80::/10</code></td>
+                                <td>The range the cloud metadata endpoint lives in</td>
+                            </tr>
+                            <tr>
+                                <td><strong>IPv6 unique-local</strong></td>
+                                <td><code>fc00::/7</code></td>
+                                <td>The IPv6 equivalent of the private ranges</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Cloud metadata</strong></td>
+                                <td><code>169.254.169.254</code> — hard-blocked, <strong>never overridable</strong></td>
+                                <td>Credential theft target; blocked even if an operator widens other rules</td>
+                            </tr>
+                        </tbody>
+                    </table>
+
+                    <p>
+                        The handler also <strong>re-validates redirects</strong>: a <code>3xx</code> chain is re-checked
+                        at the socket on each hop, so a server can't return a redirect that smuggles the agent to an
+                        internal IP after the first, allowed hop passed.
+                    </p>
+
+                    <div class="callout callout-jargon">
+                        <span class="callout-icon">¶</span>
+                        <div class="callout-body">
+                            <div class="callout-title">DNS rebinding — why connect-time matters</div>
+                            <p style="margin: 0">
+                                An attacker controls a hostname that passes a name check, then makes DNS resolve that
+                                name to an internal IP <em>between</em> the check and the connect. A check that ran at
+                                URL-parse time saw a harmless address; by the time the socket opens, the name points
+                                inward. Ring 1 checks the name; Ring 2 checks the IP at the moment of connection — so
+                                the swap is caught at exactly the point it tries to take effect.
+                            </p>
+                        </div>
+                    </div>
+
+                    <h2 id="per-skill-allowlists">Per-skill allowlists (additive only)</h2>
+                    <p>
+                        Ring 1's policy isn't one fixed list. A skill can declare the external hosts it legitimately
+                        needs through its manifest, read by
+                        <code>src/Content/Infrastructure/Infrastructure.AI/Egress/SkillManifestEgressPolicyResolver.cs</code>,
+                        which reads <code>egress.allowlist</code> from a skill's manifest. The critical constraint is
+                        that this is <strong>additive only</strong>:
+                    </p>
+
+                    <div class="def">
+                        <div class="def-term">A skill may broaden, never narrow</div>
+                        <div class="def-desc">
+                            A skill can <em>add</em> hosts to the default allowlist, but it can never narrow or override
+                            the baseline. A skill cannot punch a hole in the default policy or relax a control someone
+                            else set — it can only ask for additional reach. When a skill declares no policy at all, the
+                            resolver falls back to <code>DefaultEgressPolicy</code>, a frozen, thread-safe default entry
+                            list.
+                        </div>
+                    </div>
+
+                    <p>Hostname matching follows RFC 6125 TLS semantics — the same rules a browser uses to match a certificate to a host:</p>
+                    <ul>
+                        <li><strong>Exact match</strong>, or a single <strong>leftmost-label wildcard</strong>.</li>
+                        <li>
+                            <code>*.example.com</code> matches <code>foo.example.com</code> but
+                            <strong>not</strong> <code>foo.bar.example.com</code> — the wildcard covers exactly one
+                            label, not a whole subtree.
+                        </li>
+                        <li><strong>Scheme and port</strong> are matched per entry.</li>
+                        <li>Anything unmatched is <strong>denied</strong> — the policy is default-deny.</li>
+                    </ul>
+
+                    <div class="callout callout-info">
+                        <span class="callout-icon">i</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Default-deny, in plain terms</div>
+                            <p style="margin: 0">
+                                If a host isn't on the allowlist — and matched on scheme and port — the request is
+                                refused. There is no implicit "the rest of the internet is fine." That is why an
+                                unconfigured harness is safe but restrictive, and why adding your real external hosts is
+                                a deliberate step (see the operator note at the end).
+                            </p>
+                        </div>
+                    </div>
+
+                    <h2 id="mcp-hardening">MCP client hardening</h2>
+                    <p>
+                        When the harness connects <em>out</em> to an external MCP server — a tool catalog hosted
+                        elsewhere — that connection is its own SSRF surface. The connection path in
+                        <code>src/Content/Infrastructure/Infrastructure.AI.MCP/Services/McpConnectionManager.cs</code>
+                        hardens it before the first byte leaves:
+                    </p>
+                    <ul>
+                        <li>
+                            <strong>pre-flight rejects any non-<code>http(s)</code> scheme</strong> — a server URL using
+                            anything other than HTTP/HTTPS is refused outright;
+                        </li>
+                        <li>
+                            <strong>blocks metadata endpoints early</strong> — <code>169.254.169.254</code>,
+                            <code>metadata.google.internal</code>, and <code>metadata.goog</code> are rejected before a
+                            connection is even attempted;
+                        </li>
+                        <li>
+                            <strong>routes through a named HttpClient</strong>, <code>HttpClientNames.McpEgress</code>,
+                            that applies the AntiSSRF ring. MCP servers are admin-configured and often connected
+                            <em>outside</em> an agent turn, so they ride the SSRF ring (Ring 2) rather than the
+                            per-skill allowlist (Ring 1) — there's no agent identity on the scope to resolve a per-skill
+                            policy against;
+                        </li>
+                        <li>
+                            <strong>applies a connection/initialization timeout</strong>
+                            (<code>McpServerDefinition.StartupTimeoutSeconds</code>) so a hung or slow server can't block
+                            harness startup; and
+                        </li>
+                        <li>
+                            <strong>attaches auth headers per <code>McpServerAuthConfig</code></strong> — supporting
+                            <code>ApiKey</code>, <code>Bearer</code>, and <code>Entra</code> credential modes.
+                        </li>
+                    </ul>
+
+                    <div class="callout callout-tip">
+                        <span class="callout-icon">✓</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Operator note: default-deny means you must list your real hosts</div>
+                            <p style="margin: 0">
+                                Because Ring 1 is default-deny, a freshly cloned harness can reach almost nothing
+                                outbound — that's the safe starting state. Before your agents can call the external APIs
+                                they actually need, add those hosts to the allowlist (the frozen default for everyone,
+                                or <code>egress.allowlist</code> in a skill manifest for skill-specific reach). The
+                                metadata endpoint and the private ranges stay blocked regardless: Ring 2 isn't something
+                                you open up.
+                            </p>
+                        </div>
+                    </div>
+
+                    <h2 id="deep-dive">Going deeper</h2>
+                    <p>
+                        This page is the operator-level map of the two rings. For the complete defense matrix — every
+                        threat, every check, and how the pieces fit together end to end — see the full threat-model
+                        writeup at <code>documentation/security/ssrf-defense.md</code>. From here the guide moves to
+                        layer 6: making the <em>text</em> flowing in and out safe, where the
+                        <a href="07-content-safety.html">content safety and injection</a> controls catch the
+                        exfiltration URLs and injected instructions an egress wall alone doesn't see.
+                    </p>
+
+                    <!-- Footer nav -->
+                    <div class="page-nav">
+                        <a class="page-nav-link page-nav-prev" href="05-sandbox-and-execution.html"><div class="page-nav-label">&larr; Previous</div><div class="page-nav-title">05 &middot; Sandbox &amp; Execution</div></a>
+                        <a class="page-nav-link page-nav-next" href="07-content-safety.html"><div class="page-nav-label">Next &rarr;</div><div class="page-nav-title">07 &middot; Content Safety &amp; Injection</div></a>
+                    </div>
+                </div>
+
+                <!-- TOC -->
+                <aside class="toc" aria-label="On this page">
+                    <div class="toc-title">On this page</div>
+                    <ul class="toc-list"></ul>
+                </aside>
+            </main>
+        </div>
+        <script src="../assets/js/main.js"></script>
+    </body>
+</html>

@@ -1,0 +1,614 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>08 · Data Protection &amp; Privacy — Agentic Harness Security Guide</title>
+        <meta
+            name="description"
+            content="Layer 7: what the agent may see, keep, and be made to forget — per-tenant and per-user knowledge isolation, ambient identity propagation, provenance, retention, right-to-erasure, and secrets management."
+        />
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+        <link
+            href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap"
+            rel="stylesheet"
+        />
+        <link rel="stylesheet" href="../assets/css/styles.css" />
+    </head>
+    <body>
+        <a href="#main" class="skip-link">Skip to content</a>
+        <div class="app">
+            <!-- ============ SIDEBAR ============ -->
+            <aside class="sidebar">
+                <div class="sidebar-header">
+                    <a class="sidebar-brand" href="index.html">
+                        <span class="sidebar-brand-mark">AH</span>
+                        <span>
+                            <span class="sidebar-brand-text">Agentic Harness</span><br />
+                            <span class="sidebar-brand-sub">Security Guide</span>
+                        </span>
+                    </a>
+                </div>
+                <nav class="sidebar-nav" aria-label="Documentation navigation">
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Foundations</div>
+                        <a class="sidebar-link" href="index.html"><span class="sidebar-link-num">00</span> Welcome</a>
+                        <a class="sidebar-link" href="01-threat-model.html"
+                            ><span class="sidebar-link-num">01</span> Threat Model &amp; Defense in Depth</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Access Control</div>
+                        <a class="sidebar-link" href="02-identity-and-access.html"
+                            ><span class="sidebar-link-num">02</span> Identity &amp; Access</a
+                        >
+                        <a class="sidebar-link" href="03-autonomy-and-governance.html"
+                            ><span class="sidebar-link-num">03</span> Autonomy &amp; Governance</a
+                        >
+                        <a class="sidebar-link" href="04-tools-and-permissions.html"
+                            ><span class="sidebar-link-num">04</span> Tools &amp; Permissions</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Execution Safety</div>
+                        <a class="sidebar-link" href="05-sandbox-and-execution.html"
+                            ><span class="sidebar-link-num">05</span> Sandbox &amp; Execution</a
+                        >
+                        <a class="sidebar-link" href="06-egress-and-ssrf.html"
+                            ><span class="sidebar-link-num">06</span> Egress &amp; SSRF Defense</a
+                        >
+                        <a class="sidebar-link" href="07-content-safety.html"
+                            ><span class="sidebar-link-num">07</span> Content Safety &amp; Injection</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Data &amp; Privacy</div>
+                        <a class="sidebar-link" href="08-data-protection.html"
+                            ><span class="sidebar-link-num">08</span> Data Protection &amp; Privacy</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Assurance</div>
+                        <a class="sidebar-link" href="09-owasp-evals.html"
+                            ><span class="sidebar-link-num">09</span> OWASP Agentic Evals</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Reference</div>
+                        <a class="sidebar-link" href="10-reference.html"
+                            ><span class="sidebar-link-num">10</span> Security Cheatsheet</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Other Guides</div>
+                        <a class="sidebar-link" href="../index.html">&#8592; Developer Guide</a>
+                        <a class="sidebar-link" href="../architecture/index.html">&#8592; Architecture Guide</a>
+                        <a class="sidebar-link" href="../agentic-harness-course/index.html">&#8592; Interactive Course</a>
+                    </div>
+                </nav>
+            </aside>
+
+            <!-- ============ MAIN ============ -->
+            <main id="main" class="content-wrap">
+                <div class="content">
+                    <span class="eyebrow">Chapter 08 &middot; Data &amp; Privacy</span>
+                    <h1 class="page-title">Data Protection &amp; Privacy</h1>
+                    <p class="page-lead">
+                        The last of the seven defensive layers — layer 7: what the agent may see, what it may keep, and
+                        what it can be made to forget. The earlier layers stop an attacker from acting; this one governs
+                        the agent's relationship to data over time — per-tenant and per-user isolation, provenance,
+                        retention, and right-to-erasure. It is the difference between a system that <em>can</em> answer
+                        and a system you can put a customer's private knowledge into.
+                    </p>
+
+                    <h2 id="two-boundaries">The two privacy boundaries</h2>
+                    <p>
+                        Memory makes an agent useful and dangerous in the same breath. The moment it remembers across
+                        sessions, two questions become security-critical: can one customer's knowledge leak into
+                        another's, and can one user read another user's private memory? The harness answers both with a
+                        single mechanism, but it is worth seeing them as two distinct lines.
+                    </p>
+
+                    <div class="def">
+                        <div class="def-term">Tenant &harr; tenant</div>
+                        <div class="def-desc">
+                            The hard outer wall. One customer organisation's knowledge graph must never be visible to
+                            another's — not in retrieval, not in memory, not by accident. This is the boundary a
+                            multi-tenant SaaS lives or dies on.
+                        </div>
+                    </div>
+                    <div class="def">
+                        <div class="def-term">User &harr; shared corpus</div>
+                        <div class="def-desc">
+                            The softer inner wall, <em>inside</em> a single tenant. A user can see their tenant's
+                            <strong>shared corpus</strong> (documents and facts everyone in the tenant may use) plus
+                            <strong>their own</strong> private memory — but not another user's private memory. Net
+                            visibility: shared-in-tenant + mine, nothing else.
+                        </div>
+                    </div>
+
+                    <p>
+                        Both walls are enforced in the same place and by the same rule: a per-record check on every read
+                        and every write to the knowledge graph.
+                    </p>
+
+                    <h2 id="tenant-isolation">Per-record isolation: the visibility rule</h2>
+                    <p>
+                        The enforcement point is a decorator that wraps the knowledge-graph store
+                        (<code>IKnowledgeGraphStore</code>):
+                        <code>src/Content/Infrastructure/Infrastructure.AI.KnowledgeGraph/Scoping/TenantIsolatedGraphStore.cs</code>.
+                        It sits between callers and the real backend, and on every operation it asks two questions about
+                        each record before letting the caller see it or touch it. The questions run through
+                        <code>IKnowledgeScopeValidator</code>
+                        (<code>src/Content/Infrastructure/Infrastructure.AI.KnowledgeGraph/Scoping/KnowledgeScopeValidator.cs</code>),
+                        which checks tenant match plus dataset ownership.
+                    </p>
+
+                    <p>The rule, stated plainly:</p>
+                    <ul>
+                        <li>
+                            A node is visible only if its <code>TenantId</code> is <strong>null</strong> (a global
+                            record) <em>or</em> equals the caller's tenant; <strong>and</strong>
+                        </li>
+                        <li>
+                            its <code>OwnerId</code> is <strong>null</strong> (the shared corpus) <em>or</em> the caller
+                            owns it.
+                        </li>
+                    </ul>
+
+                    <p>
+                        Written as a truth table — both columns must land on a green cell for the record to be visible:
+                    </p>
+
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Record's <code>TenantId</code></th>
+                                <th>Tenant check</th>
+                                <th>Record's <code>OwnerId</code></th>
+                                <th>Owner check</th>
+                                <th>Visible to caller?</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><code>null</code> (global)</td>
+                                <td>passes</td>
+                                <td><code>null</code> (shared corpus)</td>
+                                <td>passes</td>
+                                <td><strong>Yes</strong></td>
+                            </tr>
+                            <tr>
+                                <td>= caller's tenant</td>
+                                <td>passes</td>
+                                <td><code>null</code> (shared corpus)</td>
+                                <td>passes</td>
+                                <td><strong>Yes</strong> — tenant shared corpus</td>
+                            </tr>
+                            <tr>
+                                <td>= caller's tenant</td>
+                                <td>passes</td>
+                                <td>= caller</td>
+                                <td>passes</td>
+                                <td><strong>Yes</strong> — caller's own memory</td>
+                            </tr>
+                            <tr>
+                                <td>= caller's tenant</td>
+                                <td>passes</td>
+                                <td>= another user</td>
+                                <td>fails</td>
+                                <td><strong>No</strong> — another user's private memory</td>
+                            </tr>
+                            <tr>
+                                <td>= another tenant</td>
+                                <td>fails</td>
+                                <td>(any)</td>
+                                <td>—</td>
+                                <td><strong>No</strong> — cross-tenant, blocked outright</td>
+                            </tr>
+                        </tbody>
+                    </table>
+
+                    <p>
+                        The net effect: a user sees their tenant's shared corpus plus their own memory — and nothing
+                        from other tenants or other users. The same check runs on writes, so a record can only be
+                        written into a scope the caller actually occupies.
+                    </p>
+
+                    <div class="callout callout-warn">
+                        <span class="callout-icon">!</span>
+                        <div class="callout-body">
+                            <div class="callout-title">The single-tenant switch is deliberate</div>
+                            <p style="margin: 0">
+                                When the <code>MultiTenantIsolation</code> config is disabled, all access passes — the
+                                decorator becomes a pass-through and the store behaves as a single shared graph. This is
+                                an intentional mode for single-tenant deployments, not a bug. If you run more than one
+                                customer on one harness, this switch must be <strong>on</strong>; treat it as a
+                                load-bearing setting and verify it in every environment.
+                            </p>
+                        </div>
+                    </div>
+
+                    <h2 id="ambient-identity">Ambient identity propagation</h2>
+                    <p>
+                        The visibility rule is only as good as the identity it checks against. The hard part is making
+                        the caller's identity available everywhere it's needed — including in background work that runs
+                        <em>after</em> the HTTP response has already been sent — without manually passing a
+                        user/tenant parameter through every method in the call chain. The harness solves this with an
+                        ambient mechanism.
+                    </p>
+
+                    <div class="callout callout-jargon">
+                        <span class="callout-icon">¶</span>
+                        <div class="callout-body">
+                            <div class="callout-title">AsyncLocal</div>
+                            <p style="margin: 0">
+                                A .NET mechanism that carries a value along an asynchronous call chain — including into
+                                background continuations spawned from it — without threading it through every method
+                                signature. Set it once at the top of a request and any code that runs <em>as part of</em>
+                                that request, however deep or however much later, can read it back. It is the right tool
+                                for "the current user" precisely because identity needs to follow the work, not the
+                                stack frame.
+                            </p>
+                        </div>
+                    </div>
+
+                    <p>
+                        The accessor
+                        (<code>src/Content/Infrastructure/Infrastructure.AI.KnowledgeGraph/Scoping/KnowledgeScopeAccessor.cs</code>)
+                        stores the user/tenant/dataset identity in a static <code>AsyncLocal</code>, set once at request
+                        entry. From there it flows automatically into child dependency-injection scopes and into
+                        post-turn background writes — so a memory written <em>after</em> the response still lands in the
+                        right tenant and owner, with no extra plumbing.
+                    </p>
+
+                    <p>Identity is captured at the entry point, after authentication, by two thin adapters:</p>
+
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Transport</th>
+                                <th>Capture point</th>
+                                <th>What it does</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>HTTP</td>
+                                <td>
+                                    <code>src/Content/Presentation/Presentation.AgentHub/Middleware/KnowledgeScopeMiddleware.cs</code>
+                                </td>
+                                <td>
+                                    Runs after authentication; calls <code>KnowledgeScopeInitializer</code> to pull
+                                    <code>userId</code>/<code>tenantId</code> from the authenticated
+                                    <code>ClaimsPrincipal</code> and seed the accessor.
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>SignalR</td>
+                                <td>
+                                    <code>src/Content/Presentation/Presentation.AgentHub/Hubs/KnowledgeScopeHubFilter.cs</code>
+                                </td>
+                                <td>
+                                    The hub-filter equivalent for real-time connections; same
+                                    <code>KnowledgeScopeInitializer</code>, same claims source, so streaming turns are
+                                    scoped identically to HTTP turns.
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+
+                    <div class="callout callout-info">
+                        <span class="callout-icon">i</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Identity comes from claims, never from the request body</div>
+                            <p style="margin: 0">
+                                Both adapters read the user and tenant from the authenticated
+                                <code>ClaimsPrincipal</code> — the identity the platform proved during login — not from
+                                anything the caller can set in the payload. A request cannot ask to be treated as a
+                                different tenant; it is whatever its token says it is.
+                            </p>
+                        </div>
+                    </div>
+
+                    <h2 id="memory-namespacing">Memory namespacing</h2>
+                    <p>
+                        Isolation by filtering is the primary control. Namespacing is the belt-and-braces backup:
+                        identity is baked into the memory node's id itself. Memory node ids follow the pattern:
+                    </p>
+
+                    <pre><code class="language-text">memory:{tenant}:{user}:{key}</code></pre>
+
+                    <p>
+                        Because the tenant and user are part of the key, one user's memory key cannot collide with or
+                        address another's — even if the per-record isolation filter were somehow bypassed, there is no
+                        id a user could construct that names another user's memory without already knowing (and being)
+                        that user's scope. The id space itself is partitioned.
+                    </p>
+
+                    <h2 id="all-backends">Enforced in all three backends</h2>
+                    <p>
+                        Isolation that only holds for the in-memory development store would be a trap: it would pass
+                        every local test and then leak in production. The harness persists and filters
+                        <code>OwnerId</code>/<code>TenantId</code> in every backend, so the same record-level boundary
+                        holds whichever store you deploy.
+                    </p>
+
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Backend</th>
+                                <th>File</th>
+                                <th>How isolation is persisted</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>In-memory (dev)</td>
+                                <td>
+                                    <code>src/Content/Infrastructure/Infrastructure.AI.KnowledgeGraph/InMemory/InMemoryGraphStore.cs</code>
+                                </td>
+                                <td>Preserves <code>OwnerId</code>/<code>TenantId</code> on merge.</td>
+                            </tr>
+                            <tr>
+                                <td>Neo4j</td>
+                                <td>
+                                    <code>src/Content/Infrastructure/Infrastructure.AI.KnowledgeGraph/Neo4j/Neo4jGraphStore.cs</code>
+                                </td>
+                                <td>
+                                    Persists <code>owner_id</code>/<code>tenant_id</code>; the Cypher uses
+                                    <code>coalesce</code> so a write never null-clobbers an existing tenant.
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>PostgreSQL</td>
+                                <td>
+                                    <code>src/Content/Infrastructure/Infrastructure.AI.KnowledgeGraph/PostgreSql/PostgreSqlGraphStore.cs</code>
+                                </td>
+                                <td>
+                                    <code>owner_id</code>/<code>tenant_id</code> columns on <code>kg_nodes</code> and
+                                    <code>kg_edges</code>, with indexes; self-initializes its schema.
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+
+                    <h2 id="provenance">Provenance: making every fact attributable</h2>
+                    <p>
+                        Isolation answers "who may see this." Provenance answers "where did this come from, and can I
+                        trust it." Every node and edge written to the graph is stamped — when
+                        <code>GraphRagConfig.ProvenanceEnabled</code> — by
+                        <code>src/Content/Infrastructure/Infrastructure.AI.KnowledgeGraph/Provenance/DefaultProvenanceStamper.cs</code>,
+                        which produces an immutable
+                        <code>src/Content/Domain/Domain.AI/KnowledgeGraph/Models/ProvenanceStamp.cs</code> record
+                        carrying:
+                    </p>
+
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Field</th>
+                                <th>Meaning</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><code>SourcePipeline</code></td>
+                                <td>Which ingestion/processing pipeline created the record.</td>
+                            </tr>
+                            <tr>
+                                <td><code>SourceTask</code></td>
+                                <td>The specific task within that pipeline.</td>
+                            </tr>
+                            <tr>
+                                <td><code>Timestamp</code></td>
+                                <td>When it was written (UTC).</td>
+                            </tr>
+                            <tr>
+                                <td><code>SourceDocumentId</code></td>
+                                <td>The originating document — or <code>null</code> if the fact was synthesized.</td>
+                            </tr>
+                            <tr>
+                                <td><code>ExtractionConfidence</code></td>
+                                <td>How sure the extractor was (0&ndash;1) — or <code>null</code>.</td>
+                            </tr>
+                            <tr>
+                                <td><code>LastModifiedBy</code></td>
+                                <td>The actor responsible for the most recent change.</td>
+                            </tr>
+                        </tbody>
+                    </table>
+
+                    <div class="callout callout-jargon">
+                        <span class="callout-icon">¶</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Memory poisoning</div>
+                            <p style="margin: 0">
+                                An attack where a hostile party plants a false "fact" into the agent's memory during one
+                                session so that a <em>later</em> session retrieves it and is misled — the slow-burn
+                                cousin of prompt injection. Because the agent treats its own memory as trusted, a single
+                                poisoned record can quietly steer future answers. This is OWASP Agentic threat
+                                <a href="09-owasp-evals.html">ASI06</a>.
+                            </p>
+                        </div>
+                    </div>
+
+                    <p>
+                        Provenance is the structural defence against it: every fact is attributable, so a downstream
+                        filter can quarantine memory whose <code>SourcePipeline</code> or
+                        <code>SourceDocumentId</code> is untrusted instead of blindly trusting whatever is in the graph.
+                        You cannot decide whether to trust a fact you cannot trace; the stamp is what makes the decision
+                        possible.
+                    </p>
+
+                    <h2 id="compliance-retention">Compliance &amp; retention</h2>
+                    <p>
+                        Knowing where data came from is half of governance; the other half is not keeping it longer than
+                        you're allowed to, and being able to prove what happened to it. A second decorator —
+                        <code>src/Content/Infrastructure/Infrastructure.AI.KnowledgeGraph/Compliance/ComplianceAwareGraphStore.cs</code>
+                        — handles the temporal and audit side:
+                    </p>
+                    <ul>
+                        <li>
+                            <strong>On writes</strong> it stamps temporal metadata — creation time via
+                            <code>TimeProvider.GetUtcNow()</code> — and tenant metadata.
+                        </li>
+                        <li><strong>On reads</strong> it filters out expired nodes, so stale data simply isn't returned.</li>
+                        <li>
+                            It emits a <code>MemoryAuditEvent</code> (<code>Remember</code> / <code>Forget</code> /
+                            <code>Erasure</code>, with <code>ActorId</code>, <code>Timestamp</code>,
+                            <code>ScopeId</code>, and <code>AffectedNodeIds</code>) to <code>IMemoryAuditSink</code>
+                            (JSONL) — an append-only trail of every memory-changing event.
+                        </li>
+                    </ul>
+                    <p>
+                        Retention rules are not hardcoded: they come from <code>IRetentionPolicyProvider</code>, resolved
+                        per tenant and per dataset, so different customers and datasets can carry different lifetimes.
+                    </p>
+
+                    <div class="callout callout-info">
+                        <span class="callout-icon">i</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Time is injected, not read from the wall clock</div>
+                            <p style="margin: 0">
+                                Creation and expiry are computed from <code>TimeProvider.GetUtcNow()</code>, an injected
+                                clock, rather than <code>DateTime.UtcNow</code>. That keeps retention behaviour
+                                deterministic and testable — you can fast-forward a fake clock in a test to prove expired
+                                nodes really do drop out of reads.
+                            </p>
+                        </div>
+                    </div>
+
+                    <h2 id="erasure">Right-to-erasure (GDPR Article 17)</h2>
+                    <p>
+                        "Delete the user's data" is easy to say and hard to do correctly, because an agent's knowledge of
+                        a user is scattered across several stores. Forgetting must be total, or it isn't forgetting. The
+                        orchestrator at
+                        <code>src/Content/Infrastructure/Infrastructure.AI.KnowledgeGraph/Compliance/DefaultErasureOrchestrator.cs</code>
+                        makes it total: <code>EraseByOwnerAsync(ownerId)</code> deletes across <strong>all</strong>
+                        stores — graph nodes (and their edges), feedback weights, and vector embeddings — then emits an
+                        <code>Erasure</code> audit event and returns an
+                        <code>src/Content/Domain/Domain.AI/KnowledgeGraph/Models/ErasureReceipt.cs</code>.
+                    </p>
+
+                    <div class="callout callout-tip">
+                        <span class="callout-icon">✓</span>
+                        <div class="callout-body">
+                            <div class="callout-title">The receipt is machine-checkable proof of compliance</div>
+                            <p>
+                                An <code>ErasureReceipt</code> is not a log line you have to trust — it is a structured,
+                                returnable record of exactly what was deleted, suitable for an auditor or a
+                                data-subject-access response. It carries:
+                            </p>
+                            <ul style="margin-bottom: 0">
+                                <li><code>RequestId</code> and <code>ScopeId</code> — which request, which scope.</li>
+                                <li>
+                                    <code>RequestedAt</code> / <code>CompletedAt</code> — the erasure window, provable
+                                    against the Article 17 timeframe.
+                                </li>
+                                <li>
+                                    counts: <code>NodesDeleted</code>, <code>EdgesDeleted</code>,
+                                    <code>FeedbackWeightsDeleted</code>, <code>VectorEmbeddingsDeleted</code> — the exact
+                                    blast radius of the deletion across every store.
+                                </li>
+                            </ul>
+                        </div>
+                    </div>
+
+                    <h2 id="secrets">Secrets management</h2>
+                    <p>
+                        The data the agent holds is one thing; the credentials that let it reach databases, model
+                        endpoints, and APIs are another. None of them belong in source. Configuration is assembled by
+                        <code>LoadAppConfig</code> in
+                        <code>src/Content/Presentation/Presentation.Common/Helpers/AppConfigHelper.cs</code>, which layers
+                        sources in ascending priority — later layers override earlier ones:
+                    </p>
+
+                    <pre><code class="language-text">appsettings.json
+  -> appsettings.{Environment}.json
+  -> User Secrets (development only)
+  -> environment variables
+  -> Azure Key Vault (non-DEBUG builds only)
+  -> Azure App Configuration</code></pre>
+
+                    <p>
+                        Key Vault is wired in for non-DEBUG builds via:
+                    </p>
+
+                    <pre><code class="language-csharp">builder.Configuration.AddAzureKeyVault(
+    new Uri(akvUri),
+    new DefaultAzureCredential());</code></pre>
+
+                    <p>
+                        The credential is <code>DefaultAzureCredential</code> — authentication is Entra managed identity,
+                        with <strong>no stored credential</strong> anywhere in the app to leak. No secret is hardcoded,
+                        and a missing required secret fails host startup loudly rather than letting the app run in a
+                        half-configured state. The Key Vault settings are bound through
+                        <code>src/Content/Domain/Domain.Common/Config/Azure/KeyVaultConfig.cs</code>.
+                    </p>
+
+                    <div class="callout callout-info">
+                        <span class="callout-icon">i</span>
+                        <div class="callout-body">
+                            <div class="callout-title">This page is the application side; deployment is elsewhere</div>
+                            <p style="margin: 0">
+                                Here we cover how the app <em>consumes</em> secrets. The deployment side — provisioning
+                                the vault, assigning the managed identity, and granting it least-privilege access — lives
+                                in the Architecture guide:
+                                <a href="../architecture/04-networking-and-security.html">Networking &amp; Security</a>.
+                            </p>
+                        </div>
+                    </div>
+
+                    <h2 id="attack-scenario">Attack scenario: reaching across the tenant wall</h2>
+                    <div class="callout callout-danger">
+                        <span class="callout-icon">✕</span>
+                        <div class="callout-body">
+                            <div class="callout-title">A user tries to recall another tenant's data</div>
+                            <p>
+                                Suppose a user in tenant <em>A</em> crafts a request designed to pull back a fact they
+                                know exists in tenant <em>B</em> — perhaps they learned a competitor's record id, or they
+                                try to address a memory key by guessing its name. Their request is authenticated as a
+                                tenant-<em>A</em> user, and that identity is set in the <code>AsyncLocal</code> accessor
+                                at the middleware before any retrieval runs.
+                            </p>
+                            <p style="margin-bottom: 0">
+                                When retrieval reaches the graph, every candidate record passes through
+                                <code>TenantIsolatedGraphStore</code>'s per-record check. Tenant <em>B</em>'s nodes have
+                                <code>TenantId</code> = <em>B</em>, which does not match the caller's tenant — the tenant
+                                check fails and those nodes are filtered out before they ever reach the model's context.
+                                The query returns nothing across the wall. Even the namespaced memory id
+                                (<code>memory:B:&hellip;</code>) can't be reached, because the caller's scope is
+                                <em>A</em> and the id space is partitioned by scope. No leak, no error message that
+                                confirms the record exists — just an empty, scoped result.
+                            </p>
+                        </div>
+                    </div>
+
+                    <p>
+                        That closes the seventh and final layer. With identity, autonomy, tool permissions, execution,
+                        egress, content safety, and now data protection all in place, the last question is how you
+                        <em>prove</em> they stay in place release after release. That is the job of the
+                        <a href="09-owasp-evals.html">OWASP Agentic evaluation pack</a> — ten deterministic tests, one
+                        per threat category, that attack each layer and fail the build if a defence has quietly
+                        regressed.
+                    </p>
+
+                    <!-- Footer nav -->
+                    <div class="page-nav">
+                        <a class="page-nav-link page-nav-prev" href="07-content-safety.html"><div class="page-nav-label">&larr; Previous</div><div class="page-nav-title">07 &middot; Content Safety &amp; Injection</div></a>
+                        <a class="page-nav-link page-nav-next" href="09-owasp-evals.html"><div class="page-nav-label">Next &rarr;</div><div class="page-nav-title">09 &middot; OWASP Agentic Evals</div></a>
+                    </div>
+                </div>
+
+                <!-- TOC -->
+                <aside class="toc" aria-label="On this page">
+                    <div class="toc-title">On this page</div>
+                    <ul class="toc-list"></ul>
+                </aside>
+            </main>
+        </div>
+        <script src="../assets/js/main.js"></script>
+    </body>
+</html>

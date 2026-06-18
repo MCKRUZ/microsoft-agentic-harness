@@ -1,0 +1,487 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>04 · Tools &amp; Permissions — Agentic Harness Security Guide</title>
+        <meta
+            name="description"
+            content="Layer 3 of the harness: which specific tools an agent may invoke right now. Keyed-DI tool registration, the three-phase permission resolver, plugin boundary governance, and the bypass-immune DeniedTools rule that holds even for an Autonomous agent."
+        />
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+        <link
+            href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap"
+            rel="stylesheet"
+        />
+        <link rel="stylesheet" href="../assets/css/styles.css" />
+    </head>
+    <body>
+        <a href="#main" class="skip-link">Skip to content</a>
+        <div class="app">
+            <!-- ============ SIDEBAR ============ -->
+            <aside class="sidebar">
+                <div class="sidebar-header">
+                    <a class="sidebar-brand" href="index.html">
+                        <span class="sidebar-brand-mark">AH</span>
+                        <span>
+                            <span class="sidebar-brand-text">Agentic Harness</span><br />
+                            <span class="sidebar-brand-sub">Security Guide</span>
+                        </span>
+                    </a>
+                </div>
+                <nav class="sidebar-nav" aria-label="Documentation navigation">
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Foundations</div>
+                        <a class="sidebar-link" href="index.html"><span class="sidebar-link-num">00</span> Welcome</a>
+                        <a class="sidebar-link" href="01-threat-model.html"
+                            ><span class="sidebar-link-num">01</span> Threat Model &amp; Defense in Depth</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Access Control</div>
+                        <a class="sidebar-link" href="02-identity-and-access.html"
+                            ><span class="sidebar-link-num">02</span> Identity &amp; Access</a
+                        >
+                        <a class="sidebar-link" href="03-autonomy-and-governance.html"
+                            ><span class="sidebar-link-num">03</span> Autonomy &amp; Governance</a
+                        >
+                        <a class="sidebar-link" href="04-tools-and-permissions.html"
+                            ><span class="sidebar-link-num">04</span> Tools &amp; Permissions</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Execution Safety</div>
+                        <a class="sidebar-link" href="05-sandbox-and-execution.html"
+                            ><span class="sidebar-link-num">05</span> Sandbox &amp; Execution</a
+                        >
+                        <a class="sidebar-link" href="06-egress-and-ssrf.html"
+                            ><span class="sidebar-link-num">06</span> Egress &amp; SSRF Defense</a
+                        >
+                        <a class="sidebar-link" href="07-content-safety.html"
+                            ><span class="sidebar-link-num">07</span> Content Safety &amp; Injection</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Data &amp; Privacy</div>
+                        <a class="sidebar-link" href="08-data-protection.html"
+                            ><span class="sidebar-link-num">08</span> Data Protection &amp; Privacy</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Assurance</div>
+                        <a class="sidebar-link" href="09-owasp-evals.html"
+                            ><span class="sidebar-link-num">09</span> OWASP Agentic Evals</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Reference</div>
+                        <a class="sidebar-link" href="10-reference.html"
+                            ><span class="sidebar-link-num">10</span> Security Cheatsheet</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Other Guides</div>
+                        <a class="sidebar-link" href="../index.html">&#8592; Developer Guide</a>
+                        <a class="sidebar-link" href="../architecture/index.html">&#8592; Architecture Guide</a>
+                        <a class="sidebar-link" href="../agentic-harness-course/index.html">&#8592; Interactive Course</a>
+                    </div>
+                </nav>
+            </aside>
+
+            <!-- ============ MAIN ============ -->
+            <main id="main" class="content-wrap">
+                <div class="content">
+                    <span class="eyebrow">Chapter 04 &middot; Access Control</span>
+                    <h1 class="page-title">Tools &amp; Permissions</h1>
+                    <p class="page-lead">
+                        The previous page set how much an agent may do without a human. This page is the next ring
+                        in: layer 3, which specific tools an agent may invoke right now, resolved fresh on every call.
+                        No tool runs until a deterministic resolver says it may — and the answer is recomputed for
+                        every single tool call, not cached at startup.
+                    </p>
+
+                    <h2 id="three-narrowings">Three narrowings, in order</h2>
+                    <p>
+                        "Can this agent use this tool?" is never one yes/no check. It is three filters applied in
+                        sequence, each strictly smaller than the last. By the time the resolver returns, a tool has
+                        had to survive all three.
+                    </p>
+
+                    <div class="def">
+                        <div class="def-term">1 &middot; Declared tools (what the agent even knows about)</div>
+                        <div class="def-desc">
+                            A skill declares which tools it may use. The model is only ever shown the schemas for
+                            those tools, so it physically cannot name a tool it was not given. This is the widest cut.
+                        </div>
+                    </div>
+                    <div class="def">
+                        <div class="def-term">2 &middot; Tier defaults (the baseline posture)</div>
+                        <div class="def-desc">
+                            The agent's <a href="03-autonomy-and-governance.html">autonomy tier</a> sets a default
+                            behavior for any tool — Allow, Ask, or Deny — before any tool-specific rule is consulted.
+                        </div>
+                    </div>
+                    <div class="def">
+                        <div class="def-term">3 &middot; Explicit rules (the per-tool verdict)</div>
+                        <div class="def-desc">
+                            Specific rules from the tier, from per-tool overrides, and from plugins are merged, sorted,
+                            and evaluated. The first matching rule wins. This is the narrowest cut and the subject of
+                            most of this page.
+                        </div>
+                    </div>
+
+                    <p>
+                        Read top to bottom, the model can only <em>request</em> tools it was declared (narrowing 1);
+                        of those, its tier sets a default disposition (narrowing 2); and the final verdict for the
+                        exact call is the first matching explicit rule (narrowing 3). Below we walk each one.
+                    </p>
+
+                    <h2 id="declared-tools">Narrowing 1 — keyed DI and declared tools</h2>
+                    <p>
+                        Every tool in the harness is registered in dependency injection under a string
+                        <strong>key</strong>. The key is the tool's name; the value is the implementation.
+                    </p>
+
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-block-lang">csharp</span></div>
+                        <pre><code>services.AddKeyedSingleton&lt;ITool&gt;("file_system", /* impl */);</code></pre>
+                    </div>
+
+                    <p>
+                        A skill's <code>SKILL.md</code> frontmatter declares which of those keyed tools the skill is
+                        allowed to use:
+                    </p>
+
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-block-lang">yaml</span></div>
+                        <pre><code>allowed-tools: ["Read", "Write"]</code></pre>
+                    </div>
+
+                    <p>
+                        Only the tools named in that list are resolvable for the skill, and the LLM is only offered
+                        the schemas for the tools it is allowed to use. This is <strong>lazy resolution</strong>: the
+                        model sees a menu, and the menu only contains what the skill declared. It is the first and
+                        cheapest narrowing — an agent literally cannot name a tool it was not given, because the name
+                        never reaches its context.
+                    </p>
+
+                    <div class="callout callout-info">
+                        <span class="callout-icon">i</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Why "lazy" matters for security, not just cost</div>
+                            <p style="margin: 0">
+                                Lazy resolution is usually sold as a token-budget optimization — don't ship 200 tool
+                                schemas when the skill uses two. The security payoff is the same mechanism viewed
+                                differently: a tool the model never sees is a tool the model cannot be tricked,
+                                jailbroken, or injection-prompted into calling. Narrowing the menu narrows the attack
+                                surface.
+                            </p>
+                        </div>
+                    </div>
+
+                    <h2 id="resolver">Narrowing 3 — the three-phase permission resolver</h2>
+                    <p>
+                        Once the model picks a declared tool, the call goes to the
+                        <strong>three-phase permission resolver</strong>
+                        (<code>ThreePhasePermissionResolver</code>, implementing <code>IToolPermissionService</code>)
+                        at
+                        <code>src/Content/Infrastructure/Infrastructure.AI/Permissions/ThreePhasePermissionResolver.cs</code>.
+                        Every tool call passes through it. Rules from every source are gathered into one list, sorted
+                        by <code>Priority</code> ascending, and evaluated in ordered phases. The <strong>first
+                        matching rule wins</strong> — evaluation stops there.
+                    </p>
+
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Phase</th>
+                                <th>Name</th>
+                                <th>What it does</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>0</td>
+                                <td><strong>Rate limit</strong></td>
+                                <td>
+                                    <code>IDenialTracker</code> auto-denies a tool once it crosses the
+                                    <code>DenialRateLimitThreshold</code>. Stops a tool that keeps getting denied from
+                                    being retried forever — a runaway agent can't spin on a forbidden call.
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>1</td>
+                                <td><strong>Deny / Safety</strong></td>
+                                <td>
+                                    Safety gates are checked <em>first</em> and are bypass-immune. Then Deny rules, in
+                                    lowest-<code>Priority</code>-first order. If anything here matches, the call is
+                                    refused and no later phase runs.
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>2</td>
+                                <td><strong>Ask</strong></td>
+                                <td>The first matching Ask rule wins → a human is prompted to approve the call.</td>
+                            </tr>
+                            <tr>
+                                <td>3</td>
+                                <td><strong>Allow</strong></td>
+                                <td>The first matching Allow rule wins → the call proceeds.</td>
+                            </tr>
+                            <tr>
+                                <td>—</td>
+                                <td><strong>Default</strong></td>
+                                <td>
+                                    Nothing matched? The verdict is <strong>Ask</strong>. Closed-by-default — the
+                                    resolver never silently Allows.
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+
+                    <div class="callout callout-tip">
+                        <span class="callout-icon">✓</span>
+                        <div class="callout-body">
+                            <div class="callout-title">The order is the whole point: Deny before Ask before Allow</div>
+                            <p style="margin: 0">
+                                Because the phases run in that order and the first match wins, a Deny is evaluated
+                                before any Ask or Allow could match. A Deny can therefore never be overridden by a more
+                                permissive rule, no matter how that permissive rule was configured. And because the
+                                default when <em>nothing</em> matches is Ask, an unconfigured tool fails safe toward a
+                                human, never toward silent execution.
+                            </p>
+                        </div>
+                    </div>
+
+                    <h2 id="rule-sources">Where the rules come from</h2>
+                    <p>
+                        The resolver does not invent rules; it merges them from <strong>providers</strong>, then sorts
+                        the combined list by <code>Priority</code>. Two providers matter here:
+                    </p>
+
+                    <div class="def">
+                        <div class="def-term">AutonomyTierRuleProvider</div>
+                        <div class="def-desc">
+                            <code>src/Content/Application/Application.Core/Permissions/AutonomyTierRuleProvider.cs</code>.
+                            Emits the agent's autonomy-tier baseline at <code>Priority 0</code> (the lowest, so it is
+                            considered earliest within its phase) plus any per-tool overrides at <code>Priority 10</code>.
+                            This is the bridge from <a href="03-autonomy-and-governance.html">Autonomy &amp;
+                            Governance</a> — the tier you set there becomes concrete rules here.
+                        </div>
+                    </div>
+                    <div class="def">
+                        <div class="def-term">PluginPermissionRuleProvider</div>
+                        <div class="def-desc">
+                            <code>src/Content/Application/Application.Core/Permissions/PluginPermissionRuleProvider.cs</code>.
+                            Emits a plugin's own autonomy baseline plus a Deny rule for every entry in the plugin's
+                            <code>DeniedTools</code> list. This provider is where the page's headline rule lives —
+                            covered below.
+                        </div>
+                    </div>
+
+                    <h2 id="plugin-boundary">Plugin boundary governance</h2>
+                    <p>
+                        A <strong>plugin</strong> is a declared bundle of skills and MCP servers an agent can load.
+                        Because a plugin extends the agent's capabilities, it ships its own boundary. The boundary is
+                        declared on <code>PluginDeclaration</code> at
+                        <code>src/Content/Domain/Domain.Common/Config/AI/Plugins/PluginDeclaration</code> and has three
+                        knobs:
+                    </p>
+
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Knob</th>
+                                <th>Type</th>
+                                <th>Effect</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><code>AllowedTools</code></td>
+                                <td>Whitelist</td>
+                                <td>Applied first — the plugin may only touch tools on this list.</td>
+                            </tr>
+                            <tr>
+                                <td><code>DeniedTools</code></td>
+                                <td>Blacklist</td>
+                                <td>Wins on any conflict — a tool here is refused even if it also appears in the whitelist.</td>
+                            </tr>
+                            <tr>
+                                <td><code>AutonomyLevel</code></td>
+                                <td>Tier</td>
+                                <td>Overrides the tier policy for the whole plugin (e.g. force a noisier plugin to Supervised).</td>
+                            </tr>
+                        </tbody>
+                    </table>
+
+                    <h2 id="bypass-immune">The bypass-immune DeniedTools rule</h2>
+                    <p>
+                        This is the most important behavior on the page, and the most counter-intuitive: a tool in a
+                        plugin's <code>DeniedTools</code> stays denied <em>even for an Autonomous-tier agent whose
+                        default is Allow, and even under an auto-approve mode.</em> Here is exactly why.
+                    </p>
+                    <p>
+                        For each entry in <code>DeniedTools</code>, <code>PluginPermissionRuleProvider</code>
+                        (around lines 76–86) constructs this rule:
+                    </p>
+
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-block-lang">csharp</span></div>
+                        <pre><code>rules.Add(new ToolPermissionRule(
+    denied, null, PermissionBehaviorType.Deny,
+    PermissionRuleSource.PluginDeclaration,
+    Priority: 1, IsBypassImmune: true));</code></pre>
+                    </div>
+
+                    <p>Two of those arguments do all the work:</p>
+
+                    <div class="annotated">
+                        <div class="annotated-row">
+                            <div class="annotated-code">PermissionBehaviorType.Deny</div>
+                            <div class="annotated-note">
+                                Makes this a Deny rule, so it is evaluated in Phase 1 — before any Ask (Phase 2) or
+                                Allow (Phase 3) rule could possibly match. The first-match-wins ordering means a Deny
+                                short-circuits the whole resolution.
+                            </div>
+                        </div>
+                        <div class="annotated-row">
+                            <div class="annotated-code">Priority: 1</div>
+                            <div class="annotated-note">
+                                A very low priority number = sorted near the front = checked early within Phase 1.
+                                Even against other Deny rules, this one is considered first.
+                            </div>
+                        </div>
+                        <div class="annotated-row">
+                            <div class="annotated-code">IsBypassImmune: true</div>
+                            <div class="annotated-note">
+                                The bypass flag. It blocks any downstream auto-approve mechanism from overriding the
+                                rule. An auto-approve / Autonomous mode can flip Ask into Allow elsewhere — it cannot
+                                touch a rule marked bypass-immune. This is the flag that makes the denial absolute.
+                            </div>
+                        </div>
+                        <div class="annotated-row">
+                            <div class="annotated-code">PermissionRuleSource.PluginDeclaration</div>
+                            <div class="annotated-note">
+                                Records provenance — the verdict's audit trail shows it came from the plugin's own
+                                declaration, not from the tier or an operator override.
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="callout callout-warn">
+                        <span class="callout-icon">!</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Common mistake: "Autonomous / auto-approve overrides everything"</div>
+                            <p style="margin: 0">
+                                It does not. An auto-approve mode (and the Autonomous tier's Allow default) turns
+                                <em>Ask</em> verdicts into <em>Allow</em> — that is its entire job. <code>DeniedTools</code>
+                                and safety gates are precisely the exceptions: they are Deny-phase, bypass-immune
+                                rules, so the auto-approve machinery never gets a chance to act on them. If you put a
+                                tool in <code>DeniedTools</code> expecting Autonomous mode to "win," you have the
+                                model backwards — the Deny wins, every time.
+                            </p>
+                        </div>
+                    </div>
+
+                    <div class="callout callout-danger">
+                        <span class="callout-icon">✕</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Attack scenario: a compromised plugin under auto-approve</div>
+                            <p>
+                                Suppose a plugin you installed is compromised — a supply-chain attacker has published
+                                a malicious update. The agent is running in Autonomous tier with auto-approve on, so by
+                                default every tool call sails through as Allow. The poisoned plugin instructs the agent
+                                to call a tool the operator had listed in that plugin's <code>DeniedTools</code> — say,
+                                a shell or a credential-reading tool.
+                            </p>
+                            <p style="margin-bottom: 0">
+                                The call still fails. The resolver gathers rules, sorts by priority, and hits the
+                                bypass-immune Deny at <code>Priority 1</code> in Phase 1 — long before the Allow
+                                default in Phase 3 is ever consulted, and with the auto-approve override unable to
+                                touch it. The agent's elevated autonomy bought the attacker nothing for that tool. The
+                                blast radius of the compromise is capped at exactly the tools the operator chose to
+                                forbid.
+                            </p>
+                        </div>
+                    </div>
+
+                    <h2 id="pipeline">Where this runs in the request pipeline</h2>
+                    <p>
+                        The resolver is invoked from a MediatR pipeline behavior,
+                        <code>ToolPermissionBehavior</code>, at
+                        <code>src/Content/Application/Application.AI.Common/MediatRBehaviors/ToolPermissionBehavior.cs</code>.
+                        Putting permission resolution in a pipeline behavior means it runs on the request path
+                        automatically for every tool-call command — there is no way to dispatch a tool call that
+                        skips it. The behavior order (verified in <code>DependencyInjection.cs</code>) is:
+                    </p>
+
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>#</th>
+                                <th>Behavior</th>
+                                <th>Concern</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>1</td>
+                                <td><code>ContentSafety</code></td>
+                                <td>Is the inbound text safe? (<a href="07-content-safety.html">page 07</a>)</td>
+                            </tr>
+                            <tr>
+                                <td>2</td>
+                                <td><code>ToolPermission</code></td>
+                                <td>May this tool be called at all? (this page)</td>
+                            </tr>
+                            <tr>
+                                <td>3</td>
+                                <td><code>GovernancePolicy</code></td>
+                                <td>Does it satisfy the autonomy-tier policy? (<a href="03-autonomy-and-governance.html">page 03</a>)</td>
+                            </tr>
+                            <tr>
+                                <td>4</td>
+                                <td><code>PromptInjection</code></td>
+                                <td>Is the content an injection attempt? (<a href="07-content-safety.html">page 07</a>)</td>
+                            </tr>
+                        </tbody>
+                    </table>
+
+                    <div class="callout callout-info">
+                        <span class="callout-icon">i</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Permission is a verdict, not an execution</div>
+                            <p style="margin: 0">
+                                Everything on this page decides <em>whether</em> a tool may be called. It says nothing
+                                about what that tool's code is allowed to touch once it runs — the filesystem, the
+                                network, CPU, memory. That is a separate layer with its own controls. An Allow verdict
+                                here hands the call to the next ring of defense, not to an unbounded process.
+                            </p>
+                        </div>
+                    </div>
+
+                    <p>
+                        So an allowed tool that executes code still has to run inside the sandbox — the closed-by-default
+                        capability box that decides what the tool's process may actually do. That is layer 4, and it is
+                        the next page: <a href="05-sandbox-and-execution.html">Sandbox &amp; Execution</a>.
+                    </p>
+
+                    <!-- Footer nav -->
+                    <div class="page-nav">
+                        <a class="page-nav-link page-nav-prev" href="03-autonomy-and-governance.html"><div class="page-nav-label">&larr; Previous</div><div class="page-nav-title">03 &middot; Autonomy &amp; Governance</div></a>
+                        <a class="page-nav-link page-nav-next" href="05-sandbox-and-execution.html"><div class="page-nav-label">Next &rarr;</div><div class="page-nav-title">05 &middot; Sandbox &amp; Execution</div></a>
+                    </div>
+                </div>
+
+                <!-- TOC -->
+                <aside class="toc" aria-label="On this page">
+                    <div class="toc-title">On this page</div>
+                    <ul class="toc-list"></ul>
+                </aside>
+            </main>
+        </div>
+        <script src="../assets/js/main.js"></script>
+    </body>
+</html>
