@@ -1,0 +1,692 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>02 · Identity &amp; Access — Agentic Harness Security Guide</title>
+        <meta
+            name="description"
+            content="Layer 1 of the harness: proving who is calling before anything else runs. JWT-authenticated MCP clients, mutually-authenticated agent-to-agent peers, role and permission authorization, SignalR token-in-query auth, CORS, security headers, and rate limiting."
+        />
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+        <link
+            href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap"
+            rel="stylesheet"
+        />
+        <link rel="stylesheet" href="../assets/css/styles.css" />
+    </head>
+    <body>
+        <a href="#main" class="skip-link">Skip to content</a>
+        <div class="app">
+            <!-- ============ SIDEBAR ============ -->
+            <aside class="sidebar">
+                <div class="sidebar-header">
+                    <a class="sidebar-brand" href="index.html">
+                        <span class="sidebar-brand-mark">AH</span>
+                        <span>
+                            <span class="sidebar-brand-text">Agentic Harness</span><br />
+                            <span class="sidebar-brand-sub">Security Guide</span>
+                        </span>
+                    </a>
+                </div>
+                <nav class="sidebar-nav" aria-label="Documentation navigation">
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Foundations</div>
+                        <a class="sidebar-link" href="index.html"><span class="sidebar-link-num">00</span> Welcome</a>
+                        <a class="sidebar-link" href="01-threat-model.html"
+                            ><span class="sidebar-link-num">01</span> Threat Model &amp; Defense in Depth</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Access Control</div>
+                        <a class="sidebar-link" href="02-identity-and-access.html"
+                            ><span class="sidebar-link-num">02</span> Identity &amp; Access</a
+                        >
+                        <a class="sidebar-link" href="03-autonomy-and-governance.html"
+                            ><span class="sidebar-link-num">03</span> Autonomy &amp; Governance</a
+                        >
+                        <a class="sidebar-link" href="04-tools-and-permissions.html"
+                            ><span class="sidebar-link-num">04</span> Tools &amp; Permissions</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Execution Safety</div>
+                        <a class="sidebar-link" href="05-sandbox-and-execution.html"
+                            ><span class="sidebar-link-num">05</span> Sandbox &amp; Execution</a
+                        >
+                        <a class="sidebar-link" href="06-egress-and-ssrf.html"
+                            ><span class="sidebar-link-num">06</span> Egress &amp; SSRF Defense</a
+                        >
+                        <a class="sidebar-link" href="07-content-safety.html"
+                            ><span class="sidebar-link-num">07</span> Content Safety &amp; Injection</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Data &amp; Privacy</div>
+                        <a class="sidebar-link" href="08-data-protection.html"
+                            ><span class="sidebar-link-num">08</span> Data Protection &amp; Privacy</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Assurance</div>
+                        <a class="sidebar-link" href="09-owasp-evals.html"
+                            ><span class="sidebar-link-num">09</span> OWASP Agentic Evals</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Reference</div>
+                        <a class="sidebar-link" href="10-reference.html"
+                            ><span class="sidebar-link-num">10</span> Security Cheatsheet</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Other Guides</div>
+                        <a class="sidebar-link" href="../index.html">&#8592; Developer Guide</a>
+                        <a class="sidebar-link" href="../architecture/index.html">&#8592; Architecture Guide</a>
+                        <a class="sidebar-link" href="../agentic-harness-course/index.html">&#8592; Interactive Course</a>
+                    </div>
+                </nav>
+            </aside>
+
+            <!-- ============ MAIN ============ -->
+            <main id="main" class="content-wrap">
+                <div class="content">
+                    <span class="eyebrow">Chapter 02 &middot; Access Control</span>
+                    <h1 class="page-title">Identity &amp; Access</h1>
+                    <p class="page-lead">
+                        This is layer 1 — the front door. Before a single line of agent logic runs, before any tool is
+                        chosen or any model token is generated, the harness has to answer one question: <em>who is
+                        actually calling?</em> That question has three very different answers — a human user, an
+                        external MCP client, or a peer agent — and each gets its own proof-of-identity mechanism. Get
+                        this layer wrong and every layer behind it is defending an attacker you already let in.
+                    </p>
+
+                    <h2 id="three-callers">The three callers</h2>
+                    <p>
+                        Everything in this chapter exists to authenticate one of three kinds of caller. They arrive on
+                        different protocols, carry different credentials, and lie in different ways, so the harness
+                        treats them separately.
+                    </p>
+
+                    <div class="def">
+                        <div class="def-term">Human users</div>
+                        <div class="def-desc">
+                            A person driving the agent through the web UI. They connect over a WebSocket (SignalR) and
+                            prove identity with a bearer token issued by your identity provider. See
+                            <a href="#signalr">SignalR hub authentication</a>.
+                        </div>
+                    </div>
+                    <div class="def">
+                        <div class="def-term">External MCP clients</div>
+                        <div class="def-desc">
+                            Other systems (or other agents) connecting <em>into</em> this harness's MCP server to use
+                            the tools it exposes. They authenticate with a JWT bearer token validated against Entra ID.
+                            See <a href="#mcp-jwt">MCP server authentication</a>.
+                        </div>
+                    </div>
+                    <div class="def">
+                        <div class="def-term">Peer agents (A2A)</div>
+                        <div class="def-desc">
+                            Other agents calling this agent — agent-to-agent, or <strong>A2A</strong>. In-process peers
+                            are trusted by execution context; cross-process peers must present a client certificate
+                            <em>and</em> a JWT. See <a href="#a2a">Agent-to-agent authentication</a>.
+                        </div>
+                    </div>
+
+                    <div class="callout callout-jargon">
+                        <span class="callout-icon">¶</span>
+                        <div class="callout-body">
+                            <div class="callout-title">JWT (JSON Web Token)</div>
+                            <p style="margin: 0">
+                                A small, cryptographically signed packet of claims — facts like "who you are"
+                                (<code>sub</code>), "who issued this" (<code>iss</code>), "who it's for"
+                                (<code>aud</code>), and "when it expires" (<code>exp</code>). Because it's signed by a
+                                trusted issuer, the harness can verify it wasn't tampered with or forged without
+                                calling back to the issuer on every request. The whole identity layer rests on
+                                validating these claims <em>strictly</em>.
+                            </p>
+                        </div>
+                    </div>
+
+                    <h2 id="mcp-jwt">MCP server authentication (external clients)</h2>
+                    <p>
+                        <strong>The attack this stops:</strong> an unauthenticated or forged client connecting to your
+                        MCP server and driving its tools as if it were a trusted agent. The harness's MCP server
+                        exposes real capability — file access, network calls, agent invocation — so its front door is
+                        JWT bearer authentication against Microsoft Entra ID, wired in
+                        <code>src/Content/Infrastructure/Infrastructure.AI.MCPServer/Extensions/McpServerExtensions.cs</code>.
+                    </p>
+                    <p>
+                        The mechanism is strict token validation. Every connecting client must present a JWT, and the
+                        harness checks all four of the claims that matter:
+                    </p>
+
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>What is checked</th>
+                                <th>Rule</th>
+                                <th>Why it matters</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><strong>Issuer</strong> (<code>iss</code>)</td>
+                                <td>
+                                    Accepts both Entra forms:
+                                    <code>https://sts.windows.net/{tenantId}/</code> and
+                                    <code>https://login.microsoftonline.com/{tenantId}/v2.0</code>
+                                </td>
+                                <td>Confirms the token came from your tenant's identity provider, not an attacker's</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Audience</strong> (<code>aud</code>)</td>
+                                <td><code>api://{clientId}</code></td>
+                                <td>Confirms the token was minted <em>for this API</em>, not borrowed from another app</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Signature</strong></td>
+                                <td><code>ValidateIssuerSigningKey = true</code></td>
+                                <td>Confirms the token wasn't tampered with or hand-forged</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Lifetime</strong> (<code>exp</code>)</td>
+                                <td>
+                                    <code>ValidateLifetime = true</code>,
+                                    <code>ClockSkew = TimeSpan.Zero</code>
+                                </td>
+                                <td>An expired token is rejected the instant it expires — no grace window</td>
+                            </tr>
+                        </tbody>
+                    </table>
+
+                    <p>
+                        That last row is the one most systems get wrong. The default clock-skew allowance in most JWT
+                        libraries is <strong>five minutes</strong> — a token is honored for up to five minutes past its
+                        stated expiry to paper over clock drift between servers. The harness sets
+                        <code>ClockSkew</code> to zero: expiry means expiry.
+                    </p>
+
+                    <div class="callout callout-danger">
+                        <span class="callout-icon">✕</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Attack scenario: the stolen, just-expired token</div>
+                            <p>
+                                An attacker captures a valid JWT from network logs or a leaked debug dump. By the time
+                                they replay it, the token expired ninety seconds ago. Against a default five-minute
+                                clock-skew window, that token still works — the attacker gets a free
+                                three-and-a-half-minute replay window on a credential that was supposed to be dead.
+                            </p>
+                            <p style="margin-bottom: 0">
+                                Against <code>ClockSkew = TimeSpan.Zero</code>, the replay is rejected outright. The
+                                same setting defeats hand-forged tokens with a future-dated <code>exp</code> but a bad
+                                signature, because signature validation fails first. Strict expiry shrinks the replay
+                                window from minutes to zero.
+                            </p>
+                        </div>
+                    </div>
+
+                    <p>
+                        The MCP server supports three auth modes, selected by <code>McpServerAuthConfig</code>, so a
+                        consumer can match the credential model their callers already have:
+                    </p>
+
+                    <div class="def">
+                        <div class="def-term">ApiKey</div>
+                        <div class="def-desc">
+                            A custom header (default <code>X-API-Key</code>) carrying a shared secret. Simplest; fine
+                            for trusted internal callers, weakest for anything internet-facing.
+                        </div>
+                    </div>
+                    <div class="def">
+                        <div class="def-term">Bearer</div>
+                        <div class="def-desc">
+                            A token in the standard <code>Authorization</code> header. The middle ground.
+                        </div>
+                    </div>
+                    <div class="def">
+                        <div class="def-term">Entra</div>
+                        <div class="def-desc">
+                            Full OAuth 2.0 client-credentials flow against Microsoft Entra ID — the production-grade
+                            mode, with all four claim checks above.
+                        </div>
+                    </div>
+
+                    <p>
+                        The deployment-side configuration surface lives under <code>AppConfig</code> at
+                        <code>MCP.Server.Authentication</code>, with <code>Authority</code>, <code>Audience</code>, and
+                        <code>ValidIssuers</code>:
+                    </p>
+
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-block-lang">json</span></div>
+                        <pre><code>{
+  "MCP": {
+    "Server": {
+      "Authentication": {
+        "Authority": "https://login.microsoftonline.com/{tenantId}/v2.0",
+        "Audience": "api://{clientId}",
+        "ValidIssuers": [
+          "https://sts.windows.net/{tenantId}/",
+          "https://login.microsoftonline.com/{tenantId}/v2.0"
+        ]
+      }
+    }
+  }
+}</code></pre>
+                    </div>
+
+                    <div class="callout callout-warn">
+                        <span class="callout-icon">!</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Development disables auth — production must not</div>
+                            <p style="margin: 0">
+                                In <code>Development</code> the MCP server requires no auth so you can iterate without
+                                wiring up Entra. In production the harness enforces Entra (or another configured mode)
+                                and <strong>throws <code>InvalidOperationException</code> at startup</strong> if it
+                                isn't configured — fail-loud, not fail-open. A misconfigured production deployment
+                                refuses to boot rather than silently accepting anonymous callers.
+                            </p>
+                        </div>
+                    </div>
+
+                    <h2 id="a2a">Agent-to-agent (A2A) authentication</h2>
+                    <p>
+                        <strong>The attack this stops:</strong> one agent impersonating another to inherit its
+                        authority — claiming to be the "admin agent" to get a tool call approved, or spoofing a peer's
+                        identity in a multi-agent workflow. A2A means agents calling other agents, and the harness
+                        treats in-process and cross-process calls very differently.
+                    </p>
+                    <p>
+                        <strong>In-process</strong> calls — one agent invoking another inside the same process — trust
+                        <code>IAgentExecutionContext.AgentIdentity</code>, an <code>AsyncLocal</code> scope that flows
+                        ambiently with the call. There's no network boundary to cross and no attacker between the two
+                        agents, so the in-memory identity is authoritative.
+                    </p>
+                    <p>
+                        <strong>Cross-process</strong> calls cross a real network boundary, so they earn no trust by
+                        default. The provider at
+                        <code>src/Content/Infrastructure/Infrastructure.AI/A2A/CrossProcessA2AAuthenticationProvider.cs</code>
+                        requires a peer to clear four checks:
+                    </p>
+
+                    <div class="callout callout-jargon">
+                        <span class="callout-icon">¶</span>
+                        <div class="callout-body">
+                            <div class="callout-title">mTLS (mutual TLS)</div>
+                            <p style="margin: 0">
+                                Ordinary HTTPS proves the <em>server's</em> identity to the client. Mutual TLS also
+                                makes the <em>client</em> present a certificate, so both ends prove who they are before
+                                any application data flows. In the harness this happens at the Kestrel listener — the
+                                web server — <em>before</em> the harness code even runs. A peer with no valid client
+                                certificate never reaches the agent.
+                            </p>
+                        </div>
+                    </div>
+
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>#</th>
+                                <th>Check</th>
+                                <th>What it proves</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>1</td>
+                                <td><strong>mTLS peer certificate</strong></td>
+                                <td>
+                                    Validated at the Kestrel listener before the harness runs — the caller is a known
+                                    machine on the network
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>2</td>
+                                <td><strong>JWT validation</strong></td>
+                                <td>Signature, issuer, audience, and expiry all check out — the caller's claims are genuine</td>
+                            </tr>
+                            <tr>
+                                <td>3</td>
+                                <td><strong><code>sub</code> overrides the envelope</strong></td>
+                                <td>
+                                    The JWT <code>sub</code> claim becomes the authoritative caller id, overriding
+                                    whatever the message body declared
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>4</td>
+                                <td><strong>Envelope must match <code>sub</code></strong></td>
+                                <td>
+                                    The envelope's <code>callerAgentId</code> must equal the JWT <code>sub</code>;
+                                    mismatch is rejected with <code>a2a.auth_rejected</code>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+
+                    <p>
+                        Checks 3 and 4 are the anti-spoofing core, and they're worth pausing on. A message envelope is
+                        <em>data the caller controls</em> — an agent can write any <code>callerAgentId</code> it likes
+                        into the body. The JWT <code>sub</code> claim is <em>cryptographically signed by the
+                        issuer</em> and cannot be forged. So the harness never trusts the envelope's claimed identity:
+                        it takes the signed <code>sub</code> as the real id, then demands the envelope agree with it.
+                        An agent that signs in as <code>worker-7</code> but stamps <code>admin-agent</code> in the
+                        envelope is rejected — the signed claim wins, and the contradiction is treated as an attack.
+                    </p>
+
+                    <p>
+                        The JWT checks themselves are performed by <code>IA2ATokenValidator</code> against
+                        <code>A2ASurfaceConfig</code>: <code>iss</code> against <code>ExpectedIssuer</code>,
+                        <code>aud</code> against <code>ExpectedAudience</code>, <code>exp</code> with
+                        <code>ClockSkewSeconds</code>, plus a revocation check if one is configured.
+                    </p>
+
+                    <h2 id="authorization">Authorization: roles vs permissions</h2>
+                    <p>
+                        Authentication answered "who are you?". <strong>Authorization</strong> answers "are you allowed
+                        to do <em>this</em>?". The harness has two complementary models, and the distinction matters:
+                        <em>roles</em> are about who you are ("Admin", "Manager"); <em>permissions</em> are about what
+                        specific capability you hold ("Access", "Admin"). Most commands gate on roles; finer-grained
+                        API surfaces gate on permissions.
+                    </p>
+
+                    <h3 id="role-authorization">Role-based authorization</h3>
+                    <p>
+                        Commands carry an attribute like
+                        <code>[Authorize(Roles = "Admin,Manager", Policy = "…")]</code>, defined in
+                        <code>src/Content/Application/Application.Common/Attributes/SecurityAttributes/AuthorizeAttribute.cs</code>
+                        and enforced as a MediatR pipeline behavior in
+                        <code>src/Content/Application/Application.Common/MediatRBehaviors/AuthorizationBehavior.cs</code>.
+                        Enforcing it in the pipeline means <em>every</em> command passes through the same gate — there's
+                        no way to call a handler and skip the check.
+                    </p>
+                    <p>
+                        The combining logic has a precise shape that's easy to get backwards, so here it is explicitly:
+                    </p>
+
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Construct</th>
+                                <th>Combining rule</th>
+                                <th>Reads as</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>Roles within one <code>[Authorize]</code></td>
+                                <td><strong>OR</strong></td>
+                                <td>Any one of the listed roles passes</td>
+                            </tr>
+                            <tr>
+                                <td>Multiple <code>[Authorize]</code> attributes</td>
+                                <td><strong>AND</strong></td>
+                                <td>Every attribute must pass</td>
+                            </tr>
+                            <tr>
+                                <td>Policies across attributes</td>
+                                <td><strong>AND</strong></td>
+                                <td>All policies must be satisfied</td>
+                            </tr>
+                        </tbody>
+                    </table>
+
+                    <p>
+                        So <code>[Authorize(Roles = "Admin,Manager")]</code> on its own means "Admin <em>or</em>
+                        Manager." Stacking a second <code>[Authorize(Roles = "Auditor")]</code> on top tightens it to
+                        "(Admin or Manager) <em>and</em> Auditor." Concrete endpoints behind this gate include
+                        <code>AgentsController</code>, <code>MetricsController</code>, and
+                        <code>DocumentsController</code> — and notably the Prometheus scraping endpoint requires
+                        authorization too, so your metrics aren't an unauthenticated information leak.
+                    </p>
+
+                    <h3 id="permission-authorization">Permission-based authorization</h3>
+                    <p>
+                        For API surfaces that need capability-level control, the attribute at
+                        <code>src/Content/Infrastructure/Infrastructure.APIAccess/Auth/Attributes/PermissionAuthorizeAttribute.cs</code>
+                        encodes permission enums as a policy name that ASP.NET Core's auth middleware parses and
+                        enforces. Written as
+                        <code>[PermissionAuthorize(AuthPermissions.Access, AuthPermissions.Admin)]</code>, it requires
+                        the caller to hold <em>all</em> listed permissions — the combining rule here is
+                        <strong>AND</strong>, not OR.
+                    </p>
+
+                    <div class="callout callout-warn">
+                        <span class="callout-icon">!</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Roles list is OR; permissions list is AND</div>
+                            <p style="margin: 0">
+                                These two attributes look similar but combine their lists oppositely. Listing several
+                                roles in one <code>[Authorize]</code> <em>widens</em> access (any one passes). Listing
+                                several permissions in <code>[PermissionAuthorize]</code> <em>narrows</em> it (all
+                                required). Reading one as if it followed the other's rule is a real source of
+                                accidental over- or under-permissioning.
+                            </p>
+                        </div>
+                    </div>
+
+                    <h2 id="signalr">SignalR hub authentication (human users)</h2>
+                    <p>
+                        <strong>The problem:</strong> human users connect over WebSockets, and a WebSocket upgrade
+                        handshake <em>cannot carry a custom <code>Authorization</code> header</em> — the browser API
+                        simply doesn't allow setting one on the upgrade request. So the standard "put the bearer token
+                        in the Authorization header" pattern is unavailable for the one caller type that needs it most.
+                    </p>
+                    <p>
+                        <strong>The solution</strong>, wired in
+                        <code>src/Content/Presentation/Presentation.AgentHub/DependencyInjection.cs</code>: the client
+                        sends the bearer token as an <code>access_token</code> query-string parameter on the connection
+                        URL. A custom <code>OnMessageReceived</code> JWT-bearer event reads it off the query string and
+                        sets <code>context.Token</code>, so the rest of the JWT validation pipeline runs exactly as it
+                        would for a header-borne token. The <code>/hubs/agent</code> hub is authenticated, and every
+                        hub method requires a valid token — there is no anonymous hub surface.
+                    </p>
+
+                    <div class="callout callout-info">
+                        <span class="callout-icon">i</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Query-string tokens are normal for WebSockets</div>
+                            <p style="margin: 0">
+                                Passing a token in the URL feels wrong if you're used to headers, but it's the
+                                documented SignalR pattern precisely because the upgrade request can't hold a header.
+                                The token still rides an encrypted TLS connection, and the same strict validation
+                                applies. The thing to watch is server access logs — make sure they don't log full
+                                query strings, or the token lands in plaintext logs.
+                            </p>
+                        </div>
+                    </div>
+
+                    <h2 id="cors">CORS: which origins may even ask</h2>
+                    <p>
+                        <strong>What CORS stops:</strong> a malicious website your user happens to also have open from
+                        making authenticated requests to your harness in the user's browser. CORS
+                        (Cross-Origin Resource Sharing) is the browser's rule for which web origins are allowed to call
+                        your API at all. The harness configures a named policy, <code>"AgentHubCors"</code>, in
+                        <code>src/Content/Presentation/Presentation.AgentHub/DependencyInjection.cs</code>:
+                    </p>
+
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-block-lang">json</span></div>
+                        <pre><code>{
+  "AgentHub": {
+    "Cors": {
+      "AllowedOrigins": [
+        "https://app.example.com",
+        "https://admin.example.com"
+      ]
+    }
+  }
+}</code></pre>
+                    </div>
+
+                    <p>
+                        Allowed origins come from <code>AgentHub:Cors:AllowedOrigins</code> — an explicit allowlist,
+                        never a wildcard in production. <code>AllowAnyMethod()</code> and <code>AllowAnyHeader()</code>
+                        are set, but <code>AllowCredentials()</code> is <strong>deliberately omitted</strong>. That's a
+                        considered choice, not an oversight: the harness authenticates with bearer tokens, not cookies,
+                        so there are no ambient credentials for the browser to attach. Enabling
+                        <code>AllowCredentials()</code> would buy nothing and would force a stricter origin model than
+                        necessary.
+                    </p>
+                    <p>
+                        One ordering detail matters: <code>UseCors</code> runs <em>before</em> <code>UseAuthentication</code>
+                        in the pipeline, so a browser's preflight <code>OPTIONS</code> request gets a clean CORS answer
+                        instead of a confusing <code>401</code> from the auth layer.
+                    </p>
+
+                    <h2 id="security-headers">HTTP security headers</h2>
+                    <p>
+                        <strong>What these stop:</strong> a family of browser-side attacks — clickjacking, MIME
+                        sniffing, downgrade to HTTP, cross-site scripting. The
+                        <code>SecurityHeadersMiddleware</code> (referenced at
+                        <code>Infrastructure.Common/Middleware/SecurityHeadersMiddleware.cs</code>) sets the same
+                        defensive headers on <em>every</em> response, so there's no endpoint that forgets them.
+                    </p>
+
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Header</th>
+                                <th>Value</th>
+                                <th>Attack it blocks</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><code>X-Frame-Options</code></td>
+                                <td><code>DENY</code></td>
+                                <td>Clickjacking — your UI embedded in a hostile <code>&lt;iframe&gt;</code></td>
+                            </tr>
+                            <tr>
+                                <td><code>X-Content-Type-Options</code></td>
+                                <td><code>nosniff</code></td>
+                                <td>MIME sniffing — the browser guessing a file is executable script</td>
+                            </tr>
+                            <tr>
+                                <td><code>Strict-Transport-Security</code></td>
+                                <td><code>max-age=31536000; includeSubDomains</code></td>
+                                <td>Protocol downgrade — forces HTTPS for a year, subdomains included</td>
+                            </tr>
+                            <tr>
+                                <td><code>Content-Security-Policy</code></td>
+                                <td>restrictive <code>default-src 'self'</code></td>
+                                <td>XSS — only same-origin resources may load by default</td>
+                            </tr>
+                            <tr>
+                                <td><code>Referrer-Policy</code></td>
+                                <td><code>strict-origin-when-cross-origin</code></td>
+                                <td>Leaking full URLs (and any tokens in them) to other sites</td>
+                            </tr>
+                            <tr>
+                                <td><code>Permissions-Policy</code></td>
+                                <td>camera / microphone / geolocation disabled</td>
+                                <td>Silent abuse of device hardware</td>
+                            </tr>
+                        </tbody>
+                    </table>
+
+                    <p>
+                        <code>Strict-Transport-Security</code> is enabled in production via <code>app.UseHsts()</code>
+                        and skipped in <code>Development</code>, where you're typically on plain
+                        <code>http://localhost</code>. For the deployment-side view of these controls — TLS
+                        termination, private networking, the WAF — see the Architecture guide's
+                        <a href="../architecture/04-networking-and-security.html">Networking &amp; Security</a> page.
+                    </p>
+
+                    <h2 id="rate-limiting">Rate limiting</h2>
+                    <p>
+                        <strong>What this stops:</strong> a single authenticated caller — compromised, buggy, or
+                        abusive — flooding the agent with expensive LLM turns and either running up your bill or
+                        starving everyone else. Authentication proves <em>who</em> you are; it doesn't cap <em>how
+                        much</em> you can do. That's what rate limiting is for.
+                    </p>
+                    <p>
+                        The hub-side limiter lives at
+                        <code>src/Content/Presentation/Presentation.AgentHub/Hubs/HubRateLimitFilter.cs</code>. It's a
+                        SignalR <code>IHubFilter</code>, which means it intercepts at the invocation boundary —
+                        <em>before</em> any LLM turn is dispatched, so a throttled call costs nothing. The mechanism is
+                        a partitioned token-bucket limiter keyed by user id: the partitioning is what keeps one user's
+                        burst from starving another, because every user gets their own independent bucket.
+                    </p>
+                    <p>
+                        Only the expensive, LLM-driving methods are throttled — <code>SendMessage</code>,
+                        <code>RetryFromMessage</code>, <code>EditAndResubmit</code>, and
+                        <code>InvokeToolViaAgent</code>. Cheap lifecycle and read-only methods pass unthrottled, so
+                        rate limiting never gets in the way of, say, loading conversation history. A throttled call
+                        surfaces to the client as a <code>HubException</code>. HTTP (non-SignalR) endpoints are covered
+                        separately by <code>app.UseRateLimiter()</code>.
+                    </p>
+
+                    <div class="callout callout-tip">
+                        <span class="callout-icon">✓</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Operator tip: the default budget and how to tune it</div>
+                            <p style="margin: 0">
+                                The default bucket holds <strong>10 tokens</strong> (the allowed burst) and
+                                replenishes <strong>10 tokens per 60-second window</strong>. In plain terms: a user can
+                                fire off up to ten agent turns in a quick burst, then settles to roughly ten per
+                                minute. If your users legitimately run long, fast-iterating sessions, raise the
+                                capacity; if you're worried about cost on a public deployment, lower it. Tune the
+                                burst (capacity) and the steady rate (replenishment) independently — they answer
+                                different questions.
+                            </p>
+                        </div>
+                    </div>
+
+                    <div class="callout callout-warn">
+                        <span class="callout-icon">!</span>
+                        <div class="callout-body">
+                            <div class="callout-title">The dev auth bypass is double-gated — production is not open</div>
+                            <p style="margin: 0">
+                                It's tempting to read "auth is disabled in development" and worry the harness ships
+                                open. It doesn't. Auth is bypassed only when <strong>both</strong> conditions hold at
+                                once: <code>IsDevelopment()</code> is true <em>and</em> the <code>Auth:Disabled</code>
+                                config flag is true. Either one being false — which is the case in any non-development
+                                environment — and authentication is fully enforced. There is no single switch that
+                                opens production.
+                            </p>
+                        </div>
+                    </div>
+
+                    <h2 id="what-this-covers">What this layer does and doesn't cover</h2>
+                    <p>
+                        Identity is layer 1, and its job is narrow on purpose: it proves <em>who</em> is calling and
+                        whether they're allowed through the front door at all. That's the whole scope. It says nothing
+                        about what an authenticated, authorized caller may then <em>do</em>.
+                    </p>
+                    <p>
+                        A perfectly authenticated admin can still ask the agent to take a destructive action it
+                        shouldn't auto-approve — that's the job of layer 2,
+                        <a href="03-autonomy-and-governance.html">Autonomy &amp; Governance</a>, which decides how much
+                        an agent may do without a human. A perfectly authenticated caller can still trigger a tool that
+                        tries to reach an internal service — that's <a href="06-egress-and-ssrf.html">Egress &amp;
+                        SSRF Defense</a>. Identity is the necessary first gate, but every layer behind it assumes the
+                        caller is already known and still does its own job. Defense in depth means no single layer is
+                        trusted to be the only one holding.
+                    </p>
+
+                    <!-- Footer nav -->
+                    <div class="page-nav">
+                        <a class="page-nav-link page-nav-prev" href="01-threat-model.html">
+                            <div class="page-nav-label">&larr; Previous</div>
+                            <div class="page-nav-title">01 &middot; Threat Model &amp; Defense in Depth</div>
+                        </a>
+                        <a class="page-nav-link page-nav-next" href="03-autonomy-and-governance.html">
+                            <div class="page-nav-label">Next &rarr;</div>
+                            <div class="page-nav-title">03 &middot; Autonomy &amp; Governance</div>
+                        </a>
+                    </div>
+                </div>
+
+                <!-- TOC -->
+                <aside class="toc" aria-label="On this page">
+                    <div class="toc-title">On this page</div>
+                    <ul class="toc-list"></ul>
+                </aside>
+            </main>
+        </div>
+        <script src="../assets/js/main.js"></script>
+    </body>
+</html>

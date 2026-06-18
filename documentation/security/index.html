@@ -1,0 +1,422 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>Welcome — Agentic Harness Security Guide</title>
+        <meta
+            name="description"
+            content="Every security protocol baked into the Microsoft Agentic Harness, explained plainly. Identity, autonomy governance, tool permissions, sandboxing, egress/SSRF defense, content safety, data protection, and the OWASP Agentic eval gate."
+        />
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+        <link
+            href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap"
+            rel="stylesheet"
+        />
+        <link rel="stylesheet" href="../assets/css/styles.css" />
+    </head>
+    <body>
+        <a href="#main" class="skip-link">Skip to content</a>
+        <div class="app">
+            <!-- ============ SIDEBAR ============ -->
+            <aside class="sidebar">
+                <div class="sidebar-header">
+                    <a class="sidebar-brand" href="index.html">
+                        <span class="sidebar-brand-mark">AH</span>
+                        <span>
+                            <span class="sidebar-brand-text">Agentic Harness</span><br />
+                            <span class="sidebar-brand-sub">Security Guide</span>
+                        </span>
+                    </a>
+                </div>
+                <nav class="sidebar-nav" aria-label="Documentation navigation">
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Foundations</div>
+                        <a class="sidebar-link" href="index.html"><span class="sidebar-link-num">00</span> Welcome</a>
+                        <a class="sidebar-link" href="01-threat-model.html"
+                            ><span class="sidebar-link-num">01</span> Threat Model &amp; Defense in Depth</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Access Control</div>
+                        <a class="sidebar-link" href="02-identity-and-access.html"
+                            ><span class="sidebar-link-num">02</span> Identity &amp; Access</a
+                        >
+                        <a class="sidebar-link" href="03-autonomy-and-governance.html"
+                            ><span class="sidebar-link-num">03</span> Autonomy &amp; Governance</a
+                        >
+                        <a class="sidebar-link" href="04-tools-and-permissions.html"
+                            ><span class="sidebar-link-num">04</span> Tools &amp; Permissions</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Execution Safety</div>
+                        <a class="sidebar-link" href="05-sandbox-and-execution.html"
+                            ><span class="sidebar-link-num">05</span> Sandbox &amp; Execution</a
+                        >
+                        <a class="sidebar-link" href="06-egress-and-ssrf.html"
+                            ><span class="sidebar-link-num">06</span> Egress &amp; SSRF Defense</a
+                        >
+                        <a class="sidebar-link" href="07-content-safety.html"
+                            ><span class="sidebar-link-num">07</span> Content Safety &amp; Injection</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Data &amp; Privacy</div>
+                        <a class="sidebar-link" href="08-data-protection.html"
+                            ><span class="sidebar-link-num">08</span> Data Protection &amp; Privacy</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Assurance</div>
+                        <a class="sidebar-link" href="09-owasp-evals.html"
+                            ><span class="sidebar-link-num">09</span> OWASP Agentic Evals</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Reference</div>
+                        <a class="sidebar-link" href="10-reference.html"
+                            ><span class="sidebar-link-num">10</span> Security Cheatsheet</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Other Guides</div>
+                        <a class="sidebar-link" href="../index.html">&#8592; Developer Guide</a>
+                        <a class="sidebar-link" href="../architecture/index.html">&#8592; Architecture Guide</a>
+                        <a class="sidebar-link" href="../agentic-harness-course/index.html">&#8592; Interactive Course</a>
+                    </div>
+                </nav>
+            </aside>
+
+            <!-- ============ MAIN ============ -->
+            <main id="main" class="content-wrap">
+                <div class="content">
+                    <section class="hero">
+                        <span class="eyebrow">Security Guide</span>
+                        <h1 class="hero-title">Security, from the inside out.</h1>
+                        <p class="hero-lead">
+                            An AI agent is a program you have <em>deliberately</em> given the ability to make
+                            decisions, call tools, run code, reach the network, and remember things across
+                            sessions. That is exactly the power you want — and exactly what an attacker wants to
+                            borrow. This guide is the complete map of how the harness keeps that power on a leash:
+                            every protocol, where it lives in the code, and what attack it stops.
+                        </p>
+                        <div class="hero-cta">
+                            <a class="btn btn-primary" href="01-threat-model.html"
+                                >Start: Threat Model &amp; Defense in Depth <span class="btn-arrow">→</span></a
+                            >
+                            <a class="btn btn-secondary" href="10-reference.html">Jump to the Cheatsheet</a>
+                        </div>
+                    </section>
+
+                    <h2>Read this first: who threatens an agent?</h2>
+                    <p>
+                        Traditional app security asks "can a malicious <em>user</em> break in?" An agentic system
+                        has to ask a harder question: <strong>"can malicious <em>content</em> turn my own agent
+                        against me?"</strong> The agent reads web pages, tool outputs, retrieved documents, and
+                        memories — any of which an attacker may have written. The moment the agent treats that text
+                        as instructions instead of data, your trusted agent is now working for someone else.
+                    </p>
+                    <p>
+                        So the harness is built on one uncomfortable assumption:
+                        <strong>everything the model reads or produces is untrusted until proven otherwise.</strong>
+                        User input, tool results, model output, retrieved knowledge — all of it passes through
+                        checks before it is allowed to cause an effect. That assumption shapes every protocol in
+                        this guide.
+                    </p>
+
+                    <div class="callout callout-info">
+                        <span class="callout-icon">i</span>
+                        <div class="callout-body">
+                            <div class="callout-title">This guide is a sibling to the others</div>
+                            <p style="margin: 0">
+                                The <a href="../index.html">Developer Guide</a> teaches you the codebase. The
+                                <a href="../architecture/index.html">Architecture Guide</a> covers Azure deployment
+                                (VNets, private endpoints, Key Vault). This guide covers the
+                                <strong>runtime security protocols inside the harness itself</strong> — the code
+                                that runs on every turn, regardless of where you host it. The three overlap at the
+                                edges, and we cross-link where they do.
+                            </p>
+                        </div>
+                    </div>
+
+                    <h2>Defense in depth: the seven layers</h2>
+                    <p>
+                        No single control is trusted to be perfect. A request from the outside world has to pass
+                        through seven independent layers before it can do anything irreversible, and the agent's
+                        output has to pass back out through them. If one layer is bypassed, the next still holds.
+                        Read this stack top-to-bottom — it is the spine of the whole guide.
+                    </p>
+
+                    <div class="arch-stack">
+                        <div class="arch-layer arch-layer-present">
+                            <div class="arch-layer-name"><span class="pill pill-present">1 · Identity</span></div>
+                            <div class="arch-layer-projects">
+                                Who is calling? JWT/Entra on the MCP server, mTLS + JWT for agent-to-agent, role and
+                                permission checks, CORS, security headers, rate limiting.
+                                <a href="02-identity-and-access.html">→ Identity &amp; Access</a>
+                            </div>
+                        </div>
+                        <div class="arch-layer arch-layer-infra">
+                            <div class="arch-layer-name"><span class="pill pill-infra">2 · Autonomy</span></div>
+                            <div class="arch-layer-projects">
+                                How much is this agent allowed to do on its own? Restricted / Supervised / Autonomous
+                                tiers, the governance pipeline behavior, human-approval escalation.
+                                <a href="03-autonomy-and-governance.html">→ Autonomy &amp; Governance</a>
+                            </div>
+                        </div>
+                        <div class="arch-layer arch-layer-app">
+                            <div class="arch-layer-name"><span class="pill pill-app">3 · Tool Permissions</span></div>
+                            <div class="arch-layer-projects">
+                                Which specific tools may it touch? Keyed-DI registration, the three-phase
+                                Deny→Ask→Allow resolver, and bypass-immune plugin <code>DeniedTools</code>.
+                                <a href="04-tools-and-permissions.html">→ Tools &amp; Permissions</a>
+                            </div>
+                        </div>
+                        <div class="arch-layer arch-layer-domain">
+                            <div class="arch-layer-name"><span class="pill pill-neutral">4 · Execution</span></div>
+                            <div class="arch-layer-projects">
+                                When a tool actually runs code, it is boxed in. Windows Job Objects / Docker
+                                sandboxes, a closed-by-default capability model, and HMAC attestation of results.
+                                <a href="05-sandbox-and-execution.html">→ Sandbox &amp; Execution</a>
+                            </div>
+                        </div>
+                        <div class="arch-layer arch-layer-infra">
+                            <div class="arch-layer-name"><span class="pill pill-infra">5 · Egress</span></div>
+                            <div class="arch-layer-projects">
+                                Where on the network can it reach? A two-ring egress wall — per-skill hostname
+                                allowlist plus connect-time IP filtering — stops SSRF and cloud-metadata theft.
+                                <a href="06-egress-and-ssrf.html">→ Egress &amp; SSRF Defense</a>
+                            </div>
+                        </div>
+                        <div class="arch-layer arch-layer-app">
+                            <div class="arch-layer-name"><span class="pill pill-app">6 · Content Safety</span></div>
+                            <div class="arch-layer-projects">
+                                What is in the text flowing in and out? Content-safety screening, deterministic
+                                prompt-injection scanning, and response sanitization for leaked secrets and
+                                exfiltration URLs. <a href="07-content-safety.html">→ Content Safety</a>
+                            </div>
+                        </div>
+                        <div class="arch-layer arch-layer-domain">
+                            <div class="arch-layer-name"><span class="pill pill-domain">7 · Data &amp; Privacy</span></div>
+                            <div class="arch-layer-projects">
+                                What can it see and keep? Per-tenant / per-owner knowledge isolation, provenance
+                                stamping, retention/compliance, and right-to-erasure receipts.
+                                <a href="08-data-protection.html">→ Data Protection &amp; Privacy</a>
+                            </div>
+                        </div>
+                    </div>
+
+                    <p>
+                        Sitting underneath all seven is <strong>assurance</strong>: the
+                        <a href="09-owasp-evals.html">OWASP Agentic Top-10 evaluation pack</a>, ten deterministic
+                        tests that try to break these layers on every pull request and fail the build if any layer
+                        regresses. Layers stop attacks; the eval gate stops you from <em>accidentally removing a
+                        layer.</em>
+                    </p>
+
+                    <h2>The four principles behind every protocol</h2>
+                    <p>
+                        If you remember nothing else, remember these. Every specific control in this guide is one of
+                        these four ideas applied to a particular layer.
+                    </p>
+
+                    <div class="def">
+                        <div class="def-term">1. Untrusted by default</div>
+                        <div class="def-desc">
+                            Model output, tool results, retrieved documents, and user input are all treated as
+                            potentially hostile. They are screened, sanitized, or sandboxed before they are allowed
+                            to influence a decision or reach the LLM's context.
+                        </div>
+                    </div>
+                    <div class="def">
+                        <div class="def-term">2. Closed by default</div>
+                        <div class="def-desc">
+                            A capability the agent was not explicitly granted is denied. Sandboxes start with no file,
+                            network, or subprocess access; the egress wall blocks any host not on an allowlist; tools
+                            resolve to <code>Ask</code> unless a rule says <code>Allow</code>.
+                        </div>
+                    </div>
+                    <div class="def">
+                        <div class="def-term">3. Fail closed</div>
+                        <div class="def-desc">
+                            When a control is misconfigured or a check errors, the safe answer is "no." A quorum
+                            approval with a broken threshold denies rather than auto-approves; an egress request with
+                            no agent identity is refused, not allowed.
+                        </div>
+                    </div>
+                    <div class="def">
+                        <div class="def-term">4. Defense in depth</div>
+                        <div class="def-desc">
+                            No control is a single point of failure. Bypassing one layer lands you in the next.
+                            <code>DeniedTools</code> is bypass-immune even for fully autonomous agents; SSRF is
+                            blocked by both a hostname allowlist <em>and</em> a connect-time IP filter.
+                        </div>
+                    </div>
+
+                    <h2>How this guide is organized</h2>
+                    <p>
+                        Each page covers one layer end-to-end: what it defends against, how it works, the exact
+                        classes and files that implement it, and the configuration you control. Pages stand alone,
+                        but they read best in order — the layers build on each other the way an attacker would
+                        encounter them.
+                    </p>
+
+                    <div class="card-grid">
+                        <a class="card" href="01-threat-model.html">
+                            <span class="card-num">01 ★</span>
+                            <div class="card-title">Threat Model &amp; Defense in Depth</div>
+                            <p class="card-desc">
+                                What makes agentic security different, the attack surface of an autonomous agent, and
+                                how the seven layers map to real-world threats. The mental model for everything else.
+                            </p>
+                        </a>
+                        <a class="card" href="02-identity-and-access.html">
+                            <span class="card-num">02</span>
+                            <div class="card-title">Identity &amp; Access</div>
+                            <p class="card-desc">
+                                JWT/Entra auth on the MCP server, agent-to-agent mTLS + token validation, role and
+                                permission gating, CORS, HTTP security headers, and per-user rate limiting.
+                            </p>
+                        </a>
+                        <a class="card" href="03-autonomy-and-governance.html">
+                            <span class="card-num">03</span>
+                            <div class="card-title">Autonomy &amp; Governance</div>
+                            <p class="card-desc">
+                                The Restricted / Supervised / Autonomous tiers, the governance pipeline behavior, and
+                                multi-party human approval (AllOf / AnyOf / Quorum) with a tamper-evident audit log.
+                            </p>
+                        </a>
+                        <a class="card" href="04-tools-and-permissions.html">
+                            <span class="card-num">04</span>
+                            <div class="card-title">Tools &amp; Permissions</div>
+                            <p class="card-desc">
+                                Keyed-DI tool registration, the three-phase Deny→Ask→Allow permission resolver, and
+                                why a plugin's <code>DeniedTools</code> can never be auto-approved away.
+                            </p>
+                        </a>
+                        <a class="card" href="05-sandbox-and-execution.html">
+                            <span class="card-num">05</span>
+                            <div class="card-title">Sandbox &amp; Execution</div>
+                            <p class="card-desc">
+                                Windows Job Object and Docker sandboxes, the closed-by-default capability model,
+                                resource limits, argument-injection prevention, and HMAC attestation of results.
+                            </p>
+                        </a>
+                        <a class="card" href="06-egress-and-ssrf.html">
+                            <span class="card-num">06 ★</span>
+                            <div class="card-title">Egress &amp; SSRF Defense</div>
+                            <p class="card-desc">
+                                The two-ring egress wall: per-skill hostname allowlists plus connect-time IP
+                                filtering that blocks private ranges, loopback, link-local, and cloud metadata.
+                            </p>
+                        </a>
+                        <a class="card" href="07-content-safety.html">
+                            <span class="card-num">07</span>
+                            <div class="card-title">Content Safety &amp; Injection</div>
+                            <p class="card-desc">
+                                Content-safety screening, deterministic prompt-injection scanning, and response
+                                sanitization that redacts leaked credentials and blocks exfiltration URLs.
+                            </p>
+                        </a>
+                        <a class="card" href="08-data-protection.html">
+                            <span class="card-num">08</span>
+                            <div class="card-title">Data Protection &amp; Privacy</div>
+                            <p class="card-desc">
+                                Per-tenant and per-owner knowledge isolation, provenance stamping, retention and
+                                compliance, right-to-erasure receipts, and secrets handling via Key Vault.
+                            </p>
+                        </a>
+                        <a class="card" href="09-owasp-evals.html">
+                            <span class="card-num">09 ★</span>
+                            <div class="card-title">OWASP Agentic Evals</div>
+                            <p class="card-desc">
+                                Ten deterministic tests mapped to the OWASP Agentic Security Initiative Top 10, run
+                                as a CI gate that blocks any pull request that weakens a defense.
+                            </p>
+                        </a>
+                        <a class="card" href="10-reference.html">
+                            <span class="card-num">10</span>
+                            <div class="card-title">Security Cheatsheet</div>
+                            <p class="card-desc">
+                                The pipeline-behavior order, every security config key, a pre-merge checklist, a
+                                glossary, and pointers to the deep-dive reference docs. Bookmark this one.
+                            </p>
+                        </a>
+                    </div>
+
+                    <h2>The page conventions</h2>
+                    <p>You will see the same callout colors used throughout. Worth learning once:</p>
+
+                    <div class="callout callout-jargon">
+                        <span class="callout-icon">¶</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Jargon callout</div>
+                            <p style="margin: 0">
+                                Purple boxes define a security term the first time it appears. Example:
+                                <strong>SSRF (Server-Side Request Forgery)</strong> — tricking your server into making
+                                a network request on the attacker's behalf, often to reach an internal address the
+                                attacker cannot reach directly.
+                            </p>
+                        </div>
+                    </div>
+                    <div class="callout callout-danger">
+                        <span class="callout-icon">✕</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Attack scenario</div>
+                            <p style="margin: 0">
+                                Red boxes walk through a concrete attack — what the attacker tries — and then point to
+                                the exact control that stops it. These are the most useful boxes for understanding
+                                <em>why</em> a protocol exists.
+                            </p>
+                        </div>
+                    </div>
+                    <div class="callout callout-tip">
+                        <span class="callout-icon">✓</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Operator tip</div>
+                            <p style="margin: 0">
+                                Green boxes are the practical knobs — the config setting to flip, the default to keep,
+                                the thing to check before you ship.
+                            </p>
+                        </div>
+                    </div>
+                    <div class="callout callout-warn">
+                        <span class="callout-icon">!</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Heads up</div>
+                            <p style="margin: 0">
+                                Yellow boxes flag a footgun — a default that looks safe but isn't, or a control that
+                                only works if you wire it up correctly.
+                            </p>
+                        </div>
+                    </div>
+
+                    <hr />
+                    <p class="muted">
+                        Ready? <a href="01-threat-model.html">Start with the Threat Model</a> — by the end of that
+                        page you'll understand what the harness is actually defending against, and the seven layers
+                        will click into place.
+                    </p>
+
+                    <!-- Footer nav -->
+                    <div class="page-nav">
+                        <div></div>
+                        <a class="page-nav-link page-nav-next" href="01-threat-model.html">
+                            <div class="page-nav-label">Next →</div>
+                            <div class="page-nav-title">01 · Threat Model &amp; Defense in Depth</div>
+                        </a>
+                    </div>
+                </div>
+
+                <!-- TOC -->
+                <aside class="toc" aria-label="On this page">
+                    <div class="toc-title">On this page</div>
+                    <ul class="toc-list"></ul>
+                </aside>
+            </main>
+        </div>
+        <script src="../assets/js/main.js"></script>
+    </body>
+</html>

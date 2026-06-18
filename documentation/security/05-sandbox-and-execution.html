@@ -1,0 +1,517 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>05 · Sandbox &amp; Execution — Agentic Harness Security Guide</title>
+        <meta
+            name="description"
+            content="Layer 4 of the harness: when an allowed tool actually runs code, it runs inside an isolated box with no capabilities it wasn't granted — Windows Job Objects, Docker containers, a closed-by-default capability model, argument-injection prevention, and HMAC-signed execution attestation."
+        />
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+        <link
+            href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap"
+            rel="stylesheet"
+        />
+        <link rel="stylesheet" href="../assets/css/styles.css" />
+    </head>
+    <body>
+        <a href="#main" class="skip-link">Skip to content</a>
+        <div class="app">
+            <!-- ============ SIDEBAR ============ -->
+            <aside class="sidebar">
+                <div class="sidebar-header">
+                    <a class="sidebar-brand" href="index.html">
+                        <span class="sidebar-brand-mark">AH</span>
+                        <span>
+                            <span class="sidebar-brand-text">Agentic Harness</span><br />
+                            <span class="sidebar-brand-sub">Security Guide</span>
+                        </span>
+                    </a>
+                </div>
+                <nav class="sidebar-nav" aria-label="Documentation navigation">
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Foundations</div>
+                        <a class="sidebar-link" href="index.html"><span class="sidebar-link-num">00</span> Welcome</a>
+                        <a class="sidebar-link" href="01-threat-model.html"
+                            ><span class="sidebar-link-num">01</span> Threat Model &amp; Defense in Depth</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Access Control</div>
+                        <a class="sidebar-link" href="02-identity-and-access.html"
+                            ><span class="sidebar-link-num">02</span> Identity &amp; Access</a
+                        >
+                        <a class="sidebar-link" href="03-autonomy-and-governance.html"
+                            ><span class="sidebar-link-num">03</span> Autonomy &amp; Governance</a
+                        >
+                        <a class="sidebar-link" href="04-tools-and-permissions.html"
+                            ><span class="sidebar-link-num">04</span> Tools &amp; Permissions</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Execution Safety</div>
+                        <a class="sidebar-link" href="05-sandbox-and-execution.html"
+                            ><span class="sidebar-link-num">05</span> Sandbox &amp; Execution</a
+                        >
+                        <a class="sidebar-link" href="06-egress-and-ssrf.html"
+                            ><span class="sidebar-link-num">06</span> Egress &amp; SSRF Defense</a
+                        >
+                        <a class="sidebar-link" href="07-content-safety.html"
+                            ><span class="sidebar-link-num">07</span> Content Safety &amp; Injection</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Data &amp; Privacy</div>
+                        <a class="sidebar-link" href="08-data-protection.html"
+                            ><span class="sidebar-link-num">08</span> Data Protection &amp; Privacy</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Assurance</div>
+                        <a class="sidebar-link" href="09-owasp-evals.html"
+                            ><span class="sidebar-link-num">09</span> OWASP Agentic Evals</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Reference</div>
+                        <a class="sidebar-link" href="10-reference.html"
+                            ><span class="sidebar-link-num">10</span> Security Cheatsheet</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Other Guides</div>
+                        <a class="sidebar-link" href="../index.html">&#8592; Developer Guide</a>
+                        <a class="sidebar-link" href="../architecture/index.html">&#8592; Architecture Guide</a>
+                        <a class="sidebar-link" href="../agentic-harness-course/index.html">&#8592; Interactive Course</a>
+                    </div>
+                </nav>
+            </aside>
+
+            <!-- ============ MAIN ============ -->
+            <main id="main" class="content-wrap">
+                <div class="content">
+                    <span class="eyebrow">Chapter 05 &middot; Execution Safety</span>
+                    <h1 class="page-title">Sandbox &amp; Execution</h1>
+                    <p class="page-lead">
+                        The first three layers decide <em>whether</em> a tool may run. This is layer 4: when an allowed
+                        tool actually runs code, it runs inside a box with no capabilities it wasn't granted — and its
+                        result is cryptographically attested. The earlier layers can be tricked by a clever prompt; this
+                        one can't, because it isn't asking the model anything. It's an operating-system-level cage with a
+                        signed receipt.
+                    </p>
+
+                    <h2 id="two-boxes">Two boxes: process and container</h2>
+                    <p>
+                        "Sandbox" means a confined execution environment: the code runs, but the walls of the box decide
+                        what it can see and do. The harness ships two boxes, picked by how strong the isolation needs to
+                        be.
+                    </p>
+
+                    <div class="def">
+                        <div class="def-term">Process sandbox</div>
+                        <div class="def-desc">
+                            <code>ProcessSandboxExecutor</code> runs the tool as an isolated Windows subprocess, caged by
+                            a kernel-level Job Object (covered next). Lighter weight; no container runtime required.
+                            File:
+                            <code>src/Content/Infrastructure/Infrastructure.AI/Sandbox/ProcessSandboxExecutor.cs</code>.
+                        </div>
+                    </div>
+                    <div class="def">
+                        <div class="def-term">Docker sandbox</div>
+                        <div class="def-desc">
+                            <code>DockerSandboxExecutor</code> runs the tool inside a Docker container (driven through
+                            the <code>Docker.DotNet</code> client). Stronger isolation — a whole container boundary
+                            between the untrusted code and the host. File:
+                            <code>src/Content/Infrastructure/Infrastructure.AI/Sandbox/DockerSandboxExecutor.cs</code>.
+                        </div>
+                    </div>
+
+                    <p>
+                        The Docker executor enforces a <strong>minimum-isolation invariant</strong>. It declares
+                        <code>MinimumIsolation = Container</code>, and if Docker is unavailable at runtime it
+                        <strong>fails the execution</strong> rather than quietly falling back to the weaker process
+                        sandbox.
+                    </p>
+
+                    <div class="callout callout-jargon">
+                        <span class="callout-icon">¶</span>
+                        <div class="callout-body">
+                            <div class="callout-title">No silent downgrade</div>
+                            <p style="margin: 0">
+                                A common failure pattern: a control "degrades gracefully" when its strong path is
+                                unavailable, and nobody notices the box got weaker. The Docker executor refuses to do
+                                this. If you asked for container isolation and the container runtime isn't there, you get
+                                an error, not a silently downgraded process sandbox. The security posture you configured
+                                is the security posture you get — or you get told it can't be met.
+                            </p>
+                        </div>
+                    </div>
+
+                    <h2 id="job-objects">Windows Job Objects: the resource cage</h2>
+                    <p>
+                        The process sandbox is held shut by a <strong>Job Object</strong>. Defining the term plainly: a
+                        Job Object is a Windows kernel object that caps and contains a <em>group</em> of processes — you
+                        attach a process (and everything it spawns) to the job, set limits on the job, and the kernel
+                        enforces those limits on every process in it. The harness wires this up via P/Invoke (calling the
+                        native Windows API directly) in two files:
+                    </p>
+                    <ul>
+                        <li><code>src/Content/Infrastructure/Infrastructure.AI/Sandbox/WindowsProcessResourceLimiter.cs</code></li>
+                        <li><code>src/Content/Infrastructure/Infrastructure.AI/Sandbox/WindowsJobObjectManager.cs</code></li>
+                    </ul>
+
+                    <p>The default limits — all configurable through <code>ResourceLimits</code> — are:</p>
+
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Limit</th>
+                                <th>Default</th>
+                                <th>Enforced by</th>
+                                <th>What it stops</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><strong>Memory</strong></td>
+                                <td>256 MB</td>
+                                <td><code>ResourceLimits.MemoryLimitBytes</code></td>
+                                <td>Memory-exhaustion / OOM attacks on the host</td>
+                            </tr>
+                            <tr>
+                                <td><strong>CPU time</strong></td>
+                                <td>30 s</td>
+                                <td><code>JOB_OBJECT_LIMIT_PROCESS_TIME</code></td>
+                                <td>CPU-burning loops, cryptomining</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Child processes</strong></td>
+                                <td>max 5</td>
+                                <td><code>JOB_OBJECT_LIMIT_ACTIVE_PROCESS</code></td>
+                                <td>Fork bombs, self-replication</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Disk quota</strong></td>
+                                <td>100 MB</td>
+                                <td><code>ResourceLimits.DiskQuotaBytes</code></td>
+                                <td>Disk-filling denial of service</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Wall-clock timeout</strong></td>
+                                <td>30 s</td>
+                                <td>Job wall-clock limit</td>
+                                <td>Hangs, infinite waits, slow-loris-style stalls</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Kill on close</strong></td>
+                                <td>always</td>
+                                <td><code>JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE</code></td>
+                                <td>Orphaned / escaped processes outliving the job</td>
+                            </tr>
+                        </tbody>
+                    </table>
+
+                    <p>
+                        The last row is the one that makes the cage trustworthy.
+                        <code>JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE</code> guarantees that when the job handle closes,
+                        <em>every</em> process in the job dies with it — there is no way for a spawned child to survive
+                        the teardown and keep running on the host. Combined with the active-process cap, this closes the
+                        most direct denial-of-service against the sandbox itself.
+                    </p>
+
+                    <div class="callout callout-danger">
+                        <span class="callout-icon">✕</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Attack scenario: the fork bomb</div>
+                            <p>
+                                A tool is coerced (by a prompt-injection payload, say) into running code that spawns
+                                children in a loop, each of which spawns more — classic self-replication designed to
+                                exhaust the host's process table and bring the whole machine down.
+                            </p>
+                            <p style="margin-bottom: 0">
+                                Inside the Job Object it gets nowhere. <code>JOB_OBJECT_LIMIT_ACTIVE_PROCESS</code> caps
+                                the job at 5 processes, so the 6th spawn fails immediately. The bomb can't replicate.
+                                When the tool's turn ends, <code>JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE</code> reaps whatever
+                                is left. The host never sees the pressure.
+                            </p>
+                        </div>
+                    </div>
+
+                    <h2 id="capability-model">The closed-by-default capability model</h2>
+                    <p>
+                        Resource limits stop a tool from <em>overwhelming</em> the host. Capabilities stop it from
+                        <em>reaching</em> things it has no business reaching. A capability is a named permission for a
+                        category of effect. The flags live in
+                        <code>src/Content/Domain/Domain.AI/Sandbox/ToolCapability.cs</code>:
+                    </p>
+
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Capability</th>
+                                <th>Grants</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr><td><code>FileRead</code></td><td>Read files</td></tr>
+                            <tr><td><code>FileWrite</code></td><td>Write files</td></tr>
+                            <tr><td><code>NetworkAccess</code></td><td>Make network connections</td></tr>
+                            <tr><td><code>Subprocess</code></td><td>Spawn child processes</td></tr>
+                            <tr><td><code>EnvRead</code></td><td>Read environment variables</td></tr>
+                            <tr><td><code>DatabaseRead</code></td><td>Read from a database</td></tr>
+                            <tr><td><code>DatabaseWrite</code></td><td>Write to a database</td></tr>
+                            <tr><td><code>LlmInvocation</code></td><td>Call an LLM</td></tr>
+                        </tbody>
+                    </table>
+
+                    <p>The model has three parts, and the order matters:</p>
+
+                    <div class="def">
+                        <div class="def-term">1. Declare</div>
+                        <div class="def-desc">
+                            A tool states the capabilities it needs by annotating itself with
+                            <code>[ToolCapabilityAttribute]</code>. This is a static, reviewable contract — you can read
+                            a tool's source and know exactly what it claims to need.
+                        </div>
+                    </div>
+                    <div class="def">
+                        <div class="def-term">2. Enforce</div>
+                        <div class="def-desc">
+                            At run time,
+                            <code>src/Content/Application/Application.AI.Common/Services/Sandbox/CapabilityEnforcer.cs</code>
+                            checks each requested effect against what was granted. A capability that wasn't granted
+                            yields <code>Result.Forbidden()</code> — the effect simply does not happen.
+                        </div>
+                    </div>
+                    <div class="def">
+                        <div class="def-term">3. Default to nothing</div>
+                        <div class="def-desc">
+                            The default grant is <strong>NONE</strong>. A tool with no declared capability can read no
+                            files, touch no network, and spawn no process. You don't lock a tool down — it arrives
+                            locked, and you open exactly the doors it proves it needs.
+                        </div>
+                    </div>
+
+                    <div class="callout callout-tip">
+                        <span class="callout-icon">✓</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Closed-by-default is the whole point</div>
+                            <p style="margin: 0">
+                                An allowlist that defaults to "deny everything" cannot be defeated by forgetting to add a
+                                rule — forgetting just keeps the door shut. A blocklist that defaults to "allow
+                                everything" fails open the moment you miss a case. The capability model is the former: a
+                                new tool, a refactored tool, or a tool whose author forgot to declare a capability all
+                                fail safe, not silently broad.
+                            </p>
+                        </div>
+                    </div>
+
+                    <p>
+                        Where capabilities are scoped to specific paths — read these files, never those — the harness
+                        uses <code>ToolPermissionProfile</code> with a
+                        <strong>deny-overrides-allow</strong> rule: if a path appears in both the allow list and the deny
+                        list, <em>deny wins</em>. There is no ambiguity to exploit and no ordering trick that lets an
+                        allow entry beat a deny entry.
+                    </p>
+
+                    <div class="callout callout-info">
+                        <span class="callout-icon">i</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Two similarly-named config types — don't mix them up</div>
+                            <p style="margin: 0">
+                                <code>SandboxOptions</code> is the Domain-layer configuration for the sandbox model
+                                itself; <code>SandboxExecutionOptions</code> is the Application-layer configuration for a
+                                specific container execution. They are different types with different jobs. If you find
+                                yourself reaching for one and the field you want isn't there, you probably want the
+                                other.
+                            </p>
+                        </div>
+                    </div>
+
+                    <h2 id="argument-injection">Argument-injection prevention</h2>
+                    <p>
+                        Even a correctly-caged subprocess can be subverted if you build its command line by gluing
+                        strings together. The harness's execution request,
+                        <code>src/Content/Domain/Domain.AI/Sandbox/SandboxExecutionRequest.cs</code>, removes the chance
+                        entirely: subprocess arguments are passed as an <code>ArgumentList</code> — an array where
+                        <em>each element is handed to the process directly, with no shell interpretation in between</em>.
+                    </p>
+
+                    <p>
+                        The contrast is the whole defense. Consider a tool that runs <code>grep</code> over
+                        user-supplied input:
+                    </p>
+
+                    <div class="annotated">
+                        <pre><code class="lang-csharp">// SAFE — each array element is a literal argument, never parsed by a shell.
+var request = new SandboxExecutionRequest
+{
+    ArgumentList = ["grep", userInput]   // userInput is ONE argument, whatever it contains
+};
+
+// UNSAFE — string concatenation hands the input to a shell to re-parse.
+var cmd = $"grep {userInput}";           // a shell now interprets metacharacters in userInput</code></pre>
+                        <div class="annotated-note">
+                            With <code>ArgumentList</code>, if <code>userInput</code> is the string
+                            <code>"; rm -rf /"</code> it is passed to <code>grep</code> as a single literal argument — a
+                            pattern to search for, which matches nothing useful and harms nothing. With the concatenated
+                            string, a shell sees the <code>;</code> as a command separator and the
+                            <code>rm -rf /</code> as a brand-new command to run.
+                        </div>
+                    </div>
+
+                    <p>
+                        To force this safe path everywhere, the older string-valued <code>Arguments</code> property is
+                        deprecated with <code>error: true</code> — code that still uses it won't compile, so there is no
+                        quiet legacy path left that re-parses a shell string.
+                    </p>
+
+                    <div class="callout callout-jargon">
+                        <span class="callout-icon">¶</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Shell metacharacters</div>
+                            <p style="margin: 0">
+                                Characters a command shell treats specially instead of literally:
+                                <code>;</code> and <code>&amp;&amp;</code> chain commands,
+                                <code>|</code> pipes output, <code>$(...)</code> and backticks substitute command output,
+                                <code>&gt;</code> redirects to a file, <code>*</code> expands file names. Argument
+                                injection is the trick of smuggling these into an argument so the shell runs your command
+                                instead of treating the text as data. Passing an argument array with no shell in the
+                                middle means none of these characters are ever special — there is no shell to interpret
+                                them.
+                            </p>
+                        </div>
+                    </div>
+
+                    <h2 id="attestation">HMAC attestation: a signed receipt for every run</h2>
+                    <p>
+                        The cage stops a tool from doing damage. Attestation answers a different question:
+                        <em>can you later prove this output really came from a sandboxed run of this input, and wasn't
+                        tampered with afterward?</em> The harness signs an attestation after every sandboxed execution in
+                        <code>src/Content/Infrastructure/Infrastructure.AI/Attestation/HmacAttestationService.cs</code>,
+                        using HMAC-SHA256.
+                    </p>
+
+                    <div class="callout callout-jargon">
+                        <span class="callout-icon">¶</span>
+                        <div class="callout-body">
+                            <div class="callout-title">HMAC</div>
+                            <p style="margin: 0">
+                                A <strong>keyed</strong> cryptographic signature over some data. Unlike a plain hash —
+                                which anyone can recompute — an HMAC can only be produced or verified by someone holding
+                                the secret key. So an HMAC over a tool's result proves two things at once: the result
+                                hasn't changed, and it was signed by the harness (the keyholder), not forged by whoever
+                                stored it.
+                            </p>
+                        </div>
+                    </div>
+
+                    <p>The signature covers a fixed payload. On a successful run:</p>
+
+                    <div class="annotated">
+                        <pre><code class="lang-csharp">// Success payload that gets HMAC-signed:
+{toolName}|{inputHash}|{outputHash}|{timestamp:O}|egress:{egressDigest}
+
+// Failure payload (no output to hash, so the failure reason is hashed instead):
+{toolName}|{inputHash}|null|{failureHash}|{timestamp:O}</code></pre>
+                        <div class="annotated-note">
+                            <code>inputHash</code> and <code>outputHash</code> are SHA-256 hashes of the input and the
+                            output. On failure there is no output, so a hash of the failure reason takes its place. The
+                            <code>timestamp</code> binds when it ran; the <code>egressDigest</code> binds which network
+                            destinations were permitted <em>before</em> the untrusted tool ran — see
+                            <a href="06-egress-and-ssrf.html">Egress &amp; SSRF</a> for that side of containment.
+                        </div>
+                    </div>
+
+                    <p>
+                        Why this matters: the attestation proves a given output was produced by a real sandboxed
+                        execution of a given input, and was not altered after the fact. The egress digest in the payload
+                        ties the run to the exact set of network destinations that were allowed when it started, so a
+                        result and its network policy can't be silently decoupled later.
+                    </p>
+
+                    <div class="callout callout-danger">
+                        <span class="callout-icon">✕</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Attack scenario: tampering with a cached result</div>
+                            <p>
+                                An attacker who can reach the result cache swaps a stored tool output for a poisoned one
+                                — a doctored summary, a fake "all clear," an injected instruction the agent will later
+                                read as truth.
+                            </p>
+                            <p style="margin-bottom: 0">
+                                The swap changes the bytes, so the <code>outputHash</code> no longer matches the signed
+                                attestation. Verification fails. Because the attacker doesn't hold the HMAC key, they
+                                can't re-sign the forged payload to make it pass either. A tampered result is detectable,
+                                not silently trusted.
+                            </p>
+                        </div>
+                    </div>
+
+                    <h2 id="keys">Where the signing key lives</h2>
+                    <p>
+                        An HMAC is only as trustworthy as the secrecy of its key, so the key handling is deliberate. Keys
+                        come from <code>IOptionsMonitor&lt;AttestationKeyOptions&gt;</code> —
+                        <code>src/Content/Infrastructure/Infrastructure.AI/Attestation/AttestationKeyOptions.cs</code> —
+                        sourced from User Secrets in development and Azure Key Vault in production. They are
+                        <strong>never</strong> read from <code>appsettings.json</code>.
+                    </p>
+                    <ul>
+                        <li>
+                            <code>CurrentKeyVersion</code> supports rotation: the signed payload carries the key version,
+                            so keys can be rolled forward without invalidating the ability to identify which key signed
+                            an older attestation.
+                        </li>
+                        <li>
+                            Key bytes are zeroed after use with <code>CryptographicOperations.ZeroMemory</code>, so the
+                            secret doesn't linger in process memory longer than the signing operation needs it.
+                        </li>
+                    </ul>
+
+                    <div class="callout callout-info">
+                        <span class="callout-icon">i</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Secrets handling has its own page</div>
+                            <p style="margin: 0">
+                                The full story on User Secrets, Key Vault, rotation, and why nothing sensitive ever lands
+                                in <code>appsettings.json</code> is on
+                                <a href="08-data-protection.html">Data Protection &amp; Privacy</a>. This page only
+                                covers what the attestation service needs from it.
+                            </p>
+                        </div>
+                    </div>
+
+                    <h2 id="forward">Where the network side lives</h2>
+                    <p>
+                        This layer contains what a tool can <em>do on the host</em>: how much it can consume, what it can
+                        touch, and proof of what it produced. The other half of containment is where it can reach on the
+                        <em>network</em> — blocking SSRF, cloud-metadata credential theft, and exfiltration. That's the
+                        egress allowlist whose digest you saw signed into the attestation payload above. It gets the full
+                        treatment on the next page.
+                    </p>
+
+                    <!-- Footer nav -->
+                    <div class="page-nav">
+                        <a class="page-nav-link page-nav-prev" href="04-tools-and-permissions.html">
+                            <div class="page-nav-label">&larr; Previous</div>
+                            <div class="page-nav-title">04 &middot; Tools &amp; Permissions</div>
+                        </a>
+                        <a class="page-nav-link page-nav-next" href="06-egress-and-ssrf.html">
+                            <div class="page-nav-label">Next &rarr;</div>
+                            <div class="page-nav-title">06 &middot; Egress &amp; SSRF Defense</div>
+                        </a>
+                    </div>
+                </div>
+
+                <!-- TOC -->
+                <aside class="toc" aria-label="On this page">
+                    <div class="toc-title">On this page</div>
+                    <ul class="toc-list"></ul>
+                </aside>
+            </main>
+        </div>
+        <script src="../assets/js/main.js"></script>
+    </body>
+</html>

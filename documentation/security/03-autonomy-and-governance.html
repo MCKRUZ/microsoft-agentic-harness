@@ -1,0 +1,428 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>03 · Autonomy &amp; Governance — Agentic Harness Security Guide</title>
+        <meta
+            name="description"
+            content="Layer 2 of the harness: autonomy tiers that set how much an agent may do on its own, the governance pipeline behavior that fails closed, human-approval strategies (AllOf, AnyOf, Quorum), and tamper-evident audit."
+        />
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+        <link
+            href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap"
+            rel="stylesheet"
+        />
+        <link rel="stylesheet" href="../assets/css/styles.css" />
+    </head>
+    <body>
+        <a href="#main" class="skip-link">Skip to content</a>
+        <div class="app">
+            <!-- ============ SIDEBAR ============ -->
+            <aside class="sidebar">
+                <div class="sidebar-header">
+                    <a class="sidebar-brand" href="index.html">
+                        <span class="sidebar-brand-mark">AH</span>
+                        <span>
+                            <span class="sidebar-brand-text">Agentic Harness</span><br />
+                            <span class="sidebar-brand-sub">Security Guide</span>
+                        </span>
+                    </a>
+                </div>
+                <nav class="sidebar-nav" aria-label="Documentation navigation">
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Foundations</div>
+                        <a class="sidebar-link" href="index.html"><span class="sidebar-link-num">00</span> Welcome</a>
+                        <a class="sidebar-link" href="01-threat-model.html"
+                            ><span class="sidebar-link-num">01</span> Threat Model &amp; Defense in Depth</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Access Control</div>
+                        <a class="sidebar-link" href="02-identity-and-access.html"
+                            ><span class="sidebar-link-num">02</span> Identity &amp; Access</a
+                        >
+                        <a class="sidebar-link" href="03-autonomy-and-governance.html"
+                            ><span class="sidebar-link-num">03</span> Autonomy &amp; Governance</a
+                        >
+                        <a class="sidebar-link" href="04-tools-and-permissions.html"
+                            ><span class="sidebar-link-num">04</span> Tools &amp; Permissions</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Execution Safety</div>
+                        <a class="sidebar-link" href="05-sandbox-and-execution.html"
+                            ><span class="sidebar-link-num">05</span> Sandbox &amp; Execution</a
+                        >
+                        <a class="sidebar-link" href="06-egress-and-ssrf.html"
+                            ><span class="sidebar-link-num">06</span> Egress &amp; SSRF Defense</a
+                        >
+                        <a class="sidebar-link" href="07-content-safety.html"
+                            ><span class="sidebar-link-num">07</span> Content Safety &amp; Injection</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Data &amp; Privacy</div>
+                        <a class="sidebar-link" href="08-data-protection.html"
+                            ><span class="sidebar-link-num">08</span> Data Protection &amp; Privacy</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Assurance</div>
+                        <a class="sidebar-link" href="09-owasp-evals.html"
+                            ><span class="sidebar-link-num">09</span> OWASP Agentic Evals</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Reference</div>
+                        <a class="sidebar-link" href="10-reference.html"
+                            ><span class="sidebar-link-num">10</span> Security Cheatsheet</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Other Guides</div>
+                        <a class="sidebar-link" href="../index.html">&#8592; Developer Guide</a>
+                        <a class="sidebar-link" href="../architecture/index.html">&#8592; Architecture Guide</a>
+                        <a class="sidebar-link" href="../agentic-harness-course/index.html">&#8592; Interactive Course</a>
+                    </div>
+                </nav>
+            </aside>
+
+            <!-- ============ MAIN ============ -->
+            <main id="main" class="content-wrap">
+                <div class="content">
+                    <span class="eyebrow">Chapter 03 &middot; Access Control</span>
+                    <h1 class="page-title">Autonomy &amp; Governance</h1>
+                    <p class="page-lead">
+                        The previous page settled <em>who</em> is allowed in. This page is layer 2: <strong>how much
+                        an agent may do on its own</strong>, and the human-approval machinery for when it wants to do
+                        more. Identity proves the caller is real; autonomy decides how far that real caller is trusted
+                        to act unattended — and governance is the gate it has to pass to act at all.
+                    </p>
+
+                    <h2 id="dial-not-switch">Autonomy is a dial, not a switch</h2>
+                    <p>
+                        The tempting mental model is binary: an agent is either "supervised" (a human approves
+                        everything) or "let loose" (it does whatever it wants). That model is wrong, and it is
+                        dangerous, because it makes "give it more freedom" feel like flipping off the safety system.
+                    </p>
+                    <p>
+                        The harness models autonomy as a <strong>tier</strong> — a setting that establishes the
+                        <em>default posture</em> for an agent's actions. A higher tier changes the default from "ask
+                        a human first" to "go ahead", but it never removes the hard limits underneath. Think of it as
+                        a dial that controls how much the agent does without prompting you, sitting on top of a floor
+                        of safety rules the dial cannot reach.
+                    </p>
+
+                    <h2 id="three-tiers">The three autonomy tiers</h2>
+                    <p>
+                        The tier is a three-value enum defined in
+                        <code>src/Content/Domain/Domain.AI/Governance/AutonomyLevel.cs</code>. Each value sets the
+                        default permission posture for the agent: whether a consequential action defaults to
+                        <strong>Ask</strong> (pause for a human) or <strong>Allow</strong> (proceed).
+                    </p>
+
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Tier</th>
+                                <th>Value</th>
+                                <th>Posture</th>
+                                <th>Default behavior</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><strong>Restricted</strong></td>
+                                <td>0</td>
+                                <td>Read-only</td>
+                                <td>Default <strong>Ask</strong> — every consequential action needs approval.</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Supervised</strong></td>
+                                <td>1</td>
+                                <td>Recommend-and-wait</td>
+                                <td>
+                                    Default <strong>Ask</strong>, but specific tools can be granted explicit
+                                    <strong>Allow</strong> overrides.
+                                </td>
+                            </tr>
+                            <tr>
+                                <td><strong>Autonomous</strong></td>
+                                <td>2</td>
+                                <td>Acts within guardrails</td>
+                                <td>
+                                    Default <strong>Allow</strong> — but safety gates and <code>Deny</code> rules
+                                    remain a hard ceiling it cannot exceed.
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+
+                    <div class="callout callout-warn">
+                        <span class="callout-icon">!</span>
+                        <div class="callout-body">
+                            <div class="callout-title">"Autonomous" is not "unrestricted"</div>
+                            <p style="margin: 0">
+                                This is the point engineers most often get wrong. Setting an agent to
+                                <strong>Autonomous</strong> flips the <em>default</em> from Ask to Allow — it does
+                                <em>not</em> disable the safety floor. The governance behavior, approval workflows, and
+                                every explicit <code>Deny</code> rule still apply. An Autonomous agent that tries a
+                                denied action is still blocked. The tier raises the floor of convenience; it never
+                                lowers the ceiling of safety.
+                            </p>
+                        </div>
+                    </div>
+
+                    <h2 id="tier-assignment">How a tier gets assigned</h2>
+                    <p>
+                        An agent doesn't pick its own tier. It is assigned by
+                        <code>src/Content/Application/Application.Core/Permissions/AutonomyTierRuleProvider.cs</code>,
+                        which reads the tier from one of two sources:
+                    </p>
+                    <ul>
+                        <li>
+                            <strong>Configuration</strong> — a <code>TierPolicies</code> section that maps agents to
+                            tiers explicitly.
+                        </li>
+                        <li>
+                            <strong>The agent's <code>SubagentType</code></strong> — its declared role. An
+                            <code>IAutonomyTierResolver</code> maps each <code>SubagentType</code> to an
+                            <code>AutonomyLevel</code>, so a "read-only researcher" subagent and a "deployment" subagent
+                            can carry different default postures without per-agent config.
+                        </li>
+                    </ul>
+                    <p>
+                        From that tier, the provider emits permission <em>rules</em> at two priorities:
+                    </p>
+
+                    <div class="def">
+                        <div class="def-term">Priority 0 — the baseline rule</div>
+                        <div class="def-desc">
+                            One rule expressing the tier's default posture (Ask or Allow). It is the lowest priority,
+                            so it is the fallback that applies when nothing more specific matches.
+                        </div>
+                    </div>
+                    <div class="def">
+                        <div class="def-term">Priority 10 — per-tool override rules</div>
+                        <div class="def-desc">
+                            Higher-priority rules for specific tools — for example, a Supervised agent granted an
+                            explicit Allow on one safe tool. Because they outrank the baseline, they win where they
+                            apply.
+                        </div>
+                    </div>
+
+                    <div class="callout callout-info">
+                        <span class="callout-icon">i</span>
+                        <div class="callout-body">
+                            <div class="callout-title">These rules feed the permission resolver</div>
+                            <p style="margin: 0">
+                                The Priority 0 and Priority 10 rules produced here are not the final word — they are
+                                <em>inputs</em> to the per-tool permission resolver covered on the next page. Autonomy
+                                decides the default and the broad overrides; the resolver merges those with tool-level
+                                allow/deny lists to reach the concrete decision. See
+                                <a href="04-tools-and-permissions.html">Tools &amp; Permissions</a>.
+                            </p>
+                        </div>
+                    </div>
+
+                    <h2 id="governance-behavior">The governance behavior, and why it fails closed</h2>
+                    <p>
+                        A tier sets defaults, but a separate gate evaluates each tool request against your written
+                        governance policies. That gate is
+                        <code>src/Content/Application/Application.AI.Common/MediatRBehaviors/GovernancePolicyBehavior.cs</code>,
+                        a <strong>MediatR pipeline behavior</strong> — a piece of code that intercepts a request on its
+                        way to being handled, like middleware for the agent's internal command bus.
+                    </p>
+                    <p>
+                        It evaluates the requested tool action against YAML-defined governance policies — things like
+                        rate limiting and approval workflows. Two outcomes matter:
+                    </p>
+                    <ul>
+                        <li>
+                            If a policy says the action <strong>requires approval</strong>, the behavior escalates via
+                            <code>IEscalationService</code> (the human-in-the-loop machinery below) rather than running
+                            the action.
+                        </li>
+                        <li>Otherwise, if no policy clears it, the behavior can <strong>deny</strong>.</li>
+                    </ul>
+
+                    <div class="callout callout-tip">
+                        <span class="callout-icon">✓</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Fail closed: the safe default is "no"</div>
+                            <p style="margin: 0">
+                                The behavior <strong>fails closed</strong>. If evaluation cannot affirmatively
+                                <em>approve</em> an action — because a policy is missing, ambiguous, or errors out — the
+                                answer is <strong>deny</strong>, never allow. A bug or a gap in your policy file makes
+                                the agent <em>more</em> restricted, not less. This is the opposite of a fail-open system,
+                                where an error would silently let the action through.
+                            </p>
+                        </div>
+                    </div>
+
+                    <h2 id="escalation">Human-in-the-loop: escalation strategies</h2>
+                    <p>
+                        When a policy demands approval, the request becomes an <strong>escalation</strong> — a pause
+                        where one or more humans must decide. <em>How</em> their votes resolve is set by an
+                        <strong>approval strategy</strong>. The harness ships three, in
+                        <code>src/Content/Application/Application.Core/Escalation/Strategies/</code>:
+                    </p>
+
+                    <div class="def">
+                        <div class="def-term">AllOf — unanimous</div>
+                        <div class="def-desc">
+                            <code>AllOfApprovalStrategy.cs</code>. Every approver must approve. A single denial
+                            immediately resolves the whole request as <strong>denied</strong> — there is no point
+                            waiting for the rest once one person has said no.
+                        </div>
+                    </div>
+                    <div class="def">
+                        <div class="def-term">AnyOf — first response wins</div>
+                        <div class="def-desc">
+                            <code>AnyOfApprovalStrategy.cs</code>. The first response — approval <em>or</em> denial —
+                            resolves it. Fast, for low-stakes actions where any one trusted reviewer suffices.
+                        </div>
+                    </div>
+                    <div class="def">
+                        <div class="def-term">Quorum — N-of-M threshold</div>
+                        <div class="def-desc">
+                            <code>QuorumApprovalStrategy.cs</code>. Approval needs N of M approvers (e.g. 2 of 3). Used
+                            when one person isn't enough but you don't want to require everyone.
+                        </div>
+                    </div>
+
+                    <div class="callout callout-warn">
+                        <span class="callout-icon">!</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Quorum fails closed on a misconfigured threshold</div>
+                            <p style="margin: 0">
+                                The headline safety property: if the configured quorum threshold is
+                                <strong>&le; 0</strong> — a misconfiguration that, naively coded, would mean "zero
+                                approvals needed, auto-approve everything" — <code>QuorumApprovalStrategy</code> returns
+                                <strong>denied</strong> instead. A broken quorum config can never become an open door.
+                                The dangerous failure mode (a typo silently disabling approval) is engineered out.
+                            </p>
+                        </div>
+                    </div>
+
+                    <p>
+                        The escalation itself is described by
+                        <code>src/Content/Domain/Domain.AI/Escalation/EscalationRequest.cs</code>, which carries the
+                        <code>ApprovalStrategyType</code> (which of the three above), the list of approvers, the quorum
+                        threshold, and a <strong>timeout action</strong>.
+                    </p>
+
+                    <div class="callout callout-tip">
+                        <span class="callout-icon">✓</span>
+                        <div class="callout-body">
+                            <div class="callout-title">A timed-out approval does not auto-approve</div>
+                            <p style="margin: 0">
+                                The default timeout action is <code>DenyAndEscalate</code>. If approvers never respond,
+                                the request is <strong>denied</strong> and escalated further — it does
+                                <em>not</em> quietly approve itself because the clock ran out. Silence is treated as
+                                "no", consistent with the fail-closed posture everywhere else on this page.
+                            </p>
+                        </div>
+                    </div>
+
+                    <h2 id="audit">Tamper-evident audit</h2>
+                    <p>
+                        Every governance decision is logged so that "the agent did X, and it was approved by Y" is
+                        provable after the fact. The logging path is
+                        <code>src/Content/Infrastructure/Infrastructure.AI.Governance/Adapters/AgtAuditAdapter.cs</code>,
+                        which wraps the AgentGovernance Toolkit (AGT) <code>AuditLogger</code> behind the harness's
+                        <code>IGovernanceAuditService</code> interface.
+                    </p>
+                    <p>
+                        <code>Log(agentId, action, decision)</code> writes a structured JSONL entry — one JSON object
+                        per line — recording who acted, what they did, and how it was decided. The integrity guarantee
+                        comes from <code>VerifyChainIntegrity()</code>, which delegates to AGT's tamper-evident hash-chain
+                        verification.
+                    </p>
+
+                    <div class="callout callout-jargon">
+                        <span class="callout-icon">¶</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Hash chain</div>
+                            <p style="margin: 0">
+                                A log structured so each entry includes a cryptographic hash (a short fixed-length
+                                fingerprint) of the <em>previous</em> entry. Because every entry is fingerprinted into
+                                the next, you cannot delete, reorder, or edit an old entry without breaking the
+                                fingerprint of every entry after it — and the break is detectable. It is the same idea
+                                that makes a blockchain tamper-evident: not that the log <em>can't</em> be altered, but
+                                that any alteration is <strong>provably visible</strong>. That is what
+                                <code>VerifyChainIntegrity()</code> checks.
+                            </p>
+                        </div>
+                    </div>
+
+                    <h2 id="attack-scenario">Attack scenario: the destructive action with no approvals</h2>
+                    <div class="callout callout-danger">
+                        <span class="callout-icon">✕</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Slipping a destructive action past the humans</div>
+                            <p>
+                                Suppose an attacker — via an indirect prompt injection — coaxes an agent into requesting
+                                a destructive tool call (delete a dataset, push to production). The governance policy
+                                requires a 2-of-3 <strong>Quorum</strong> approval for that action. The attacker's
+                                angle is to make the approval requirement evaporate: trigger the action at a moment when
+                                the approver list is empty, or exploit a config where the quorum threshold was
+                                fat-fingered to <code>0</code>.
+                            </p>
+                            <p style="margin-bottom: 0">
+                                Both fail. <code>GovernancePolicyBehavior</code> fails closed, so a request it cannot
+                                affirmatively approve is denied. <code>QuorumApprovalStrategy</code> returns
+                                <strong>denied</strong> on a threshold of <code>&le; 0</code> rather than auto-approving.
+                                And if approvers are simply unreachable, the <code>DenyAndEscalate</code> timeout action
+                                denies the request instead of waiting it out into a yes. The destructive action never
+                                runs — and the attempt is written into the tamper-evident audit chain for the
+                                investigation that follows.
+                            </p>
+                        </div>
+                    </div>
+
+                    <h2 id="forward">Where this layer hands off</h2>
+                    <p>
+                        Autonomy and governance decide <em>whether</em> an action is allowed or needs approval. They do
+                        not, by themselves, resolve the fine-grained per-tool allow/deny decision, nor do they inspect
+                        what the agent says back. Those are the next two stops:
+                    </p>
+                    <ul>
+                        <li>
+                            The Priority 0 / Priority 10 rules from this page feed the per-tool permission resolver on
+                            <a href="04-tools-and-permissions.html">Tools &amp; Permissions</a> — that page covers how
+                            allow/deny lists combine into the final decision for a specific tool.
+                        </li>
+                        <li>
+                            Separately, a <code>ResponseSanitizationBehavior</code> inspects the agent's output for
+                            leaked secrets and injection payloads before it leaves the system. That belongs to
+                            <a href="07-content-safety.html">Content Safety &amp; Injection</a> — covered there, not
+                            duplicated here.
+                        </li>
+                    </ul>
+
+                    <!-- Footer nav -->
+                    <div class="page-nav">
+                        <a class="page-nav-link page-nav-prev" href="02-identity-and-access.html">
+                            <div class="page-nav-label">&larr; Previous</div>
+                            <div class="page-nav-title">02 &middot; Identity &amp; Access</div>
+                        </a>
+                        <a class="page-nav-link page-nav-next" href="04-tools-and-permissions.html">
+                            <div class="page-nav-label">Next &rarr;</div>
+                            <div class="page-nav-title">04 &middot; Tools &amp; Permissions</div>
+                        </a>
+                    </div>
+                </div>
+
+                <!-- TOC -->
+                <aside class="toc" aria-label="On this page">
+                    <div class="toc-title">On this page</div>
+                    <ul class="toc-list"></ul>
+                </aside>
+            </main>
+        </div>
+        <script src="../assets/js/main.js"></script>
+    </body>
+</html>
