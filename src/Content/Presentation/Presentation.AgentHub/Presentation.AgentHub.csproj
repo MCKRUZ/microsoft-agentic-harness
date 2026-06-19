@@ -15,7 +15,11 @@
   <PropertyGroup Condition="'$(Configuration)' == 'Debug' or '$(Configuration)' == 'Debug-AgentHub-All'">
     <SpaRoot>.\</SpaRoot>
     <SpaProxyServerUrl>http://localhost:5173</SpaProxyServerUrl>
-    <SpaProxyLaunchCommand>cmd.exe /c start-all-spas.cmd</SpaProxyLaunchCommand>
+    <!-- Launch both SPAs. The Windows .cmd cannot run on macOS/Linux, so select a
+         shell launcher per OS — otherwise SpaProxy fails with "Couldn't start the SPA
+         development server with command 'cmd.exe /c start-all-spas.cmd'." -->
+    <SpaProxyLaunchCommand Condition="$([MSBuild]::IsOSPlatform('Windows'))">cmd.exe /c start-all-spas.cmd</SpaProxyLaunchCommand>
+    <SpaProxyLaunchCommand Condition="!$([MSBuild]::IsOSPlatform('Windows'))">bash start-all-spas.sh</SpaProxyLaunchCommand>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)' == 'Debug-AgentHub-WebUI'">

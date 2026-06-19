@@ -27,9 +27,12 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.Extensions.Caching.StackExchangeRedis;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Identity.Web;
 using Presentation.Common.Helpers;
+using Presentation.Common.Hosting;
 using Presentation.Common.Security;
 
 namespace Presentation.Common.Extensions;
@@ -160,6 +163,12 @@ public static class IServiceCollectionExtensions
         services.AddOptions();
         services.AddProblemDetails();
         services.AddHttpContextAccessor();
+
+        // Console-style hosts (ConsoleUI, EvalRunner, FoundryHost) compose a bare ServiceCollection
+        // with no IHost, so IHostEnvironment is never registered — yet services like
+        // AutonomyDecisionEvaluator hard-inject it and fail at first resolution. TryAdd fills the gap
+        // for those hosts while leaving a web host's real IHostEnvironment untouched.
+        services.TryAddSingleton<IHostEnvironment>(new HarnessHostEnvironment());
 
         services.AddCacheConfiguration(appConfig.Cache);
         services.AddCustomHealthChecks(appConfig, includeHealthChecksUI);

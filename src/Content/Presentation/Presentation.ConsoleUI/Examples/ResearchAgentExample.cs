@@ -15,13 +15,11 @@ namespace Presentation.ConsoleUI.Examples;
 /// </summary>
 public class ResearchAgentExample
 {
-	private readonly ISender _sender;
 	private readonly IServiceScopeFactory _scopeFactory;
 	private readonly ILogger<ResearchAgentExample> _logger;
 
-	public ResearchAgentExample(ISender sender, IServiceScopeFactory scopeFactory, ILogger<ResearchAgentExample> logger)
+	public ResearchAgentExample(IServiceScopeFactory scopeFactory, ILogger<ResearchAgentExample> logger)
 	{
-		_sender = sender;
 		_scopeFactory = scopeFactory;
 		_logger = logger;
 	}
@@ -146,7 +144,14 @@ public class ResearchAgentExample
 			.SpinnerStyle(Style.Parse("cornflowerblue"))
 			.StartAsync("ResearchAgent is thinking...", async _ =>
 			{
-				var result = await _sender.Send(new ExecuteAgentTurnCommand
+				// Fresh DI scope per turn: IAgentExecutionContext is scoped and binds itself
+				// for the conversation. Reusing the root-injected sender would re-bind the
+				// same root-scope instance on the next run, throwing "AgentExecutionContext
+				// scope conflict". Mirrors RunHeadlessAsync.
+				await using var scope = _scopeFactory.CreateAsyncScope();
+				var scopedSender = scope.ServiceProvider.GetRequiredService<ISender>();
+
+				var result = await scopedSender.Send(new ExecuteAgentTurnCommand
 				{
 					AgentName = "research-agent",
 					UserMessage = question,
@@ -182,7 +187,12 @@ public class ResearchAgentExample
 
 		AnsiConsole.MarkupLine($"\n[bold]Running {messages.Count}-turn conversation...[/]\n");
 
-		var result = await _sender.Send(new RunConversationCommand
+		// Fresh DI scope per conversation so the scoped IAgentExecutionContext starts
+		// unbound — same reason as RunSingleTurnAsync / RunHeadlessAsync.
+		await using var scope = _scopeFactory.CreateAsyncScope();
+		var scopedSender = scope.ServiceProvider.GetRequiredService<ISender>();
+
+		var result = await scopedSender.Send(new RunConversationCommand
 		{
 			AgentName = "research-agent",
 			UserMessages = messages,
