@@ -1,3 +1,4 @@
+using Domain.AI.Changes;
 using Domain.AI.Models;
 
 namespace Application.AI.Common.Interfaces.Tools;
@@ -59,6 +60,30 @@ public interface ITool
     /// Default is false (fail-closed — assumes not safe).
     /// </summary>
     bool IsConcurrencySafe => false;
+
+    /// <summary>
+    /// The intrinsic blast radius (impact band) of invoking this tool — how much damage
+    /// a single call can do. Feeds the graded-autonomy engine: higher tiers may
+    /// auto-approve low-radius tools while still requiring human approval for high-radius
+    /// ones, and the escalation severity is derived from it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Default is <see cref="BlastRadius.Medium"/> — a neutral middle that preserves the
+    /// harness's prior fixed risk treatment for tools that do not classify themselves.
+    /// Tools should override this to declare their true impact: read-only lookups as
+    /// <see cref="BlastRadius.Trivial"/>/<see cref="BlastRadius.Low"/>; operations that
+    /// touch production state, run commands, or apply infrastructure as
+    /// <see cref="BlastRadius.High"/>/<see cref="BlastRadius.Critical"/>.
+    /// </para>
+    /// <para>
+    /// This is the tool-level (worst-case) rating across all <see cref="SupportedOperations"/>;
+    /// per-operation risk refinement is a separate concern. The reused
+    /// <see cref="BlastRadius"/> scale lets a tool's rating flow directly into the same
+    /// graded-autonomy evaluator that governs change proposals, with no mapping layer.
+    /// </para>
+    /// </remarks>
+    BlastRadius RiskTier => BlastRadius.Medium;
 
     /// <summary>
     /// Declares the expected output content type for compression strategy selection.

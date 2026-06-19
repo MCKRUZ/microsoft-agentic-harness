@@ -1,6 +1,7 @@
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.MediatR;
+using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.MediatRBehaviors;
 using Domain.AI.Governance;
 using Domain.Common;
@@ -22,6 +23,8 @@ public sealed class GovernancePolicyBehaviorTests
     private readonly Mock<ILogger<GovernancePolicyBehavior<TestToolRequest, Result<string>>>> _logger = new();
     private readonly GovernanceConfig _config = new() { Enabled = true, EnableAudit = true };
     private readonly PermissionsConfig _permissionsConfig = new();
+    private readonly IToolRiskClassifier _toolRiskClassifier =
+        Mock.Of<IToolRiskClassifier>(c => c.Classify(It.IsAny<string>()) == ToolRiskProfile.Default);
     private readonly GovernancePolicyBehavior<TestToolRequest, Result<string>> _behavior;
     private bool _nextCalled;
 
@@ -37,6 +40,7 @@ public sealed class GovernancePolicyBehaviorTests
             _executionContext.Object,
             monitor,
             permMonitor,
+            _toolRiskClassifier,
             _logger.Object);
     }
 
@@ -55,6 +59,7 @@ public sealed class GovernancePolicyBehaviorTests
             _executionContext.Object,
             Mock.Of<IOptionsMonitor<GovernanceConfig>>(m => m.CurrentValue == _config),
             Mock.Of<IOptionsMonitor<PermissionsConfig>>(m => m.CurrentValue == _permissionsConfig),
+            _toolRiskClassifier,
             Mock.Of<ILogger<GovernancePolicyBehavior<NonToolRequest, Result<string>>>>());
 
         var result = await behavior.Handle(new NonToolRequest(), () => Task.FromResult(Result<string>.Success("ok")), CancellationToken.None);
@@ -70,6 +75,7 @@ public sealed class GovernancePolicyBehaviorTests
             _policyEngine.Object, _auditService.Object, _executionContext.Object,
             Mock.Of<IOptionsMonitor<GovernanceConfig>>(m => m.CurrentValue == disabledConfig),
             Mock.Of<IOptionsMonitor<PermissionsConfig>>(m => m.CurrentValue == _permissionsConfig),
+            _toolRiskClassifier,
             _logger.Object);
 
         var result = await behavior.Handle(new TestToolRequest("test"), Next, CancellationToken.None);

@@ -1,11 +1,16 @@
 using Application.AI.Common.Interfaces.Agent;
+using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.MediatR;
 using Application.AI.Common.Interfaces.Permissions;
 using Application.AI.Common.Interfaces.Sandbox;
+using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.MediatRBehaviors;
+using Domain.AI.Changes;
+using Domain.AI.Governance;
 using Domain.AI.Permissions;
 using Domain.AI.Sandbox;
 using Domain.Common;
+using Domain.Common.Config.AI.Permissions;
 using Domain.Common.Config.AI.Sandbox;
 using FluentAssertions;
 using MediatR;
@@ -22,12 +27,18 @@ public sealed class ToolPermissionBehaviorTests
     private readonly Mock<IToolPermissionService> _permissionService = new();
     private readonly Mock<IDenialTracker> _denialTracker = new();
     private readonly Mock<ICapabilityEnforcer> _capabilityEnforcer = new();
+    private readonly Mock<IToolRiskClassifier> _toolRiskClassifier = new();
+    private readonly Mock<IAutonomyDecisionEvaluator> _autonomyEvaluator = new();
     private readonly Mock<IOptionsMonitor<SandboxConfig>> _sandboxConfig = new();
+    private readonly Mock<IOptionsMonitor<PermissionsConfig>> _permissionsConfig = new();
     private readonly Mock<ILogger<ToolPermissionBehavior<TestToolRequest, Result<string>>>> _logger = new();
 
     public ToolPermissionBehaviorTests()
     {
         _sandboxConfig.Setup(o => o.CurrentValue).Returns(new SandboxConfig());
+        // GradedAutonomy defaults to disabled, so the risk gate is a no-op for these tests.
+        _permissionsConfig.Setup(o => o.CurrentValue).Returns(new PermissionsConfig());
+        _toolRiskClassifier.Setup(c => c.Classify(It.IsAny<string>())).Returns(ToolRiskProfile.Default);
         _capabilityEnforcer
             .Setup(e => e.EnforceAsync(
                 It.IsAny<string>(), It.IsAny<ToolCapability>(),
@@ -38,7 +49,8 @@ public sealed class ToolPermissionBehaviorTests
 
     private ToolPermissionBehavior<TestToolRequest, Result<string>> CreateBehavior() =>
         new(_executionContext.Object, _permissionService.Object, _denialTracker.Object,
-            _capabilityEnforcer.Object, _sandboxConfig.Object, _logger.Object);
+            _capabilityEnforcer.Object, _toolRiskClassifier.Object, _autonomyEvaluator.Object,
+            _sandboxConfig.Object, _permissionsConfig.Object, _logger.Object);
 
     private static RequestHandlerDelegate<Result<string>> CreateNext(string value = "success") =>
         () => Task.FromResult(Result<string>.Success(value));
@@ -149,7 +161,8 @@ public sealed class ToolPermissionBehaviorTests
         var nonToolLogger = new Mock<ILogger<ToolPermissionBehavior<NonToolRequest, Result<string>>>>();
         var behavior = new ToolPermissionBehavior<NonToolRequest, Result<string>>(
             _executionContext.Object, _permissionService.Object, _denialTracker.Object,
-            _capabilityEnforcer.Object, _sandboxConfig.Object, nonToolLogger.Object);
+            _capabilityEnforcer.Object, _toolRiskClassifier.Object, _autonomyEvaluator.Object,
+            _sandboxConfig.Object, _permissionsConfig.Object, nonToolLogger.Object);
 
         RequestHandlerDelegate<Result<string>> next = () =>
             Task.FromResult(Result<string>.Success("passed"));
@@ -180,6 +193,77 @@ public sealed class ToolPermissionBehaviorTests
             s => s.ResolvePermissionAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<IReadOnlyDictionary<string, object?>?>(), It.IsAny<CancellationToken>()),
             Times.Never);
     }
+
+    // -- Graded-autonomy risk gate --
+
+    [Fact]
+    public async Task RiskGate_Disabled_DoesNotTightenAllow_EvenForHighRiskTool()
+    {
+        // GradedAutonomy is off (default): a rules-Allow proceeds regardless of tool risk,
+        // and the evaluator is never consulted.
+        ArrangeAllow();
+        _toolRiskClassifier.Setup(c => c.Classify("test_tool"))
+            .Returns(new ToolRiskProfile(BlastRadius.High, IsReadOnly: false));
+
+        var result = await CreateBehavior().Handle(
+            new TestToolRequest("test_tool"), CreateNext("allowed"), CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        _autonomyEvaluator.Verify(
+            e => e.Evaluate(It.IsAny<AutonomyLevel>(), It.IsAny<BlastRadius>(), It.IsAny<ChangeTargetKind>(), It.IsAny<bool>(), It.IsAny<string?>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task RiskGate_Enabled_HighRiskTool_RequiresApproval_TightensAllowToAsk()
+    {
+        ArrangeAllow();
+        _permissionsConfig.Setup(o => o.CurrentValue).Returns(GradedConfig());
+        _toolRiskClassifier.Setup(c => c.Classify("test_tool"))
+            .Returns(new ToolRiskProfile(BlastRadius.High, IsReadOnly: false));
+        _autonomyEvaluator
+            .Setup(e => e.Evaluate(It.IsAny<AutonomyLevel>(), BlastRadius.High, It.IsAny<ChangeTargetKind>(), true, null))
+            .Returns(EvalResult(AutonomyDecision.RequiresApproval));
+
+        var result = await CreateBehavior().Handle(
+            new TestToolRequest("test_tool"), CreateNext("allowed"), CancellationToken.None);
+
+        // Allow was tightened to Ask → PermissionRequired failure, and the denial was recorded.
+        result.IsSuccess.Should().BeFalse();
+        _denialTracker.Verify(d => d.RecordDenial("agent-1", "test_tool"), Times.Once);
+    }
+
+    [Fact]
+    public async Task RiskGate_Enabled_AutoApprove_KeepsAllow()
+    {
+        ArrangeAllow();
+        _permissionsConfig.Setup(o => o.CurrentValue).Returns(GradedConfig());
+        _toolRiskClassifier.Setup(c => c.Classify("test_tool"))
+            .Returns(new ToolRiskProfile(BlastRadius.Low, IsReadOnly: true));
+        _autonomyEvaluator
+            .Setup(e => e.Evaluate(It.IsAny<AutonomyLevel>(), It.IsAny<BlastRadius>(), It.IsAny<ChangeTargetKind>(), It.IsAny<bool>(), It.IsAny<string?>()))
+            .Returns(EvalResult(AutonomyDecision.AutoApprove));
+
+        var result = await CreateBehavior().Handle(
+            new TestToolRequest("test_tool"), CreateNext("allowed"), CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+    }
+
+    private void ArrangeAllow()
+    {
+        _executionContext.Setup(c => c.AgentId).Returns("agent-1");
+        _permissionService
+            .Setup(s => s.ResolvePermissionAsync("agent-1", "test_tool", null, null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(PermissionDecision.Allow("Allowed by rule."));
+    }
+
+    private static PermissionsConfig GradedConfig(string tier = "Autonomous") =>
+        new() { DefaultAutonomyLevel = tier, GradedAutonomy = new() { Enabled = true } };
+
+    private static AutonomyDecisionResult EvalResult(AutonomyDecision decision) =>
+        new(decision, AutonomyLevel.Autonomous, BlastRadius.High, ChangeTargetKind.Unspecified,
+            IsStateChange: true, "Test", SkillKey: null, "test reason");
 
     // Test request types
 

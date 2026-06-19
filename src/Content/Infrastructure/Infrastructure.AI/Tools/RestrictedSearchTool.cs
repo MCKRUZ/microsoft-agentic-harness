@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text;
 using Application.AI.Common.Interfaces.Tools;
+using Domain.AI.Changes;
 using Domain.AI.Models;
 using Domain.Common.Config.MetaHarness;
 using Microsoft.Extensions.Logging;
@@ -92,6 +93,9 @@ public sealed class RestrictedSearchTool : ITool
 
     /// <inheritdoc />
     public bool IsReadOnly => true;
+
+    /// <inheritdoc />
+    public BlastRadius RiskTier => BlastRadius.Medium;
 
     /// <inheritdoc />
     public bool IsConcurrencySafe => true;

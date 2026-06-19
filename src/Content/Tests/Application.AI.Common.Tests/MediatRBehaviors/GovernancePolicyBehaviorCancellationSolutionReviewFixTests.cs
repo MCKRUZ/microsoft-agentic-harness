@@ -68,6 +68,8 @@ public sealed class GovernancePolicyBehaviorCancellationSolutionReviewFixTests
             _executionContext.Object,
             Mock.Of<IOptionsMonitor<GovernanceConfig>>(m => m.CurrentValue == _config),
             Mock.Of<IOptionsMonitor<PermissionsConfig>>(m => m.CurrentValue == _permissionsConfig),
+            Mock.Of<Application.AI.Common.Interfaces.Tools.IToolRiskClassifier>(
+                c => c.Classify(It.IsAny<string>()) == Application.AI.Common.Interfaces.Tools.ToolRiskProfile.Default),
             _logger.Object,
             _escalationService.Object);
 

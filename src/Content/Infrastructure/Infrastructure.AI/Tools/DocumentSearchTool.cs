@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using Application.AI.Common.Interfaces.RAG;
 using Application.AI.Common.Interfaces.Tools;
+using Domain.AI.Changes;
 using Domain.AI.Models;
 using Domain.AI.RAG.Enums;
 
@@ -69,6 +70,9 @@ public sealed class DocumentSearchTool : ITool
 
     /// <inheritdoc />
     public bool IsReadOnly => true;
+
+    /// <inheritdoc />
+    public BlastRadius RiskTier => BlastRadius.Low;
 
     /// <inheritdoc />
     public bool IsConcurrencySafe => true;

@@ -98,6 +98,7 @@ public sealed class AutonomyConfigValidator : IHostedService
 
         var errors = new List<string>();
 
+        ValidateDefaultAutonomyLevel(permissions, errors);
         ValidatePerEnvironment(graded, environmentName, errors);
         ValidatePerSkill(graded, permissions, errors);
         ValidateStateChangerOptIns(graded, errors);
@@ -120,6 +121,20 @@ public sealed class AutonomyConfigValidator : IHostedService
 
     /// <inheritdoc />
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+    private static void ValidateDefaultAutonomyLevel(PermissionsConfig permissions, List<string> errors)
+    {
+        // The tool-risk gate (ToolPermissionBehavior) parses this value at runtime; an invalid
+        // tier would silently disable the gate. Fail fast at boot instead — but only when graded
+        // autonomy is enabled (this validator returns early otherwise), so a typo cannot quietly
+        // weaken governance.
+        if (!Enum.TryParse<AutonomyLevel>(permissions.DefaultAutonomyLevel, ignoreCase: true, out _))
+        {
+            errors.Add(
+                $"DefaultAutonomyLevel '{permissions.DefaultAutonomyLevel}' is not a valid AutonomyLevel. " +
+                "Valid values: Restricted, Supervised, Autonomous.");
+        }
+    }
 
     private static void ValidatePerEnvironment(
         GradedAutonomyConfig graded,

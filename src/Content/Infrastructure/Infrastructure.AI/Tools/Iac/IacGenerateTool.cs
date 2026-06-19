@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Application.AI.Common.Interfaces.Tools;
+using Domain.AI.Changes;
 using Domain.AI.Iac;
 using Domain.AI.Models;
 using Domain.Common.Config;
@@ -47,6 +48,9 @@ public sealed class IacGenerateTool : ITool
 
     /// <inheritdoc />
     public bool IsReadOnly => true;
+
+    /// <inheritdoc />
+    public BlastRadius RiskTier => BlastRadius.Low;
 
     /// <inheritdoc />
     public bool IsConcurrencySafe => true;

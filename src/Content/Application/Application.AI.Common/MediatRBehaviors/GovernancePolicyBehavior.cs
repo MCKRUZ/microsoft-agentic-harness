@@ -2,6 +2,7 @@ using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.MediatR;
+using Application.AI.Common.Interfaces.Tools;
 using Domain.AI.Escalation;
 using Domain.AI.Governance;
 using Domain.Common;
@@ -31,6 +32,7 @@ public sealed class GovernancePolicyBehavior<TRequest, TResponse>
     private readonly IAgentExecutionContext _executionContext;
     private readonly IOptionsMonitor<GovernanceConfig> _config;
     private readonly IOptionsMonitor<PermissionsConfig> _permissionsConfig;
+    private readonly IToolRiskClassifier _toolRiskClassifier;
     private readonly ILogger<GovernancePolicyBehavior<TRequest, TResponse>> _logger;
     private readonly IEscalationService? _escalationService;
 
@@ -40,6 +42,7 @@ public sealed class GovernancePolicyBehavior<TRequest, TResponse>
         IAgentExecutionContext executionContext,
         IOptionsMonitor<GovernanceConfig> config,
         IOptionsMonitor<PermissionsConfig> permissionsConfig,
+        IToolRiskClassifier toolRiskClassifier,
         ILogger<GovernancePolicyBehavior<TRequest, TResponse>> logger,
         IEscalationService? escalationService = null)
     {
@@ -48,6 +51,7 @@ public sealed class GovernancePolicyBehavior<TRequest, TResponse>
         _executionContext = executionContext;
         _config = config;
         _permissionsConfig = permissionsConfig;
+        _toolRiskClassifier = toolRiskClassifier;
         _logger = logger;
         _escalationService = escalationService;
     }
@@ -107,6 +111,12 @@ public sealed class GovernancePolicyBehavior<TRequest, TResponse>
             throw new InvalidOperationException($"Governance policy denied: {decision.Reason}");
         }
 
+        // Derive escalation severity from the tool's declared blast radius rather than a
+        // fixed default, so a high-impact tool escalates harder (stricter approval strategy,
+        // shorter timeout, wider notification) than a low-impact one. Unknown tools fall back
+        // to the Medium-equivalent default via the classifier.
+        var toolRiskLevel = _toolRiskClassifier.Classify(toolRequest.ToolName).Radius.ToRiskLevel();
+
         var escalationRequest = new EscalationRequest
         {
             EscalationId = Guid.NewGuid(),
@@ -114,7 +124,7 @@ public sealed class GovernancePolicyBehavior<TRequest, TResponse>
             ToolName = toolRequest.ToolName,
             Arguments = new Dictionary<string, string>(),
             Description = $"Agent '{agentId}' requires approval to invoke '{toolRequest.ToolName}': {decision.Reason}",
-            RiskLevel = RiskLevel.Medium,
+            RiskLevel = toolRiskLevel,
             Priority = EscalationPriority.Blocking,
             ApprovalStrategy = Enum.TryParse<ApprovalStrategyType>(escalationConfig.DefaultApprovalStrategy, true, out var strategy)
                 ? strategy

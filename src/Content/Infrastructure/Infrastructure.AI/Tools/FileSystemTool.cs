@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces.Tools;
+using Domain.AI.Changes;
 using Domain.AI.Models;
 
 namespace Infrastructure.AI.Tools;
@@ -43,6 +44,9 @@ public sealed class FileSystemTool : ITool
 
     /// <inheritdoc />
     public string Name => ToolName;
+
+    /// <inheritdoc />
+    public BlastRadius RiskTier => BlastRadius.High;
 
     /// <inheritdoc />
     public string Description => "Reads, writes, lists, and searches files within the project sandbox.";

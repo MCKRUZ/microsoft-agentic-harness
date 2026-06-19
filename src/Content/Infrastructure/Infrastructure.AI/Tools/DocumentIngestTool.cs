@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Application.AI.Common.Interfaces.Tools;
 using Application.Core.CQRS.RAG.IngestDocument;
+using Domain.AI.Changes;
 using Domain.AI.Models;
 using MediatR;
 
@@ -56,6 +57,9 @@ public sealed class DocumentIngestTool : ITool
 
     /// <inheritdoc />
     public bool IsReadOnly => false;
+
+    /// <inheritdoc />
+    public BlastRadius RiskTier => BlastRadius.Medium;
 
     /// <inheritdoc />
     public bool IsConcurrencySafe => false;

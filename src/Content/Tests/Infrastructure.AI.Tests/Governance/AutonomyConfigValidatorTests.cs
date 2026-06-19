@@ -160,6 +160,22 @@ public sealed class AutonomyConfigValidatorTests
     }
 
     [Fact]
+    public async Task StartAsync_InvalidDefaultAutonomyLevel_Throws()
+    {
+        // The tool-risk gate parses DefaultAutonomyLevel at runtime; a typo must fail boot
+        // (when graded autonomy is enabled) rather than silently disable the gate.
+        var cfg = GradedEnabled(_ => { });
+        cfg.AI.Permissions.DefaultAutonomyLevel = "NotATier";
+
+        var sut = Build(cfg);
+
+        var act = async () => await sut.StartAsync(CancellationToken.None);
+
+        var ex = await act.Should().ThrowAsync<InvalidOperationException>();
+        ex.Which.Message.Should().Contain("DefaultAutonomyLevel");
+    }
+
+    [Fact]
     public async Task StartAsync_PerSkillCriticalAutoApprove_Throws()
     {
         var cfg = GradedEnabled(g =>

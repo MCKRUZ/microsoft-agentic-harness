@@ -126,6 +126,10 @@ public static class DependencyInjection
         // Tool conversion — ITool to AITool bridge for keyed DI tools
         services.AddSingleton<IToolConverter, AIToolConverter>();
 
+        // Tool risk classification — resolves a tool's declared blast radius for the
+        // graded-autonomy gate and escalation-severity derivation.
+        services.AddSingleton<Interfaces.Tools.IToolRiskClassifier, Services.Tools.ToolRiskClassifier>();
+
         // Context budget tracking
         services.AddSingleton<IContextBudgetTracker, ContextBudgetTracker>();
 

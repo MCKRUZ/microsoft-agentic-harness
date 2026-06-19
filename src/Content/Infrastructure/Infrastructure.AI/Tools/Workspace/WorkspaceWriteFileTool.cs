@@ -67,6 +67,9 @@ public sealed class WorkspaceWriteFileTool : ITool
     public bool IsReadOnly => false;
 
     /// <inheritdoc />
+    public BlastRadius RiskTier => BlastRadius.High;
+
+    /// <inheritdoc />
     public bool IsConcurrencySafe => false;
 
     /// <inheritdoc />

@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Application.AI.Common.Interfaces.GitOps;
 using Application.AI.Common.Interfaces.Tools;
+using Domain.AI.Changes;
 using Domain.AI.Models;
 
 namespace Infrastructure.AI.Tools.GitOps;
@@ -59,6 +60,9 @@ public sealed class GitOpsProposeRemediationTool : ITool
 
     /// <inheritdoc />
     public bool IsReadOnly => false;
+
+    /// <inheritdoc />
+    public BlastRadius RiskTier => BlastRadius.High;
 
     /// <inheritdoc />
     public bool IsConcurrencySafe => false;

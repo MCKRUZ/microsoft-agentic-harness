@@ -2,7 +2,9 @@ using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.MediatR;
+using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.MediatRBehaviors;
+using Domain.AI.Changes;
 using Domain.AI.Escalation;
 using Domain.AI.Governance;
 using Domain.Common;
@@ -31,6 +33,8 @@ public sealed class GovernancePolicyBehaviorEscalationTests
     private readonly Mock<ILogger<GovernancePolicyBehavior<TestToolRequest, Result<string>>>> _logger = new();
     private readonly GovernanceConfig _config;
     private readonly PermissionsConfig _permissionsConfig;
+    private IToolRiskClassifier _toolRiskClassifier =
+        Mock.Of<IToolRiskClassifier>(c => c.Classify(It.IsAny<string>()) == ToolRiskProfile.Default);
     private bool _nextCalled;
 
     public GovernancePolicyBehaviorEscalationTests()
@@ -72,6 +76,7 @@ public sealed class GovernancePolicyBehaviorEscalationTests
             _executionContext.Object,
             Mock.Of<IOptionsMonitor<GovernanceConfig>>(m => m.CurrentValue == cfg),
             Mock.Of<IOptionsMonitor<PermissionsConfig>>(m => m.CurrentValue == perm),
+            _toolRiskClassifier,
             _logger.Object,
             _escalationService.Object);
     }
@@ -117,6 +122,35 @@ public sealed class GovernancePolicyBehaviorEscalationTests
                     r.AgentId == "test-agent" &&
                     r.ToolName == "deploy" &&
                     r.Approvers.Contains("admin@test.com")),
+                It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task Handle_RequireApproval_DerivesEscalationRiskLevelFromToolBlastRadius()
+    {
+        // A High-blast-radius tool must escalate as High, not the previously-hardcoded Medium.
+        _toolRiskClassifier = Mock.Of<IToolRiskClassifier>(
+            c => c.Classify("deploy") == new ToolRiskProfile(BlastRadius.High, false));
+        _policyEngine.Setup(x => x.HasPolicies).Returns(true);
+        _policyEngine.Setup(x => x.EvaluateToolCall("test-agent", "deploy", null))
+            .Returns(RequireApprovalDecision());
+        _escalationService
+            .Setup(x => x.RequestEscalationAsync(It.IsAny<EscalationRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new EscalationOutcome
+            {
+                EscalationId = Guid.NewGuid(),
+                IsApproved = true,
+                Decisions = [],
+                ResolutionType = EscalationResolutionType.Approved,
+                ResolvedAt = DateTimeOffset.UtcNow
+            });
+
+        await CreateBehavior().Handle(new TestToolRequest("deploy"), Next, CancellationToken.None);
+
+        _escalationService.Verify(
+            x => x.RequestEscalationAsync(
+                It.Is<EscalationRequest>(r => r.RiskLevel == RiskLevel.High),
                 It.IsAny<CancellationToken>()),
             Times.Once);
     }

@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces.Tools;
+using Domain.AI.Changes;
 using Domain.AI.Models;
 
 namespace Infrastructure.AI.Tools;
@@ -25,6 +26,9 @@ public sealed class EchoLookupTool : ITool
 
 	/// <inheritdoc />
 	public bool IsReadOnly => true;
+
+	/// <inheritdoc />
+	public BlastRadius RiskTier => BlastRadius.Trivial;
 
 	/// <inheritdoc />
 	public bool IsConcurrencySafe => true;

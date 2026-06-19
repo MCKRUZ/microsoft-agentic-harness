@@ -1,6 +1,7 @@
 using Application.AI.Common.Interfaces.Sandbox;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Interfaces.Workspace;
+using Domain.AI.Changes;
 using Domain.AI.Models;
 
 namespace Infrastructure.AI.Tools.Workspace;
@@ -44,6 +45,9 @@ public sealed class WorkspaceRunTestsTool : ITool
 
     /// <inheritdoc />
     public string Name => ToolName;
+
+    /// <inheritdoc />
+    public BlastRadius RiskTier => BlastRadius.Medium;
 
     /// <inheritdoc />
     public string Description =>

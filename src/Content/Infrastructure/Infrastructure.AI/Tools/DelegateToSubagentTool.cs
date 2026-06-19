@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces.Agents;
 using Application.AI.Common.Interfaces.Tools;
+using Domain.AI.Changes;
 using Domain.AI.Governance;
 using Domain.AI.Models;
 using Microsoft.Extensions.Logging;
@@ -73,6 +74,9 @@ public sealed class DelegateToSubagentTool : ITool
 
     /// <inheritdoc />
     public bool IsReadOnly => false;
+
+    /// <inheritdoc />
+    public BlastRadius RiskTier => BlastRadius.High;
 
     /// <inheritdoc />
     public bool IsConcurrencySafe => false;
