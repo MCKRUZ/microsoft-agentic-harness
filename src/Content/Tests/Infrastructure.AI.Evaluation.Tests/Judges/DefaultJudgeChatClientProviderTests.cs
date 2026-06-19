@@ -121,4 +121,63 @@ public sealed class DefaultJudgeChatClientProviderTests
         factory.Verify(f => f.GetChatClientAsync(
             AIAgentFrameworkClientType.OpenAI, "x", It.IsAny<CancellationToken>()), Times.Once);
     }
+
+    [Fact]
+    public async Task GetJudgeAsync_overload_resolves_explicit_client_type_and_deployment()
+    {
+        var client = Mock.Of<IChatClient>();
+        var factory = new Mock<IChatClientFactory>();
+        factory.Setup(f => f.GetChatClientAsync(
+                AIAgentFrameworkClientType.AzureOpenAI,
+                "panel-model",
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(client);
+
+        var sut = new DefaultJudgeChatClientProvider(
+            factory.Object,
+            Options(new JudgeOptions { Deployment = "default" }));
+
+        var result = await sut.GetJudgeAsync(
+            AIAgentFrameworkClientType.AzureOpenAI, "panel-model", CancellationToken.None);
+
+        result.Should().BeSameAs(client);
+    }
+
+    [Fact]
+    public async Task GetJudgeAsync_overload_throws_when_deployment_blank()
+    {
+        var factory = new Mock<IChatClientFactory>(MockBehavior.Strict);
+        var sut = new DefaultJudgeChatClientProvider(
+            factory.Object,
+            Options(new JudgeOptions { Deployment = "default" }));
+
+        var act = () => sut.GetJudgeAsync(AIAgentFrameworkClientType.OpenAI, "   ", CancellationToken.None);
+
+        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*deployment*");
+        factory.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task GetJudgeAsync_overload_shares_cache_with_default_for_same_model()
+    {
+        var client = Mock.Of<IChatClient>();
+        var factory = new Mock<IChatClientFactory>();
+        factory.Setup(f => f.GetChatClientAsync(
+                It.IsAny<AIAgentFrameworkClientType>(),
+                It.IsAny<string>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(client);
+
+        var sut = new DefaultJudgeChatClientProvider(
+            factory.Object,
+            Options(new JudgeOptions { ClientType = AIAgentFrameworkClientType.OpenAI, Deployment = "shared" }));
+
+        var viaDefault = await sut.GetJudgeAsync(CancellationToken.None);
+        var viaOverload = await sut.GetJudgeAsync(
+            AIAgentFrameworkClientType.OpenAI, "shared", CancellationToken.None);
+
+        viaDefault.Should().BeSameAs(viaOverload);
+        factory.Verify(f => f.GetChatClientAsync(
+            AIAgentFrameworkClientType.OpenAI, "shared", It.IsAny<CancellationToken>()), Times.Once);
+    }
 }

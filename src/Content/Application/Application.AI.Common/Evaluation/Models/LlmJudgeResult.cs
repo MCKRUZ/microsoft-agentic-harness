@@ -39,4 +39,16 @@ public sealed record LlmJudgeResult
 
     /// <summary>Total output tokens produced across all attempts.</summary>
     public long OutputTokens { get; init; }
+
+    /// <summary>
+    /// When a panel of judges (a "jury") produced this result, the per-panelist
+    /// breakdown and consensus summary; <see cref="Score"/> is then the aggregate.
+    /// <c>null</c> when a single judge produced the result (the default).
+    /// </summary>
+    /// <remarks>
+    /// Additive and back-compatible: existing single-judge callers ignore this field.
+    /// Metrics copy <see cref="JuryPanelResult.Bucket"/> / <see cref="JuryPanelResult.Spread"/>
+    /// onto their <c>MetricScore</c> for the dashboard.
+    /// </remarks>
+    public JuryPanelResult? Panel { get; init; }
 }

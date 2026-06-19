@@ -1,3 +1,4 @@
+using Domain.Common.Config.AI;
 using Microsoft.Extensions.AI;
 
 namespace Application.AI.Common.Evaluation.Interfaces;
@@ -35,4 +36,22 @@ public interface IJudgeChatClientProvider
     /// Thrown when judge configuration is missing or no AI provider is available.
     /// </exception>
     Task<IChatClient> GetJudgeAsync(CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Returns a judge chat client for an explicit provider + deployment, rather than the
+    /// configured default. Used by a judge panel to resolve each panelist's model.
+    /// Shares the same cache as <see cref="GetJudgeAsync(CancellationToken)"/>, so the
+    /// default judge and a panelist requesting the same model reuse one client.
+    /// </summary>
+    /// <param name="clientType">The provider that hosts the panelist's model.</param>
+    /// <param name="deployment">The deployment / model identifier for the panelist.</param>
+    /// <param name="cancellationToken">The cancellation token.</param>
+    /// <returns>A ready-to-use <see cref="IChatClient"/> for the requested model.</returns>
+    /// <exception cref="InvalidOperationException">
+    /// Thrown when <paramref name="deployment"/> is empty or the requested provider is unavailable.
+    /// </exception>
+    Task<IChatClient> GetJudgeAsync(
+        AIAgentFrameworkClientType clientType,
+        string deployment,
+        CancellationToken cancellationToken);
 }

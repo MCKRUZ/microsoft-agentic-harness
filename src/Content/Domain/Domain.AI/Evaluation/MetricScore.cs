@@ -46,4 +46,23 @@ public sealed record MetricScore
 
     /// <summary>How long the metric took to score this case.</summary>
     public TimeSpan Duration { get; init; }
+
+    /// <summary>
+    /// When a panel of judges (a "jury") produced this score, how much they agreed.
+    /// <c>null</c> for single-judge metrics and all non-LLM metrics — the dashboard
+    /// renders those as no consensus indicator.
+    /// </summary>
+    /// <remarks>
+    /// Advisory only: the pass/fail <see cref="Verdict"/> is decided from the aggregated
+    /// (median) score versus the metric threshold, independent of this bucket. The
+    /// per-panelist breakdown is preserved in <see cref="RawOutput"/> for forensic review.
+    /// </remarks>
+    public ConsensusBucket? Consensus { get; init; }
+
+    /// <summary>
+    /// The spread (max − min) of the panelists' individual scores when a jury produced
+    /// this score; <c>null</c> for single-judge and non-LLM metrics. Drives the
+    /// <see cref="Consensus"/> bucket and is shown alongside it on the dashboard.
+    /// </summary>
+    public double? Spread { get; init; }
 }

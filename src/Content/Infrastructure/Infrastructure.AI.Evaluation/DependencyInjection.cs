@@ -84,8 +84,14 @@ public static class DependencyInjection
         services.AddSingleton<IJudgeChatClientProvider, DefaultJudgeChatClientProvider>();
         services.AddOptions<JudgeOptions>();
 
-        // Shared judge call mechanics used by LlmJudgeMetric and the RAG metric pack.
-        services.AddSingleton<ILlmJudge, DefaultLlmJudge>();
+        // Judge panel ("jury"). The public ILlmJudge resolves to JuryLlmJudge, which
+        // delegates to the single DefaultLlmJudge when no panel is configured (the
+        // default) — byte-identical single-judge behavior — and runs a panel only when a
+        // consumer populates JuryOptions.Panelists.
+        services.AddOptions<JuryOptions>();
+        services.AddSingleton<DefaultLlmJudge>();
+        services.AddSingleton<JuryLlmJudge>();
+        services.AddSingleton<ILlmJudge>(sp => sp.GetRequiredService<JuryLlmJudge>());
 
         // NOTE: RAG metrics resolve their prompts via IPromptRegistry; the registry is
         // wired by the composition root through AddPromptRegistry(...) so the eval

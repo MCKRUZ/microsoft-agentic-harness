@@ -17,6 +17,36 @@ function formatScore(s: MetricScore): string {
   return `${s.score.toFixed(3)} (${s.verdict})`;
 }
 
+// Jury agreement palette: green = judges agreed, amber = split, red = conflict (look here).
+function consensusColor(bucket: string): string {
+  switch (bucket) {
+    case 'Consensus': return 'text-otel-positive';
+    case 'Split': return 'text-otel-warning';
+    case 'Conflict': return 'text-otel-negative';
+    default: return 'text-muted-foreground';
+  }
+}
+
+function ConsensusCell({ scores }: { scores: Record<string, MetricScore> }) {
+  const withConsensus = Object.entries(scores).filter(([, v]) => v.consensus != null);
+  if (withConsensus.length === 0) {
+    return <span className="text-muted-foreground">—</span>;
+  }
+  return (
+    <div className="space-y-0.5 text-xs">
+      {withConsensus.map(([k, v]) => (
+        <div key={k}>
+          <span className="text-muted-foreground">{k}:</span>{' '}
+          <span className={consensusColor(v.consensus!)}>
+            {v.consensus}
+            {v.spread != null ? ` (Δ${v.spread.toFixed(2)})` : ''}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function CaseRow({ result }: { result: EvalResult }) {
   return (
     <tr className="border-t border-border">
@@ -31,6 +61,7 @@ function CaseRow({ result }: { result: EvalResult }) {
           ))}
         </div>
       </td>
+      <td className="px-3 py-2"><ConsensusCell scores={result.aggregatedScores} /></td>
       <td className="px-3 py-2 text-right font-mono tabular-nums">${result.costUsd.toFixed(4)}</td>
       <td className="px-3 py-2 text-xs text-muted-foreground">{result.error ?? '—'}</td>
     </tr>
@@ -110,6 +141,7 @@ export default function EvalRunDetailPage() {
               <th className="px-3 py-2 text-left">Case ID</th>
               <th className="px-3 py-2 text-left">Verdict</th>
               <th className="px-3 py-2 text-left">Scores</th>
+              <th className="px-3 py-2 text-left">Consensus</th>
               <th className="px-3 py-2 text-right">Cost</th>
               <th className="px-3 py-2 text-left">Error</th>
             </tr>

@@ -35,6 +35,10 @@ export interface MetricScore {
   verdict: 'Pass' | 'Fail' | 'Warn';
   reasoning?: string | null;
   costUsd: number;
+  /** Panel ("jury") agreement when several judges scored this metric; null for single-judge/non-LLM metrics. */
+  consensus?: 'Consensus' | 'Split' | 'Conflict' | null;
+  /** Spread (max − min) of the panelists' scores; null when {@link consensus} is null. */
+  spread?: number | null;
 }
 
 export interface EvalResult {

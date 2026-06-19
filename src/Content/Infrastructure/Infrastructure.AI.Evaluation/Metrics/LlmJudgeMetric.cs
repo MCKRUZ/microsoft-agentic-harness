@@ -132,29 +132,7 @@ public sealed class LlmJudgeMetric : IEvalMetric
 
         sw.Stop();
 
-        return result.Outcome switch
-        {
-            LlmJudgeOutcome.Parsed => new MetricScore
-            {
-                MetricKey = Key,
-                Score = result.Score,
-                Verdict = result.Score >= spec.Threshold ? Verdict.Pass : Verdict.Fail,
-                Reasoning = result.Reasoning,
-                RawOutput = result.RawOutput,
-                CostUsd = result.CostUsd,
-                Duration = sw.Elapsed
-            },
-            _ => new MetricScore
-            {
-                MetricKey = Key,
-                Score = 0.0,
-                Verdict = Verdict.Warn,
-                Reasoning = result.Reasoning,
-                RawOutput = result.RawOutput,
-                CostUsd = result.CostUsd,
-                Duration = sw.Elapsed
-            }
-        };
+        return JudgeMetricScoreMapper.ToMetricScore(Key, result, spec.Threshold, sw.Elapsed);
     }
 
     private MetricScore Warn(Stopwatch sw, string reasoning)

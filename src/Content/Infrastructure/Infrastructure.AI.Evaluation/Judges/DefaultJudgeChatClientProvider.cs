@@ -81,7 +81,7 @@ public sealed class DefaultJudgeChatClientProvider : IJudgeChatClientProvider, I
     }
 
     /// <inheritdoc />
-    public async Task<IChatClient> GetJudgeAsync(CancellationToken cancellationToken)
+    public Task<IChatClient> GetJudgeAsync(CancellationToken cancellationToken)
     {
         var opts = _options.CurrentValue;
         if (string.IsNullOrWhiteSpace(opts.Deployment))
@@ -92,13 +92,38 @@ public sealed class DefaultJudgeChatClientProvider : IJudgeChatClientProvider, I
         }
 
         var clientType = opts.ClientType ?? PickFirstAvailable();
-        var key = (clientType, opts.Deployment);
+        return ResolveAsync(clientType, opts.Deployment, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public Task<IChatClient> GetJudgeAsync(
+        AIAgentFrameworkClientType clientType,
+        string deployment,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(deployment))
+        {
+            throw new InvalidOperationException(
+                "A judge panelist deployment must be non-empty. Set it on the panelist spec " +
+                "or leave the panelist's model fields null to fall back to JudgeOptions.");
+        }
+
+        // Explicit panelist model — no PickFirstAvailable fallback; the caller chose it.
+        return ResolveAsync(clientType, deployment, cancellationToken);
+    }
+
+    private async Task<IChatClient> ResolveAsync(
+        AIAgentFrameworkClientType clientType,
+        string deployment,
+        CancellationToken cancellationToken)
+    {
+        var key = (clientType, deployment);
 
         // Single-flight: GetOrAdd returns the same Lazy<Task<IChatClient>> to every
         // concurrent caller for a given key. The factory delegate inside the Lazy runs
         // at most once, so only one IChatClient is ever constructed per key — losers
         // await the winner's task instead of each building (and discarding) their own.
-        // Cancellation cancels the awaiter's wait, not the construction itself.
+        // The default judge and any panelist requesting the same model share one client.
         var lazy = _cache.GetOrAdd(
             key,
             k => new Lazy<Task<IChatClient>>(
