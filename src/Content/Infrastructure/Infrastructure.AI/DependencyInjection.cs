@@ -1,3 +1,4 @@
+using Application.AI.Common.Evaluation.Interfaces;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Compression;
@@ -28,6 +29,7 @@ using Infrastructure.AI.Config;
 using Infrastructure.AI.ContentSafety;
 using Infrastructure.AI.Factories;
 using Infrastructure.AI.Generators;
+using Infrastructure.AI.Routing.Evaluation;
 using Infrastructure.AI.Hooks;
 using Infrastructure.AI.MetaHarness;
 using Infrastructure.AI.Plugins;
@@ -324,6 +326,9 @@ public static partial class DependencyInjection
         services.AddSingleton<IEscalationTracker, EscalationTracker>();
         services.AddSingleton<ITaskComplexityClassifier, TaskComplexityClassifier>();
         services.AddSingleton<IModelRouter, ModelRouter>();
+
+        // Eval probe exposing the task-complexity router to the routing-accuracy scorecard.
+        services.AddSingleton<IRouterEvalProbe, TaskComplexityRouterProbe>();
 
         // --- Tool output compression ---
 

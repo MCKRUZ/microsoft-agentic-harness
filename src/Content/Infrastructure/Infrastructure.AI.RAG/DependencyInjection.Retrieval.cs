@@ -1,3 +1,4 @@
+using Application.AI.Common.Evaluation.Interfaces;
 using Application.AI.Common.Interfaces.RAG;
 using Application.AI.Common.Interfaces.Routing;
 using Application.Common.Interfaces.Data;
@@ -92,6 +93,9 @@ public static partial class DependencyInjection
     {
         // Query classifier
         services.AddSingleton<IQueryClassifier, LlmQueryClassifier>();
+
+        // Eval probe exposing the query-type router to the routing-accuracy scorecard.
+        services.AddSingleton<IRouterEvalProbe, QueryTypeRouterProbe>();
 
         // Query transformers — keyed by strategy name
         services.AddKeyedSingleton<IQueryTransformer>("rag_fusion", (sp, _) =>

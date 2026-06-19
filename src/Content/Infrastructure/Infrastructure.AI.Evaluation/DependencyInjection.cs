@@ -51,6 +51,11 @@ public static class DependencyInjection
         AddMetric<IsValidJsonMetric>(services, "is_valid_json");
         AddMetric<LlmJudgeMetric>(services, "llm_judge");
 
+        // Routing-accuracy: compares a router's predicted label to the case's gold label.
+        // Paired with RouterEvalInvoker (below) and the router probes registered by the RAG
+        // and routing infrastructure projects.
+        AddMetric<RoutingAccuracyMetric>(services, "routing_accuracy");
+
         // RAG metric pack: faithfulness, context precision/recall, answer relevance/correctness.
         // All share ILlmJudge + IPromptRegistry (registry registered separately via
         // AddPromptRegistry — the eval framework consumes it, does not own it).
@@ -65,9 +70,15 @@ public static class DependencyInjection
         services.AddSingleton<IEvalReporter, JUnitXmlEvalReporter>();
         services.AddSingleton<IEvalReporter, ConsoleEvalReporter>();
 
-        // Runner + invoker
+        // Runner + invoker. RouterEvalInvoker decorates the harness invoker: cases that opt in via
+        // a `target: "router:<key>"` override are dispatched to a router probe (resolved from the
+        // probes registered by the RAG / routing infrastructure projects), while every other case
+        // passes through to HarnessAgentInvoker unchanged. When no probes are registered (e.g. an
+        // eval host that composes only this project), router-target cases fail soft and agent cases
+        // are unaffected.
         services.AddSingleton<IEvalRunner, EvalRunner>();
-        services.AddSingleton<IAgentInvoker, HarnessAgentInvoker>();
+        services.AddSingleton<HarnessAgentInvoker>();
+        services.AddSingleton<IAgentInvoker, RouterEvalInvoker>();
 
         // Fixed judge chat client (NOT model-router) — preserves cross-run reproducibility.
         services.AddSingleton<IJudgeChatClientProvider, DefaultJudgeChatClientProvider>();
