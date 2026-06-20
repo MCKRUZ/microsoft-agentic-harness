@@ -88,6 +88,28 @@ public class RunConversationCommandHandlerTests
     }
 
     [Fact]
+    public async Task Handle_TurnCancelled_PropagatesCancellation_NotAFailedResult()
+    {
+        // A turn tagged Cancelled (e.g. caller disconnect) is routine: it must surface as
+        // an OperationCanceledException (session ended "cancelled"), not a failed result.
+        _mediator
+            .Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new AgentTurnResult
+            {
+                Success = false,
+                Response = string.Empty,
+                UpdatedHistory = [],
+                Error = "cancelled",
+                ErrorKind = AgentTurnErrorKind.Cancelled,
+            });
+
+        var command = new RunConversationCommand { AgentName = "TestAgent", UserMessages = ["Hello"] };
+
+        var act = () => _handler.Handle(command, CancellationToken.None);
+        await act.Should().ThrowAsync<OperationCanceledException>();
+    }
+
+    [Fact]
     public async Task Handle_MultipleMessages_ExecutesMultipleTurns()
     {
         // Arrange

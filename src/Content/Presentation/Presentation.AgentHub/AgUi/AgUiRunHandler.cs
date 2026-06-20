@@ -228,6 +228,12 @@ public sealed class AgUiRunHandler
 
         if (!result.Success)
         {
+            // A cancelled turn (e.g. caller disconnect) is routine — abort like the
+            // OperationCanceledException catch above instead of emitting a user-facing
+            // error event, consistent with the SignalR transport.
+            if (result.ErrorKind == AgentTurnErrorKind.Cancelled)
+                throw new OperationCanceledException(ct);
+
             _logger.LogWarning("AG-UI run {RunId}: agent returned failure — {Error}.", input.RunId, result.Error);
 
             // A provider-configuration failure carries an actionable, secret-free message. Surface it

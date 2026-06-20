@@ -296,10 +296,11 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
 
         if (!result.Success)
         {
-            // A disconnect can also surface as a failed result with `ct` already cancelled
-            // (the handler catches the cancellation internally). Treat that as routine
-            // cancellation, not an agent error — same reasoning as the catch above.
-            if (ct.IsCancellationRequested)
+            // A disconnect can also surface as a failed result: the handler catches the
+            // cancellation internally and tags it Cancelled. Treat only that as routine —
+            // keying on the kind (not ct.IsCancellationRequested) avoids reclassifying a
+            // genuine failure that merely coincides with a client drop as a disconnect.
+            if (result.ErrorKind == AgentTurnErrorKind.Cancelled)
             {
                 _logger.LogInformation(
                     "Turn for conversation {ConversationId} aborted by client disconnect; not recorded as an error.",

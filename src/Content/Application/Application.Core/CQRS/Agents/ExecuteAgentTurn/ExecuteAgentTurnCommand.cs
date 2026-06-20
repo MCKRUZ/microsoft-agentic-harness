@@ -118,5 +118,14 @@ public enum AgentTurnErrorKind
 	Configuration,
 
 	/// <summary>An unexpected internal error occurred during the turn.</summary>
-	Internal
+	Internal,
+
+	/// <summary>
+	/// The turn was cancelled via the caller's token (e.g. the client disconnected).
+	/// Routine control flow, not an agent failure — transports should abort quietly
+	/// rather than recording a health error or surfacing a failure to the user. A
+	/// per-request timeout is distinct: it cancels a linked token, surfaces as a
+	/// <see cref="System.TimeoutException"/>, and remains an <see cref="Internal"/> error.
+	/// </summary>
+	Cancelled
 }

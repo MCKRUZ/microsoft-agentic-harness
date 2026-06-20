@@ -257,6 +257,26 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 				Model = usage.Model
 			};
 		}
+		catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+		{
+			// The caller's token cancelled mid-turn (e.g. client disconnect). Routine
+			// control flow, not an agent failure: tag it Cancelled so the transport can
+			// abort quietly instead of recording a health error. Deliberately not counted
+			// via RecordTurnError. A per-request timeout cancels a linked token (this
+			// handler's token stays uncancelled), so it never lands here — it surfaces as a
+			// TimeoutException and is classified Internal upstream.
+			_logger.LogInformation("Agent {AgentName} turn {TurnNumber} cancelled by caller",
+				request.AgentName, request.TurnNumber);
+
+			return new AgentTurnResult
+			{
+				Success = false,
+				Response = string.Empty,
+				UpdatedHistory = [.. request.ConversationHistory, new ChatMessage(ChatRole.User, request.UserMessage)],
+				Error = "The agent turn was cancelled.",
+				ErrorKind = AgentTurnErrorKind.Cancelled
+			};
+		}
 		catch (Exception ex) when (FindConfigurationError(ex) is { } configError)
 		{
 			_logger.LogError(ex,

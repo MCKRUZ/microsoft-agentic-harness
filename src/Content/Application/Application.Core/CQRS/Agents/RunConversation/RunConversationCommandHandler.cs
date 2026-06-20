@@ -94,6 +94,12 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 
 				if (!lastResult.Success)
 				{
+					// A cancelled turn (e.g. caller disconnect) is routine, not a failure:
+					// route it into the OperationCanceledException handler below so the session
+					// ends "cancelled" rather than "error", consistent with the other transports.
+					if (lastResult.ErrorKind == AgentTurnErrorKind.Cancelled)
+						throw new OperationCanceledException(cancellationToken);
+
 					_logger.LogError("Conversation turn {Turn} failed for {AgentName}: {Error}",
 						index + 1, request.AgentName, lastResult.Error);
 

@@ -118,6 +118,30 @@ public class ExecuteAgentTurnCommandHandlerTests
     }
 
     [Fact]
+    public async Task Handle_CallerCancelled_ReturnsCancelledErrorKind()
+    {
+        // A cancellation via the caller's token (e.g. client disconnect) is routine — it must
+        // be classified Cancelled, not Internal, so the transport can abort without recording
+        // an agent error.
+        var agent = TestableAIAgent.Throwing(new OperationCanceledException());
+        _agentCache
+            .Setup(c => c.GetOrCreateAsync(
+                It.IsAny<string>(),
+                It.IsAny<IReadOnlyList<string>>(),
+                It.IsAny<SkillAgentOptions>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(agent);
+
+        using var cts = new CancellationTokenSource();
+        await cts.CancelAsync();
+
+        var result = await _handler.Handle(CreateCommand(), cts.Token);
+
+        result.Success.Should().BeFalse();
+        result.ErrorKind.Should().Be(AgentTurnErrorKind.Cancelled);
+    }
+
+    [Fact]
     public async Task Handle_NoStreamSink_DoesNotStream_AndStillReturnsResponse()
     {
         // Arrange — sink is null (default), so the handler uses the blocking path.

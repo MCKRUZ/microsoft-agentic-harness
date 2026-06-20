@@ -254,6 +254,35 @@ public sealed class AgUiRunHandlerTests
     }
 
     [Fact]
+    public async Task HandleRunAsync_CancelledTurn_PropagatesCancellation_NoRunError()
+    {
+        // A cancelled turn (e.g. caller disconnect) is routine — it funnels into the
+        // handler's central cancellation sink (no event emitted) rather than surfacing a
+        // user-facing RunError. The run aborts gracefully without a RunError or RunFinished.
+        const string threadId = "conv-cancel";
+        const string userId = "user-cancel";
+        var cancelled = new AgentTurnResult
+        {
+            Success = false,
+            Response = string.Empty,
+            UpdatedHistory = [],
+            Error = "cancelled",
+            ErrorKind = AgentTurnErrorKind.Cancelled,
+        };
+
+        var (mediator, store) = SetupFailingTurn(threadId, userId, cancelled);
+        var handler = BuildHandler(mediator, store);
+
+        using var ms = new MemoryStream();
+        var act = () => handler.HandleRunAsync(MakeInput(threadId, "Hi"), new AgUiEventWriter(ms), MakeUser(userId));
+
+        await act.Should().NotThrowAsync();
+        var frames = ParseSseFrames(ms);
+        frames.Should().NotContain(f => EventType(f) == AgUiEventType.RunError);
+        frames.Should().NotContain(f => EventType(f) == AgUiEventType.RunFinished);
+    }
+
+    [Fact]
     public async Task HandleRunAsync_HappyPath_EmitsFullEventSequence()
     {
         const string threadId = "conv-happy";
