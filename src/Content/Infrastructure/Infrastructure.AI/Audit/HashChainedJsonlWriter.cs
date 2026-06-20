@@ -25,6 +25,15 @@ namespace Infrastructure.AI.Audit;
 /// altered, removed, or moved without invalidating every record that follows it.
 /// </para>
 /// <para>
+/// <b>Single-file and segmented modes.</b> A chain can back onto one file or span an ordered
+/// set of <i>segments</i> (e.g. date-partitioned files). In segmented mode the sequence is
+/// global across all segments and a record in a later segment chains onto the last record of
+/// the previous one, so deleting an entire middle segment file breaks the chain exactly as
+/// deleting a single record would. Segments must be appended in non-decreasing order (the
+/// caller's segment selector should pick by append time, not by back-dated record time) so
+/// sequence numbers stay monotonic across files.
+/// </para>
+/// <para>
 /// <b>Framing safety.</b> The framing is line- and tab-delimited. <c>System.Text.Json</c>
 /// escapes control characters inside string values (tab/newline become <c>\t</c>/<c>\n</c>),
 /// so a serialized JSON payload never contains a raw framing byte. The writer rejects any
@@ -33,14 +42,14 @@ namespace Infrastructure.AI.Audit;
 /// </para>
 /// <para>
 /// <b>Trusted head recovery.</b> On first append after a restart the writer rebuilds its
-/// in-memory head by scanning the file and validating the chain — the head is set to the last
-/// <i>cryptographically valid</i> record, never to an unverified tail. A forged or torn line
-/// appended out of band therefore cannot seed the live head; legitimate records continue to
-/// chain onto verified state, and the forged/torn line is still surfaced by
+/// in-memory head by scanning the segments and validating the chain — the head is set to the
+/// last <i>cryptographically valid</i> record, never to an unverified tail. A forged or torn
+/// line appended out of band therefore cannot seed the live head; legitimate records continue
+/// to chain onto verified state, and the forged/torn line is still surfaced by
 /// <see cref="VerifyChainAsync"/>.
 /// </para>
 /// <para>
-/// <b>Brownfield rollout.</b> When pointed at a file that already contains un-chained lines
+/// <b>Brownfield rollout.</b> When pointed at files that already contain un-chained lines
 /// written before this primitive was introduced, those legacy lines are treated as predating
 /// the chain: the scan skips them, the chain genesis is the first chained record written after
 /// rollout, and verification ignores the leading legacy lines. No silent rewrite of existing
@@ -48,12 +57,13 @@ namespace Infrastructure.AI.Audit;
 /// </para>
 /// <para>
 /// <b>Out of scope (handled by the verification layer).</b> A torn trailing line from a crash
-/// mid-write, or wholesale deletion of the file, are not concealable by this primitive but are
-/// not <i>repaired</i> by it either — those are the province of WORM storage and the scheduled
-/// chain-verification job. This primitive guarantees detection, not crash-safe truncation.
+/// mid-write, or wholesale deletion of the file/last segment, are not concealable by this
+/// primitive but are not <i>repaired</i> by it either — those are the province of WORM storage
+/// and the scheduled chain-verification job. This primitive guarantees detection, not crash-safe
+/// truncation.
 /// </para>
 /// <para>
-/// <b>Cost note.</b> Head recovery scans the file once per process lifetime (on first append);
+/// <b>Cost note.</b> Head recovery scans the chain once per process lifetime (on first append);
 /// verification scans it in full. Both are O(records). For the append-only audit volumes this
 /// primitive targets, that cost is paid rarely and is acceptable.
 /// </para>
@@ -69,7 +79,9 @@ public sealed class HashChainedJsonlWriter : IDisposable
     /// <summary>Characters that would break the line/tab framing if present in a payload.</summary>
     private static readonly SearchValues<char> FramingChars = SearchValues.Create("\t\n\r");
 
-    private readonly string _filePath;
+    private readonly Func<string> _currentSegment;
+    private readonly Func<IReadOnlyList<string>> _orderedSegments;
+    private readonly string _displayLocation;
     private readonly ILogger _logger;
     private readonly SemaphoreSlim _semaphore = new(1, 1);
 
@@ -77,16 +89,51 @@ public sealed class HashChainedJsonlWriter : IDisposable
     private long _headSequence = -1;
     private string _headHash = GenesisHash;
 
-    /// <summary>Initializes a new <see cref="HashChainedJsonlWriter"/>.</summary>
+    /// <summary>Initializes a single-file chain backed by one JSONL file.</summary>
     /// <param name="filePath">Absolute path to the JSONL file backing this chain.</param>
     /// <param name="logger">Logger for operational diagnostics.</param>
     public HashChainedJsonlWriter(string filePath, ILogger logger)
+        : this(
+            filePath,
+            () => filePath,
+            () => File.Exists(filePath) ? [filePath] : [],
+            logger)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
+    }
+
+    /// <summary>Initializes a segmented chain spanning an ordered set of JSONL files.</summary>
+    /// <param name="displayLocation">A directory or label used in diagnostic log messages.</param>
+    /// <param name="currentSegment">Selects the segment file the next record is appended to (by append time).</param>
+    /// <param name="orderedSegments">Returns all existing segment files in chain (append) order.</param>
+    /// <param name="logger">Logger for operational diagnostics.</param>
+    public HashChainedJsonlWriter(
+        string displayLocation,
+        Func<string> currentSegment,
+        Func<IReadOnlyList<string>> orderedSegments,
+        ILogger logger)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(displayLocation);
+        ArgumentNullException.ThrowIfNull(currentSegment);
+        ArgumentNullException.ThrowIfNull(orderedSegments);
         ArgumentNullException.ThrowIfNull(logger);
 
-        _filePath = filePath;
+        _displayLocation = displayLocation;
+        _currentSegment = currentSegment;
+        _orderedSegments = orderedSegments;
         _logger = logger;
+    }
+
+    /// <summary>
+    /// Extracts the original payload JSON from a persisted chain line (the text before the first
+    /// framing tab). Tolerates legacy un-chained lines, which are returned unchanged.
+    /// </summary>
+    /// <param name="line">A persisted line.</param>
+    /// <returns>The payload JSON portion of the line.</returns>
+    public static string ExtractPayload(string line)
+    {
+        ArgumentNullException.ThrowIfNull(line);
+        var tabIndex = line.IndexOf(FieldSeparator);
+        return tabIndex < 0 ? line : line[..tabIndex];
     }
 
     /// <summary>
@@ -120,10 +167,11 @@ public sealed class HashChainedJsonlWriter : IDisposable
                 previousHash, FieldSeparator,
                 sequence.ToString(CultureInfo.InvariantCulture), "\n");
 
-            Directory.CreateDirectory(Path.GetDirectoryName(_filePath)!);
+            var segmentPath = _currentSegment();
+            Directory.CreateDirectory(Path.GetDirectoryName(segmentPath)!);
 
             await using (var stream = new FileStream(
-                _filePath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite))
+                segmentPath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite))
             await using (var writer = new StreamWriter(stream))
             {
                 await writer.WriteAsync(line.AsMemory(), cancellationToken).ConfigureAwait(false);
@@ -135,7 +183,7 @@ public sealed class HashChainedJsonlWriter : IDisposable
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            _logger.LogError(ex, "Failed to append audit record to {FilePath}", _filePath);
+            _logger.LogError(ex, "Failed to append audit record to {AuditLocation}", _displayLocation);
             return Result.Fail($"Failed to persist audit record: {ex.Message}");
         }
         finally
@@ -145,8 +193,8 @@ public sealed class HashChainedJsonlWriter : IDisposable
     }
 
     /// <summary>
-    /// Walks the chain from genesis and recomputes every link, reporting whether the log is
-    /// intact and, if not, the first record where it broke.
+    /// Walks the chain from genesis across all segments and recomputes every link, reporting
+    /// whether the log is intact and, if not, the first record where it broke.
     /// </summary>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>A verification result describing the chain's integrity.</returns>
@@ -162,7 +210,7 @@ public sealed class HashChainedJsonlWriter : IDisposable
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            _logger.LogError(ex, "Failed to read audit chain at {FilePath}", _filePath);
+            _logger.LogError(ex, "Failed to read audit chain at {AuditLocation}", _displayLocation);
             return AuditChainVerificationResult.Broken(0, 0, $"Failed to read audit chain: {ex.Message}");
         }
         finally
@@ -176,8 +224,9 @@ public sealed class HashChainedJsonlWriter : IDisposable
 
     /// <summary>
     /// Recovers the chain head (last valid sequence and hash) by scanning and validating the
-    /// file once. The head is the tail of the longest valid prefix, so appends always continue
-    /// from cryptographically verified state. Runs once per process under the append semaphore.
+    /// segments once. The head is the tail of the longest valid prefix, so appends always
+    /// continue from cryptographically verified state. Runs once per process under the append
+    /// semaphore.
     /// </summary>
     private async Task EnsureHeadInitializedAsync(CancellationToken cancellationToken)
     {
@@ -191,65 +240,80 @@ public sealed class HashChainedJsonlWriter : IDisposable
     }
 
     /// <summary>
-    /// Single forward pass over the file shared by verification and head recovery. Validates
-    /// sequence continuity, previous-hash links, and record hashes from genesis, tolerating
-    /// only the leading legacy (pre-chain) lines.
+    /// Single forward pass over all segments shared by verification and head recovery. Validates
+    /// sequence continuity, previous-hash links, and record hashes from genesis, tolerating only
+    /// the leading legacy (pre-chain) lines.
     /// </summary>
     private async Task<ChainScan> ScanChainAsync(CancellationToken cancellationToken)
     {
-        if (!File.Exists(_filePath))
-            return ChainScan.Empty;
+        var state = ScanState.Genesis;
 
-        long expectedSequence = 0;
-        var expectedPreviousHash = GenesisHash;
-        long verifiedCount = 0;
-        long lastValidSequence = -1;
-        var lastValidHash = GenesisHash;
-        var chainStarted = false;
-        var lineNumber = 0;
-
-        await using var stream = new FileStream(
-            _filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-        using var reader = new StreamReader(stream);
-
-        while (await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false) is { } line)
+        foreach (var segmentPath in _orderedSegments())
         {
-            lineNumber++;
-            if (string.IsNullOrWhiteSpace(line))
+            if (!File.Exists(segmentPath))
                 continue;
 
-            if (!TryParseLine(line, out var sequence, out var recordHash, out var previousHash, out var payloadJson))
+            await using var stream = new FileStream(
+                segmentPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            using var reader = new StreamReader(stream);
+
+            while (await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false) is { } line)
             {
-                // Legacy lines that predate the chain are tolerated only before it starts.
-                if (chainStarted)
-                    return ChainScan.Break(verifiedCount, expectedSequence, lastValidSequence, lastValidHash,
-                        $"Malformed chain line at line {lineNumber}.");
-                continue;
+                state.LineNumber++;
+                if (string.IsNullOrWhiteSpace(line))
+                    continue;
+
+                if (!ApplyLine(line, ref state, out var breakScan))
+                    return breakScan;
             }
-
-            chainStarted = true;
-
-            if (sequence != expectedSequence)
-                return ChainScan.Break(verifiedCount, expectedSequence, lastValidSequence, lastValidHash,
-                    $"Sequence gap: expected {expectedSequence} but found {sequence} at line {lineNumber} (record deleted or reordered).");
-
-            if (!string.Equals(previousHash, expectedPreviousHash, StringComparison.Ordinal))
-                return ChainScan.Break(verifiedCount, sequence, lastValidSequence, lastValidHash,
-                    $"Previous-hash mismatch at sequence {sequence} (chain link altered).");
-
-            var computedHash = ComputeRecordHash(sequence, previousHash, payloadJson);
-            if (!string.Equals(computedHash, recordHash, StringComparison.Ordinal))
-                return ChainScan.Break(verifiedCount, sequence, lastValidSequence, lastValidHash,
-                    $"Record-hash mismatch at sequence {sequence} (record content altered).");
-
-            verifiedCount++;
-            lastValidSequence = sequence;
-            lastValidHash = recordHash;
-            expectedSequence = sequence + 1;
-            expectedPreviousHash = recordHash;
         }
 
-        return ChainScan.Valid(verifiedCount, lastValidSequence, lastValidHash);
+        return ChainScan.Valid(state.VerifiedCount, state.LastValidSequence, state.LastValidHash);
+    }
+
+    /// <summary>
+    /// Validates one line against the running chain state. Returns false and yields a break
+    /// result when the line is tampered/out-of-place; otherwise advances the state and returns true.
+    /// </summary>
+    private static bool ApplyLine(string line, ref ScanState state, out ChainScan breakScan)
+    {
+        breakScan = default;
+
+        if (!TryParseLine(line, out var sequence, out var recordHash, out var previousHash, out var payloadJson))
+        {
+            // Legacy lines that predate the chain are tolerated only before it starts.
+            if (state.ChainStarted)
+            {
+                breakScan = state.Break(state.ExpectedSequence, $"Malformed chain line at line {state.LineNumber}.");
+                return false;
+            }
+            return true;
+        }
+
+        state.ChainStarted = true;
+
+        if (sequence != state.ExpectedSequence)
+        {
+            breakScan = state.Break(state.ExpectedSequence,
+                $"Sequence gap: expected {state.ExpectedSequence} but found {sequence} at line {state.LineNumber} (record deleted or reordered).");
+            return false;
+        }
+
+        if (!string.Equals(previousHash, state.ExpectedPreviousHash, StringComparison.Ordinal))
+        {
+            breakScan = state.Break(sequence, $"Previous-hash mismatch at sequence {sequence} (chain link altered).");
+            return false;
+        }
+
+        var computedHash = ComputeRecordHash(sequence, previousHash, payloadJson);
+        if (!string.Equals(computedHash, recordHash, StringComparison.Ordinal))
+        {
+            breakScan = state.Break(sequence, $"Record-hash mismatch at sequence {sequence} (record content altered).");
+            return false;
+        }
+
+        state.Advance(sequence, recordHash);
+        return true;
     }
 
     private static string ComputeRecordHash(long sequence, string previousHash, string payloadJson)
@@ -282,7 +346,42 @@ public sealed class HashChainedJsonlWriter : IDisposable
         return true;
     }
 
-    /// <summary>Outcome of a single forward pass over the chain file.</summary>
+    /// <summary>Mutable running state for a single forward pass over the chain.</summary>
+    private struct ScanState
+    {
+        public long ExpectedSequence;
+        public string ExpectedPreviousHash;
+        public long VerifiedCount;
+        public long LastValidSequence;
+        public string LastValidHash;
+        public bool ChainStarted;
+        public int LineNumber;
+
+        public static ScanState Genesis => new()
+        {
+            ExpectedSequence = 0,
+            ExpectedPreviousHash = GenesisHash,
+            VerifiedCount = 0,
+            LastValidSequence = -1,
+            LastValidHash = GenesisHash,
+            ChainStarted = false,
+            LineNumber = 0
+        };
+
+        public void Advance(long sequence, string recordHash)
+        {
+            VerifiedCount++;
+            LastValidSequence = sequence;
+            LastValidHash = recordHash;
+            ExpectedSequence = sequence + 1;
+            ExpectedPreviousHash = recordHash;
+        }
+
+        public readonly ChainScan Break(long breakSequence, string reason) =>
+            ChainScan.Break(VerifiedCount, breakSequence, LastValidSequence, LastValidHash, reason);
+    }
+
+    /// <summary>Outcome of a single forward pass over the chain.</summary>
     /// <param name="VerifiedCount">Records that verified cleanly from genesis before any break.</param>
     /// <param name="LastValidSequence">Sequence of the last valid record, or -1 if none.</param>
     /// <param name="LastValidHash">Record hash of the last valid record, or the genesis hash if none.</param>
@@ -295,8 +394,6 @@ public sealed class HashChainedJsonlWriter : IDisposable
         long? BreakSequence,
         string? BreakReason)
     {
-        public static ChainScan Empty { get; } = Valid(0, -1, GenesisHash);
-
         public static ChainScan Valid(long verifiedCount, long lastValidSequence, string lastValidHash) =>
             new(verifiedCount, lastValidSequence, lastValidHash, null, null);
 

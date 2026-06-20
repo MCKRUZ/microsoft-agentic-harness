@@ -1,6 +1,8 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Application.AI.Common.Interfaces.Audit;
 using Application.AI.Common.Interfaces.Egress;
+using Domain.AI.Audit;
 using Domain.AI.Egress;
 using Domain.AI.Identity;
 using Domain.Common.Config;
@@ -25,8 +27,11 @@ namespace Infrastructure.AI.Egress;
 /// surface area over time.
 /// </para>
 /// </remarks>
-public sealed class JsonlEgressAuditWriter : IEgressAuditWriter, IDisposable
+public sealed class JsonlEgressAuditWriter : IEgressAuditWriter, IVerifiableAuditChain, IDisposable
 {
+    /// <inheritdoc />
+    public string AuditName => "egress";
+
     private static readonly JsonSerializerOptions SerializeOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
@@ -92,6 +97,10 @@ public sealed class JsonlEgressAuditWriter : IEgressAuditWriter, IDisposable
                 $"Failed to append egress audit record for target {decision.Target.Host}: {reason}");
         }
     }
+
+    /// <inheritdoc />
+    public Task<AuditChainVerificationResult> VerifyChainAsync(CancellationToken cancellationToken) =>
+        _chain.VerifyChainAsync(cancellationToken);
 
     /// <inheritdoc />
     public void Dispose() => _chain.Dispose();

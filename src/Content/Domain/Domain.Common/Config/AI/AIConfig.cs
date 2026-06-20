@@ -1,5 +1,6 @@
 using Domain.Common.Config.AI.A2A;
 using Domain.Common.Config.AI.AIFoundry;
+using Domain.Common.Config.AI.Audit;
 using Domain.Common.Config.AI.ContextManagement;
 using Domain.Common.Config.AI.DriftDetection;
 using Domain.Common.Config.AI.GitOps;
@@ -164,6 +165,13 @@ public class AIConfig
 
     /// <summary>Agent Governance Toolkit configuration.</summary>
     public GovernanceConfig Governance { get; init; } = new();
+
+    /// <summary>
+    /// Scheduled audit-chain verification configuration. On by default — a background service
+    /// periodically walks every hash-chained audit log and raises an alert (log + metric) when
+    /// a chain has been tampered with.
+    /// </summary>
+    public AuditConfig Audit { get; init; } = new();
 
     /// <summary>
     /// Planner subsystem configuration: concurrency limits, timeouts,

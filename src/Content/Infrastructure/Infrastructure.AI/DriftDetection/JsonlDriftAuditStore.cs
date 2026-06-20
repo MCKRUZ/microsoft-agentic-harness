@@ -1,28 +1,30 @@
 using System.Globalization;
-using System.Security.Cryptography;
-using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Application.AI.Common.Interfaces.Audit;
 using Application.AI.Common.Interfaces.DriftDetection;
+using Domain.AI.Audit;
 using Domain.AI.DriftDetection;
 using Domain.Common;
 using Domain.Common.Config;
+using Infrastructure.AI.Audit;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace Infrastructure.AI.DriftDetection;
 
 /// <summary>
-/// Append-only JSONL file store for drift detection audit records.
-/// Writes date-partitioned files at <c>{AuditPath}/drift-audit/{yyyy-MM-dd}.jsonl</c>.
-/// Thread-safe via <see cref="SemaphoreSlim"/> for file access.
+/// Append-only JSONL store for drift detection audit records, date-partitioned at
+/// <c>{AuditPath}/drift-audit/{yyyy-MM-dd}.jsonl</c> and linked into a tamper-evident
+/// hash-chain that spans the date files via <see cref="HashChainedJsonlWriter"/>.
 /// </summary>
 /// <remarks>
-/// Follows the pattern of <see cref="Escalation.JsonlEscalationAuditStore"/> with
-/// date partitioning for efficient range queries. Uses <see cref="TimeProvider"/>
-/// for deterministic timestamps in tests via <c>FakeTimeProvider</c>.
+/// Records are written to the segment for the current append time (from <see cref="TimeProvider"/>),
+/// which keeps the global chain sequence monotonic across days so deleting an entire date file
+/// breaks the chain exactly as deleting a single record would. Date partitioning is preserved for
+/// efficient range queries; <see cref="GetRecordsAsync"/> resolves only the files in range.
 /// </remarks>
-public sealed class JsonlDriftAuditStore : IDriftAuditStore, IDisposable
+public sealed class JsonlDriftAuditStore : IDriftAuditStore, IVerifiableAuditChain, IDisposable
 {
     private static readonly JsonSerializerOptions SerializeOptions = new()
     {
@@ -40,8 +42,8 @@ public sealed class JsonlDriftAuditStore : IDriftAuditStore, IDisposable
 
     private readonly string _auditDirectory;
     private readonly TimeProvider _timeProvider;
+    private readonly HashChainedJsonlWriter _chain;
     private readonly ILogger<JsonlDriftAuditStore> _logger;
-    private readonly SemaphoreSlim _semaphore = new(1, 1);
 
     /// <summary>
     /// Initializes a new instance of <see cref="JsonlDriftAuditStore"/>.
@@ -60,37 +62,31 @@ public sealed class JsonlDriftAuditStore : IDriftAuditStore, IDisposable
         _auditDirectory = Path.Combine(auditPath, "drift-audit");
         _timeProvider = timeProvider;
         _logger = logger;
+        _chain = new HashChainedJsonlWriter(
+            _auditDirectory,
+            () => GetFilePath(_timeProvider.GetUtcNow()),
+            () => Directory.Exists(_auditDirectory)
+                ? Directory.GetFiles(_auditDirectory, "*.jsonl").OrderBy(f => f, StringComparer.Ordinal).ToArray()
+                : [],
+            logger);
     }
+
+    /// <inheritdoc />
+    public string AuditName => "drift";
 
     /// <inheritdoc />
     public async Task<Result> RecordAsync(DriftAuditRecord record, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(record);
 
-        var filePath = GetFilePath(record.RecordedAt);
         var json = JsonSerializer.Serialize(record, SerializeOptions);
-        var hash = ComputeIntegrityHash(json);
-        var line = $"{json}\t{hash}\n";
-
-        await _semaphore.WaitAsync(ct);
-        try
-        {
-            Directory.CreateDirectory(_auditDirectory);
-            await File.AppendAllTextAsync(filePath, line, ct);
-        }
-        catch (IOException ex)
-        {
-            _logger.LogError(ex, "Failed to append drift audit record to {FilePath}", filePath);
-            return Result.Fail($"Failed to persist audit record: {ex.Message}");
-        }
-        finally
-        {
-            _semaphore.Release();
-        }
+        var result = await _chain.AppendAsync(json, ct);
+        if (!result.IsSuccess)
+            return result;
 
         _logger.LogDebug(
-            "Appended drift audit {RecordType} for event {EventId} to {FilePath}",
-            record.RecordType, record.EventId, filePath);
+            "Appended drift audit {RecordType} for event {EventId}",
+            record.RecordType, record.EventId);
 
         return Result.Success();
     }
@@ -105,7 +101,6 @@ public sealed class JsonlDriftAuditStore : IDriftAuditStore, IDisposable
         var filePaths = ResolveFilePaths(query);
         var records = new List<DriftAuditRecord>();
 
-        await _semaphore.WaitAsync(ct);
         try
         {
             foreach (var filePath in filePaths)
@@ -126,15 +121,7 @@ public sealed class JsonlDriftAuditStore : IDriftAuditStore, IDisposable
 
                     try
                     {
-                        var (json, valid) = VerifyIntegrity(line);
-                        if (!valid)
-                        {
-                            _logger.LogWarning(
-                                "Integrity check failed for drift audit record at {FilePath}:{LineNumber}",
-                                filePath, lineNumber);
-                            continue;
-                        }
-
+                        var json = HashChainedJsonlWriter.ExtractPayload(line);
                         var record = JsonSerializer.Deserialize<DriftAuditRecord>(json, DeserializeOptions);
                         if (record is not null)
                             records.Add(record);
@@ -153,12 +140,18 @@ public sealed class JsonlDriftAuditStore : IDriftAuditStore, IDisposable
             _logger.LogError(ex, "Failed to read drift audit records");
             return Result<IReadOnlyList<DriftAuditRecord>>.Fail($"Failed to read audit records: {ex.Message}");
         }
-        finally
-        {
-            _semaphore.Release();
-        }
 
         var filtered = records.AsEnumerable();
+
+        // Files are partitioned by append time, which is ~equal to RecordedAt in practice but can
+        // differ (a back-dated record, or an append that crosses midnight). Filter precisely on
+        // RecordedAt so the date-range query means "records recorded in range" regardless of which
+        // file they physically landed in (ResolveFilePaths widens the file set by a day to match).
+        if (query.Start.HasValue)
+            filtered = filtered.Where(r => r.RecordedAt >= query.Start.Value);
+
+        if (query.End.HasValue)
+            filtered = filtered.Where(r => r.RecordedAt <= query.End.Value);
 
         if (query.RecordType.HasValue)
             filtered = filtered.Where(r => r.RecordType == query.RecordType.Value);
@@ -170,29 +163,33 @@ public sealed class JsonlDriftAuditStore : IDriftAuditStore, IDisposable
         return Result<IReadOnlyList<DriftAuditRecord>>.Success(result.AsReadOnly());
     }
 
+    /// <inheritdoc />
+    public Task<AuditChainVerificationResult> VerifyChainAsync(CancellationToken cancellationToken) =>
+        _chain.VerifyChainAsync(cancellationToken);
+
     /// <inheritdoc cref="IDisposable.Dispose" />
-    public void Dispose()
-    {
-        _semaphore.Dispose();
-    }
+    public void Dispose() => _chain.Dispose();
 
     private string GetFilePath(DateTimeOffset recordedAt) =>
         Path.Combine(_auditDirectory, $"{recordedAt:yyyy-MM-dd}.jsonl");
 
     private IReadOnlyList<string> ResolveFilePaths(DriftAuditQuery query)
     {
+        // Widen the file window by a day on each side: a record can land in the segment for its
+        // append time, which may differ from RecordedAt by a clock skew / midnight crossing. The
+        // precise RecordedAt filter in GetRecordsAsync trims the extra records back out.
         if (query.Start.HasValue && query.End.HasValue)
-            return EnumerateDatePaths(query.Start.Value.Date, query.End.Value.Date);
+            return EnumerateDatePaths(query.Start.Value.Date.AddDays(-1), query.End.Value.Date.AddDays(1));
 
         if (query.Start.HasValue)
-            return EnumerateDatePaths(query.Start.Value.Date, _timeProvider.GetUtcNow().Date);
+            return EnumerateDatePaths(query.Start.Value.Date.AddDays(-1), _timeProvider.GetUtcNow().Date);
 
         if (query.End.HasValue)
         {
             // End-only: scan existing files, filter by parsed date to avoid unbounded enumeration
             return Directory.Exists(_auditDirectory)
                 ? Directory.GetFiles(_auditDirectory, "*.jsonl")
-                    .Where(f => ParseDateFromFileName(f) <= query.End.Value.Date)
+                    .Where(f => ParseDateFromFileName(f) <= query.End.Value.Date.AddDays(1))
                     .ToList()
                 : [];
         }
@@ -215,20 +212,5 @@ public sealed class JsonlDriftAuditStore : IDriftAuditStore, IDisposable
         var fileName = Path.GetFileNameWithoutExtension(filePath);
         return DateTime.TryParseExact(fileName, "yyyy-MM-dd", CultureInfo.InvariantCulture,
             DateTimeStyles.None, out var date) ? date : DateTime.MaxValue;
-    }
-
-    private static string ComputeIntegrityHash(string json) =>
-        Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(json)));
-
-    private static (string Json, bool Valid) VerifyIntegrity(string line)
-    {
-        var tabIndex = line.LastIndexOf('\t');
-        if (tabIndex < 0)
-            return (line, false);
-
-        var json = line[..tabIndex];
-        var storedHash = line[(tabIndex + 1)..];
-        var computedHash = ComputeIntegrityHash(json);
-        return (json, string.Equals(storedHash, computedHash, StringComparison.OrdinalIgnoreCase));
     }
 }

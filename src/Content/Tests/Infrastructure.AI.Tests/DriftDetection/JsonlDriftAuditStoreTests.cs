@@ -115,6 +115,29 @@ public sealed class JsonlDriftAuditStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task GetRecords_FindsRecordByRecordedAt_EvenWhenAppendedOnADifferentDay()
+    {
+        // Append on 2025-06-15 (the fake clock), but the record is back-dated to 2025-06-14.
+        // The segment file is named by append day, yet a query on the record day must still find it.
+        var backDated = new DateTimeOffset(2025, 6, 14, 12, 0, 0, TimeSpan.Zero);
+        await _store.RecordAsync(BuildRecord(recordedAt: backDated), CancellationToken.None);
+
+        File.Exists(Path.Combine(_tempDir, "drift-audit", "2025-06-15.jsonl")).Should().BeTrue();
+
+        var query = new DriftAuditQuery
+        {
+            Start = new DateTimeOffset(2025, 6, 14, 0, 0, 0, TimeSpan.Zero),
+            End = new DateTimeOffset(2025, 6, 14, 23, 59, 59, TimeSpan.Zero)
+        };
+
+        var result = await _store.GetRecordsAsync(query, CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value!.Should().HaveCount(1);
+        result.Value[0].RecordedAt.Should().Be(backDated);
+    }
+
+    [Fact]
     public async Task GetRecords_FiltersByRecordType()
     {
         await _store.RecordAsync(BuildRecord(recordType: DriftAuditRecordType.Detected), CancellationToken.None);

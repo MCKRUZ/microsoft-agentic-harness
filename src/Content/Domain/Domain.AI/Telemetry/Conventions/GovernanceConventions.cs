@@ -23,6 +23,10 @@ public static class GovernanceConventions
     public const string SanitizationDuration = "agent.governance.response.sanitization_duration";
     public const string SanitizationCategoryTag = "agent.governance.sanitization.category";
 
+    public const string AuditChainVerifications = "agent.governance.audit_chain.verifications";
+    public const string AuditChainBreaks = "agent.governance.audit_chain.breaks";
+    public const string AuditChainNameTag = "agent.governance.audit_chain.name";
+
     public static class ActionValues
     {
         public const string Allow = "allow";
