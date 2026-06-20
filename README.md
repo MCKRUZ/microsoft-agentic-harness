@@ -23,7 +23,7 @@ This harness solves those problems with real engineering, not abstractions on to
 
 ## Learn How It Works
 
-Five learning resources, depending on what you need:
+Six learning resources, depending on what you need:
 
 - **[Developer Onboarding Guide](https://mckruz.github.io/microsoft-agentic-harness/)** — Step-by-step walkthrough of the codebase aimed at engineers who are forking this template to build something. 14 pages covering getting running, every config knob, the Clean Architecture layout, a full message-journey trace, the skills/tools/RAG/MCP systems, observability, the evaluation framework, and the SkillOpt-port skill-training loop. Read this if you're going to write code.
 
@@ -34,6 +34,8 @@ Five learning resources, depending on what you need:
 - **[Patterns & Technologies Reference](https://mckruz.github.io/microsoft-agentic-harness/reference/patterns-and-technologies.html)** — Exhaustive catalogue of every architectural pattern, AI/RAG subsystem, governance behaviour, framework, and dependency the harness ships with — cross-linked to source paths. 11 sections covering the CQRS pipeline (all 14 MediatR behaviours in order), Result&lt;T&gt;, factories, keyed-DI strategies, the skills/plugin system, the full RAG pipeline (3 chunkers, RAPTOR, hybrid + RRF, CRAG, multi-source orchestration), four knowledge-graph backends, drift/learnings/escalation governance, the DAG plan executor, sandbox + HMAC attestation, the frontend stack, and the full NuGet/npm inventory. Read this when you know what you're looking for and just need the index.
 
 - **[Inside the Agentic Harness — Interactive Course](https://mckruz.github.io/microsoft-agentic-harness/agentic-harness-course/)** — A visual, scroll-based course that teaches how the harness works through animated diagrams, plain-English code translations, and interactive quizzes. No coding background required. Read this if you're trying to understand what the system *does* conceptually. (Local copy: `documentation/agentic-harness-course/index.html`.)
+
+- **[Understand Anything — visual codebase map](https://github.com/Egonex-AI/Understand-Anything)** *(optional third-party tool)* — A Claude Code plugin that turns the codebase into an interactive knowledge-graph dashboard: files, classes, and functions become clickable nodes, automatically grouped into architectural layers, with an auto-generated guided tour that walks a newcomer through the system in dependency order. Install with `/plugin marketplace add Egonex-AI/Understand-Anything` then `/plugin install understand-anything`; run `/understand` to build the graph and `/understand-dashboard` to explore it (requires Node&nbsp;&ge;&nbsp;22 and pnpm). Two honest caveats for *this* codebase: **(1)** a full-repo `/understand` is a heavy multi-agent run — on the order of tens of millions of tokens on a tree this size — so scope it to a subdirectory (e.g. `/understand src/Content/Infrastructure/Infrastructure.AI.RAG`) unless you mean it; **(2)** its relationship edges are inferred by the LLM rather than statically resolved, because the plugin's deterministic backbone is path-based imports and C# uses namespace `using` — so the **layers and the guided tour are the payoff here, not the call graph**. Run this if you want to *see* the architecture and onboard visually rather than read about it. Generated output lands in a gitignored `.understand-anything/` and is never committed.
 
 ---
 
