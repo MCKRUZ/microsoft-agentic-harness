@@ -1,6 +1,6 @@
 # Plan: Tamper-Evident Audit Chain
 
-**Status:** PR 1 ✅ merged (#69). PR 2 ✅ implemented (this branch). PR 3 pending investigation.
+**Status:** PR 1 ✅ merged (#69). PR 2 ✅ merged (#70). PR 3 ✅ investigated → **not needed** (see below).
 **Date:** 2026-06-20
 
 ## Progress log
@@ -151,9 +151,27 @@ Replace the two standalone-hash writers' integrity with the chain. Add
 Includes a backfill note: existing un-chained files are treated as chain-genesis
 (verifier starts the chain from first record on/after rollout; documented, not silent).
 
-**PR 3 — Tier 2 (conditional on the investigation).**
-Only if a content-bearing sink exists. Content/hash split, encryption, erasure wiring,
-`ErasureReceipt` integration.
+**PR 3 — Tier 2 (conditional on the investigation). → INVESTIGATED, NOT NEEDED.**
+
+The gating investigation (2026-06-20) found **no durable audit log stores raw prompt or
+response content**, so the WORM-vs-erasure tension does not exist in the harness's audit
+chains and content/hash separation would be solving a non-problem. Evidence:
+
+| Sink | Stores | Raw conversation content? |
+|---|---|---|
+| `JsonlChangeAuditWriter` | gate decisions, structured diff ops, identity, evidence **hash** | No |
+| `JsonlEgressAuditWriter` | allow/deny verdict, host/URL, matched rule, identity | No |
+| `JsonlDriftAuditStore` | drift metrics / baseline events | No |
+| `JsonlEscalationAuditStore` | tool name + **sanitized-for-display** args, summary, approvers | No |
+| `StructuredLogAuditSink` (`IAuditSink`) | action/outcome metadata — **log-only, not durable** | No |
+| OTel content capture | prompt/response — but **opt-in, off by default, redacted, traces (not WORM)** | N/A |
+| `FileSystemToolResultStore` | tool outputs — **ephemeral session cache, not an audit log** | No |
+
+Conclusion: the chained logs hold exactly the decision/identity/hash records a compliance
+audit must **retain and resist erasure** — which the hash-chain now hardens correctly. Raw
+conversation content lives only in the opt-in, redacted OTel path, never in a WORM log. The
+two concerns are already correctly separated. **PR 3 is dropped.** If a future consumer adds a
+durable prompt/response transcript log, revisit this with the content/hash split designed above.
 
 ---
 
