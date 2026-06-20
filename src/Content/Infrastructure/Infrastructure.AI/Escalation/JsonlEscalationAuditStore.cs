@@ -1,10 +1,11 @@
-using System.Security.Cryptography;
-using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Application.AI.Common.Interfaces.Audit;
 using Application.AI.Common.Interfaces.Escalation;
+using Domain.AI.Audit;
 using Domain.AI.Escalation;
 using Domain.Common.Config;
+using Infrastructure.AI.Audit;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -13,16 +14,16 @@ namespace Infrastructure.AI.Escalation;
 /// <summary>
 /// Append-only JSONL file store for escalation audit records.
 /// Each line is a serialized <see cref="EscalationAuditRecord"/> with a
-/// <see cref="EscalationAuditRecordType"/> discriminator.
-/// Thread-safe via a single <see cref="SemaphoreSlim"/> for file access.
+/// <see cref="EscalationAuditRecordType"/> discriminator, linked into a tamper-evident
+/// hash-chain via <see cref="HashChainedJsonlWriter"/> so a retroactively altered or
+/// deleted escalation event is detectable.
 /// </summary>
 /// <remarks>
-/// Follows the same pattern as <see cref="Agents.JsonlDelegationStore"/>:
 /// snake_case JSON, enum-as-string, <c>FileShare.ReadWrite</c> for concurrent reads.
 /// The file is created lazily on first write in the configured
 /// <c>EscalationConfig.AuditStoragePath</c> directory.
 /// </remarks>
-public sealed class JsonlEscalationAuditStore : IEscalationAuditStore, IDisposable
+public sealed class JsonlEscalationAuditStore : IEscalationAuditStore, IVerifiableAuditChain, IDisposable
 {
     private static readonly JsonSerializerOptions SerializeOptions = new()
     {
@@ -39,8 +40,8 @@ public sealed class JsonlEscalationAuditStore : IEscalationAuditStore, IDisposab
     };
 
     private readonly string _filePath;
+    private readonly HashChainedJsonlWriter _chain;
     private readonly ILogger<JsonlEscalationAuditStore> _logger;
-    private readonly SemaphoreSlim _semaphore = new(1, 1);
 
     /// <summary>
     /// Initializes a new instance of <see cref="JsonlEscalationAuditStore"/>.
@@ -54,8 +55,12 @@ public sealed class JsonlEscalationAuditStore : IEscalationAuditStore, IDisposab
         _filePath = Path.Combine(
             config.CurrentValue.AI.Governance.Escalation.AuditStoragePath,
             "escalations.jsonl");
+        _chain = new HashChainedJsonlWriter(_filePath, logger);
         _logger = logger;
     }
+
+    /// <inheritdoc />
+    public string AuditName => "escalations";
 
     /// <inheritdoc />
     public async Task RecordRequestAsync(EscalationRequest request, CancellationToken ct)
@@ -115,105 +120,62 @@ public sealed class JsonlEscalationAuditStore : IEscalationAuditStore, IDisposab
 
         var records = new List<EscalationAuditRecord>();
 
-        await _semaphore.WaitAsync(ct);
-        try
-        {
-            await using var stream = new FileStream(
-                _filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-            using var reader = new StreamReader(stream);
+        await using var stream = new FileStream(
+            _filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        using var reader = new StreamReader(stream);
 
-            var lineNumber = 0;
-            while (await reader.ReadLineAsync(ct) is { } line)
+        var lineNumber = 0;
+        while (await reader.ReadLineAsync(ct) is { } line)
+        {
+            lineNumber++;
+
+            if (string.IsNullOrWhiteSpace(line))
+                continue;
+
+            try
             {
-                lineNumber++;
-
-                if (string.IsNullOrWhiteSpace(line))
-                    continue;
-
-                try
-                {
-                    var (json, valid) = VerifyIntegrity(line);
-                    if (!valid)
-                    {
-                        _logger.LogWarning(
-                            "Integrity check failed for escalation audit record at {FilePath}:{LineNumber}",
-                            _filePath, lineNumber);
-                        continue;
-                    }
-
-                    var record = JsonSerializer.Deserialize<EscalationAuditRecord>(json, DeserializeOptions);
-                    if (record is not null && record.EscalationId == escalationId)
-                        records.Add(record);
-                }
-                catch (JsonException)
-                {
-                    _logger.LogWarning(
-                        "Skipped corrupted audit record at {FilePath}:{LineNumber}",
-                        _filePath, lineNumber);
-                }
+                var json = HashChainedJsonlWriter.ExtractPayload(line);
+                var record = JsonSerializer.Deserialize<EscalationAuditRecord>(json, DeserializeOptions);
+                if (record is not null && record.EscalationId == escalationId)
+                    records.Add(record);
             }
-        }
-        finally
-        {
-            _semaphore.Release();
+            catch (JsonException)
+            {
+                _logger.LogWarning(
+                    "Skipped corrupted audit record at {FilePath}:{LineNumber}",
+                    _filePath, lineNumber);
+            }
         }
 
         return records.OrderBy(r => r.Timestamp).ToList();
     }
 
+    /// <inheritdoc />
+    public Task<AuditChainVerificationResult> VerifyChainAsync(CancellationToken cancellationToken) =>
+        _chain.VerifyChainAsync(cancellationToken);
+
     /// <inheritdoc cref="IDisposable.Dispose" />
-    public void Dispose()
-    {
-        _semaphore.Dispose();
-    }
+    public void Dispose() => _chain.Dispose();
 
     /// <summary>
-    /// Serializes and appends a single audit record as one JSONL line.
+    /// Serializes and appends a single audit record as one hash-chained JSONL line.
     /// </summary>
     private async Task AppendRecordAsync(EscalationAuditRecord record, CancellationToken ct)
     {
         var json = JsonSerializer.Serialize(record, SerializeOptions);
-        var hash = ComputeIntegrityHash(json);
-        var line = $"{json}\t{hash}\n";
-
-        await _semaphore.WaitAsync(ct);
-        try
+        var result = await _chain.AppendAsync(json, ct);
+        if (!result.IsSuccess)
         {
-            EnsureDirectoryExists(_filePath);
-            await File.AppendAllTextAsync(_filePath, line, ct);
-        }
-        finally
-        {
-            _semaphore.Release();
+            var reason = string.Join("; ", result.Errors);
+            _logger.LogError(
+                "Failed to append escalation audit {RecordType} for {EscalationId}: {Reason}",
+                record.RecordType, record.EscalationId, reason);
+            throw new IOException(
+                $"Failed to append escalation audit record for {record.EscalationId}: {reason}");
         }
 
         _logger.LogDebug(
             "Appended escalation audit {RecordType} for {EscalationId} to {FilePath}",
             record.RecordType, record.EscalationId, _filePath);
-    }
-
-    /// <summary>
-    /// Ensures the parent directory for the given file path exists.
-    /// </summary>
-    private static void EnsureDirectoryExists(string filePath)
-    {
-        var dir = Path.GetDirectoryName(filePath);
-        if (dir is not null)
-            Directory.CreateDirectory(dir);
-    }
-
-    private static string ComputeIntegrityHash(string json) =>
-        Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(json)));
-
-    private static (string Json, bool Valid) VerifyIntegrity(string line)
-    {
-        var tabIndex = line.LastIndexOf('\t');
-        if (tabIndex < 0)
-            return (line, false);
-
-        var json = line[..tabIndex];
-        var storedHash = line[(tabIndex + 1)..];
-        var computedHash = ComputeIntegrityHash(json);
-        return (json, string.Equals(storedHash, computedHash, StringComparison.OrdinalIgnoreCase));
     }
 }

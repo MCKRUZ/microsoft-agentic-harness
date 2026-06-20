@@ -303,6 +303,12 @@ public static partial class DependencyInjection
         RegisterDriftDetectionServices(services);
         RegisterLearningsServices(services, appConfig);
 
+        // --- Audit-chain verification (scheduled tamper-evidence check over all
+        //     hash-chained JSONL audit logs). Must run after the four audit writers
+        //     above are registered. Hosted service gated on AppConfig.AI.Audit. ---
+
+        RegisterAuditChainVerification(services, appConfig);
+
         // --- Planner and sandbox ---
 
         RegisterPlannerDbContext(services, appConfig);

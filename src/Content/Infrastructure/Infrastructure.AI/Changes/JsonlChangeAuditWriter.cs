@@ -1,6 +1,8 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Application.AI.Common.Interfaces.Audit;
 using Application.AI.Common.Interfaces.Changes;
+using Domain.AI.Audit;
 using Domain.AI.Changes;
 using Domain.AI.Identity;
 using Domain.Common.Config;
@@ -18,8 +20,11 @@ namespace Infrastructure.AI.Changes;
 /// <see cref="HashChainedJsonlWriter"/> so a retroactively altered or deleted
 /// decision is detectable.
 /// </summary>
-public sealed class JsonlChangeAuditWriter : IChangeAuditWriter, IDisposable
+public sealed class JsonlChangeAuditWriter : IChangeAuditWriter, IVerifiableAuditChain, IDisposable
 {
+    /// <inheritdoc />
+    public string AuditName => "changes";
+
     private static readonly JsonSerializerOptions SerializeOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
@@ -92,6 +97,10 @@ public sealed class JsonlChangeAuditWriter : IChangeAuditWriter, IDisposable
                 $"Failed to append change audit record for proposal {proposal.Id}: {reason}");
         }
     }
+
+    /// <inheritdoc />
+    public Task<AuditChainVerificationResult> VerifyChainAsync(CancellationToken cancellationToken) =>
+        _chain.VerifyChainAsync(cancellationToken);
 
     /// <inheritdoc />
     public void Dispose() => _chain.Dispose();

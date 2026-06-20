@@ -53,4 +53,12 @@ public static class GovernanceMetrics
     /// <summary>Response sanitization latency in milliseconds.</summary>
     public static Histogram<double> SanitizationDuration { get; } =
         AppInstrument.Meter.CreateHistogram<double>(GovernanceConventions.SanitizationDuration, "ms", "Response sanitization duration");
+
+    /// <summary>Audit-chain integrity verifications performed. Tags: agent.governance.audit_chain.name.</summary>
+    public static Counter<long> AuditChainVerifications { get; } =
+        AppInstrument.Meter.CreateCounter<long>(GovernanceConventions.AuditChainVerifications, "{verification}", "Audit-chain integrity verifications");
+
+    /// <summary>Audit-chain integrity breaks detected (tampering, deletion, or corruption). Tags: agent.governance.audit_chain.name.</summary>
+    public static Counter<long> AuditChainBreaks { get; } =
+        AppInstrument.Meter.CreateCounter<long>(GovernanceConventions.AuditChainBreaks, "{break}", "Audit-chain integrity breaks detected");
 }

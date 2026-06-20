@@ -1,7 +1,24 @@
 # Plan: Tamper-Evident Audit Chain
 
-**Status:** Proposed — awaiting go-ahead
+**Status:** PR 1 ✅ merged (#69). PR 2 ✅ implemented (this branch). PR 3 pending investigation.
 **Date:** 2026-06-20
+
+## Progress log
+- **PR 1 (merged #69):** `HashChainedJsonlWriter` primitive + `AuditChainVerificationResult`;
+  migrated the two zero-integrity writers (change, egress). Trusted head recovery, framing-char
+  rejection, brownfield tolerance.
+- **PR 2 (this branch):** Generalized the primitive to **segmented (multi-file) chains**; migrated
+  drift (date-partitioned, cross-file chain) and escalation (single-file). Added
+  `IVerifiableAuditChain` on all four writers, the `AuditChainVerificationService` background
+  verifier (metrics + critical-log + JSONL receipts), `AuditConfig`, and DI wiring.
+  - **Design decision:** drift now partitions by **append time**, not `RecordedAt`, so the global
+    chain sequence stays monotonic across day files. `GetRecordsAsync` compensates with a precise
+    `RecordedAt` post-filter + a ±1-day file-window widening, so date-range queries are unchanged
+    for callers.
+  - **Verifier hardening:** interval floored to 1 min (no hot loop), loop body survives any
+    non-cancellation fault (an audit verifier must never `StopHost`).
+
+---
 **Source:** Gap analysis vs "AI Gateway Blueprint: Five Governance Functions" (Wasowski, 2026)
 **Related memory:** MCP Hardening (`project_mcp_hardening.md`), Multi-tenant isolation (`project_maf_native_adoption.md`)
 

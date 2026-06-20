@@ -275,4 +275,75 @@ public sealed class HashChainedJsonlWriterTests : IDisposable
             .ToArray();
         sequences.Should().Equal(Enumerable.Range(0, 50).Select(i => (long)i));
     }
+
+    // --- Segmented (multi-file) chains ---
+
+    private string _segment = "a.jsonl";
+
+    private HashChainedJsonlWriter NewSegmentedWriter() =>
+        new(
+            _tempDir,
+            () => Path.Combine(_tempDir, _segment),
+            () => Directory.GetFiles(_tempDir, "*.jsonl").OrderBy(f => f, StringComparer.Ordinal).ToArray(),
+            NullLogger.Instance);
+
+    [Fact]
+    public async Task Segmented_ChainSpansFiles_AndLinksAcrossSegments()
+    {
+        using var sut = NewSegmentedWriter();
+
+        _segment = "a.jsonl";
+        await sut.AppendAsync("{\"a\":0}", CancellationToken.None);
+        _segment = "b.jsonl";
+        await sut.AppendAsync("{\"a\":1}", CancellationToken.None);
+
+        var result = await sut.VerifyChainAsync(CancellationToken.None);
+        result.IsValid.Should().BeTrue();
+        result.VerifiedCount.Should().Be(2);
+
+        var aRecordHash = (await File.ReadAllLinesAsync(Path.Combine(_tempDir, "a.jsonl")))[0].Split('\t')[1];
+        var bPreviousHash = (await File.ReadAllLinesAsync(Path.Combine(_tempDir, "b.jsonl")))[0].Split('\t')[2];
+        bPreviousHash.Should().Be(aRecordHash); // segment B chains onto segment A's tail
+    }
+
+    [Fact]
+    public async Task Segmented_DeletingAnEntireMiddleSegment_BreaksTheChain()
+    {
+        using var sut = NewSegmentedWriter();
+
+        _segment = "a.jsonl";
+        await sut.AppendAsync("{\"a\":0}", CancellationToken.None);
+        _segment = "b.jsonl";
+        await sut.AppendAsync("{\"a\":1}", CancellationToken.None);
+        _segment = "c.jsonl";
+        await sut.AppendAsync("{\"a\":2}", CancellationToken.None);
+
+        File.Delete(Path.Combine(_tempDir, "b.jsonl")); // wipe the whole middle day
+
+        var result = await sut.VerifyChainAsync(CancellationToken.None);
+        result.IsValid.Should().BeFalse();
+        result.FirstBrokenSequence.Should().Be(1); // sequence 1 (from b) is gone
+        result.FailureReason.Should().Contain("Sequence gap");
+    }
+
+    [Fact]
+    public async Task Segmented_TamperInEarlierSegment_DetectedDuringCrossFileWalk()
+    {
+        using var sut = NewSegmentedWriter();
+
+        _segment = "a.jsonl";
+        await sut.AppendAsync("{\"a\":0}", CancellationToken.None);
+        await sut.AppendAsync("{\"a\":1}", CancellationToken.None);
+        _segment = "b.jsonl";
+        await sut.AppendAsync("{\"a\":2}", CancellationToken.None);
+
+        var aLines = await File.ReadAllLinesAsync(Path.Combine(_tempDir, "a.jsonl"));
+        var p = aLines[1].Split('\t');
+        aLines[1] = string.Join('\t', "{\"a\":9}", p[1], p[2], p[3]); // edit seq 1 in segment A
+        await File.WriteAllLinesAsync(Path.Combine(_tempDir, "a.jsonl"), aLines);
+
+        var result = await sut.VerifyChainAsync(CancellationToken.None);
+        result.IsValid.Should().BeFalse();
+        result.FirstBrokenSequence.Should().Be(1);
+    }
 }
