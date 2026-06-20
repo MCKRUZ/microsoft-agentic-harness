@@ -4,6 +4,7 @@ using Application.AI.Common.Interfaces.Egress;
 using Domain.AI.Egress;
 using Domain.AI.Identity;
 using Domain.Common.Config;
+using Infrastructure.AI.Audit;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -12,9 +13,9 @@ namespace Infrastructure.AI.Egress;
 /// <summary>
 /// Append-only JSONL audit writer for egress decisions. Mirrors the shape
 /// established by <c>JsonlChangeAuditWriter</c>: one line per record,
-/// snake_case JSON, enums-as-strings, written under a <see cref="SemaphoreSlim"/>
-/// for thread safety, file opened with <c>FileShare.ReadWrite</c> for
-/// concurrent reads.
+/// snake_case JSON, enums-as-strings. Records are linked into a tamper-evident
+/// hash-chain via <see cref="HashChainedJsonlWriter"/> so a retroactively
+/// altered or deleted egress decision is detectable.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -33,9 +34,8 @@ public sealed class JsonlEgressAuditWriter : IEgressAuditWriter, IDisposable
         Converters = { new JsonStringEnumConverter() }
     };
 
-    private readonly string _filePath;
+    private readonly HashChainedJsonlWriter _chain;
     private readonly ILogger<JsonlEgressAuditWriter> _logger;
-    private readonly SemaphoreSlim _semaphore = new(1, 1);
 
     /// <summary>Initializes a new <see cref="JsonlEgressAuditWriter"/>.</summary>
     public JsonlEgressAuditWriter(
@@ -46,7 +46,7 @@ public sealed class JsonlEgressAuditWriter : IEgressAuditWriter, IDisposable
         ArgumentNullException.ThrowIfNull(logger);
 
         var dir = config.CurrentValue.AI.Egress.AuditStoragePath;
-        _filePath = Path.Combine(dir, "egress.jsonl");
+        _chain = new HashChainedJsonlWriter(Path.Combine(dir, "egress.jsonl"), logger);
         _logger = logger;
     }
 
@@ -78,37 +78,23 @@ public sealed class JsonlEgressAuditWriter : IEgressAuditWriter, IDisposable
             }
         };
 
-        Directory.CreateDirectory(Path.GetDirectoryName(_filePath)!);
-
-        await _semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
+        var json = JsonSerializer.Serialize(record, SerializeOptions);
+        var result = await _chain.AppendAsync(json, cancellationToken).ConfigureAwait(false);
+        if (!result.IsSuccess)
         {
-            await using var stream = new FileStream(
-                _filePath,
-                FileMode.Append,
-                FileAccess.Write,
-                FileShare.ReadWrite);
-            await using var writer = new StreamWriter(stream);
-            var json = JsonSerializer.Serialize(record, SerializeOptions);
-            await writer.WriteLineAsync(json).ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
+            var reason = string.Join("; ", result.Errors);
             _logger.LogError(
-                ex,
-                "Failed to append egress audit line for target {Host} ({Allowed}).",
+                "Failed to append egress audit line for target {Host} ({Allowed}): {Reason}",
                 decision.Target.Host,
-                decision.Allowed);
-            throw;
-        }
-        finally
-        {
-            _semaphore.Release();
+                decision.Allowed,
+                reason);
+            throw new IOException(
+                $"Failed to append egress audit record for target {decision.Target.Host}: {reason}");
         }
     }
 
     /// <inheritdoc />
-    public void Dispose() => _semaphore.Dispose();
+    public void Dispose() => _chain.Dispose();
 
     private sealed record EgressAuditRecord
     {
