@@ -219,6 +219,18 @@ public class AgentFactory : IAgentFactory
             .Use(inner => new Middleware.ToolDiagnosticsMiddleware(
                 inner, _loggerFactory.CreateLogger<Middleware.ToolDiagnosticsMiddleware>()));
 
+        // Cache-stats enrichment — only when a generation-stats client is registered (i.e. the
+        // configured provider is the OpenRouter path with prompt caching enabled). For every other
+        // provider the service is absent and this middleware is skipped entirely.
+        var statsClient = _serviceProvider.GetService<IGenerationStatsClient>();
+        if (statsClient is not null)
+        {
+            chatClientBuilder = chatClientBuilder.Use(inner =>
+                new Middleware.CacheStatsEnrichingChatClient(
+                    inner, statsClient, agentContext.Name ?? "unknown",
+                    _loggerFactory.CreateLogger<Middleware.CacheStatsEnrichingChatClient>()));
+        }
+
         // Wire prerequisite middleware when prerequisite metadata exists
         if (agentContext.AdditionalProperties?.TryGetValue(
                 SkillPrerequisiteMap.AdditionalPropertiesKey, out var prereqObj) == true

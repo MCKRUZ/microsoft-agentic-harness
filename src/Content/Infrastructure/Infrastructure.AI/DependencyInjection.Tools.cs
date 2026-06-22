@@ -91,6 +91,7 @@ public static partial class DependencyInjection
         if (framework.IsConfigured)
             RegisterChatClient(services, framework);
 
+        RegisterGenerationStatsClient(services, framework);
         RegisterEmbeddingGenerator(services, appConfig);
     }
 

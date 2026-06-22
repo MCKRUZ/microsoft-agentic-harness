@@ -104,6 +104,86 @@ public sealed class LlmTokenTrackingProcessorTests : IDisposable
         act.Should().NotThrow();
     }
 
+    /// <summary>
+    /// Regression guard for the cache-hit-rate histogram: on the OpenRouter path the cache counts
+    /// never reach the span (they arrive out-of-band via CacheStatsEnrichingChatClient). A span with
+    /// input/output tokens but NO cache attributes must NOT record a hit rate, otherwise every such
+    /// call would push a 0 into the histogram and halve the true average.
+    /// </summary>
+    [Fact]
+    public void OnEnd_SpanWithoutCacheAttributes_DoesNotRecordHitRate()
+    {
+        var processor = CreateProcessor();
+
+        var hitRates = new List<double>();
+        using var listener = new MeterListener
+        {
+            InstrumentPublished = (instrument, l) =>
+            {
+                if (instrument.Name == TokenConventions.CacheHitRate)
+                    l.EnableMeasurementEvents(instrument);
+            }
+        };
+        listener.SetMeasurementEventCallback<double>((_, value, tags, _) =>
+        {
+            foreach (var tag in tags)
+                if (tag.Key == TokenConventions.GenAiRequestModel && tag.Value as string == "no-cache-attrs-model")
+                    hitRates.Add(value);
+        });
+        listener.Start();
+
+        using (var activity = _source.StartActivity("llm-call")!)
+        {
+            activity.SetTag(TokenConventions.GenAiInputTokens, 1000);
+            activity.SetTag(TokenConventions.GenAiOutputTokens, 200);
+            activity.SetTag(TokenConventions.GenAiRequestModel, "no-cache-attrs-model");
+            // No cache_read / cache_creation attributes — the OpenRouter shape.
+            processor.OnEnd(activity);
+        }
+
+        hitRates.Should().BeEmpty(
+            "a span without cache attributes must not pollute the hit-rate histogram with a 0");
+    }
+
+    /// <summary>
+    /// The native path (e.g. Anthropic/Foundry) DOES carry cache attributes on the span, so the
+    /// processor must still record the hit rate there.
+    /// </summary>
+    [Fact]
+    public void OnEnd_SpanWithCacheAttributes_RecordsHitRate()
+    {
+        var processor = CreateProcessor();
+
+        var hitRates = new List<double>();
+        using var listener = new MeterListener
+        {
+            InstrumentPublished = (instrument, l) =>
+            {
+                if (instrument.Name == TokenConventions.CacheHitRate)
+                    l.EnableMeasurementEvents(instrument);
+            }
+        };
+        listener.SetMeasurementEventCallback<double>((_, value, tags, _) =>
+        {
+            foreach (var tag in tags)
+                if (tag.Key == TokenConventions.GenAiRequestModel && tag.Value as string == "with-cache-attrs-model")
+                    hitRates.Add(value);
+        });
+        listener.Start();
+
+        using (var activity = _source.StartActivity("llm-call")!)
+        {
+            activity.SetTag(TokenConventions.GenAiInputTokens, 200);
+            activity.SetTag(TokenConventions.GenAiOutputTokens, 100);
+            activity.SetTag(TokenConventions.GenAiCacheReadTokens, 800);
+            activity.SetTag(TokenConventions.GenAiRequestModel, "with-cache-attrs-model");
+            processor.OnEnd(activity);
+        }
+
+        hitRates.Should().ContainSingle()
+            .Which.Should().BeApproximately(0.8, 0.0001, "800 cache-read of 1000 total input");
+    }
+
     [Fact]
     public void OnEnd_UnknownModel_FallsBackToDefaultModel()
     {

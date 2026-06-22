@@ -118,9 +118,16 @@ public sealed class LlmTokenTrackingProcessor : BaseProcessor<Activity>
             }
         }
 
-        // Cache hit rate
+        // Cache hit rate — only when the span actually carried cache attributes. On the
+        // OpenAI-compatible OpenRouter path the cache counts never reach the span (they are
+        // fetched out-of-band by CacheStatsEnrichingChatClient, which records the real rate);
+        // without this guard the processor would record a 0 hit rate for every such call and
+        // drag the histogram average down to roughly half the true value.
+        var hasCacheAttributes =
+            data.GetTagItem(TokenConventions.GenAiCacheReadTokens) is (int or long)
+            || data.GetTagItem(TokenConventions.GenAiCacheWriteTokens) is (int or long);
         var totalInput = inputTokens + cacheReadTokens;
-        if (totalInput > 0)
+        if (hasCacheAttributes && totalInput > 0)
         {
             var hitRate = (double)cacheReadTokens / totalInput;
             LlmUsageMetrics.CacheHitRate.Record(hitRate, new TagList { { TokenConventions.GenAiRequestModel, model } });
