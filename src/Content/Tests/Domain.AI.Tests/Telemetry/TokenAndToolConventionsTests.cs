@@ -19,6 +19,7 @@ public sealed class TokenAndToolConventionsTests
     [InlineData(TokenConventions.CacheRead, "agent.tokens.cache_read")]
     [InlineData(TokenConventions.CacheWrite, "agent.tokens.cache_write")]
     [InlineData(TokenConventions.CostEstimated, "agent.tokens.cost_estimated")]
+    [InlineData(TokenConventions.CostActual, "agent.tokens.cost_actual")]
     [InlineData(TokenConventions.CacheHitRate, "agent.tokens.cache_hit_rate")]
     public void TokenConventions_HaveExpectedValues(string actual, string expected)
     {

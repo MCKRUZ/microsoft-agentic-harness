@@ -48,6 +48,7 @@ public sealed class OpenRouterGenerationStatsClientTests
         stats!.Model.Should().Be("anthropic/claude-sonnet-4.6");
         stats.CacheReadTokens.Should().Be(18041);
         stats.PromptTokens.Should().Be(18054);
+        stats.TotalCost.Should().Be(0.0055m);
         stats.CacheDiscount.Should().Be(0.0615m);
     }
 

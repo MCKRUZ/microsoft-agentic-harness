@@ -29,6 +29,7 @@ public static class MetricNamingContract
         new InstrumentDefinition("agent.tokens.cache_read", InstrumentType.Counter, "{token}"),
         new InstrumentDefinition("agent.tokens.cache_write", InstrumentType.Counter, "{token}"),
         new InstrumentDefinition("agent.tokens.cost_estimated", InstrumentType.Counter, "{usd}"),
+        new InstrumentDefinition("agent.tokens.cost_actual", InstrumentType.Counter, "{usd}"),
         new InstrumentDefinition("agent.tokens.cost_cache_savings", InstrumentType.Counter, "{usd}"),
         new InstrumentDefinition("agent.tokens.cache_hit_rate", InstrumentType.Histogram, "{ratio}"),
 

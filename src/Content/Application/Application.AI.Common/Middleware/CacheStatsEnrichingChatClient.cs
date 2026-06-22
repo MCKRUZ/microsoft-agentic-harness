@@ -148,6 +148,11 @@ public sealed class CacheStatsEnrichingChatClient : DelegatingChatClient
         if (stats.CacheDiscount != 0m)
             LlmUsageMetrics.CacheSavings.Add((double)Math.Abs(stats.CacheDiscount), tags);
 
+        // Authoritative, already-discounted provider cost. The cost tiles prefer this over the
+        // estimate on this path, which over-prices the cached prompt tokens at the full input rate.
+        if (stats.TotalCost > 0m)
+            LlmUsageMetrics.ActualCost.Add((double)stats.TotalCost, tags);
+
         // Hit rate over total native prompt tokens (which include the cached portion). Recorded
         // only when there is a denominator, so a stats record with no prompt tokens is ignored
         // rather than dividing by zero.

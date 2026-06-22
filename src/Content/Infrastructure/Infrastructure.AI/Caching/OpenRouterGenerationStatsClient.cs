@@ -153,6 +153,7 @@ public sealed class OpenRouterGenerationStatsClient : IGenerationStatsClient
                 Model: model,
                 CacheReadTokens: GetLong(data, "native_tokens_cached"),
                 PromptTokens: GetLong(data, "native_tokens_prompt"),
+                TotalCost: GetDecimal(data, "total_cost"),
                 CacheDiscount: GetDecimal(data, "cache_discount"));
         }
         catch (JsonException ex)

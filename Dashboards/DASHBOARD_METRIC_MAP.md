@@ -122,8 +122,9 @@
 
 | Panel | Prometheus Metric | Code Metric | Recorded By | Status |
 |-------|-------------------|-------------|-------------|--------|
-| Total Cost | `agentic_harness_agent_tokens_cost_estimated_total` | `agent.tokens.cost_estimated` | `LlmTokenTrackingProcessor` | **LIVE** |
-| Cache Savings | `agentic_harness_agent_tokens_cost_cache_savings_total` | `agent.tokens.cost_cache_savings` | `LlmTokenTrackingProcessor` | **LIVE** (only if model supports caching) |
+| Total Cost | `agentic_harness_agent_tokens_cost_actual_total` (preferred) → `..._cost_estimated_total` | `agent.tokens.cost_actual` / `cost_estimated` | `CacheStatsEnrichingChatClient` (actual) / `LlmTokenTrackingProcessor` (estimate) | **LIVE** |
+| Actual Cost | `agentic_harness_agent_tokens_cost_actual_total` | `agent.tokens.cost_actual` | `CacheStatsEnrichingChatClient` | **LIVE** (OpenRouter path only — provider-reported, cache-discounted) |
+| Cache Savings | `agentic_harness_agent_tokens_cost_cache_savings_total` | `agent.tokens.cost_cache_savings` | `CacheStatsEnrichingChatClient` (OpenRouter) / `LlmTokenTrackingProcessor` (native) | **LIVE** (only if model supports caching) |
 | Savings Rate | both above | both above | same | **LIVE** |
 | Avg Cost/Conversation | cost_estimated + `agent_orchestration_conversation_duration_count` | cost + orchestration | LlmTokenTrackingProcessor + RunConversationCommandHandler | **PARTIAL** (cost LIVE, denominator BATCH-ONLY) |
 | Cost/Turn P50 | `agentic_harness_agent_tokens_cost_per_turn_bucket` | `agent.tokens.cost_per_turn` | `LlmTokenTrackingProcessor` | **LIVE** |

@@ -53,6 +53,11 @@ public interface IGenerationStatsClient
 /// Total native prompt tokens for the call (<c>native_tokens_prompt</c>), inclusive of
 /// <see cref="CacheReadTokens"/>. The denominator for the cache hit rate.
 /// </param>
+/// <param name="TotalCost">
+/// The provider's authoritative charge for the generation in USD (<c>total_cost</c>), already net
+/// of any cache discount. Surfaced as the <c>agent.tokens.cost_actual</c> metric, which the cost
+/// tiles prefer over the estimate on this path.
+/// </param>
 /// <param name="CacheDiscount">
 /// The USD amount the prompt cache saved on this generation (<c>cache_discount</c>). Reported as a
 /// magnitude; zero when nothing was served from cache.
@@ -61,4 +66,5 @@ public record GenerationStats(
     string? Model,
     long CacheReadTokens,
     long PromptTokens,
+    decimal TotalCost,
     decimal CacheDiscount);

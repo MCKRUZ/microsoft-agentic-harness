@@ -7,6 +7,7 @@ import { Section } from '@/components/primitives/Section';
 import { SloBoard } from './SloBoard';
 import { CheckCircle, AlertTriangle, Info } from 'lucide-react';
 import { useMetric, latestValue, computeDelta, formatKpi, primarySeries } from './pulse-helpers';
+import { costRateQuery } from '@/config/costQueries';
 import { cn } from '@/lib/utils';
 
 const AVG_TURN_QUERY =
@@ -15,8 +16,7 @@ const ERROR_RATE_QUERY =
   'sum(rate(agentic_harness_agent_tool_errors_total[5m])) / (sum(rate(agentic_harness_agent_tool_invocations_total[5m])) > 0) or vector(0)';
 const SAFETY_BLOCKS_QUERY =
   'sum(agentic_harness_agent_safety_blocks_total) or vector(0)';
-const COST_RATE_QUERY =
-  'rate(agentic_harness_agent_tokens_cost_estimated_total[5m]) * 3600 or vector(0)';
+const COST_RATE_QUERY = costRateQuery;
 
 export function HealthTab() {
   const tokensPerMin = useMetric('tokens_per_minute');

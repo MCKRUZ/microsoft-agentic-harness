@@ -14,8 +14,15 @@ public static class TokenConventions
     public const string CacheRead = "agent.tokens.cache_read";
     /// <summary>Cache-write (creation) input tokens per LLM call.</summary>
     public const string CacheWrite = "agent.tokens.cache_write";
-    /// <summary>Estimated cost in USD per LLM call.</summary>
+    /// <summary>Estimated cost in USD per LLM call (computed from the configured pricing table).</summary>
     public const string CostEstimated = "agent.tokens.cost_estimated";
+    /// <summary>
+    /// Authoritative, provider-reported cost in USD per LLM call, net of any cache discount.
+    /// Emitted only where the provider exposes a real cost (the OpenRouter generation record);
+    /// preferred over <see cref="CostEstimated"/> on that path, which over-prices cached prompt
+    /// tokens at the full input rate.
+    /// </summary>
+    public const string CostActual = "agent.tokens.cost_actual";
     /// <summary>Estimated cost savings from cache hits in USD.</summary>
     public const string CostCacheSavings = "agent.tokens.cost_cache_savings";
     /// <summary>Cache hit rate per LLM call (0-1 ratio of cache-read to total input).</summary>

@@ -1,10 +1,11 @@
 import type { MetricCatalogEntry } from '@/api/types';
+import { costTotalQuery, costRateQuery, costByQuery } from './costQueries';
 
 export const metricCatalog: Record<string, MetricCatalogEntry> = {
   // --- Overview ---
   tokens_per_minute: { id: 'tokens_per_minute', title: 'Tokens / Minute', description: 'Rate of total token consumption', query: 'rate(agentic_harness_agent_tokens_total_sum[5m]) * 60', chartType: 'stat', unit: 'tokens/min', category: 'overview', refreshIntervalSeconds: 15 },
   active_sessions: { id: 'active_sessions', title: 'Active Sessions', description: 'Sessions with recent activity', query: 'sum(agentic_harness_agent_session_active) or vector(0)', chartType: 'stat', unit: 'sessions', category: 'overview', refreshIntervalSeconds: 15 },
-  cost_today: { id: 'cost_today', title: 'Cost Today', description: 'Estimated LLM cost since midnight UTC', query: 'sum(agentic_harness_agent_tokens_cost_estimated_total) or vector(0)', chartType: 'stat', unit: 'usd', category: 'overview', refreshIntervalSeconds: 30 },
+  cost_today: { id: 'cost_today', title: 'Cost Today', description: 'LLM cost since midnight UTC (provider-reported where available, else estimated)', query: costTotalQuery, chartType: 'stat', unit: 'usd', category: 'overview', refreshIntervalSeconds: 30 },
   cache_hit_rate: { id: 'cache_hit_rate', title: 'Cache Hit Rate', description: 'Prompt cache hit ratio', query: 'agentic_harness_agent_tokens_cache_hit_rate_sum / agentic_harness_agent_tokens_cache_hit_rate_count or vector(0)', chartType: 'gauge', unit: 'percent', category: 'overview', refreshIntervalSeconds: 30 },
   safety_violations: { id: 'safety_violations', title: 'Safety Evaluations', description: 'Content safety evaluations performed', query: 'sum(agentic_harness_agent_safety_evaluations_total) or vector(0)', chartType: 'stat', unit: 'count', category: 'overview', refreshIntervalSeconds: 30 },
   budget_status: { id: 'budget_status', title: 'Budget Status', description: 'Current budget utilization percentage', query: 'max(agentic_harness_agent_budget_utilization_percent) or vector(0)', chartType: 'gauge', unit: 'percent', category: 'overview', refreshIntervalSeconds: 15 },
@@ -20,9 +21,9 @@ export const metricCatalog: Record<string, MetricCatalogEntry> = {
   tokens_cache_hit_rate_ts: { id: 'tokens_cache_hit_rate_ts', title: 'Cache Hit Rate Over Time', description: 'Cache hit ratio over time', query: 'agentic_harness_agent_tokens_cache_hit_rate_sum / agentic_harness_agent_tokens_cache_hit_rate_count', chartType: 'timeseries', unit: 'percent', category: 'tokens', refreshIntervalSeconds: 30 },
 
   // --- Cost ---
-  cost_total: { id: 'cost_total', title: 'Total Cost', description: 'Cumulative estimated LLM spend', query: 'sum(agentic_harness_agent_tokens_cost_estimated_total) or vector(0)', chartType: 'stat', unit: 'usd', category: 'cost', refreshIntervalSeconds: 30 },
-  cost_rate: { id: 'cost_rate', title: 'Cost Rate', description: 'USD burn rate per hour', query: 'rate(agentic_harness_agent_tokens_cost_estimated_total[5m]) * 3600', chartType: 'timeseries', unit: 'usd', category: 'cost', refreshIntervalSeconds: 30 },
-  cost_by_model: { id: 'cost_by_model', title: 'Cost by Model', description: 'Cost breakdown per model', query: 'sum by (model) (agentic_harness_agent_tokens_cost_estimated_total)', chartType: 'pie', unit: 'usd', category: 'cost', refreshIntervalSeconds: 30 },
+  cost_total: { id: 'cost_total', title: 'Total Cost', description: 'Cumulative LLM spend (provider-reported where available, else estimated)', query: costTotalQuery, chartType: 'stat', unit: 'usd', category: 'cost', refreshIntervalSeconds: 30 },
+  cost_rate: { id: 'cost_rate', title: 'Cost Rate', description: 'USD burn rate per hour (provider-reported where available, else estimated)', query: costRateQuery, chartType: 'timeseries', unit: 'usd', category: 'cost', refreshIntervalSeconds: 30 },
+  cost_by_model: { id: 'cost_by_model', title: 'Cost by Model', description: 'Cost breakdown per model (provider-reported where available, else estimated)', query: costByQuery('model'), chartType: 'pie', unit: 'usd', category: 'cost', refreshIntervalSeconds: 30 },
   cost_cache_savings: { id: 'cost_cache_savings', title: 'Cache Savings', description: 'Estimated cost saved via prompt caching', query: 'sum(agentic_harness_agent_tokens_cost_cache_savings_total) or vector(0)', chartType: 'stat', unit: 'usd', category: 'cost', refreshIntervalSeconds: 30 },
   cost_budget_remaining: { id: 'cost_budget_remaining', title: 'Budget Remaining', description: 'Remaining budget allocation', query: 'max(agentic_harness_agent_budget_remaining) or vector(0)', chartType: 'gauge', unit: 'usd', category: 'cost', refreshIntervalSeconds: 15 },
 
@@ -65,7 +66,7 @@ export const metricCatalog: Record<string, MetricCatalogEntry> = {
   budget_limit: { id: 'budget_limit', title: 'Budget Limit', description: 'Configured budget ceiling', query: 'agentic_harness_agent_budget_threshold_critical or vector(0)', chartType: 'stat', unit: 'usd', category: 'budget', refreshIntervalSeconds: 60 },
   budget_remaining: { id: 'budget_remaining', title: 'Remaining', description: 'Budget remaining before limit', query: 'agentic_harness_agent_budget_threshold_critical - agentic_harness_agent_budget_current_spend or vector(0)', chartType: 'stat', unit: 'usd', category: 'budget', refreshIntervalSeconds: 15 },
   budget_utilization: { id: 'budget_utilization', title: 'Utilization', description: 'Budget utilization percentage', query: 'agentic_harness_agent_budget_current_spend / agentic_harness_agent_budget_threshold_critical or vector(0)', chartType: 'gauge', unit: 'percent', category: 'budget', refreshIntervalSeconds: 15 },
-  budget_spend_rate: { id: 'budget_spend_rate', title: 'Spend Rate', description: 'Budget burn rate over time', query: 'rate(agentic_harness_agent_tokens_cost_estimated_total[5m]) * 3600', chartType: 'timeseries', unit: 'usd/hr', category: 'budget', refreshIntervalSeconds: 15 },
+  budget_spend_rate: { id: 'budget_spend_rate', title: 'Spend Rate', description: 'Budget burn rate over time (provider-reported where available, else estimated)', query: costRateQuery, chartType: 'timeseries', unit: 'usd/hr', category: 'budget', refreshIntervalSeconds: 15 },
   budget_status: { id: 'budget_status', title: 'Budget Status', description: 'Budget status (0=clear, 1=warning, 2=critical)', query: 'agentic_harness_agent_budget_status or vector(0)', chartType: 'stat', unit: 'status', category: 'budget', refreshIntervalSeconds: 30 },
 
   // --- Governance ---

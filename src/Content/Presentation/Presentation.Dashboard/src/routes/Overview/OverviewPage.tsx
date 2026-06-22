@@ -1,5 +1,6 @@
 import { usePromQuery } from '@/hooks/usePromQuery';
 import { metricCatalog } from '@/config/metricCatalog';
+import { costRateQuery } from '@/config/costQueries';
 import { KpiCard } from '@/components/panels/KpiCard';
 import { PanelCard } from '@/components/panels/PanelCard';
 import { PanelGrid } from '@/components/panels/PanelGrid';
@@ -37,7 +38,7 @@ export default function OverviewPage() {
   const budgetStatus = useMetric('budget_status');
 
   const tokenRate = usePromQuery('rate(agentic_harness_agent_tokens_total_sum[5m]) * 60');
-  const costRate = usePromQuery('rate(agentic_harness_agent_tokens_cost_estimated_total[5m]) * 3600');
+  const costRate = usePromQuery(costRateQuery);
 
   const anyLoading = tokensPerMin.isLoading || activeSessions.isLoading || costToday.isLoading || cacheHitRate.isLoading;
 

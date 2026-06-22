@@ -23,7 +23,7 @@ public sealed class CacheStatsEnrichingChatClientTests
     {
         var agent = $"agent-{Guid.NewGuid():N}";
         var stats = new GenerationStats(Model, CacheReadTokens: 18041, PromptTokens: 18054,
-            CacheDiscount: 0.0615m);
+            TotalCost: 0.0055m, CacheDiscount: 0.0615m);
         var statsClient = new FakeStatsClient(stats);
         var inner = new TestChatClient(new ChatResponse(new ChatMessage(ChatRole.Assistant, "hi"))
         {
@@ -34,6 +34,7 @@ public sealed class CacheStatsEnrichingChatClientTests
 
         var cacheReads = CaptureCounterLong(TokenConventions.CacheRead, agent);
         var savings = CaptureCounterDouble(TokenConventions.CostCacheSavings, agent);
+        var actualCost = CaptureCounterDouble(TokenConventions.CostActual, agent);
 
         var response = await sut.GetResponseAsync([new ChatMessage(ChatRole.User, "hello")]);
         await sut.EnrichmentCompletion; // deterministically await the background fetch
@@ -42,6 +43,8 @@ public sealed class CacheStatsEnrichingChatClientTests
         statsClient.LastId.Should().Be("gen-1");
         cacheReads.Sum().Should().Be(18041);
         savings.Sum().Should().BeApproximately(0.0615, 0.0001);
+        actualCost.Sum().Should().BeApproximately(0.0055, 0.0001,
+            "the authoritative provider cost is emitted as cost_actual");
     }
 
     [Fact]
@@ -82,7 +85,7 @@ public sealed class CacheStatsEnrichingChatClientTests
     {
         var agent = $"agent-{Guid.NewGuid():N}";
         var stats = new GenerationStats(Model, CacheReadTokens: 1000, PromptTokens: 2000,
-            CacheDiscount: 0.02m);
+            TotalCost: 0.01m, CacheDiscount: 0.02m);
         var statsClient = new FakeStatsClient(stats);
         var updates = new[]
         {
@@ -109,7 +112,7 @@ public sealed class CacheStatsEnrichingChatClientTests
     {
         var agent = $"agent-{Guid.NewGuid():N}";
         var stats = new GenerationStats(Model, CacheReadTokens: 0, PromptTokens: 500,
-            CacheDiscount: 0m);
+            TotalCost: 0.01m, CacheDiscount: 0m);
         var statsClient = new FakeStatsClient(stats);
         var inner = new TestChatClient(new ChatResponse(new ChatMessage(ChatRole.Assistant, "hi"))
         {

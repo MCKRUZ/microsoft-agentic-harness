@@ -7,15 +7,13 @@ import { MetricPanel } from '@/components/metrics/MetricPanel';
 import { TimeSeriesChart } from '@/components/charts/TimeSeriesChart';
 import { HBarList } from '@/components/charts/HBarList';
 import { useMetric, latestValue, formatKpi, seriesToBars } from './pulse-helpers';
+import { costRateQuery, costByQuery } from '@/config/costQueries';
 
-const COST_RATE =
-  'rate(agentic_harness_agent_tokens_cost_estimated_total[5m]) * 3600 or vector(0)';
+const COST_RATE = costRateQuery;
 const COST_PER_SESSION =
   'agentic_harness_agent_session_cost_sum / agentic_harness_agent_session_cost_count or vector(0)';
-const COST_BY_MODEL =
-  'sum by (model) (agentic_harness_agent_tokens_cost_estimated_total)';
-const COST_BY_AGENT =
-  'sum by (agent_name) (agentic_harness_agent_tokens_cost_estimated_total)';
+const COST_BY_MODEL = costByQuery('model');
+const COST_BY_AGENT = costByQuery('agent_name');
 const INPUT_TOKENS =
   'sum(agentic_harness_agent_tokens_input_sum) or vector(0)';
 const CACHE_TOKENS =

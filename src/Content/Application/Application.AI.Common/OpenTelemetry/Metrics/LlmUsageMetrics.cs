@@ -35,6 +35,15 @@ public static class LlmUsageMetrics
     public static Counter<double> EstimatedCost { get; } =
         AppInstrument.Meter.CreateCounter<double>(TokenConventions.CostEstimated, "{USD}", "Estimated cost per LLM call");
 
+    /// <summary>
+    /// Authoritative provider-reported cost in USD per LLM call, net of cache discount. Tags: model,
+    /// agent. Emitted only on the OpenRouter path (from the generation record), where the estimate
+    /// over-prices cached prompt tokens; the cost dashboard tiles prefer this over
+    /// <see cref="EstimatedCost"/> when present.
+    /// </summary>
+    public static Counter<double> ActualCost { get; } =
+        AppInstrument.Meter.CreateCounter<double>(TokenConventions.CostActual, "{USD}", "Provider-reported cost per LLM call");
+
     /// <summary>Estimated cache savings in USD per LLM call. Tags: model, agent.</summary>
     public static Counter<double> CacheSavings { get; } =
         AppInstrument.Meter.CreateCounter<double>(TokenConventions.CostCacheSavings, "{USD}", "Estimated cost savings from cache hits");
