@@ -66,6 +66,7 @@ logs/
 ## AgentHub runtime artifacts
 src/Content/Presentation/Presentation.AgentHub/conversations/
 src/Content/Presentation/Presentation.AgentHub/traces/
+src/Content/Presentation/Presentation.AgentHub/data/
 coverage-final/
 coverage-out*/
 infra-cov*/
