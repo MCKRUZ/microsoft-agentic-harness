@@ -66,4 +66,12 @@ public sealed class HarnessPatchValidator
             ? HarnessPatchValidation.Allowed
             : new HarnessPatchValidation { IsAllowed = false, Violations = violations };
     }
+
+    /// <summary>
+    /// Returns <see langword="true"/> iff the code-owned registry marks <paramref name="surface"/>
+    /// editable. Exposed so the training loop can fail fast when a run declares a
+    /// <c>TargetSurface</c> the registry has not unlocked, instead of silently rejecting every step.
+    /// </summary>
+    /// <param name="surface">The surface to test.</param>
+    public bool IsSurfaceEditable(HarnessSurface surface) => _registry.IsEditable(surface);
 }

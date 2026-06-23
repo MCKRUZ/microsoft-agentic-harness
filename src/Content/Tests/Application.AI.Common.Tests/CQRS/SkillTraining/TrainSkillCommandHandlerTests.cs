@@ -22,13 +22,18 @@ public class TrainSkillCommandHandlerTests
         IRolloutRunner runner,
         IPatchProposer proposer,
         InMemorySkillTrainingCheckpointStore store,
-        IGovernanceAuditService? audit = null)
+        IGovernanceAuditService? audit = null,
+        HarnessPatchValidator? fence = null)
     {
         return new TrainSkillCommandHandler(
-            runner, proposer, Aggregator, Selector, Applier, Gate, Fence,
+            runner, proposer, Aggregator, Selector, Applier, Gate, fence ?? Fence,
             store, new NoOpMediator(), TimeProvider.System,
             NullLogger<TrainSkillCommandHandler>.Instance, audit);
     }
+
+    /// <summary>A fence whose registry has been widened to unlock the given prose surfaces (Phase 2).</summary>
+    private static HarnessPatchValidator WidenedFence(params HarnessSurface[] surfaces) =>
+        new(new EditableSurfaceRegistry([HarnessSurface.SkillDocument, .. surfaces]));
 
     private static TrainSkillCommand NewCommand(TrainSkillConfig config) => new()
     {
@@ -409,6 +414,127 @@ public class TrainSkillCommandHandlerTests
 
         result.Value!.StepsExecuted.Should().Be(2, because: "patience=2 stops after 2 fence rejects");
         result.Value.Steps.Should().AllSatisfy(s => s.Action.Should().Be(GateAction.Reject));
+    }
+
+    [Fact]
+    public async Task Handle_TargetSurfaceNotEditable_ReturnsValidationFailure_RunsNothing()
+    {
+        // The default registry locks every surface but SkillDocument. A run that declares a still-locked
+        // TargetSurface must fail fast at intake, not silently reject every step.
+        var runner = new StubRolloutRunner((_, _) => [new RolloutResult { ItemId = "x", Hard = 1.0, Soft = 1.0 }]);
+        var proposer = new StubProposer(_ => new Patch
+        {
+            Edits = [new Edit { Op = EditOp.Append, Content = "- x", Surface = HarnessSurface.FailureRecovery }]
+        });
+        var sut = NewSut(runner, proposer, new InMemorySkillTrainingCheckpointStore());
+
+        var result = await sut.Handle(
+            NewCommand(new TrainSkillConfig
+            {
+                Epochs = 1, StepsPerEpoch = 1, LrStart = 4, LrMin = 1,
+                LrScheduler = "constant", Patience = 6,
+                UseSlowUpdate = false, UseMetaSkill = false,
+                TargetSurface = HarnessSurface.FailureRecovery   // never unlocked in the default registry
+            }),
+            CancellationToken.None);
+
+        result.IsSuccess.Should().BeFalse(because: "a locked TargetSurface is rejected before the loop starts");
+    }
+
+    [Fact]
+    public async Task Handle_EditOutsideRunTargetSurface_RejectsAndAudits_EvenWhenSurfaceIsUnlocked()
+    {
+        // The registry unlocks both SkillDocument and FailureRecovery, but this run targets only
+        // FailureRecovery. An edit on SkillDocument passes the frozen-surface fence yet must be rejected
+        // by the run-scope guard — a run touches exactly its one declared surface.
+        var runner = new StubRolloutRunner((_, _) => [new RolloutResult { ItemId = "x", Hard = 1.0, Soft = 1.0 }]);
+        var proposer = new StubProposer(_ => new Patch
+        {
+            Edits = [new Edit { Op = EditOp.Append, Content = "- a skill-body rule", Surface = HarnessSurface.SkillDocument }]
+        });
+        var audit = new CapturingAudit();
+        var sut = NewSut(runner, proposer, new InMemorySkillTrainingCheckpointStore(),
+            audit, WidenedFence(HarnessSurface.FailureRecovery));
+
+        var result = await sut.Handle(
+            NewCommand(new TrainSkillConfig
+            {
+                Epochs = 1, StepsPerEpoch = 1, LrStart = 4, LrMin = 1,
+                LrScheduler = "constant", Patience = 6,
+                UseSlowUpdate = false, UseMetaSkill = false,
+                TargetSurface = HarnessSurface.FailureRecovery
+            }),
+            CancellationToken.None);
+
+        var run = result.Value!;
+        run.Steps[0].Action.Should().Be(GateAction.Reject);
+        run.Steps[0].AppliedEditCount.Should().Be(0, because: "the run-scope guard rejects before PatchApplier runs");
+        run.BestSkill.Should().Be("# initial\n- baseline rule");
+        run.HasAcceptedAny.Should().BeFalse();
+        audit.Entries.Should().ContainSingle();
+        audit.Entries[0].Action.Should().Be("skill_training.out_of_run_scope");
+        audit.Entries[0].Decision.Should().Contain("SkillDocument");
+    }
+
+    [Fact]
+    public async Task Handle_EditOnUnlockedTargetSurface_AppliesAndAuditsTheApply()
+    {
+        // A run targeting an unlocked prose surface, with an edit on that same surface, flows all the
+        // way through: fence passes, run-scope passes, candidate accepted — and the accepted apply is
+        // written to the governance audit (audit-everything-it-changes).
+        var runner = new StubRolloutRunner((_, batch) => batch.Split == "val"
+            ? [new RolloutResult { ItemId = "v", Hard = 1.0, Soft = 1.0 }]
+            : [new RolloutResult { ItemId = "t", Hard = 0.5, Soft = 0.5 }]);
+        var proposer = new StubProposer(_ => new Patch
+        {
+            Edits = [new Edit { Op = EditOp.Append, Content = "- retry once, then escalate", Surface = HarnessSurface.FailureRecovery }]
+        });
+        var audit = new CapturingAudit();
+        var sut = NewSut(runner, proposer, new InMemorySkillTrainingCheckpointStore(),
+            audit, WidenedFence(HarnessSurface.FailureRecovery));
+
+        var result = await sut.Handle(
+            NewCommand(new TrainSkillConfig
+            {
+                Epochs = 1, StepsPerEpoch = 1, LrStart = 4, LrMin = 1,
+                LrScheduler = "constant", Patience = 6,
+                UseSlowUpdate = false, UseMetaSkill = false,
+                TargetSurface = HarnessSurface.FailureRecovery
+            }),
+            CancellationToken.None);
+
+        result.Value!.Steps[0].Action.Should().Be(GateAction.AcceptNewBest);
+        result.Value.BestSkill.Should().Contain("retry once, then escalate");
+        var applied = audit.Entries.Should().ContainSingle(e => e.Action == "skill_training.harness_patch_applied").Subject;
+        applied.Decision.Should().Contain("FailureRecovery");
+    }
+
+    [Fact]
+    public async Task Handle_AcceptedSkillDocumentEdit_AuditsTheApply()
+    {
+        // The default skill-document path also audits accepted applies — the common case, not just
+        // widened prose surfaces.
+        var runner = new StubRolloutRunner((_, batch) => batch.Split == "val"
+            ? [new RolloutResult { ItemId = "v", Hard = 1.0, Soft = 1.0 }]
+            : [new RolloutResult { ItemId = "t", Hard = 0.5, Soft = 0.5 }]);
+        var proposer = new StubProposer(_ => new Patch
+        {
+            Edits = [new Edit { Op = EditOp.Append, Content = "- new rule" }]
+        });
+        var audit = new CapturingAudit();
+        var sut = NewSut(runner, proposer, new InMemorySkillTrainingCheckpointStore(), audit);
+
+        await sut.Handle(
+            NewCommand(new TrainSkillConfig
+            {
+                Epochs = 1, StepsPerEpoch = 1, LrStart = 4, LrMin = 1,
+                LrScheduler = "constant", Patience = 6,
+                UseSlowUpdate = false, UseMetaSkill = false
+            }),
+            CancellationToken.None);
+
+        audit.Entries.Should().ContainSingle(e => e.Action == "skill_training.harness_patch_applied")
+            .Subject.Decision.Should().Contain("SkillDocument");
     }
 
     // ── Stubs ────────────────────────────────────────────────────────────────────

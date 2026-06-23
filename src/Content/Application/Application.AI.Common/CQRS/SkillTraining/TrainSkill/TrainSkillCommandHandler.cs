@@ -113,6 +113,16 @@ public sealed class TrainSkillCommandHandler
                 ["TrainSkillConfig invariants violated; ensure RequestValidationBehavior is registered."]);
         }
 
+        // Fail fast when a run declares a TargetSurface the code-owned registry has not unlocked.
+        // Without this, every step's edits (which target this surface) would be fence-rejected one by
+        // one — correct, but opaque. Surfaces stay locked by default; widening is a deliberate,
+        // human-owned registration in the composition root, never something the loop can do itself.
+        if (!_fence.IsSurfaceEditable(cfg.TargetSurface))
+        {
+            return Result<SkillTrainingRunResult>.ValidationFailure(
+                [$"TargetSurface '{cfg.TargetSurface}' is not editable. The EditableSurfaceRegistry must be widened (in code) to unlock it before a run may target it."]);
+        }
+
         var scheduler = ResolveScheduler(cfg.LrScheduler);
         var totalSteps = cfg.Epochs * cfg.StepsPerEpoch;
 
@@ -193,21 +203,32 @@ public sealed class TrainSkillCommandHandler
                     _logger.LogWarning(
                         "Harness patch fence rejected step {Step}: {Count} edit(s) target frozen surface(s) [{Surfaces}]. Patch not applied or gated.",
                         globalStep, fenceResult.Violations.Count, surfaces);
-                    // The fence — not the audit — is the control: an audit-write failure must not abort
-                    // the run or let a frozen-surface patch through. Record the rejection best-effort.
-                    try
-                    {
-                        _audit?.Log(
-                            request.SkillId,
-                            "skill_training.harness_patch_rejected",
-                            $"deny: frozen surface(s) [{surfaces}]");
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogError(ex,
-                            "Governance audit write failed for fence rejection at step {Step}; rejection still enforced.",
-                            globalStep);
-                    }
+                    // The fence — not the audit — is the control: SafeAudit swallows write failures so a
+                    // frozen-surface patch can never slip through on a broken audit sink.
+                    SafeAudit(request.SkillId, "skill_training.harness_patch_rejected",
+                        $"deny: frozen surface(s) [{surfaces}]", globalStep);
+                    steps.Add(NewStepRecord(globalStep, epoch, GateAction.Reject,
+                        candidateScore: 0.0, proposed.Edits.Count, applied: 0));
+                    consecutiveRejects++;
+                    if (consecutiveRejects >= cfg.Patience) goto EarlyStop;
+                    continue;
+                }
+
+                // ── Run-scope guard (Self-Harness Phase 2) ────────────────────
+                // A run optimizes exactly one declared surface (cfg.TargetSurface). The fence above
+                // already guaranteed every edit targets an *editable* surface; this narrows further to
+                // the run's *declared* surface, so a failure-recovery run cannot also rewrite the skill
+                // body even though both may be unlocked. All-or-nothing, like the fence — and below the
+                // gate, so an out-of-scope edit can never be score-accepted.
+                var outOfScope = proposed.Edits.Where(e => e.Surface != cfg.TargetSurface).ToArray();
+                if (outOfScope.Length > 0)
+                {
+                    var surfaces = string.Join(", ", outOfScope.Select(e => e.Surface).Distinct());
+                    _logger.LogWarning(
+                        "Run-scope guard rejected step {Step}: {Count} edit(s) target surface(s) [{Surfaces}] outside the run's TargetSurface '{Target}'. Patch not applied or gated.",
+                        globalStep, outOfScope.Length, surfaces, cfg.TargetSurface);
+                    SafeAudit(request.SkillId, "skill_training.out_of_run_scope",
+                        $"deny: edit(s) on [{surfaces}] outside TargetSurface '{cfg.TargetSurface}'", globalStep);
                     steps.Add(NewStepRecord(globalStep, epoch, GateAction.Reject,
                         candidateScore: 0.0, proposed.Edits.Count, applied: 0));
                     consecutiveRejects++;
@@ -346,6 +367,17 @@ public sealed class TrainSkillCommandHandler
                         break;
                 }
 
+                // Audit every accepted change to a harness surface (caveat: audit everything the loop
+                // alters). Rejections are recorded as step records; an accept mutates the surface, so it
+                // is written to the tamper-evident governance trail. Best-effort and isolated — an audit
+                // failure must not unwind an already-gated, already-applied accept.
+                if (gateResult.Action is GateAction.Accept or GateAction.AcceptNewBest)
+                {
+                    SafeAudit(request.SkillId, "skill_training.harness_patch_applied",
+                        $"accept: surface '{cfg.TargetSurface}', {applyReport.AppliedEdits.Count} edit(s), score {gateResult.CandidateScore:F4}",
+                        globalStep);
+                }
+
                 await _checkpointStore.SaveAsync(
                     new SkillTrainingCheckpoint
                     {
@@ -441,6 +473,25 @@ public sealed class TrainSkillCommandHandler
         };
         var result = await _mediator.Send(cmd, ct).ConfigureAwait(false);
         return result.IsSuccess ? result.Value! : priorMemory;
+    }
+
+    /// <summary>
+    /// Writes a governance-audit entry best-effort. The audit is the record, not the control: a failed
+    /// write is logged and swallowed so it can never unwind an already-enforced reject or an
+    /// already-applied accept. No-op when no <c>IGovernanceAuditService</c> is registered.
+    /// </summary>
+    private void SafeAudit(string skillId, string action, string decision, int step)
+    {
+        try
+        {
+            _audit?.Log(skillId, action, decision);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "Governance audit write failed for {Action} at step {Step}; the control was still enforced.",
+                action, step);
+        }
     }
 
     private static SkillTrainingStepRecord NewStepRecord(

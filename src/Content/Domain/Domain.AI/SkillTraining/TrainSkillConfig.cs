@@ -63,4 +63,17 @@ public sealed record TrainSkillConfig
 
     /// <summary>Seed for sampling the train/val batches; 0 = nondeterministic.</summary>
     public int Seed { get; init; }
+
+    /// <summary>
+    /// The single harness surface this run is permitted to optimize. Defaults to
+    /// <see cref="HarnessSurface.SkillDocument"/> — the original, only-editable-today surface.
+    /// </summary>
+    /// <remarks>
+    /// This is the per-run scope, narrower than (and validated against) the code-owned
+    /// <c>EditableSurfaceRegistry</c>: the surface must be marked editable by the registry, and the
+    /// fence (<c>HarnessPatchValidator</c>) rejects, below the gate, any edit whose surface differs
+    /// from this value. A run therefore touches exactly one declared surface — the "get specific about
+    /// what it can and cannot alter" guardrail of Self-Harness Phase 2.
+    /// </remarks>
+    public HarnessSurface TargetSurface { get; init; } = HarnessSurface.SkillDocument;
 }

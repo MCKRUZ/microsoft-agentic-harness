@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces.SkillTraining;
 using Application.AI.Common.Services.SkillTraining;
+using Domain.AI.SkillTraining;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
@@ -35,8 +36,19 @@ public static class SkillTrainingDependencyInjection
 {
     /// <summary>Registers the skill-training subsystem's services.</summary>
     /// <param name="services">The service collection to configure.</param>
+    /// <param name="editableSurfaces">
+    /// Optional set of harness surfaces to <em>unlock</em> for the self-optimization loop, beyond the
+    /// always-editable <see cref="HarnessSurface.SkillDocument"/>. Defaults to <see langword="null"/> —
+    /// locked, skill-document-only. Passing surfaces here is the <em>deliberate, human-owned, code-level</em>
+    /// opt-in to Self-Harness Phase 2: it is the only way to widen the fence, the loop can never do it
+    /// itself, and the validating <see cref="EditableSurfaceRegistry"/> constructor throws if any
+    /// requested surface is frozen by construction (denied tools, autonomy tier, content safety, the
+    /// registry itself).
+    /// </param>
     /// <returns>The service collection for chaining.</returns>
-    public static IServiceCollection AddSkillTrainingDependencies(this IServiceCollection services)
+    public static IServiceCollection AddSkillTrainingDependencies(
+        this IServiceCollection services,
+        IReadOnlyCollection<HarnessSurface>? editableSurfaces = null)
     {
         ArgumentNullException.ThrowIfNull(services);
 
@@ -44,7 +56,21 @@ public static class SkillTrainingDependencyInjection
         services.TryAddSingleton<IGateEvaluator, GateEvaluator>();
         services.TryAddSingleton<IPatchAggregator, PatchAggregator>();
         services.TryAddSingleton<IEditSelector, TopKEditSelector>();
-        services.TryAddSingleton<EditableSurfaceRegistry>();
+
+        // Widen the fence only when a consumer explicitly opts in (code, not config). SkillDocument is
+        // always editable; the validating constructor throws on any frozen-by-construction surface.
+        // TryAddSingleton means the default-locked registration below is a no-op once this one lands.
+        if (editableSurfaces is { Count: > 0 })
+        {
+            var unlocked = new HashSet<HarnessSurface>(editableSurfaces) { HarnessSurface.SkillDocument };
+            services.TryAddSingleton(new EditableSurfaceRegistry(unlocked));
+        }
+
+        // Default-locked fallback. Registered via an explicit factory, NOT TryAddSingleton<T>(): the
+        // container's greedy constructor selection would otherwise activate the IEnumerable ctor with an
+        // empty sequence (unregistered IEnumerable<T> resolves to empty), producing a registry that
+        // locks every surface — including SkillDocument — and silently breaking the loop's own edits.
+        services.TryAddSingleton(_ => new EditableSurfaceRegistry());
         services.TryAddSingleton<HarnessPatchValidator>();
         services.TryAddSingleton<ISkillTrainingCheckpointStore, InMemorySkillTrainingCheckpointStore>();
         services.TryAddSingleton<IPatchProposer, NotConfiguredPatchProposer>();
