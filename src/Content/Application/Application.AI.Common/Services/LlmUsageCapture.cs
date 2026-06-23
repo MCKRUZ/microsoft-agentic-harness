@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces;
+using Application.AI.Common.Pricing;
 using Domain.Common.Config;
 using Domain.Common.Config.Observability;
 using Microsoft.Extensions.Options;
@@ -183,10 +184,6 @@ public sealed class LlmUsageCapture : ILlmUsageCapture
         if (model is null || !_pricing.TryGetValue(model, out var p))
             return 0m;
 
-        return
-            (input * p.InputPerMillion / 1_000_000m) +
-            (output * p.OutputPerMillion / 1_000_000m) +
-            (cacheRead * p.CacheReadPerMillion / 1_000_000m) +
-            (cacheWrite * p.CacheWritePerMillion / 1_000_000m);
+        return LlmCostCalculator.Compute(input, output, cacheRead, cacheWrite, p);
     }
 }

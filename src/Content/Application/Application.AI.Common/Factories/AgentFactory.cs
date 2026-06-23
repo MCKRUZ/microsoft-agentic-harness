@@ -225,9 +225,14 @@ public class AgentFactory : IAgentFactory
         var statsClient = _serviceProvider.GetService<IGenerationStatsClient>();
         if (statsClient is not null)
         {
+            var pricing = _appConfig.CurrentValue.Observability.LlmPricing;
+            var pricingByModel = pricing.Models.ToDictionary(
+                m => m.Name, m => m, StringComparer.OrdinalIgnoreCase);
+
             chatClientBuilder = chatClientBuilder.Use(inner =>
                 new Middleware.CacheStatsEnrichingChatClient(
                     inner, statsClient, agentContext.Name ?? "unknown",
+                    pricingByModel, pricing.DefaultModel,
                     _loggerFactory.CreateLogger<Middleware.CacheStatsEnrichingChatClient>()));
         }
 

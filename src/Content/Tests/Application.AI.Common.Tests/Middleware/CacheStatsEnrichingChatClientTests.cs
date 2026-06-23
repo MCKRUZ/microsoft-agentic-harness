@@ -3,6 +3,7 @@ using System.Runtime.CompilerServices;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Middleware;
 using Domain.AI.Telemetry.Conventions;
+using Domain.Common.Config.Observability;
 using FluentAssertions;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -61,7 +62,7 @@ public sealed class CacheStatsEnrichingChatClientTests
     }
 
     [Fact]
-    public async Task GetResponseAsync_StatsUnavailable_EmitsNothing()
+    public async Task GetResponseAsync_StatsUnavailable_EmitsNoCacheMetrics()
     {
         var agent = $"agent-{Guid.NewGuid():N}";
         var statsClient = new FakeStatsClient(null); // record never became available
@@ -77,7 +78,32 @@ public sealed class CacheStatsEnrichingChatClientTests
         await sut.EnrichmentCompletion;
 
         statsClient.Calls.Should().Be(1);
-        cacheReads.Should().BeEmpty();
+        cacheReads.Should().BeEmpty("cache instruments only come from a fetched generation record");
+    }
+
+    [Fact]
+    public async Task GetResponseAsync_StatsUnavailable_EmitsEstimatedCostAsActualCost()
+    {
+        // When the generation record can't be fetched, cost_actual must still be emitted from the
+        // per-call token estimate so the cost tiles never silently drop a call's spend.
+        var agent = $"agent-{Guid.NewGuid():N}";
+        var statsClient = new FakeStatsClient(null);
+        var inner = new TestChatClient(new ChatResponse(new ChatMessage(ChatRole.Assistant, "hi"))
+        {
+            ResponseId = "gen-fallback",
+            ModelId = DefaultModel,
+            Usage = new UsageDetails { InputTokenCount = 1_000_000, OutputTokenCount = 0 }
+        });
+        var sut = Create(inner, statsClient, agent);
+
+        var actualCost = CaptureCounterDouble(TokenConventions.CostActual, agent);
+
+        await sut.GetResponseAsync([new ChatMessage(ChatRole.User, "hello")]);
+        await sut.EnrichmentCompletion;
+
+        statsClient.Calls.Should().Be(1);
+        actualCost.Sum().Should().BeApproximately(3.00, 0.0001,
+            "1,000,000 input tokens at the $3.00/M rate, estimated because the real record was unavailable");
     }
 
     [Fact]
@@ -129,9 +155,24 @@ public sealed class CacheStatsEnrichingChatClientTests
         cacheReads.Should().BeEmpty("a cache miss should not record a zero cache-read measurement");
     }
 
+    private const string DefaultModel = "claude-sonnet-4-6";
+
+    private static readonly IReadOnlyDictionary<string, ModelPricingEntry> Pricing =
+        new Dictionary<string, ModelPricingEntry>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["claude-sonnet-4-6"] = new ModelPricingEntry
+            {
+                Name = "claude-sonnet-4-6",
+                InputPerMillion = 3.00m,
+                OutputPerMillion = 15.00m,
+                CacheReadPerMillion = 0.30m,
+                CacheWritePerMillion = 3.75m
+            }
+        };
+
     private static CacheStatsEnrichingChatClient Create(
         IChatClient inner, IGenerationStatsClient statsClient, string agentName)
-        => new(inner, statsClient, agentName,
+        => new(inner, statsClient, agentName, Pricing, DefaultModel,
             NullLogger<CacheStatsEnrichingChatClient>.Instance);
 
     /// <summary>Captures long-counter measurements emitted for a specific agent.</summary>
