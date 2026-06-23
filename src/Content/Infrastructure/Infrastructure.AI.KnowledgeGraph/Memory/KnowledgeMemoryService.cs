@@ -25,6 +25,7 @@ public sealed class KnowledgeMemoryService : IKnowledgeMemory
     private readonly IFeedbackStore? _feedbackStore;
     private readonly IOptionsMonitor<AppConfig> _configMonitor;
     private readonly ILogger<KnowledgeMemoryService> _logger;
+    private readonly IMemoryWriteGate? _writeGate;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="KnowledgeMemoryService"/> class.
@@ -37,6 +38,9 @@ public sealed class KnowledgeMemoryService : IKnowledgeMemory
     /// <param name="feedbackStore">Feedback weight store (null when feedback disabled).</param>
     /// <param name="configMonitor">Application configuration.</param>
     /// <param name="logger">Logger for recording memory operations.</param>
+    /// <param name="writeGate">Memory write gate that scans, classifies, and stamps provenance on
+    /// facts before persistence. When <see langword="null"/> (gate not registered), writes pass
+    /// through unguarded — preserving legacy behavior.</param>
     public KnowledgeMemoryService(
         ISessionKnowledgeCache sessionCache,
         IKnowledgeGraphStore graphStore,
@@ -44,7 +48,8 @@ public sealed class KnowledgeMemoryService : IKnowledgeMemory
         IFeedbackDetector? feedbackDetector,
         IFeedbackStore? feedbackStore,
         IOptionsMonitor<AppConfig> configMonitor,
-        ILogger<KnowledgeMemoryService> logger)
+        ILogger<KnowledgeMemoryService> logger,
+        IMemoryWriteGate? writeGate = null)
     {
         ArgumentNullException.ThrowIfNull(sessionCache);
         ArgumentNullException.ThrowIfNull(graphStore);
@@ -59,6 +64,7 @@ public sealed class KnowledgeMemoryService : IKnowledgeMemory
         _feedbackStore = feedbackStore;
         _configMonitor = configMonitor;
         _logger = logger;
+        _writeGate = writeGate;
     }
 
     /// <inheritdoc />
@@ -68,6 +74,21 @@ public sealed class KnowledgeMemoryService : IKnowledgeMemory
         string entityType = "Fact",
         CancellationToken cancellationToken = default)
     {
+        // Gate the write before anything is persisted: scan for injection, classify trust, and
+        // stamp provenance. This is the single chokepoint covering every write — including the
+        // unattended post-turn auto-extraction path that bypasses the request pipeline.
+        var decision = _writeGate is null
+            ? null
+            : await _writeGate.EvaluateAsync(key, content, entityType, cancellationToken);
+
+        if (decision is { Persist: false })
+        {
+            _logger.LogWarning(
+                "Memory write blocked for Key={Key}, Type={Type}: {Reason}",
+                key, entityType, decision.Reason);
+            return;
+        }
+
         var node = new GraphNode
         {
             Id = MemoryNodeId(key),
@@ -76,19 +97,33 @@ public sealed class KnowledgeMemoryService : IKnowledgeMemory
             Properties = new Dictionary<string, string> { ["content"] = content },
             ChunkIds = [],
             OwnerId = _scope.UserId,
-            TenantId = _scope.TenantId
+            TenantId = _scope.TenantId,
+            Provenance = decision?.Provenance
         };
 
-        // Fast path for any same-scope recall within this request.
-        _sessionCache.Add(node);
+        // Only quarantined facts carry an explicit trust marker. Trusted facts stay unmarked —
+        // GetTrust defaults unmarked nodes to Trusted — so a trusted write, a disabled-guard write,
+        // and a no-gate write are all indistinguishable and recallable.
+        var quarantined = decision is { Trust: MemoryTrust.Untrusted };
+        if (quarantined)
+            node = node.WithTrust(MemoryTrust.Untrusted);
+
+        // Fast path for any same-scope recall within this request. Quarantined facts are kept out of
+        // the cache as an optimization (no point caching what recall will filter); the authoritative
+        // "never serve quarantined" enforcement lives in RecallAsync.
+        if (!quarantined)
+            _sessionCache.Add(node);
 
         // Durable write so the fact survives the request scope and is recallable in future
         // sessions. The node carries an explicit scope-namespaced Id + OwnerId, so it is
         // correctly attributed even when persisted from the post-turn background task (where
-        // the ambient request scope is no longer established).
+        // the ambient request scope is no longer established). Quarantined facts are still
+        // persisted here (marked untrusted) so they remain available for audit and incident response.
         await _graphStore.AddNodesAsync([node], cancellationToken);
 
-        _logger.LogDebug("Remembered: Key={Key}, Type={Type}", key, entityType);
+        _logger.LogDebug(
+            "Remembered: Key={Key}, Type={Type}, Trust={Trust}",
+            key, entityType, quarantined ? MemoryTrust.Untrusted : MemoryTrust.Trusted);
     }
 
     /// <inheritdoc />
@@ -97,8 +132,12 @@ public sealed class KnowledgeMemoryService : IKnowledgeMemory
         int maxResults = 5,
         CancellationToken cancellationToken = default)
     {
+        // RecallAsync is the single chokepoint that enforces "quarantined facts are never served":
+        // both sources are passed through IsRecallable here, so the trust invariant lives in one
+        // place and cannot be bypassed by a future read path or a stray cache insertion.
+
         // Source 1: Session cache (fast, sub-millisecond)
-        var cached = _sessionCache.Search(query, maxResults);
+        var cached = _sessionCache.Search(query, maxResults).Where(IsRecallable).ToList();
         if (cached.Count >= maxResults)
         {
             _logger.LogDebug("Recall satisfied from session cache: {Count} results", cached.Count);
@@ -111,7 +150,7 @@ public sealed class KnowledgeMemoryService : IKnowledgeMemory
 
         var graphResults = await SearchGraphAsync(query, remaining + cached.Count, cancellationToken);
         var deduped = graphResults
-            .Where(n => !cachedIds.Contains(n.Id))
+            .Where(n => IsRecallable(n) && !cachedIds.Contains(n.Id))
             .Take(remaining)
             .ToList();
 
@@ -234,6 +273,10 @@ public sealed class KnowledgeMemoryService : IKnowledgeMemory
             node.Name.Contains(t, StringComparison.OrdinalIgnoreCase) ||
             node.Type.Contains(t, StringComparison.OrdinalIgnoreCase));
     }
+
+    // Quarantined (untrusted-provenance) facts are persisted for audit but never served by recall.
+    // Implements the "treat retrieval as a risk decision" principle: trust is re-checked at read.
+    private static bool IsRecallable(GraphNode node) => node.GetTrust() == MemoryTrust.Trusted;
 
     /// <summary>
     /// Builds the deterministic, scope-namespaced node id for a remembered fact. Two users (or

@@ -1,3 +1,4 @@
+using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Application.AI.Common.Interfaces.Learnings;
 using Application.AI.Common.Interfaces.RAG;
@@ -143,6 +144,20 @@ public static class DependencyInjection
                 sp.GetRequiredService<Application.AI.Common.Interfaces.Routing.IModelRouter>(),
                 sp.GetRequiredService<ILogger<LlmFeedbackDetector>>()));
 
+        // Memory write gate — scans, classifies, and stamps provenance on facts before persistence,
+        // closing the unattended auto-extraction write path. The intent ("Task Adherence") seam
+        // ships fail-open via TryAdd so a consumer's real classifier wins. The scanner and audit
+        // chain are resolved optionally: the gate degrades gracefully (and logs) when absent.
+        services.TryAddSingleton<IMemoryIntentClassifier, NoOpMemoryIntentClassifier>();
+        services.AddSingleton<IMemoryWriteGate>(sp =>
+            new ProvenanceMemoryWriteGate(
+                sp.GetRequiredService<IProvenanceStamper>(),
+                sp.GetRequiredService<IMemoryIntentClassifier>(),
+                sp.GetRequiredService<IOptionsMonitor<AppConfig>>(),
+                sp.GetRequiredService<ILogger<ProvenanceMemoryWriteGate>>(),
+                sp.GetService<IPromptInjectionScanner>(),
+                sp.GetService<IGovernanceAuditService>()));
+
         // Cross-session knowledge persistence (scoped per request/session)
         services.AddScoped<ISessionKnowledgeCache, InMemorySessionCache>();
         services.AddScoped<IKnowledgeMemory>(sp =>
@@ -153,7 +168,8 @@ public static class DependencyInjection
                 sp.GetService<IFeedbackDetector>(),
                 sp.GetService<IFeedbackStore>(),
                 sp.GetRequiredService<IOptionsMonitor<AppConfig>>(),
-                sp.GetRequiredService<ILogger<KnowledgeMemoryService>>()));
+                sp.GetRequiredService<ILogger<KnowledgeMemoryService>>(),
+                sp.GetService<IMemoryWriteGate>()));
 
         // Conversation-to-Knowledge Bridge — LLM-based fact extraction from agent turns
         services.AddTransient<IConversationFactExtractor, ConversationFactExtractor>();

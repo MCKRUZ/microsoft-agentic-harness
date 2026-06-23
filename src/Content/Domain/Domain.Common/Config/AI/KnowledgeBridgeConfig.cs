@@ -42,4 +42,11 @@ public sealed class KnowledgeBridgeConfig
     /// <c>ModelRoutingConfig.OperationOverrides</c>.
     /// </summary>
     public string RoutingOperationName { get; set; } = "fact_extraction";
+
+    /// <summary>
+    /// The memory write gate — scans, classifies, and stamps provenance on facts before they enter
+    /// long-term memory, and quarantines untrusted facts from recall. Enabled by default whenever
+    /// memory itself is enabled (defense-by-default).
+    /// </summary>
+    public MemoryGuardConfig MemoryGuard { get; set; } = new();
 }
