@@ -21,6 +21,7 @@ public sealed class TokenAndToolConventionsTests
     [InlineData(TokenConventions.CostEstimated, "agent.tokens.cost_estimated")]
     [InlineData(TokenConventions.CostActual, "agent.tokens.cost_actual")]
     [InlineData(TokenConventions.CacheHitRate, "agent.tokens.cache_hit_rate")]
+    [InlineData(TokenConventions.Model, "model")]
     public void TokenConventions_HaveExpectedValues(string actual, string expected)
     {
         actual.Should().Be(expected);

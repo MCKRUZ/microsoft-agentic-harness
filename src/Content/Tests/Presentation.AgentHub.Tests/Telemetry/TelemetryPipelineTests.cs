@@ -74,7 +74,7 @@ public class TelemetryPipelineTests : IClassFixture<TelemetryPipelineTests.Telem
         var tags = new KeyValuePair<string, object?>[]
         {
             new("agent.name", "test-agent"),
-            new("gen_ai.request.model", "gpt-4o"),
+            new("model", "gpt-4o"),
         };
 
         // Session metrics
@@ -286,8 +286,8 @@ public class TelemetryPipelineTests : IClassFixture<TelemetryPipelineTests.Telem
     {
         var metrics = await ScrapeMetrics();
 
-        metrics.Should().Contain("gen_ai_request_model=\"gpt-4o\"",
-            "dashboard cost-by-model queries group by gen_ai_request_model");
+        metrics.Should().Contain("model=\"gpt-4o\"",
+            "dashboard cost/token-by-model queries group by the short `model` label");
     }
 
     [Fact]

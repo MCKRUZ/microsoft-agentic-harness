@@ -153,9 +153,12 @@ public sealed class CacheStatsEnrichingChatClient : DelegatingChatClient
     private void EmitMetrics(GenerationStats? stats, string? fallbackModel, TokenCounts tokens)
     {
         var model = stats?.Model ?? fallbackModel;
+        // Stamp the harness-short `model` label (not the dotted semconv key) so the dashboards'
+        // `sum by (model)` cost/cache breakdowns resolve — must match LlmTokenTrackingProcessor,
+        // which emits the same instruments. See TokenConventions.Model.
         var tags = new TagList
         {
-            { TokenConventions.GenAiRequestModel, model ?? "unknown" },
+            { TokenConventions.Model, model ?? "unknown" },
             { AgentConventions.Name, _agentName }
         };
 
@@ -174,7 +177,7 @@ public sealed class CacheStatsEnrichingChatClient : DelegatingChatClient
             {
                 var hitRate = (double)stats.CacheReadTokens / stats.PromptTokens;
                 LlmUsageMetrics.CacheHitRate.Record(
-                    hitRate, new TagList { { TokenConventions.GenAiRequestModel, model ?? "unknown" } });
+                    hitRate, new TagList { { TokenConventions.Model, model ?? "unknown" } });
             }
         }
 

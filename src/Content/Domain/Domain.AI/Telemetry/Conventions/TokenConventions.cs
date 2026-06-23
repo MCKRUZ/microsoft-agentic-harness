@@ -42,4 +42,18 @@ public static class TokenConventions
     public const string GenAiCacheWriteTokens = "gen_ai.usage.cache_creation_input_tokens";
     /// <summary>Gen AI semantic convention: requested model identifier.</summary>
     public const string GenAiRequestModel = "gen_ai.request.model";
+
+    /// <summary>
+    /// Harness-owned short model label stamped on the harness's own token and cost metrics
+    /// (<c>agent.tokens.*</c>). The dashboards break down spend and volume with
+    /// <c>sum by (model)</c>, so the emitted metric label must be the bare <c>model</c>.
+    /// </summary>
+    /// <remarks>
+    /// The model value itself is read from the span's <see cref="GenAiRequestModel"/> attribute,
+    /// but that dotted semantic-convention key normalizes to the Prometheus label
+    /// <c>gen_ai_request_model</c> — which no dashboard query references. This mirrors how the
+    /// harness labels agents with the short <c>agent.name</c> (→ <c>agent_name</c>) rather than a
+    /// dotted semconv key, keeping the metric label aligned with the dashboard and demo data.
+    /// </remarks>
+    public const string Model = "model";
 }

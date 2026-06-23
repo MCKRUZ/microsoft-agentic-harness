@@ -79,9 +79,11 @@ public sealed class LlmTokenTrackingProcessor : BaseProcessor<Activity>
             ?? data.GetBaggageItem(AgentConventions.Name)
             ?? "unknown";
 
+        // Stamp the harness-short `model` label (not the dotted semconv key) so the
+        // dashboards' `sum by (model)` breakdowns resolve — see TokenConventions.Model.
         var tags = new TagList
         {
-            { TokenConventions.GenAiRequestModel, model },
+            { TokenConventions.Model, model },
             { AgentConventions.Name, agentName }
         };
 
@@ -131,7 +133,7 @@ public sealed class LlmTokenTrackingProcessor : BaseProcessor<Activity>
         if (hasCacheAttributes && totalInput > 0)
         {
             var hitRate = (double)cacheReadTokens / totalInput;
-            LlmUsageMetrics.CacheHitRate.Record(hitRate, new TagList { { TokenConventions.GenAiRequestModel, model } });
+            LlmUsageMetrics.CacheHitRate.Record(hitRate, new TagList { { TokenConventions.Model, model } });
         }
 
         // Per-turn metrics

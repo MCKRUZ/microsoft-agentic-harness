@@ -166,7 +166,7 @@ public sealed class LlmTokenTrackingProcessorTests : IDisposable
         listener.SetMeasurementEventCallback<double>((_, value, tags, _) =>
         {
             foreach (var tag in tags)
-                if (tag.Key == TokenConventions.GenAiRequestModel && tag.Value as string == "with-cache-attrs-model")
+                if (tag.Key == TokenConventions.Model && tag.Value as string == "with-cache-attrs-model")
                     hitRates.Add(value);
         });
         listener.Start();
@@ -271,5 +271,64 @@ public sealed class LlmTokenTrackingProcessorTests : IDisposable
             "a non-null unpriced model must still emit cost via the default-model pricing fallback");
         costs.Sum().Should().BeApproximately(3.00, 0.0001,
             "1,000,000 input tokens priced at the default model's $3.00/M rate");
+    }
+
+    /// <summary>
+    /// Regression guard for the dashboard "Distribution by Model" tile showing a single
+    /// "unknown" bucket: the harness's own token metrics must carry the short <c>model</c>
+    /// label that every <c>sum by (model)</c> dashboard query groups on — NOT the dotted
+    /// semantic-convention key <c>gen_ai.request.model</c>, which Prometheus normalizes to
+    /// <c>gen_ai_request_model</c> and which no dashboard query references.
+    /// </summary>
+    [Fact]
+    public void OnEnd_EmitsTotalTokens_WithShortModelLabel()
+    {
+        const string uniqueAgent = "model-label-guard-agent";
+        const string expectedModel = "claude-opus-4-8";
+        var processor = CreateProcessor();
+
+        var modelTagValues = new List<string?>();
+        var sawDottedSemconvKey = false;
+        using var listener = new MeterListener
+        {
+            InstrumentPublished = (instrument, l) =>
+            {
+                if (instrument.Name == TokenConventions.Total)
+                    l.EnableMeasurementEvents(instrument);
+            }
+        };
+        listener.SetMeasurementEventCallback<long>((_, _, tags, _) =>
+        {
+            var isOurs = false;
+            string? model = null;
+            foreach (var tag in tags)
+            {
+                if (tag.Key == AgentConventions.Name && tag.Value as string == uniqueAgent)
+                    isOurs = true;
+                if (tag.Key == TokenConventions.Model)
+                    model = tag.Value as string;
+                if (tag.Key == TokenConventions.GenAiRequestModel)
+                    sawDottedSemconvKey = true;
+            }
+            if (isOurs)
+                modelTagValues.Add(model);
+        });
+        listener.Start();
+
+        using (var activity = _source.StartActivity("llm-call")!)
+        {
+            activity.SetTag(TokenConventions.GenAiInputTokens, 100);
+            activity.SetTag(TokenConventions.GenAiOutputTokens, 50);
+            activity.SetTag(TokenConventions.GenAiRequestModel, expectedModel);
+            activity.SetTag(AgentConventions.Name, uniqueAgent);
+            processor.OnEnd(activity);
+        }
+
+        modelTagValues.Should().ContainSingle(
+            "the total-tokens metric is emitted once per LLM call")
+            .Which.Should().Be(expectedModel,
+                "the dashboards group by the short `model` label, populated from the span's model attribute");
+        sawDottedSemconvKey.Should().BeFalse(
+            "the metric must not be labelled with the dotted gen_ai.request.model key");
     }
 }

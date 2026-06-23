@@ -49,6 +49,34 @@ public sealed class CacheStatsEnrichingChatClientTests
     }
 
     [Fact]
+    public async Task GetResponseAsync_TagsCacheMetricsWithShortModelLabel()
+    {
+        // The dashboards group cache/cost by the short `model` label (sum by (model)). Emitting the
+        // dotted gen_ai.request.model key here would leave these metrics — including cost_actual,
+        // the preferred cost source — invisible to those tiles, and disagree with
+        // LlmTokenTrackingProcessor, which emits the same instruments. See TokenConventions.Model.
+        var agent = $"agent-{Guid.NewGuid():N}";
+        var stats = new GenerationStats(Model, CacheReadTokens: 100, PromptTokens: 200,
+            TotalCost: 0.01m, CacheDiscount: 0.02m);
+        var statsClient = new FakeStatsClient(stats);
+        var inner = new TestChatClient(new ChatResponse(new ChatMessage(ChatRole.Assistant, "hi"))
+        {
+            ResponseId = "gen-model",
+            ModelId = Model
+        });
+        var sut = Create(inner, statsClient, agent);
+
+        var models = CaptureModelTag(TokenConventions.CacheRead, agent);
+
+        await sut.GetResponseAsync([new ChatMessage(ChatRole.User, "hello")]);
+        await sut.EnrichmentCompletion;
+
+        models.Should().ContainSingle(
+            "the cache metric must carry the short `model` label, not the dotted gen_ai.request.model key")
+            .Which.Should().Be(Model);
+    }
+
+    [Fact]
     public async Task GetResponseAsync_NoResponseId_DoesNotCallStatsClient()
     {
         var statsClient = new FakeStatsClient(null);
@@ -215,6 +243,30 @@ public sealed class CacheStatsEnrichingChatClientTests
         });
         listener.Start();
         return values;
+    }
+
+    /// <summary>Captures the value of the short <c>model</c> tag on long-counter measurements for an agent.</summary>
+    private static List<string> CaptureModelTag(string instrumentName, string agent)
+    {
+        var models = new List<string>();
+        var listener = new MeterListener
+        {
+            InstrumentPublished = (instrument, l) =>
+            {
+                if (instrument.Name == instrumentName)
+                    l.EnableMeasurementEvents(instrument);
+            }
+        };
+        listener.SetMeasurementEventCallback<long>((_, _, tags, _) =>
+        {
+            if (!HasAgentTag(tags, agent))
+                return;
+            foreach (var tag in tags)
+                if (tag.Key == TokenConventions.Model && tag.Value is string model)
+                    models.Add(model);
+        });
+        listener.Start();
+        return models;
     }
 
     private static bool HasAgentTag(ReadOnlySpan<KeyValuePair<string, object?>> tags, string agent)
