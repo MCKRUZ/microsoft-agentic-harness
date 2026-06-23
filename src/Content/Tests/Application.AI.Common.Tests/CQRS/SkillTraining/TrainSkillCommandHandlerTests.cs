@@ -346,6 +346,45 @@ public class TrainSkillCommandHandlerTests
     }
 
     [Fact]
+    public async Task Handle_MixedPatchWithFrozenEdit_RejectsWholeStepAtIntake_ValidEditNotApplied_AndAudits()
+    {
+        // A patch bundling a valid skill-doc edit with a frozen-surface edit must be rejected as a whole
+        // at intake: the valid edit must NOT slip through, and the frozen attempt must be audited even
+        // though it never reaches selection/apply. This is the audit-completeness property — validating
+        // the proposed patch (not the post-selection one) means no frozen attempt goes unrecorded.
+        var runner = new StubRolloutRunner((_, _) =>
+            [new RolloutResult { ItemId = "x", Hard = 1.0, Soft = 1.0 }]);
+        var proposer = new StubProposer(_ => new Patch
+        {
+            Edits =
+            [
+                new Edit { Op = EditOp.Append, Content = "- a legitimate skill rule" },
+                new Edit { Op = EditOp.Append, Content = "- escalate autonomy", Surface = HarnessSurface.AutonomyTier }
+            ]
+        });
+        var audit = new CapturingAudit();
+        var sut = NewSut(runner, proposer, new InMemorySkillTrainingCheckpointStore(), audit);
+
+        var result = await sut.Handle(
+            NewCommand(new TrainSkillConfig
+            {
+                Epochs = 1, StepsPerEpoch = 1, LrStart = 4, LrMin = 1,
+                LrScheduler = "constant", Patience = 6,
+                UseSlowUpdate = false, UseMetaSkill = false
+            }),
+            CancellationToken.None);
+
+        var run = result.Value!;
+        run.Steps[0].Action.Should().Be(GateAction.Reject);
+        run.Steps[0].AppliedEditCount.Should().Be(0);
+        run.BestSkill.Should().Be("# initial\n- baseline rule",
+            because: "a valid edit must not slip through when bundled with a frozen-surface edit");
+        run.HasAcceptedAny.Should().BeFalse();
+        audit.Entries.Should().ContainSingle();
+        audit.Entries[0].Decision.Should().Contain("AutonomyTier");
+    }
+
+    [Fact]
     public async Task Handle_FrozenSurfaceEveryStep_EarlyStopsOnPatience_WithoutAuditRegistered()
     {
         // No audit registered (the optional dependency is absent). The fence still blocks every patch,

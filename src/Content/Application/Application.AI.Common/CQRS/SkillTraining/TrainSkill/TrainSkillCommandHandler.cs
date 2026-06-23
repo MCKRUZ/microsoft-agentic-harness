@@ -175,29 +175,18 @@ public sealed class TrainSkillCommandHandler
                     continue;
                 }
 
-                // ── Aggregate + select ────────────────────────────────────────
-                var aggregated = _aggregator.Aggregate([proposed]);
-                var lr = scheduler.GetLearningRate(globalStep - 1, totalSteps, cfg.LrStart, cfg.LrMin);
-                var selected = _selector.SelectTopK(aggregated, lr);
-
-                if (selected.Edits.Count == 0)
-                {
-                    // No edits proposed — record as a Reject no-op and continue.
-                    steps.Add(NewStepRecord(globalStep, epoch, GateAction.Reject,
-                        candidateScore: 0.0, proposed.Edits.Count, 0));
-                    consecutiveRejects++;
-                    if (consecutiveRejects >= cfg.Patience) goto EarlyStop;
-                    continue;
-                }
-
                 // ── Governance fence (Self-Harness Phase 1) ───────────────────
-                // Hard-reject — below and independent of the gate — any patch whose edits target a
-                // harness surface the code-owned registry has not marked editable. Running beneath the
-                // gate is the whole point: a frozen-surface edit can never be accepted by improving the
-                // score. Today only SkillDocument is editable, so legitimate skill-prose patches pass
+                // Hard-reject — at intake, below and independent of the gate — any proposed patch whose
+                // edits target a harness surface the code-owned registry has not marked editable.
+                // Validating the PROPOSED patch (before aggregate/select) keeps the audit trail complete:
+                // every frozen-surface attempt is recorded, including ones selection would later drop.
+                // Aggregate/select only filter and merge existing edits (preserving Edit.Surface), so
+                // they cannot introduce a frozen surface that intake did not already see. Running beneath
+                // the gate is the whole point: a frozen-surface edit can never be accepted by improving
+                // the score. Today only SkillDocument is editable, so legitimate skill-prose patches pass
                 // untouched; this is the lock that must already exist before the edit target is ever
                 // widened to system prompt / tools / policies (Phase 2/3).
-                var fenceResult = _fence.Validate(selected);
+                var fenceResult = _fence.Validate(proposed);
                 if (!fenceResult.IsAllowed)
                 {
                     var surfaces = string.Join(", ", fenceResult.Violations.Select(v => v.Surface));
@@ -221,6 +210,21 @@ public sealed class TrainSkillCommandHandler
                     }
                     steps.Add(NewStepRecord(globalStep, epoch, GateAction.Reject,
                         candidateScore: 0.0, proposed.Edits.Count, applied: 0));
+                    consecutiveRejects++;
+                    if (consecutiveRejects >= cfg.Patience) goto EarlyStop;
+                    continue;
+                }
+
+                // ── Aggregate + select ────────────────────────────────────────
+                var aggregated = _aggregator.Aggregate([proposed]);
+                var lr = scheduler.GetLearningRate(globalStep - 1, totalSteps, cfg.LrStart, cfg.LrMin);
+                var selected = _selector.SelectTopK(aggregated, lr);
+
+                if (selected.Edits.Count == 0)
+                {
+                    // No edits proposed — record as a Reject no-op and continue.
+                    steps.Add(NewStepRecord(globalStep, epoch, GateAction.Reject,
+                        candidateScore: 0.0, proposed.Edits.Count, 0));
                     consecutiveRejects++;
                     if (consecutiveRejects >= cfg.Patience) goto EarlyStop;
                     continue;
