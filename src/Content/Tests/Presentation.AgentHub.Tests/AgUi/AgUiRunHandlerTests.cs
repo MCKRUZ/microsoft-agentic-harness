@@ -350,7 +350,10 @@ public sealed class AgUiRunHandlerTests
         mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(MakeSuccessResult(agentResponse));
 
-        var handler = BuildHandler(mediator, store);
+        var budget = new Mock<IConversationBudgetTracker>();
+        budget.Setup(b => b.GetStatus(It.IsAny<string>())).Returns(ConversationBudgetStatus.Disabled);
+
+        var handler = BuildHandler(mediator, store, budget: budget);
         var input = MakeInput(threadId, "Hi there");
         var user = MakeUser(userId);
 
@@ -386,6 +389,9 @@ public sealed class AgUiRunHandlerTests
         frames.Where(f => EventType(f) == AgUiEventType.TextMessageContent)
               .All(f => f.RootElement.GetProperty("messageId").GetString() == messageId)
               .Should().BeTrue();
+
+        // A successful turn folds its usage into the conversation-lifetime budget.
+        budget.Verify(b => b.RecordUsage(threadId, It.IsAny<int>()), Times.Once);
 
         // Conversation persistence: user msg + assistant msg both appended
         store.Verify(s => s.AppendMessageAsync(

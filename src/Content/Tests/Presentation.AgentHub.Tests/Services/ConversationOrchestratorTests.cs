@@ -177,6 +177,8 @@ public class ConversationOrchestratorTests
         outcome.Response.Should().Be("Hello from agent");
         outcome.AssistantMessageId.Should().NotBeEmpty();
         chunks.Should().Equal("Hello ", "from agent");
+        // A successful turn folds its usage into the conversation-lifetime budget.
+        _budget.Verify(b => b.RecordUsage("c1", It.IsAny<int>()), Times.Once);
     }
 
     [Fact]
