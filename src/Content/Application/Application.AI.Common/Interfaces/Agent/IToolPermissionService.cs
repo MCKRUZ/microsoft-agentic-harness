@@ -7,8 +7,8 @@ namespace Application.AI.Common.Interfaces.Agent;
 /// Uses a 3-phase resolution algorithm: Deny gates -> Ask rules -> Allow rules.
 /// </summary>
 /// <remarks>
-/// Implementation lives in Infrastructure. This interface enables the
-/// <c>ToolPermissionBehavior</c> to enforce agent-level tool ACLs without
+/// Implementation lives in Infrastructure. This interface enables
+/// <c>IToolInvocationGovernor</c> to enforce agent-level tool ACLs on the live tool path without
 /// depending on manifest parsing details.
 /// </remarks>
 public interface IToolPermissionService

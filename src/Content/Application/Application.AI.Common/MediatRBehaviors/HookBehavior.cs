@@ -18,9 +18,10 @@ namespace Application.AI.Common.MediatRBehaviors;
 /// <see cref="HookEvent.PostTurn"/> after the handler.
 /// </summary>
 /// <remarks>
-/// Pipeline position: 6 (after <c>ToolPermissionBehavior</c>).
 /// If any PreToolUse hook returns <c>Continue = false</c>, the pipeline is short-circuited
-/// with a <see cref="ResultFailureType.Forbidden"/> result.
+/// with a <see cref="ResultFailureType.Forbidden"/> result. The <see cref="IToolRequest"/> branch
+/// only fires when a consumer routes tool calls through MediatR; the agent's own tool calls are
+/// governed on the live path by <c>IToolInvocationGovernor</c>, not here.
 /// </remarks>
 public sealed class HookBehavior<TRequest, TResponse>
     : IPipelineBehavior<TRequest, TResponse> where TRequest : notnull

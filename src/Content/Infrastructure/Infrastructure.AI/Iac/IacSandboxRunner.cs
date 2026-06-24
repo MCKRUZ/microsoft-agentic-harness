@@ -28,8 +28,8 @@ namespace Infrastructure.AI.Iac;
 /// <para>
 /// Egress enforcement is the registry allowlist from
 /// <c>AppConfig.AI.Iac.RegistryAllowlist</c>. Because the IaC generators dispatch
-/// directly through the keyed sandbox executor (bypassing the MediatR
-/// <c>ToolPermissionBehavior</c>/<c>CapabilityEnforcer</c> pipeline), the only
+/// directly through the keyed sandbox executor (bypassing the
+/// <c>IToolInvocationGovernor</c>/<c>CapabilityEnforcer</c> governance path), the only
 /// active sandbox-side egress gate is the preflight: each allowlisted registry host
 /// is surfaced as a <see cref="SandboxExecutionRequest.EgressPrecheckTargets"/>
 /// entry so the executor runs every declared destination through the active

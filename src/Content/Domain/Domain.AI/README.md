@@ -354,7 +354,7 @@ Domain.AI/
 | `ToolConcurrencyClassification` | Parallelism safety | IToolConcurrencyClassifier |
 | **Permissions** | | |
 | `ToolPermissionRule` | Allow/deny/ask rule | IPermissionRuleProvider |
-| `PermissionDecision` | Resolved permission outcome | ToolPermissionBehavior |
+| `PermissionDecision` | Resolved permission outcome | IToolInvocationGovernor |
 | `SafetyGate` | Always-dangerous paths | ISafetyGateRegistry |
 | **Planner** | | |
 | `PlanGraph` | Root aggregate: DAG of steps and edges | IPlanExecutor, IPlanGenerator |

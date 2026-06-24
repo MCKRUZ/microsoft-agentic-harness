@@ -48,20 +48,24 @@ Request enters
     → AgentContextPropagation      Sets scoped agent identity (AgentId, ConversationId, TurnNumber)
       → AuditTrailBehavior         Records who did what, when, and the outcome
         → ContentSafetyBehavior    Screens IContentScreenable against safety policies
-          → ToolPermissionBehavior 3-phase tool access check (rules → gates → rate limits)
-            → GovernancePolicyBehavior  Evaluates governance policies
-              → PromptInjectionBehavior Scans for injection attacks
-                → HookBehavior     Fires pre/post lifecycle hooks
+          → PromptInjectionBehavior Scans for injection attacks
+            → HookBehavior     Fires pre/post lifecycle hooks
                   → RetrievalAuditBehavior  Records RAG retrieval metrics
                     → ToolOutputCompressionBehavior  Compresses large tool outputs by content type
                       → [Generic behaviors from Application.Common]
                       → Handler
 ```
 
+> **Tool-call authorization** (permission ACLs, graded-autonomy risk, declarative policy) does **not**
+> run as a MediatR behavior. The agent's autonomous tool calls never produce a MediatR request, so it
+> is enforced on the live tool path by `IToolInvocationGovernor` (via `GovernedAIFunction`). The earlier
+> `ToolPermissionBehavior` / `GovernancePolicyBehavior` were removed because nothing implements
+> `IToolRequest` in production, so they never fired.
+
 Requests opt into specific behaviors via marker interfaces:
 
 ```csharp
-// This command participates in content safety, tool permission, agent context, and observability:
+// This command participates in content safety, agent context, and observability:
 public record ExecuteAgentTurnCommand :
     IRequest<AgentTurnResult>,
     IAgentScopedRequest,       // → AgentContextPropagation activates
@@ -254,14 +258,12 @@ Application.AI.Common/
 │   ├── AgentContextPropagationBehavior.cs  # Sets scoped agent identity
 │   ├── AuditTrailBehavior.cs          # Records who/what/when/outcome
 │   ├── ContentSafetyBehavior.cs       # Input screening
-│   ├── GovernancePolicyBehavior.cs    # Policy evaluation gate
 │   ├── HookBehavior.cs               # Pre/post lifecycle hooks
 │   ├── PromptInjectionBehavior.cs     # Injection attack detection
 │   ├── ResponseSanitizationBehavior.cs # Sanitizes response content
 │   ├── RetrievalAuditBehavior.cs      # RAG retrieval metrics
 │   ├── TokenBudgetBehavior.cs         # Token budget enforcement
 │   ├── ToolOutputCompressionBehavior.cs # Compresses large tool outputs by content type
-│   ├── ToolPermissionBehavior.cs      # 3-phase permission check
 │   └── UnhandledExceptionBehavior.cs  # Outer safety net
 ├── Middleware/
 │   ├── ObservabilityMiddleware.cs     # Chat client middleware: tracks LLM calls
@@ -324,9 +326,8 @@ All validators enforce score ranges in [0, 1], `MaxSkillLength = 262_144` on eve
 | `AgentExecutionContextFactory` | SkillDefinition → AgentExecutionContext | AgentFactory |
 | **Behaviors** | | |
 | `ContentSafetyBehavior<,>` | Input screening via ITextContentSafetyService | IContentScreenable requests |
-| `ToolPermissionBehavior<,>` | 3-phase tool access check | IToolRequest requests |
-| `GovernancePolicyBehavior<,>` | Policy evaluation gate | All agent-scoped requests |
 | `HookBehavior<,>` | Pre/post lifecycle hook dispatch | All requests (checks hook registry) |
+| `IToolInvocationGovernor` | Tool permission + graded-autonomy risk + policy on the live tool path | GovernedAIFunction (agent tool calls) |
 | **Services** | | |
 | `ContextBudgetTracker` | Tracks token allocation per agent | TieredContextAssembler, compaction |
 | `TieredContextAssembler` | Loads skill tiers based on budget | AgentExecutionContextFactory |
@@ -334,7 +335,7 @@ All validators enforce score ranges in [0, 1], `MaxSkillLength = 262_144` on eve
 | **Interfaces** | | |
 | `IRagOrchestrator` | Full RAG pipeline entry point | DocumentSearchTool, SearchDocumentsHandler |
 | `ITool` | Framework-independent tool contract | All tool implementations |
-| `IGovernancePolicyEngine` | Policy evaluation | GovernancePolicyBehavior |
+| `IGovernancePolicyEngine` | Policy evaluation | IToolInvocationGovernor |
 | **Planner** | | |
 | `IPlanExecutor` | DAG plan execution with checkpoint/resume | ExecutePlanCommandHandler |
 | `IPlanValidator` | Structural + semantic plan validation | PlanExecutor, CreatePlanCommandHandler |

@@ -48,7 +48,6 @@ namespace Application.AI.Common;
 ///   <item><description><c>AgentContextPropagationBehavior</c> — sets scoped agent identity</description></item>
 ///   <item><description><c>AuditTrailBehavior</c> — records IAuditable requests</description></item>
 ///   <item><description><c>ContentSafetyBehavior</c> — screens IContentScreenable requests</description></item>
-///   <item><description><c>ToolPermissionBehavior</c> — checks IToolRequest permissions</description></item>
 ///   <item><description><c>HookBehavior</c> — fires lifecycle hooks for tool and turn events</description></item>
 ///   <item><description><c>RetrievalAuditBehavior</c> — logs retrieval-augmented generation audit trails</description></item>
 ///   <item><description><c>ResponseSanitizationBehavior</c> — post-execution: sanitizes tool output for credentials, injection, exfiltration</description></item>
@@ -89,8 +88,11 @@ public static class DependencyInjection
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(AgentIdentityResolutionBehavior<,>))
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(AuditTrailBehavior<,>))
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(ContentSafetyBehavior<,>))
-            .AddTransient(typeof(IPipelineBehavior<,>), typeof(ToolPermissionBehavior<,>))
-            .AddTransient(typeof(IPipelineBehavior<,>), typeof(GovernancePolicyBehavior<,>))
+            // Tool permission + graded-autonomy risk + declarative policy now run on the agent's live
+            // tool path via IToolInvocationGovernor (GovernedAIFunction), not as MediatR behaviors —
+            // nothing in production implements IToolRequest, so the old ToolPermissionBehavior /
+            // GovernancePolicyBehavior never fired for agent tool calls. They were removed to avoid
+            // dead, drift-prone duplicates of the governor's logic.
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(PromptInjectionBehavior<,>))
             // Pre-flight token budget gate: short-circuits IConsumesTokens requests whose
             // estimate exceeds the remaining scoped budget, then records actual usage post-turn.

@@ -91,9 +91,9 @@ public sealed class ToolInvocationGovernor : IToolInvocationGovernor
         var profile = _toolRiskClassifier.Classify(toolName);
 
         // No agent identity means this isn't a fully-scoped agent turn (e.g. an execution path that
-        // did not initialize the context). Mirror ToolPermissionBehavior and pass through rather than
-        // guess an identity — but RECORD it as ungoverned (Enforced=false) so the trace surfaces the
-        // gap instead of it being invisible to an evaluator.
+        // did not initialize the context). Pass through rather than guess an identity — but RECORD it
+        // as ungoverned (Enforced=false) so the trace surfaces the gap instead of it being invisible
+        // to an evaluator.
         var agentId = _executionContext.AgentId;
         if (string.IsNullOrEmpty(agentId))
         {
@@ -109,7 +109,7 @@ public sealed class ToolInvocationGovernor : IToolInvocationGovernor
             .ResolvePermissionAsync(agentId, toolName, cancellationToken: cancellationToken)
             .ConfigureAwait(false);
 
-        // Graded-autonomy risk gate: can only tighten an Allow, never loosen (mirrors ToolPermissionBehavior).
+        // Graded-autonomy risk gate: can only tighten an Allow, never loosen.
         permission = ApplyRiskGate(permission, toolName, profile);
 
         switch (permission.Behavior)
@@ -215,9 +215,10 @@ public sealed class ToolInvocationGovernor : IToolInvocationGovernor
     }
 
     /// <summary>
-    /// Applies the graded-autonomy risk gate to an Allow decision (a faithful copy of
-    /// <c>ToolPermissionBehavior.ApplyRiskGate</c>). Tightens Allow → Ask/Deny when the active tier
-    /// will not auto-approve the tool's blast radius; never loosens.
+    /// Applies the graded-autonomy risk gate to an Allow decision. Tightens Allow → Ask/Deny when the
+    /// active tier will not auto-approve the tool's blast radius; never loosens. This is the live home
+    /// of the risk gate on the agent tool path (it formerly also existed as the now-removed
+    /// <c>ToolPermissionBehavior</c>, which never fired because nothing implements <c>IToolRequest</c>).
     /// </summary>
     private PermissionDecision ApplyRiskGate(PermissionDecision decision, string toolName, ToolRiskProfile profile)
     {

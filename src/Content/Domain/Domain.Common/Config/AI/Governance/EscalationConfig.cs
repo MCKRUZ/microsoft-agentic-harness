@@ -24,8 +24,8 @@ namespace Domain.Common.Config.AI.Governance;
 public class EscalationConfig
 {
     /// <summary>
-    /// Whether the escalation system is active. When disabled,
-    /// <c>GovernancePolicyBehavior</c> treats <c>RequireApproval</c> as a denial.
+    /// Whether the escalation system is active. When disabled, governance treats an
+    /// approval-required decision as a denial (fail-closed).
     /// </summary>
     public bool Enabled { get; set; }
 

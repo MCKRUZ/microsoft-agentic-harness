@@ -74,17 +74,15 @@ public sealed class PipelineBehaviorsExample
             (2, "AgentContextPropagationBehavior", "Sets scoped agent identity", "Application.AI"),
             (3, "AuditTrailBehavior", "Records IAuditable requests", "Application.AI"),
             (4, "ContentSafetyBehavior", "Screens IContentScreenable requests", "Application.AI"),
-            (5, "ToolPermissionBehavior", "Checks IToolRequest permissions", "Application.AI"),
-            (6, "GovernancePolicyBehavior", "Enforces governance policies", "Application.AI"),
-            (7, "PromptInjectionBehavior", "Detects prompt injection attacks", "Application.AI"),
-            (8, "HookBehavior", "Fires lifecycle hooks for tool and turn events", "Application.AI"),
-            (9, "RetrievalAuditBehavior", "Logs RAG audit trails", "Application.AI"),
-            (10, "ResponseSanitizationBehavior", "Sanitizes tool output for credentials/injection/exfil", "Application.AI"),
-            (11, "RequestValidationBehavior", "FluentValidation, returns Result failure", "Application.Common"),
-            (12, "AuthorizationBehavior", "Checks [Authorize] attributes", "Application.Common"),
-            (13, "CachingBehavior", "Hybrid memory/distributed cache", "Application.Common"),
-            (14, "RequestTracingBehavior", "OTel spans with duration", "Application.Common"),
-            (15, "TimeoutBehavior", "Enforces IHasTimeout deadlines", "Application.Common")
+            (5, "PromptInjectionBehavior", "Detects prompt injection attacks", "Application.AI"),
+            (6, "HookBehavior", "Fires lifecycle hooks for tool and turn events", "Application.AI"),
+            (7, "RetrievalAuditBehavior", "Logs RAG audit trails", "Application.AI"),
+            (8, "ResponseSanitizationBehavior", "Sanitizes tool output for credentials/injection/exfil", "Application.AI"),
+            (9, "RequestValidationBehavior", "FluentValidation, returns Result failure", "Application.Common"),
+            (10, "AuthorizationBehavior", "Checks [Authorize] attributes", "Application.Common"),
+            (11, "CachingBehavior", "Hybrid memory/distributed cache", "Application.Common"),
+            (12, "RequestTracingBehavior", "OTel spans with duration", "Application.Common"),
+            (13, "TimeoutBehavior", "Enforces IHasTimeout deadlines", "Application.Common")
         };
 
         foreach (var (order, name, purpose, layer) in behaviors)
@@ -202,8 +200,9 @@ public sealed class PipelineBehaviorsExample
             ("Safety & Content", new[] { "ContentSafetyBehavior", "PromptInjectionBehavior", "ResponseSanitizationBehavior" },
                 "Fire when: request is IContentScreenable or response is IToolResponse"),
 
-            ("Authorization", new[] { "AuthorizationBehavior", "ToolPermissionBehavior" },
-                "Fire when: [Authorize] attribute present or IToolRequest without permission"),
+            ("Authorization", new[] { "AuthorizationBehavior" },
+                "Fire when: [Authorize] attribute present. Agent tool-call authorization runs on the "
+                + "live tool path via IToolInvocationGovernor, not as a MediatR behavior."),
 
             ("Observability & Audit", new[] { "RequestTracingBehavior", "AuditTrailBehavior", "RetrievalAuditBehavior" },
                 "Fire when: enabled in config; log every request for audit/tracing"),
@@ -212,7 +211,7 @@ public sealed class PipelineBehaviorsExample
                 "Fire when: [Cacheable] attribute or IHasTimeout interface present"),
 
             ("Infrastructure", new[] { "UnhandledExceptionBehavior", "AgentContextPropagationBehavior",
-                "GovernancePolicyBehavior", "HookBehavior", "RequestValidationBehavior", "IdempotencyBehavior" },
+                "HookBehavior", "RequestValidationBehavior", "IdempotencyBehavior" },
                 "Fire for all requests; provide pipeline glue and error handling")
         };
 

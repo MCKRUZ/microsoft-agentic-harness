@@ -14,7 +14,6 @@ Files mirror the production project structure: `Behaviors/`, `MediatRBehaviors/`
 |------------|---------------|-------------------|------------------|
 | `HookBehaviorTests` | Hook execution pipeline behavior | 5 | Unit |
 | `HookBehaviorAgentTurnTests` | Hook behavior for agent turn commands | 4 | Unit |
-| `ToolPermissionBehaviorTests` | Allow/Deny/Ask permission pipeline gating | 8 | Unit |
 | `MetaHarnessConfigTests` | MetaHarness configuration binding | 3 | Unit |
 | `ConnectorOperationResultTests` | Connector result value object | 4 | Unit |
 | `ConnectorToolAdapterTests` | Connector-to-AITool adapter bridge | 5 | Unit |
@@ -38,7 +37,6 @@ Files mirror the production project structure: `Behaviors/`, `MediatRBehaviors/`
 | `AgentContextPropagationBehaviorTests` | Context flowing through pipeline | 4 | Unit |
 | `AuditTrailBehaviorTests` | Audit log recording | 4 | Unit |
 | `ContentSafetyBehaviorTests` | Content blocking in pipeline | 5 | Unit |
-| `GovernancePolicyBehaviorTests` | Governance policy enforcement | 5 | Unit |
 | `PromptInjectionBehaviorTests` | Injection detection blocking | 4 | Unit |
 | `UnhandledExceptionBehaviorTests` | Global exception wrapping | 3 | Unit |
 | `HarnessCandidateTests` | MetaHarness candidate model | 3 | Unit |
@@ -104,10 +102,10 @@ dotnet test src/Content/Tests/Application.AI.Common.Tests/Application.AI.Common.
 dotnet test src/Content/Tests/Application.AI.Common.Tests/Application.AI.Common.Tests.csproj --collect:"XPlat Code Coverage"
 
 # Single class
-dotnet test --filter "FullyQualifiedName~ToolPermissionBehaviorTests"
+dotnet test --filter "FullyQualifiedName~HookBehaviorTests"
 
 # Single test
-dotnet test --filter "FullyQualifiedName~ToolPermissionBehaviorTests.DenyDecision_ReturnsForbidden"
+dotnet test --filter "FullyQualifiedName~HookBehaviorTests.PreToolUseHook_BlocksExecution"
 ```
 
 ## How to Add a New Test
