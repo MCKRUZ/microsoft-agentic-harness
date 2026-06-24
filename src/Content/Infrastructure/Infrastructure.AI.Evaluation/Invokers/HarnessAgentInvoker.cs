@@ -100,7 +100,8 @@ public sealed class HarnessAgentInvoker : IAgentInvoker
                 OutputTokens = turn.OutputTokens,
                 CostUsd = turn.CostUsd,
                 Model = turn.Model,
-                Duration = sw.Elapsed
+                Duration = sw.Elapsed,
+                Governance = turn.Governance
             };
         }
         catch (OperationCanceledException)

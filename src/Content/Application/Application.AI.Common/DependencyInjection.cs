@@ -1,5 +1,6 @@
 using System.Reflection;
 using Application.AI.Common.Evaluation.Interfaces;
+using Application.AI.Common.Evaluation.Metrics.Governance;
 using Application.AI.Common.Evaluation.Metrics.Owasp;
 using Application.AI.Common.Extensions;
 using Application.AI.Common.Factories;
@@ -179,6 +180,16 @@ public static class DependencyInjection
             .AddKeyedSingleton<IEvalMetric, OwaspAsi08CascadingMetric>("owasp.asi08.cascading")
             .AddKeyedSingleton<IEvalMetric, OwaspAsi09HumanTrustMetric>("owasp.asi09.human_trust")
             .AddKeyedSingleton<IEvalMetric, OwaspAsi10RogueAgentMetric>("owasp.asi10.rogue_agent");
+
+        // Governance-behaviour eval metric — grades the real per-invocation GovernanceTrace
+        // (approval-bypass / observe-only / missing-escalation), independently of task outcome.
+        // EvalRunner builds its metric map from the non-keyed IEnumerable<IEvalMetric> — and keyed
+        // registrations are invisible to IEnumerable<T> — so this MUST be registered non-keyed to be
+        // discoverable by MetricKey at run time. The keyed alias mirrors the canonical AddMetric pattern.
+        services.AddSingleton<GovernanceBehaviorMetric>();
+        services.AddSingleton<IEvalMetric>(sp => sp.GetRequiredService<GovernanceBehaviorMetric>());
+        services.AddKeyedSingleton<IEvalMetric>(
+            "governance.behavior", (sp, _) => sp.GetRequiredService<GovernanceBehaviorMetric>());
 
         return services;
     }

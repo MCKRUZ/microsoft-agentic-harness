@@ -56,4 +56,13 @@ public sealed record AgentInvocationResult
 
     /// <summary>Wall-clock duration of the invocation.</summary>
     public TimeSpan Duration { get; init; }
+
+    /// <summary>
+    /// Snapshot of the per-invocation governance decisions the agent's tool calls passed through
+    /// during the turn, carried straight from <c>AgentTurnResult.Governance</c>. Null when tool-invocation
+    /// governance was not engaged (the legacy default). Lets governance-behaviour metrics grade what the
+    /// live governed tool path actually did — allowing, denying, gating on approval, escalating — rather
+    /// than scoring hand-authored payloads.
+    /// </summary>
+    public Domain.AI.Governance.GovernanceTrace? Governance { get; init; }
 }

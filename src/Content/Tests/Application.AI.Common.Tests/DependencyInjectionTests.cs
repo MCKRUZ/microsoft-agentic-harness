@@ -1,4 +1,5 @@
 using Application.AI.Common;
+using Application.AI.Common.Evaluation.Interfaces;
 using Application.AI.Common.Factories;
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Context;
@@ -128,6 +129,19 @@ public class DependencyInjectionTests
         descriptor.Should().NotBeNull();
         descriptor!.Lifetime.Should().Be(ServiceLifetime.Singleton);
         descriptor.ImplementationType.Should().Be(typeof(Application.AI.Common.Services.AmbientRequestScope));
+    }
+
+    [Fact]
+    public void AddApplicationAIDependencies_RegistersGovernanceBehaviorMetric_InNonKeyedMetricSet()
+    {
+        // EvalRunner builds its metric map from IEnumerable<IEvalMetric>; keyed registrations are
+        // invisible to IEnumerable<T>. A keyed-only registration would make the metric look present
+        // but never run (EvalRunner silently skips unknown metric keys). Guard the non-keyed path.
+        var provider = CreateServicesWithAIDependencies().BuildServiceProvider();
+
+        var metrics = provider.GetServices<IEvalMetric>();
+
+        metrics.Should().ContainSingle(m => m.Key == "governance.behavior");
     }
 
     [Fact]
