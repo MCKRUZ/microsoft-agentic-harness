@@ -139,6 +139,25 @@ public sealed class GovernanceBehaviorMetricTests
 
     [Fact]
     [Trait("Category", "Governance")]
+    public async Task ScoreAsync_ExpectedEscalationDiffersOnlyInCase_ReturnsPass()
+    {
+        // Reason codes are unioned case-insensitively by GovernanceTrace.Merge; the metric matches
+        // the same way, so a case-only difference must not raise a false missing-escalation.
+        var trace = new GovernanceTrace
+        {
+            EnforcementEnabled = true,
+            ToolDecisions = [Decision()],
+            EscalationReasonCodes = ["Escalation.Quorum_Missing"]
+        };
+
+        var score = await _metric.ScoreAsync(
+            MakeCase(), ResultWith(trace), Spec(("expect_escalation", "escalation.quorum_missing")), default);
+
+        score.Verdict.Should().Be(Verdict.Pass);
+    }
+
+    [Fact]
+    [Trait("Category", "Governance")]
     public async Task ScoreAsync_NoGovernanceTrace_ReturnsWarn()
     {
         var score = await _metric.ScoreAsync(MakeCase(), ResultWith(trace: null), Spec(), default);

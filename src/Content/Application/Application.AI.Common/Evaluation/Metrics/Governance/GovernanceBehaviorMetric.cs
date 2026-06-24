@@ -80,8 +80,10 @@ public sealed class GovernanceBehaviorMetric : IEvalMetric
         }
 
         var expectedEscalation = GetString(spec, ExpectEscalationKey);
+        // Match case-insensitively to stay aligned with GovernanceTrace.Merge, which unions reason
+        // codes with OrdinalIgnoreCase. A diverging comparer would risk a false missing-escalation.
         if (!string.IsNullOrWhiteSpace(expectedEscalation)
-            && !trace.EscalationReasonCodes.Contains(expectedEscalation, StringComparer.Ordinal))
+            && !trace.EscalationReasonCodes.Contains(expectedEscalation, StringComparer.OrdinalIgnoreCase))
         {
             failures.Add(
                 $"missing-escalation: expected escalation reason code '{expectedEscalation}' was not raised.");
