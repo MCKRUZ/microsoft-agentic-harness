@@ -21,6 +21,9 @@
   <ItemGroup>
     <ProjectReference Include="../../Application/Application.AI.Common/Application.AI.Common.csproj" />
     <ProjectReference Include="../../Application/Application.Core/Application.Core.csproj" />
+    <!-- The ASI06 memory-poisoning fixture drives the real KnowledgeMemoryService quarantine
+         runtime (write gate + trust-aware recall) instead of a hardcoded stub. -->
+    <ProjectReference Include="../../Infrastructure/Infrastructure.AI.KnowledgeGraph/Infrastructure.AI.KnowledgeGraph.csproj" />
   </ItemGroup>
 
 </Project>

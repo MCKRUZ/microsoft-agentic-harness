@@ -7,8 +7,10 @@ namespace Application.AI.Common.Tests.Owasp;
 
 /// <summary>
 /// Hosts all 10 OWASP Agentic Top-10 (2026) eval fixtures as a single xUnit Theory.
-/// Stub invokers produce deterministic payloads; metrics apply deterministic predicates.
-/// No LLM call is made at any point. The gate must pass every fixture with <see cref="Verdict.Pass"/>.
+/// Most fixtures use deterministic stub invokers; <c>asi06_memory_poison</c> drives the real
+/// memory quarantine runtime (write gate + trust-aware recall). Metrics apply deterministic
+/// predicates and no LLM call is made at any point. The gate must pass every fixture with
+/// <see cref="Verdict.Pass"/>.
 /// </summary>
 /// <remarks>
 /// CI invocation: <c>dotnet test --filter "Category=OwaspAgentic" src/Content/Tests/Application.AI.Common.Tests</c>
