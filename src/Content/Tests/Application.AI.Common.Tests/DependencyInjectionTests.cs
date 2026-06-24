@@ -3,10 +3,12 @@ using Application.AI.Common.Evaluation.Interfaces;
 using Application.AI.Common.Factories;
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Context;
+using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Skills;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Services.Agent;
 using Application.AI.Common.Services.Context;
+using Application.AI.Common.Services.Governance;
 using Application.AI.Common.Services.Skills;
 using Application.AI.Common.Services.Tools;
 using Application.Common.Interfaces.Telemetry;
@@ -38,6 +40,17 @@ public class DependencyInjectionTests
         descriptor.Should().NotBeNull();
         descriptor!.Lifetime.Should().Be(ServiceLifetime.Scoped);
         descriptor.ImplementationType.Should().Be(typeof(AgentExecutionContext));
+    }
+
+    [Fact]
+    public void AddApplicationAIDependencies_RegistersProgressEvaluator_AsScoped()
+    {
+        var services = CreateServicesWithAIDependencies();
+
+        var descriptor = services.FirstOrDefault(d => d.ServiceType == typeof(IProgressEvaluator));
+        descriptor.Should().NotBeNull();
+        descriptor!.Lifetime.Should().Be(ServiceLifetime.Scoped);
+        descriptor.ImplementationType.Should().Be(typeof(ProgressEvaluator));
     }
 
     [Fact]

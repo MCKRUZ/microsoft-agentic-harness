@@ -61,4 +61,12 @@ public static class GovernanceMetrics
     /// <summary>Audit-chain integrity breaks detected (tampering, deletion, or corruption). Tags: agent.governance.audit_chain.name.</summary>
     public static Counter<long> AuditChainBreaks { get; } =
         AppInstrument.Meter.CreateCounter<long>(GovernanceConventions.AuditChainBreaks, "{break}", "Audit-chain integrity breaks detected");
+
+    /// <summary>
+    /// Spin / no-progress guard interventions — the agent loop was broken because it was repeating an
+    /// identical call or making no progress. Tags: agent.governance.spin.reason (repetition |
+    /// no_progress), agent.governance.spin.mode (stop | escalate), agent.governance.tool.
+    /// </summary>
+    public static Counter<long> SpinInterventions { get; } =
+        AppInstrument.Meter.CreateCounter<long>(GovernanceConventions.SpinInterventions, "{intervention}", "Spin / no-progress guard interventions");
 }

@@ -66,4 +66,12 @@ public sealed class GovernanceConfig
     /// agents exceed their authority.
     /// </summary>
     public EscalationConfig Escalation { get; init; } = new();
+
+    /// <summary>
+    /// Deterministic spin / no-progress guard for the agent's live tool-call path. Opt-in via
+    /// <see cref="Governance.ProgressGuardConfig.Enabled"/>; off by default. Independent of
+    /// <see cref="EnforceToolInvocation"/> — it answers "is the agent making progress?" rather than
+    /// "may this tool run?".
+    /// </summary>
+    public ProgressGuardConfig ProgressGuard { get; init; } = new();
 }

@@ -116,6 +116,12 @@ public static class DependencyInjection
         // and records the per-turn governance trace. Scoped: one per agent turn.
         services.AddScoped<Interfaces.Governance.IToolInvocationGovernor, Services.Governance.ToolInvocationGovernor>();
 
+        // Deterministic spin / no-progress guard for the agent's live tool-call path (opt-in via
+        // GovernanceConfig.ProgressGuard.Enabled). Consulted at the same chokepoint as the governor;
+        // breaks the loop when the agent repeats an identical call or makes no progress. Scoped: one
+        // per agent turn, reset between turns alongside the governor.
+        services.AddScoped<Interfaces.Governance.IProgressEvaluator, Services.Governance.ProgressEvaluator>();
+
         // AI telemetry configurator — registers AI SDK OTel sources and processors
         services.AddSingleton<ITelemetryConfigurator, AiTelemetryConfigurator>();
 

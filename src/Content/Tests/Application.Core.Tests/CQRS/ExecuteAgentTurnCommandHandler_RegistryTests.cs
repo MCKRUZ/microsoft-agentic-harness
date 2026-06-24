@@ -33,6 +33,7 @@ public class ExecuteAgentTurnCommandHandler_RegistryTests
         _handler = new ExecuteAgentTurnCommandHandler(
             _agentCache.Object,
             new Mock<Application.AI.Common.Interfaces.Governance.IToolInvocationGovernor>().Object,
+            new Mock<Application.AI.Common.Interfaces.Governance.IProgressEvaluator>().Object,
             _agentRegistry.Object,
             new Mock<ISkillMetadataRegistry>().Object,
             new Application.AI.Common.Services.Context.ConversationRegistrationTracker(),

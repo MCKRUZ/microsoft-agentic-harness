@@ -27,6 +27,30 @@ public static class GovernanceConventions
     public const string AuditChainBreaks = "agent.governance.audit_chain.breaks";
     public const string AuditChainNameTag = "agent.governance.audit_chain.name";
 
+    public const string SpinInterventions = "agent.governance.spin_interventions";
+    public const string SpinReasonTag = "agent.governance.spin.reason";
+    public const string SpinModeTag = "agent.governance.spin.mode";
+
+    /// <summary>Tag values for <see cref="SpinReasonTag"/> — why the spin guard broke the loop.</summary>
+    public static class SpinReasonValues
+    {
+        /// <summary>The identical call (same tool + arguments) fired consecutively past the threshold.</summary>
+        public const string Repetition = "repetition";
+
+        /// <summary>A window of calls introduced no new call signature — no progress.</summary>
+        public const string NoProgress = "no_progress";
+    }
+
+    /// <summary>Tag values for <see cref="SpinModeTag"/> — what the guard did on a detected spin.</summary>
+    public static class SpinModeValues
+    {
+        /// <summary>The loop was broken locally with a model-facing message; no escalation raised.</summary>
+        public const string Stop = "stop";
+
+        /// <summary>The loop was broken and an escalation reason code was raised on the governance trace.</summary>
+        public const string Escalate = "escalate";
+    }
+
     public static class ActionValues
     {
         public const string Allow = "allow";

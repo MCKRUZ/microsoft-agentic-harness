@@ -12,6 +12,7 @@ using Application.AI.Common.Services;
 using Application.AI.Common.Services.Governance;
 using Domain.AI.Agents;
 using Domain.AI.Context;
+using Domain.AI.Governance;
 using Domain.AI.Skills;
 using Domain.AI.Telemetry.Conventions;
 using Domain.Common.Extensions;
@@ -30,6 +31,7 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 {
 	private readonly IAgentConversationCache _agentCache;
 	private readonly IToolInvocationGovernor _governor;
+	private readonly IProgressEvaluator _progressEvaluator;
 	private readonly IAgentMetadataRegistry _agentRegistry;
 	private readonly ISkillMetadataRegistry _skillRegistry;
 	private readonly IConversationRegistrationTracker _registrationTracker;
@@ -43,6 +45,7 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 	public ExecuteAgentTurnCommandHandler(
 		IAgentConversationCache agentCache,
 		IToolInvocationGovernor governor,
+		IProgressEvaluator progressEvaluator,
 		IAgentMetadataRegistry agentRegistry,
 		ISkillMetadataRegistry skillRegistry,
 		IConversationRegistrationTracker registrationTracker,
@@ -55,6 +58,7 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 	{
 		_agentCache = agentCache;
 		_governor = governor;
+		_progressEvaluator = progressEvaluator;
 		_agentRegistry = agentRegistry;
 		_skillRegistry = skillRegistry;
 		_registrationTracker = registrationTracker;
@@ -122,6 +126,12 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 			_governor.Reset();
 			ToolGovernanceAccessor.Current = _governor;
 
+			// Same per-turn lifecycle for the spin / no-progress guard: reset prior turns' call
+			// history and expose this turn's scoped evaluator ambiently so the governed tool wrapper
+			// consults it at invocation time. Cleared in the finally below alongside the governor.
+			_progressEvaluator.Reset();
+			ProgressGuardAccessor.Current = _progressEvaluator;
+
 			object? response;
 			var turnSw = Stopwatch.StartNew();
 			try
@@ -141,6 +151,7 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 			{
 				LlmUsageCapture.Current = null;
 				ToolGovernanceAccessor.Current = null;
+				ProgressGuardAccessor.Current = null;
 			}
 
 			// Capture accumulated token usage from all LLM calls during this turn
@@ -269,7 +280,7 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 				CacheWrite = usage.CacheWrite,
 				CostUsd = usage.CostUsd,
 				Model = usage.Model,
-				Governance = _governor.GetTrace()
+				Governance = BuildGovernanceTrace()
 			};
 		}
 		catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -352,6 +363,28 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 		}
 
 		return builder.ToString();
+	}
+
+	/// <summary>
+	/// Composes the turn's governance trace: the per-invocation governor's decisions, with any
+	/// escalation reason codes the spin / no-progress guard raised this turn folded into
+	/// <see cref="GovernanceTrace.EscalationReasonCodes"/>. When the guard raised nothing (the common
+	/// case — Stop mode or no spin) the governor's trace is returned unchanged.
+	/// </summary>
+	private GovernanceTrace BuildGovernanceTrace()
+	{
+		var trace = _governor.GetTrace();
+		var spinEscalations = _progressEvaluator.EscalationReasonCodes;
+		if (spinEscalations is null or { Count: 0 })
+			return trace;
+
+		// Dedup case-insensitively to honour GovernanceTrace.EscalationReasonCodes' "distinct" contract
+		// and stay aligned with GovernanceTrace.Merge's OrdinalIgnoreCase union.
+		return trace with
+		{
+			EscalationReasonCodes =
+				[.. trace.EscalationReasonCodes.Concat(spinEscalations).Distinct(StringComparer.OrdinalIgnoreCase)]
+		};
 	}
 
 	private static void RecordTurnError(string agentName)

@@ -56,6 +56,13 @@ public class AgentPipelineIntegrationTests
             .ReturnsAsync(Application.AI.Common.Interfaces.Governance.ToolInvocationDecision.Allow());
         services.AddScoped(_ => governorMock.Object);
 
+        // Progress / spin guard — not under test here; permissive mock so the handler resolves.
+        var progressMock = new Mock<Application.AI.Common.Interfaces.Governance.IProgressEvaluator>();
+        progressMock
+            .Setup(p => p.Evaluate(It.IsAny<string>(), It.IsAny<Func<string?>>()))
+            .Returns(Application.AI.Common.Interfaces.Governance.ProgressVerdict.Continue());
+        services.AddScoped(_ => progressMock.Object);
+
         // Agent conversation cache — mock returns testable agents
         services.AddSingleton(cacheMock.Object);
 
