@@ -40,6 +40,8 @@ public class RunOrchestratedTaskCommandHandler_EdgeCaseTests
         _handler = new RunOrchestratedTaskCommandHandler(
             _agentFactory.Object,
             _scopeFactory.Object,
+            new Application.AI.Common.Services.Agent.AgentExecutionContext(),
+            new Mock<Application.AI.Common.Interfaces.Governance.IToolInvocationGovernor>().Object,
             NullLogger<RunOrchestratedTaskCommandHandler>.Instance);
     }
 

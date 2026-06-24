@@ -49,6 +49,13 @@ public class AgentPipelineIntegrationTests
         // Scoped agent execution context — real implementation, not mock
         services.AddScoped<IAgentExecutionContext, AgentExecutionContext>();
 
+        // Tool-invocation governor — not under test here; permissive mock so the handler resolves.
+        var governorMock = new Mock<Application.AI.Common.Interfaces.Governance.IToolInvocationGovernor>();
+        governorMock
+            .Setup(g => g.AuthorizeAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Application.AI.Common.Interfaces.Governance.ToolInvocationDecision.Allow());
+        services.AddScoped(_ => governorMock.Object);
+
         // Agent conversation cache — mock returns testable agents
         services.AddSingleton(cacheMock.Object);
 

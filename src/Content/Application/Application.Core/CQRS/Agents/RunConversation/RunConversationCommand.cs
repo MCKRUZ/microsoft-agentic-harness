@@ -61,6 +61,12 @@ public record ConversationResult
 	public required string FinalResponse { get; init; }
 	public int TotalToolInvocations { get; init; }
 	public string? Error { get; init; }
+
+	/// <summary>
+	/// Aggregated snapshot of the per-invocation governance decisions across all turns of the
+	/// conversation. Null when tool-invocation governance was not engaged.
+	/// </summary>
+	public Domain.AI.Governance.GovernanceTrace? Governance { get; init; }
 }
 
 /// <summary>

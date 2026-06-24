@@ -110,6 +110,11 @@ public static class DependencyInjection
         // Scoped agent execution context — carries agent identity through the pipeline
         services.AddScoped<IAgentExecutionContext, AgentExecutionContext>();
 
+        // Per-invocation tool governor — runs the permission / graded-autonomy / capability / policy
+        // checks on the agent's live tool-call path (opt-in via GovernanceConfig.EnforceToolInvocation)
+        // and records the per-turn governance trace. Scoped: one per agent turn.
+        services.AddScoped<Interfaces.Governance.IToolInvocationGovernor, Services.Governance.ToolInvocationGovernor>();
+
         // AI telemetry configurator — registers AI SDK OTel sources and processors
         services.AddSingleton<ITelemetryConfigurator, AiTelemetryConfigurator>();
 

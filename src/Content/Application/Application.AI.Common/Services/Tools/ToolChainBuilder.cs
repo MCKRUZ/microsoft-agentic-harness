@@ -74,7 +74,7 @@ public class ToolChainBuilder : IToolChainBuilder
                 skill.Id, skill.PluginSource, tools.Count);
 
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            return tools.Where(t => seen.Add(t.Name)).ToList();
+            return WrapGoverned(tools.Where(t => seen.Add(t.Name)));
         }
 
         if (skill.Tools?.Count > 0)
@@ -105,8 +105,21 @@ public class ToolChainBuilder : IToolChainBuilder
             tools.AddRange(options.AdditionalTools);
 
         var seen2 = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        return tools.Where(t => seen2.Add(t.Name)).ToList();
+        return WrapGoverned(tools.Where(t => seen2.Add(t.Name)));
     }
+
+    /// <summary>
+    /// Wraps each callable tool function in a <see cref="GovernedAIFunction"/> so a per-invocation
+    /// governance check runs before the tool executes. Non-function tools and already-wrapped
+    /// functions pass through unchanged. The wrapper is inert unless tool-invocation enforcement is
+    /// enabled and a governor is ambient for the turn, so this adds no behaviour when governance is off.
+    /// Applied at this single shared builder so every agent-callable tool — keyed-DI, MCP, or
+    /// skill-provided — is governed exactly once.
+    /// </summary>
+    private static List<AITool> WrapGoverned(IEnumerable<AITool> tools)
+        => tools
+            .Select(t => t is AIFunction fn and not GovernedAIFunction ? new GovernedAIFunction(fn) : t)
+            .ToList();
 
     /// <inheritdoc />
     public async Task<List<AITool>> BuildMergedToolsAsync(

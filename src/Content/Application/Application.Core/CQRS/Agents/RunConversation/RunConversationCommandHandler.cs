@@ -3,6 +3,7 @@ using System.Diagnostics.Metrics;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.OpenTelemetry.Metrics;
 using Application.Core.CQRS.Agents.ExecuteAgentTurn;
+using Domain.AI.Governance;
 using Domain.AI.Telemetry.Conventions;
 using MediatR;
 using Microsoft.Extensions.Logging;
@@ -40,6 +41,7 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 		var sw = Stopwatch.StartNew();
 		var turns = new List<TurnSummary>();
 		var totalToolInvocations = 0;
+		var governanceTraces = new List<GovernanceTrace>();
 		AgentTurnResult? lastResult = null;
 
 		// Running token/cost aggregates for session-level metrics
@@ -127,6 +129,9 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 
 				totalToolInvocations += lastResult.ToolsInvoked.Count;
 
+				if (lastResult.Governance is not null)
+					governanceTraces.Add(lastResult.Governance);
+
 				totalInputTokens += lastResult.InputTokens;
 				totalOutputTokens += lastResult.OutputTokens;
 				totalCacheRead += lastResult.CacheRead;
@@ -175,7 +180,8 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 				Success = true,
 				Turns = turns,
 				FinalResponse = lastResult?.Response ?? string.Empty,
-				TotalToolInvocations = totalToolInvocations
+				TotalToolInvocations = totalToolInvocations,
+				Governance = governanceTraces.Count > 0 ? GovernanceTrace.Merge(governanceTraces) : null
 			};
 		}
 		catch (OperationCanceledException)

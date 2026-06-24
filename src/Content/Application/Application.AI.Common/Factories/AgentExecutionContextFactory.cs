@@ -335,6 +335,16 @@ public class AgentExecutionContextFactory
             }
         }
 
+        // Governance wrapper — added LAST so it wraps the final, filtered tool set. When
+        // tool-invocation enforcement is on, this guarantees the governor gates every tool the agent
+        // can call, including framework progressive-disclosure tools that bypass ToolChainBuilder.
+        // Inert (and skipped entirely) when enforcement is off, so default behaviour is unchanged.
+        if (_appConfig.CurrentValue.AI?.Governance?.EnforceToolInvocation == true)
+        {
+            providers.Add(new Services.Agent.GoverningToolContextProvider());
+            _logger.LogDebug("Wired GoverningToolContextProvider (tool-invocation enforcement enabled)");
+        }
+
         return providers.Count > 0 ? providers : null;
     }
 

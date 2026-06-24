@@ -101,6 +101,13 @@ public record AgentTurnResult : IAgentTurnResult
 	public int CacheWrite { get; init; }
 	public decimal CostUsd { get; init; }
 	public string? Model { get; init; }
+
+	/// <summary>
+	/// Snapshot of the per-invocation governance decisions the agent's tool calls passed through
+	/// this turn. Null when tool-invocation governance was not engaged. Lets evaluation grade the
+	/// agent's governance behaviour independently of task outcome.
+	/// </summary>
+	public Domain.AI.Governance.GovernanceTrace? Governance { get; init; }
 }
 
 /// <summary>

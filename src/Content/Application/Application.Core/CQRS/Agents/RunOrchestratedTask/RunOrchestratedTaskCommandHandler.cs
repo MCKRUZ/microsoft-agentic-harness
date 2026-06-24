@@ -1,5 +1,8 @@
 using Application.AI.Common.Interfaces;
+using Application.AI.Common.Interfaces.Agent;
+using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.OpenTelemetry.Metrics;
+using Application.AI.Common.Services.Governance;
 using Application.Core.CQRS.Agents.RunConversation;
 using Domain.AI.Skills;
 using Domain.AI.Telemetry.Conventions;
@@ -22,15 +25,21 @@ public class RunOrchestratedTaskCommandHandler : IRequestHandler<RunOrchestrated
 {
 	private readonly IAgentFactory _agentFactory;
 	private readonly IServiceScopeFactory _scopeFactory;
+	private readonly IAgentExecutionContext _executionContext;
+	private readonly IToolInvocationGovernor _governor;
 	private readonly ILogger<RunOrchestratedTaskCommandHandler> _logger;
 
 	public RunOrchestratedTaskCommandHandler(
 		IAgentFactory agentFactory,
 		IServiceScopeFactory scopeFactory,
+		IAgentExecutionContext executionContext,
+		IToolInvocationGovernor governor,
 		ILogger<RunOrchestratedTaskCommandHandler> logger)
 	{
 		_agentFactory = agentFactory;
 		_scopeFactory = scopeFactory;
+		_executionContext = executionContext;
+		_governor = governor;
 		_logger = logger;
 	}
 
@@ -61,6 +70,12 @@ public class RunOrchestratedTaskCommandHandler : IRequestHandler<RunOrchestrated
 				},
 				cancellationToken);
 
+			// Govern the orchestrator's OWN tool calls (planning + synthesis). This command is not
+			// IAgentScopedRequest, so the pipeline doesn't initialize the execution context — set the
+			// orchestrator identity here so the governor can resolve it. Sub-agent delegation runs in
+			// its own child scope and governs itself per turn.
+			_executionContext.Initialize(request.OrchestratorName, request.ConversationId, 0);
+
 			await ReportProgress(request, "planning", request.OrchestratorName, "Decomposing task...");
 
 			var planMessages = new List<ChatMessage>
@@ -68,7 +83,7 @@ public class RunOrchestratedTaskCommandHandler : IRequestHandler<RunOrchestrated
 				new(ChatRole.User, $"Decompose and execute this task: {request.TaskDescription}")
 			};
 
-			var planResponse = await orchestrator.RunAsync(planMessages, cancellationToken: cancellationToken);
+			var planResponse = await RunOrchestratorGovernedAsync(orchestrator, planMessages, cancellationToken);
 			var planText = ExtractContent(planResponse);
 
 			await ReportProgress(request, "planning", request.OrchestratorName, "Plan created");
@@ -136,7 +151,7 @@ public class RunOrchestratedTaskCommandHandler : IRequestHandler<RunOrchestrated
 				new(ChatRole.User, synthesisPrompt)
 			};
 
-			var synthesisResponse = await orchestrator.RunAsync(synthesisMessages, cancellationToken: cancellationToken);
+			var synthesisResponse = await RunOrchestratorGovernedAsync(orchestrator, synthesisMessages, cancellationToken);
 			var finalSynthesis = ExtractContent(synthesisResponse);
 			totalTurns++;
 
@@ -164,6 +179,23 @@ public class RunOrchestratedTaskCommandHandler : IRequestHandler<RunOrchestrated
 				SubAgentResults = [],
 				Error = ex.Message
 			};
+		}
+	}
+
+	private async Task<object?> RunOrchestratorGovernedAsync(
+		AIAgent orchestrator, List<ChatMessage> messages, CancellationToken cancellationToken)
+	{
+		// Expose this scope's governor to the governed tool wrappers for the orchestrator's own
+		// RunAsync. Set/clear tightly around the call so interleaved sub-agent turns (which set their
+		// own ambient governor in their child scope) are unaffected.
+		ToolGovernanceAccessor.Current = _governor;
+		try
+		{
+			return await orchestrator.RunAsync(messages, cancellationToken: cancellationToken);
+		}
+		finally
+		{
+			ToolGovernanceAccessor.Current = null;
 		}
 	}
 

@@ -12,6 +12,21 @@ public sealed class GovernanceConfig
     public bool Enabled { get; init; }
 
     /// <summary>
+    /// Whether per-invocation governance runs on the agent's live tool-call path. When true, every
+    /// tool the agent calls during a turn passes through <c>IToolInvocationGovernor</c> (permission,
+    /// graded-autonomy risk, capability, and policy checks) before executing, fail-closed. When false
+    /// (the default) the governor is a pure pass-through and agent tool calls are not gated at
+    /// invocation time — preserving existing behaviour for consumers who have not opted in.
+    /// </summary>
+    /// <remarks>
+    /// This is the switch that connects the otherwise-dormant tool governance to the agent loop.
+    /// Enabling it without configured permission rules makes the default "Ask" behaviour block tools,
+    /// so operators should pair it with explicit allow rules. Independent of <see cref="Enabled"/>,
+    /// which only gates the declarative YAML policy layer.
+    /// </remarks>
+    public bool EnforceToolInvocation { get; init; }
+
+    /// <summary>
     /// Paths to YAML policy files. Relative paths resolve from the application base directory.
     /// </summary>
     public List<string> PolicyPaths { get; init; } = [];

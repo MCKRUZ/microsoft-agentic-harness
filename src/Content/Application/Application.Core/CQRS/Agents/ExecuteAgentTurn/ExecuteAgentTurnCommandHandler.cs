@@ -6,8 +6,10 @@ using Application.AI.Common.Exceptions;
 using Application.AI.Common.Helpers;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Context;
+using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.OpenTelemetry.Metrics;
 using Application.AI.Common.Services;
+using Application.AI.Common.Services.Governance;
 using Domain.AI.Agents;
 using Domain.AI.Context;
 using Domain.AI.Skills;
@@ -27,6 +29,7 @@ namespace Application.Core.CQRS.Agents.ExecuteAgentTurn;
 public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCommand, AgentTurnResult>
 {
 	private readonly IAgentConversationCache _agentCache;
+	private readonly IToolInvocationGovernor _governor;
 	private readonly IAgentMetadataRegistry _agentRegistry;
 	private readonly ISkillMetadataRegistry _skillRegistry;
 	private readonly IConversationRegistrationTracker _registrationTracker;
@@ -39,6 +42,7 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 
 	public ExecuteAgentTurnCommandHandler(
 		IAgentConversationCache agentCache,
+		IToolInvocationGovernor governor,
 		IAgentMetadataRegistry agentRegistry,
 		ISkillMetadataRegistry skillRegistry,
 		IConversationRegistrationTracker registrationTracker,
@@ -50,6 +54,7 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 		ILogger<ExecuteAgentTurnCommandHandler> logger)
 	{
 		_agentCache = agentCache;
+		_governor = governor;
 		_agentRegistry = agentRegistry;
 		_skillRegistry = skillRegistry;
 		_registrationTracker = registrationTracker;
@@ -109,6 +114,14 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 			// records to this handler's scoped ILlmUsageCapture instance.
 			LlmUsageCapture.Current = _usageCapture;
 
+			// Same bridge for tool governance: the agent (and its cached tool functions) outlive
+			// this scope, so expose this turn's scoped governor ambiently for the governed tool
+			// wrapper to consult at invocation time. Reset first: nested MediatR sends within a
+			// conversation share one scope (one governor), so clear prior turns' decisions so this
+			// turn's trace reflects only this turn — mirrors the _usageCapture clear above.
+			_governor.Reset();
+			ToolGovernanceAccessor.Current = _governor;
+
 			object? response;
 			var turnSw = Stopwatch.StartNew();
 			try
@@ -127,6 +140,7 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 			finally
 			{
 				LlmUsageCapture.Current = null;
+				ToolGovernanceAccessor.Current = null;
 			}
 
 			// Capture accumulated token usage from all LLM calls during this turn
@@ -254,7 +268,8 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 				CacheRead = usage.CacheRead,
 				CacheWrite = usage.CacheWrite,
 				CostUsd = usage.CostUsd,
-				Model = usage.Model
+				Model = usage.Model,
+				Governance = _governor.GetTrace()
 			};
 		}
 		catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
