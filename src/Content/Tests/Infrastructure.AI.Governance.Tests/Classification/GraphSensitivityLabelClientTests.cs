@@ -168,6 +168,26 @@ public sealed class GraphSensitivityLabelClientTests
     }
 
     [Fact]
+    public async Task GetLabelAsync_NextLinkWithDowngradedScheme_ThrowsWithoutForwardingToken()
+    {
+        // Same host but http instead of the configured https — a scheme downgrade must be rejected so the
+        // token is never sent over an unencrypted channel.
+        var handler = new StubHandler(_ => Ok($$"""
+            {
+              "value": [ { "id": "{{ConfidentialId}}", "name": "Confidential" } ],
+              "@odata.nextLink": "http://graph.test/v1.0/security/dataSecurityAndGovernance/sensitivityLabels?$skiptoken=P2"
+            }
+            """));
+        var sut = CreateClient(handler, new MutableTimeProvider(Now));
+
+        var act = async () => await sut.GetLabelAsync(
+            new AssetReference(AssetType.LocalFile, ConfidentialId), CancellationToken.None);
+
+        await act.Should().ThrowAsync<InvalidOperationException>();
+        handler.CallCount.Should().Be(1, "a scheme-downgraded nextLink must not be followed with the token attached");
+    }
+
+    [Fact]
     public async Task GetLabelAsync_GraphReturns200WithoutValueCollection_Throws()
     {
         // A 200 whose body lacks the 'value' array is an unrecognized shape — it must fail closed rather

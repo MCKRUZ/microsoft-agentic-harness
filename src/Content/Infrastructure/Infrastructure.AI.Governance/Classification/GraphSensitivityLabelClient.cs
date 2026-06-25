@@ -218,8 +218,9 @@ public sealed partial class GraphSensitivityLabelClient : IDataClassificationPro
     /// <summary>
     /// Parses and validates an <c>@odata.nextLink</c>, returning the next page URL or null on the final
     /// page. The link comes from the response body, and each page request carries the access token, so the
-    /// host and scheme must match the configured Graph endpoint — otherwise a tampered or misrouted
-    /// response could trick the client into forwarding the bearer token to an attacker-controlled host.
+    /// scheme and authority (host and port) must match the configured Graph endpoint — otherwise a
+    /// tampered or misrouted response could trick the client into forwarding the bearer token to an
+    /// attacker-controlled host, a downgraded scheme, or a different port.
     /// </summary>
     private Uri? ResolveNextLink(string? nextLink)
     {
@@ -228,11 +229,11 @@ public sealed partial class GraphSensitivityLabelClient : IDataClassificationPro
 
         if (!Uri.TryCreate(nextLink, UriKind.Absolute, out var next) ||
             next.Scheme != _labelsEndpoint.Scheme ||
-            !string.Equals(next.Host, _labelsEndpoint.Host, StringComparison.OrdinalIgnoreCase))
+            !string.Equals(next.Authority, _labelsEndpoint.Authority, StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidOperationException(
-                "The Microsoft Graph @odata.nextLink pointed to an unexpected or malformed host; refusing to " +
-                "forward the access token off the configured Graph endpoint.");
+                "The Microsoft Graph @odata.nextLink pointed to an unexpected or malformed endpoint; refusing " +
+                "to forward the access token off the configured Graph scheme/host/port.");
         }
 
         return next;
