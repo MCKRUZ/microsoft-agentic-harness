@@ -49,4 +49,20 @@ public sealed class DataClassificationConfig
     /// for fail-closed handling of anything Purview cannot vouch for.
     /// </summary>
     public ClassificationAction UnknownAssetAction { get; init; } = ClassificationAction.Allow;
+
+    /// <summary>
+    /// Configuration for the Microsoft Purview Information Protection (MIP) provider — the Microsoft
+    /// Graph-backed source of sensitivity labels for documents and files. Opt-in via
+    /// <see cref="InformationProtectionProviderConfig.Enabled"/>; off by default.
+    /// </summary>
+    public InformationProtectionProviderConfig InformationProtection { get; init; } = new();
+
+    /// <summary>
+    /// How long a resolved <c>AssetLabelResult</c> is cached, keyed by the asset, before the provider is
+    /// consulted again. Caching is mandatory in practice — without it every gated tool call incurs a
+    /// Purview round trip. Defaults to five minutes; a non-positive value disables result caching.
+    /// Distinct from <see cref="InformationProtectionProviderConfig.LabelCatalogCacheTtl"/>, which caches
+    /// the label taxonomy rather than per-asset results.
+    /// </summary>
+    public TimeSpan ResultCacheTtl { get; init; } = TimeSpan.FromMinutes(5);
 }

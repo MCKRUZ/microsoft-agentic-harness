@@ -84,4 +84,102 @@ public class DataClassificationConfigValidatorTests
         result.IsValid.Should().BeFalse();
         result.Errors.Should().Contain(e => e.PropertyName.StartsWith("LabelActions"));
     }
+
+    [Fact]
+    public async Task Validate_EnforceWithNegativeResultCacheTtl_HasError()
+    {
+        var config = new DataClassificationConfig
+        {
+            Mode = ClassificationEnforcementMode.Enforce,
+            ResultCacheTtl = TimeSpan.FromSeconds(-1),
+        };
+
+        var result = await _validator.ValidateAsync(config);
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName == nameof(DataClassificationConfig.ResultCacheTtl));
+    }
+
+    [Fact]
+    public async Task Validate_InformationProtectionDisabled_SkipsProviderRules()
+    {
+        // Even with incoherent provider settings, a disabled provider imposes no constraints.
+        var config = new DataClassificationConfig
+        {
+            InformationProtection = new InformationProtectionProviderConfig
+            {
+                Enabled = false,
+                GraphBaseUrl = "not-a-url",
+                Scopes = [],
+                LabelCatalogCacheTtl = TimeSpan.Zero,
+            },
+        };
+
+        var result = await _validator.ValidateAsync(config);
+
+        result.IsValid.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Validate_InformationProtectionEnabledWithDefaults_IsValid()
+    {
+        var config = new DataClassificationConfig
+        {
+            InformationProtection = new InformationProtectionProviderConfig { Enabled = true },
+        };
+
+        var result = await _validator.ValidateAsync(config);
+
+        result.IsValid.Should().BeTrue();
+        result.Errors.Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData("not-a-url")]
+    [InlineData("ftp://graph.microsoft.com")]
+    [InlineData("graph.microsoft.com/v1.0")]
+    public async Task Validate_InformationProtectionEnabledWithInvalidGraphUrl_HasError(string badUrl)
+    {
+        var config = new DataClassificationConfig
+        {
+            InformationProtection = new InformationProtectionProviderConfig { Enabled = true, GraphBaseUrl = badUrl },
+        };
+
+        var result = await _validator.ValidateAsync(config);
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName.Contains(nameof(InformationProtectionProviderConfig.GraphBaseUrl)));
+    }
+
+    [Fact]
+    public async Task Validate_InformationProtectionEnabledWithEmptyScopes_HasError()
+    {
+        var config = new DataClassificationConfig
+        {
+            InformationProtection = new InformationProtectionProviderConfig { Enabled = true, Scopes = [] },
+        };
+
+        var result = await _validator.ValidateAsync(config);
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName.Contains(nameof(InformationProtectionProviderConfig.Scopes)));
+    }
+
+    [Fact]
+    public async Task Validate_InformationProtectionEnabledWithNonPositiveCatalogTtl_HasError()
+    {
+        var config = new DataClassificationConfig
+        {
+            InformationProtection = new InformationProtectionProviderConfig
+            {
+                Enabled = true,
+                LabelCatalogCacheTtl = TimeSpan.Zero,
+            },
+        };
+
+        var result = await _validator.ValidateAsync(config);
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName.Contains(nameof(InformationProtectionProviderConfig.LabelCatalogCacheTtl)));
+    }
 }

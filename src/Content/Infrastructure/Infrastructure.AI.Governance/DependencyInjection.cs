@@ -4,8 +4,11 @@ using AgentGovernance.Policy;
 using AgentGovernance.Security;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Services.Governance;
+using Application.Common.Factories;
 using Domain.Common.Config.AI;
+using Domain.Common.Config.AI.Governance;
 using Infrastructure.AI.Governance.Adapters;
+using Infrastructure.AI.Governance.Classification;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
@@ -59,13 +62,55 @@ public static class DependencyInjection
         services.AddSingleton<IResponseSanitizer, ExfiltrationUrlDetector>();
         services.AddSingleton<ICompositeResponseSanitizer, CompositeResponseSanitizer>();
 
-        // Data-classification seam. The policy evaluator is pure; the provider default is fail-fast and
-        // is only consulted when DataClassificationConfig.Mode is not Off — a real Purview-backed
-        // provider (Graph / Data Map) replaces it before classification enforcement is switched on.
-        services.AddSingleton<IClassificationPolicyEvaluator, DefaultClassificationPolicyEvaluator>();
-        services.AddSingleton<IDataClassificationProvider, NotConfiguredDataClassificationProvider>();
+        // Data-classification seam. The policy evaluator is pure; the provider is the real Graph-backed
+        // Information Protection client when wired, else the fail-fast default.
+        AddDataClassificationProvider(services, config.DataClassification);
 
         return services;
+    }
+
+    /// <summary>
+    /// Registers the data-classification policy evaluator and the appropriate
+    /// <see cref="IDataClassificationProvider"/>. Wires the real Graph-backed
+    /// <see cref="GraphSensitivityLabelClient"/> (behind a TTL cache) only when classification is enabled
+    /// and the Information Protection provider is switched on; otherwise keeps the fail-fast default so an
+    /// enabled-but-unconfigured gate fails loudly rather than silently allowing everything.
+    /// </summary>
+    private static void AddDataClassificationProvider(IServiceCollection services, DataClassificationConfig config)
+    {
+        services.AddSingleton<IClassificationPolicyEvaluator, DefaultClassificationPolicyEvaluator>();
+
+        var ip = config.InformationProtection;
+        if (config.Mode == ClassificationEnforcementMode.Off || !ip.Enabled)
+        {
+            services.AddSingleton<IDataClassificationProvider, NotConfiguredDataClassificationProvider>();
+            return;
+        }
+
+        services.AddHttpClient(GraphSensitivityLabelClient.HttpClientName);
+
+        services.AddSingleton<IDataClassificationProvider>(sp =>
+        {
+            var timeProvider = sp.GetRequiredService<TimeProvider>();
+
+            // Azure.Identity caches and refreshes the token in-process, so building the credential once
+            // for the singleton is correct; it is created lazily here so a credential-config error
+            // surfaces when the provider is first resolved rather than during the DI graph build.
+            var credential = AzureCredentialFactory.CreateTokenCredential(ip.Auth);
+
+            var inner = new GraphSensitivityLabelClient(
+                sp.GetRequiredService<IHttpClientFactory>(),
+                credential,
+                ip,
+                timeProvider,
+                sp.GetRequiredService<ILogger<GraphSensitivityLabelClient>>());
+
+            return new CachedDataClassificationProvider(
+                inner,
+                timeProvider,
+                config.ResultCacheTtl,
+                sp.GetRequiredService<ILogger<CachedDataClassificationProvider>>());
+        });
     }
 
     /// <summary>

@@ -30,6 +30,35 @@ public sealed class DataClassificationConfigValidator : AbstractValidator<DataCl
                 .WithMessage(
                     "LabelActions contains a blank label name. A blank key can never match a Purview " +
                     "sensitivity label, so the rule would never fire — remove it or supply the label name.");
+
+            RuleFor(x => x.ResultCacheTtl)
+                .GreaterThanOrEqualTo(TimeSpan.Zero)
+                .WithMessage("ResultCacheTtl cannot be negative; use TimeSpan.Zero to disable result caching.");
+        });
+
+        // Information Protection provider rules apply only once it is switched on, independent of Mode:
+        // an operator may stage the provider's connection settings before flipping the gate.
+        When(x => x.InformationProtection.Enabled, () =>
+        {
+            RuleFor(x => x.InformationProtection.GraphBaseUrl)
+                .Must(BeValidHttpUrl)
+                .WithMessage("InformationProtection.GraphBaseUrl must be a valid absolute http(s) URL.");
+
+            RuleFor(x => x.InformationProtection.Scopes)
+                .NotEmpty()
+                .WithMessage("InformationProtection.Scopes must contain at least one OAuth scope to mint a Graph token.");
+
+            RuleForEach(x => x.InformationProtection.Scopes)
+                .Must(scope => !string.IsNullOrWhiteSpace(scope))
+                .WithMessage("InformationProtection.Scopes contains a blank scope; remove it or supply a value.");
+
+            RuleFor(x => x.InformationProtection.LabelCatalogCacheTtl)
+                .GreaterThan(TimeSpan.Zero)
+                .WithMessage("InformationProtection.LabelCatalogCacheTtl must be positive so the label taxonomy is cached.");
         });
     }
+
+    private static bool BeValidHttpUrl(string url) =>
+        Uri.TryCreate(url, UriKind.Absolute, out var uri) &&
+        (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps);
 }
