@@ -108,7 +108,7 @@ public class DependencyInjectionTests
     }
 
     [Fact]
-    public void AddApplicationAIDependencies_RegistersFourteenPipelineBehaviors()
+    public void AddApplicationAIDependencies_RegistersFifteenPipelineBehaviors()
     {
         var services = CreateServicesWithAIDependencies();
 
@@ -117,10 +117,11 @@ public class DependencyInjectionTests
                         d.ServiceType.GetGenericTypeDefinition() == typeof(MediatR.IPipelineBehavior<,>))
             .ToList();
 
-        // 14 = the prior 16 minus ToolPermissionBehavior + GovernancePolicyBehavior, which were
-        // removed once IToolInvocationGovernor took over tool authorization on the live tool path
-        // (nothing in production implements IToolRequest, so those behaviors never fired).
-        behaviors.Should().HaveCount(14);
+        // 15 = the prior 16 minus ToolPermissionBehavior + GovernancePolicyBehavior (removed once
+        // IToolInvocationGovernor took over tool authorization on the live tool path — nothing in
+        // production implements IToolRequest, so those behaviors never fired), plus the post-turn
+        // WorkEpisodeCaptureBehavior (self-improving work memory).
+        behaviors.Should().HaveCount(15);
         behaviors.Should().OnlyContain(d => d.Lifetime == ServiceLifetime.Transient);
     }
 
