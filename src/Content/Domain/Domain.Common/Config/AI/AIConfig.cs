@@ -19,6 +19,7 @@ using Domain.Common.Config.AI.Resilience;
 using Domain.Common.Config.AI.Routing;
 using Domain.Common.Config.AI.Sandbox;
 using Domain.Common.Config.AI.Telemetry;
+using Domain.Common.Config.AI.WorkMemory;
 
 namespace Domain.Common.Config.AI;
 
@@ -47,6 +48,7 @@ namespace Domain.Common.Config.AI;
 /// ├── KnowledgeBridge    — Conversation-to-Knowledge Bridge: fact extraction, confidence, timeout
 /// ├── DriftDetection    — EWMA-based drift detection for quality regressions
 /// ├── Learnings         — Cross-session learnings: feedback blending, decay, pruning
+/// ├── WorkMemory        — Self-improving work memory: per-turn episode capture for synthesis
 /// ├── Planner           — Plan execution: concurrency, timeouts, persistence
 /// ├── Sandbox           — Sandbox execution: resource limits, isolation, containers
 /// ├── ToolOutputCompression — Tool output compression: thresholds, LLM fallback, strategies
@@ -162,6 +164,16 @@ public class AIConfig
     /// temporal decay, pruning schedules, and drift baseline adjustment.
     /// </summary>
     public LearningsConfig Learnings { get; set; } = new();
+
+    /// <summary>
+    /// Self-improving work-memory configuration. Off by default — when enabled,
+    /// <c>WorkEpisodeCaptureBehavior</c> records what the agent did on each turn (a
+    /// <c>WorkEpisode</c>) so a later overnight synthesis pass can distill those trajectories
+    /// into reusable lessons. Distinct from <see cref="Learnings"/> (isolated facts) and
+    /// <see cref="KnowledgeBridge"/> (user/domain facts): work memory is about the agent's own
+    /// task executions — what worked, what failed, and what it cost.
+    /// </summary>
+    public WorkMemoryConfig WorkMemory { get; set; } = new();
 
     /// <summary>Agent Governance Toolkit configuration.</summary>
     public GovernanceConfig Governance { get; init; } = new();
