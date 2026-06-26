@@ -87,6 +87,31 @@ public sealed class GovernedAIFunctionClassificationTests : IDisposable
     }
 
     [Fact]
+    public async Task InvokeAsync_ClassificationBlocks_SkipsProgressGuard()
+    {
+        // Ordering guarantee: a classification block returns before the progress guard, so a blocked call
+        // (which never executes) must not be counted toward progress.
+        var (inner, _) = MakeInner();
+        var gate = GateReturning(ClassificationVerdict.Block("blocked"));
+        ClassificationGateAccessor.Current = gate.Object;
+        var progress = new Mock<IProgressEvaluator>();
+        ProgressGuardAccessor.Current = progress.Object;
+
+        try
+        {
+            var governed = new GovernedAIFunction(inner);
+            await governed.InvokeAsync(new AIFunctionArguments(), CancellationToken.None);
+
+            progress.Verify(p => p.Evaluate(It.IsAny<string>(), It.IsAny<Func<string?>>()), Times.Never,
+                "a classification-blocked call must not reach the progress guard");
+        }
+        finally
+        {
+            ProgressGuardAccessor.Current = null;
+        }
+    }
+
+    [Fact]
     public async Task InvokeAsync_NoAmbientGate_PassesThrough()
     {
         var (inner, wasInvoked) = MakeInner();
