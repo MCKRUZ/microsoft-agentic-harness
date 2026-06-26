@@ -175,6 +175,14 @@ public class AIConfig
     /// </summary>
     public WorkMemoryConfig WorkMemory { get; set; } = new();
 
+    /// <summary>
+    /// Configuration for recalling relevant learnings into the agent's context at turn start (the read
+    /// half of the self-improving loop). Off by default; when enabled, the most task-relevant
+    /// learnings — across every source, including the work-memory synthesis lessons — are injected
+    /// before the model runs.
+    /// </summary>
+    public LearningsRecallConfig LearningsRecall { get; set; } = new();
+
     /// <summary>Agent Governance Toolkit configuration.</summary>
     public GovernanceConfig Governance { get; init; } = new();
 
