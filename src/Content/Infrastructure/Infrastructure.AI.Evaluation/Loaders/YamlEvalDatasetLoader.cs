@@ -25,6 +25,11 @@ public sealed class YamlEvalDatasetLoader : IEvalDatasetLoader
     private static readonly IDeserializer Deserializer = new DeserializerBuilder()
         .WithNamingConvention(UnderscoredNamingConvention.Instance)
         .IgnoreUnmatchedProperties()
+        // Depth cap (defense-in-depth): the dataset schema is shallow
+        // (dataset -> cases -> metrics), so 64 is far above any legitimate document.
+        // Bounds stack growth from maliciously deep YAML, complementing the
+        // no-arbitrary-type-construction stance above. Requires YamlDotNet >= 17.
+        .WithMaximumRecursion(64)
         .Build();
 
     /// <inheritdoc />
