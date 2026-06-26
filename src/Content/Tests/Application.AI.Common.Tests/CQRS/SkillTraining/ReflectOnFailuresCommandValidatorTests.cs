@@ -56,8 +56,8 @@ public sealed class ReflectOnFailuresCommandValidatorTests
     public void Rollout_with_score_out_of_range_fails()
     {
         var bad = new RolloutResult { ItemId = "x", Hard = 1.5, Soft = 0.5 };
-        _sut.TestValidate(Valid() with { Rollouts = [bad] })
-            .ShouldHaveAnyValidationError();
+        var result = _sut.TestValidate(Valid() with { Rollouts = [bad] });
+        Assert.False(result.IsValid);
     }
 
     [Fact]
@@ -69,7 +69,7 @@ public sealed class ReflectOnFailuresCommandValidatorTests
             Rollouts = [Success("s1"), Success("s2")]
         };
 
-        _sut.TestValidate(cmd).ShouldHaveAnyValidationError();
+        Assert.False(_sut.TestValidate(cmd).IsValid);
     }
 
     [Fact]
