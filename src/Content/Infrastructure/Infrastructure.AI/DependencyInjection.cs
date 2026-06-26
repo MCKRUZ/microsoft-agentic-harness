@@ -302,6 +302,7 @@ public static partial class DependencyInjection
 
         RegisterDriftDetectionServices(services);
         RegisterLearningsServices(services, appConfig);
+        RegisterWorkMemorySynthesisServices(services, appConfig);
 
         // --- Audit-chain verification (scheduled tamper-evidence check over all
         //     hash-chained JSONL audit logs). Must run after the four audit writers

@@ -29,5 +29,17 @@ public sealed class WorkMemoryConfigValidator : AbstractValidator<WorkMemoryConf
 
         RuleFor(x => x.ResponseSummaryMaxChars)
             .GreaterThan(0).WithMessage("ResponseSummaryMaxChars must be > 0.");
+
+        RuleFor(x => x.SynthesisIntervalHours)
+            .GreaterThan(0).WithMessage("SynthesisIntervalHours must be > 0.");
+
+        RuleFor(x => x.SynthesisLookbackHours)
+            .GreaterThan(0).WithMessage("SynthesisLookbackHours must be > 0.");
+
+        RuleFor(x => x.MaxEpisodesPerRun)
+            .GreaterThan(0).WithMessage("MaxEpisodesPerRun must be > 0.");
+
+        RuleFor(x => x.MinConfidenceToStore)
+            .InclusiveBetween(0d, 1d).WithMessage("MinConfidenceToStore must be in [0, 1].");
     }
 }

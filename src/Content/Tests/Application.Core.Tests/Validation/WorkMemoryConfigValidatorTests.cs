@@ -49,4 +49,59 @@ public sealed class WorkMemoryConfigValidatorTests
         result.IsValid.Should().BeFalse();
         result.Errors.Should().Contain(e => e.PropertyName == nameof(WorkMemoryConfig.ResponseSummaryMaxChars));
     }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void Validate_NonPositiveSynthesisIntervalHours_Fails(double hours)
+    {
+        var result = _sut.Validate(new WorkMemoryConfig { SynthesisIntervalHours = hours });
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName == nameof(WorkMemoryConfig.SynthesisIntervalHours));
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-5)]
+    public void Validate_NonPositiveSynthesisLookbackHours_Fails(double hours)
+    {
+        var result = _sut.Validate(new WorkMemoryConfig { SynthesisLookbackHours = hours });
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName == nameof(WorkMemoryConfig.SynthesisLookbackHours));
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void Validate_NonPositiveMaxEpisodesPerRun_Fails(int max)
+    {
+        var result = _sut.Validate(new WorkMemoryConfig { MaxEpisodesPerRun = max });
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName == nameof(WorkMemoryConfig.MaxEpisodesPerRun));
+    }
+
+    [Theory]
+    [InlineData(-0.1)]
+    [InlineData(1.1)]
+    public void Validate_MinConfidenceOutOfRange_Fails(double confidence)
+    {
+        var result = _sut.Validate(new WorkMemoryConfig { MinConfidenceToStore = confidence });
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName == nameof(WorkMemoryConfig.MinConfidenceToStore));
+    }
+
+    [Theory]
+    [InlineData(0d)]
+    [InlineData(0.7)]
+    [InlineData(1d)]
+    public void Validate_MinConfidenceInRange_Passes(double confidence)
+    {
+        var result = _sut.Validate(new WorkMemoryConfig { MinConfidenceToStore = confidence });
+
+        result.IsValid.Should().BeTrue();
+    }
 }
