@@ -84,4 +84,19 @@ public static partial class DependencyInjection
             services.AddHostedService(sp => sp.GetRequiredService<LearningsPruningBackgroundService>());
         }
     }
+
+    /// <summary>
+    /// Registers the overnight work-memory synthesis background service (PR2). Gated on both the
+    /// work-memory master toggle and the nested synthesis toggle: the pass only runs when episodes are
+    /// being captured <em>and</em> the consumer has opted into distilling them into lessons.
+    /// </summary>
+    private static void RegisterWorkMemorySynthesisServices(IServiceCollection services, AppConfig appConfig)
+    {
+        if (appConfig.AI.WorkMemory.Enabled && appConfig.AI.WorkMemory.SynthesisEnabled)
+        {
+            services.AddSingleton<WorkMemory.WorkMemorySynthesisBackgroundService>();
+            services.AddHostedService(sp =>
+                sp.GetRequiredService<WorkMemory.WorkMemorySynthesisBackgroundService>());
+        }
+    }
 }

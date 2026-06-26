@@ -282,6 +282,11 @@ public static class DependencyInjection
         services.AddSingleton<IWorkEpisodeStore>(sp =>
             sp.GetRequiredKeyedService<IWorkEpisodeStore>(workMemoryProvider));
 
+        // Overnight synthesizer (PR2) — distills episodes into reusable lessons via an economy-tier
+        // LLM. Registered unconditionally (mirrors IConversationFactExtractor); it is only resolved by
+        // the synthesis background service, which is itself gated on the synthesis toggle.
+        services.AddTransient<IWorkEpisodeSynthesizer, WorkMemory.LlmWorkEpisodeSynthesizer>();
+
         return services;
     }
 }
