@@ -335,6 +335,24 @@ public class AgentExecutionContextFactory
             }
         }
 
+        // Task-similarity learnings recall. Like the memory provider above, it resolves the scoped,
+        // tenant-aware ILearningRecaller per invocation from the current request scope, so it is safe to
+        // attach to a singleton-cached agent. Injects the most task-relevant lessons (every source,
+        // including work-memory synthesis output) at turn start — the read half of the self-improving loop.
+        if (_appConfig.CurrentValue.AI?.LearningsRecall?.Enabled == true)
+        {
+            var ambientScope = _serviceProvider.GetService<IAmbientRequestScope>();
+            if (ambientScope is not null)
+            {
+                providers.Add(new Services.Agent.LearningsRecallContextProvider(
+                    ambientScope,
+                    _appConfig,
+                    _loggerFactory.CreateLogger<Services.Agent.LearningsRecallContextProvider>()));
+
+                _logger.LogDebug("Wired LearningsRecallContextProvider for task-similarity recall");
+            }
+        }
+
         // Governance wrapper — added LAST so it wraps the final, filtered tool set. When
         // tool-invocation enforcement is on, this guarantees the governor gates every tool the agent
         // can call, including framework progressive-disclosure tools that bypass ToolChainBuilder.

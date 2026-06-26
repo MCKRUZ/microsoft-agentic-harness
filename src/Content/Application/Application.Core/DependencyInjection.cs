@@ -1,7 +1,9 @@
 using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.Interfaces.Governance;
+using Application.AI.Common.Interfaces.Learnings;
 using Application.AI.Common.Interfaces.Permissions;
 using Application.Core.Escalation.Strategies;
+using Application.Core.Learnings;
 using Application.Core.Permissions;
 using Application.Core.Workflows.Governance;
 using Application.Core.Workflows.KnowledgeGraph;
@@ -42,6 +44,11 @@ public static class DependencyInjection
 
 		// Auto-discover FluentValidation validators in this assembly
 		services.AddValidatorsFromAssembly(assembly);
+
+		// Learning recall seam — lets Application.AI.Common context providers recall learnings via the
+		// RecallQuery scoring pipeline without depending on MediatR. Scoped because it resolves the
+		// request-scoped IMediator.
+		services.AddScoped<ILearningRecaller, MediatorLearningRecaller>();
 
 		// Autonomy tier rule provider — generates baseline permission rules from agent tier
 		services.AddSingleton<IPermissionRuleProvider, AutonomyTierRuleProvider>();
