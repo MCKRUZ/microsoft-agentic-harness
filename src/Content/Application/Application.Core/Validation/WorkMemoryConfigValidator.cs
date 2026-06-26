@@ -5,10 +5,16 @@ namespace Application.Core.Validation;
 
 /// <summary>
 /// Validates <see cref="WorkMemoryConfig"/>: the episode store provider must name a registered keyed
-/// implementation, and the response-summary cap must be positive. Validating the provider here turns a
-/// misconfigured key into a fail-loud startup error rather than a silent per-turn crash on the
-/// fire-and-forget capture path (where the exception would be swallowed).
+/// implementation, and the response-summary cap must be positive. Auto-discovered via
+/// <c>AddValidatorsFromAssembly</c>, consistent with the sibling config validators
+/// (<c>LearningsConfigValidator</c> et al.).
 /// </summary>
+/// <remarks>
+/// The hard fail-loud guarantee for a misconfigured <see cref="WorkMemoryConfig.StoreProvider"/> is
+/// enforced independently at DI registration time (<c>AddKnowledgeGraphDependencies</c>), which throws
+/// at startup before the app serves a turn. This validator additionally covers the numeric range and
+/// is available to any explicit config-validation pass.
+/// </remarks>
 public sealed class WorkMemoryConfigValidator : AbstractValidator<WorkMemoryConfig>
 {
     private static readonly string[] KnownStoreProviders = ["graph", "in_memory"];

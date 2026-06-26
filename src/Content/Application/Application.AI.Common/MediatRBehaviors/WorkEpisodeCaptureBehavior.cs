@@ -151,8 +151,10 @@ public sealed class WorkEpisodeCaptureBehavior<TRequest, TResponse>
                     "Failed to persist work episode for conversation {ConversationId} turn {Turn}: {Errors}",
                     episode.ConversationId, episode.TurnNumber, string.Join(", ", result.Errors));
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex)
         {
+            // Catch everything (incl. OperationCanceledException): this runs on a discarded Task.Run,
+            // so an unobserved exception would otherwise escape. Capture is best-effort, never fatal.
             _logger.LogWarning(ex,
                 "Work-episode capture failed for conversation {ConversationId} turn {Turn}",
                 episode.ConversationId, episode.TurnNumber);

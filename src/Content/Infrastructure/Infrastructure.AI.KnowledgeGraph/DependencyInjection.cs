@@ -268,6 +268,17 @@ public static class DependencyInjection
             new WorkMemory.InMemoryWorkEpisodeStore());
 
         var workMemoryProvider = appConfig.AI.WorkMemory.StoreProvider;
+        // Fail loud at startup on a misconfigured provider key. Capture runs fire-and-forget, so a
+        // bad key would otherwise throw inside WorkEpisodeCaptureBehavior's swallowed catch on every
+        // turn — the subsystem would be silently dead with no surfaced error. Only enforced when the
+        // subsystem is enabled so a disabled (default) host with a stale value still boots.
+        if (appConfig.AI.WorkMemory.Enabled && workMemoryProvider is not ("graph" or "in_memory"))
+        {
+            throw new InvalidOperationException(
+                $"AppConfig:AI:WorkMemory:StoreProvider '{workMemoryProvider}' is not a registered " +
+                "work-episode store provider. Use 'graph' or 'in_memory'.");
+        }
+
         services.AddSingleton<IWorkEpisodeStore>(sp =>
             sp.GetRequiredKeyedService<IWorkEpisodeStore>(workMemoryProvider));
 

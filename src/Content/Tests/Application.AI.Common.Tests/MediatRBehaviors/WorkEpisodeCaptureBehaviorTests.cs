@@ -65,6 +65,7 @@ public sealed class WorkEpisodeCaptureBehaviorTests
         await WaitForAsync(() => captured.Count == 1, TimeSpan.FromSeconds(2));
 
         var episode = captured.Single();
+        episode.AgentId.Should().Be("test-agent"); // ExecuteAgentTurnCommand.AgentId => AgentName
         episode.ConversationId.Should().Be("conv-9");
         episode.TurnNumber.Should().Be(4);
         episode.UserMessage.Should().Be("the task");
