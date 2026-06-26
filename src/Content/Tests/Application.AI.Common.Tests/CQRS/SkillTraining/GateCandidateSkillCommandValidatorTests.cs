@@ -74,7 +74,7 @@ public sealed class GateCandidateSkillCommandValidatorTests
     public void BestStep_Exceeds_GlobalStep_Fails()
     {
         var cmd = Valid() with { BestStep = 5, GlobalStep = 2 };
-        _sut.TestValidate(cmd).ShouldHaveAnyValidationError();
+        Assert.False(_sut.TestValidate(cmd).IsValid);
     }
 
     [Fact]

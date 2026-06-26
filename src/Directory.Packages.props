@@ -16,8 +16,8 @@
 
     <!-- Application layer -->
     <PackageVersion Include="Azure.Identity" Version="1.21.0" />
-    <PackageVersion Include="FluentValidation" Version="11.11.0" />
-    <PackageVersion Include="FluentValidation.DependencyInjectionExtensions" Version="11.11.0" />
+    <PackageVersion Include="FluentValidation" Version="12.1.1" />
+    <PackageVersion Include="FluentValidation.DependencyInjectionExtensions" Version="12.1.1" />
     <PackageVersion Include="MediatR" Version="12.4.1" />
     <PackageVersion Include="Microsoft.Extensions.Caching.Hybrid" Version="10.1.0" />
     <PackageVersion Include="Microsoft.Extensions.Caching.Memory" Version="10.0.5" />
@@ -38,14 +38,25 @@
     <PackageVersion Include="Microsoft.Extensions.Http" Version="10.0.5" />
 
     <!-- Infrastructure.AI.Governance -->
+    <!-- Held at 3.0.2: AgentGovernance 4.0.0 makes PolicyEngine.Evaluate reject non-DID
+         agent identifiers (requires did:mesh: / did:agentmesh: prefix), throwing on the
+         live tool-path governance gate. 4.0 adds only SQL/K8s policy facets + redaction
+         this harness does not use, so the breaking identity-model change buys nothing.
+         Revisit when the harness adopts AgentMesh DIDs. -->
     <PackageVersion Include="Microsoft.AgentGovernance" Version="3.0.2" />
 
     <!-- Infrastructure.AI.KnowledgeGraph -->
-    <PackageVersion Include="Neo4j.Driver" Version="5.28.0" />
+    <PackageVersion Include="Neo4j.Driver" Version="6.2.1" />
 
     <!-- Infrastructure.AI.RAG -->
-    <PackageVersion Include="Azure.Search.Documents" Version="11.7.0" />
+    <PackageVersion Include="Azure.Search.Documents" Version="12.0.0" />
     <PackageVersion Include="Microsoft.Data.Sqlite" Version="10.0.5" />
+    <!-- Transitive security pin: Microsoft.Data.Sqlite / EF Core Sqlite pull the native
+         SQLitePCLRaw.lib.e_sqlite3 2.1.11, whose embedded SQLite (< 3.50.2) is vulnerable
+         to CVE-2025-6965 (GHSA-2m69-gcr7-jv3q, High). The lib package re-versions to match
+         SQLite, so 3.50.3 is the patched native build (consumed alongside the existing
+         2.1.x core/provider/bundle — the C API surface is unchanged). -->
+    <PackageVersion Include="SQLitePCLRaw.lib.e_sqlite3" Version="3.50.3" />
 
     <!-- Infrastructure.AI -->
     <PackageVersion Include="Docker.DotNet" Version="3.125.15" />
@@ -63,7 +74,7 @@
     <PackageVersion Include="Microsoft.Security.AntiSSRF" Version="1.0.0" />
 
     <!-- Infrastructure.AI.Evaluation -->
-    <PackageVersion Include="YamlDotNet" Version="16.3.0" />
+    <PackageVersion Include="YamlDotNet" Version="18.0.0" />
 
     <!-- Infrastructure.AI Prompt Registry (Sub-phase 5.3) -->
     <!-- 7.0+ patches multiple critical/high CVEs (GHSA-5wr9-m6jw-xx44 etc). -->
@@ -78,14 +89,14 @@
     <PackageVersion Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.5" />
 
     <!-- Infrastructure.APIAccess -->
-    <PackageVersion Include="Asp.Versioning.Http" Version="8.1.1" />
-    <PackageVersion Include="Asp.Versioning.Mvc.ApiExplorer" Version="8.1.1" />
+    <PackageVersion Include="Asp.Versioning.Http" Version="10.0.0" />
+    <PackageVersion Include="Asp.Versioning.Mvc.ApiExplorer" Version="10.0.0" />
     <PackageVersion Include="CorrelationId" Version="3.0.1" />
     <PackageVersion Include="Microsoft.Extensions.Http.Resilience" Version="10.2.0" />
     <PackageVersion Include="Swashbuckle.AspNetCore.SwaggerGen" Version="10.1.0" />
 
     <!-- Infrastructure.Observability -->
-    <PackageVersion Include="Npgsql" Version="9.0.3" />
+    <PackageVersion Include="Npgsql" Version="10.0.3" />
     <PackageVersion Include="Azure.Monitor.OpenTelemetry.Exporter" Version="1.4.0" />
     <PackageVersion Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.15.3" />
     <PackageVersion Include="OpenTelemetry.Exporter.Prometheus.AspNetCore" Version="1.11.2-beta.1" />
@@ -103,11 +114,11 @@
          17.0.14+ patches GHSA-w7r3-mgwf-4mqq. -->
     <PackageVersion Include="KubernetesClient" Version="19.0.2" />
     <PackageVersion Include="Azure.Extensions.AspNetCore.Configuration.Secrets" Version="1.4.0" />
-    <PackageVersion Include="Microsoft.Extensions.Caching.StackExchangeRedis" Version="9.0.4" />
+    <PackageVersion Include="Microsoft.Extensions.Caching.StackExchangeRedis" Version="10.0.9" />
     <PackageVersion Include="Microsoft.Extensions.Configuration.AzureAppConfiguration" Version="8.1.0" />
     <PackageVersion Include="Microsoft.Extensions.Configuration.UserSecrets" Version="10.0.5" />
     <PackageVersion Include="Microsoft.AspNetCore.SpaProxy" Version="10.0.0" />
-    <PackageVersion Include="Microsoft.Identity.Web" Version="3.8.4" />
+    <PackageVersion Include="Microsoft.Identity.Web" Version="4.11.0" />
     <PackageVersion Include="OpenTelemetry.Extensions.Hosting" Version="1.15.3" />
     <PackageVersion Include="OpenTelemetry.Instrumentation.AspNetCore" Version="1.15.2" />
     <PackageVersion Include="OpenTelemetry.Instrumentation.Http" Version="1.15.1" />

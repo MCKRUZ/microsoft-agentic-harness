@@ -182,7 +182,7 @@ public sealed class GetTopRegressedCasesQueryValidatorTests
     [Fact]
     public void Same_run_ids_fails()
         => _sut.TestValidate(Valid() with { CurrentRunId = "x", BaselineRunId = "x" })
-            .ShouldHaveAnyValidationError();
+            .IsValid.Should().BeFalse();
 
     [Fact]
     public void Zero_Take_fails()

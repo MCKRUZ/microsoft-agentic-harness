@@ -16,6 +16,10 @@
     <PackageReference Include="coverlet.collector" />
     <PackageReference Include="Microsoft.Extensions.Configuration.UserSecrets" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" />
+    <!-- Security pin: forces the transitively-pulled native SQLite up to a build carrying
+         SQLite >= 3.50.2, fixing CVE-2025-6965 (GHSA-2m69-gcr7-jv3q, High). Version is
+         centrally managed in Directory.Packages.props. -->
+    <PackageReference Include="SQLitePCLRaw.lib.e_sqlite3" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" />
     <PackageReference Include="FluentAssertions" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" />
