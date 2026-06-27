@@ -20,6 +20,9 @@ if (typeof window !== 'undefined') {
     unobserve() {}
     disconnect() {}
   };
+
+  // jsdom does not implement scrollIntoView; the chat message list calls it.
+  Element.prototype.scrollIntoView ??= () => {};
 }
 
 beforeAll(() => server.listen({ onUnhandledRequest: 'bypass' }));
