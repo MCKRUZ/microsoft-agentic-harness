@@ -107,6 +107,13 @@ export function useAgentStream(): UseAgentStreamReturn {
         return;
       }
       subscriptionRef.current = sub;
+    }).catch((err: unknown) => {
+      // Agent construction (or a synchronous throw in agent.run) failed — clear
+      // the streaming flag the current run optimistically set, so the UI does
+      // not stick in a "streaming" state. Ignore if already superseded.
+      if (myRun !== runIdRef.current) return;
+      const message = err instanceof Error ? err.message : 'Failed to start the agent stream';
+      useChatStore.getState().setError(message);
     });
   };
 
