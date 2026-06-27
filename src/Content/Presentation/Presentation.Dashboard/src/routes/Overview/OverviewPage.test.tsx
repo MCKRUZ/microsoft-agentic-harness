@@ -1,4 +1,4 @@
-import { screen } from '@testing-library/react';
+import { screen, waitFor } from '@testing-library/react';
 import { describe, it, expect } from 'vitest';
 import { renderPage } from '@/test/helpers/renderPage';
 import OverviewPage from './OverviewPage';

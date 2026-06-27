@@ -255,29 +255,3 @@
     font-variant-numeric: tabular-nums;
   }
 }
-
-/* ---------------------------------------------------------------------------
-   Chat surface (folded in from Presentation.WebUI during frontend unification).
-   Strictly additive and chat-scoped: one token consumed by the chat code block,
-   plus the two keyframes the typing indicator and streaming cursor reference via
-   Tailwind `animate-[…]` arbitrary classes. The chat components style their own
-   inline code and collapsible chevrons with Tailwind utilities, so NO global
-   element rules are introduced — the observability surfaces render unchanged.
---------------------------------------------------------------------------- */
-:root {
-  --code-bg: #f4f3ec;
-}
-
-[data-theme="dark"], .dark {
-  --code-bg: #1f2028;
-}
-
-@keyframes typing-pulse {
-  0%, 100% { opacity: 0.4; transform: scale(0.8); }
-  50% { opacity: 1; transform: scale(1); }
-}
-
-@keyframes cursor-blink {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0; }
-}
