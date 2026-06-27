@@ -1,6 +1,7 @@
 import { defineConfig } from '@playwright/test';
 
 const BASE_URL = process.env.DASHBOARD_URL ?? 'http://localhost:5174';
+const API_URL = process.env.API_URL ?? 'http://localhost:52000';
 
 export default defineConfig({
   testDir: './e2e',

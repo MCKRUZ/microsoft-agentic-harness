@@ -1,6 +1,7 @@
 import { useCallback, useMemo, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { ChevronLeft, ChevronRight, X } from 'lucide-react';
+import { cn } from '@/lib/utils';
 import { CATEGORY_LABEL, type CategoryKey } from '@/lib/categories';
 import { CategorySwatch } from './CategorySwatch';
 
