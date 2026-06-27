@@ -21,6 +21,16 @@ const GovernancePage = lazy(() => import('@/routes/Governance/GovernancePage'));
 const EvalsListPage = lazy(() => import('@/routes/Evals/EvalsListPage'));
 const EvalRunDetailPage = lazy(() => import('@/routes/Evals/EvalRunDetailPage'));
 
+// Agent-interaction surface (folded in from the former WebUI). Its own shell
+// mounts the SignalR conversation hub; the views use named exports, so each
+// lazy import maps the named member onto `default`.
+const ChatShell = lazy(() => import('@/components/layout/ChatShell'));
+const ChatView = lazy(() => import('@/views/ChatView').then((m) => ({ default: m.ChatView })));
+const AgentsView = lazy(() => import('@/views/AgentsView').then((m) => ({ default: m.AgentsView })));
+const ToolsView = lazy(() => import('@/views/ToolsView').then((m) => ({ default: m.ToolsView })));
+const ResourcesView = lazy(() => import('@/views/ResourcesView').then((m) => ({ default: m.ResourcesView })));
+const PromptsView = lazy(() => import('@/views/PromptsView').then((m) => ({ default: m.PromptsView })));
+
 // Dev-only sandbox. `import.meta.env.DEV` is statically replaced by Vite, so in
 // prod the ternary resolves to `null` at build time and the dynamic import() is
 // dropped from the bundle entirely — no DesignSystemPage chunk ships to users.
@@ -87,6 +97,22 @@ export const router = createBrowserRouter([
       { path: 'tools', element: <Navigate to="/quality/tools" replace /> },
       { path: 'safety', element: <Navigate to="/quality/safety" replace /> },
       { path: 'rag', element: <Navigate to="/quality/rag" replace /> },
+    ],
+  },
+
+  // Agent interaction (chat + MCP browsers) under its own shell, which mounts
+  // the SignalR conversation hub. Namespaced under /agent so 'tools' here does
+  // not collide with the legacy '/tools' → '/quality/tools' redirect above.
+  {
+    path: '/agent',
+    element: <LazyWrapper><ChatShell /></LazyWrapper>,
+    children: [
+      { index: true, element: <Navigate to="/agent/chat" replace /> },
+      { path: 'chat', element: <LazyWrapper><ChatView /></LazyWrapper> },
+      { path: 'agents', element: <LazyWrapper><AgentsView /></LazyWrapper> },
+      { path: 'tools', element: <LazyWrapper><ToolsView /></LazyWrapper> },
+      { path: 'resources', element: <LazyWrapper><ResourcesView /></LazyWrapper> },
+      { path: 'prompts', element: <LazyWrapper><PromptsView /></LazyWrapper> },
     ],
   },
 ]);

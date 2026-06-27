@@ -16,6 +16,10 @@ export interface UseAgentStreamReturn {
 export function useAgentStream(): UseAgentStreamReturn {
   const { instance } = useMsal();
   const subscriptionRef = useRef<Subscription | null>(null);
+  // Monotonic run token: a newer sendMessage() (or abort()) bumps it, so an
+  // older in-flight agent-construction promise sees it was superseded and tears
+  // its subscription down instead of leaking it.
+  const runIdRef = useRef(0);
 
   const getAccessToken = async (): Promise<string> => {
     if (IS_AUTH_DISABLED) return '';
@@ -26,12 +30,14 @@ export function useAgentStream(): UseAgentStreamReturn {
   };
 
   const abort = (): void => {
+    runIdRef.current += 1;
     subscriptionRef.current?.unsubscribe();
     subscriptionRef.current = null;
   };
 
   const sendMessage = (conversationId: string, userMessageId: string, message: string): void => {
     abort();
+    const myRun = runIdRef.current;
 
     const chatStore = useChatStore.getState();
     chatStore.startStreaming();
@@ -39,6 +45,8 @@ export function useAgentStream(): UseAgentStreamReturn {
     let currentMessageId: string | null = null;
 
     void createAuthenticatedAgUiAgent(getAccessToken).then((agent) => {
+      if (myRun !== runIdRef.current) return; // superseded before the agent was ready
+
       const obs$ = agent.run({
         threadId: conversationId,
         runId: crypto.randomUUID(),
@@ -54,7 +62,7 @@ export function useAgentStream(): UseAgentStreamReturn {
         forwardedProps: {},
       });
 
-      subscriptionRef.current = obs$.subscribe({
+      const sub = obs$.subscribe({
         next: (event: BaseEvent) => {
           switch (event.type) {
             case EventType.TEXT_MESSAGE_START: {
@@ -91,6 +99,14 @@ export function useAgentStream(): UseAgentStreamReturn {
           subscriptionRef.current = null;
         },
       });
+
+      // A newer send (or abort) ran while we awaited agent construction —
+      // discard this subscription so it cannot leak past its successor.
+      if (myRun !== runIdRef.current) {
+        sub.unsubscribe();
+        return;
+      }
+      subscriptionRef.current = sub;
     });
   };
 

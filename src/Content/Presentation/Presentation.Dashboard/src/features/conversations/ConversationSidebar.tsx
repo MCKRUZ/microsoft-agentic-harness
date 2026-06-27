@@ -4,6 +4,7 @@ import { useConversationsQuery } from './useConversationsQuery';
 import { useDeleteConversation } from './useDeleteConversation';
 import { useAppStore } from '@/stores/appStore';
 import { useChatStore } from '@/features/chat/useChatStore';
+import { useConversationSettingsStore } from '@/stores/conversationSettingsStore';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -35,6 +36,7 @@ export function ConversationSidebar({ onSelect }: ConversationSidebarProps) {
   const selectedAgent = useAppStore((s) => s.selectedAgent);
   const setSelectedAgent = useAppStore((s) => s.setSelectedAgent);
   const clearMessages = useChatStore((s) => s.clearMessages);
+  const clearSettings = useConversationSettingsStore((s) => s.clear);
   const [search, setSearch] = useState('');
 
   const filtered = useMemo(() => {
@@ -71,6 +73,7 @@ export function ConversationSidebar({ onSelect }: ConversationSidebarProps) {
   const handleDelete = (e: React.MouseEvent, id: string): void => {
     e.stopPropagation();
     deleteMutation.mutate(id);
+    clearSettings(id);
     if (id === activeId) {
       clearMessages();
       const remaining = conversations?.filter((c) => c.id !== id) ?? [];

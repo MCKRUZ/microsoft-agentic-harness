@@ -2,6 +2,7 @@ import { NavLink, useLocation } from 'react-router-dom';
 import {
   Activity, Users, TrendingUp, Coins, DollarSign, Wallet,
   Wrench, ShieldCheck, Database, LayoutGrid, ChevronDown, Shield, FlaskConical,
+  MessageSquare, Bot, FolderOpen, FileText,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useState } from 'react';
@@ -20,6 +21,16 @@ interface NavItem {
 }
 
 const navGroups: NavGroup[] = [
+  {
+    label: 'Agent',
+    items: [
+      { to: '/agent/chat', label: 'Chat', icon: MessageSquare },
+      { to: '/agent/agents', label: 'Agents', icon: Bot },
+      { to: '/agent/tools', label: 'Tools', icon: Wrench },
+      { to: '/agent/resources', label: 'Resources', icon: FolderOpen },
+      { to: '/agent/prompts', label: 'Prompts', icon: FileText },
+    ],
+  },
   {
     label: 'Observe',
     items: [
