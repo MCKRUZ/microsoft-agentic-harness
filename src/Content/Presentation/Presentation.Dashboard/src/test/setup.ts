@@ -23,6 +23,9 @@ if (typeof window !== 'undefined') {
 
   // jsdom does not implement scrollIntoView; the chat message list calls it.
   Element.prototype.scrollIntoView ??= () => {};
+
+  // jsdom lacks the Web Animations API that Radix (ScrollArea/Tooltip) probes.
+  Element.prototype.getAnimations ??= () => [];
 }
 
 beforeAll(() => server.listen({ onUnhandledRequest: 'bypass' }));
