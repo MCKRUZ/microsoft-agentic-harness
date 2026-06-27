@@ -60,10 +60,13 @@ export default function SessionsPage() {
   const customStart = useTimeRangeStore((s) => s.customStart);
   const customEnd = useTimeRangeStore((s) => s.customEnd);
   const getRange = useTimeRangeStore((s) => s.getRange);
-  const { start, end } = useMemo(
-    () => getRange(),
-    [preset, customStart, customEnd, getRange],
-  );
+  // getRange() reads preset/customStart/customEnd from the store; its identity
+  // is stable, so those three values are the real inputs that must re-trigger
+  // the range computation. The exhaustive-deps rule flags them as "unnecessary"
+  // because they aren't referenced in the callback body, but dropping them would
+  // freeze the range on first render — they are deliberate.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const { start, end } = useMemo(() => getRange(), [preset, customStart, customEnd]);
 
   const sessionsQuery = useQuery({
     queryKey: ['sessions-list', start, end],
@@ -82,7 +85,9 @@ export default function SessionsPage() {
     retry: 1,
   });
 
-  const sessions = sessionsQuery.data ?? [];
+  // Stabilise identity: `?? []` would mint a fresh array every render while the
+  // query is empty, re-running the roster memo (and its dependents) needlessly.
+  const sessions = useMemo(() => sessionsQuery.data ?? [], [sessionsQuery.data]);
   const roster = useMemo(
     () => buildAgentRoster(agentsQuery.data ?? [], sessions),
     [agentsQuery.data, sessions],

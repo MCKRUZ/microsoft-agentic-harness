@@ -40,6 +40,6 @@ export async function getKpiValue(page: Page, testId: string): Promise<number> {
   const el = page.locator(`[data-testid="${testId}-value"]`);
   const text = await el.textContent({ timeout: 20_000 });
   if (!text) return 0;
-  const cleaned = text.replace(/[^0-9.\-]/g, '');
+  const cleaned = text.replace(/[^0-9.-]/g, '');
   return parseFloat(cleaned) || 0;
 }

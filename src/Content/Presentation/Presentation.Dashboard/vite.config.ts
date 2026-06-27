@@ -12,6 +12,7 @@ export default defineConfig({
     port: 5174,
     proxy: {
       '/api': { target: 'http://localhost:52000', changeOrigin: true },
+      '/ag-ui': { target: 'http://localhost:52000', changeOrigin: true },
       '/hubs': { target: 'http://localhost:52000', ws: true, changeOrigin: true },
     },
   },

@@ -2,7 +2,12 @@ import { useEffect, useRef } from 'react';
 
 export function useAutoRefresh(callback: () => void, intervalMs: number, enabled = true): void {
   const savedCallback = useRef(callback);
-  savedCallback.current = callback;
+
+  // Keep the ref pointing at the latest callback without re-arming the interval.
+  // Assigning in an effect (not during render) avoids mutating a ref mid-render.
+  useEffect(() => {
+    savedCallback.current = callback;
+  }, [callback]);
 
   useEffect(() => {
     if (!enabled || intervalMs <= 0) return;
