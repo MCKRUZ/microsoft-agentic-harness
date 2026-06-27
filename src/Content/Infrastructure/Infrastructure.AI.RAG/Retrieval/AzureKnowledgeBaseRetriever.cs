@@ -38,6 +38,12 @@ namespace Infrastructure.AI.RAG.Retrieval;
 /// The result-mapping step is exception-safe (it constructs no host-segment URIs and parses
 /// JSON defensively), so it never throws regardless of payload or configured name.
 /// </para>
+/// <para>
+/// <strong>Single knowledge base.</strong> This backend always queries the one knowledge base
+/// named in configuration. The <c>IHybridRetriever.RetrieveAsync</c> <c>collectionName</c>
+/// override is therefore not supported — a non-null value that differs from the configured name
+/// is logged and ignored rather than silently retargeting (or wrongly querying) another base.
+/// </para>
 /// </remarks>
 public sealed class AzureKnowledgeBaseRetriever : IHybridRetriever
 {
@@ -79,6 +85,13 @@ public sealed class AzureKnowledgeBaseRetriever : IHybridRetriever
         if (string.IsNullOrWhiteSpace(query) || topK <= 0)
             return [];
 
+        if (collectionName is not null && collectionName != config.KnowledgeBaseName)
+        {
+            _logger.LogWarning(
+                "Agentic retrieval ignores collectionName '{Requested}'; it always queries the configured knowledge base '{KnowledgeBase}'.",
+                collectionName, config.KnowledgeBaseName);
+        }
+
         KnowledgeBaseRetrievalResponse response;
         try
         {
@@ -97,14 +110,7 @@ public sealed class AzureKnowledgeBaseRetriever : IHybridRetriever
             return [];
         }
 
-        // Extractive mode returns a single grounding message whose text content is a JSON array
-        // of ranked chunks. Take the first non-empty text payload and map it.
-        var groundingText = response.Response
-            .SelectMany(message => message.Content)
-            .OfType<KnowledgeBaseMessageTextContent>()
-            .Select(content => content.Text)
-            .FirstOrDefault(text => !string.IsNullOrWhiteSpace(text));
-
+        var groundingText = ExtractGroundingText(response);
         if (groundingText is null)
         {
             _logger.LogDebug("Agentic retrieval returned no grounding content for the query.");
@@ -153,39 +159,66 @@ public sealed class AzureKnowledgeBaseRetriever : IHybridRetriever
                 return [];
 
             var results = new List<RetrievalResult>();
-            var rank = 0;
             foreach (var element in document.RootElement.EnumerateArray())
             {
                 if (results.Count >= topK)
                     break;
-                if (element.ValueKind != JsonValueKind.Object)
-                    continue;
 
-                var content = GetString(element, "content", "text", "chunk");
-                if (string.IsNullOrWhiteSpace(content))
-                    continue;
-
-                var refId = GetString(element, "ref_id", "id", "doc_key") ?? $"kb-{rank}";
-                var title = GetString(element, "title", "section_path", "sectionPath");
-
-                // The service ranks results server-side, so list order is the relevance order.
-                // The extractive payload carries no per-chunk numeric score, so encode rank as
-                // a positional proxy: first = 1.0, decaying as 1/(1+rank).
-                var score = 1.0 / (1 + rank);
-
-                results.Add(new RetrievalResult
-                {
-                    Chunk = BuildChunk(refId, title, content!, knowledgeBaseName, retrievedAt),
-                    DenseScore = score,
-                    SparseScore = 0.0,
-                    FusedScore = score
-                });
-                rank++;
+                // results.Count is the OUTPUT rank: skipped (content-less) entries don't consume
+                // a slot, so the top surviving chunk scores 1.0 rather than being demoted.
+                var mapped = TryMapElement(element, results.Count, knowledgeBaseName, retrievedAt);
+                if (mapped is not null)
+                    results.Add(mapped);
             }
 
             return results;
         }
     }
+
+    /// <summary>
+    /// Maps a single grounding-array element to a <see cref="RetrievalResult"/>, or returns
+    /// <see langword="null"/> when the element is not a content-bearing object (skipped).
+    /// </summary>
+    private static RetrievalResult? TryMapElement(
+        JsonElement element,
+        int rank,
+        string knowledgeBaseName,
+        DateTimeOffset retrievedAt)
+    {
+        if (element.ValueKind != JsonValueKind.Object)
+            return null;
+
+        var content = GetString(element, "content", "text", "chunk");
+        if (string.IsNullOrWhiteSpace(content))
+            return null;
+
+        var refId = GetString(element, "ref_id", "id", "doc_key") ?? $"kb-{rank}";
+        var title = GetString(element, "title", "section_path", "sectionPath");
+
+        // The service ranks results server-side, so list order is the relevance order. The
+        // extractive payload carries no per-chunk numeric score, so encode the output rank as a
+        // positional proxy: first = 1.0, decaying as 1/(1+rank).
+        var score = 1.0 / (1 + rank);
+
+        return new RetrievalResult
+        {
+            Chunk = BuildChunk(refId, title, content!, knowledgeBaseName, retrievedAt),
+            DenseScore = score,
+            SparseScore = 0.0,
+            FusedScore = score
+        };
+    }
+
+    /// <summary>
+    /// Returns the first non-empty text payload from the knowledge base response — in extractive
+    /// mode a single grounding message whose text content is the JSON array of ranked chunks.
+    /// </summary>
+    private static string? ExtractGroundingText(KnowledgeBaseRetrievalResponse response) =>
+        response.Response
+            .SelectMany(message => message.Content)
+            .OfType<KnowledgeBaseMessageTextContent>()
+            .Select(content => content.Text)
+            .FirstOrDefault(text => !string.IsNullOrWhiteSpace(text));
 
     private static DocumentChunk BuildChunk(
         string refId,

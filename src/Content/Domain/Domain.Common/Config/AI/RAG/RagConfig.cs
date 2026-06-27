@@ -13,6 +13,7 @@ namespace Domain.Common.Config.AI.RAG;
 /// ├── Ingestion          — Chunking strategy, token targets, RAPTOR summaries
 /// ├── Retrieval          — Top-K, RRF constant, hybrid search toggle
 /// ├── VectorStore        — Provider, endpoint, embedding model, dimensions
+/// ├── AgenticRetrieval   — Opt-in Azure AI Search knowledge-base backend (off by default)
 /// ├── GraphRag           — Graph provider, community level, entity extraction
 /// ├── Reranker           — Reranking strategy and model selection
 /// ├── Crag               — Corrective RAG thresholds and web fallback

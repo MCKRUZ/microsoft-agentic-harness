@@ -1,5 +1,6 @@
 using Azure;
 using Azure.Search.Documents.KnowledgeBases;
+using Azure.Search.Documents.KnowledgeBases.Models;
 using Domain.Common.Config;
 using FluentAssertions;
 using Infrastructure.AI.RAG.Retrieval;
@@ -129,6 +130,30 @@ public sealed class AzureKnowledgeBaseRetrieverTests
 
         AzureKnowledgeBaseRetriever.ParseGroundingPayload(payload, "kb", topK: 0, RetrievedAt)
             .Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task RetrieveAsync_BackendThrowsRequestFailed_FailsSoftToEmpty()
+    {
+        var config = new AppConfig();
+        config.AI.Rag.AgenticRetrieval.Enabled = true;
+        config.AI.Rag.AgenticRetrieval.Endpoint = "https://svc.search.windows.net";
+        var monitor = Mock.Of<IOptionsMonitor<AppConfig>>(m => m.CurrentValue == config);
+
+        // KnowledgeBaseRetrievalClient has a protected ctor + virtual RetrieveAsync, so it is
+        // mockable; simulate a backend outage and assert the fail-soft contract (no throw).
+        var client = new Mock<KnowledgeBaseRetrievalClient>();
+        client
+            .Setup(c => c.RetrieveAsync(
+                It.IsAny<KnowledgeBaseRetrievalRequest>(),
+                It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new RequestFailedException(503, "service unavailable"));
+
+        var sut = new AzureKnowledgeBaseRetriever(client.Object, monitor, NullLogger<AzureKnowledgeBaseRetriever>.Instance);
+
+        var results = await sut.RetrieveAsync("any query", topK: 5);
+
+        results.Should().BeEmpty();
     }
 
     [Fact]
