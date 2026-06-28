@@ -35,6 +35,14 @@ async function runDashboardControl(args: string): Promise<string> {
   }
 }
 
+/** Marks the current run as failed: clears the activity spinner, records the message, sets error status. */
+function failRun(message: string): void {
+  const store = useChatStore.getState();
+  store.setToolActivity(null);
+  store.setError(message);
+  store.setStatus('error');
+}
+
 /** Executes a `render_chart` call: fetches the data, appends a chart message, and returns a summary. */
 async function runRenderChart(args: string): Promise<string> {
   try {
@@ -93,10 +101,7 @@ export function useDashboardAgent() {
     } catch (err) {
       // The server tool is blocked on this POST; if delivery fails the run can never resume. Surface
       // an error and stop the spinner so the panel recovers instead of hanging on 'running' forever.
-      const store = useChatStore.getState();
-      store.setToolActivity(null);
-      store.setError(err instanceof Error ? err.message : 'Could not deliver the tool result to the agent.');
-      store.setStatus('error');
+      failRun(err instanceof Error ? err.message : 'Could not deliver the tool result to the agent.');
     }
   }, []);
 
@@ -133,9 +138,7 @@ export function useDashboardAgent() {
         }
         case EventType.RUN_ERROR: {
           const e = event as BaseEvent & { message?: string };
-          store.setToolActivity(null);
-          store.setError(e.message ?? 'The agent run failed.');
-          store.setStatus('error');
+          failRun(e.message ?? 'The agent run failed.');
           break;
         }
         default:
@@ -178,12 +181,7 @@ export function useDashboardAgent() {
           })
           .subscribe({
             next: (event) => handleEvent(threadId!, event),
-            error: (err: unknown) => {
-              const message = err instanceof Error ? err.message : 'The agent run failed.';
-              useChatStore.getState().setToolActivity(null);
-              useChatStore.getState().setError(message);
-              useChatStore.getState().setStatus('error');
-            },
+            error: (err: unknown) => failRun(err instanceof Error ? err.message : 'The agent run failed.'),
             complete: () => {
               const s = useChatStore.getState();
               s.setToolActivity(null);
@@ -191,9 +189,7 @@ export function useDashboardAgent() {
             },
           });
       } catch (err) {
-        const message = err instanceof Error ? err.message : 'Could not start the agent.';
-        store.setError(message);
-        store.setStatus('error');
+        failRun(err instanceof Error ? err.message : 'Could not start the agent.');
       }
     },
     [handleEvent],

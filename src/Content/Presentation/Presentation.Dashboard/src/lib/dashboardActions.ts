@@ -1,5 +1,6 @@
 import { router } from '@/app/router';
 import { queryClient } from '@/app/queryClient';
+import { asString } from '@/lib/utils';
 import { useTimeRangeStore, type TimeRangePreset } from '@/stores/timeRangeStore';
 import { useThemeStore } from '@/stores/themeStore';
 
@@ -8,10 +9,6 @@ export type ActionParams = Record<string, unknown>;
 
 /** Presets the agent may select via `set_time_range` (excludes the custom sentinel). */
 const SELECTABLE_PRESETS: readonly TimeRangePreset[] = ['1h', '6h', '24h', '7d'];
-
-function asString(value: unknown): string | null {
-  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
-}
 
 /** Reads the current view state so the agent can reason about what the user is looking at. */
 function getState(): string {

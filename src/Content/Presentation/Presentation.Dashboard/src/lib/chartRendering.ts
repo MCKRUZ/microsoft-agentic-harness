@@ -1,5 +1,8 @@
 import { getCatalog, queryRange } from '@/api/metrics';
+import { queryClient } from '@/app/queryClient';
+import { asString } from '@/lib/utils';
 import { useTimeRangeStore } from '@/stores/timeRangeStore';
+import type { MetricCatalogEntry } from '@/api/types';
 import type { ChartSpec } from '@/stores/chatStore';
 
 /** Parameters the agent supplies to `render_chart`. */
@@ -11,7 +14,7 @@ export interface RenderChartParams {
 }
 
 /** Normalizes a catalog/agent chart type to one the panel can render. */
-function normalizeChartType(raw: string | undefined): 'timeseries' | 'bar' | 'pie' {
+function normalizeChartType(raw: string | null | undefined): 'timeseries' | 'bar' | 'pie' {
   switch ((raw ?? '').toLowerCase()) {
     case 'bar':
       return 'bar';
@@ -23,8 +26,17 @@ function normalizeChartType(raw: string | undefined): 'timeseries' | 'bar' | 'pi
   }
 }
 
-function asString(value: unknown): string | null {
-  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
+/**
+ * Loads the dashboard metric catalog, cached for the session. Uses the same server catalog the agent's
+ * `list_metrics` tool exposes (so a metricId the agent picked always resolves), routed through the
+ * shared query cache so repeated chart requests don't re-fetch it. The catalog is static at runtime.
+ */
+function loadCatalog(): Promise<MetricCatalogEntry[]> {
+  return queryClient.fetchQuery({
+    queryKey: ['metricsCatalog'],
+    queryFn: getCatalog,
+    staleTime: Infinity,
+  });
 }
 
 /**
@@ -42,10 +54,10 @@ export async function buildChart(
   let query: string;
   let title: string;
   let unit: string | undefined;
-  let chartType: string | undefined = asString(params.chartType) ?? undefined;
+  let chartType = asString(params.chartType);
 
   if (metricId) {
-    const entry = (await getCatalog()).find((e) => e.id === metricId);
+    const entry = (await loadCatalog()).find((e) => e.id === metricId);
     if (!entry) {
       throw new Error(`Unknown metric "${metricId}".`);
     }

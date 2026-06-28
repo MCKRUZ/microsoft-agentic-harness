@@ -1,6 +1,5 @@
 using System.Text.Json;
 using Application.AI.Common.Interfaces.Tools;
-using Domain.AI.Changes;
 using Domain.AI.Models;
 
 namespace Infrastructure.AI.Tools;
@@ -26,7 +25,7 @@ namespace Infrastructure.AI.Tools;
 /// </code>
 /// </para>
 /// </remarks>
-public sealed class RenderChartTool : ITool
+public sealed class RenderChartTool : BlockingProxyTool
 {
     /// <summary>The tool name matching keyed DI registration and SKILL.md declarations.</summary>
     public const string ToolName = "render_chart";
@@ -35,27 +34,17 @@ public sealed class RenderChartTool : ITool
 
     private static readonly IReadOnlyList<string> Operations = [Render];
 
-    private static readonly JsonSerializerOptions SerializerOptions = new()
-    {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
-    };
-
-    private readonly IClientToolBridge _bridge;
-
     /// <summary>Initializes a new instance of the <see cref="RenderChartTool"/> class.</summary>
     /// <param name="bridge">The client round-trip bridge used to delegate rendering to the browser.</param>
-    public RenderChartTool(IClientToolBridge bridge)
+    public RenderChartTool(IClientToolBridge bridge) : base(bridge)
     {
-        ArgumentNullException.ThrowIfNull(bridge);
-        _bridge = bridge;
     }
 
     /// <inheritdoc />
-    public string Name => ToolName;
+    public override string Name => ToolName;
 
     /// <inheritdoc />
-    public string Description =>
+    public override string Description =>
         "Renders a chart inline in your answer from the dashboard's metrics. Operation: render. " +
         "Provide either a metricId from list_metrics (preferred) or a raw promQL query. " +
         "Parameters: metricId (string, optional — a metric id such as 'tokens_by_model'); " +
@@ -65,42 +54,26 @@ public sealed class RenderChartTool : ITool
         "time range, so call set_time_range first if a different window is needed.";
 
     /// <inheritdoc />
-    public IReadOnlyList<string> SupportedOperations => Operations;
-
-    /// <summary>Reads metric data and renders UI; low blast radius (no state mutation).</summary>
-    public BlastRadius RiskTier => BlastRadius.Low;
+    public override IReadOnlyList<string> SupportedOperations => Operations;
 
     /// <inheritdoc />
-    public async Task<ToolResult> ExecuteAsync(
+    public override Task<ToolResult> ExecuteAsync(
         string operation,
         IReadOnlyDictionary<string, object?> parameters,
         CancellationToken cancellationToken = default)
     {
         if (!string.Equals(operation, Render, StringComparison.OrdinalIgnoreCase))
-            return ToolResult.Fail($"Unknown operation: {operation}. Supported: {Render}");
+            return Task.FromResult(ToolResult.Fail($"Unknown operation: {operation}. Supported: {Render}"));
 
-        if (!_bridge.IsClientAttached)
-            return ToolResult.Fail("No dashboard client is connected to this conversation, so a chart cannot be rendered.");
+        if (!IsClientAttached)
+            return Task.FromResult(ToolResult.Fail("No dashboard client is connected to this conversation, so a chart cannot be rendered."));
 
         var hasMetric = parameters.ContainsKey("metricId") || parameters.ContainsKey("promQL");
         if (!hasMetric)
-            return ToolResult.Fail("Provide a metricId (from list_metrics) or a promQL query to chart.");
+            return Task.FromResult(ToolResult.Fail("Provide a metricId (from list_metrics) or a promQL query to chart."));
 
         var argumentsJson = JsonSerializer.Serialize(parameters, SerializerOptions);
 
-        try
-        {
-            var result = await _bridge.InvokeAsync(ToolName, argumentsJson, cancellationToken);
-            return ToolResult.Ok(result);
-        }
-        catch (TimeoutException)
-        {
-            return ToolResult.Fail("The dashboard did not render the chart in time.");
-        }
-        catch (InvalidOperationException ex)
-        {
-            return ToolResult.Fail(ex.Message);
-        }
-        // OperationCanceledException intentionally propagates so a cancelled run unwinds.
+        return InvokeClientAsync(argumentsJson, "The dashboard did not render the chart in time.", cancellationToken);
     }
 }

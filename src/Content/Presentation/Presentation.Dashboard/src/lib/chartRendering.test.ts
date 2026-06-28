@@ -7,6 +7,11 @@ const { getCatalog, queryRange } = vi.hoisted(() => ({
 
 vi.mock('@/api/metrics', () => ({ getCatalog, queryRange }));
 
+// Bypass the real query cache so each test sees its own getCatalog mock (no cross-test caching).
+vi.mock('@/app/queryClient', () => ({
+  queryClient: { fetchQuery: ({ queryFn }: { queryFn: () => unknown }) => queryFn() },
+}));
+
 import { buildChart } from './chartRendering';
 
 const CATALOG = [
