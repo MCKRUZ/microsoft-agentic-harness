@@ -1,13 +1,30 @@
 import { create } from 'zustand';
+import type { MetricSeries } from '@/api/types';
 
 /** Role of a message shown in the agent chat transcript. */
 export type ChatRole = 'user' | 'assistant';
 
-/** A single message in the agent chat transcript. */
+/** A chart the agent rendered inline, populated from the dashboard's existing metric data. */
+export interface ChartSpec {
+  /** Heading shown above the chart. */
+  title: string;
+  /** Which chart component to render: `timeseries`, `bar`, or `pie`. */
+  chartType: string;
+  /** Optional display unit (e.g. `tokens`, `usd`). */
+  unit?: string;
+  /** The metric series to plot, in the dashboard's standard shape. */
+  series: MetricSeries[];
+}
+
+/**
+ * A single message in the agent chat transcript. A message is plain text unless {@link chart} is set,
+ * in which case the panel renders the chart inline and uses {@link content} as its caption/summary.
+ */
 export interface ChatMessage {
   id: string;
   role: ChatRole;
   content: string;
+  chart?: ChartSpec;
 }
 
 /** Lifecycle of the current agent run, used to gate input and show status. */

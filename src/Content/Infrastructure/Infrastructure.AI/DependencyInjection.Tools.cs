@@ -81,6 +81,12 @@ public static partial class DependencyInjection
         // agent can pick a valid metric. Read-only, non-blocking. Opt-in per skill via allowed-tools.
         services.AddKeyedSingleton<ITool>(ListMetricsTool.ToolName, (sp, _) =>
             new ListMetricsTool(sp.GetRequiredService<IMetricCatalog>()));
+
+        // Render-chart tool — generative UI: the agent renders a chart inline in its answer via the
+        // same client round-trip bridge as dashboard_control. The browser draws an existing chart
+        // component from a metric and returns a short summary. Opt-in per skill via allowed-tools.
+        services.AddKeyedSingleton<ITool>(RenderChartTool.ToolName, (sp, _) =>
+            new RenderChartTool(sp.GetRequiredService<IClientToolBridge>()));
     }
 
     /// <summary>

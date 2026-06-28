@@ -20,6 +20,14 @@ vi.mock('@/lib/dashboardActions', () => ({
   describeAction: () => 'Navigating',
 }));
 
+const buildChart = vi.fn(async () => ({
+  chart: { title: 'Tokens by Model', chartType: 'pie', unit: 'tokens', series: [{ labels: {}, dataPoints: [] }] },
+  summary: 'Rendered a pie chart of "Tokens by Model" (1 series).',
+}));
+vi.mock('@/lib/chartRendering', () => ({
+  buildChart: (...args: unknown[]) => buildChart(...(args as [])),
+}));
+
 import { useDashboardAgent } from './useDashboardAgent';
 import { useChatStore } from '@/stores/chatStore';
 
@@ -60,6 +68,28 @@ describe('useDashboardAgent', () => {
     expect(messages[0]).toMatchObject({ role: 'user', content: 'show spend' });
     expect(messages.some((m) => m.role === 'assistant' && m.content === 'Done.')).toBe(true);
     expect(useChatStore.getState().status).toBe('idle');
+  });
+
+  it('renders a chart on a render_chart call and appends a chart message', async () => {
+    runWith([
+      { type: EventType.TOOL_CALL_START, toolCallId: 'c2', toolCallName: 'render_chart' },
+      { type: EventType.TOOL_CALL_ARGS, toolCallId: 'c2', delta: JSON.stringify({ metricId: 'tokens_by_model', chartType: 'pie' }) },
+      { type: EventType.TOOL_CALL_END, toolCallId: 'c2' },
+      { type: EventType.RUN_FINISHED, threadId: 'thread-1', runId: 'r1' },
+    ]);
+
+    const { result } = renderHook(() => useDashboardAgent());
+    await act(async () => {
+      await result.current.sendMessage('chart tokens by model');
+    });
+
+    await waitFor(() => expect(buildChart).toHaveBeenCalledWith({ metricId: 'tokens_by_model', chartType: 'pie' }));
+    await waitFor(() =>
+      expect(postToolResult).toHaveBeenCalledWith('thread-1', 'c2', 'Rendered a pie chart of "Tokens by Model" (1 series).'),
+    );
+
+    const chartMessage = useChatStore.getState().messages.find((m) => m.chart);
+    expect(chartMessage?.chart?.chartType).toBe('pie');
   });
 
   it('reuses an existing threadId on a second turn', async () => {

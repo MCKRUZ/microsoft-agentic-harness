@@ -4,6 +4,8 @@ import { Loader2, Send, Sparkles, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useChatStore, type ChatMessage } from '@/stores/chatStore';
 import { useDashboardAgent } from '@/hooks/useDashboardAgent';
+import { TimeSeriesChart } from '@/components/charts/TimeSeriesChart';
+import { MetricBarChart } from '@/components/charts/BarChart';
 
 /**
  * Embedded dashboard agent panel — a right-side slide-over (Radix Dialog, mirroring
@@ -116,6 +118,8 @@ export function AgentPanel() {
 }
 
 function MessageBubble({ message }: { message: ChatMessage }) {
+  if (message.chart) return <ChartCard message={message} />;
+
   const isUser = message.role === 'user';
   return (
     <div data-testid={`agent-message-${message.role}`} className={cn('flex', isUser ? 'justify-end' : 'justify-start')}>
@@ -127,6 +131,30 @@ function MessageBubble({ message }: { message: ChatMessage }) {
       >
         {message.content || <span className="text-muted-foreground">…</span>}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Renders a chart the agent generated inline, reusing the dashboard's existing chart components
+ * (bar/pie → {@link MetricBarChart}, otherwise → {@link TimeSeriesChart}) populated from real metric data.
+ */
+function ChartCard({ message }: { message: ChatMessage }) {
+  const chart = message.chart!;
+  const isBar = chart.chartType === 'bar' || chart.chartType === 'pie';
+  return (
+    <div data-testid="agent-message-chart" className="rounded-lg border border-border bg-muted/40 p-3">
+      <div className="mb-2 text-xs font-medium text-foreground">{chart.title}</div>
+      <div className="h-48">
+        {chart.series.length === 0 ? (
+          <p className="text-xs text-muted-foreground">No data for the current time range.</p>
+        ) : isBar ? (
+          <MetricBarChart series={chart.series} unit={chart.unit} />
+        ) : (
+          <TimeSeriesChart series={chart.series} unit={chart.unit} />
+        )}
+      </div>
+      {message.content && <p className="mt-2 text-xs text-muted-foreground">{message.content}</p>}
     </div>
   );
 }

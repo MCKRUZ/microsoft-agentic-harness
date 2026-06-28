@@ -8,15 +8,44 @@ import {
   postToolResult,
 } from '@/lib/agUiClient';
 import { describeAction, dispatchDashboardAction } from '@/lib/dashboardActions';
+import { buildChart, type RenderChartParams } from '@/lib/chartRendering';
 import { useChatStore } from '@/stores/chatStore';
 
-/** The client round-trip tool the agent uses to act on the dashboard. */
+/** Client round-trip tools the agent uses to act on the dashboard. */
 const DASHBOARD_CONTROL = 'dashboard_control';
+const RENDER_CHART = 'render_chart';
 
 /** Accumulator for an in-flight tool call as its name and argument deltas stream in. */
 interface PendingCall {
   name: string;
   args: string;
+}
+
+/** Executes a `dashboard_control` call and returns the result string the agent should observe. */
+async function runDashboardControl(args: string): Promise<string> {
+  try {
+    const { operation, parameters } = JSON.parse(args || '{}') as {
+      operation?: string;
+      parameters?: Record<string, unknown>;
+    };
+    useChatStore.getState().setToolActivity(describeAction(operation ?? '', parameters ?? {}));
+    return await dispatchDashboardAction(operation ?? '', parameters ?? {});
+  } catch {
+    return 'The dashboard could not interpret the requested action.';
+  }
+}
+
+/** Executes a `render_chart` call: fetches the data, appends a chart message, and returns a summary. */
+async function runRenderChart(args: string): Promise<string> {
+  try {
+    const params = JSON.parse(args || '{}') as RenderChartParams;
+    useChatStore.getState().setToolActivity('Rendering chart');
+    const { chart, summary } = await buildChart(params);
+    useChatStore.getState().addMessage({ id: crypto.randomUUID(), role: 'assistant', content: summary, chart });
+    return summary;
+  } catch (e) {
+    return e instanceof Error ? e.message : 'Could not render the chart.';
+  }
 }
 
 /**
@@ -40,22 +69,17 @@ export function useDashboardAgent() {
     pendingCallsRef.current.delete(callId);
     if (!pending) return;
 
-    // Only dashboard_control is a client round-trip tool; ignore any others defensively.
-    if (pending.name !== DASHBOARD_CONTROL) {
-      await postToolResult(threadId, callId, `Unsupported client tool "${pending.name}".`);
-      return;
-    }
-
     let result: string;
-    try {
-      const { operation, parameters } = JSON.parse(pending.args || '{}') as {
-        operation?: string;
-        parameters?: Record<string, unknown>;
-      };
-      useChatStore.getState().setToolActivity(describeAction(operation ?? '', parameters ?? {}));
-      result = await dispatchDashboardAction(operation ?? '', parameters ?? {});
-    } catch {
-      result = 'The dashboard could not interpret the requested action.';
+    switch (pending.name) {
+      case DASHBOARD_CONTROL:
+        result = await runDashboardControl(pending.args);
+        break;
+      case RENDER_CHART:
+        result = await runRenderChart(pending.args);
+        break;
+      default:
+        result = `Unsupported client tool "${pending.name}".`;
+        break;
     }
 
     // Always post a result — even on failure — so the awaiting server-side tool never hangs.
