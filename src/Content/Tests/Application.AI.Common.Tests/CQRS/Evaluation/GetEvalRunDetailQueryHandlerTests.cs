@@ -42,7 +42,7 @@ public sealed class GetEvalRunDetailQueryHandlerTests
         var result = await _sut.Handle(new GetEvalRunDetailQuery { RunId = "r1" }, CancellationToken.None);
 
         result.IsSuccess.Should().BeTrue();
-        result.Value.RunId.Should().Be("r1");
+        result.Value!.RunId.Should().Be("r1");
     }
 
     [Fact]

@@ -71,13 +71,13 @@ internal static class MagenticTestHelpers
         public override string? Description => _id;
         protected override System.Threading.Tasks.ValueTask<Microsoft.Agents.AI.AgentSession> CreateSessionCoreAsync(CancellationToken cancellationToken)
             => throw new NotSupportedException();
-        protected override System.Threading.Tasks.ValueTask<System.Text.Json.JsonElement> SerializeSessionCoreAsync(Microsoft.Agents.AI.AgentSession session, System.Text.Json.JsonSerializerOptions jsonSerializerOptions, CancellationToken cancellationToken)
+        protected override System.Threading.Tasks.ValueTask<System.Text.Json.JsonElement> SerializeSessionCoreAsync(Microsoft.Agents.AI.AgentSession session, System.Text.Json.JsonSerializerOptions? jsonSerializerOptions, CancellationToken cancellationToken)
             => throw new NotSupportedException();
-        protected override System.Threading.Tasks.ValueTask<Microsoft.Agents.AI.AgentSession> DeserializeSessionCoreAsync(System.Text.Json.JsonElement serializedState, System.Text.Json.JsonSerializerOptions jsonSerializerOptions, CancellationToken cancellationToken)
+        protected override System.Threading.Tasks.ValueTask<Microsoft.Agents.AI.AgentSession> DeserializeSessionCoreAsync(System.Text.Json.JsonElement serializedState, System.Text.Json.JsonSerializerOptions? jsonSerializerOptions, CancellationToken cancellationToken)
             => throw new NotSupportedException();
-        protected override System.Threading.Tasks.Task<Microsoft.Agents.AI.AgentResponse> RunCoreAsync(IEnumerable<ChatMessage> messages, Microsoft.Agents.AI.AgentSession session, Microsoft.Agents.AI.AgentRunOptions options, CancellationToken cancellationToken)
+        protected override System.Threading.Tasks.Task<Microsoft.Agents.AI.AgentResponse> RunCoreAsync(IEnumerable<ChatMessage> messages, Microsoft.Agents.AI.AgentSession? session, Microsoft.Agents.AI.AgentRunOptions? options, CancellationToken cancellationToken)
             => throw new NotSupportedException();
-        protected override IAsyncEnumerable<Microsoft.Agents.AI.AgentResponseUpdate> RunCoreStreamingAsync(IEnumerable<ChatMessage> messages, Microsoft.Agents.AI.AgentSession session, Microsoft.Agents.AI.AgentRunOptions options, CancellationToken cancellationToken)
+        protected override IAsyncEnumerable<Microsoft.Agents.AI.AgentResponseUpdate> RunCoreStreamingAsync(IEnumerable<ChatMessage> messages, Microsoft.Agents.AI.AgentSession? session, Microsoft.Agents.AI.AgentRunOptions? options, CancellationToken cancellationToken)
             => throw new NotSupportedException();
     }
 

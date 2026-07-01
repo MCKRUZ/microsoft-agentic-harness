@@ -38,7 +38,8 @@ public sealed class GetPlanQueryHandler : IRequestHandler<GetPlanQuery, Result<P
         var snapshot = new PlanSnapshot
         {
             Graph = loadResult.Value,
-            StepStates = statesResult.Value
+            // non-null: Result<T>.Value is populated whenever IsSuccess is true
+            StepStates = statesResult.Value!
         };
 
         return Result<PlanSnapshot>.Success(snapshot);

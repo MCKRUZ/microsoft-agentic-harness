@@ -60,7 +60,7 @@ public class AgentFactoryFoundryResponsesTests
             monitor,
             new ServiceCollection().BuildServiceProvider(),
             NullLoggerFactory.Instance,
-            null, null, null, null, null, null);
+            null!, null!, null!, null!, null!, null!);
 
         return new AgentFactory(
             NullLogger<AgentFactory>.Instance,

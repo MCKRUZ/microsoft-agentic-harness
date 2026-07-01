@@ -31,7 +31,7 @@ public class AgentExecutionContextFactoryTests
 {
     private static AgentExecutionContextFactory CreateFactory(
         AIAgentFrameworkClientType configuredClientType = AIAgentFrameworkClientType.AzureOpenAI,
-        string? deployment = "default-model",
+        string deployment = "default-model",
         IExecutionTraceStore? traceStore = null,
         IContextBudgetTracker? budgetTracker = null,
         IMcpToolProvider? mcpToolProvider = null,
@@ -788,7 +788,8 @@ public class AgentExecutionContextFactoryTests
 
         var context = await factory.MapToAgentContextAsync([skill1, skill2], new SkillAgentOptions());
 
-        var map = (SkillPrerequisiteMap)context.AdditionalProperties[SkillPrerequisiteMap.AdditionalPropertiesKey];
+        context.AdditionalProperties.Should().NotBeNull();
+        var map = (SkillPrerequisiteMap)context.AdditionalProperties![SkillPrerequisiteMap.AdditionalPropertiesKey];
         // Tool names come from declared names matched against resolved tools.
         // Since no keyed DI tools are registered, the tool lists will be empty
         // (AllowedTools resolve via keyed DI which isn't wired in this test).

@@ -49,7 +49,9 @@ public static class DependencyInjection
 
         services.AddSingleton(kernel);
         services.AddSingleton(kernel.PolicyEngine);
-        services.AddSingleton(kernel.InjectionDetector);
+        // non-null when prompt-injection detection is enabled; AddSingleton throws on a null instance
+        // regardless, so the null-forgiving here does not change runtime behavior.
+        services.AddSingleton(kernel.InjectionDetector!);
         services.AddSingleton<AuditLogger>();
 
         services.AddSingleton<IGovernancePolicyEngine, AgtPolicyEngineAdapter>();

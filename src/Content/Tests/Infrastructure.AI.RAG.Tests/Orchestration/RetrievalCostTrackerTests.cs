@@ -74,7 +74,7 @@ public sealed class RetrievalCostTrackerTests
     }
 
     [Fact]
-    public void RecordCall_ConcurrentAccess_ThreadSafe()
+    public async Task RecordCall_ConcurrentAccess_ThreadSafe()
     {
         var tracker = CreateTracker();
         const int threadCount = 50;
@@ -88,7 +88,7 @@ public sealed class RetrievalCostTrackerTests
             }))
             .ToArray();
 
-        Task.WaitAll(tasks);
+        await Task.WhenAll(tasks);
 
         var summary = tracker.GetSummary();
         summary.RetrievalCalls.Should().Be(threadCount * callsPerThread);

@@ -104,7 +104,7 @@ public sealed class AgentExecutionContextFactoryGovernanceTests
 
         var context = await CreateFactory().MapToAgentContextAsync(skill, new SkillAgentOptions());
 
-        context.Tools.Select(t => t.Name).Should().BeEquivalentTo(["az_cli", "read_file"]);
+        context.Tools!.Select(t => t.Name).Should().BeEquivalentTo(["az_cli", "read_file"]);
     }
 
     [Fact]
@@ -125,7 +125,7 @@ public sealed class AgentExecutionContextFactoryGovernanceTests
 
         var context = await CreateFactory().MapToAgentContextAsync(skill, new SkillAgentOptions());
 
-        context.Tools.Select(t => t.Name).Should().BeEquivalentTo(["tool_a", "tool_b"]);
+        context.Tools!.Select(t => t.Name).Should().BeEquivalentTo(["tool_a", "tool_b"]);
     }
 
     [Fact]
@@ -147,7 +147,7 @@ public sealed class AgentExecutionContextFactoryGovernanceTests
 
         var context = await CreateFactory().MapToAgentContextAsync(skill, new SkillAgentOptions());
 
-        context.Tools.Select(t => t.Name).Should().BeEquivalentTo(["a"]);
+        context.Tools!.Select(t => t.Name).Should().BeEquivalentTo(["a"]);
     }
 
     [Fact]
@@ -213,7 +213,7 @@ public sealed class AgentExecutionContextFactoryGovernanceTests
 
         var context = await CreateFactory().MapToAgentContextAsync(skill, options);
 
-        context.Tools.Select(t => t.Name).Should().BeEquivalentTo(["safe_tool"]);
+        context.Tools!.Select(t => t.Name).Should().BeEquivalentTo(["safe_tool"]);
         context.Tools.Should().NotContain(t => t.Name == "dangerous");
     }
 

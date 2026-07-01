@@ -94,7 +94,9 @@ public static class McpServerExtensions
                         logger?.LogInformation(
                             "MCP tool call completed. User={User} ToolName={ToolName} Status={Status} CorrelationId={CorrelationId}",
                             user, toolName, result?.IsError == true ? "error" : "success", correlationId);
-                        return result;
+                        // non-null: the call-tool handler pipeline always yields a CallToolResult;
+                        // the ! is compile-time only and does not alter the returned value.
+                        return result!;
                     }
                     catch (Exception ex)
                     {

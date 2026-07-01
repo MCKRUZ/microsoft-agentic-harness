@@ -31,7 +31,8 @@ public sealed class CreatePlanCommandHandler : IRequestHandler<CreatePlanCommand
         if (!validationResult.IsSuccess)
             return Result<PlanId>.Fail(validationResult.Errors.ToArray());
 
-        if (!validationResult.Value.IsValid)
+        // non-null: Result<T>.Value is populated whenever IsSuccess is true
+        if (!validationResult.Value!.IsValid)
         {
             _logger.LogWarning("Plan validation failed: {Errors}",
                 string.Join("; ", validationResult.Value.Errors));

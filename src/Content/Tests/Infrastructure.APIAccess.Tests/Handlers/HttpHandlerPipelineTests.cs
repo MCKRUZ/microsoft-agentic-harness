@@ -132,7 +132,7 @@ public sealed class HttpHandlerPipelineTests
     public async Task CorrelationIdHandler_NullContext_DoesNotAddHeader()
     {
         var contextAccessor = new Mock<ICorrelationContextAccessor>();
-        contextAccessor.Setup(a => a.CorrelationContext).Returns((CorrelationContext?)null);
+        contextAccessor.Setup(a => a.CorrelationContext).Returns((CorrelationContext)null!);
 
         var correlationOptions = Options.Create(new CorrelationIdOptions
         {

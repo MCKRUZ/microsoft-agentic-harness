@@ -136,7 +136,8 @@ public class AgentExecutionContextFactory
         var additionalProps = BuildAdditionalProperties(primarySkill, options);
 
         // Compute prerequisite map for middleware consumption
-        var prerequisiteMap = _prerequisiteResolver.BuildPrerequisiteMap(skills, tools);
+        // non-null: `tools` is the result of ToList() at method start; the ?. usages elsewhere are defensive only
+        var prerequisiteMap = _prerequisiteResolver.BuildPrerequisiteMap(skills, tools!);
         if (prerequisiteMap.HasAnyPrerequisites)
             additionalProps[SkillPrerequisiteMap.AdditionalPropertiesKey] = prerequisiteMap;
 

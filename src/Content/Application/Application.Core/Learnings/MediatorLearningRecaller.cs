@@ -56,7 +56,7 @@ public sealed class MediatorLearningRecaller : ILearningRecaller
 
         var result = await _mediator.Send(query, ct);
         if (result.IsSuccess)
-            return result.Value;
+            return result.Value!; // non-null: Result<T>.Value is populated whenever IsSuccess is true
 
         _logger.LogWarning("Learning recall failed: {Errors}", string.Join(", ", result.Errors));
         return [];

@@ -200,7 +200,7 @@ public sealed class DependencyInjectionTests
 
         var channels = provider.GetServices<IEscalationNotificationChannel>().ToList();
 
-        channels.Should().NotContain(c => c is CompositeEscalationNotifier);
+        channels.Should().NotContain(c => c.GetType() == typeof(CompositeEscalationNotifier));
     }
 
     /// <summary>

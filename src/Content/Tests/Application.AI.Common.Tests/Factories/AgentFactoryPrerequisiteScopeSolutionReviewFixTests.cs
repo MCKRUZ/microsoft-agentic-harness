@@ -67,7 +67,7 @@ public class AgentFactoryPrerequisiteScopeSolutionReviewFixTests
             monitor,
             new ServiceCollection().BuildServiceProvider(),
             NullLoggerFactory.Instance,
-            null, null, null, null, null, null);
+            null!, null!, null!, null!, null!, null!);
 
         _factory = new AgentFactory(
             NullLogger<AgentFactory>.Instance,
