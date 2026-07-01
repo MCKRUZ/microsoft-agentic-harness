@@ -36,13 +36,15 @@ public sealed class GeneratePlanCommandHandler : IRequestHandler<GeneratePlanCom
         if (!generationResult.IsSuccess)
             return Result<PlanId>.Fail(generationResult.Errors.ToArray());
 
-        var plan = generationResult.Value;
+        // non-null: Result<T>.Value is populated whenever IsSuccess is true
+        var plan = generationResult.Value!;
 
         var validationResult = await _validator.ValidateAsync(plan, cancellationToken);
         if (!validationResult.IsSuccess)
             return Result<PlanId>.Fail(validationResult.Errors.ToArray());
 
-        if (!validationResult.Value.IsValid)
+        // non-null: Result<T>.Value is populated whenever IsSuccess is true
+        if (!validationResult.Value!.IsValid)
         {
             _logger.LogWarning("Generated plan failed validation: {Errors}",
                 string.Join("; ", validationResult.Value.Errors));

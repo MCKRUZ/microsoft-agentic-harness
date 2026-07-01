@@ -152,7 +152,7 @@ public class LearningsLogExample
 
         if (result.IsSuccess)
         {
-            var learnings = result.Value;
+            var learnings = result.Value!; // non-null: Result<T>.Value is populated whenever IsSuccess is true
             AnsiConsole.MarkupLine($"[green]✓[/] Found {learnings.Count} learnings");
             AnsiConsole.WriteLine();
 
@@ -198,7 +198,8 @@ public class LearningsLogExample
 
         var searchResult = await store.SearchAsync(criteria, ct);
 
-        if (searchResult.IsSuccess && searchResult.Value.Count > 0)
+        // non-null: Result<T>.Value is populated whenever IsSuccess is true
+        if (searchResult.IsSuccess && searchResult.Value!.Count > 0)
         {
             var learning = searchResult.Value[0];
             AnsiConsole.MarkupLine($"Retrieved learning: [cyan]{learning.LearningId:N}[/]");
@@ -247,7 +248,8 @@ public class LearningsLogExample
 
         var searchResult = await store.SearchAsync(criteria, ct);
 
-        if (searchResult.IsSuccess && searchResult.Value.Count > 0)
+        // non-null: Result<T>.Value is populated whenever IsSuccess is true
+        if (searchResult.IsSuccess && searchResult.Value!.Count > 0)
         {
             var learning = searchResult.Value[0];
             AnsiConsole.MarkupLine($"Retrieved learning for soft-delete: [cyan]{learning.LearningId:N}[/]");

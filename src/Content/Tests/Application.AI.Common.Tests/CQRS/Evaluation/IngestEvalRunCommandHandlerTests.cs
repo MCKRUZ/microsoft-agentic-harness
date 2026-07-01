@@ -54,7 +54,7 @@ public sealed class IngestEvalRunCommandHandlerTests
         var result = await _sut.Handle(new IngestEvalRunCommand { Report = report }, CancellationToken.None);
 
         result.IsSuccess.Should().BeTrue();
-        result.Value.RunId.Should().Be("run-1");
+        result.Value!.RunId.Should().Be("run-1");
         result.Value.Inserted.Should().BeTrue();
         result.Value.ReceivedAtUtc.Should().Be(_time.GetUtcNow());
     }
@@ -69,7 +69,7 @@ public sealed class IngestEvalRunCommandHandlerTests
         var result = await _sut.Handle(new IngestEvalRunCommand { Report = report }, CancellationToken.None);
 
         result.IsSuccess.Should().BeTrue();
-        result.Value.Inserted.Should().BeFalse();
+        result.Value!.Inserted.Should().BeFalse();
     }
 
     [Fact]
@@ -118,7 +118,7 @@ public sealed class IngestEvalRunCommandHandlerTests
         var result = await _sut.Handle(new IngestEvalRunCommand { Report = report }, CancellationToken.None);
 
         capturedReceivedAt.Should().Be(afterClock);
-        result.Value.ReceivedAtUtc.Should().Be(afterClock);
+        result.Value!.ReceivedAtUtc.Should().Be(afterClock);
     }
 
     [Fact]
@@ -175,7 +175,7 @@ public sealed class IngestEvalRunCommandHandlerTests
         var result = await _sut.Handle(new IngestEvalRunCommand { Report = report }, CancellationToken.None);
 
         result.IsSuccess.Should().BeTrue();
-        result.Value.Inserted.Should().BeTrue();
+        result.Value!.Inserted.Should().BeTrue();
     }
 
     [Fact]

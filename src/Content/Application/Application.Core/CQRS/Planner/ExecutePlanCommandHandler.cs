@@ -44,7 +44,8 @@ public sealed class ExecutePlanCommandHandler : IRequestHandler<ExecutePlanComma
         if (!validationResult.IsSuccess)
             return Result<PlanExecutionSummary>.Fail(validationResult.Errors.ToArray());
 
-        if (!validationResult.Value.IsValid)
+        // non-null: Result<T>.Value is populated whenever IsSuccess is true
+        if (!validationResult.Value!.IsValid)
         {
             _logger.LogWarning("Plan {PlanId} failed pre-execution validation: {Errors}",
                 request.PlanId.Value, string.Join("; ", validationResult.Value.Errors));

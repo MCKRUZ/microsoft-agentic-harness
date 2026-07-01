@@ -224,7 +224,7 @@ public sealed class ToolDiagnosticsMiddleware : DelegatingChatClient
                     argsJson = System.Text.Json.JsonSerializer.Serialize(args);
                     if (_redactor is not null)
                         argsJson = _redactor.Redact(argsJson);
-                    if (argsJson.Length > MaxPayloadSummaryLength)
+                    if (argsJson is not null && argsJson.Length > MaxPayloadSummaryLength)
                         argsJson = argsJson[..MaxPayloadSummaryLength];
                 }
                 catch (Exception ex)

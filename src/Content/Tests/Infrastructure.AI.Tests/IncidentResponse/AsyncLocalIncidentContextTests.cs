@@ -48,7 +48,7 @@ public sealed class AsyncLocalIncidentContextTests
 
         sut.CurrentIncidentType.Should().Be("DataExfiltrationSuspected");
 
-        await Task.Delay(1).ConfigureAwait(false);
+        await Task.Delay(1);
 
         sut.CurrentIncidentType.Should().Be("DataExfiltrationSuspected");
     }
@@ -70,7 +70,7 @@ public sealed class AsyncLocalIncidentContextTests
         {
             sut.Set("LeftIncident");
             leftReady.SetResult();
-            await release.Task.ConfigureAwait(false);
+            await release.Task;
             return sut.CurrentIncidentType;
         });
 
@@ -78,16 +78,16 @@ public sealed class AsyncLocalIncidentContextTests
         {
             sut.Set("RightIncident");
             rightReady.SetResult();
-            await release.Task.ConfigureAwait(false);
+            await release.Task;
             return sut.CurrentIncidentType;
         });
 
-        await leftReady.Task.ConfigureAwait(false);
-        await rightReady.Task.ConfigureAwait(false);
+        await leftReady.Task;
+        await rightReady.Task;
         release.SetResult();
 
-        var leftValue = await leftTask.ConfigureAwait(false);
-        var rightValue = await rightTask.ConfigureAwait(false);
+        var leftValue = await leftTask;
+        var rightValue = await rightTask;
 
         leftValue.Should().Be("LeftIncident");
         rightValue.Should().Be("RightIncident");
@@ -101,7 +101,7 @@ public sealed class AsyncLocalIncidentContextTests
         var sut = new AsyncLocalIncidentContext();
         sut.Set("OuterIncident");
 
-        var inner = await Task.Run(() => sut.CurrentIncidentType).ConfigureAwait(false);
+        var inner = await Task.Run(() => sut.CurrentIncidentType);
 
         inner.Should().Be("OuterIncident",
             because: "Task.Run captures the AsyncLocal slot at the point of scheduling");

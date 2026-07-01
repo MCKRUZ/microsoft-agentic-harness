@@ -261,7 +261,7 @@ public sealed class McpControllerTests : IClassFixture<TestWebApplicationFactory
         private readonly Func<ValueTask<object?>>? _impl;
 
         public override string Name { get; }
-        public override string? Description { get; }
+        public override string Description { get; }
         public override JsonElement JsonSchema { get; }
 
         public FakeAIFunction(string name, string description, Func<ValueTask<object?>>? impl = null)

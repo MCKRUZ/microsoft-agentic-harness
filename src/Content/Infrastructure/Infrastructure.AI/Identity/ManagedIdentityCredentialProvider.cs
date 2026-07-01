@@ -67,8 +67,8 @@ public sealed class ManagedIdentityCredentialProvider : IAgentCredentialProvider
             // Constructing the credential is cheap and synchronous — no IMDS call here.
             // Token acquisition happens at first .GetTokenAsync() call by downstream code.
             _ = string.IsNullOrWhiteSpace(miConfig.ClientId)
-                ? new ManagedIdentityCredential()
-                : new ManagedIdentityCredential(miConfig.ClientId);
+                ? new ManagedIdentityCredential(ManagedIdentityId.SystemAssigned)
+                : new ManagedIdentityCredential(ManagedIdentityId.FromUserAssignedClientId(miConfig.ClientId));
         }
         catch (Exception ex)
         {

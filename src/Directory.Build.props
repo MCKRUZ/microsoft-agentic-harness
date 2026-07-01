@@ -30,7 +30,4 @@
 		<NoWarn>$(NoWarn);MAAI001</NoWarn>
 	</PropertyGroup>
 
-	<ItemGroup>
-		<FrameworkReference Include="Microsoft.AspNetCore.App" />
-	</ItemGroup>
 </Project>

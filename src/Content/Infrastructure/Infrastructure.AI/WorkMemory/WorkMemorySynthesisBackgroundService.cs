@@ -148,7 +148,7 @@ public sealed class WorkMemorySynthesisBackgroundService : BackgroundService
         if (!episodesResult.IsSuccess)
             return Result<int>.Fail(episodesResult.Errors.ToArray());
 
-        var episodes = episodesResult.Value;
+        var episodes = episodesResult.Value!; // non-null: Result<T>.Value is populated whenever IsSuccess is true
         if (episodes.Count == 0)
         {
             _logger.LogDebug("Work-memory synthesis: no episodes in the {Hours}h look-back window", cfg.SynthesisLookbackHours);

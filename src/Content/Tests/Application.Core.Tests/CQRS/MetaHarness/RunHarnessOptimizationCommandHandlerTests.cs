@@ -324,7 +324,6 @@ public sealed class RunHarnessOptimizationCommandHandlerTests : IDisposable
                 return new EvaluationResult(Guid.NewGuid(), score, 100, []);
             });
 
-        Guid? capturedBestId = null;
         _repository
             .Setup(x => x.GetBestAsync(runId, It.IsAny<CancellationToken>()))
             .ReturnsAsync(() =>

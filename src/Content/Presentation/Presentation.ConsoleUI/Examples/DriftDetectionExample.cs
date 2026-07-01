@@ -98,7 +98,7 @@ public class DriftDetectionExample
 
         if (baselineResult.IsSuccess)
         {
-            var baseline = baselineResult.Value;
+            var baseline = baselineResult.Value!; // non-null: Result<T>.Value is populated whenever IsSuccess is true
             AnsiConsole.MarkupLine($"[green]✓[/] Baseline computed: [bold]{baseline.BaselineId}[/]");
             AnsiConsole.MarkupLine($"  Scope: {baseline.Scope} / {baseline.ScopeIdentifier}");
             AnsiConsole.MarkupLine($"  Samples: {baseline.SampleCount}");
@@ -139,8 +139,9 @@ public class DriftDetectionExample
 
             if (result.IsSuccess)
             {
-                scores.Add(result.Value);
-                AnsiConsole.MarkupLine($"  Score: {score:F2} → Severity: [bold]{result.Value.Severity}[/] (Drift: {result.Value.OverallDrift:F2}σ)");
+                var evaluation = result.Value!; // non-null: Result<T>.Value is populated whenever IsSuccess is true
+                scores.Add(evaluation);
+                AnsiConsole.MarkupLine($"  Score: {score:F2} → Severity: [bold]{evaluation.Severity}[/] (Drift: {evaluation.OverallDrift:F2}σ)");
             }
         }
 
@@ -176,8 +177,9 @@ public class DriftDetectionExample
 
             if (result.IsSuccess)
             {
-                severityProgression.Add((score, result.Value.Severity, result.Value.OverallDrift));
-                var color = result.Value.Severity switch
+                var evaluation = result.Value!; // non-null: Result<T>.Value is populated whenever IsSuccess is true
+                severityProgression.Add((score, evaluation.Severity, evaluation.OverallDrift));
+                var color = evaluation.Severity switch
                 {
                     DriftSeverity.None => "white",
                     DriftSeverity.Warn => "yellow",
@@ -186,7 +188,7 @@ public class DriftDetectionExample
                     _ => "white"
                 };
 
-                AnsiConsole.MarkupLine($"  Score: {score:F2} → Severity: [{color}]{result.Value.Severity}[/] (Drift: {result.Value.OverallDrift:F2}σ)");
+                AnsiConsole.MarkupLine($"  Score: {score:F2} → Severity: [{color}]{evaluation.Severity}[/] (Drift: {evaluation.OverallDrift:F2}σ)");
             }
         }
 
@@ -237,7 +239,7 @@ public class DriftDetectionExample
 
         if (historyResult.IsSuccess)
         {
-            var history = historyResult.Value;
+            var history = historyResult.Value!; // non-null: Result<T>.Value is populated whenever IsSuccess is true
             AnsiConsole.MarkupLine($"[green]✓[/] Retrieved {history.Count} historical scores.");
 
             if (history.Count > 0)
@@ -252,7 +254,7 @@ public class DriftDetectionExample
 
                 if (auditResult.IsSuccess)
                 {
-                    var records = auditResult.Value;
+                    var records = auditResult.Value!; // non-null: Result<T>.Value is populated whenever IsSuccess is true
                     AnsiConsole.MarkupLine($"[green]✓[/] Retrieved {records.Count} audit entries.");
 
                     if (records.Count > 0)

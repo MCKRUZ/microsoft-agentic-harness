@@ -58,6 +58,7 @@ public sealed class PlanQueryHandlerTests
         var result = await handler.Handle(query, CancellationToken.None);
 
         Assert.True(result.IsSuccess);
+        Assert.NotNull(result.Value);
         Assert.Equal(plan, result.Value.Graph);
         Assert.Equal(stepStates, result.Value.StepStates);
     }
@@ -107,6 +108,7 @@ public sealed class PlanQueryHandlerTests
         var result = await handler.Handle(query, CancellationToken.None);
 
         Assert.True(result.IsSuccess);
+        Assert.NotNull(result.Value);
         Assert.Single(result.Value);
     }
 
@@ -130,6 +132,7 @@ public sealed class PlanQueryHandlerTests
         var result = await handler.Handle(query, CancellationToken.None);
 
         Assert.True(result.IsSuccess);
+        Assert.NotNull(result.Value);
         Assert.Single(result.Value);
     }
 }

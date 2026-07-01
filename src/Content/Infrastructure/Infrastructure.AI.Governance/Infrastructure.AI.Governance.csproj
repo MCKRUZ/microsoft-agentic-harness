@@ -21,6 +21,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Governance surfaces ASP.NET Core endpoint filters (IEndpointFilter,
+         EndpointFilterInvocationContext), so it references the shared framework directly. -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
     <InternalsVisibleTo Include="Infrastructure.AI.Governance.Tests" />
   </ItemGroup>
 

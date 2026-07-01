@@ -14,8 +14,8 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.Agents.AI.Foundry.Hosting" />
     <PackageReference Include="Azure.AI.Projects" />
-    <PackageReference Include="Microsoft.Extensions.Hosting" />
-    <PackageReference Include="Microsoft.Extensions.Configuration.UserSecrets" />
+    <!-- Microsoft.Extensions.Hosting / Configuration.UserSecrets are provided by the
+         implicit Microsoft.AspNetCore.App shared framework (Web SDK) — no PackageReference needed. -->
   </ItemGroup>
 
   <ItemGroup>

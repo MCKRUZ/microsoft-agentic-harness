@@ -80,6 +80,7 @@ public sealed class ExecutePlanCommandHandlerTests
         var result = await _handler.Handle(command, CancellationToken.None);
 
         Assert.True(result.IsSuccess);
+        Assert.NotNull(result.Value);
         Assert.Equal(planId, result.Value.PlanId);
         _executorMock.Verify(e => e.ExecuteAsync(planId, It.IsAny<CancellationToken>()), Times.Once);
     }
