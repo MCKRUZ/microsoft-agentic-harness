@@ -12,6 +12,13 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- This project hosts ASP.NET Core middleware (RequestDelegate, HttpContext, IHttpClientFactory),
+         so it references the shared framework directly. The reference flows transitively to consumers,
+         keeping ASP.NET Core out of the Domain/Application layers that never touch it. -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\..\Application\Application.Common\Application.Common.csproj" />
   </ItemGroup>
 
