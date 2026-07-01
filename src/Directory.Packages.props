@@ -94,6 +94,13 @@
     <PackageVersion Include="CorrelationId" Version="3.0.1" />
     <PackageVersion Include="Microsoft.Extensions.Http.Resilience" Version="10.2.0" />
     <PackageVersion Include="Swashbuckle.AspNetCore.SwaggerGen" Version="10.1.0" />
+    <!-- Transitive security pin: Swashbuckle.AspNetCore.SwaggerGen 10.1.0 pulls
+         Microsoft.OpenApi 2.3.0, which is vulnerable to a high-severity parsing DoS
+         via circular schema references (GHSA-v5pm-xwqc-g5wc, affects <= 2.7.4).
+         2.9.0 is the latest patched 2.x, staying within Swashbuckle's 2.x major.
+         Pinned via an explicit PackageReference in Infrastructure.APIAccess (the sole
+         direct Swashbuckle consumer); downstream projects inherit it transitively. -->
+    <PackageVersion Include="Microsoft.OpenApi" Version="2.9.0" />
 
     <!-- Infrastructure.Observability -->
     <PackageVersion Include="Npgsql" Version="10.0.3" />

@@ -13,6 +13,9 @@
     <PackageReference Include="CorrelationId" />
     <PackageReference Include="Microsoft.Extensions.Http.Resilience" />
     <PackageReference Include="Swashbuckle.AspNetCore.SwaggerGen" />
+    <!-- Forces the patched Microsoft.OpenApi over Swashbuckle's vulnerable 2.3.0
+         transitive (GHSA-v5pm-xwqc-g5wc); version comes from Directory.Packages.props. -->
+    <PackageReference Include="Microsoft.OpenApi" />
   </ItemGroup>
 
   <ItemGroup>
