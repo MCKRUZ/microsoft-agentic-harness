@@ -84,6 +84,34 @@ describe('useAgentStream — render_image round-trip', () => {
     expect(useChatStore.getState().messages.some((m) => m.widget)).toBe(false);
   });
 
+  it('renders the form widget and posts a "displayed" ack (answers come later as a message)', async () => {
+    const events$ = await startRun();
+
+    act(() => {
+      events$.next({ type: EventType.TOOL_CALL_START, toolCallId: 'call-f', toolCallName: 'render_form' });
+      events$.next({ type: EventType.TOOL_CALL_ARGS, toolCallId: 'call-f', delta: JSON.stringify({ title: 'Prefs', fields: [{ name: 'email', type: 'text' }] }) });
+      events$.next({ type: EventType.TOOL_CALL_END, toolCallId: 'call-f' });
+    });
+
+    await waitFor(() => {
+      expect(postToolResult).toHaveBeenCalledWith('conv-1', 'call-f', expect.stringContaining('Displayed the form'));
+    });
+    expect(useChatStore.getState().messages.some((m) => m.widget?.type === 'render_form')).toBe(true);
+  });
+
+  it('posts an explanatory result and renders no widget for a form with no valid fields', async () => {
+    const events$ = await startRun();
+
+    act(() => {
+      events$.next({ type: EventType.TOOL_CALL_START, toolCallId: 'call-g', toolCallName: 'render_form' });
+      events$.next({ type: EventType.TOOL_CALL_ARGS, toolCallId: 'call-g', delta: JSON.stringify({ fields: [] }) });
+      events$.next({ type: EventType.TOOL_CALL_END, toolCallId: 'call-g' });
+    });
+
+    await waitFor(() => { expect(postToolResult).toHaveBeenCalledWith('conv-1', 'call-g', expect.stringContaining('no fields')); });
+    expect(useChatStore.getState().messages.some((m) => m.widget?.type === 'render_form')).toBe(false);
+  });
+
   it('still posts a result for a tool call it never saw a START for, so the server never hangs', async () => {
     const events$ = await startRun();
 

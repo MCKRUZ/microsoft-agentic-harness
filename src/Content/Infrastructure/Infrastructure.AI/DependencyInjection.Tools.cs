@@ -93,6 +93,12 @@ public static partial class DependencyInjection
         // returns a short acknowledgement. General-purpose (not dashboard-specific); opt-in per skill.
         services.AddKeyedSingleton<ITool>(RenderImageTool.ToolName, (sp, _) =>
             new RenderImageTool(sp.GetRequiredService<IClientToolBridge>()));
+
+        // Render-form tool — generative UI: the agent displays an interactive form inline. The browser
+        // acknowledges display synchronously; the user's answers arrive later as an ordinary next
+        // message (not through this tool). General-purpose; opt-in per skill.
+        services.AddKeyedSingleton<ITool>(RenderFormTool.ToolName, (sp, _) =>
+            new RenderFormTool(sp.GetRequiredService<IClientToolBridge>()));
     }
 
     /// <summary>

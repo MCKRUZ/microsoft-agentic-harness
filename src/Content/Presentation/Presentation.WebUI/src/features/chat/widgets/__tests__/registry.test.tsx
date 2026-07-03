@@ -1,6 +1,9 @@
 import { render, screen } from '@testing-library/react';
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { renderWidget } from '../registry';
+
+// AgentForm (render_form) pulls in the send hook → MSAL; stub it so the registry test stays isolated.
+vi.mock('@/hooks/useSendUserMessage', () => ({ useSendUserMessage: () => () => true }));
 
 describe('widget registry', () => {
   it('renders the AgentImage component for a render_image widget', () => {
@@ -19,5 +22,11 @@ describe('widget registry', () => {
   it('renders nothing for an unknown widget type rather than throwing', () => {
     const { container } = render(<>{renderWidget({ type: 'render_hologram', args: {} })}</>);
     expect(container).toBeEmptyDOMElement();
+  });
+
+  it('renders the AgentForm component for a render_form widget', () => {
+    render(<>{renderWidget({ type: 'render_form', args: { title: 'Sign up', fields: [{ name: 'email', label: 'Email', type: 'text' }] } })}</>);
+    expect(screen.getByTestId('agent-form')).toBeInTheDocument();
+    expect(screen.getByLabelText('Email')).toBeInTheDocument();
   });
 });

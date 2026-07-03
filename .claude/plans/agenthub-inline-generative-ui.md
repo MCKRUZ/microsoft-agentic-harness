@@ -107,7 +107,9 @@ Bump `Presentation.WebUI` `@ag-ui/client` + `@ag-ui/core` from **0.0.53 → 0.0.
 1. **PR1** — version bump + `postToolResult` helper + `useAgentStream` TOOL_CALL_* handling with a
    single trivial widget (`render_image`) end-to-end, incl. backend `RenderImageTool` + skill wiring.
    Proves the full loop with the least surface.
-2. **PR2** — `render_form` (the interactive/HITL round-trip) + `AgentForm` + deferred result POST.
+2. **PR2** — `render_form` via **Approach 3** (form is UI, submit is a normal message). See the
+   detailed PR2 section below — the original "deferred result POST" idea was rejected after verifying
+   the framework can't suspend/resume a turn.
 3. **PR3** — `render_table` + any registry hardening surfaced by review.
 
 ## Open questions for Matt
@@ -115,3 +117,87 @@ Bump `Presentation.WebUI` `@ag-ui/client` + `@ag-ui/core` from **0.0.53 → 0.0.
 - Starter widget set confirmed as image / form / table, or a different first three?
 - Should `render_image` be restricted to model/tool-produced URLs (safer) vs. arbitrary agent-supplied
   URLs (needs the proxy)?
+
+---
+
+## PR2 detail — `render_form` (Approach 3)
+
+### Decision record — HITL round-trip model (verified 2026-07-03)
+Investigated three ways for the agent to obtain form input:
+
+- **Approach 2 (terminate-and-resume) — REJECTED, not cleanly supported.** Agent turns run through the
+  framework's atomic `AIAgent.RunAsync` (`ExecuteAgentTurnCommandHandler.cs:154`), which owns the tool
+  loop; the blocking proxy exists *because* of that. Conversation history is persisted text-only
+  (`AgUiRunHandler.ToMeaiHistory` = role + content; no structured tool-call/result). Resuming a specific
+  pending tool call across runs would require replacing the framework tool loop with a hand-rolled
+  `IChatClient` loop across the whole agent path AND extending the conversation store to persist
+  structured tool-call/result content. Core rewrite + correctness risk. Not a PR2 feature.
+- **Approach 1 (hold the run open, long timeout) — REJECTED as primary.** Works, but the pending-call
+  registry is in-memory (`PendingToolCallRegistry` = `ConcurrentDictionary` + `TaskCompletionSource`)
+  and the parked `RunAsync` is tied to the live SSE request (a disconnect cancels it). A mid-form page
+  refresh / disconnect loses the parked call and the submit 404s. Also needs a per-tool timeout added
+  to `IClientToolBridge`.
+- **Approach 3 (form is UI, submit is a message) — CHOSEN.** `render_form` is a *synchronous* client
+  tool: the browser renders the form and immediately acks "Displayed the form." (millisecond round-trip,
+  identical to `render_image` — no timeout, no parked run, no framework fight). The agent's turn ends
+  ("I've put a form up"). When the user submits, the collected values are sent as a **normal user
+  message** via the existing send path, starting a fresh turn the agent continues naturally. Survives
+  refresh (the form is UI; the submit is an ordinary persisted message); reuses existing infrastructure.
+  Trade-off: the agent receives answers as the user's next message rather than a formal tool result —
+  invisible in practice, the conversation context makes the linkage obvious.
+
+### Backend
+- `RenderFormTool` (new, `BlockingProxyTool` subclass, mirrors `RenderImageTool`). Params:
+  `{ title?, fields: [{ name, label?, type, required?, options? }], submitLabel? }`. Validate: `fields`
+  non-empty; each field has a non-empty `name` and a `type` in the whitelist
+  {`text`, `textarea`, `number`, `select`, `checkbox`, `date`}; `select` requires non-empty `options`.
+  Fail with a clear message otherwise. Serialize params to the client; ack "Displayed the form."
+- Register via keyed DI next to `render_image`. Add `render_form` to the `research-agent` skill
+  `allowed-tools` + a one-line usage note (same home as `render_image`; the default-agent-skill
+  follow-up still stands and should be resolved before a widget accretes onto a third skill).
+
+### Frontend (WebUI)
+- `widgets/formTypes.ts` (new) — `FormFieldSpec`, `FormSpec`, and `parseFormArgs(args)` at the client
+  trust boundary: coerce/validate, drop invalid fields, unknown `type` skipped; return a typed
+  `FormSpec` or a reason. Field-type whitelist enforced here too (defense in depth).
+- `widgets/AgentForm.tsx` (new) — renders the form from a `FormSpec`: one control per field by type,
+  required-field validation, a submit button (`submitLabel`). On submit: format values into a readable
+  message, call the shared send hook, then mark submitted (disable inputs/button, show "Submitted") to
+  prevent double-send.
+- `hooks/useSendUserMessage.ts` (new) — extract the existing inline send sequence
+  (`addMessage(user)` → `startStreaming()` → `agUiSend`) currently duplicated in `ChatPanel`
+  (`handleSuggestionClick`, main send) into one reusable hook that resolves the active conversation id.
+  Refactor `ChatPanel` to use it (DRY); `AgentForm` uses it for submit — this is why the form neither
+  duplicates `ChatPanel` nor prop-drills a callback through the widget registry.
+- `widgets/registry.tsx` — add `render_form` → `<AgentForm ... />` (Map entry).
+- `hooks/useAgentStream.ts` — add a `render_form` branch to the `finishToolCall` dispatch: render the
+  form widget message + ack "Displayed the form." (synchronous — same shape as `render_image`).
+- `useChatStore` — no change; `AgentWidget { type, args }` already carries the form spec in `args`.
+
+### Message format on submit
+Readable text the model parses naturally and that renders cleanly as the user's message:
+```
+Here are my answers:
+- Full name: Jane Doe
+- Email: jane@example.com
+- Newsletter: Yes
+```
+Labels fall back to field `name`; checkbox → Yes/No; empty optional fields omitted.
+
+### Tests
+- Backend `RenderFormTool`: metadata; unknown op; no-client; empty/missing fields; invalid field type;
+  `select` without options; happy-path serialization + ack.
+- Frontend: `parseFormArgs` (whitelist, required, select options, drop invalid); `AgentForm` (renders
+  each field type, required validation blocks submit, submit formats + calls send hook + disables
+  after); `useSendUserMessage` (adds user message + triggers a run); registry `render_form` → AgentForm;
+  `useAgentStream` `render_form` branch (renders widget + acks).
+
+### Note on the deferred registry-unification cleanup
+Approach 3 makes `render_form`'s tool round-trip **synchronous**, so the reason we deferred folding
+`handle` into the widget registry in PR1 (render_form's async submit) no longer applies. With two
+synchronous widgets, the inline `finishToolCall` dispatch stays (rule of three); unify render+handle
+into a single widget registry at **PR3** (`render_table`) when the shape is proven across three.
+
+### Out of scope (tracked follow-ups)
+- Registry render+handle unification → PR3.
+- `default`-agent dedicated skill home (generative UI grafted onto `research-agent`).

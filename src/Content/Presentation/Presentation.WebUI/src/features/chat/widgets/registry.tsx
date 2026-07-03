@@ -1,30 +1,50 @@
 import type { ReactNode } from 'react';
 import { AgentImage } from './AgentImage';
-import type { AgentWidget } from './types';
+import { AgentForm } from './AgentForm';
+import { parseImageArgs, type AgentWidget } from './types';
+import { parseFormArgs } from './formTypes';
 
-type WidgetRenderer = (args: Record<string, unknown>) => ReactNode;
+/** Outcome of validating a widget's raw args: ok → it renders and `ack` is returned to the agent;
+ *  not ok → `reason` is returned and no widget is shown. */
+type ValidationResult = { ok: true } | { ok: false; reason: string };
 
 /**
- * The palette of inline widgets the agent can summon: a client tool name → the component that renders
- * its result. This is the generative-UI trust boundary — the agent selects a widget and supplies its
- * arguments, but can never introduce a component that is not registered here. Add a new widget by
- * registering its tool name and a renderer; nothing else in the transcript path changes.
+ * Everything the transcript and the stream handler need for one inline widget: how its result renders,
+ * how to validate the agent's raw args at the client trust boundary, and the acknowledgement the agent
+ * observes once it is displayed. Adding a widget is one entry in {@link WIDGET_REGISTRY} — the stream
+ * handler (generic) and the transcript renderer both dispatch off it, so nothing else changes. This is
+ * the generative-UI trust boundary: the agent can only summon a registered widget, with validated args.
  */
-// NOTE: this maps a tool name to how its result RENDERS. The matching round-trip handler (validate
-// args, push the widget message, produce the agent acknowledgement) currently lives in
-// useAgentStream's dispatch — a widget must be added in both places until PR2 (render_form) unifies
-// them. render_form defers its acknowledgement until user submit, so the unified shape can't be
-// designed against render_image's synchronous ack alone; keep the two in sync by hand until then.
-// A Map (not an object) so an agent-influenced widget.type can never resolve to an inherited member
+export interface WidgetDefinition {
+  render: (args: Record<string, unknown>) => ReactNode;
+  validate: (args: Record<string, unknown>) => ValidationResult;
+  ack: string;
+}
+
+// A Map (not an object) so an agent-influenced widget type can never resolve to an inherited member
 // like "constructor" and get invoked — lookups are prototype-safe by construction.
-const WIDGET_REGISTRY = new Map<string, WidgetRenderer>([
-  ['render_image', (args) => <AgentImage args={args} />],
+const WIDGET_REGISTRY = new Map<string, WidgetDefinition>([
+  ['render_image', {
+    render: (args) => <AgentImage args={args} />,
+    validate: (args) => { const r = parseImageArgs(args); return r.ok ? { ok: true } : { ok: false, reason: r.reason }; },
+    ack: 'Displayed the image to the user.',
+  }],
+  ['render_form', {
+    render: (args) => <AgentForm args={args} />,
+    validate: (args) => { const r = parseFormArgs(args); return r.ok ? { ok: true } : { ok: false, reason: r.reason }; },
+    ack: 'Displayed the form to the user; their answers will arrive as their next message.',
+  }],
 ]);
+
+/** The widget definition for a client tool name, or undefined if it is not a widget tool. */
+export function getWidget(type: string): WidgetDefinition | undefined {
+  return WIDGET_REGISTRY.get(type);
+}
 
 /**
  * Renders an inline widget by tool name. An unknown type renders nothing (a safe fallback) rather than
  * throwing — the transcript must never crash on an unexpected agent tool call.
  */
 export function renderWidget(widget: AgentWidget): ReactNode {
-  return WIDGET_REGISTRY.get(widget.type)?.(widget.args) ?? null;
+  return WIDGET_REGISTRY.get(widget.type)?.render(widget.args) ?? null;
 }
