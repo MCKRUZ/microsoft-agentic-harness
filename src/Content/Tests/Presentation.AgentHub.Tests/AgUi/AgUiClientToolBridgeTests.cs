@@ -1,8 +1,11 @@
 using FluentAssertions;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Moq;
 using Presentation.AgentHub.AgUi;
 using Presentation.AgentHub.Config;
+using Presentation.AgentHub.DTOs;
+using Presentation.AgentHub.Interfaces;
 using Xunit;
 
 namespace Presentation.AgentHub.Tests.AgUi;
@@ -10,7 +13,8 @@ namespace Presentation.AgentHub.Tests.AgUi;
 /// <summary>
 /// Unit tests for <see cref="AgUiClientToolBridge"/> — the mid-run blocking proxy. Verifies it emits the
 /// <c>TOOL_CALL_START</c>/<c>ARGS</c>/<c>END</c> sequence (sharing one callId), parks until the registry
-/// is completed out-of-band, returns the client's result, and fails fast when no client is attached.
+/// is completed out-of-band, returns the client's result, fails fast when no client is attached, and
+/// persists a widget message for widget tools (so the render survives a reload) but not for others.
 /// </summary>
 public sealed class AgUiClientToolBridgeTests
 {
@@ -21,13 +25,21 @@ public sealed class AgUiClientToolBridgeTests
         return mock.Object;
     }
 
+    private static AgUiClientToolBridge Bridge(
+        IAgUiEventWriterAccessor accessor,
+        PendingToolCallRegistry registry,
+        IConversationStore? store = null,
+        int timeoutSeconds = 30) =>
+        new(accessor, registry, Options(timeoutSeconds), store ?? new RecordingConversationStore(),
+            new ClientWidgetCatalog(), NullLogger<AgUiClientToolBridge>.Instance);
+
     [Fact]
     public async Task InvokeAsync_EmitsToolCallSequence_BlocksUntilCompleted_ThenReturnsResult()
     {
         var writer = new CapturingEventWriter();
         var accessor = new AgUiEventWriterAccessor { Writer = writer, ThreadId = "thread-1" };
         var registry = new PendingToolCallRegistry();
-        var bridge = new AgUiClientToolBridge(accessor, registry, Options());
+        var bridge = Bridge(accessor, registry);
 
         var invokeTask = bridge.InvokeAsync("dashboard_control", "{\"operation\":\"navigate\"}");
 
@@ -53,7 +65,7 @@ public sealed class AgUiClientToolBridgeTests
     public async Task InvokeAsync_NoClientAttached_Throws()
     {
         var accessor = new AgUiEventWriterAccessor { Writer = null };
-        var bridge = new AgUiClientToolBridge(accessor, new PendingToolCallRegistry(), Options());
+        var bridge = Bridge(accessor, new PendingToolCallRegistry());
 
         bridge.IsClientAttached.Should().BeFalse();
 
@@ -65,11 +77,75 @@ public sealed class AgUiClientToolBridgeTests
     public void IsClientAttached_ReflectsAmbientWriter()
     {
         var accessor = new AgUiEventWriterAccessor();
-        var bridge = new AgUiClientToolBridge(accessor, new PendingToolCallRegistry(), Options());
+        var bridge = Bridge(accessor, new PendingToolCallRegistry());
 
         bridge.IsClientAttached.Should().BeFalse();
         accessor.Writer = new CapturingEventWriter();
         bridge.IsClientAttached.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task InvokeAsync_WidgetTool_PersistsWidgetMessage()
+    {
+        var accessor = new AgUiEventWriterAccessor { Writer = new CapturingEventWriter(), ThreadId = "thread-w" };
+        var registry = new PendingToolCallRegistry();
+        var store = new RecordingConversationStore();
+        var bridge = Bridge(accessor, registry, store);
+
+        var invokeTask = bridge.InvokeAsync("render_table", "{\"columns\":[\"Name\"],\"rows\":[[\"Ada\"]]}");
+
+        // Persistence must wait for the client to confirm the render: while the call is still parked the
+        // widget is NOT yet persisted, so a timed-out/never-rendered round-trip leaves no phantom.
+        await WaitForAsync(() => ((CapturingEventWriter)accessor.Writer!).Events.Count >= 3);
+        store.Appended.Should().BeEmpty("the widget is persisted only after the client acknowledges the render");
+
+        // Complete the round-trip as the client posting its result; only now is the widget persisted.
+        var callId = ((ToolCallStartEvent)((CapturingEventWriter)accessor.Writer!).Events[0]).ToolCallId;
+        registry.TryComplete(callId, "thread-w", "ok").Should().BeTrue();
+        await invokeTask.WaitAsync(TimeSpan.FromSeconds(5));
+
+        store.Appended.Should().HaveCount(1);
+        var (conversationId, message) = store.Appended[0];
+        conversationId.Should().Be("thread-w");
+        message.Role.Should().Be(MessageRole.Assistant);
+        message.Content.Should().BeEmpty("the widget message renders as the widget only, matching the live message");
+        message.Widget.Should().NotBeNull();
+        message.Widget!.Type.Should().Be("render_table");
+        message.Widget.Args.GetProperty("columns").GetArrayLength().Should().Be(1);
+    }
+
+    [Fact]
+    public async Task InvokeAsync_WidgetTool_TimesOut_DoesNotPersist()
+    {
+        var accessor = new AgUiEventWriterAccessor { Writer = new CapturingEventWriter(), ThreadId = "thread-t" };
+        var registry = new PendingToolCallRegistry();
+        var store = new RecordingConversationStore();
+        var bridge = Bridge(accessor, registry, store, timeoutSeconds: 1);
+
+        // Never complete the registry: the parked call times out and the widget must NOT be persisted,
+        // so a round-trip that never rendered leaves no phantom widget on reload.
+        var act = async () => await bridge.InvokeAsync("render_table", "{\"columns\":[\"Name\"]}");
+        await act.Should().ThrowAsync<TimeoutException>();
+
+        store.Appended.Should().BeEmpty("a timed-out render must not persist a widget");
+    }
+
+    [Fact]
+    public async Task InvokeAsync_NonWidgetTool_DoesNotPersist()
+    {
+        var accessor = new AgUiEventWriterAccessor { Writer = new CapturingEventWriter(), ThreadId = "thread-n" };
+        var registry = new PendingToolCallRegistry();
+        var store = new RecordingConversationStore();
+        var bridge = Bridge(accessor, registry, store);
+
+        var invokeTask = bridge.InvokeAsync("dashboard_control", "{\"operation\":\"refresh_data\"}");
+
+        await WaitForAsync(() => ((CapturingEventWriter)accessor.Writer!).Events.Count >= 3);
+        store.Appended.Should().BeEmpty("only widget tools are persisted for reload");
+
+        var callId = ((ToolCallStartEvent)((CapturingEventWriter)accessor.Writer!).Events[0]).ToolCallId;
+        registry.TryComplete(callId, "thread-n", "ok").Should().BeTrue();
+        await invokeTask.WaitAsync(TimeSpan.FromSeconds(5));
     }
 
     private static async Task WaitForAsync(Func<bool> condition)
@@ -90,5 +166,35 @@ public sealed class AgUiClientToolBridgeTests
             _events.Add(evt);
             return Task.CompletedTask;
         }
+    }
+
+    /// <summary>An <see cref="IConversationStore"/> that records appended messages; other members are unused.</summary>
+    private sealed class RecordingConversationStore : IConversationStore
+    {
+        private readonly List<(string ConversationId, ConversationMessage Message)> _appended = [];
+        public IReadOnlyList<(string ConversationId, ConversationMessage Message)> Appended => _appended;
+
+        public Task AppendMessageAsync(string conversationId, ConversationMessage message, CancellationToken ct = default)
+        {
+            _appended.Add((conversationId, message));
+            return Task.CompletedTask;
+        }
+
+        public Task<ConversationRecord?> GetAsync(string conversationId, CancellationToken ct = default) =>
+            throw new NotSupportedException();
+        public Task<IReadOnlyList<ConversationRecord>> ListAsync(string userId, CancellationToken ct = default) =>
+            throw new NotSupportedException();
+        public Task<ConversationRecord> CreateAsync(string agentName, string userId, string? conversationId = null, CancellationToken ct = default) =>
+            throw new NotSupportedException();
+        public Task DeleteAsync(string conversationId, CancellationToken ct = default) =>
+            throw new NotSupportedException();
+        public Task<IReadOnlyList<ConversationMessage>?> GetHistoryForDispatch(string conversationId, int maxMessages, CancellationToken ct = default) =>
+            throw new NotSupportedException();
+        public Task<ConversationRecord?> TruncateFromMessageAsync(string conversationId, Guid messageId, CancellationToken ct = default) =>
+            throw new NotSupportedException();
+        public Task<ConversationRecord?> UpdateSettingsAsync(string conversationId, ConversationSettings settings, CancellationToken ct = default) =>
+            throw new NotSupportedException();
+        public Task<ConversationRecord?> UpdateTelemetryAsync(string conversationId, Guid observabilitySessionId, TelemetryAccumulator telemetry, CancellationToken ct = default) =>
+            throw new NotSupportedException();
     }
 }

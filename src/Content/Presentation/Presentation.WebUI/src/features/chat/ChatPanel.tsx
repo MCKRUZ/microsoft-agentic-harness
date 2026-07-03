@@ -197,6 +197,7 @@ export function ChatPanel() {
               content: m.content,
               timestamp: new Date(m.timestamp),
               toolCalls: m.toolCalls ?? undefined,
+              widget: m.widget ?? undefined,
             }));
           if (mapped.length > 0) {
             useChatStore.getState().setMessages(mapped);

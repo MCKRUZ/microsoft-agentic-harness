@@ -1,6 +1,10 @@
+using System.Text.Json;
 using Application.AI.Common.Interfaces.Tools;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Presentation.AgentHub.Config;
+using Presentation.AgentHub.DTOs;
+using Presentation.AgentHub.Interfaces;
 
 namespace Presentation.AgentHub.AgUi;
 
@@ -27,16 +31,25 @@ public sealed class AgUiClientToolBridge : IClientToolBridge
     private readonly IAgUiEventWriterAccessor _writerAccessor;
     private readonly PendingToolCallRegistry _registry;
     private readonly IOptionsMonitor<AgentHubConfig> _config;
+    private readonly IConversationStore _conversationStore;
+    private readonly ClientWidgetCatalog _widgetCatalog;
+    private readonly ILogger<AgUiClientToolBridge> _logger;
 
     /// <summary>Initializes a new <see cref="AgUiClientToolBridge"/>.</summary>
     public AgUiClientToolBridge(
         IAgUiEventWriterAccessor writerAccessor,
         PendingToolCallRegistry registry,
-        IOptionsMonitor<AgentHubConfig> config)
+        IOptionsMonitor<AgentHubConfig> config,
+        IConversationStore conversationStore,
+        ClientWidgetCatalog widgetCatalog,
+        ILogger<AgUiClientToolBridge> logger)
     {
         _writerAccessor = writerAccessor;
         _registry = registry;
         _config = config;
+        _conversationStore = conversationStore;
+        _widgetCatalog = widgetCatalog;
+        _logger = logger;
     }
 
     /// <inheritdoc />
@@ -66,6 +79,41 @@ public sealed class AgUiClientToolBridge : IClientToolBridge
         await writer.WriteAsync(new ToolCallArgsEvent(callId, argumentsJson ?? "{}"), cancellationToken).ConfigureAwait(false);
         await writer.WriteAsync(new ToolCallEndEvent(callId), cancellationToken).ConfigureAwait(false);
 
-        return await resultTask.ConfigureAwait(false);
+        var result = await resultTask.ConfigureAwait(false);
+
+        // Persist the widget as an assistant message so it re-renders on reload (the live in-browser
+        // message is not otherwise persisted). Only after the client posts its result — a timed-out or
+        // disconnected round-trip that never displayed the widget throws above, so we do not leave a
+        // phantom that reappears on reload contradicting the agent. This still precedes the run handler's
+        // final assistant-text append, so the widget lands in the right position. A persistence failure
+        // must not break the turn, so it is logged and swallowed.
+        if (_widgetCatalog.IsWidget(toolName))
+            await PersistWidgetAsync(threadId, toolName, argumentsJson, cancellationToken).ConfigureAwait(false);
+
+        return result;
+    }
+
+    /// <summary>
+    /// Appends an assistant message carrying the widget spec (empty text, so it renders as the widget
+    /// only, matching the live in-browser message). Errors are logged and swallowed — durability is
+    /// best-effort and must never fail the turn.
+    /// </summary>
+    private async Task PersistWidgetAsync(
+        string threadId, string toolName, string? argumentsJson, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(argumentsJson) ? "{}" : argumentsJson);
+            var widget = new WidgetSpec(toolName, doc.RootElement.Clone());
+            var message = new ConversationMessage(
+                Guid.NewGuid(), MessageRole.Assistant, string.Empty, DateTimeOffset.UtcNow, Widget: widget);
+            await _conversationStore.AppendMessageAsync(threadId, message, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex,
+                "Failed to persist widget message for tool {ToolName} in conversation {ThreadId}; the widget " +
+                "was still displayed live but will not survive a reload.", toolName, threadId);
+        }
     }
 }
