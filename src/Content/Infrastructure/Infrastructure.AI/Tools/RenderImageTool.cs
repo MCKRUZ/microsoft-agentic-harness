@@ -1,4 +1,3 @@
-using System.Text.Json;
 using Application.AI.Common.Interfaces.Tools;
 using Domain.AI.Models;
 
@@ -26,15 +25,12 @@ namespace Infrastructure.AI.Tools;
 /// </code>
 /// </para>
 /// </remarks>
-public sealed class RenderImageTool : BlockingProxyTool
+public sealed class RenderImageTool : SingleRenderProxyTool
 {
     /// <summary>The tool name matching keyed DI registration and SKILL.md declarations.</summary>
     public const string ToolName = "render_image";
 
-    private const string Render = "render";
     private const string UrlKey = "url";
-
-    private static readonly IReadOnlyList<string> Operations = [Render];
 
     /// <summary>Initializes a new instance of the <see cref="RenderImageTool"/> class.</summary>
     /// <param name="bridge">The client round-trip bridge used to delegate rendering to the browser.</param>
@@ -54,28 +50,24 @@ public sealed class RenderImageTool : BlockingProxyTool
         "Use this when the user asks to see or display an image you can reference by URL.";
 
     /// <inheritdoc />
-    public override IReadOnlyList<string> SupportedOperations => Operations;
+    protected override string NoClientMessage =>
+        "No client is connected to this conversation, so an image cannot be displayed.";
 
     /// <inheritdoc />
-    public override Task<ToolResult> ExecuteAsync(
-        string operation,
-        IReadOnlyDictionary<string, object?> parameters,
-        CancellationToken cancellationToken = default)
+    protected override string TimeoutMessage => "The client did not display the image in time.";
+
+    /// <inheritdoc />
+    // The URL is a top-level scalar, so validate it straight from the parameter dictionary. It must be an
+    // absolute https URL so a malformed or unsafe reference (javascript:/data:) never reaches the browser.
+    protected override string? ValidateArguments(
+        IReadOnlyDictionary<string, object?> parameters, string argumentsJson)
     {
-        if (!string.Equals(operation, Render, StringComparison.OrdinalIgnoreCase))
-            return Task.FromResult(ToolResult.Fail($"Unknown operation: {operation}. Supported: {Render}"));
-
-        if (!IsClientAttached)
-            return Task.FromResult(ToolResult.Fail("No client is connected to this conversation, so an image cannot be displayed."));
-
         if (!parameters.TryGetValue(UrlKey, out var urlValue) || urlValue is not string url || string.IsNullOrWhiteSpace(url))
-            return Task.FromResult(ToolResult.Fail("Provide an image 'url' to display."));
+            return "Provide an image 'url' to display.";
 
         if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps)
-            return Task.FromResult(ToolResult.Fail("The image 'url' must be an absolute https URL."));
+            return "The image 'url' must be an absolute https URL.";
 
-        var argumentsJson = JsonSerializer.Serialize(parameters, SerializerOptions);
-
-        return InvokeClientAsync(argumentsJson, "The client did not display the image in time.", cancellationToken);
+        return null;
     }
 }
