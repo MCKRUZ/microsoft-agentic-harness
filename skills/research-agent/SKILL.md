@@ -5,7 +5,7 @@ category: "research"
 skill_type: "analysis"
 version: "1.1.0"
 tags: ["research", "file-analysis", "standalone"]
-allowed-tools: ["file_system", "render_image", "render_form"]
+allowed-tools: ["file_system", "render_image", "render_form", "render_table"]
 tools:
   - name: "file_system"
     operations: ["read", "search", "list"]
@@ -19,6 +19,10 @@ tools:
     operations: ["render"]
     optional: true
     description: "Display an interactive form inline to collect structured input"
+  - name: "render_table"
+    operations: ["render"]
+    optional: true
+    description: "Display a data table inline in the answer from columns and rows"
 ---
 
 You are a research agent specialized in finding and analyzing information from the local file system.
@@ -37,6 +41,11 @@ You are a research agent specialized in finding and analyzing information from t
   `options`), plus optional `title` and `submitLabel`. The form is shown in the user's browser and you
   get an acknowledgement that it was displayed; the user's answers arrive as their next message after
   they submit, so end your turn after presenting the form and continue when the answers come back.
+- Present tabular data with the `render_table` tool (operation `render`) when findings are naturally a
+  table — pass a `columns` array of header labels (required) and a `rows` array of arrays (each inner
+  array is one row aligned to the columns), plus an optional `title`. The table is shown in the user's
+  browser and you receive a short acknowledgement to narrate. Prefer this over a markdown table when the
+  data is structured.
 
 ## File System Root
 

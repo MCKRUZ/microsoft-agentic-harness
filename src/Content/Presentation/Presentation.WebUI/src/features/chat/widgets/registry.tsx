@@ -1,8 +1,10 @@
 import type { ReactNode } from 'react';
 import { AgentImage } from './AgentImage';
 import { AgentForm } from './AgentForm';
+import { AgentTable } from './AgentTable';
 import { parseImageArgs, type AgentWidget } from './types';
 import { parseFormArgs } from './formTypes';
+import { parseTableArgs } from './tableTypes';
 
 /** Outcome of validating a widget's raw args: ok → it renders and `ack` is returned to the agent;
  *  not ok → `reason` is returned and no widget is shown. */
@@ -33,6 +35,11 @@ const WIDGET_REGISTRY = new Map<string, WidgetDefinition>([
     render: (args) => <AgentForm args={args} />,
     validate: (args) => { const r = parseFormArgs(args); return r.ok ? { ok: true } : { ok: false, reason: r.reason }; },
     ack: 'Displayed the form to the user; their answers will arrive as their next message.',
+  }],
+  ['render_table', {
+    render: (args) => <AgentTable args={args} />,
+    validate: (args) => { const r = parseTableArgs(args); return r.ok ? { ok: true } : { ok: false, reason: r.reason }; },
+    ack: 'Displayed the table to the user.',
   }],
 ]);
 

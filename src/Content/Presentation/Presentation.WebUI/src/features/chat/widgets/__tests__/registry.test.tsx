@@ -29,4 +29,16 @@ describe('widget registry', () => {
     expect(screen.getByTestId('agent-form')).toBeInTheDocument();
     expect(screen.getByLabelText('Email')).toBeInTheDocument();
   });
+
+  it('renders the AgentTable component for a render_table widget', () => {
+    render(<>{renderWidget({ type: 'render_table', args: { columns: ['Name', 'Score'], rows: [['Ada', '97']] } })}</>);
+    expect(screen.getByTestId('agent-table')).toBeInTheDocument();
+    expect(screen.getByRole('cell', { name: 'Ada' })).toBeInTheDocument();
+  });
+
+  it('renders a safe fallback (not a broken table) for a render_table widget with no columns', () => {
+    render(<>{renderWidget({ type: 'render_table', args: { rows: [['x']] } })}</>);
+    expect(screen.queryByRole('table')).not.toBeInTheDocument();
+    expect(screen.getByTestId('agent-table-fallback')).toBeInTheDocument();
+  });
 });

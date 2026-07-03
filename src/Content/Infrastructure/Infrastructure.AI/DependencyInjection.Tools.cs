@@ -99,6 +99,12 @@ public static partial class DependencyInjection
         // message (not through this tool). General-purpose; opt-in per skill.
         services.AddKeyedSingleton<ITool>(RenderFormTool.ToolName, (sp, _) =>
             new RenderFormTool(sp.GetRequiredService<IClientToolBridge>()));
+
+        // Render-table tool — generative UI: the agent displays a data table inline via the same client
+        // round-trip bridge. The browser draws a table from validated columns/rows and returns a short
+        // acknowledgement synchronously (non-interactive). General-purpose; opt-in per skill.
+        services.AddKeyedSingleton<ITool>(RenderTableTool.ToolName, (sp, _) =>
+            new RenderTableTool(sp.GetRequiredService<IClientToolBridge>()));
     }
 
     /// <summary>
