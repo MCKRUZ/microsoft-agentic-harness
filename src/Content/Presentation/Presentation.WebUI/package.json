@@ -17,8 +17,8 @@
     "test:e2e:ui": "playwright test --ui"
   },
   "dependencies": {
-    "@ag-ui/client": "^0.0.53",
-    "@ag-ui/core": "^0.0.53",
+    "@ag-ui/client": "^0.0.57",
+    "@ag-ui/core": "^0.0.57",
     "@azure/msal-browser": "^5.6.3",
     "@azure/msal-react": "^5.2.1",
     "@base-ui/react": "^1.4.0",

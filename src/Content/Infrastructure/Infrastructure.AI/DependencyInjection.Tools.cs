@@ -87,6 +87,12 @@ public static partial class DependencyInjection
         // component from a metric and returns a short summary. Opt-in per skill via allowed-tools.
         services.AddKeyedSingleton<ITool>(RenderChartTool.ToolName, (sp, _) =>
             new RenderChartTool(sp.GetRequiredService<IClientToolBridge>()));
+
+        // Render-image tool — generative UI: the agent displays an image inline in its answer via the
+        // same client round-trip bridge. The browser renders an <img> from a validated https URL and
+        // returns a short acknowledgement. General-purpose (not dashboard-specific); opt-in per skill.
+        services.AddKeyedSingleton<ITool>(RenderImageTool.ToolName, (sp, _) =>
+            new RenderImageTool(sp.GetRequiredService<IClientToolBridge>()));
     }
 
     /// <summary>

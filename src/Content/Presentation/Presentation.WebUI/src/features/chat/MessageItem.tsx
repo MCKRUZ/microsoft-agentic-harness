@@ -8,6 +8,7 @@ import { Badge } from '@/components/ui/badge';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { JsonViewer } from '@/components/ui/json-viewer';
+import { renderWidget } from './widgets/registry';
 import type { ChatMessage, ToolCallSummary } from './useChatStore';
 
 function ToolCallCard({ toolCall }: { toolCall: ToolCallSummary }) {
@@ -145,6 +146,8 @@ export function MessageItem({
   };
 
   const hasActions = canRetry || canEdit || canCopy;
+  // A widget-only assistant message (empty content) shows just the widget — no empty bubble.
+  const showBubble = isEditing || isStreaming || message.content.length > 0;
 
   return (
     <div
@@ -173,47 +176,56 @@ export function MessageItem({
         </span>
 
         {/* Message bubble */}
-        <div
-          className={cn(
-            'rounded-2xl px-4 py-3 text-sm leading-relaxed',
-            isUser
-              ? 'bg-primary text-primary-foreground rounded-tr-sm'
-              : 'bg-card border border-border/50 text-card-foreground rounded-tl-sm',
-          )}
-        >
-          {isEditing ? (
-            <div className="flex flex-col gap-2 min-w-[280px]">
-              <Textarea
-                value={draft}
-                onChange={(e) => { setDraft(e.target.value); }}
-                onKeyDown={handleKeyDown}
-                rows={3}
-                aria-label="Edit message"
-                autoFocus
-                className="bg-background/50 border-border/50"
-              />
-              <div className="flex justify-end gap-2">
-                <Button type="button" variant="ghost" size="sm" onClick={handleCancelEdit}>
-                  <X size={14} className="mr-1" /> Cancel
-                </Button>
-                <Button type="button" size="sm" onClick={handleSaveEdit}>
-                  <Check size={14} className="mr-1" /> Save
-                </Button>
+        {showBubble && (
+          <div
+            className={cn(
+              'rounded-2xl px-4 py-3 text-sm leading-relaxed',
+              isUser
+                ? 'bg-primary text-primary-foreground rounded-tr-sm'
+                : 'bg-card border border-border/50 text-card-foreground rounded-tl-sm',
+            )}
+          >
+            {isEditing ? (
+              <div className="flex flex-col gap-2 min-w-[280px]">
+                <Textarea
+                  value={draft}
+                  onChange={(e) => { setDraft(e.target.value); }}
+                  onKeyDown={handleKeyDown}
+                  rows={3}
+                  aria-label="Edit message"
+                  autoFocus
+                  className="bg-background/50 border-border/50"
+                />
+                <div className="flex justify-end gap-2">
+                  <Button type="button" variant="ghost" size="sm" onClick={handleCancelEdit}>
+                    <X size={14} className="mr-1" /> Cancel
+                  </Button>
+                  <Button type="button" size="sm" onClick={handleSaveEdit}>
+                    <Check size={14} className="mr-1" /> Save
+                  </Button>
+                </div>
               </div>
-            </div>
-          ) : isUser ? (
-            <p className="whitespace-pre-wrap">{message.content}</p>
-          ) : (
-            <Markdown content={message.content} isStreaming={isStreaming} />
-          )}
+            ) : isUser ? (
+              <p className="whitespace-pre-wrap">{message.content}</p>
+            ) : (
+              <Markdown content={message.content} isStreaming={isStreaming} />
+            )}
 
-          {isStreaming && (
-            <span
-              className="inline-block w-0.5 h-4 bg-current animate-[cursor-blink_1s_ease-in-out_infinite] ml-0.5 align-middle rounded-full"
-              aria-hidden
-            />
-          )}
-        </div>
+            {isStreaming && (
+              <span
+                className="inline-block w-0.5 h-4 bg-current animate-[cursor-blink_1s_ease-in-out_infinite] ml-0.5 align-middle rounded-full"
+                aria-hidden
+              />
+            )}
+          </div>
+        )}
+
+        {/* Inline generative-UI widget (e.g. an image) — rendered outside the bubble. */}
+        {!isUser && message.widget && (
+          <div className="w-full mt-1">
+            {renderWidget(message.widget)}
+          </div>
+        )}
 
         {/* Tool calls — outside the bubble for cleaner layout */}
         {!isUser && (message.toolCalls ?? []).length > 0 && (
