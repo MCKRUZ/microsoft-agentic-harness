@@ -1,5 +1,6 @@
 import { HttpAgent } from '@ag-ui/client';
 import type { HttpAgentConfig } from '@ag-ui/client';
+import { apiClient } from '@/lib/apiClient';
 
 const AG_UI_BASE_URL = '/ag-ui/run';
 
@@ -45,4 +46,18 @@ export async function createAuthenticatedAgUiAgent(
 ): Promise<HttpAgent> {
   const headers = await buildAgUiHeaders(getAccessToken);
   return createAgUiAgent(headers);
+}
+
+/**
+ * Posts the browser's result for a mid-run client tool call back to the server, unblocking the
+ * parked server-side tool so the same agent run resumes with the result in hand. Mirrors the
+ * `POST /ag-ui/tool-result` contract (`{ threadId, callId, result }`); the shared `apiClient`
+ * supplies the base URL and the Authorization header via its request interceptor.
+ */
+export async function postToolResult(
+  threadId: string,
+  callId: string,
+  result: string,
+): Promise<void> {
+  await apiClient.post('/ag-ui/tool-result', { threadId, callId, result });
 }

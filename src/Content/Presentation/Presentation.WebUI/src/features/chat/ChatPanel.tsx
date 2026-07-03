@@ -7,13 +7,13 @@ import { useAppStore } from '@/stores/appStore';
 import { useConversationSettingsStore } from '@/stores/conversationSettingsStore';
 import { useAgentHub, type ConnectionState, type ConversationSettingsInput, type ServerConversationMessage } from '@/hooks/useAgentHub';
 import { useAgentStream } from '@/hooks/useAgentStream';
+import { useSendUserMessage } from '@/hooks/useSendUserMessage';
 import type { ChatMessage } from './useChatStore';
 import { CONVERSATIONS_QUERY_KEY } from '@/features/conversations/useConversationsQuery';
 import { MessageList } from './MessageList';
 import { TypingIndicator } from './TypingIndicator';
 import { ChatInput } from './ChatInput';
 import { ConversationSettingsDrawer } from './ConversationSettingsDrawer';
-import { Badge } from '@/components/ui/badge';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { EmptyState } from '@/components/ui/empty-state';
 
@@ -123,6 +123,7 @@ export function ChatPanel() {
     connectionState,
   } = useAgentHub();
   const { sendMessage: agUiSend } = useAgentStream();
+  const sendUserMessage = useSendUserMessage();
   const [conversationReady, setConversationReady] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const currentSettings = useConversationSettingsStore((s) =>
@@ -149,16 +150,8 @@ export function ChatPanel() {
   };
 
   const handleSuggestionClick = (text: string): void => {
-    if (!activeConversationId || !conversationReady) return;
-    const userMessageId = crypto.randomUUID();
-    useChatStore.getState().addMessage({
-      id: userMessageId,
-      role: 'user',
-      content: text,
-      timestamp: new Date(),
-    });
-    useChatStore.getState().startStreaming();
-    agUiSend(activeConversationId, userMessageId, text);
+    if (!conversationReady) return;
+    sendUserMessage(text);
   };
 
   const handleEdit = (userMessageId: string, newContent: string): void => {

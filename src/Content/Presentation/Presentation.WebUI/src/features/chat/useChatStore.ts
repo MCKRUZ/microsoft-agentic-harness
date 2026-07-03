@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import type { AgentWidget } from './widgets/types';
 
 export interface ToolCallSummary {
   toolName: string;
@@ -12,6 +13,12 @@ export interface ChatMessage {
   content: string;
   timestamp: Date;
   toolCalls?: ToolCallSummary[];
+  /**
+   * An inline generative-UI widget the agent rendered mid-run (e.g. an image). When present on an
+   * assistant message with empty `content`, the transcript shows only the widget. Rendered via the
+   * widget registry.
+   */
+  widget?: AgentWidget;
 }
 
 interface ChatState {
