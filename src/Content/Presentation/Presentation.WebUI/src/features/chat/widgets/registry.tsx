@@ -28,17 +28,17 @@ export interface WidgetDefinition {
 const WIDGET_REGISTRY = new Map<string, WidgetDefinition>([
   ['render_image', {
     render: (args) => <AgentImage args={args} />,
-    validate: (args) => { const r = parseImageArgs(args); return r.ok ? { ok: true } : { ok: false, reason: r.reason }; },
+    validate: parseImageArgs,
     ack: 'Displayed the image to the user.',
   }],
   ['render_form', {
     render: (args) => <AgentForm args={args} />,
-    validate: (args) => { const r = parseFormArgs(args); return r.ok ? { ok: true } : { ok: false, reason: r.reason }; },
+    validate: parseFormArgs,
     ack: 'Displayed the form to the user; their answers will arrive as their next message.',
   }],
   ['render_table', {
     render: (args) => <AgentTable args={args} />,
-    validate: (args) => { const r = parseTableArgs(args); return r.ok ? { ok: true } : { ok: false, reason: r.reason }; },
+    validate: parseTableArgs,
     ack: 'Displayed the table to the user.',
   }],
 ]);
