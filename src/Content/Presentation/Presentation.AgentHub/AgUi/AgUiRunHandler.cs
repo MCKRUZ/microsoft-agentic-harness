@@ -383,6 +383,8 @@ public sealed class AgUiRunHandler
             ? parsed
             : Guid.NewGuid();
 
+    // Widget (empty-content) messages are already excluded upstream by GetHistoryForDispatch, so this is
+    // a straight projection of the dispatch history to the framework's chat-message shape.
     private static IReadOnlyList<ChatMessage> ToMeaiHistory(IReadOnlyList<ConversationMessage> messages) =>
         messages.Select(m => new ChatMessage(ToChatRole(m.Role), m.Content)).ToList();
 

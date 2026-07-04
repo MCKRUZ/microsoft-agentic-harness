@@ -14,6 +14,8 @@ export interface ServerConversationMessage {
   content: string;
   timestamp: string;
   toolCalls?: { toolName: string; input: Record<string, unknown>; output: unknown }[] | null;
+  /** Set on an assistant message that carried an inline generative-UI widget, so it re-renders on reload. */
+  widget?: { type: string; args: Record<string, unknown> } | null;
 }
 
 export interface ConversationSettingsInput {

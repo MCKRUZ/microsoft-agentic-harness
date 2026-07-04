@@ -7,7 +7,7 @@ category: general
 version: 1.0.0
 author: Microsoft Agentic Harness
 tags: ["default", "general"]
-skill: research-agent
+skill: default-agent
 ---
 
 # Default Agent

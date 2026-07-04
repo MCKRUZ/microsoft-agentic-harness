@@ -6,7 +6,6 @@ import { useChatStore } from './useChatStore';
 import { useAppStore } from '@/stores/appStore';
 import { useConversationSettingsStore } from '@/stores/conversationSettingsStore';
 import { useAgentHub, type ConnectionState, type ConversationSettingsInput, type ServerConversationMessage } from '@/hooks/useAgentHub';
-import { useAgentStream } from '@/hooks/useAgentStream';
 import { useSendUserMessage } from '@/hooks/useSendUserMessage';
 import type { ChatMessage } from './useChatStore';
 import { CONVERSATIONS_QUERY_KEY } from '@/features/conversations/useConversationsQuery';
@@ -122,7 +121,6 @@ export function ChatPanel() {
     setConversationSettings,
     connectionState,
   } = useAgentHub();
-  const { sendMessage: agUiSend } = useAgentStream();
   const sendUserMessage = useSendUserMessage();
   const [conversationReady, setConversationReady] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -143,10 +141,6 @@ export function ChatPanel() {
     void retryFromMessage(activeConversationId, assistantMessageId).catch((err: unknown) => {
       useChatStore.getState().setError(err instanceof Error ? err.message : 'Retry failed');
     });
-  };
-
-  const sendMessage = async (conversationId: string, userMessageId: string, message: string): Promise<void> => {
-    agUiSend(conversationId, userMessageId, message);
   };
 
   const handleSuggestionClick = (text: string): void => {
@@ -203,6 +197,7 @@ export function ChatPanel() {
               content: m.content,
               timestamp: new Date(m.timestamp),
               toolCalls: m.toolCalls ?? undefined,
+              widget: m.widget ?? undefined,
             }));
           if (mapped.length > 0) {
             useChatStore.getState().setMessages(mapped);
@@ -252,11 +247,7 @@ export function ChatPanel() {
       </div>
       <TypingIndicator />
       {activeConversationId && (
-        <ChatInput
-          conversationId={activeConversationId}
-          sendMessage={sendMessage}
-          disabled={!conversationReady}
-        />
+        <ChatInput disabled={!conversationReady} />
       )}
       <ConversationSettingsDrawer
         open={settingsOpen}

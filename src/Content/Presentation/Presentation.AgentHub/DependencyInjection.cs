@@ -235,6 +235,9 @@ public static class DependencyInjection
         // it MUST be a singleton. The bridge holds no per-run state (writer is ambient, pending map
         // lives in the registry) and the catalog provider is immutable — both safe as singletons.
         services.AddSingleton<AgUi.PendingToolCallRegistry>();
+        // Immutable catalog of client tool names whose calls are persisted as re-renderable widget
+        // messages; consumed by the bridge to make inline generative-UI widgets survive a reload.
+        services.AddSingleton<AgUi.ClientWidgetCatalog>();
         services.AddSingleton<Application.AI.Common.Interfaces.Tools.IClientToolBridge, AgUi.AgUiClientToolBridge>();
         services.AddSingleton<Application.AI.Common.Interfaces.Observability.IMetricCatalog, AgUi.MetricCatalogProvider>();
         services.AddSingleton<IEscalationNotificationChannel, AgUiEscalationNotifier>();

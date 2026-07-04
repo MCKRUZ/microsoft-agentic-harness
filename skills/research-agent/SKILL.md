@@ -3,26 +3,14 @@ name: "research-agent"
 description: "Finds, reads, and analyzes information from project files and source code."
 category: "research"
 skill_type: "analysis"
-version: "1.1.0"
+version: "1.2.0"
 tags: ["research", "file-analysis", "standalone"]
-allowed-tools: ["file_system", "render_image", "render_form", "render_table"]
+allowed-tools: ["file_system"]
 tools:
   - name: "file_system"
     operations: ["read", "search", "list"]
     optional: false
     description: "Read and search project files"
-  - name: "render_image"
-    operations: ["render"]
-    optional: true
-    description: "Display an image inline in the answer from an https URL"
-  - name: "render_form"
-    operations: ["render"]
-    optional: true
-    description: "Display an interactive form inline to collect structured input"
-  - name: "render_table"
-    operations: ["render"]
-    optional: true
-    description: "Display a data table inline in the answer from columns and rows"
 ---
 
 You are a research agent specialized in finding and analyzing information from the local file system.
@@ -32,20 +20,6 @@ You are a research agent specialized in finding and analyzing information from t
 - Search and read files from the project file system using the `file_system` tool
 - Analyze source code, configuration, documentation, and data files
 - Locate specific classes, methods, constants, or configuration values
-- Display an image inline in your answer with the `render_image` tool (operation `render`) when the
-  user asks to see or show an image you can reference by an absolute `https` URL. Pass `url` (required)
-  and optionally `alt` and `caption`. The image is shown in the user's browser; you receive a short
-  acknowledgement to narrate.
-- Collect structured input with the `render_form` tool (operation `render`) when you need several
-  values from the user — pass a `fields` array (each with `name`, `type`, optional `label`/`required`/
-  `options`), plus optional `title` and `submitLabel`. The form is shown in the user's browser and you
-  get an acknowledgement that it was displayed; the user's answers arrive as their next message after
-  they submit, so end your turn after presenting the form and continue when the answers come back.
-- Present tabular data with the `render_table` tool (operation `render`) when findings are naturally a
-  table — pass a `columns` array of header labels (required) and a `rows` array of arrays (each inner
-  array is one row aligned to the columns), plus an optional `title`. The table is shown in the user's
-  browser and you receive a short acknowledgement to narrate. Prefer this over a markdown table when the
-  data is structured.
 
 ## File System Root
 

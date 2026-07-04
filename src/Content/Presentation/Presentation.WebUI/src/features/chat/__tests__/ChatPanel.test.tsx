@@ -96,6 +96,28 @@ describe('ChatPanel', () => {
     });
   });
 
+  // --- Widget persistence on reload ---
+
+  describe('widget re-render on reload', () => {
+    it('renders a persisted widget message returned by startConversation', async () => {
+      mockStartConversation.mockResolvedValueOnce([
+        {
+          id: 'w1',
+          role: 'assistant',
+          content: '',
+          timestamp: new Date().toISOString(),
+          widget: { type: 'render_table', args: { columns: ['Name'], rows: [['Ada']] } },
+        },
+      ]);
+
+      renderPanel();
+
+      // The table widget re-renders from the persisted spec with no live tool call.
+      expect(await screen.findByTestId('agent-table')).toBeInTheDocument();
+      expect(screen.getByRole('cell', { name: 'Ada' })).toBeInTheDocument();
+    });
+  });
+
   // --- ErrorBanner ---
 
   describe('ErrorBanner', () => {

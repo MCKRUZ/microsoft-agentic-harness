@@ -10,6 +10,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { MentionPicker, type MentionItem } from './MentionPicker';
 import { usePromptsQuery, useToolsQuery } from '@/features/mcp/useMcpQuery';
+import { useSendUserMessage } from '@/hooks/useSendUserMessage';
 
 const MAX_ATTACHMENT_BYTES = 500 * 1024;
 const MAX_MESSAGE_CHARS = 40_000;
@@ -28,8 +29,6 @@ interface Attachment {
 }
 
 interface ChatInputProps {
-  conversationId: string;
-  sendMessage: (conversationId: string, userMessageId: string, message: string) => Promise<void>;
   disabled?: boolean;
 }
 
@@ -63,10 +62,9 @@ function detectTrigger(value: string, caret: number): TriggerState | null {
   return null;
 }
 
-export function ChatInput({ conversationId, sendMessage, disabled = false }: ChatInputProps) {
+export function ChatInput({ disabled = false }: ChatInputProps) {
   const isStreaming = useChatStore((s) => s.isStreaming);
-  const addMessage = useChatStore((s) => s.addMessage);
-  const startStreaming = useChatStore((s) => s.startStreaming);
+  const sendUserMessage = useSendUserMessage();
   const [attachment, setAttachment] = useState<Attachment | null>(null);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
@@ -207,24 +205,16 @@ export function ChatInput({ conversationId, sendMessage, disabled = false }: Cha
     setAttachmentError(null);
   };
 
-  const onSubmit = async (data: FormData): Promise<void> => {
+  const onSubmit = (data: FormData): void => {
     if (disabled || isStreaming) return;
     const composed = composeMessage(data.message, attachment);
-    const userMessageId = crypto.randomUUID();
-    addMessage({
-      id: userMessageId,
-      role: 'user',
-      content: composed,
-      timestamp: new Date(),
-    });
-    startStreaming();
     form.reset();
     clearAttachment();
     setTrigger(null);
-    try {
-      await sendMessage(conversationId, userMessageId, composed);
-    } catch (err) {
-      useChatStore.getState().setError(err instanceof Error ? err.message : 'Failed to send message');
+    // The shared hook owns the send sequence (optimistic message → start streaming → dispatch run);
+    // it returns false only when there is no active conversation to send to.
+    if (!sendUserMessage(composed)) {
+      useChatStore.getState().setError('There is no active conversation to send to.');
     }
   };
 

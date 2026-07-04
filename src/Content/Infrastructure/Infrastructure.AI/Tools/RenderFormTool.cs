@@ -30,14 +30,10 @@ namespace Infrastructure.AI.Tools;
 /// </code>
 /// </para>
 /// </remarks>
-public sealed class RenderFormTool : BlockingProxyTool
+public sealed class RenderFormTool : SingleRenderProxyTool
 {
     /// <summary>The tool name matching keyed DI registration and SKILL.md declarations.</summary>
     public const string ToolName = "render_form";
-
-    private const string Render = "render";
-
-    private static readonly IReadOnlyList<string> Operations = [Render];
 
     /// <summary>Field <c>type</c> values the browser knows how to render. Kept in sync with the client whitelist.</summary>
     private static readonly HashSet<string> AllowedFieldTypes =
@@ -65,30 +61,18 @@ public sealed class RenderFormTool : BlockingProxyTool
         "submit. Use this to collect structured input instead of asking for many values in prose.";
 
     /// <inheritdoc />
-    public override IReadOnlyList<string> SupportedOperations => Operations;
+    protected override string NoClientMessage =>
+        "No client is connected to this conversation, so a form cannot be displayed.";
 
     /// <inheritdoc />
-    public override Task<ToolResult> ExecuteAsync(
-        string operation,
-        IReadOnlyDictionary<string, object?> parameters,
-        CancellationToken cancellationToken = default)
-    {
-        if (!string.Equals(operation, Render, StringComparison.OrdinalIgnoreCase))
-            return Task.FromResult(ToolResult.Fail($"Unknown operation: {operation}. Supported: {Render}"));
+    protected override string TimeoutMessage => "The client did not display the form in time.";
 
-        if (!IsClientAttached)
-            return Task.FromResult(ToolResult.Fail("No client is connected to this conversation, so a form cannot be displayed."));
-
-        // Serialize once, then validate the structure from the JSON so nested `fields` are inspected
-        // deterministically regardless of how the tool arguments were deserialized into the dictionary.
-        var argumentsJson = JsonSerializer.Serialize(parameters, SerializerOptions);
-
-        var validationError = ValidateFields(argumentsJson);
-        if (validationError is not null)
-            return Task.FromResult(ToolResult.Fail(validationError));
-
-        return InvokeClientAsync(argumentsJson, "The client did not display the form in time.", cancellationToken);
-    }
+    /// <inheritdoc />
+    // Validate the structure from the serialized JSON so nested `fields` are inspected deterministically
+    // regardless of how the tool arguments were deserialized into the dictionary.
+    protected override string? ValidateArguments(
+        IReadOnlyDictionary<string, object?> parameters, string argumentsJson)
+        => ValidateFields(argumentsJson);
 
     /// <summary>Validates the serialized <c>fields</c> array; returns an error message, or null when valid.</summary>
     private static string? ValidateFields(string argumentsJson)

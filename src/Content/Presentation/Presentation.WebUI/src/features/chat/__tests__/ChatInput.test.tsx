@@ -22,10 +22,13 @@ vi.mock('@/features/mcp/useMcpQuery', () => ({
   }),
 }));
 
-const mockSendMessage = vi.fn().mockResolvedValue(undefined);
+// ChatInput delegates the send sequence to the shared useSendUserMessage hook; mock it so the test
+// asserts on the composed text without pulling in the agent stream / MSAL.
+const mockSend = vi.fn().mockReturnValue(true);
+vi.mock('@/hooks/useSendUserMessage', () => ({ useSendUserMessage: () => mockSend }));
 
 function renderInput() {
-  return renderWithProviders(<ChatInput conversationId="test-conv" sendMessage={mockSendMessage} />);
+  return renderWithProviders(<ChatInput />);
 }
 
 function getSubmitButton(): HTMLButtonElement {
@@ -40,12 +43,12 @@ describe('ChatInput', () => {
     useChatStore.setState({ conversationId: null, messages: [], isStreaming: false, streamingContent: '' });
   });
 
-  it('submit calls sendMessage with input value', async () => {
+  it('submit sends the input value via the shared hook', async () => {
     const user = userEvent.setup();
     renderInput();
     await user.type(screen.getByPlaceholderText(/message the agent/i), 'hello world');
     await user.click(getSubmitButton());
-    expect(mockSendMessage).toHaveBeenCalledWith('test-conv', expect.any(String), 'hello world');
+    expect(mockSend).toHaveBeenCalledWith('hello world');
   });
 
   it('is disabled while isStreaming is true', () => {
@@ -63,11 +66,11 @@ describe('ChatInput', () => {
     expect(screen.getByPlaceholderText(/message the agent/i)).toHaveValue('');
   });
 
-  it('rejects empty string (does not call sendMessage)', async () => {
+  it('rejects empty string (does not call the send hook)', async () => {
     const user = userEvent.setup();
     renderInput();
     await user.click(getSubmitButton());
-    expect(mockSendMessage).not.toHaveBeenCalled();
+    expect(mockSend).not.toHaveBeenCalled();
   });
 
   it('rejects messages over 40000 characters', async () => {
@@ -77,7 +80,7 @@ describe('ChatInput', () => {
     });
     fireEvent.click(getSubmitButton());
     expect(await screen.findByText(/message too long/i)).toBeInTheDocument();
-    expect(mockSendMessage).not.toHaveBeenCalled();
+    expect(mockSend).not.toHaveBeenCalled();
   });
 
   it('shows prompt picker when user types @', async () => {

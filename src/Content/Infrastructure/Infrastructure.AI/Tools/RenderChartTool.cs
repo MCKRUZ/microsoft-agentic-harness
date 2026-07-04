@@ -1,4 +1,3 @@
-using System.Text.Json;
 using Application.AI.Common.Interfaces.Tools;
 using Domain.AI.Models;
 
@@ -25,14 +24,10 @@ namespace Infrastructure.AI.Tools;
 /// </code>
 /// </para>
 /// </remarks>
-public sealed class RenderChartTool : BlockingProxyTool
+public sealed class RenderChartTool : SingleRenderProxyTool
 {
     /// <summary>The tool name matching keyed DI registration and SKILL.md declarations.</summary>
     public const string ToolName = "render_chart";
-
-    private const string Render = "render";
-
-    private static readonly IReadOnlyList<string> Operations = [Render];
 
     /// <summary>Initializes a new instance of the <see cref="RenderChartTool"/> class.</summary>
     /// <param name="bridge">The client round-trip bridge used to delegate rendering to the browser.</param>
@@ -54,26 +49,19 @@ public sealed class RenderChartTool : BlockingProxyTool
         "time range, so call set_time_range first if a different window is needed.";
 
     /// <inheritdoc />
-    public override IReadOnlyList<string> SupportedOperations => Operations;
+    protected override string NoClientMessage =>
+        "No dashboard client is connected to this conversation, so a chart cannot be rendered.";
 
     /// <inheritdoc />
-    public override Task<ToolResult> ExecuteAsync(
-        string operation,
-        IReadOnlyDictionary<string, object?> parameters,
-        CancellationToken cancellationToken = default)
+    protected override string TimeoutMessage => "The dashboard did not render the chart in time.";
+
+    /// <inheritdoc />
+    // Either a metricId or a promQL query must be present; both are top-level scalars, so check the
+    // parameter dictionary directly.
+    protected override string? ValidateArguments(
+        IReadOnlyDictionary<string, object?> parameters, string argumentsJson)
     {
-        if (!string.Equals(operation, Render, StringComparison.OrdinalIgnoreCase))
-            return Task.FromResult(ToolResult.Fail($"Unknown operation: {operation}. Supported: {Render}"));
-
-        if (!IsClientAttached)
-            return Task.FromResult(ToolResult.Fail("No dashboard client is connected to this conversation, so a chart cannot be rendered."));
-
         var hasMetric = parameters.ContainsKey("metricId") || parameters.ContainsKey("promQL");
-        if (!hasMetric)
-            return Task.FromResult(ToolResult.Fail("Provide a metricId (from list_metrics) or a promQL query to chart."));
-
-        var argumentsJson = JsonSerializer.Serialize(parameters, SerializerOptions);
-
-        return InvokeClientAsync(argumentsJson, "The dashboard did not render the chart in time.", cancellationToken);
+        return hasMetric ? null : "Provide a metricId (from list_metrics) or a promQL query to chart.";
     }
 }
