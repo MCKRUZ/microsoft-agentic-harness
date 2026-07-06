@@ -1,0 +1,59 @@
+namespace Domain.Common.Config.AI.HarmonicMemory;
+
+/// <summary>
+/// Root configuration for the harmonic memory representation (Memora port). Bound from
+/// <c>AppConfig:AI:HarmonicMemory</c> in appsettings.json.
+/// </summary>
+/// <remarks>
+/// <para>
+/// Harmonic memory indexes a lightweight scaffolding layer — a primary abstraction plus cue anchors —
+/// over each cross-session memory value, rather than embedding the raw value. This yields more precise,
+/// controlled recall while preserving full-fidelity content. See the plan at
+/// <c>.claude/plans/harmonic-memory-representation.md</c>.
+/// </para>
+/// <para>
+/// <strong>Off by default.</strong> The abstraction/consolidation write path costs one to two LLM calls
+/// per remembered fact (vs. today's cheap cache insert), so it must be a deliberate opt-in. The cost
+/// guards below bound that spend once enabled.
+/// </para>
+/// <code>
+/// AppConfig.AI.HarmonicMemory
+/// ├── Mode                  — Off (default) / AbstractOnly / Full — governs the write-time LLM cost
+/// ├── MinContentLengthChars — Only abstract facts at least this long (short facts stay on the legacy path)
+/// ├── ConsolidationTopK     — How many similar existing entries the consolidator sees (Full mode)
+/// └── BatchAtSessionFlush   — Defer abstraction to session flush instead of per-RememberAsync
+/// </code>
+/// </remarks>
+public class HarmonicMemoryConfig
+{
+    /// <summary>
+    /// Graduated master toggle. When <see cref="HarmonicMemoryMode.Off"/> (the default), the memory write
+    /// path is byte-for-byte the legacy path and no LLM calls are made.
+    /// </summary>
+    /// <value>Default: <see cref="HarmonicMemoryMode.Off"/></value>
+    public HarmonicMemoryMode Mode { get; set; } = HarmonicMemoryMode.Off;
+
+    /// <summary>
+    /// Minimum content length, in characters, before a remembered fact is abstracted. Facts shorter than
+    /// this skip abstraction and take the legacy path, sparing the LLM cost on trivial one-liners. Zero
+    /// (the default) abstracts everything. Must not be negative.
+    /// </summary>
+    /// <value>Default: 0</value>
+    public int MinContentLengthChars { get; set; }
+
+    /// <summary>
+    /// Number of similar existing entries the consolidator is shown when deciding merge-vs-create in
+    /// <see cref="HarmonicMemoryMode.Full"/>. Higher values improve merge recall at the cost of a larger
+    /// consolidation prompt. Ignored in <see cref="HarmonicMemoryMode.AbstractOnly"/>. Must be positive.
+    /// </summary>
+    /// <value>Default: 5</value>
+    public int ConsolidationTopK { get; set; } = 5;
+
+    /// <summary>
+    /// When true, abstraction and consolidation are deferred from each <c>RememberAsync</c> call to the
+    /// session-flush boundary, amortizing the LLM cost across the whole session instead of paying it per
+    /// fact. When false (the default), each remembered fact is abstracted inline.
+    /// </summary>
+    /// <value>Default: false</value>
+    public bool BatchAtSessionFlush { get; set; }
+}

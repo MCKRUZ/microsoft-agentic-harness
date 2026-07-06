@@ -15,6 +15,7 @@ using Domain.Common.Config.AI.Permissions;
 using Domain.Common.Config.AI.Planner;
 using Domain.Common.Config.AI.Plugins;
 using Domain.Common.Config.AI.RAG;
+using Domain.Common.Config.AI.HarmonicMemory;
 using Domain.Common.Config.AI.Resilience;
 using Domain.Common.Config.AI.Routing;
 using Domain.Common.Config.AI.Sandbox;
@@ -174,6 +175,15 @@ public class AIConfig
     /// task executions — what worked, what failed, and what it cost.
     /// </summary>
     public WorkMemoryConfig WorkMemory { get; set; } = new();
+
+    /// <summary>
+    /// Harmonic memory representation (Memora port). Off by default — when enabled, the cross-session
+    /// memory write path produces an indexed primary abstraction plus cue anchors over each memory value
+    /// (rather than embedding the raw value), for more precise, controlled recall. The graduated
+    /// <c>Mode</c> toggle governs the write-time LLM cost. Distinct from <see cref="Learnings"/> and
+    /// <see cref="WorkMemory"/>: this changes how cross-session facts are represented and indexed.
+    /// </summary>
+    public HarmonicMemoryConfig HarmonicMemory { get; set; } = new();
 
     /// <summary>
     /// Configuration for recalling relevant learnings into the agent's context at turn start (the read
