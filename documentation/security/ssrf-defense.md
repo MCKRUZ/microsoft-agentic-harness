@@ -116,7 +116,12 @@ The runner-up `idunno.Security.Ssrf` would be a fine adoption choice for an inte
 
 ## 5. Integration sketch
 
-The handler chain on a per-skill `HttpClient` is the existing `IEgressPolicy` wrapper *outside*, `AntiSSRFHandler` *inside*, both fed into `IHttpClientFactory`:
+> **Shipped names:** this section is a pre-implementation sketch. The types that actually shipped are
+> `EgressPolicyDelegatingHandler` (the outer per-skill allowlist handler, shown below as `EgressPolicyHandler`)
+> and `AntiSsrfHandlerFactory` (which produces the inner SSRF handler, shown below as `AntiSSRFHandler`). Read
+> the class names in this sketch as illustrative; the shipped code lives under `Infrastructure.AI/Egress/`.
+
+The handler chain on a per-skill `HttpClient` is the existing `IEgressPolicy` wrapper *outside*, the SSRF handler *inside*, both fed into `IHttpClientFactory`:
 
 ```csharp
 // Infrastructure.AI.Common/DependencyInjection.cs (illustrative)
@@ -214,7 +219,7 @@ After `GetHandler()` returns, the policy is permanently immutable. The runtime r
 3. Register the handler via `AddHttpMessageHandler(() => handler)` — IHttpClientFactory caches it.
 4. Concurrent requests share the immutable policy with zero lock contention.
 
-The harness's `EgressPolicyHttpClientFactory` must NOT expose runtime mutation of the underlying policy. Document this in the `Infrastructure.AI/Egress/` XML comments at PR-3b time.
+The harness's `AntiSsrfHandlerFactory` must NOT expose runtime mutation of the underlying policy. Document this in the `Infrastructure.AI/Egress/` XML comments at PR-3b time.
 
 ### 6.4 IPv6 ULA (`fc00::/7`) coverage — verified present ✅
 

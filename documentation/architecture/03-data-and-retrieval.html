@@ -141,6 +141,24 @@
                         call.
                     </p>
 
+                    <div class="callout callout-info">
+                        <span class="callout-icon">i</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Optional: Azure AI Search agentic retrieval</div>
+                            <p style="margin: 0">
+                                As an alternative to the in-process hybrid pipeline, the harness ships
+                                <code>AzureKnowledgeBaseRetriever</code> (an <code>IHybridRetriever</code> backend)
+                                that hands the whole query &rarr; ranked-results step to an Azure AI Search
+                                <strong>knowledge base</strong> via <code>KnowledgeBaseRetrievalClient</code>
+                                (API version <code>2026-04-01</code>). It is <strong>opt-in and off by default</strong>
+                                &mdash; enable it under <code>AppConfig.AI.Rag.AgenticRetrieval</code>
+                                (<code>Enabled</code> + <code>Endpoint</code> + <code>KnowledgeBaseName</code>). The
+                                referenced knowledge base must already exist in your Search service. See
+                                <code>AgenticRetrievalConfig.cs</code>.
+                            </p>
+                        </div>
+                    </div>
+
                     <h3 id="ai-search-configuration">AI Search configuration</h3>
                     <div class="code-block">
                         <div class="code-block-header">
@@ -174,8 +192,11 @@
                     <h2 id="knowledge-graph-backends">Knowledge graph backends</h2>
                     <p>
                         The knowledge graph stores entity relationships extracted from documents and conversations.
-                        Three backends are supported behind the <code>IGraphDatabaseBackend</code> interface. Choose
-                        based on your operational maturity and query complexity.
+                        Storage sits behind <strong>two</strong> interfaces: the embedded <strong>Kuzu</strong> backend
+                        implements <code>IGraphDatabaseBackend</code>, while <strong>Neo4j</strong>,
+                        <strong>PostgreSQL</strong>, and the dev-only in-memory store implement
+                        <code>IKnowledgeGraphStore</code> (with <code>Feedback</code> and <code>TenantIsolated</code>
+                        decorators layered on top). Choose based on your operational maturity and query complexity.
                     </p>
 
                     <table>
@@ -189,22 +210,22 @@
                         </thead>
                         <tbody>
                             <tr>
-                                <td><strong>PostgreSQL</strong></td>
-                                <td>Cosmos DB for PostgreSQL</td>
-                                <td>Production, familiar SQL + graph queries</td>
-                                <td>Apache AGE extension for Cypher, scales horizontally</td>
+                                <td><strong>PostgreSQL</strong> <span style="opacity:0.7">(<code>IKnowledgeGraphStore</code>)</span></td>
+                                <td>Any managed Postgres (Azure Database for PostgreSQL Flexible Server, etc.)</td>
+                                <td>Production, familiar SQL, one fewer moving part</td>
+                                <td>Plain relational Npgsql &mdash; <code>kg_nodes</code> / <code>kg_edges</code> tables, self-initializing schema. <strong>No Apache AGE, no Cypher extension required.</strong> Provider-agnostic.</td>
                             </tr>
                             <tr>
-                                <td><strong>Neo4j</strong></td>
+                                <td><strong>Neo4j</strong> <span style="opacity:0.7">(<code>IKnowledgeGraphStore</code>)</span></td>
                                 <td>Neo4j Aura (managed) or Neo4j on AKS</td>
                                 <td>Complex graph traversals, existing Neo4j expertise</td>
-                                <td>Additional managed service cost, Aura is fully managed</td>
+                                <td>Additional managed service cost, Aura is fully managed. Chosen by the validated staging/prod payloads.</td>
                             </tr>
                             <tr>
-                                <td><strong>Kuzu</strong></td>
+                                <td><strong>Kuzu</strong> <span style="opacity:0.7">(<code>IGraphDatabaseBackend</code>)</span></td>
                                 <td>Embedded (in-process)</td>
                                 <td>Development, testing, single-node deployments</td>
-                                <td>No external service needed, fast for small graphs</td>
+                                <td>No external service needed, fast for small graphs. The one backend on the <code>IGraphDatabaseBackend</code> interface.</td>
                             </tr>
                         </tbody>
                     </table>
@@ -251,7 +272,7 @@
                                 <div class="az-box-detail">
                                     Entities and relationships persisted to the graph backend.
                                 </div>
-                                <span class="az-box-sku">Cosmos DB / Neo4j / Kuzu</span>
+                                <span class="az-box-sku">Neo4j / PostgreSQL / Kuzu</span>
                             </div>
                         </div>
                         <div class="topology-connector">&#8595;</div>

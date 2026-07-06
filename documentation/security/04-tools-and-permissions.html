@@ -407,47 +407,51 @@
                         </div>
                     </div>
 
-                    <h2 id="pipeline">Where this runs in the request pipeline</h2>
+                    <h2 id="pipeline">Where this runs on the tool path</h2>
                     <p>
-                        The resolver is invoked from a MediatR pipeline behavior,
-                        <code>ToolPermissionBehavior</code>, at
-                        <code>src/Content/Application/Application.AI.Common/MediatRBehaviors/ToolPermissionBehavior.cs</code>.
-                        Putting permission resolution in a pipeline behavior means it runs on the request path
-                        automatically for every tool-call command — there is no way to dispatch a tool call that
-                        skips it. The behavior order (verified in <code>DependencyInjection.cs</code>) is:
+                        The resolver is invoked from the <strong>live tool-execution path</strong>, not the MediatR
+                        request pipeline. Every agent tool is wrapped by <code>GovernedAIFunction</code>, whose
+                        <code>InvokeCoreAsync</code> calls <code>IToolInvocationGovernor.AuthorizeAsync</code>
+                        (<code>src/Content/Application/Application.AI.Common/Services/Governance/ToolInvocationGovernor.cs</code>),
+                        which in turn calls <code>_toolPermissionService.ResolvePermissionAsync</code> — the
+                        <code>ThreePhasePermissionResolver</code> covered above. Because the wrapper sits on the
+                        execution path, there is no way to dispatch a tool call that skips it. Once the governor
+                        authorizes the call, two more ambient gates run before the tool executes:
                     </p>
 
                     <table>
                         <thead>
                             <tr>
                                 <th>#</th>
-                                <th>Behavior</th>
+                                <th>Gate</th>
                                 <th>Concern</th>
                             </tr>
                         </thead>
                         <tbody>
                             <tr>
                                 <td>1</td>
-                                <td><code>ContentSafety</code></td>
-                                <td>Is the inbound text safe? (<a href="07-content-safety.html">page 07</a>)</td>
+                                <td><code>IToolInvocationGovernor</code></td>
+                                <td>May this tool be called at all? Permission resolution + autonomy-tier policy (this page and <a href="03-autonomy-and-governance.html">page 03</a>)</td>
                             </tr>
                             <tr>
                                 <td>2</td>
-                                <td><code>ToolPermission</code></td>
-                                <td>May this tool be called at all? (this page)</td>
+                                <td><code>IToolClassificationGate</code></td>
+                                <td>Does the data classification allow it? Purview DLP (<a href="08-data-protection.html">page 08</a>)</td>
                             </tr>
                             <tr>
                                 <td>3</td>
-                                <td><code>GovernancePolicy</code></td>
-                                <td>Does it satisfy the autonomy-tier policy? (<a href="03-autonomy-and-governance.html">page 03</a>)</td>
-                            </tr>
-                            <tr>
-                                <td>4</td>
-                                <td><code>PromptInjection</code></td>
-                                <td>Is the content an injection attempt? (<a href="07-content-safety.html">page 07</a>)</td>
+                                <td><code>IProgressEvaluator</code></td>
+                                <td>Is the agent spinning on repeated identical calls? (spin guard)</td>
                             </tr>
                         </tbody>
                     </table>
+
+                    <p>
+                        Two earlier MediatR behaviors named <code>ToolPermissionBehavior</code> and
+                        <code>GovernancePolicyBehavior</code> were <strong>removed as dead code</strong> — they keyed on
+                        a request marker nothing in production implemented, so they never fired. Permission resolution
+                        lives on the tool path described here.
+                    </p>
 
                     <div class="callout callout-info">
                         <span class="callout-icon">i</span>

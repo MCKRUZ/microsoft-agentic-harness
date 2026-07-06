@@ -121,21 +121,31 @@
                     <p>The behaviours registered by the harness, in execution order (outermost first):</p>
                     <ol>
                         <li><code>UnhandledExceptionBehavior</code> — top-level safety net, structured log + rethrow</li>
+                        <li><code>AmbientRequestScopeBehavior</code> — establishes the ambient request scope</li>
                         <li><code>AgentContextPropagationBehavior</code> — copies agent/conversation IDs into ambient OTel baggage</li>
-                        <li><code>HookBehavior</code> — fires pre/post hooks declared by plugins</li>
+                        <li><code>AgentIdentityResolutionBehavior</code> — resolves the acting agent identity</li>
                         <li><code>AuditTrailBehavior</code> — JSONL audit log of every command</li>
-                        <li><code>PromptInjectionBehavior</code> — guards against user-prompted system-prompt overrides</li>
                         <li><code>ContentSafetyBehavior</code> — runs Azure Content Safety (or mock) on inputs &amp; outputs</li>
-                        <li><code>GovernancePolicyBehavior</code> — enforces autonomy tier (Manual/Supervised/Autonomous)</li>
-                        <li><code>ToolPermissionBehavior</code> — gates tool calls against plugin AllowedTools/DeniedTools</li>
+                        <li><code>PromptInjectionBehavior</code> — guards against user-prompted system-prompt overrides</li>
                         <li><code>TokenBudgetBehavior</code> — enforces per-conversation token spend</li>
-                        <li><code>ToolOutputCompressionBehavior</code> — compresses large tool outputs by content type</li>
+                        <li><code>HookBehavior</code> — fires pre/post hooks declared by plugins</li>
                         <li><code>RetrievalAuditBehavior</code> — captures RAG retrievals for evaluation replay</li>
-                        <li><code>KnowledgeExtractionBehavior</code> — extracts facts from conversation into the knowledge graph</li>
+                        <li><code>ResponseSanitizationBehavior</code> — masks PII/secrets before returning to client (post-execution)</li>
+                        <li><code>ToolOutputCompressionBehavior</code> — compresses large tool outputs by content type (post-execution)</li>
+                        <li><code>KnowledgeExtractionBehavior</code> — extracts facts from conversation into the knowledge graph (post-turn, fire-and-forget)</li>
+                        <li><code>WorkEpisodeCaptureBehavior</code> — captures work episodes for self-improving memory (post-turn, fire-and-forget)</li>
                         <li><code>PromptUsageTrackingBehavior</code> — records prompt cache hit/miss for cost analysis</li>
-                        <li><code>ResponseSanitizationBehavior</code> — masks PII/secrets before returning to client</li>
                     </ol>
                     <p>All behaviour files live under <code>src/Content/Application/Application.AI.Common/MediatRBehaviors/</code>.</p>
+                    <p>
+                        <strong>Note:</strong> tool <em>authorization</em> and <em>governance</em> are <em>not</em> MediatR
+                        behaviours. They run on the live tool-execution path — every agent tool is wrapped by
+                        <code>GovernedAIFunction</code>, whose <code>InvokeCoreAsync</code> runs three ambient gates
+                        (<code>IToolInvocationGovernor</code> → <code>IToolClassificationGate</code> →
+                        <code>IProgressEvaluator</code>) before the tool runs. Two earlier behaviours,
+                        <code>GovernancePolicyBehavior</code> and <code>ToolPermissionBehavior</code>, were removed as
+                        dead code because they keyed on a request marker nothing in production implemented.
+                    </p>
 
                     <h3 id="result-pattern">Result&lt;T&gt; (marquee pattern · 2 of 12)</h3>
                     <p>
@@ -791,10 +801,10 @@ return quality.MaxScore switch
 
                     <h3 id="autonomy-tiers">Autonomy tiers</h3>
                     <p>
-                        Three levels enforced by <code>GovernancePolicyBehavior</code>: <strong>Manual</strong>
-                        (human approves every action), <strong>Supervised</strong> (auto-approve low-risk, escalate
-                        high-risk), <strong>Autonomous</strong> (no gates, full audit). Tier resolves per-plugin,
-                        per-skill, or per-tool via <code>DefaultAutonomyTierResolver</code>.
+                        Three levels enforced by the <code>IToolInvocationGovernor</code> on the tool path:
+                        <strong>Manual</strong> (human approves every action), <strong>Supervised</strong>
+                        (auto-approve low-risk, escalate high-risk), <strong>Autonomous</strong> (no gates, full audit).
+                        Tier resolves per-plugin, per-skill, or per-tool via <code>DefaultAutonomyTierResolver</code>.
                     </p>
 
                     <h3 id="polly">Resilience pipeline (Polly)</h3>
@@ -838,6 +848,61 @@ return quality.MaxScore switch
                         <code>SafetyGateRegistry</code> holds named gates a plugin can flip
                         (<code>before_write</code>, <code>before_shell</code>, etc.); <code>InMemoryDenialTracker</code>
                         records every denial so operators can see what the harness is blocking and why.
+                    </p>
+
+                    <h3 id="tool-invocation-governor">Tool-invocation governor (three ambient gates)</h3>
+                    <p>
+                        The live tool-gating path. Every agent tool is wrapped by <code>GovernedAIFunction</code>, whose
+                        <code>InvokeCoreAsync</code> runs three ambient gates before the tool executes:
+                        <code>IToolInvocationGovernor</code> (authorization — permission resolver → graded-autonomy risk
+                        gate → capability enforcement → YAML policy engine; fails closed with a
+                        <code>PendingApproval</code>), <code>IToolClassificationGate</code> (data-classification DLP,
+                        below), and <code>IProgressEvaluator</code> (spin / no-progress guard). Opt-in via
+                        <code>GovernanceConfig.EnforceToolInvocation</code>. Files under
+                        <code>Application.AI.Common/Services/Governance/</code> and
+                        <code>Services/Tools/GovernedAIFunction.cs</code>.
+                    </p>
+
+                    <h3 id="purview-dlp">Purview data-classification DLP</h3>
+                    <p>
+                        <code>IToolClassificationGate</code> classifies tool arguments/outputs against Microsoft Purview
+                        sensitivity labels. Opt-in via <code>AppConfig:AI:Governance:DataClassification:Mode</code>
+                        (<code>Off</code> / <code>Audit</code> / <code>Enforce</code>). A <strong>Block</strong> verdict
+                        returns a model-facing message instead of running the tool; a <strong>RedactOutput</strong>
+                        verdict runs the tool then scrubs the result via <code>ICompositeResponseSanitizer</code>.
+                        Defaults <code>Off</code> and Unknown-classification → Allow.
+                    </p>
+
+                    <h3 id="memory-write-gate">Trust-aware memory write-gate</h3>
+                    <p>
+                        <code>KnowledgeMemoryService.RememberAsync</code> runs <code>IMemoryWriteGate</code> on every
+                        memory write. Untrusted content is quarantined (<code>MemoryTrust.Untrusted</code>) rather than
+                        written as recallable; <code>IsRecallable</code> is re-checked at read time so quarantined
+                        entries never re-enter a prompt. Defends the "poisoned memory" path (OWASP ASI06).
+                    </p>
+
+                    <h3 id="conversation-budget">Conversation budget &amp; spin guard</h3>
+                    <p>
+                        <code>IConversationBudgetTracker</code> is a singleton that enforces a conversation-lifetime
+                        token ceiling (distinct from the per-turn <code>IContextBudgetTracker</code>), breaking
+                        gracefully when exceeded. The spin guard <code>IProgressEvaluator</code> halts a tool call when
+                        the agent repeats identical calls without progress.
+                    </p>
+
+                    <h3 id="audit-hash-chain">Tamper-evident audit hash-chain</h3>
+                    <p>
+                        <code>HashChainedJsonlWriter</code> links every audit record to its predecessor by hash;
+                        <code>AuditChainVerificationService</code> / <code>IVerifiableAuditChain</code> detect any
+                        insertion, deletion, or edit of past records.
+                    </p>
+
+                    <h3 id="owasp-agentic-evals">OWASP Agentic Top-10 evals</h3>
+                    <p>
+                        Ten metrics <code>OwaspAsi01…10*</code> under
+                        <code>Application.AI.Common/Evaluation/Metrics/Owasp/</code>, keyed-registered and run via
+                        <code>dotnet test --filter Category=OwaspAgentic</code> against the dataset at repo-root
+                        <code>eval-datasets/owasp-agentic-top-10.yaml</code>. See
+                        <a href="../security/09-owasp-evals.html">OWASP Evals</a>.
                     </p>
 
                     <hr />
@@ -978,10 +1043,12 @@ await _store.SaveAsync(attestation, ct);</code></pre>
 
                     <h3 id="tool-permission-gate">Tool permission gate</h3>
                     <p>
-                        <code>ToolPermissionBehavior</code> (MediatR) is the first line of defence — it checks the
-                        invoking plugin's <code>AllowedTools</code>/<code>DeniedTools</code> against the requested
-                        tool. <code>ThreePhasePermissionResolver</code> applies "default deny" → "plugin allow" →
-                        "user deny" precedence; <code>GlobPatternMatcher</code> supports wildcard rules.
+                        <code>IToolInvocationGovernor</code> (called from <code>GovernedAIFunction</code> on the tool
+                        path) is the first line of defence — its <code>AuthorizeAsync</code> invokes
+                        <code>ThreePhasePermissionResolver</code>, which checks the invoking plugin's
+                        <code>AllowedTools</code>/<code>DeniedTools</code> against the requested tool and applies
+                        "default deny" → "plugin allow" → "user deny" precedence; <code>GlobPatternMatcher</code>
+                        supports wildcard rules.
                     </p>
 
                     <h3 id="secret-redaction">Secret redaction</h3>

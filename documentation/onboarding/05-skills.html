@@ -28,7 +28,7 @@
                         <a class="sidebar-link" href="05-skills.html"><span class="sidebar-link-num">05</span> Skills System</a>
                         <a class="sidebar-link" href="06-tools.html"><span class="sidebar-link-num">06</span> Tools &amp; Keyed DI</a>
                         <a class="sidebar-link" href="07-rag.html"><span class="sidebar-link-num">07</span> The RAG Pipeline</a>
-                        <a class="sidebar-link" href="08-mcp.html"><span class="sidebar-link-num">08</span> MCP Server &amp; Client</a></div>
+                        <a class="sidebar-link" href="08-mcp.html"><span class="sidebar-link-num">08</span> MCP Server &amp; Client</a><a class="sidebar-link" href="16-generative-ui.html"><span class="sidebar-link-num">16</span> Generative UI &amp; Widgets</a></div>
                     <div class="sidebar-group"><div class="sidebar-group-title">Patterns</div>
                         <a class="sidebar-link" href="09-patterns.html"><span class="sidebar-link-num">09</span> Patterns You'll Use Daily</a>
                         <a class="sidebar-link" href="10-observability.html"><span class="sidebar-link-num">10</span> Observability &amp; Safety</a></div>
@@ -146,15 +146,11 @@ description: Finds and synthesizes information from documents and the web.
 category: information-gathering
 tags: [research, search, summarize]
 allowed-tools:
-  - file_system_read
+  - file_system
   - document_search
-  - web_search
-deployment: gpt-4o      # optional override of AppConfig default
-context-loading:
-  references:
-    - ./references/citation-style.md
-  templates:
-    - ./templates/summary.md
+version: 1.0.0
+model-override: gpt-4o    # optional override of AppConfig default
+skill_type: research
 ---
 
 # Research Agent
@@ -162,7 +158,7 @@ context-loading:
 ## Role
 You are a thorough research assistant. When given a question, you:
 1. Identify what is and isn't known.
-2. Use the document_search and web_search tools to gather sources.
+2. Use the document_search tool to gather sources.
 3. Synthesize findings with citations.
 
 ## Behavioral guidelines
@@ -173,43 +169,66 @@ You are a thorough research assistant. When given a question, you:
                     </div>
 
                     <p>
-                        The frontmatter is the Tier-1 + Tier-2 metadata: <code>id</code>, <code>name</code>,
-                        <code>description</code> are the index card; <code>allowed-tools</code> and
-                        <code>context-loading</code> drive what gets loaded. The Markdown body is the Tier-2 content —
-                        the agent's instructions for this role.
+                        The frontmatter is the Tier-1 metadata: <code>id</code>, <code>name</code>,
+                        <code>description</code>, <code>category</code>, <code>tags</code> are the index card;
+                        <code>allowed-tools</code> declares the tool surface. The parser
+                        (<code>SkillMetadataParser</code>) reads a fixed set of keys — <code>category</code>,
+                        <code>tags</code>, <code>version</code>, <code>model-override</code>, <code>agent-id</code>,
+                        <code>allowed-tools</code>, <code>prerequisites</code>, <code>completion_tool</code>,
+                        <code>skill_type</code> — anything else lands in a generic <code>Metadata</code> bag. The
+                        Markdown body is the Tier-2 content — the agent's instructions for this role. Tier-3 resources
+                        aren't listed in frontmatter at all: they're discovered from the skill folder's
+                        <code>references/</code>, <code>templates/</code>, and <code>scripts/</code> subdirectories.
                     </p>
 
                     <h3>The <code>SkillDefinition</code> domain type</h3>
                     <p>When the loader parses a <code>SKILL.md</code>, it produces a <code>SkillDefinition</code>:</p>
                     <div class="code-block">
                         <div class="code-block-header"><span class="code-block-lang">C# · Domain.AI/Skills/SkillDefinition.cs</span></div>
-                        <pre><code>public sealed record SkillDefinition
+                        <pre><code>public class SkillDefinition
 {
-    public required string Id { get; init; }
-    public required string Name { get; init; }
-    public required string Description { get; init; }
-    public required string Instructions { get; init; }   // Markdown body
-    public IReadOnlyList&lt;string&gt; AllowedTools { get; init; } = [];
-    public ContextLoading ContextLoading { get; init; } = new();
-    public string? Deployment { get; init; }
+    // Level 1 — Index Card (always loaded)
+    public string Id { get; set; } = string.Empty;
+    public string Name { get; set; } = string.Empty;
+    public string Description { get; set; } = string.Empty;
 
-    // Dual-mode support
-    public SkillMode Mode { get; init; } = SkillMode.Managed;
-    public string? PluginSource { get; init; }           // plugin ID, if Injected
+    // Level 2 — Folder (on demand)
+    public string? Instructions { get; set; } = string.Empty;   // Markdown body
+
+    // Categorization + runtime config
+    public string? Version { get; set; }
+    public string? Category { get; set; }
+    public string? SkillType { get; set; }                      // from skill_type
+    public IList&lt;string&gt; Tags { get; set; } = new List&lt;string&gt;();
+    public IList&lt;string&gt;? AllowedTools { get; set; }
+    public string? ModelOverride { get; set; }                  // from model-override
+    public string? AgentId { get; set; }                        // from agent-id
+    public string? PluginSource { get; set; }                   // plugin ID, if Injected
 
     // Prerequisite ordering
-    public IReadOnlyList&lt;string&gt; Prerequisites { get; init; } = [];
-    public string? CompletionTool { get; init; }         // tool invocation marks this skill complete
-    // ... category, tags, etc.
+    public IList&lt;string&gt; Prerequisites { get; set; } = new List&lt;string&gt;();
+    public string? CompletionTool { get; set; }                 // from completion_tool
+
+    // Level 3 — Filing Cabinet (discovered from subfolders)
+    public IList&lt;SkillResource&gt; Templates  { get; set; } = new List&lt;SkillResource&gt;();
+    public IList&lt;SkillResource&gt; References { get; set; } = new List&lt;SkillResource&gt;();
+    public IList&lt;SkillResource&gt; Scripts    { get; set; } = new List&lt;SkillResource&gt;();
+
+    // Computed — NOT settable
+    public bool IsPluginSkill => !string.IsNullOrEmpty(PluginSource);
+    public SkillMode Mode => IsPluginSkill &amp;&amp; !HasToolDeclarations &amp;&amp; !HasToolRestrictions
+        ? SkillMode.Injected : SkillMode.Managed;
+    // ... Author, License, StateConfiguration, DecisionFramework, etc.
 }</code></pre>
                     </div>
 
                     <p>
-                        Notice it's a record with init-only properties — once a skill is loaded, it's immutable. To
-                        change skill behavior at runtime, the harness produces a new <code>SkillDefinition</code> (or
-                        a <code>SkillAmendment</code>) and replaces the entry. The <code>Mode</code>,
-                        <code>PluginSource</code>, and <code>Prerequisites</code> properties are covered in the
-                        sections below.
+                        Notice it's a plain <strong>mutable class</strong> with <code>get; set;</code> properties and
+                        <code>IList&lt;&gt;</code> collections — the parser builds it up field by field as it reads the
+                        SKILL.md. The one thing you <em>can't</em> set is <code>Mode</code>: it's a computed property
+                        derived from <code>IsPluginSkill</code> plus whether the skill declares any tools. The
+                        <code>PluginSource</code> and <code>Prerequisites</code> properties are covered in the sections
+                        below.
                     </p>
 
                     <h2>How a skill becomes an agent</h2>
@@ -218,7 +237,7 @@ You are a thorough research assistant. When given a question, you:
                     <ol class="steps">
                         <li class="step">
                             <div class="step-title">Discovery at startup</div>
-                            <p><code>SkillLoaderService</code> walks <code>AppConfig.AI.Skills.BasePath</code> (and any <code>AdditionalPaths</code>) at startup, finds every <code>SKILL.md</code>, parses the frontmatter into <code>SkillDefinition</code>, and registers each in <code>ISkillRegistry</code>. Only the Tier-1 metadata is in memory at this point — the Markdown body is held lazily.</p>
+                            <p><code>SkillMetadataParser</code> parses each <code>SKILL.md</code> frontmatter into a <code>SkillDefinition</code>, and <code>SkillMetadataRegistry</code> (behind <code>ISkillMetadataRegistry</code>) holds them, keyed by id. Only the Tier-1 metadata is eagerly in memory — the Markdown body is held lazily.</p>
                         </li>
                         <li class="step">
                             <div class="step-title">Selection and assembly per turn</div>
@@ -230,11 +249,11 @@ You are a thorough research assistant. When given a question, you:
                         </li>
                         <li class="step">
                             <div class="step-title">Tool resolution</div>
-                            <p>For each entry in <code>allowed-tools</code>, the harness resolves a keyed singleton from DI — <code>sp.GetRequiredKeyedService&lt;ITool&gt;("file_system_read")</code> — then converts it to an <code>AITool</code> via <code>AIToolConverter</code> and attaches it to the agent. See <a href="06-tools.html">Tools &amp; Keyed DI</a>.</p>
+                            <p>For each entry in <code>allowed-tools</code>, the harness resolves a keyed singleton from DI — <code>sp.GetRequiredKeyedService&lt;ITool&gt;("file_system")</code> — then converts it to an <code>AITool</code> and attaches it to the agent. See <a href="06-tools.html">Tools &amp; Keyed DI</a>.</p>
                         </li>
                         <li class="step">
                             <div class="step-title">Tier-3 access at runtime</div>
-                            <p>If the skill's <code>context-loading.references</code> list includes a file path, that file isn't read until the agent's <code>file_system_read</code> tool actually opens it. The path is exposed via the tool, not preloaded into the prompt.</p>
+                            <p>A resource under the skill folder's <code>references/</code> subdirectory isn't read until the agent's <code>file_system</code> tool actually opens it. The path is exposed via the tool, not preloaded into the prompt.</p>
                         </li>
                     </ol>
 
@@ -278,10 +297,10 @@ You are a thorough research assistant. When given a question, you:
 id: analysis
 name: Analysis Agent
 prerequisites: [data-gathering]    # must complete first
-completion-tool: submit_report     # calling this marks analysis as done
+completion_tool: submit_report     # calling this marks analysis as done
 allowed-tools:
   - submit_report
-  - file_system_read
+  - file_system
 ---</code></pre>
                     </div>
                     <div class="callout callout-tip">
@@ -322,20 +341,23 @@ skills:
                     <p>
                         While the above is happening, <code>IContextBudgetTracker</code> keeps a running count of how
                         many tokens are committed to: the system prompt, loaded skill content, tool schemas, and
-                        conversation history. When the budget reaches its threshold, the
-                        <code>ITieredContextAssembler</code> stops promoting Tier-2 content and the orchestrator falls
-                        back to Tier-1 descriptions only.
+                        conversation history for the <em>current turn</em>. When the budget nears its threshold, the
+                        assembler stops promoting Tier-2 content and falls back to Tier-1 descriptions only.
                     </p>
                     <div class="callout callout-warn">
                         <span class="callout-icon">!</span>
                         <div class="callout-body">
-                            <div class="callout-title">Token budget is per-agent, not per-message</div>
+                            <div class="callout-title">Two budgets: per-turn vs whole-conversation</div>
                             <p style="margin: 0">
-                                <code>AppConfig.Agent.DefaultTokenBudget</code> applies to the whole agent session,
-                                not a single message. Long conversations accumulate history — eventually the budget
-                                tracker forces compaction (older messages are summarized) or short-circuits skill
-                                loading. If you're seeing skills "disappear" mid-conversation, the tracker is
-                                preserving budget.
+                                <code>IContextBudgetTracker</code> governs a single turn, sized by
+                                <code>AppConfig:AI:AgentFramework:DefaultTokenBudget</code> (default
+                                <strong>200,000</strong> tokens). A separate <code>IConversationBudgetTracker</code>
+                                (a singleton) enforces a <em>cross-turn</em> ceiling for the whole conversation
+                                (<code>ConversationTokenBudget</code>) and can gracefully break the loop when a long
+                                session runs out of budget. If you're seeing skills "disappear" mid-conversation, the
+                                per-turn tracker is preserving budget; if a run stops cleanly after many turns, that's
+                                the conversation tracker. (Note: there is no <code>MaxTurnsPerConversation</code>
+                                property — budgets are token-based, not turn-count-based.)
                             </p>
                         </div>
                     </div>

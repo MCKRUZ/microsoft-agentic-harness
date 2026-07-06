@@ -215,7 +215,7 @@
         <div class="step-body">
           <strong>The response streams back over SSE</strong>
           <p><code>Presentation.AgentHub/AgUi/AgUiRunHandler.cs:261&ndash;270</code> (<code>TEXT_MESSAGE_CONTENT</code> emission) + <code>AgUiEventWriter</code></p>
-          <p>Once <code>_mediator.Send</code> returns the full <code>AgentTurnResult</code>, the AG-UI handler chops the response into 50-character chunks and emits AG-UI-protocol <code>TEXT_MESSAGE_CONTENT</code> delta events, followed by a <code>RUN_FINISHED</code> event. Note: streaming is currently <em>simulated</em> &mdash; the LLM call is awaited fully before chunking. Real token streaming via <code>IAsyncEnumerable&lt;string&gt;</code> is still pending.</p>
+          <p>Once <code>_mediator.Send</code> returns the full <code>AgentTurnResult</code>, the AG-UI handler chops the response into 50-character chunks and emits AG-UI-protocol <code>TEXT_MESSAGE_CONTENT</code> delta events, followed by a <code>RUN_FINISHED</code> event. Worth being precise here: the harness itself <em>does</em> stream real tokens on its turn path &mdash; the engine hands out each word as the model produces it. What you&rsquo;re watching in <em>this browser chat</em> is a different, older transport: the AG-UI handler waits for the whole answer, then re-chops it into evenly sized chunks so it still &ldquo;types in.&rdquo; So the capability is real inside the harness; carrying those live tokens all the way through to the browser is the one remaining step.</p>
         </div>
       </div>
 
@@ -328,8 +328,8 @@
 
       <div class="quiz-question-block"
            data-correct="opt-c2"
-           data-explanation-right="Yes. AgUiRunHandler awaits the full LLM response, then chops it into 50-char AG-UI TEXT_MESSAGE_CONTENT delta events. Real token-level streaming requires plumbing IAsyncEnumerable end-to-end, which is not yet wired through ExecuteAgentTurnCommand."
-           data-explanation-wrong="Look at AgUiRunHandler.cs around line 261. The chunking is simulated; the LLM call is awaited in full first, then sliced into 50-char SSE events.">
+           data-explanation-right="Right — for this browser path. AgUiRunHandler awaits the full LLM response, then chops it into 50-char AG-UI TEXT_MESSAGE_CONTENT delta events, so what you see typing in is re-chunked, not live. (The harness engine itself does stream real tokens on its turn path; the open item is carrying those live tokens all the way out to the browser transport.)"
+           data-explanation-wrong="Careful: two different paths. The harness engine streams real tokens as the model produces them. But the AG-UI browser handler around AgUiRunHandler.cs line 261 waits for the full response first, then slices it into evenly sized 50-char SSE events — so what the browser shows is re-chunked, not live.">
         <h3 class="quiz-question">3. The WebUI shows the response &ldquo;typing in&rdquo; chunk by chunk over SSE. Is this real token streaming?</h3>
         <div class="quiz-options">
           <button class="quiz-option" data-value="opt-c1" onclick="selectOption(this)">

@@ -436,10 +436,20 @@
 
                     <p>
                         Provenance is the structural defence against it: every fact is attributable, so a downstream
-                        filter can quarantine memory whose <code>SourcePipeline</code> or
-                        <code>SourceDocumentId</code> is untrusted instead of blindly trusting whatever is in the graph.
-                        You cannot decide whether to trust a fact you cannot trace; the stamp is what makes the decision
-                        possible.
+                        filter can act on memory whose <code>SourcePipeline</code> or <code>SourceDocumentId</code> is
+                        untrusted instead of blindly trusting whatever is in the graph. You cannot decide whether to
+                        trust a fact you cannot trace; the stamp is what makes the decision possible.
+                    </p>
+
+                    <h2 id="memory-write-gate">Trust-aware memory: the write-gate</h2>
+                    <p>
+                        The quarantine is not hypothetical — it is enforced on every write.
+                        <code>KnowledgeMemoryService.RememberAsync</code> runs an <code>IMemoryWriteGate</code> before
+                        anything is persisted. Content the gate judges untrusted is stored as
+                        <code>MemoryTrust.Untrusted</code> — quarantined rather than written as recallable — and the
+                        <code>IsRecallable</code> check is re-evaluated at <em>read</em> time, so a quarantined record
+                        never re-enters a prompt even if it slipped through. This directly closes the memory-poisoning
+                        (ASI06) path: a hostile fact planted in one session cannot silently steer a later one.
                     </p>
 
                     <h2 id="compliance-retention">Compliance &amp; retention</h2>
@@ -515,6 +525,37 @@
                             </ul>
                         </div>
                     </div>
+
+                    <h2 id="data-classification-dlp">Data-classification DLP</h2>
+                    <p>
+                        Isolation and retention govern <em>where</em> data lives; data-loss prevention governs
+                        <em>whether a tool call may move it at all</em> based on its sensitivity. The harness ships a
+                        Microsoft Purview classification gate, <code>IToolClassificationGate</code>, that runs on the
+                        live tool-execution path — one of the three ambient gates inside <code>GovernedAIFunction</code>
+                        (see <a href="04-tools-and-permissions.html">Tools &amp; Permissions</a>). It classifies the
+                        data a tool touches against Purview sensitivity labels and acts on the verdict.
+                    </p>
+                    <p>
+                        It is opt-in through a single mode knob,
+                        <code>AppConfig:AI:Governance:DataClassification:Mode</code>:
+                    </p>
+                    <ul>
+                        <li><strong><code>Off</code></strong> (default) — the gate is inert; no classification runs.</li>
+                        <li><strong><code>Audit</code></strong> — classifications are computed and logged, but nothing is blocked or altered.</li>
+                        <li>
+                            <strong><code>Enforce</code></strong> — verdicts act. A <strong>Block</strong> verdict returns
+                            a model-facing message instead of running the tool; a <strong>RedactOutput</strong> verdict
+                            lets the tool run, then scrubs the sensitive spans from the result via
+                            <code>ICompositeResponseSanitizer</code> before it re-enters the model's context.
+                        </li>
+                    </ul>
+                    <p>
+                        The gate fails <em>open on ambiguity by design</em>: an <code>Unknown</code> classification maps
+                        to <strong>Allow</strong>, and the whole subsystem stays dormant unless both a mode other than
+                        <code>Off</code> and a classification provider are configured. This keeps the closed-by-default
+                        posture on capabilities while avoiding false positives that would block legitimate work in
+                        deployments that have not adopted Purview labelling.
+                    </p>
 
                     <h2 id="secrets">Secrets management</h2>
                     <p>

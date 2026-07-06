@@ -9,12 +9,12 @@ touching call sites.
 ## Why not a thin wrapper over MAF A2A?
 
 The plan calls for "thin wrapper over MAF" but Microsoft Agent
-Framework 1.9.0 (current pin — `Microsoft.Agents.AI`) does **not** ship
+Framework 1.10.0 (current pin — `Microsoft.Agents.AI`) does **not** ship
 an A2A client/server surface. The Linux Foundation A2A protocol is
 young (June 2025) and MAF has not yet published primitives that the
 harness could wrap. PR-7 therefore ships a harness-native A2A surface
 with the same goals — wire shape, identity propagation, OTel span
-linking, mutual-TLS-plus-JWT auth — and pins to MAF 1.9.0 via a
+linking, mutual-TLS-plus-JWT auth — and pins to MAF 1.10.0 via a
 canary test (`A2AVersionPinTests`) that fails the moment MAF adds an
 A2A surface, so the harness can switch to wrapping it.
 
@@ -219,7 +219,7 @@ Missing handlers surface as `a2a.skill_not_found`.
 
 `Infrastructure.AI.Tests/A2A/A2AVersionPinTests` asserts:
 
-- `Microsoft.Agents.AI` 1.9.0 does **not** expose a public A2A surface
+- `Microsoft.Agents.AI` 1.10.0 does **not** expose a public A2A surface
   (canary: when MAF adds one, this test fails and the harness should
   switch to wrapping it).
 - `A2AEnvelope.CurrentSchemaVersion == 1` — bumping requires updating

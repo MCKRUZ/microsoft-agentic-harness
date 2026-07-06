@@ -19,7 +19,7 @@
                     <div class="sidebar-group"><div class="sidebar-group-title">Getting Started</div><a class="sidebar-link" href="index.html"><span class="sidebar-link-num">00</span> Welcome</a><a class="sidebar-link" href="01-get-running.html"><span class="sidebar-link-num">01</span> Get Running in 10 Minutes</a></div>
                     <div class="sidebar-group"><div class="sidebar-group-title">Configuration</div><a class="sidebar-link" href="02-configuration.html"><span class="sidebar-link-num">02</span> Configuration Reference</a></div>
                     <div class="sidebar-group"><div class="sidebar-group-title">Architecture</div><a class="sidebar-link" href="03-big-picture.html"><span class="sidebar-link-num">03</span> The Big Picture</a><a class="sidebar-link" href="04-message-journey.html"><span class="sidebar-link-num">04</span> A Message's Journey</a></div>
-                    <div class="sidebar-group"><div class="sidebar-group-title">Systems</div><a class="sidebar-link" href="05-skills.html"><span class="sidebar-link-num">05</span> Skills System</a><a class="sidebar-link" href="06-tools.html"><span class="sidebar-link-num">06</span> Tools &amp; Keyed DI</a><a class="sidebar-link" href="07-rag.html"><span class="sidebar-link-num">07</span> The RAG Pipeline</a><a class="sidebar-link" href="08-mcp.html"><span class="sidebar-link-num">08</span> MCP Server &amp; Client</a></div>
+                    <div class="sidebar-group"><div class="sidebar-group-title">Systems</div><a class="sidebar-link" href="05-skills.html"><span class="sidebar-link-num">05</span> Skills System</a><a class="sidebar-link" href="06-tools.html"><span class="sidebar-link-num">06</span> Tools &amp; Keyed DI</a><a class="sidebar-link" href="07-rag.html"><span class="sidebar-link-num">07</span> The RAG Pipeline</a><a class="sidebar-link" href="08-mcp.html"><span class="sidebar-link-num">08</span> MCP Server &amp; Client</a><a class="sidebar-link" href="16-generative-ui.html"><span class="sidebar-link-num">16</span> Generative UI &amp; Widgets</a></div>
                     <div class="sidebar-group"><div class="sidebar-group-title">Patterns</div><a class="sidebar-link" href="09-patterns.html"><span class="sidebar-link-num">09</span> Patterns You'll Use Daily</a><a class="sidebar-link" href="10-observability.html"><span class="sidebar-link-num">10</span> Observability &amp; Safety</a></div>
                     <div class="sidebar-group"><div class="sidebar-group-title">Building</div><a class="sidebar-link" href="11-extending.html"><span class="sidebar-link-num">11</span> Extending the Harness</a></div>
                     <div class="sidebar-group"><div class="sidebar-group-title">Quality</div><a class="sidebar-link" href="13-evaluation.html"><span class="sidebar-link-num">13</span> Evaluation Framework</a><a class="sidebar-link" href="14-skill-training.html"><span class="sidebar-link-num">14</span> Skill Training</a></div>
@@ -153,8 +153,8 @@ app.MapMcp()
                     <ol>
                         <li>Opens a connection over the configured transport (HTTP or stdio).</li>
                         <li>Calls the MCP <code>tools/list</code> method to enumerate exposed tools.</li>
-                        <li>For each tool, creates an <code>McpTool</code> wrapper that implements <code>ITool</code>. The wrapper translates internal <code>ExecuteAsync</code> calls into MCP <code>tools/call</code> requests.</li>
-                        <li>Registers each wrapper in keyed DI under the MCP tool's name, so skills can reference it the same way they reference internal tools.</li>
+                        <li>For each tool, <code>McpToolProvider</code> casts the SDK's <code>McpClientTool</code> straight to a <code>Microsoft.Extensions.AI</code> <code>AITool</code> (<code>McpClientTool</code> already derives from <code>AITool</code>). There is <strong>no</strong> internal <code>McpTool : ITool</code> wrapper and <strong>no</strong> per-tool keyed DI registration.</li>
+                        <li>Returns the resulting <code>AITool</code> list — per server, and merged across servers — so the agent can offer MCP tools alongside its built-in tools in the same turn.</li>
                     </ol>
 
                     <div class="code-block">
@@ -163,8 +163,8 @@ app.MapMcp()
   "Servers": {
     "bifrost": {
       "Type": "Http",
-      "Url": "http://192.168.50.189:8090/mcp",
-      "Auth": { "Type": "Bearer", "Token": "${BIFROST_TOKEN}" }
+      "Url": "http://your-mcp-gateway:8090/mcp",
+      "Auth": { "Type": "Bearer", "BearerToken": "${BIFROST_TOKEN}" }
     },
     "local-fs": {
       "Type": "Stdio",
@@ -176,13 +176,48 @@ app.MapMcp()
 }</code></pre>
                     </div>
 
+                    <h3>Outbound authentication</h3>
+                    <p>
+                        Each server's <code>Auth.Type</code> controls how this app authenticates <em>to</em> that MCP
+                        server. The supported values are <code>None</code>, <code>ApiKey</code>, <code>Bearer</code>
+                        (the <code>BearerToken</code> shown above), and <code>Entra</code>. For <code>Entra</code>, the
+                        harness mints its own short-lived, auto-rotating token via <code>EntraTokenAuthHandler</code>
+                        (wired by <code>McpConnectionManager</code>) rather than forwarding a caller's credential:
+                    </p>
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-block-lang">json · Entra (managed identity) MCP auth</span></div>
+                        <pre><code>"secure-remote": {
+  "Type": "Http",
+  "Url": "https://secure-mcp.example.com/mcp",
+  "Auth": {
+    "Type": "Entra",
+    "Scopes": ["api://&lt;target-app-id&gt;/.default"]
+  }
+}</code></pre>
+                    </div>
+                    <div class="callout callout-info">
+                        <span class="callout-icon">ℹ</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Managed identity is Scopes-only</div>
+                            <p style="margin: 0">
+                                The secure-by-default <code>Entra</code> shape supplies only <code>Scopes</code> (at
+                                least one is required) and optionally <code>ClientId</code> for a user-assigned
+                                identity — no standing secret is stored. A client secret or certificate is supported as
+                                an explicit fallback, but then <em>both</em> <code>TenantId</code> and
+                                <code>ClientId</code> are required. A lone <code>TenantId</code> with no secret or
+                                certificate is <strong>rejected</strong> as half-configured, so a forgotten credential
+                                fails loudly instead of silently minting a token from an ambient identity.
+                            </p>
+                        </div>
+                    </div>
+
                     <h3>Why this matters</h3>
-                    <p>Once an MCP tool is wrapped as <code>ITool</code>, the rest of the harness treats it identically to a built-in tool:</p>
+                    <p>Because MCP tools arrive as first-class <code>AITool</code> instances, the rest of the harness treats them like any other tool handed to the agent:</p>
                     <ul>
-                        <li>It goes through the same <code>AIToolConverter</code>.</li>
-                        <li>It participates in the same skill <code>allowed-tools</code> declaration.</li>
-                        <li>It emits the same OTel spans on invocation.</li>
-                        <li>It's subject to the same governance and permission checks.</li>
+                        <li>They appear in the same tool list the model sees each turn.</li>
+                        <li>They can be referenced from a skill's <code>allowed-tools</code> declaration.</li>
+                        <li>They emit the same OTel spans on invocation.</li>
+                        <li>They pass through the same tool-execution governance gates.</li>
                     </ul>
                     <p>The agent has no idea whether a tool lives in this process or two networks away. <em>That's the point.</em></p>
 
@@ -245,7 +280,7 @@ app.MapMcp()
 
                     <div class="page-nav">
                         <a class="page-nav-link page-nav-prev" href="07-rag.html"><div class="page-nav-label">← Previous</div><div class="page-nav-title">07 · The RAG Pipeline</div></a>
-                        <a class="page-nav-link page-nav-next" href="09-patterns.html"><div class="page-nav-label">Next →</div><div class="page-nav-title">09 · Patterns You'll Use Daily</div></a>
+                        <a class="page-nav-link page-nav-next" href="16-generative-ui.html"><div class="page-nav-label">Next →</div><div class="page-nav-title">16 · Generative UI &amp; Widgets</div></a>
                     </div>
                 </div>
                 <aside class="toc" aria-label="On this page"><div class="toc-title">On this page</div><ul class="toc-list"></ul></aside>

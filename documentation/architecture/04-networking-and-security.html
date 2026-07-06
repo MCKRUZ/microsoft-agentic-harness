@@ -97,7 +97,7 @@
                                 <div class="az-box az-data">
                                     <span class="az-box-icon">&#9632;</span>
                                     <div class="az-box-name">snet-data</div>
-                                    <div class="az-box-detail">Private endpoints: Cosmos DB, Azure SQL, Blob Storage</div>
+                                    <div class="az-box-detail">Private endpoints: graph backend, Azure SQL, Blob Storage</div>
                                     <span class="az-box-sku">10.0.2.0/24</span>
                                 </div>
                             </div>
@@ -163,8 +163,8 @@
                                 <td>RAG queries never hit the public internet</td>
                             </tr>
                             <tr>
-                                <td>Cosmos DB</td>
-                                <td><code>privatelink.postgres.cosmos.azure.com</code></td>
+                                <td>Knowledge graph backend</td>
+                                <td><code>privatelink.postgres.database.azure.com</code> (Azure DB for PostgreSQL Flexible Server) &mdash; Neo4j on AKS uses a private cluster IP instead</td>
                                 <td>Knowledge graph reads/writes</td>
                             </tr>
                             <tr>

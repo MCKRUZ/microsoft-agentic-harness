@@ -102,7 +102,7 @@
                                 <ul>
                                     <li><strong>Container Apps:</strong> Consumption plan, 2 containers (API + Hub)</li>
                                     <li><strong>Azure OpenAI:</strong> S0 with 10K TPM allocation</li>
-                                    <li><strong>Data:</strong> Azure SQL Basic ($5/mo), Cosmos DB for PostgreSQL (1 vCore burstable, $30/mo)</li>
+                                    <li><strong>Data:</strong> Azure SQL Basic ($5/mo) for plan state, graph backend &mdash; Neo4j on AKS or managed PostgreSQL (~$30/mo)</li>
                                     <li><strong>AI Search:</strong> Basic tier ($75/mo, 15GB, semantic ranker)</li>
                                     <li><strong>Blob Storage:</strong> LRS, hot tier</li>
                                     <li><strong>Monitoring:</strong> Application Insights + Log Analytics</li>
@@ -118,7 +118,7 @@
                                 <ul>
                                     <li><strong>Container Apps:</strong> Dedicated plan with workload profiles (2 vCPU/4GB minimum)</li>
                                     <li><strong>Azure OpenAI:</strong> Provisioned throughput (PTU) for predictable latency</li>
-                                    <li><strong>Data:</strong> Azure SQL S1+ or Cosmos DB for PostgreSQL (4 vCore, HA), Blob Storage GRS</li>
+                                    <li><strong>Data:</strong> Azure SQL S1+ (plan state), graph backend in HA &mdash; Neo4j on AKS or managed PostgreSQL (4 vCore), Blob Storage GRS</li>
                                     <li><strong>AI Search:</strong> Standard tier (3 replicas for HA, semantic ranker)</li>
                                     <li><strong>Front Door:</strong> Standard tier with WAF</li>
                                     <li><strong>Key Vault:</strong> Standard tier</li>
@@ -187,7 +187,7 @@
                                 <td>$0</td>
                                 <td>$35&ndash;65</td>
                                 <td>$100&ndash;300</td>
-                                <td>Cosmos DB vCores, Azure SQL tier</td>
+                                <td>Graph backend size (Neo4j/PostgreSQL), Azure SQL tier</td>
                             </tr>
                             <tr>
                                 <td><strong>Storage</strong></td>
@@ -266,7 +266,7 @@
                         <li><strong>Start with pay-as-you-go</strong>, move to PTU when you have predictable load and want guaranteed latency.</li>
                         <li><strong>Isolate quotas:</strong> use different deployments for agent chat vs. embeddings so one workload doesn&rsquo;t starve the other.</li>
                         <li><strong>Multi-region fallback:</strong> configure a secondary Azure OpenAI resource in a different region. The harness Polly circuit breaker chain handles failover automatically.</li>
-                        <li><strong>Monitor 429s:</strong> track <code>openai.requests.throttled</code> metric. Sustained 429s mean you need more quota or a PTU commitment.</li>
+                        <li><strong>Monitor 429s:</strong> the harness has no dedicated throttle counter &mdash; watch the HTTP client instrumentation (<code>http.client.request.duration</code> with <code>http.response.status_code = 429</code>) or the Azure Monitor <code>dependencies</code> failure rate for the OpenAI endpoint. Sustained 429s mean you need more quota or a PTU commitment.</li>
                     </ul>
 
                     <h3 id="ai-search-scaling">AI Search scaling</h3>
@@ -489,12 +489,12 @@
                         <tbody>
                             <tr>
                                 <td><strong>Agent returning empty responses</strong></td>
-                                <td>Check <code>agent.turn</code> spans for errors. Check OpenAI quota (429s).</td>
+                                <td>Check <code>invoke_agent</code> spans for errors. Check OpenAI quota (429s).</td>
                                 <td>Increase TPM quota or switch to fallback deployment</td>
                             </tr>
                             <tr>
                                 <td><strong>RAG returning irrelevant results</strong></td>
-                                <td>Check <code>rag.quality.score</code> in traces. Run CRAG evaluation.</td>
+                                <td>Check the <code>rag.grounding_score</code> histogram in traces. Run CRAG evaluation.</td>
                                 <td>Retune chunking strategy, check embedding model, rebuild index</td>
                             </tr>
                             <tr>
@@ -504,17 +504,17 @@
                             </tr>
                             <tr>
                                 <td><strong>Knowledge graph queries timing out</strong></td>
-                                <td>Check <code>knowledge.query</code> spans. Check Cosmos DB RU consumption.</td>
-                                <td>Scale Cosmos DB vCores, optimize Cypher queries, add graph indexes</td>
+                                <td>Check the <code>rag.retrieval.duration</code> histogram. Check backend health (Neo4j on AKS pod, or the Postgres/Kuzu store).</td>
+                                <td>Scale the graph backend, tune queries, add graph indexes</td>
                             </tr>
                             <tr>
                                 <td><strong>Circuit breaker stuck open</strong></td>
-                                <td>Check <code>governance.circuit_breaks</code> counter. Provider health dashboard.</td>
+                                <td>Check the <code>agent.governance.violations</code> counter and the provider health dashboard (Polly breaker state is logged, not a dedicated metric).</td>
                                 <td>Verify provider is back up, manually reset circuit, check fallback chain</td>
                             </tr>
                             <tr>
                                 <td><strong>Cost spike</strong></td>
-                                <td>Check <code>harness.agent.tokens</code> metric. Compare to baseline.</td>
+                                <td>Check the <code>agent.tokens.total</code> histogram. Compare to baseline.</td>
                                 <td>Identify high-token conversations, enable context budget enforcement, switch to smaller model for simple queries</td>
                             </tr>
                         </tbody>
@@ -529,7 +529,7 @@
 
                     <h3 id="backup-strategy">Backup</h3>
                     <ul>
-                        <li><strong>Cosmos DB:</strong> Continuous backup (Point-in-Time Restore, 7-day default retention).</li>
+                        <li><strong>Knowledge graph backend:</strong> use the backend's native backup &mdash; Neo4j on AKS (scheduled dumps to Blob) or Azure Database for PostgreSQL Flexible Server (automated backups, point-in-time restore). The store is plain relational (<code>kg_nodes</code> / <code>kg_edges</code>), so any managed Postgres backup applies.</li>
                         <li><strong>Azure SQL:</strong> Automated backups with geo-redundant storage.</li>
                         <li><strong>Blob Storage:</strong> Soft-delete enabled. GRS for production (cross-region replication).</li>
                     </ul>
@@ -559,7 +559,7 @@
                             <tr>
                                 <td><strong>RPO</strong> (Recovery Point Objective)</td>
                                 <td>&lt;1 hour</td>
-                                <td>Cosmos DB PITR + Blob GRS + SQL geo-replication</td>
+                                <td>Graph-backend point-in-time restore + Blob GRS + SQL geo-replication</td>
                             </tr>
                         </tbody>
                     </table>

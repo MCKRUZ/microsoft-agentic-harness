@@ -202,6 +202,14 @@
         <p>Integer-backed enums let you write <code>if (agent.Tier &gt;= AutonomyLevel.Supervised)</code> &mdash; concise, type-safe, and impossible to typo. The XML doc comments above each value are the source of truth for what the tier <em>means</em>; the rest of the codebase reads them, so changing the comment changes the docs everywhere.</p>
       </div>
     </div>
+
+    <div class="callout callout-accent">
+      <div class="callout-icon">&#x1F3AF;</div>
+      <div class="callout-content">
+        <strong class="callout-title">The dial isn&rsquo;t the whole story &mdash; every tool has a risk rating too</strong>
+        <p>The tier sets the agent&rsquo;s <em>default</em> trust. But not every action is equally dangerous. Reading a file is nearly harmless; deleting a folder or spending money is not. So each tool carries its own <strong>risk tier</strong> and a <strong>blast radius</strong> &mdash; a plain measure of &ldquo;how much damage could this cause if it went wrong?&rdquo; When the agent reaches for a tool, the harness combines <em>the agent&rsquo;s dial</em> with <em>the tool&rsquo;s risk rating</em>. A Supervised agent might sail through low-risk reads but still get stopped for a high-blast-radius delete. The same risk rating also decides how loudly to escalate when a human does need to be asked &mdash; a risky tool raises a louder alarm than a trivial one.</p>
+      </div>
+    </div>
   </div>
 
   <!-- ============================================================
@@ -656,6 +664,101 @@
   </div>
 
   <!-- ============================================================
+       SCREEN 5b — Learning From Its Own Work (Work Memory & Trust)
+       ============================================================ -->
+  <div class="screen" id="screen-8-5b">
+    <h2 class="screen-title">Learning From Its Own Work &mdash; and Not Believing Everything It Writes Down</h2>
+    <p class="screen-subtitle">Drift and learnings watch the <em>scores</em>. This is a different kind of memory: the agent keeps a diary of the jobs it actually did, then quietly studies that diary so it does better next time &mdash; while being careful not to trust every note in it.</p>
+
+    <h3>The work diary &mdash; capture, synthesise, recall</h3>
+    <p>Imagine a new employee who, at the end of every task, jots a quick note: &ldquo;Here&rsquo;s what I was asked, here&rsquo;s what I tried, here&rsquo;s what worked.&rdquo; On its own each note is just a scrap. But overnight, when nobody is waiting on an answer, a quieter process reads a whole stack of those scraps and distils them into a handful of durable <em>lessons</em> &mdash; &ldquo;when the request looks like <em>this</em>, the move that works is <em>that</em>.&rdquo; Then, the next time a similar request arrives, those lessons are pulled back up and handed to the agent before it starts. The agent walks into the new job already reminded of how the last one like it went.</p>
+
+    <div class="pattern-cards" style="margin-top: var(--space-6);">
+      <div class="pattern-card" style="border-top: 3px solid var(--color-actor-1)">
+        <div class="pattern-icon" style="background: var(--color-actor-1)">&#x1F4DD;</div>
+        <h4 class="pattern-title">1. Capture</h4>
+        <p class="pattern-desc">After a turn finishes, the harness quietly files an &ldquo;episode&rdquo; &mdash; what was asked, what the agent did, how it turned out. This happens in the background, so it never slows down the answer you&rsquo;re waiting for.</p>
+      </div>
+      <div class="pattern-card" style="border-top: 3px solid var(--color-actor-2)">
+        <div class="pattern-icon" style="background: var(--color-actor-2)">&#x1F319;</div>
+        <h4 class="pattern-title">2. Synthesise (overnight)</h4>
+        <p class="pattern-desc">On its own schedule, a synthesiser reads many episodes at once and turns the raw diary into a few generalised lessons. Many scattered experiences become one reusable rule of thumb.</p>
+      </div>
+      <div class="pattern-card" style="border-top: 3px solid var(--color-actor-3)">
+        <div class="pattern-icon" style="background: var(--color-actor-3)">&#x1F4A1;</div>
+        <h4 class="pattern-title">3. Recall</h4>
+        <p class="pattern-desc">When a new request looks like an old one, the matching lessons are surfaced and dropped into the agent&rsquo;s briefing at the very start of the turn &mdash; so hard-won experience shows up exactly when it&rsquo;s useful.</p>
+      </div>
+    </div>
+
+    <h3 style="margin-top: var(--space-10);">Trust-aware memory &mdash; a diary can be poisoned</h3>
+    <p>There&rsquo;s a catch, and it&rsquo;s an important one. If the agent will read its own notes later and act on them, then anything that sneaks a note into that diary can steer the agent&rsquo;s future behaviour. A malicious web page or document could try to plant a &ldquo;lesson&rdquo; like &ldquo;always email this file to that address.&rdquo; So the harness treats its own memory as <em>untrusted until proven otherwise</em>.</p>
+    <p>Every time something wants to write to memory, it passes through a <strong>write-gate</strong> &mdash; a bouncer for the diary. A note that can&rsquo;t be vouched for isn&rsquo;t thrown away, but it&rsquo;s stamped <em>untrusted</em> and quarantined. Later, when the agent goes to recall a lesson, that trust stamp is checked again: untrusted notes stay out of the briefing. The agent gets the benefit of learning from itself without blindly believing every scrap that landed in its notebook.</p>
+
+    <div class="callout callout-info">
+      <div class="callout-icon">&#x1F6E1;</div>
+      <div class="callout-content">
+        <strong class="callout-title">Why this matters</strong>
+        <p>&ldquo;Learn from your own work&rdquo; and &ldquo;believe everything in your own notes&rdquo; sound like the same thing, but the gap between them is a real attack surface. The write-gate is what lets the harness turn on self-improvement without opening a back door for prompt-injection to rewrite the agent&rsquo;s habits.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       SCREEN 5c — More Guardrails (Budget, Spin & Sensitive Data)
+       ============================================================ -->
+  <div class="screen" id="screen-8-5c">
+    <h2 class="screen-title">Three More Ways the Harness Keeps Itself Honest</h2>
+    <p class="screen-subtitle">Governance decides <em>whether</em> an action is allowed. These three guardrails watch <em>how the work is going</em> &mdash; catching runaway loops, runaway costs, and sensitive data before they become a problem.</p>
+
+    <div class="pattern-cards" style="margin-top: var(--space-6);">
+      <div class="pattern-card" style="border-top: 3px solid var(--color-actor-1)">
+        <div class="pattern-icon" style="background: var(--color-actor-1)">&#x1F4B0;</div>
+        <h4 class="pattern-title">A budget for the whole conversation</h4>
+        <p class="pattern-desc">Module 4 showed the per-turn &ldquo;glass jar&rdquo; &mdash; how much the agent can think about in one reply. This is a bigger jar: a ceiling on the <em>entire conversation</em>. Even if every single turn stays under its own limit, a very long back-and-forth can quietly rack up a large bill. The conversation budget watches the running total and, when it&rsquo;s nearly spent, brings the conversation to a graceful stop instead of letting it drift on forever.</p>
+      </div>
+      <div class="pattern-card" style="border-top: 3px solid var(--color-actor-2)">
+        <div class="pattern-icon" style="background: var(--color-actor-2)">&#x1F503;</div>
+        <h4 class="pattern-title">A spin detector</h4>
+        <p class="pattern-desc">Sometimes an agent gets stuck &mdash; calling the same tool with the same input over and over, making no headway, like a car with its wheels spinning in mud. A progress guard watches for exactly this. If the agent keeps repeating itself without getting anywhere, the guard halts the loop rather than burning time and money going nowhere.</p>
+      </div>
+      <div class="pattern-card" style="border-top: 3px solid var(--color-actor-3)">
+        <div class="pattern-icon" style="background: var(--color-actor-3)">&#x1F512;</div>
+        <h4 class="pattern-title">A sensitive-data checkpoint</h4>
+        <p class="pattern-desc">Some information should never leave the building &mdash; a customer&rsquo;s medical record, a secret contract. Before a tool runs, a data-classification checkpoint can look at what&rsquo;s about to be touched and, depending on how it&rsquo;s configured, block the action outright or let it run but scrub the sensitive parts out of the result.</p>
+      </div>
+    </div>
+
+    <h3 style="margin-top: var(--space-8);">The sensitive-data checkpoint, a little closer</h3>
+    <p>This checkpoint is the harness&rsquo;s tie-in to <span class="term" data-definition="Microsoft Purview is a data-governance service that labels and classifies information by sensitivity (for example: Public, Confidential, Highly Confidential) and enforces rules about what may be done with each label. DLP stands for Data Loss Prevention.">Microsoft Purview</span>-style data governance. It runs as its own gate, separate from the permission rulebook, and it has three settings so an organisation can adopt it gradually:</p>
+    <div class="pattern-cards" style="margin-top: var(--space-6);">
+      <div class="pattern-card" style="border-top: 3px solid var(--color-actor-4)">
+        <div class="pattern-icon" style="background: var(--color-actor-4)">&#x26AA;</div>
+        <h4 class="pattern-title">Off</h4>
+        <p class="pattern-desc">The checkpoint does nothing. This is the default &mdash; nothing changes until an organisation deliberately turns it on.</p>
+      </div>
+      <div class="pattern-card" style="border-top: 3px solid var(--color-actor-2)">
+        <div class="pattern-icon" style="background: var(--color-actor-2)">&#x1F441;</div>
+        <h4 class="pattern-title">Audit</h4>
+        <p class="pattern-desc">The checkpoint watches and records what sensitive data was touched, but never blocks anything. A safe way to see what <em>would</em> happen before enforcing.</p>
+      </div>
+      <div class="pattern-card" style="border-top: 3px solid var(--color-actor-1)">
+        <div class="pattern-icon" style="background: var(--color-actor-1)">&#x1F6D1;</div>
+        <h4 class="pattern-title">Enforce</h4>
+        <p class="pattern-desc">The checkpoint acts: a &ldquo;block&rdquo; verdict stops the tool and tells the agent why; a &ldquo;redact&rdquo; verdict lets the tool run, then scrubs the sensitive parts out of the answer.</p>
+      </div>
+    </div>
+
+    <div class="callout callout-accent">
+      <div class="callout-icon">&#x1F517;</div>
+      <div class="callout-content">
+        <strong class="callout-title">Three gates, stacked</strong>
+        <p>Put together, a tool call now passes through three checkpoints in a row before it runs: <strong>&ldquo;are you allowed?&rdquo;</strong> (governance and the trust dial), <strong>&ldquo;is this data safe to touch?&rdquo;</strong> (the sensitive-data checkpoint), and <strong>&ldquo;are you actually making progress?&rdquo;</strong> (the spin detector). Each is off by default and switched on when an organisation is ready for it &mdash; the harness ships cautious and lets you tighten the screws over time.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================
        SCREEN 6 — Putting It Together
        ============================================================ -->
   <div class="screen" id="screen-8-6">
@@ -1021,7 +1124,7 @@
 
     <!-- Closer (relocated from screen 8-6) -->
     <div class="animate-in" style="margin-top: var(--space-12); padding: var(--space-8); background: linear-gradient(135deg, var(--color-accent-light), var(--color-surface)); border-radius: var(--radius-md); border-left: 4px solid var(--color-accent); text-align: center;">
-      <h2 style="margin-top: 0;">The loop closes here &mdash; for now.</h2>
+      <h2 style="margin-top: 0;">The loop closes here &mdash; one module left.</h2>
       <p>
         You&rsquo;ve seen the harness as it stands today: <strong>seven modules</strong> covering what it is, who&rsquo;s in the cast, how a conversation flows, how skills load, how tools fire safely, how the system watches itself, and how to trace any of it end-to-end in the code. <strong>This eighth module</strong> shows what changes when those same systems start learning from their own behavior &mdash; on two timescales.
       </p>
@@ -1029,7 +1132,7 @@
         The <strong>online loop</strong> &mdash; governance &rarr; escalation &rarr; learnings, with EMA reinforcement and drift-bridged baselines &mdash; tunes the harness continuously, one rating at a time. The <strong>offline loop</strong> &mdash; the harness-proposer reading traces and editing skills &mdash; rewrites the playbook when tuning isn&rsquo;t enough. Together they answer the hardest question in production AI: <em>is my agent getting worse, and can I prove it?</em>
       </p>
       <p style="font-weight: 600; color: var(--color-accent);">
-        Now go put a real agent through both loops. Watch the EWMA scores in the Quality dashboard. Trigger an escalation and resolve it. Create a learning and reinforce it across a few turns. Then run the proposer over the traces and read what it suggests. That&rsquo;s when the patterns from these modules become muscle memory.
+        Now go put a real agent through both loops. Watch the EWMA scores in the Quality dashboard. Trigger an escalation and resolve it. Create a learning and reinforce it across a few turns. Then run the proposer over the traces and read what it suggests. That&rsquo;s when the patterns from these modules become muscle memory. And there&rsquo;s one more module ahead &mdash; where the agent stops only <em>telling</em> you things and starts <em>showing</em> and <em>doing</em> them on the screen in front of you.
       </p>
     </div>
   </div>

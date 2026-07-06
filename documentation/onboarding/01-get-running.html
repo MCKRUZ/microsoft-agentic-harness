@@ -67,6 +67,9 @@
                         <a class="sidebar-link" href="08-mcp.html"
                             ><span class="sidebar-link-num">08</span> MCP Server &amp; Client</a
                         >
+                        <a class="sidebar-link" href="16-generative-ui.html"
+                            ><span class="sidebar-link-num">16</span> Generative UI &amp; Widgets</a
+                        >
                     </div>
                     <div class="sidebar-group">
                         <div class="sidebar-group-title">Patterns</div>
@@ -164,42 +167,49 @@
                     <h3>3 · An AI provider account</h3>
                     <p>
                         The agent calls a real Large Language Model. The harness ships pointed at
-                        <strong>OpenRouter</strong> &mdash; an OpenAI-compatible gateway that fronts most major model
-                        families behind one API &mdash; but the same code path works for Azure OpenAI, plain OpenAI,
-                        or Anthropic directly. Pick whichever fits your situation:
+                        <strong>Azure OpenAI</strong> &mdash; the shipped <code>appsettings.json</code> sets
+                        <code>ClientType: "AzureOpenAI"</code> with the <code>gpt-4o</code> deployment &mdash; but the
+                        same code path works for plain OpenAI, Anthropic via Azure AI Foundry, or any
+                        OpenAI-compatible gateway (OpenRouter, LiteLLM, a local proxy) driven through the
+                        <code>OpenAI</code> client type. Pick whichever fits your situation:
                     </p>
                     <ul>
                         <li>
-                            <strong>OpenRouter</strong> (recommended for local dev) &mdash; one API key from
-                            <a href="https://openrouter.ai/keys">openrouter.ai/keys</a> unlocks Anthropic, OpenAI,
-                            Google, Mistral, and more. Easiest path if you don't have an Azure subscription. Default
-                            model slug:
-                            <code>anthropic/claude-sonnet-4.6</code>.
-                        </li>
-                        <li>
-                            <strong>Azure OpenAI</strong> &mdash; an Azure subscription with the OpenAI service
-                            provisioned and a deployment created (most enterprise users land here in production).
-                            You'll need the <em>endpoint URL</em> and an <em>API key</em>, or a managed identity if
-                            you're running on Azure compute.
+                            <strong>Azure OpenAI</strong> (the shipped default) &mdash; an Azure subscription with the
+                            OpenAI service provisioned and a deployment created (most enterprise users land here in
+                            production). You'll need the <em>endpoint URL</em> and an <em>API key</em>, or a managed
+                            identity if you're running on Azure compute. The default deployment name is
+                            <code>gpt-4o</code>.
                         </li>
                         <li>
                             <strong>OpenAI</strong> &mdash; an API key from
                             <a href="https://platform.openai.com">platform.openai.com</a>. Direct, no Azure layer.
                         </li>
                         <li>
-                            <strong>Anthropic</strong> &mdash; an API key from
-                            <a href="https://console.anthropic.com">console.anthropic.com</a>. Use this if your
-                            enterprise routes Claude calls through Anthropic directly rather than Azure AI Foundry.
+                            <strong>OpenAI-compatible gateway</strong> (e.g. OpenRouter) &mdash; there is no dedicated
+                            <code>OpenRouter</code> client type; you reach it through the <code>OpenAI</code> client
+                            type by setting <code>Endpoint</code> to the gateway's base URL and supplying its API key.
+                            One key from <a href="https://openrouter.ai/keys">openrouter.ai/keys</a> then fronts
+                            Anthropic, OpenAI, Google, Mistral, and more &mdash; handy if you don't have an Azure
+                            subscription.
+                        </li>
+                        <li>
+                            <strong>Anthropic</strong> &mdash; the <code>Anthropic</code> client type routes Claude
+                            calls through the native Anthropic Messages API under an Azure AI Foundry resource
+                            endpoint. Use this if your enterprise standardizes on Claude models via Foundry.
                         </li>
                     </ul>
 
                     <div class="callout callout-info">
                         <span class="callout-icon">i</span>
                         <div class="callout-body">
-                            <div class="callout-title">One switch, four providers</div>
+                            <div class="callout-title">One switch, many providers</div>
                             <p style="margin: 0">
-                                The <code>AI:AgentFramework:ClientType</code> setting picks the SDK path
-                                (<code>OpenAI</code> / <code>AzureOpenAI</code> / <code>Anthropic</code>);
+                                The <code>AI:AgentFramework:ClientType</code> setting picks the SDK path. The
+                                <code>AIAgentFrameworkClientType</code> enum has seven values:
+                                <code>AzureOpenAI</code>, <code>OpenAI</code>, <code>AzureAIInference</code>,
+                                <code>PersistentAgents</code>, <code>Anthropic</code>, <code>Echo</code> (a
+                                deterministic test client), and <code>FoundryResponses</code>. Then
                                 <code>Endpoint</code>, <code>DefaultDeployment</code>, and <code>ApiKey</code> point it
                                 at the chosen provider. Switching providers is a config change, not a code change.
                                 See <a href="../architecture/02-compute-and-ai.html">Architecture &middot; Compute
@@ -213,10 +223,12 @@
                         <div class="callout-body">
                             <div class="callout-title">Embeddings are configured separately</div>
                             <p style="margin: 0">
-                                OpenRouter does not currently offer an embeddings API. If you need RAG or the
-                                knowledge graph, point <code>AI:Embedding:*</code> at an OpenAI or Azure OpenAI
-                                embedding endpoint separately from your chat provider. For the 10-minute getting-started
-                                path you can skip this &mdash; the agent itself works without embeddings.
+                                Embeddings have their own <code>AI:Embedding:*</code> settings, independent of your chat
+                                provider. Azure OpenAI and OpenAI both expose embedding endpoints; some gateways
+                                (OpenRouter, for example) do not. If you need RAG or the knowledge graph, point
+                                <code>AI:Embedding:*</code> at an OpenAI or Azure OpenAI embedding deployment. For the
+                                10-minute getting-started path you can skip this &mdash; the agent itself works without
+                                embeddings.
                             </p>
                         </div>
                     </div>
@@ -412,38 +424,72 @@ Time Elapsed 00:00:42.18</code></pre>
                                 </div>
                                 <pre><code>dotnet run --project src/Content/Presentation/Presentation.ConsoleUI</code></pre>
                             </div>
-                            <p>You should see an interactive menu like this:</p>
+                            <p>
+                                You should see an interactive menu. It's a
+                                <strong>Spectre.Console <code>SelectionPrompt</code></strong>, not a numbered list:
+                                the examples are grouped under category headings, and you move between them with the
+                                <strong>arrow keys</strong> and press <strong>Enter</strong> to run the highlighted one
+                                (there's nothing to type). The highlighted row is drawn in colour:
+                            </p>
                             <div class="code-block">
                                 <div class="code-block-header">
                                     <span class="code-block-lang">terminal</span>
                                 </div>
-                                <pre><code>╔══════════════════════════════════════════╗
-║       Agentic Harness · Console UI       ║
-╚══════════════════════════════════════════╝
+                                <pre><code>┌────────────────────────────────────────────┐
+│              Agentic Harness                 │
+└────────────────────────────────────────────┘
 
-Choose an example to run:
+What would you like to do?
 
-  [1] Research agent
-  [2] Orchestrator (multi-agent)
-  [3] MCP tools discovery
-  [4] Tool converter demo
-  [5] Persistent agent
-  [6] A2A agent-to-agent
-  [7] Setup secrets wizard
-  [8] Meta-harness optimization
-  [9] RAG pipeline demo
-  [q] Quit
-
-Selection:</code></pre>
+  Agents
+  &gt; Research Agent (Standalone)      ◀ use ↑/↓ to move, Enter to select
+    Orchestrator Agent (Multi-Agent)
+    Magentic Orchestration (Multi-Agent)
+    Persistent Agent (AI Foundry)
+    A2A Agent-to-Agent
+    A2A SRE-to-Workspace
+  RAG &amp; Retrieval
+    RAG Pipeline Demo
+    Multi-Source Retrieval
+  Knowledge Graph
+    Knowledge Graph Memory
+    Knowledge Graph Compliance
+  Governance &amp; Safety
+    Response Sanitization
+    Escalation &amp; Approvals
+    Pipeline Behaviors
+  Skills &amp; Tools
+    Skills Discovery &amp; Budget
+    Tool Converter Demo
+    MCP Tools Discovery
+    Sandbox Capabilities
+  Observability
+    Drift Detection
+    Learnings Log
+    Budget &amp; Health Tracking
+  Optimization
+    Meta-Harness Optimizer
+    Skill Training (SkillOpt)
+  Setup
+    Setup User Secrets
+    Show Configuration
+  Exit</code></pre>
                             </div>
+                            <p>
+                                The category headings (<strong>Agents</strong>, <strong>RAG &amp; Retrieval</strong>,
+                                and so on) are <code>AddChoiceGroup</code> labels &mdash; they're not selectable; the
+                                cursor skips over them to the runnable items underneath.
+                            </p>
                         </li>
 
                         <li class="step">
                             <div class="step-meta">Step 6 · ~30 seconds</div>
                             <div class="step-title">Talk to an agent</div>
                             <p>
-                                Pick option <strong>[1] Research agent</strong>. It's the simplest single-agent
-                                example, and a great first interaction to demystify what's happening under the hood.
+                                Arrow down to <strong>Research Agent (Standalone)</strong> under the
+                                <strong>Agents</strong> group and press <strong>Enter</strong>. It's the simplest
+                                single-agent example, and a great first interaction to demystify what's happening under
+                                the hood.
                             </p>
                             <p>When prompted, type something like:</p>
                             <div class="code-block">

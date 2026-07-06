@@ -36,7 +36,7 @@
                         <a class="sidebar-link" href="05-skills.html"><span class="sidebar-link-num">05</span> Skills System</a>
                         <a class="sidebar-link" href="06-tools.html"><span class="sidebar-link-num">06</span> Tools &amp; Keyed DI</a>
                         <a class="sidebar-link" href="07-rag.html"><span class="sidebar-link-num">07</span> The RAG Pipeline</a>
-                        <a class="sidebar-link" href="08-mcp.html"><span class="sidebar-link-num">08</span> MCP Server &amp; Client</a>
+                        <a class="sidebar-link" href="08-mcp.html"><span class="sidebar-link-num">08</span> MCP Server &amp; Client</a><a class="sidebar-link" href="16-generative-ui.html"><span class="sidebar-link-num">16</span> Generative UI &amp; Widgets</a>
                     </div>
                     <div class="sidebar-group"><div class="sidebar-group-title">Patterns</div>
                         <a class="sidebar-link" href="09-patterns.html"><span class="sidebar-link-num">09</span> Patterns You'll Use Daily</a>
@@ -141,20 +141,28 @@ var result = await _mediator.Send(cmd, cancellationToken);</code></pre>
                             </p>
                             <ol>
                                 <li><code>UnhandledExceptionBehavior</code> — outer wrapper, converts uncaught exceptions to logged errors.</li>
-                                <li><code>RequestTracingBehavior</code> — opens an OTel <code>Activity</code> per request.</li>
-                                <li><code>TimeoutBehavior</code> — enforces <code>request.Timeout</code> or <code>AppConfig.Agent.DefaultRequestTimeoutSec</code>.</li>
+                                <li><code>AmbientRequestScopeBehavior</code> — establishes the ambient request scope the inner behaviors read from.</li>
                                 <li><code>AgentContextPropagationBehavior</code> — copies agent/conversation IDs into ambient tracing tags.</li>
-                                <li><code>PromptInjectionBehavior</code> — runs deterministic prompt-injection detectors on user input.</li>
-                                <li><code>ContentSafetyBehavior</code> — checks input against configured content filters.</li>
-                                <li><code>GovernancePolicyBehavior</code> — applies YAML policy rules.</li>
-                                <li><code>ToolPermissionBehavior</code> — checks autonomy-tier permissions if the request invokes a tool.</li>
-                                <li><code>RequestValidationBehavior</code> — runs FluentValidation validators in parallel.</li>
-                                <li><code>AuthorizationBehavior</code> — claim-based authorization (for HTTP-hosted commands).</li>
-                                <li><code>CachingBehavior</code> — looks up cached responses for cacheable queries.</li>
-                                <li><code>ToolOutputCompressionBehavior</code> — compresses large tool outputs by content type (JSON, XML, diagnostic, free text) to reduce token usage. Configurable size thresholds.</li>
+                                <li><code>AgentIdentityResolutionBehavior</code> — resolves the caller's tenant/owner identity for scope isolation.</li>
                                 <li><code>AuditTrailBehavior</code> — persistent audit log of every command.</li>
+                                <li><code>ContentSafetyBehavior</code> — checks input against configured content filters.</li>
+                                <li><code>PromptInjectionBehavior</code> — runs deterministic prompt-injection detectors on user input.</li>
+                                <li><code>TokenBudgetBehavior</code> — enforces the per-turn token budget.</li>
                                 <li><code>HookBehavior</code> — invokes any configured pre/post hooks.</li>
+                                <li><code>RetrievalAuditBehavior</code> — records RAG retrievals for the turn.</li>
+                                <li><code>ResponseSanitizationBehavior</code> — <em>post-execution</em>; scrubs the assistant response.</li>
+                                <li><code>ToolOutputCompressionBehavior</code> — <em>post-execution</em>; compresses large tool outputs by content type to reduce token usage.</li>
+                                <li><code>KnowledgeExtractionBehavior</code> — <em>post-turn, fire-and-forget</em>; extracts knowledge-graph facts.</li>
+                                <li><code>WorkEpisodeCaptureBehavior</code> — <em>post-turn, fire-and-forget</em>; captures a work-memory episode.</li>
+                                <li><code>PromptUsageTrackingBehavior</code> — records prompt/token usage metrics.</li>
                             </ol>
+                            <p>
+                                There is no <code>GovernancePolicyBehavior</code> or <code>ToolPermissionBehavior</code>
+                                in this list — those two were deleted in PR #90 (they keyed on an
+                                <code>IToolRequest</code> marker nothing implemented, so they never fired). Tool
+                                authorization happens on the <em>execution</em> path via <code>GovernedAIFunction</code>
+                                instead — see <a href="06-tools.html">Tools &amp; Keyed DI</a>.
+                            </p>
 
                             <div class="callout callout-tip">
                                 <span class="callout-icon">✓</span>
@@ -194,14 +202,16 @@ return await next();   // call the next behavior / handler</code></pre>
                                 resolve the skill, get or build an agent, run the turn, record telemetry.
                             </p>
                             <p>
-                                <strong>Resolving the skill.</strong> The incoming <code>AgentName</code> might be an
-                                agent ID (from the manifest) or a skill ID directly. The handler looks up the agent
-                                manifest first, then falls back to treating the name as a skill ID:
+                                <strong>Resolving the skills.</strong> The incoming <code>AgentName</code> might be an
+                                agent ID (from the manifest, which references <em>one or more</em> skills) or a single
+                                skill ID directly. An agent's <code>Skills</code> is a list — the harness supports
+                                multi-skill agents — so resolution yields a set of skill IDs, falling back to treating
+                                the name as a single skill ID:
                             </p>
                             <div class="code-block">
                                 <div class="code-block-header"><span class="code-block-lang">C# · skill resolution</span></div>
-                                <pre><code>var skillId = _agentRegistry.TryGet(request.AgentName)?.Skill
-              ?? request.AgentName;</code></pre>
+                                <pre><code>var skillIds = _agentRegistry.TryGet(request.AgentName)?.Skills
+               ?? [request.AgentName];</code></pre>
                             </div>
                         </li>
 
@@ -211,11 +221,14 @@ return await next();   // call the next behavior / handler</code></pre>
                             <p>
                                 <code>AgentConversationCache.GetOrCreateAsync()</code> keys by
                                 <code>(conversationId, skillId)</code>. If an agent for that key already exists, it's
-                                reused (preserving any in-memory state). Otherwise, <code>AgentFactory.Create()</code>
-                                is invoked. Building a new agent is non-trivial:
+                                reused (preserving any in-memory state). Otherwise, <code>AgentFactory</code> builds one
+                                — <code>CreateAgentFromSkillsAsync(...)</code> for a skill set, or
+                                <code>CreateAgentAsync(context)</code> from an assembled execution context.
+                                <code>AgentFactory</code> lives in <code>Application.AI.Common/Factories/</code>.
+                                Building a new agent is non-trivial:
                             </p>
                             <ul>
-                                <li>Load the <code>SkillDefinition</code> from the <code>SKILL.md</code> file via <code>ISkillLoaderService</code>.</li>
+                                <li>Look up the <code>SkillDefinition</code>(s) from <code>ISkillMetadataRegistry</code> (parsed from <code>SKILL.md</code> at startup).</li>
                                 <li>Read the skill's <code>allowed-tools</code> declaration. Resolve each one from the keyed DI container.</li>
                                 <li>Convert internal <code>ITool</code> implementations to <code>AITool</code> via <code>AIToolConverter</code> — see <a href="06-tools.html">Tools &amp; Keyed DI</a>.</li>
                                 <li>Create the chat client through <code>IChatClientFactory</code> (Azure OpenAI, OpenAI, or AI Foundry depending on config).</li>
@@ -264,6 +277,25 @@ response = await agent.RunAsync(messages, cancellationToken: ct);
 
 var usage = _usageCapture.TakeSnapshot(); // total tokens, cost, tools called</code></pre>
                             </div>
+                            <div class="callout callout-info">
+                                <span class="callout-icon">i</span>
+                                <div class="callout-body">
+                                    <div class="callout-title">Streaming and loop guards on this same call</div>
+                                    <p style="margin: 0">
+                                        Two things happen around this invocation worth knowing. First,
+                                        <strong>real token streaming</strong>: the turn-drivers can call
+                                        <code>RunStreamingAsync</code> and forward each delta through
+                                        <code>IAgentTurnStreamSink</code> as it arrives, rather than awaiting the whole
+                                        answer. (The AG-UI browser transport still re-chunks a fully-awaited response —
+                                        end-to-end streaming to the browser is the remaining step.) Second,
+                                        <strong>loop-engineering guards</strong>: every tool call inside the loop passes
+                                        through <code>GovernedAIFunction</code>, whose spin guard
+                                        (<code>IProgressEvaluator</code>) halts an agent repeating identical calls, while
+                                        a conversation-lifetime <code>IConversationBudgetTracker</code> can gracefully
+                                        break a run that has exhausted its cross-turn token ceiling.
+                                    </p>
+                                </div>
+                            </div>
                         </li>
 
                         <li class="step">
@@ -295,31 +327,32 @@ var usage = _usageCapture.TakeSnapshot(); // total tokens, cost, tools called</c
    IMediator.Send(cmd)
         │
         ▼
-   ┌────────────── MediatR pipeline ──────────────┐
-   │  Tracing → Timeout → ContextPropagation →    │
-   │  PromptInjection → ContentSafety →           │
-   │  Governance → ToolPermission → Validation →  │
-   │  Auth → Caching → Compression → Audit → Hooks│
-   └──────────────────┬───────────────────────────┘
+   ┌────────────── MediatR pipeline (outer→inner) ─────────────┐
+   │  UnhandledException → AmbientScope → ContextPropagation →  │
+   │  IdentityResolution → AuditTrail → ContentSafety →         │
+   │  PromptInjection → TokenBudget → Hook → RetrievalAudit →   │
+   │  [handler] → ResponseSanitization → ToolOutputCompression →│
+   │  KnowledgeExtraction → WorkEpisodeCapture → PromptUsage    │
+   └──────────────────────────┬────────────────────────────────┘
                       ▼
    ExecuteAgentTurnCommandHandler
-        │ resolve skill ID
+        │ resolve skill IDs (Skills list)
         ▼
    AgentConversationCache.GetOrCreateAsync
         │ cache miss?
         ▼
-   AgentFactory.Create(skill)
-        │  loads SKILL.md
-        │  resolves keyed tools
+   AgentFactory.CreateAgentFromSkillsAsync(skillIds)
+        │  looks up SKILL.md metadata
+        │  resolves keyed tools (wrapped by GovernedAIFunction)
         │  wires content safety + OTel
         ▼
    ChatClientFactory.CreateAsync
         │  AzureOpenAI / OpenAI / AIFoundry
         ▼
-   agent.RunAsync(messages)
+   agent.RunAsync / RunStreamingAsync(messages)
         │  ┌─ LLM call (prompt + tool schemas)
         │  │  ┐
-        │  └─ if tool_call → dispatch → result → loop
+        │  └─ if tool_call → GovernedAIFunction gates → dispatch → result → loop
         │     ┘
         ▼
    AgentTurnResult { text, tokens, cost, tools[] }

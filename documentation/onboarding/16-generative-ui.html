@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>16 · Generative UI &amp; Widgets — Agentic Harness Developer Guide</title>
+        <meta name="description" content="How the agent renders inline UI — images, forms, tables, and charts — in the AgentHub WebUI and the acting Dashboard agent." />
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+        <link rel="stylesheet" href="assets/css/styles.css" />
+    </head>
+    <body>
+        <a href="#main" class="skip-link">Skip to content</a>
+        <div class="app">
+            <aside class="sidebar">
+                <div class="sidebar-header"><a class="sidebar-brand" href="index.html"><span class="sidebar-brand-mark">AH</span><span><span class="sidebar-brand-text">Agentic Harness</span><br /><span class="sidebar-brand-sub">Developer Guide</span></span></a></div>
+                <nav class="sidebar-nav" aria-label="Documentation navigation">
+                    <div class="sidebar-group"><div class="sidebar-group-title">Getting Started</div><a class="sidebar-link" href="index.html"><span class="sidebar-link-num">00</span> Welcome</a><a class="sidebar-link" href="01-get-running.html"><span class="sidebar-link-num">01</span> Get Running in 10 Minutes</a></div>
+                    <div class="sidebar-group"><div class="sidebar-group-title">Configuration</div><a class="sidebar-link" href="02-configuration.html"><span class="sidebar-link-num">02</span> Configuration Reference</a></div>
+                    <div class="sidebar-group"><div class="sidebar-group-title">Architecture</div><a class="sidebar-link" href="03-big-picture.html"><span class="sidebar-link-num">03</span> The Big Picture</a><a class="sidebar-link" href="04-message-journey.html"><span class="sidebar-link-num">04</span> A Message's Journey</a></div>
+                    <div class="sidebar-group"><div class="sidebar-group-title">Systems</div><a class="sidebar-link" href="05-skills.html"><span class="sidebar-link-num">05</span> Skills System</a><a class="sidebar-link" href="06-tools.html"><span class="sidebar-link-num">06</span> Tools &amp; Keyed DI</a><a class="sidebar-link" href="07-rag.html"><span class="sidebar-link-num">07</span> The RAG Pipeline</a><a class="sidebar-link" href="08-mcp.html"><span class="sidebar-link-num">08</span> MCP Server &amp; Client</a><a class="sidebar-link" href="16-generative-ui.html"><span class="sidebar-link-num">16</span> Generative UI &amp; Widgets</a></div>
+                    <div class="sidebar-group"><div class="sidebar-group-title">Patterns</div><a class="sidebar-link" href="09-patterns.html"><span class="sidebar-link-num">09</span> Patterns You'll Use Daily</a><a class="sidebar-link" href="10-observability.html"><span class="sidebar-link-num">10</span> Observability &amp; Safety</a></div>
+                    <div class="sidebar-group"><div class="sidebar-group-title">Building</div><a class="sidebar-link" href="11-extending.html"><span class="sidebar-link-num">11</span> Extending the Harness</a></div>
+                    <div class="sidebar-group"><div class="sidebar-group-title">Quality</div><a class="sidebar-link" href="13-evaluation.html"><span class="sidebar-link-num">13</span> Evaluation Framework</a><a class="sidebar-link" href="14-skill-training.html"><span class="sidebar-link-num">14</span> Skill Training</a></div>
+                    <div class="sidebar-group"><div class="sidebar-group-title">Delivery</div><a class="sidebar-link" href="15-delivery-governance.html"><span class="sidebar-link-num">15</span> Delivery &amp; CI Governance</a></div>
+                    <div class="sidebar-group"><div class="sidebar-group-title">Reference</div><a class="sidebar-link" href="12-reference.html"><span class="sidebar-link-num">12</span> Cheatsheet &amp; Glossary</a></div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Other Guides</div>
+                        <a class="sidebar-link" href="../architecture/index.html">&#8592; Architecture Guide</a>
+                        <a class="sidebar-link" href="../agentic-harness-course/index.html">&#8592; Interactive Course</a>
+                        <a class="sidebar-link" href="../security/index.html">&#8592; Security Guide</a>
+                    </div>
+                </nav>
+            </aside>
+
+            <main id="main" class="content-wrap">
+                <div class="content">
+                    <span class="eyebrow">Chapter 16 · Systems</span>
+                    <h1 class="page-title">Generative UI &amp; Widgets</h1>
+                    <p class="page-lead">
+                        Most tools return text. A small, special family returns <em>interface</em>: the agent can draw
+                        an image, a form, a table, or a chart directly into the chat transcript in the user's browser.
+                        This chapter follows one render call from a backend <code>ITool</code>, across the AG-UI stream,
+                        into a React widget registry, and back — plus the acting Dashboard agent that uses the same
+                        machinery to drive a live UI.
+                    </p>
+
+                    <h2>The idea: tools that render, not narrate</h2>
+                    <p>
+                        A normal tool call runs on the server and returns a string the model reads. A <strong>render
+                        tool</strong> inverts that: the server-side tool call is <em>parked</em>, the request is
+                        streamed to the connected browser, the browser draws a widget and sends back a short
+                        acknowledgement, and only then does the parked tool unblock so the agent can narrate what it
+                        just showed. The pixels never touch the model — only a URL, a form spec, or a set of rows do.
+                    </p>
+                    <div class="callout callout-jargon">
+                        <span class="callout-icon">¶</span>
+                        <div class="callout-body">
+                            <div class="callout-title">"Generative UI", slowly</div>
+                            <p style="margin: 0">
+                                The agent <em>generates</em> the arguments for a UI component the frontend already
+                                knows how to draw. It is <strong>not</strong> generating HTML or code that the browser
+                                executes — that would be a security disaster. The set of drawable widgets is fixed and
+                                registered ahead of time; the agent can only pick one and fill in validated arguments.
+                                That constraint is the whole safety model.
+                            </p>
+                        </div>
+                    </div>
+
+                    <h2>The backend render tools</h2>
+                    <p>
+                        Four <code>ITool</code>s make up the family, all in <code>Infrastructure.AI/Tools/</code> and
+                        registered by keyed DI in <code>DependencyInjection.Tools.cs</code>:
+                    </p>
+                    <table>
+                        <thead><tr><th>Tool</th><th>Key</th><th>What it renders</th></tr></thead>
+                        <tbody>
+                            <tr><td><code>RenderImageTool</code></td><td><code>render_image</code></td><td>An <code>&lt;img&gt;</code> from a validated absolute <code>https</code> URL (+ optional alt / caption)</td></tr>
+                            <tr><td><code>RenderFormTool</code></td><td><code>render_form</code></td><td>An interactive form; the user's answers arrive later as an ordinary next message, not through the tool</td></tr>
+                            <tr><td><code>RenderTableTool</code></td><td><code>render_table</code></td><td>A data table from validated columns / rows (non-interactive)</td></tr>
+                            <tr><td><code>RenderChartTool</code></td><td><code>render_chart</code></td><td>An inline chart drawn from a dashboard metric (used by the Dashboard agent)</td></tr>
+                        </tbody>
+                    </table>
+                    <p>
+                        Each is opt-in per skill via <code>allowed-tools</code> in a SKILL.md, exactly like any other
+                        tool. They all reach the browser through <code>IClientToolBridge</code> — a mid-run
+                        client round-trip. If no client is attached (for example a console run), the tool fails
+                        gracefully with a plain message rather than hanging.
+                    </p>
+
+                    <h2>Dedup: <code>SingleRenderProxyTool</code></h2>
+                    <p>
+                        Every render tool does the same five things: gate on the single <code>render</code> operation,
+                        check a client is attached, serialize the arguments to JSON, validate them, then invoke the
+                        bridge. Rather than repeat that scaffolding four times, the shared base class
+                        <code>SingleRenderProxyTool</code> (itself a <code>BlockingProxyTool</code>) owns it. A concrete
+                        tool supplies only what differs — its <code>Name</code>, <code>Description</code>, the two
+                        user-facing failure messages, and an optional <code>ValidateArguments</code> override:
+                    </p>
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-block-lang">C# · SingleRenderProxyTool.ExecuteAsync (sealed)</span></div>
+                        <pre><code>if (!string.Equals(operation, RenderOperation, StringComparison.OrdinalIgnoreCase))
+    return Task.FromResult(ToolResult.Fail($"Unknown operation: {operation}..."));
+
+if (!IsClientAttached)
+    return Task.FromResult(ToolResult.Fail(NoClientMessage));
+
+var argumentsJson = JsonSerializer.Serialize(parameters, SerializerOptions);
+
+var validationError = ValidateArguments(parameters, argumentsJson);
+if (validationError is not null)
+    return Task.FromResult(ToolResult.Fail(validationError));
+
+return InvokeClientAsync(argumentsJson, TimeoutMessage, cancellationToken);</code></pre>
+                    </div>
+                    <p>
+                        <code>RenderImageTool</code>, for instance, overrides <code>ValidateArguments</code> to reject
+                        anything that isn't an absolute <code>https</code> URL — so a <code>javascript:</code> or
+                        <code>data:</code> URI never reaches the browser. That's the <strong>first</strong> of two
+                        validation passes; the client registry validates again at the render boundary (defense in
+                        depth). Note the factory uses <code>ToolResult.Fail(...)</code> / <code>.Ok(...)</code> — there
+                        is no <code>ToolResult.Success(...)</code> factory (<code>Success</code> is a bool property).
+                    </p>
+                    <div class="callout callout-tip">
+                        <span class="callout-icon">✓</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Multi-operation proxy tools don't derive from this base</div>
+                            <p style="margin: 0">
+                                <code>DashboardControlTool</code> (read-view / set-time-range / navigate / refresh) is
+                                also a client round-trip tool, but its dispatch isn't a single fixed operation — so it
+                                extends <code>BlockingProxyTool</code> directly, not <code>SingleRenderProxyTool</code>.
+                                Reach for the render base only when the tool summons exactly one widget.
+                            </p>
+                        </div>
+                    </div>
+
+                    <h2>The frontend registry — <code>{render, validate, ack}</code></h2>
+                    <p>
+                        On the browser side (<code>Presentation.WebUI</code>), every widget the agent may summon is one
+                        entry in a single registry, <code>src/features/chat/widgets/registry.tsx</code>. Each entry
+                        bundles three things: how the widget <strong>render</strong>s, how to
+                        <strong>validate</strong> the agent's raw args at the trust boundary, and the
+                        <strong>ack</strong> string the agent observes once the widget is shown.
+                    </p>
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-block-lang">tsx · widgets/registry.tsx</span></div>
+                        <pre><code>export interface WidgetDefinition {
+  render: (args: Record&lt;string, unknown&gt;) =&gt; ReactNode;
+  validate: (args: Record&lt;string, unknown&gt;) =&gt; ValidationResult;
+  ack: string;
+}
+
+// A Map — never a plain object — so an agent-influenced widget name can never
+// resolve to an inherited member like "constructor" and get invoked.
+const WIDGET_REGISTRY = new Map&lt;string, WidgetDefinition&gt;([
+  ['render_image', { render: (a) =&gt; &lt;AgentImage args={a} /&gt;, validate: parseImageArgs, ack: 'Displayed the image to the user.' }],
+  ['render_form',  { render: (a) =&gt; &lt;AgentForm  args={a} /&gt;, validate: parseFormArgs,  ack: 'Displayed the form to the user; their answers will arrive as their next message.' }],
+  ['render_table', { render: (a) =&gt; &lt;AgentTable args={a} /&gt;, validate: parseTableArgs, ack: 'Displayed the table to the user.' }],
+]);</code></pre>
+                    </div>
+                    <div class="callout callout-warn">
+                        <span class="callout-icon">!</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Two trust-boundary details worth internalizing</div>
+                            <p style="margin: 0">
+                                First, the registry is a <code>Map</code>, not an object literal — a lookup can never
+                                land on a prototype member, so an agent-supplied name like <code>"constructor"</code>
+                                can't be invoked. Second, an unknown widget type renders <em>nothing</em> (a safe
+                                fallback) rather than throwing: the transcript must never crash on an unexpected agent
+                                tool call. The WebUI registry ships three widgets (image / form / table);
+                                <code>render_chart</code> lives on the Dashboard side, covered below.
+                            </p>
+                        </div>
+                    </div>
+
+                    <h2>Generic dispatch — <code>useAgentStream</code></h2>
+                    <p>
+                        The stream hook (<code>src/hooks/useAgentStream.ts</code>) drives the raw
+                        <code>@ag-ui/client</code> run. As tool-call events arrive it accumulates the streamed name and
+                        argument deltas per <code>toolCallId</code>; on <code>TOOL_CALL_END</code> it completes the
+                        call. Crucially, the hook is <strong>generic over the registry</strong> — it never names a
+                        specific widget:
+                    </p>
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-block-lang">ts · runWidgetToolCall (excerpt)</span></div>
+                        <pre><code>const widget = getWidget(name);
+if (!widget) return `The client has no handler for widget "${name}".`;
+
+let args; try { args = JSON.parse(argsJson || '{}'); }
+catch { return `The ${name} arguments could not be parsed.`; }
+
+const check = widget.validate(args);   // trust boundary — validate the agent's args
+if (!check.ok) return check.reason;    // invalid ⇒ render nothing, tell the agent why
+
+useChatStore.getState().addMessage({ role: 'assistant', content: '', widget: { type: name, args } });
+return widget.ack;                      // the string the agent observes as the tool result</code></pre>
+                    </div>
+                    <p>
+                        The result is then POSTed back with <code>postToolResult(threadId, callId, result)</code>, which
+                        unblocks the parked server-side tool so the same open run resumes with the agent's follow-up
+                        narration. A result is posted for <em>every</em> <code>callId</code> — even one with no matching
+                        handler — so the awaiting server tool never hangs. Because dispatch is generic, adding a fourth
+                        WebUI widget touches only <code>registry.tsx</code>; the hook is unchanged.
+                    </p>
+
+                    <h2>Widget persistence across reload</h2>
+                    <p>
+                        A rendered widget is part of the conversation, so it must survive a page reload. Two subtleties
+                        make this correct rather than merely working:
+                    </p>
+                    <ul>
+                        <li>
+                            A widget is persisted <strong>after the client confirms</strong> it rendered — not when the
+                            tool call is dispatched. Persisting on dispatch would leave a phantom widget behind if the
+                            round-trip timed out and nothing was ever drawn.
+                        </li>
+                        <li>
+                            The empty carrier messages that hold a widget (their text <code>content</code> is
+                            <code>''</code>) are <strong>filtered out of the history window</strong> the agent sees on
+                            its next turn (<code>GetHistoryForDispatch</code>). They belong to the rendered transcript,
+                            not to the model's text context — including them would feed the model blank turns.
+                        </li>
+                    </ul>
+
+                    <h2>The acting Dashboard agent</h2>
+                    <p>
+                        <code>Presentation.Dashboard</code> embeds an agent that doesn't just <em>show</em> UI — it
+                        <strong>acts</strong> on the dashboard. The same blocking-proxy machinery lets it read the
+                        current view state, set the time range, navigate, and refresh, and draw in-chat charts. The key
+                        files:
+                    </p>
+                    <table>
+                        <thead><tr><th>File</th><th>Role</th></tr></thead>
+                        <tbody>
+                            <tr><td><code>components/agent/AgentPanel.tsx</code></td><td>The embedded chat panel UI</td></tr>
+                            <tr><td><code>hooks/useDashboardAgent.ts</code></td><td>Drives the run and dispatches the dashboard's client tools</td></tr>
+                            <tr><td><code>lib/agUiClient.ts</code></td><td>Raw <code>@ag-ui/client</code> wiring — the mid-run blocking-proxy transport</td></tr>
+                        </tbody>
+                    </table>
+                    <p>
+                        On the backend, the acting tools are <code>DashboardControlTool</code> (the read/act operations,
+                        via <code>IClientToolBridge</code>), <code>ListMetricsTool</code> (enumerates the curated metric
+                        catalog so the agent picks a valid metric), and <code>RenderChartTool</code> (draws an existing
+                        chart component from a metric and returns a short summary). All three are opt-in per skill, and
+                        all three flow through the same <code>GovernedAIFunction</code> governance chain as every other
+                        tool — see <a href="06-tools.html">Chapter 06 · Tools &amp; Keyed DI</a>.
+                    </p>
+                    <div class="callout callout-info">
+                        <span class="callout-icon">i</span>
+                        <div class="callout-body">
+                            <div class="callout-title">One transport, two front-ends</div>
+                            <p style="margin: 0">
+                                Both the AgentHub WebUI chat widgets and the Dashboard acting agent ride the same
+                                pattern: a parked server tool, a mid-run round-trip over <code>@ag-ui/client</code>, a
+                                client-side registry that validates and executes, and an acknowledgement that resumes
+                                the run. Learn it once here and both surfaces read the same way.
+                            </p>
+                        </div>
+                    </div>
+
+                    <h2>Adding a new widget</h2>
+                    <ol>
+                        <li>Write the backend tool: derive from <code>SingleRenderProxyTool</code>, give it a
+                            <code>ToolName</code> const, a <code>Name</code>/<code>Description</code>, the two failure
+                            messages, and a <code>ValidateArguments</code> override that rejects unsafe input.</li>
+                        <li>Register it by keyed DI in <code>Infrastructure.AI/DependencyInjection.Tools.cs</code>,
+                            injecting <code>IClientToolBridge</code>.</li>
+                        <li>Add one entry to <code>WIDGET_REGISTRY</code> in <code>registry.tsx</code>: a
+                            <code>render</code> component, a <code>validate</code> parser, and an <code>ack</code>
+                            string. The stream hook needs no changes.</li>
+                        <li>Grant it to a skill via <code>allowed-tools</code>.</li>
+                    </ol>
+
+                    <hr />
+
+                    <h2>Where to go from here</h2>
+                    <div class="card-grid">
+                        <a class="card" href="06-tools.html">
+                            <span class="card-num">06 · Related</span>
+                            <div class="card-title">Tools &amp; Keyed DI</div>
+                            <p class="card-desc">How every tool — including these render tools — registers, converts to <code>AITool</code>, and passes through <code>GovernedAIFunction</code>.</p>
+                        </a>
+                        <a class="card" href="08-mcp.html">
+                            <span class="card-num">08 · Related</span>
+                            <div class="card-title">MCP Server &amp; Client</div>
+                            <p class="card-desc">The other way the tool surface grows — external tools discovered over the Model Context Protocol.</p>
+                        </a>
+                    </div>
+
+                    <div class="page-nav">
+                        <a class="page-nav-link page-nav-prev" href="08-mcp.html"><div class="page-nav-label">← Previous</div><div class="page-nav-title">08 · MCP Server &amp; Client</div></a>
+                        <a class="page-nav-link page-nav-next" href="09-patterns.html"><div class="page-nav-label">Next →</div><div class="page-nav-title">09 · Patterns You'll Use Daily</div></a>
+                    </div>
+                </div>
+                <aside class="toc" aria-label="On this page"><div class="toc-title">On this page</div><ul class="toc-list"></ul></aside>
+            </main>
+        </div>
+        <script src="assets/js/main.js"></script>
+    </body>
+</html>

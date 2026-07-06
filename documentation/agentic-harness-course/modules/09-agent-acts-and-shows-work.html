@@ -1,0 +1,188 @@
+<section class="module" id="module-9">
+
+  <!-- ============================================================
+       SCREEN 1 — Intro: The Agent Acts & Shows Its Work
+       ============================================================ -->
+  <div class="screen" id="screen-9-1">
+    <div class="module-number">09</div>
+
+    <h1 class="animate-in">The Agent Acts &amp; Shows Its Work</h1>
+
+    <p class="subtitle animate-in">
+      Everything so far pictured the agent as something that <em>talks</em> &mdash; you ask, it answers in words. This last module is about the two ways it steps out of the chat box: it can <strong>show</strong> you things you can look at and click, and it can <strong>act</strong> on the screen in front of you.
+    </p>
+
+    <p class="animate-in">
+      Think of the difference between a travel agent who <em>reads you</em> a list of flights over the phone, and one sitting next to you who <em>pulls up the booking screen</em>, lays the options out as a table, hands you a form to pick your seat, and then clicks through the booking while you watch. Same job &mdash; but the second one is showing their work and doing the work, right in front of you. That&rsquo;s what this module is about.
+    </p>
+
+    <div class="pattern-cards animate-in" style="margin-top: var(--space-8);">
+      <div class="pattern-card" style="border-top: 3px solid var(--color-actor-1)">
+        <div class="pattern-icon" style="background: var(--color-actor-1)">&#x1F4CA;</div>
+        <h4 class="pattern-title">Showing &mdash; interactive widgets in the chat</h4>
+        <p class="pattern-desc">Instead of describing data in a paragraph, the agent can drop a real chart, table, image, or fill-in form straight into the conversation for you to read or use.</p>
+      </div>
+      <div class="pattern-card" style="border-top: 3px solid var(--color-actor-3)">
+        <div class="pattern-icon" style="background: var(--color-actor-3)">&#x1F5A5;</div>
+        <h4 class="pattern-title">Acting &mdash; an agent that drives the screen</h4>
+        <p class="pattern-desc">Embedded inside a live dashboard, the agent can change the date range, jump to another page, refresh the data, and read what&rsquo;s currently on screen &mdash; doing the clicking for you.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       SCREEN 2 — Generative-UI Widgets (Showing)
+       ============================================================ -->
+  <div class="screen" id="screen-9-2">
+    <h2 class="screen-title">Showing Its Work &mdash; Widgets Instead of Walls of Text</h2>
+    <p class="screen-subtitle">In Module 5 you met these as ordinary tools. Here&rsquo;s what they actually put on your screen.</p>
+
+    <p>When the agent decides that a picture would say more than a paragraph, it reaches for a special kind of tool. To the agent it&rsquo;s just another tool call &mdash; but instead of returning text, the harness renders the result as a live element right there in the chat. There are four flavours:</p>
+
+    <div class="pattern-cards" style="margin-top: var(--space-6);">
+      <div class="pattern-card" style="border-top: 3px solid var(--color-actor-1)">
+        <div class="pattern-icon" style="background: var(--color-actor-1)">&#x1F5BC;</div>
+        <h4 class="pattern-title">An image</h4>
+        <p class="pattern-desc">A picture or diagram shown inline &mdash; not a link you have to open, but the actual image sitting in the reply.</p>
+      </div>
+      <div class="pattern-card" style="border-top: 3px solid var(--color-actor-2)">
+        <div class="pattern-icon" style="background: var(--color-actor-2)">&#x1F4CB;</div>
+        <h4 class="pattern-title">A table</h4>
+        <p class="pattern-desc">Rows and columns laid out cleanly, so you can scan numbers or compare items at a glance instead of parsing a run-on sentence.</p>
+      </div>
+      <div class="pattern-card" style="border-top: 3px solid var(--color-actor-3)">
+        <div class="pattern-icon" style="background: var(--color-actor-3)">&#x1F4C8;</div>
+        <h4 class="pattern-title">A chart</h4>
+        <p class="pattern-desc">A bar, line, or pie chart drawn from the data the agent gathered &mdash; the trend jumps out visually rather than hiding in a list of figures.</p>
+      </div>
+      <div class="pattern-card" style="border-top: 3px solid var(--color-actor-4)">
+        <div class="pattern-icon" style="background: var(--color-actor-4)">&#x1F4DD;</div>
+        <h4 class="pattern-title">A form</h4>
+        <p class="pattern-desc">Actual fields you fill in &mdash; a date, a dropdown, a yes/no &mdash; and when you submit, your answers travel straight back to the agent so it can continue with real input from you.</p>
+      </div>
+    </div>
+
+    <p style="margin-top: var(--space-8);">The form is the interesting one, because it turns a one-way announcement into a back-and-forth. The agent hands you a form, you fill it in and hit submit, and your answers become the agent&rsquo;s next piece of information &mdash; a genuine conversation conducted partly through the interface rather than only through typing.</p>
+
+    <div class="callout callout-info">
+      <div class="callout-icon">&#x1F4BE;</div>
+      <div class="callout-content">
+        <strong class="callout-title">The widgets stick around</strong>
+        <p>A chart or a filled-in form isn&rsquo;t a throwaway that vanishes when you reload the page. Once you&rsquo;ve confirmed a widget, it&rsquo;s saved as part of the conversation&rsquo;s history, so it&rsquo;s still there when you come back later. (There&rsquo;s a small piece of care here: the harness only saves a widget <em>after</em> you&rsquo;ve actually confirmed it, so a form you never submitted doesn&rsquo;t leave a ghost behind.)</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       SCREEN 3 — The Acting Dashboard Agent
+       ============================================================ -->
+  <div class="screen" id="screen-9-3">
+    <h2 class="screen-title">Doing the Work &mdash; An Agent That Drives the Dashboard</h2>
+    <p class="screen-subtitle">Showing you a chart is helpful. Changing the screen for you is a bigger leap &mdash; and it&rsquo;s where the agent stops being a narrator and becomes a co-pilot.</p>
+
+    <p>Picture one of the harness&rsquo;s monitoring dashboards &mdash; charts, filters, a date picker, several pages. Now picture a small chat panel tucked into the corner of that same dashboard. You can ask that panel things in plain language, and instead of just answering, it can <em>operate the dashboard for you</em>. That&rsquo;s the acting agent.</p>
+
+    <div class="pattern-cards" style="margin-top: var(--space-6);">
+      <div class="pattern-card" style="border-top: 3px solid var(--color-actor-1)">
+        <div class="pattern-icon" style="background: var(--color-actor-1)">&#x1F4C5;</div>
+        <h4 class="pattern-title">Set the time range</h4>
+        <p class="pattern-desc">&ldquo;Show me the last 24 hours&rdquo; &mdash; and the date filter actually moves, redrawing every chart on the page.</p>
+      </div>
+      <div class="pattern-card" style="border-top: 3px solid var(--color-actor-2)">
+        <div class="pattern-icon" style="background: var(--color-actor-2)">&#x1F9ED;</div>
+        <h4 class="pattern-title">Navigate</h4>
+        <p class="pattern-desc">&ldquo;Take me to the errors page&rdquo; &mdash; and the dashboard switches views, saving you the hunt through the menu.</p>
+      </div>
+      <div class="pattern-card" style="border-top: 3px solid var(--color-actor-3)">
+        <div class="pattern-icon" style="background: var(--color-actor-3)">&#x1F504;</div>
+        <h4 class="pattern-title">Refresh</h4>
+        <p class="pattern-desc">&ldquo;Pull the latest numbers&rdquo; &mdash; and it re-fetches the data so you&rsquo;re looking at the current state.</p>
+      </div>
+      <div class="pattern-card" style="border-top: 3px solid var(--color-actor-4)">
+        <div class="pattern-icon" style="background: var(--color-actor-4)">&#x1F441;</div>
+        <h4 class="pattern-title">Read what&rsquo;s on screen</h4>
+        <p class="pattern-desc">It can also <em>look</em> at the dashboard&rsquo;s current state &mdash; which range is selected, what&rsquo;s showing &mdash; so its answers match what you&rsquo;re actually seeing.</p>
+      </div>
+    </div>
+
+    <p style="margin-top: var(--space-8);">And it can still <em>show</em> at the same time: ask it a question about the data and it can draw a fresh chart right in the chat panel, on top of driving the page. So in one exchange it can read the current view, change the time range, and hand you a new chart of what changed &mdash; all from a sentence you typed in plain language.</p>
+
+    <div class="callout callout-accent">
+      <div class="callout-icon">&#x1F91D;</div>
+      <div class="callout-content">
+        <strong class="callout-title">Why this is the natural finish line</strong>
+        <p>Every earlier module made the agent more capable <em>behind</em> the screen &mdash; better memory, safer tools, tighter oversight. This module is where all of that turns outward. The same governance, the same permission gates, and the same trust dial from Module 8 still apply when the agent acts on your dashboard &mdash; acting on the UI is just another set of tools, watched by the same guards. The payoff is an assistant you don&rsquo;t just read, but work alongside.</p>
+      </div>
+    </div>
+
+    <h3 style="margin-top: var(--space-10);">Quick check</h3>
+    <div class="quiz-container" id="quiz-module9">
+
+      <div class="quiz-question-block"
+           data-correct="opt-w2"
+           data-explanation-right="Right. A render tool is called exactly like any other tool — the difference is only in what comes back: instead of text, the harness renders an interactive element (image, table, chart, or form) inline in the chat."
+           data-explanation-wrong="The agent doesn't use a separate channel or a different kind of request. To the agent, drawing a chart is an ordinary tool call — what's special is that the result is rendered as a live widget rather than returned as text.">
+        <h3 class="quiz-question">1. How does the agent &ldquo;draw you a chart&rdquo; in the chat?</h3>
+        <div class="quiz-options">
+          <button class="quiz-option" data-value="opt-w1" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div><span>Through a special separate channel reserved only for pictures</span>
+          </button>
+          <button class="quiz-option" data-value="opt-w2" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div><span>It calls an ordinary tool &mdash; the result just gets rendered as a live widget instead of text</span>
+          </button>
+          <button class="quiz-option" data-value="opt-w3" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div><span>It can&rsquo;t &mdash; charts have to be built by a human afterwards</span>
+          </button>
+        </div>
+        <div class="quiz-feedback"></div>
+      </div>
+
+      <div class="quiz-question-block"
+           data-correct="opt-a2"
+           data-explanation-right="Exactly. The dashboard agent doesn't just describe what to do — it actually operates the page: moving the date filter, switching views, refreshing data, and reading the current state. And the same governance and permission gates from Module 8 still apply to those actions."
+           data-explanation-wrong="The whole point of the acting agent is that it changes the screen itself. It can set the time range, navigate, refresh, and read the dashboard's state — all under the same safety gates as any other tool.">
+        <h3 class="quiz-question">2. What makes the embedded dashboard agent different from an ordinary chatbot?</h3>
+        <div class="quiz-options">
+          <button class="quiz-option" data-value="opt-a1" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div><span>Nothing &mdash; it only answers questions in words like any chatbot</span>
+          </button>
+          <button class="quiz-option" data-value="opt-a2" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div><span>It can act on the dashboard itself &mdash; change the range, navigate, refresh, read state &mdash; still under the usual safety gates</span>
+          </button>
+          <button class="quiz-option" data-value="opt-a3" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div><span>It bypasses all the governance and permission checks so it can move fast</span>
+          </button>
+        </div>
+        <div class="quiz-feedback"></div>
+      </div>
+
+      <button class="quiz-check-btn" onclick="checkQuiz('quiz-module9')">Check Answers</button>
+      <button class="quiz-reset-btn" onclick="resetQuiz('quiz-module9')">Try Again</button>
+    </div>
+
+    <!-- Course closer -->
+    <div class="animate-in" style="margin-top: var(--space-12); padding: var(--space-8); background: linear-gradient(135deg, var(--color-accent-light), var(--color-surface)); border-radius: var(--radius-md); border-left: 4px solid var(--color-accent); text-align: center;">
+      <h2 style="margin-top: 0;">That&rsquo;s the whole tour.</h2>
+      <p>
+        You started with a black box that answers questions and ended with an assistant that keeps a diary of its own work, refuses to trust every note in it, watches its own budget and its own progress, guards sensitive data, and &mdash; in this last module &mdash; steps out of the chat box to <strong>show</strong> you charts and forms and to <strong>act</strong> on the screen in front of you.
+      </p>
+      <p style="font-weight: 600; color: var(--color-accent);">
+        None of it is magic. Every capability you&rsquo;ve seen is a small, inspectable piece &mdash; a tool, a gate, a memory, a widget &mdash; wired together with care. That&rsquo;s the whole idea of a harness: not one clever trick, but a lot of honest parts you can trace, one at a time.
+      </p>
+    </div>
+
+    <!-- Guide cross-links -->
+    <div class="animate-in" style="margin-top: var(--space-8); display: flex; gap: var(--space-4); flex-wrap: wrap; justify-content: center;">
+      <a href="../index.html" style="display: inline-flex; align-items: center; gap: 8px; padding: 12px 24px; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); text-decoration: none; color: var(--color-text); font-weight: 500; transition: border-color 0.15s ease, box-shadow 0.15s ease;">
+        <span style="font-size: 14px;">&#8592;</span> Developer Guide
+      </a>
+      <a href="../architecture/index.html" style="display: inline-flex; align-items: center; gap: 8px; padding: 12px 24px; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); text-decoration: none; color: var(--color-text); font-weight: 500; transition: border-color 0.15s ease, box-shadow 0.15s ease;">
+        Architecture Guide <span style="font-size: 14px;">&#8594;</span>
+      </a>
+      <a href="../security/index.html" style="display: inline-flex; align-items: center; gap: 8px; padding: 12px 24px; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); text-decoration: none; color: var(--color-text); font-weight: 500; transition: border-color 0.15s ease, box-shadow 0.15s ease;">
+        Security Guide <span style="font-size: 14px;">&#8594;</span>
+      </a>
+    </div>
+  </div>
+
+</section>

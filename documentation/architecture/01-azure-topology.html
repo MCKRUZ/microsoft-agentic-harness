@@ -100,10 +100,11 @@
                     <div class="rg-group">
                         <span class="rg-label">rg-harness-data</span>
                         <p>
-                            <strong>Data.</strong> Knowledge graph backend (Neo4j on AKS or PostgreSQL via Cosmos
-                            DB — both ship as <code>IGraphDatabaseBackend</code> implementations and you pick one
-                            per environment), Azure SQL (plan state persistence via EF Core), and Blob Storage
-                            (document ingestion, FAISS index snapshots, JSONL audit logs).
+                            <strong>Data.</strong> Knowledge graph backend (Neo4j on AKS &mdash; the choice in the
+                            validated staging/prod payloads &mdash; or any managed PostgreSQL; both implement
+                            <code>IKnowledgeGraphStore</code>, while the embedded Kuzu backend used for local dev
+                            implements <code>IGraphDatabaseBackend</code>), Azure SQL (plan state persistence via EF
+                            Core), and Blob Storage (document ingestion, FAISS index snapshots, JSONL audit logs).
                         </p>
                     </div>
 
@@ -185,9 +186,9 @@
                         <div class="topology-row">
                             <div class="az-box az-data">
                                 <span class="az-box-icon">&#128450;</span>
-                                <div class="az-box-name">Cosmos DB for PostgreSQL</div>
+                                <div class="az-box-name">Neo4j on AKS</div>
                                 <span class="az-box-detail">Knowledge graph backend</span>
-                                <span class="az-box-sku">1 node / Multi-node</span>
+                                <span class="az-box-sku">Single / HA cluster</span>
                             </div>
                             <div class="az-box az-data">
                                 <span class="az-box-icon">&#128451;</span>
@@ -252,9 +253,10 @@
                             context window.
                         </li>
                         <li>
-                            <strong>API &rarr; Cosmos DB (knowledge graph query).</strong>
+                            <strong>API &rarr; Knowledge graph backend (graph query).</strong>
                             For graph-backed memory queries — entity lookup, community detection, cross-session
-                            recall — the API hits the Cosmos DB for PostgreSQL cluster.
+                            recall — the API hits the configured graph backend (Neo4j on AKS in the validated
+                            payloads, or a managed PostgreSQL store).
                         </li>
                         <li>
                             <strong>API &rarr; Application Insights (telemetry).</strong>
