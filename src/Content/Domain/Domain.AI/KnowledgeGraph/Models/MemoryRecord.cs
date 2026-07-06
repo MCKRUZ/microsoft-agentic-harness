@@ -29,18 +29,4 @@ public sealed record MemoryRecord
 
     /// <summary>Arbitrary metadata (entity types, topic tags). Strings for graph portability.</summary>
     public IReadOnlyDictionary<string, string> Metadata { get; init; } = new Dictionary<string, string>();
-
-    /// <summary>
-    /// Optional primary abstraction — a one-to-one canonical summary of what this memory is about,
-    /// used as the consolidation/update key in the harmonic memory representation. Null on records
-    /// written via the legacy (non-harmonic) path. See <see cref="MemoryAbstraction"/>.
-    /// </summary>
-    public string? Abstraction { get; init; }
-
-    /// <summary>
-    /// Optional cue anchors — short <c>[Entity] + [Aspect]</c> phrases that expose additional retrieval
-    /// paths into this memory and connect it, many-to-many, to related memories through shared anchors.
-    /// Empty on records written via the legacy path.
-    /// </summary>
-    public IReadOnlyList<string> CueAnchors { get; init; } = [];
 }
