@@ -287,6 +287,16 @@ public static class DependencyInjection
         // the synthesis background service, which is itself gated on the synthesis toggle.
         services.AddTransient<IWorkEpisodeSynthesizer, WorkMemory.LlmWorkEpisodeSynthesizer>();
 
+        // --- Harmonic Episodic-Segment Store (Memora port) ---
+        // Graph-backed only; shares the tenant-isolating store chain like the work-episode store.
+        // Registered unconditionally so it resolves in WorkEpisodeCaptureBehavior when harmonic memory is
+        // enabled; capture is fire-and-forget, so an unregistered store would only surface in that
+        // behavior's swallowed catch.
+        services.AddSingleton<IEpisodicSegmentStore>(sp =>
+            new Memory.GraphEpisodicSegmentStore(
+                sp.GetRequiredService<IKnowledgeGraphStore>(),
+                sp.GetRequiredService<ILogger<Memory.GraphEpisodicSegmentStore>>()));
+
         return services;
     }
 }

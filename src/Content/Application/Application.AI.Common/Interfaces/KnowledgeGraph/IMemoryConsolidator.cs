@@ -25,6 +25,7 @@ public interface IMemoryConsolidator
     /// <param name="candidateValue">The candidate's full memory value.</param>
     /// <param name="similarExisting">
     /// The most-similar existing entries (by abstraction), up to <c>HarmonicMemoryConfig.ConsolidationTopK</c>.
+    /// Storage-neutral <see cref="ExistingMemory"/> views, so the seam is not coupled to any store type.
     /// May be empty, in which case implementations return <see cref="MemoryConsolidationDecision.Create"/>.
     /// </param>
     /// <param name="cancellationToken">Cancellation token with the consolidation timeout.</param>
@@ -32,6 +33,6 @@ public interface IMemoryConsolidator
     Task<MemoryConsolidationDecision> ConsolidateAsync(
         MemoryAbstraction candidate,
         string candidateValue,
-        IReadOnlyList<MemoryRecord> similarExisting,
+        IReadOnlyList<ExistingMemory> similarExisting,
         CancellationToken cancellationToken = default);
 }

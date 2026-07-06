@@ -1,10 +1,13 @@
 using Application.AI.Common.Interfaces;
+using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Application.AI.Common.Interfaces.WorkMemory;
 using Application.AI.Common.MediatRBehaviors;
 using Application.Core.CQRS.Agents.ExecuteAgentTurn;
+using Domain.AI.KnowledgeGraph.Models;
 using Domain.AI.WorkMemory;
 using Domain.Common;
 using Domain.Common.Config;
+using Domain.Common.Config.AI.HarmonicMemory;
 using FluentAssertions;
 using MediatR;
 using Microsoft.Extensions.DependencyInjection;
@@ -18,6 +21,7 @@ namespace Application.AI.Common.Tests.MediatRBehaviors;
 public sealed class WorkEpisodeCaptureBehaviorTests
 {
     private readonly Mock<IWorkEpisodeStore> _store = new();
+    private readonly Mock<IEpisodicSegmentStore> _segmentStore = new();
     private readonly AppConfig _appConfig = new();
 
     public WorkEpisodeCaptureBehaviorTests()
@@ -142,7 +146,121 @@ public sealed class WorkEpisodeCaptureBehaviorTests
         await WaitForAsync(() => Volatile.Read(ref attempts) == 1, TimeSpan.FromSeconds(2));
     }
 
+    // --- Harmonic episodic-segment capture (shared turn-boundary seam) ---
+
+    [Fact]
+    public async Task Handle_HarmonicEnabled_CapturesRawSegmentCrossLinkedToEpisode()
+    {
+        _appConfig.AI.HarmonicMemory.Mode = HarmonicMemoryMode.AbstractOnly;
+        var episodes = SetupCapture();
+        var segments = SetupSegmentCapture();
+        var behavior = CreateAgentTurnBehavior();
+        // Response longer than the WorkEpisode truncation cap (2000) — the segment must keep it raw.
+        var response = CreateResult(success: true, response: new string('y', 5000));
+
+        await behavior.Handle(CreateCommand("the task", "conv-7", 3), () => Task.FromResult(response), CancellationToken.None);
+
+        await WaitForAsync(() => episodes.Count == 1 && segments.Count == 1, TimeSpan.FromSeconds(2));
+
+        var episode = episodes.Single();
+        var segment = segments.Single();
+        segment.EpisodeId.Should().Be(episode.EpisodeId, "the segment cross-links to the same turn's work episode");
+        segment.ConversationId.Should().Be("conv-7");
+        segment.TurnNumber.Should().Be(3);
+        segment.CreatedAt.Should().Be(episode.CreatedAt, "both records share the turn-completion timestamp");
+        segment.SegmentId.Should().NotBe(Guid.Empty);
+        // Raw + untruncated — the whole 5000-char response survives, unlike the truncated episode summary.
+        segment.Content.Should().Contain(new string('y', 5000)).And.Contain("the task");
+        episode.ResponseSummary.Length.Should().BeLessThan(5000, "the work episode is still truncated");
+    }
+
+    [Fact]
+    public async Task Handle_HarmonicOnly_WorkMemoryOff_CapturesSegmentNotEpisode()
+    {
+        _appConfig.AI.WorkMemory.Enabled = false;
+        _appConfig.AI.HarmonicMemory.Mode = HarmonicMemoryMode.Full;
+        SetupCapture();
+        var segments = SetupSegmentCapture();
+        var behavior = CreateAgentTurnBehavior();
+        var response = CreateResult(success: true, response: "said");
+
+        await behavior.Handle(CreateCommand("q"), () => Task.FromResult(response), CancellationToken.None);
+
+        await WaitForAsync(() => segments.Count == 1, TimeSpan.FromSeconds(2));
+        // The episode is persisted before the segment in PersistAsync; once the segment lands, a
+        // work-episode write (had it been enabled) would already have run. It must not have.
+        _store.Verify(s => s.SaveAsync(It.IsAny<WorkEpisode>(), It.IsAny<CancellationToken>()), Times.Never);
+        // No episode was persisted, so the segment's cross-link is null (correlation is by conversation+turn).
+        segments.Single().EpisodeId.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Handle_BothDisabled_SkipsBothCaptures()
+    {
+        _appConfig.AI.WorkMemory.Enabled = false;
+        _appConfig.AI.HarmonicMemory.Mode = HarmonicMemoryMode.Off;
+        var behavior = CreateAgentTurnBehavior();
+        var response = CreateResult(success: true, response: "x");
+
+        var result = await behavior.Handle(CreateCommand("hi"), () => Task.FromResult(response), CancellationToken.None);
+
+        result.Should().BeSameAs(response);
+        _store.Verify(s => s.SaveAsync(It.IsAny<WorkEpisode>(), It.IsAny<CancellationToken>()), Times.Never);
+        _segmentStore.Verify(s => s.SaveAsync(It.IsAny<EpisodicSegment>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Handle_EpisodeStoreThrows_SegmentStillPersisted()
+    {
+        // Both subsystems on. The episode write throws; the episodic segment must still be captured —
+        // the two persists are independent.
+        _appConfig.AI.HarmonicMemory.Mode = HarmonicMemoryMode.AbstractOnly;
+        _store
+            .Setup(s => s.SaveAsync(It.IsAny<WorkEpisode>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("episode store down"));
+        var segments = SetupSegmentCapture();
+        var behavior = CreateAgentTurnBehavior();
+        var response = CreateResult(success: true, response: "said");
+
+        await behavior.Handle(CreateCommand("q"), () => Task.FromResult(response), CancellationToken.None);
+
+        await WaitForAsync(() => segments.Count == 1, TimeSpan.FromSeconds(2));
+    }
+
+    [Fact]
+    public void BuildSegment_CrossLinksToEpisodeAndKeepsRawContent()
+    {
+        var behavior = CreateAgentTurnBehavior();
+        var request = CreateCommand("what is x", "conv-2", 5);
+        var result = CreateResult(success: true, response: "x is y");
+        var episodeId = Guid.NewGuid();
+        var createdAt = DateTimeOffset.UtcNow;
+
+        var segment = behavior.BuildSegment(request, result, episodeId, createdAt);
+
+        segment.EpisodeId.Should().Be(episodeId);
+        segment.AgentId.Should().Be("test-agent");
+        segment.ConversationId.Should().Be("conv-2");
+        segment.TurnNumber.Should().Be(5);
+        segment.CreatedAt.Should().Be(createdAt);
+        segment.SegmentId.Should().NotBe(Guid.Empty);
+        segment.Content.Should().Contain("what is x").And.Contain("x is y");
+    }
+
     // --- Helpers ---
+
+    private List<EpisodicSegment> SetupSegmentCapture()
+    {
+        var captured = new List<EpisodicSegment>();
+        _segmentStore
+            .Setup(s => s.SaveAsync(It.IsAny<EpisodicSegment>(), It.IsAny<CancellationToken>()))
+            .Callback<EpisodicSegment, CancellationToken>((s, _) =>
+            {
+                lock (captured) { captured.Add(s); }
+            })
+            .ReturnsAsync(Result.Success());
+        return captured;
+    }
 
     private List<WorkEpisode> SetupCapture()
     {
@@ -172,6 +290,7 @@ public sealed class WorkEpisodeCaptureBehaviorTests
     {
         var provider = new Mock<IServiceProvider>();
         provider.Setup(p => p.GetService(typeof(IWorkEpisodeStore))).Returns(_store.Object);
+        provider.Setup(p => p.GetService(typeof(IEpisodicSegmentStore))).Returns(_segmentStore.Object);
 
         var scope = new Mock<IServiceScope>();
         scope.SetupGet(s => s.ServiceProvider).Returns(provider.Object);

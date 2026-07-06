@@ -53,4 +53,23 @@ public sealed class HarmonicMemoryConfigValidatorTests
         result.IsValid.Should().BeFalse();
         result.Errors.Should().Contain(e => e.PropertyName == nameof(HarmonicMemoryConfig.ConsolidationTopK));
     }
+
+    [Fact]
+    public void Validate_BatchAtSessionFlushTrue_Fails()
+    {
+        // The flag is not supported in this build (no session-flush seam to defer into). It must fail
+        // loud at startup rather than be silently ignored.
+        var result = _sut.Validate(new HarmonicMemoryConfig { BatchAtSessionFlush = true });
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName == nameof(HarmonicMemoryConfig.BatchAtSessionFlush));
+    }
+
+    [Fact]
+    public void Validate_BatchAtSessionFlushFalse_Passes()
+    {
+        var result = _sut.Validate(new HarmonicMemoryConfig { BatchAtSessionFlush = false });
+
+        result.IsValid.Should().BeTrue();
+    }
 }

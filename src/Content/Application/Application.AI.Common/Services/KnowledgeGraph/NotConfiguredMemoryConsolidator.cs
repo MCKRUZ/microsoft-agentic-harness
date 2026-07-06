@@ -15,7 +15,7 @@ public sealed class NotConfiguredMemoryConsolidator : IMemoryConsolidator
     public Task<MemoryConsolidationDecision> ConsolidateAsync(
         MemoryAbstraction candidate,
         string candidateValue,
-        IReadOnlyList<MemoryRecord> similarExisting,
+        IReadOnlyList<ExistingMemory> similarExisting,
         CancellationToken cancellationToken = default) =>
         throw new InvalidOperationException(
             "No IMemoryConsolidator is configured. Harmonic memory is enabled in Full mode " +

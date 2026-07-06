@@ -44,4 +44,75 @@ public static class GraphNodeMemoryExtensions
                 ? trust
                 : MemoryTrust.Trusted;
     }
+
+    /// <summary>
+    /// The <see cref="GraphNode.Properties"/> key under which the harmonic memory primary abstraction
+    /// (the "what is this memory about" canonical summary) is stored.
+    /// </summary>
+    public const string AbstractionPropertyKey = "memory.abstraction";
+
+    /// <summary>
+    /// The <see cref="GraphNode.Properties"/> key under which the harmonic memory cue anchors are stored,
+    /// newline-joined. Cue anchors are short <c>[Entity] + [Aspect]</c> phrases; the abstractor sanitizes
+    /// them to single-line values, so a newline join round-trips losslessly and stays portable across every
+    /// graph backend without a JSON dependency in the domain layer.
+    /// </summary>
+    public const string CueAnchorsPropertyKey = "memory.cue_anchors";
+
+    /// <summary>
+    /// Returns a copy of <paramref name="node"/> carrying the harmonic scaffolding layer —
+    /// <see cref="MemoryAbstraction.Abstraction"/> and its <see cref="MemoryAbstraction.CueAnchors"/> —
+    /// in <see cref="GraphNode.Properties"/>. Existing properties (including the trust marker) are
+    /// preserved. The cue-anchor key is written only when at least one anchor is present, mirroring how
+    /// the trust marker is written only when it carries signal.
+    /// </summary>
+    /// <param name="node">The node to stamp.</param>
+    /// <param name="abstraction">The primary abstraction and cue anchors to store.</param>
+    public static GraphNode WithAbstraction(this GraphNode node, MemoryAbstraction abstraction)
+    {
+        ArgumentNullException.ThrowIfNull(node);
+        ArgumentNullException.ThrowIfNull(abstraction);
+
+        var properties = new Dictionary<string, string>(node.Properties)
+        {
+            [AbstractionPropertyKey] = abstraction.Abstraction
+        };
+
+        var anchors = abstraction.CueAnchors
+            .Where(a => !string.IsNullOrWhiteSpace(a))
+            .Select(a => a.Trim())
+            .ToList();
+        if (anchors.Count > 0)
+            properties[CueAnchorsPropertyKey] = string.Join('\n', anchors);
+
+        return node with { Properties = properties };
+    }
+
+    /// <summary>
+    /// Reads the harmonic primary abstraction from <paramref name="node"/>, or <see langword="null"/>
+    /// when the node carries none (legacy memory nodes, or nodes written with harmonic memory off).
+    /// </summary>
+    public static string? GetAbstraction(this GraphNode node)
+    {
+        ArgumentNullException.ThrowIfNull(node);
+
+        return node.Properties.TryGetValue(AbstractionPropertyKey, out var abstraction)
+            && !string.IsNullOrWhiteSpace(abstraction)
+                ? abstraction
+                : null;
+    }
+
+    /// <summary>
+    /// Reads the harmonic cue anchors from <paramref name="node"/>. Returns an empty list when the node
+    /// carries none.
+    /// </summary>
+    public static IReadOnlyList<string> GetCueAnchors(this GraphNode node)
+    {
+        ArgumentNullException.ThrowIfNull(node);
+
+        return node.Properties.TryGetValue(CueAnchorsPropertyKey, out var raw)
+            && !string.IsNullOrWhiteSpace(raw)
+                ? raw.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                : [];
+    }
 }

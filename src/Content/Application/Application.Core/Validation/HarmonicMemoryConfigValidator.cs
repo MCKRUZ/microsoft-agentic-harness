@@ -9,10 +9,19 @@ namespace Application.Core.Validation;
 /// consistent with the sibling config validators (<c>WorkMemoryConfigValidator</c> et al.).
 /// </summary>
 /// <remarks>
+/// <para>
 /// <see cref="HarmonicMemoryConfig.Mode"/> needs no rule — the enum's values are exhaustive and
 /// <see cref="HarmonicMemoryMode.Off"/> is a valid default. <see cref="HarmonicMemoryConfig.ConsolidationTopK"/>
 /// is only consulted in <see cref="HarmonicMemoryMode.Full"/>, but is validated unconditionally so a
 /// misconfiguration is caught before the mode is ever raised.
+/// </para>
+/// <para>
+/// <see cref="HarmonicMemoryConfig.BatchAtSessionFlush"/> is rejected when <see langword="true"/>: the
+/// write path abstracts inline on each <c>RememberAsync</c>, and there is no session-flush seam to defer
+/// into — cross-session memory is persisted durably inline, and <c>ISessionKnowledgeCache.FlushToGraphAsync</c>
+/// has no production caller for the memory path. Rather than silently ignore the flag (a lying knob), the
+/// validator fails loud at startup; deferred batching is a scoped future change that will lift this rule.
+/// </para>
 /// </remarks>
 public sealed class HarmonicMemoryConfigValidator : AbstractValidator<HarmonicMemoryConfig>
 {
@@ -24,5 +33,12 @@ public sealed class HarmonicMemoryConfigValidator : AbstractValidator<HarmonicMe
 
         RuleFor(x => x.ConsolidationTopK)
             .GreaterThan(0).WithMessage("ConsolidationTopK must be > 0.");
+
+        RuleFor(x => x.BatchAtSessionFlush)
+            .Equal(false)
+            .WithMessage(
+                "BatchAtSessionFlush is not supported in this build: harmonic abstraction runs inline on " +
+                "each RememberAsync, and there is no session-flush seam to defer into. Leave it false; a " +
+                "future release will add deferred batching.");
     }
 }
