@@ -89,36 +89,40 @@ You are a task orchestrator. When given a complex task:
 - If a subtask fails, retry with a different agent or approach
 ```
 
-### Snippet 3: TieredContextAssembler
+### Snippet 3: ContextBudgetTracker (tiered skill loading)
 ```csharp
-public sealed class TieredContextAssembler : ITieredContextAssembler
+// IContextBudgetTracker records token allocations per agent, by named component
+// ("system_prompt", "tool_schemas", "skill_context", "conversation_history"),
+// and throws ContextBudgetExceededException before the window overflows.
+public interface IContextBudgetTracker
 {
-    private const int DefaultTier1MaxTokens = 3000;
-    private const int DefaultTier2MaxTokens = 8000;
+    void RecordAllocation(string agentName, string component, int tokens);
+    int  GetTotalAllocated(string agentName);
+    void EnsureBudget(string agentName, int additionalTokens, int totalBudget);
+    IReadOnlyDictionary<string, int> GetBreakdown(string agentName);
+}
 
-    public async Task<TieredContextResult> AssembleAsync(
-        SkillDefinition skill, TierLoadingOptions? options = null,
-        CancellationToken cancellationToken = default)
+// Tiered loading in practice: only the tiers that actually enter the window are
+// charged against the budget. Tier 3 resource paths are exposed, never loaded.
+void LoadSkillContext(string agentName, SkillDefinition skill, int totalBudget)
+{
+    // Tier 1: always loaded — lightweight metadata (id, name, description, tags)
+    int tier1Tokens = EstimateTokens(BuildTier1Metadata(skill));
+    tracker.EnsureBudget(agentName, tier1Tokens, totalBudget);
+    tracker.RecordAllocation(agentName, "skill_context", tier1Tokens);
+
+    // Tier 2: on-demand — full instructions + tool schemas, only when the skill activates
+    if (skill.Mode == SkillMode.Injected)
     {
-        var result = new TieredContextResult { SkillId = skill.Id };
+        int tier2Tokens = EstimateTokens(skill.Instructions);
+        tracker.EnsureBudget(agentName, tier2Tokens, totalBudget);
+        tracker.RecordAllocation(agentName, "skill_context", tier2Tokens);
+    }
 
-        // Tier 1: Always loaded — lightweight metadata
-        var tier1Content = BuildTier1Content(skill);
-        var tier1Tokens = TokenEstimationHelper.EstimateTokens(tier1Content);
-        _budgetTracker.RecordAllocation("skill-tier1", skill.Id, tier1Tokens);
-
-        // Tier 2: On-demand — full instructions
-        if (options?.LoadTier2 == true)
-        {
-            var tier2Content = BuildTier2Content(skill);
-            var tier2Tokens = TokenEstimationHelper.EstimateTokens(tier2Content);
-            _budgetTracker.RecordAllocation("skill-tier2", skill.Id, tier2Tokens);
-        }
-
-        // Tier 3: Never loaded into context — paths exposed for on-demand access
-        result.Tier3ResourcePaths = skill.References
-            .Concat(skill.Templates)
-            .Select(r => r.Path).ToList();
+    // Tier 3: never loaded into context — paths handed to the agent for on-demand reads
+    var tier3Paths = skill.References.Concat(skill.Templates)
+        .Select(r => r.Path).ToList();
+}
 ```
 
 ### Snippet 4: CompactionBoundaryMessage

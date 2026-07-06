@@ -129,10 +129,10 @@
                     </div>
 
                     <p>
-                        The Docker executor enforces a <strong>minimum-isolation invariant</strong>. It declares
-                        <code>MinimumIsolation = Container</code>, and if Docker is unavailable at runtime it
-                        <strong>fails the execution</strong> rather than quietly falling back to the weaker process
-                        sandbox.
+                        The Docker executor enforces a <strong>minimum-isolation invariant</strong>. When a request's
+                        permission profile requires <code>MinimumIsolation = Container</code> and Docker is unavailable
+                        at runtime, the execution <strong>fails</strong> rather than quietly falling back to the weaker
+                        process sandbox.
                     </p>
 
                     <div class="callout callout-jargon">
@@ -201,7 +201,7 @@
                             <tr>
                                 <td><strong>Wall-clock timeout</strong></td>
                                 <td>30 s</td>
-                                <td>Job wall-clock limit</td>
+                                <td><code>CancellationTokenSource.CancelAfter</code></td>
                                 <td>Hangs, infinite waits, slow-loris-style stalls</td>
                             </tr>
                             <tr>

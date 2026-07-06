@@ -19,7 +19,7 @@
                     <div class="sidebar-group"><div class="sidebar-group-title">Getting Started</div><a class="sidebar-link" href="index.html"><span class="sidebar-link-num">00</span> Welcome</a><a class="sidebar-link" href="01-get-running.html"><span class="sidebar-link-num">01</span> Get Running in 10 Minutes</a></div>
                     <div class="sidebar-group"><div class="sidebar-group-title">Configuration</div><a class="sidebar-link" href="02-configuration.html"><span class="sidebar-link-num">02</span> Configuration Reference</a></div>
                     <div class="sidebar-group"><div class="sidebar-group-title">Architecture</div><a class="sidebar-link" href="03-big-picture.html"><span class="sidebar-link-num">03</span> The Big Picture</a><a class="sidebar-link" href="04-message-journey.html"><span class="sidebar-link-num">04</span> A Message's Journey</a></div>
-                    <div class="sidebar-group"><div class="sidebar-group-title">Systems</div><a class="sidebar-link" href="05-skills.html"><span class="sidebar-link-num">05</span> Skills System</a><a class="sidebar-link" href="06-tools.html"><span class="sidebar-link-num">06</span> Tools &amp; Keyed DI</a><a class="sidebar-link" href="07-rag.html"><span class="sidebar-link-num">07</span> The RAG Pipeline</a><a class="sidebar-link" href="08-mcp.html"><span class="sidebar-link-num">08</span> MCP Server &amp; Client</a></div>
+                    <div class="sidebar-group"><div class="sidebar-group-title">Systems</div><a class="sidebar-link" href="05-skills.html"><span class="sidebar-link-num">05</span> Skills System</a><a class="sidebar-link" href="06-tools.html"><span class="sidebar-link-num">06</span> Tools &amp; Keyed DI</a><a class="sidebar-link" href="07-rag.html"><span class="sidebar-link-num">07</span> The RAG Pipeline</a><a class="sidebar-link" href="08-mcp.html"><span class="sidebar-link-num">08</span> MCP Server &amp; Client</a><a class="sidebar-link" href="16-generative-ui.html"><span class="sidebar-link-num">16</span> Generative UI &amp; Widgets</a></div>
                     <div class="sidebar-group"><div class="sidebar-group-title">Patterns</div><a class="sidebar-link" href="09-patterns.html"><span class="sidebar-link-num">09</span> Patterns You'll Use Daily</a><a class="sidebar-link" href="10-observability.html"><span class="sidebar-link-num">10</span> Observability &amp; Safety</a></div>
                     <div class="sidebar-group"><div class="sidebar-group-title">Building</div><a class="sidebar-link" href="11-extending.html"><span class="sidebar-link-num">11</span> Extending the Harness</a></div>
                     <div class="sidebar-group"><div class="sidebar-group-title">Quality</div><a class="sidebar-link" href="13-evaluation.html"><span class="sidebar-link-num">13</span> Evaluation Framework</a><a class="sidebar-link" href="14-skill-training.html"><span class="sidebar-link-num">14</span> Skill Training</a></div>
@@ -89,23 +89,27 @@
     │   ├── <span class="ft-dir">Infrastructure.AI.MCP/</span>
     │   ├── <span class="ft-dir">Infrastructure.AI.MCPServer/</span>
     │   ├── <span class="ft-dir">Infrastructure.AI.RAG/</span>
+    │   ├── <span class="ft-dir">Infrastructure.AI.Evaluation/</span>  <span class="ft-comment">// eval metrics + dataset runner</span>
     │   ├── <span class="ft-dir">Infrastructure.AI.Connectors/</span>
     │   ├── <span class="ft-dir">Infrastructure.AI.Governance/</span>
     │   ├── <span class="ft-dir">Infrastructure.AI.KnowledgeGraph/</span>
     │   ├── <span class="ft-dir">Infrastructure.APIAccess/</span>
     │   └── <span class="ft-dir">Infrastructure.Observability/</span>
     ├── <span class="ft-dir">Presentation/</span>
-    │   ├── <span class="ft-dir">Presentation.Common/</span>   <span class="ft-comment">// composition root</span>
+    │   ├── <span class="ft-dir">Presentation.Common/</span>     <span class="ft-comment">// composition root</span>
     │   ├── <span class="ft-dir">Presentation.ConsoleUI/</span>
-    │   ├── <span class="ft-dir">Presentation.AgentHub/</span>
+    │   ├── <span class="ft-dir">Presentation.AgentHub/</span>   <span class="ft-comment">// SignalR agent hub</span>
+    │   ├── <span class="ft-dir">Presentation.WebUI/</span>      <span class="ft-comment">// browser chat + generative-UI widgets</span>
+    │   ├── <span class="ft-dir">Presentation.Dashboard/</span>  <span class="ft-comment">// observability dashboard + acting agent</span>
+    │   ├── <span class="ft-dir">Presentation.EvalRunner/</span> <span class="ft-comment">// runs eval datasets</span>
+    │   ├── <span class="ft-dir">Presentation.FoundryHost/</span> <span class="ft-comment">// Azure AI Foundry hosted agents</span>
     │   └── <span class="ft-dir">Presentation.LoggerUI/</span>
     └── <span class="ft-dir">Tests/</span>                     <span class="ft-comment">// one test project per source project</span>
 
 <span class="ft-dir">skills/</span>                              <span class="ft-comment">// SKILL.md files — loaded at runtime</span>
 <span class="ft-dir">agents/</span>                              <span class="ft-comment">// AGENT.md files — loaded at runtime</span>
-<span class="ft-dir">eval-tasks/</span>                          <span class="ft-comment">// meta-harness evaluation tasks</span>
+<span class="ft-dir">eval-datasets/</span>                       <span class="ft-comment">// eval YAML datasets (seed/ has 9)</span>
 <span class="ft-dir">documentation/</span>                       <span class="ft-comment">// you are here</span>
-<span class="ft-dir">.meta-harness/</span>                       <span class="ft-comment">// optimization traces &amp; outputs</span>
                     </div>
 
                     <h2>Where to look for...</h2>
@@ -147,6 +151,8 @@
                     <div class="def"><div class="def-term">FAISS</div><div class="def-desc">Facebook AI Similarity Search — vector index library used as one of two vector store options (the other is Azure AI Search).</div></div>
                     <div class="def"><div class="def-term">FluentValidation</div><div class="def-desc">C# validation library. Validators live alongside their commands and are run by <code>RequestValidationBehavior</code>.</div></div>
                     <div class="def"><div class="def-term">HyDE</div><div class="def-desc">Hypothetical Document Embedding — query transform that generates a fake "ideal answer", embeds it, and retrieves against the fake answer's embedding.</div></div>
+                    <div class="def"><div class="def-term">IContextBudgetTracker</div><div class="def-desc">Tracks token consumption for a single agent <em>turn</em> against <code>DefaultTokenBudget</code>, so the assembler can stop packing context before the turn overflows. Scoped per turn — distinct from <code>IConversationBudgetTracker</code>.</div></div>
+                    <div class="def"><div class="def-term">IConversationBudgetTracker</div><div class="def-desc">Enforces a token ceiling across the <em>whole multi-turn conversation</em>, not just one turn. Registered as a singleton so the running total survives across turns; when the ceiling is hit it triggers a graceful break rather than throwing. Introduced by the loop-engineering work as the conversation-lifetime counterpart to the per-turn <code>IContextBudgetTracker</code>.</div></div>
                     <div class="def"><div class="def-term">IOptionsMonitor</div><div class="def-desc">.NET pattern for accessing configuration that hot-reloads when the underlying file changes. Always preferred over <code>IOptions</code>. See <a href="09-patterns.html">Patterns</a>.</div></div>
                     <div class="def"><div class="def-term">Injected mode</div><div class="def-desc">A <code>SkillMode</code> where the skill receives all MCP tools from its parent plugin automatically, bypassing explicit <code>allowed-tools</code> declarations. Used for plugin-provided skills. See <a href="05-skills.html">Skills System</a>.</div></div>
                     <div class="def"><div class="def-term">ITool</div><div class="def-desc">Internal tool interface. Every tool the agent can call implements this — file system, calculator, MCP wrappers, RAG retrievers.</div></div>
@@ -169,11 +175,11 @@
                     <div class="def"><div class="def-term">Result&lt;T&gt;</div><div class="def-desc">The pattern for expected failures. Returns success/failure with optional error details instead of throwing. See <a href="09-patterns.html">Patterns</a>.</div></div>
                     <div class="def"><div class="def-term">RRF</div><div class="def-desc">Reciprocal Rank Fusion — algorithm for merging multiple ranked lists into one. Used in hybrid RAG retrieval.</div></div>
                     <div class="def"><div class="def-term">Sandbox</div><div class="def-desc">The path-validated restriction on file system access. The agent thinks it has a file system; it actually has a cage.</div></div>
-                    <div class="def"><div class="def-term">SKILL.md</div><div class="def-desc">A Markdown file with frontmatter that defines what an agent knows for a given role. Loaded by <code>SkillLoaderService</code> at startup.</div></div>
+                    <div class="def"><div class="def-term">SKILL.md</div><div class="def-desc">A Markdown file with frontmatter that defines what an agent knows for a given role. Parsed by <code>SkillMetadataParser</code> and held in <code>SkillMetadataRegistry</code> at startup.</div></div>
                     <div class="def"><div class="def-term">SkillMode</div><div class="def-desc">Enum: <code>Managed</code> (default — harness resolves only declared tools) or <code>Injected</code> (all MCP tools from the parent plugin are passed through). See <a href="05-skills.html">Skills System</a>.</div></div>
                     <div class="def"><div class="def-term">Span / Trace</div><div class="def-desc">OpenTelemetry concepts. A span is one operation; spans nest into traces. We instrument every command, agent turn, tool call, and LLM request.</div></div>
                     <div class="def"><div class="def-term">Tier 1 / 2 / 3</div><div class="def-desc">The three skill loading levels — index card (~100 tokens), folder (~5K), filing cabinet (unbounded).</div></div>
-                    <div class="def"><div class="def-term">Token budget</div><div class="def-desc">Cap on how many tokens an agent session can consume. Configured via <code>AppConfig.Agent.DefaultTokenBudget</code>; tracked by <code>IContextBudgetTracker</code>.</div></div>
+                    <div class="def"><div class="def-term">Token budget</div><div class="def-desc">Cap on how many tokens an agent turn can consume. Configured via <code>AppConfig:AI:AgentFramework:DefaultTokenBudget</code> (default 200,000); the <em>per-turn</em> ceiling is tracked by <code>IContextBudgetTracker</code>. For the ceiling that spans an entire multi-turn conversation, see <code>IConversationBudgetTracker</code>.</div></div>
                     <div class="def"><div class="def-term">ToolOutputCategory</div><div class="def-desc">Enum classifying tool output content type: <code>Default</code>, <code>Diagnostic</code>, <code>DataHeavy</code>, <code>Conversational</code>. Determines which compression strategy is applied. See <a href="04-message-journey.html">A Message's Journey</a>.</div></div>
                     <div class="def"><div class="def-term">ToolOutputCompressionBehavior</div><div class="def-desc">MediatR pipeline behavior that compresses large tool outputs by content type. Detects the <code>ToolOutputCategory</code>, selects a strategy (FreeText, JSON, XML, Diagnostic), and compresses when the output exceeds configurable thresholds. Reduces token usage significantly for verbose tool responses.</div></div>
                     <div class="def"><div class="def-term">User Secrets</div><div class="def-desc">.NET's development-only encrypted-at-rest secret store. Run <code>dotnet user-secrets set</code> to populate.</div></div>

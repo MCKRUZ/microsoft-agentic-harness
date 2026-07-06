@@ -42,7 +42,7 @@
                         <a class="sidebar-link" href="05-skills.html"><span class="sidebar-link-num">05</span> Skills System</a>
                         <a class="sidebar-link" href="06-tools.html"><span class="sidebar-link-num">06</span> Tools &amp; Keyed DI</a>
                         <a class="sidebar-link" href="07-rag.html"><span class="sidebar-link-num">07</span> The RAG Pipeline</a>
-                        <a class="sidebar-link" href="08-mcp.html"><span class="sidebar-link-num">08</span> MCP Server &amp; Client</a>
+                        <a class="sidebar-link" href="08-mcp.html"><span class="sidebar-link-num">08</span> MCP Server &amp; Client</a><a class="sidebar-link" href="16-generative-ui.html"><span class="sidebar-link-num">16</span> Generative UI &amp; Widgets</a>
                     </div>
                     <div class="sidebar-group"><div class="sidebar-group-title">Patterns</div>
                         <a class="sidebar-link" href="09-patterns.html"><span class="sidebar-link-num">09</span> Patterns You'll Use Daily</a>
@@ -205,14 +205,16 @@
                             <div class="arch-layer-name"><span class="pill pill-present">Presentation</span></div>
                             <div class="arch-layer-projects">
                                 Presentation.ConsoleUI · Presentation.AgentHub (SignalR) ·
-                                Presentation.Common · Infrastructure.AI.MCPServer (WebAPI host)
+                                Presentation.Dashboard · Presentation.WebUI · Presentation.EvalRunner ·
+                                Presentation.FoundryHost · Presentation.LoggerUI · Presentation.Common ·
+                                Infrastructure.AI.MCPServer (WebAPI host)
                             </div>
                         </div>
                         <div class="arch-layer arch-layer-infra">
                             <div class="arch-layer-name"><span class="pill pill-infra">Infrastructure</span></div>
                             <div class="arch-layer-projects">
                                 Infrastructure.AI · Infrastructure.AI.MCP · Infrastructure.AI.Connectors ·
-                                Infrastructure.AI.RAG · Infrastructure.AI.Governance ·
+                                Infrastructure.AI.RAG · Infrastructure.AI.Evaluation · Infrastructure.AI.Governance ·
                                 Infrastructure.AI.KnowledgeGraph · Infrastructure.Common ·
                                 Infrastructure.APIAccess · Infrastructure.Observability
                             </div>
@@ -241,7 +243,7 @@
                     <h3>Application</h3>
                     <p>
                         The "what should happen" layer. CQRS commands like <code>ExecuteAgentTurnCommand</code>,
-                        interfaces like <code>IAgentFactory</code> and <code>ISkillLoaderService</code>, FluentValidation
+                        interfaces like <code>IAgentFactory</code> and <code>ISkillMetadataRegistry</code>, FluentValidation
                         validators, MediatR pipeline behaviors, the <code>AIToolConverter</code> that bridges internal
                         tools to Microsoft.Extensions.AI. Application can depend on Domain, but it must
                         <em>never</em> depend on Infrastructure — it only knows interfaces.
@@ -333,7 +335,7 @@
                             </tr>
                             <tr>
                                 <td>The Azure OpenAI / OpenAI client wiring</td>
-                                <td><code>Infrastructure.AI/ChatClientFactory.cs</code></td>
+                                <td><code>Infrastructure.AI/Factories/ChatClientFactory.cs</code></td>
                             </tr>
                             <tr>
                                 <td>A built-in tool (file system, calculator, etc.)</td>
@@ -408,7 +410,7 @@ services
 
                     <div class="def">
                         <div class="def-term"><code>Infrastructure.AI</code></div>
-                        <div class="def-desc">The agent runtime — chat clients, agent factory, sandboxed file/calculation tools, state management, A2A host.</div>
+                        <div class="def-desc">The agent runtime — chat clients (<code>ChatClientFactory</code>), sandboxed file/calculation tools, state management, A2A host. Note the <code>AgentFactory</code> itself lives in <code>Application.AI.Common/Factories/</code>, not here.</div>
                     </div>
                     <div class="def">
                         <div class="def-term"><code>Infrastructure.AI.MCP</code></div>
@@ -432,7 +434,7 @@ services
                     </div>
                     <div class="def">
                         <div class="def-term"><code>Infrastructure.AI.KnowledgeGraph</code></div>
-                        <div class="def-desc">Graph-backed knowledge storage (planned: Neo4j/Kuzu backend; currently teaching-stub).</div>
+                        <div class="def-desc">Graph-backed knowledge storage — shipped with Neo4j, Kuzu, and PostgreSQL backends and Leiden community detection.</div>
                     </div>
                     <div class="def">
                         <div class="def-term"><code>Infrastructure.Observability</code></div>

@@ -19,7 +19,7 @@
                     <div class="sidebar-group"><div class="sidebar-group-title">Getting Started</div><a class="sidebar-link" href="index.html"><span class="sidebar-link-num">00</span> Welcome</a><a class="sidebar-link" href="01-get-running.html"><span class="sidebar-link-num">01</span> Get Running in 10 Minutes</a></div>
                     <div class="sidebar-group"><div class="sidebar-group-title">Configuration</div><a class="sidebar-link" href="02-configuration.html"><span class="sidebar-link-num">02</span> Configuration Reference</a></div>
                     <div class="sidebar-group"><div class="sidebar-group-title">Architecture</div><a class="sidebar-link" href="03-big-picture.html"><span class="sidebar-link-num">03</span> The Big Picture</a><a class="sidebar-link" href="04-message-journey.html"><span class="sidebar-link-num">04</span> A Message's Journey</a></div>
-                    <div class="sidebar-group"><div class="sidebar-group-title">Systems</div><a class="sidebar-link" href="05-skills.html"><span class="sidebar-link-num">05</span> Skills System</a><a class="sidebar-link" href="06-tools.html"><span class="sidebar-link-num">06</span> Tools &amp; Keyed DI</a><a class="sidebar-link" href="07-rag.html"><span class="sidebar-link-num">07</span> The RAG Pipeline</a><a class="sidebar-link" href="08-mcp.html"><span class="sidebar-link-num">08</span> MCP Server &amp; Client</a></div>
+                    <div class="sidebar-group"><div class="sidebar-group-title">Systems</div><a class="sidebar-link" href="05-skills.html"><span class="sidebar-link-num">05</span> Skills System</a><a class="sidebar-link" href="06-tools.html"><span class="sidebar-link-num">06</span> Tools &amp; Keyed DI</a><a class="sidebar-link" href="07-rag.html"><span class="sidebar-link-num">07</span> The RAG Pipeline</a><a class="sidebar-link" href="08-mcp.html"><span class="sidebar-link-num">08</span> MCP Server &amp; Client</a><a class="sidebar-link" href="16-generative-ui.html"><span class="sidebar-link-num">16</span> Generative UI &amp; Widgets</a></div>
                     <div class="sidebar-group"><div class="sidebar-group-title">Patterns</div><a class="sidebar-link" href="09-patterns.html"><span class="sidebar-link-num">09</span> Patterns You'll Use Daily</a><a class="sidebar-link" href="10-observability.html"><span class="sidebar-link-num">10</span> Observability &amp; Safety</a></div>
                     <div class="sidebar-group"><div class="sidebar-group-title">Building</div><a class="sidebar-link" href="11-extending.html"><span class="sidebar-link-num">11</span> Extending the Harness</a></div>
                     <div class="sidebar-group"><div class="sidebar-group-title">Quality</div><a class="sidebar-link" href="13-evaluation.html"><span class="sidebar-link-num">13</span> Evaluation Framework</a><a class="sidebar-link" href="14-skill-training.html"><span class="sidebar-link-num">14</span> Skill Training</a></div>
@@ -158,6 +158,45 @@
                         <li>Token budget enforcement — the assembler stops before exceeding <code>AppConfig.Agent.DefaultTokenBudget</code> minus the conversation history reserve.</li>
                     </ul>
 
+                    <h2>Alternative backend: Azure AI Search agentic retrieval</h2>
+                    <p>
+                        The whole ingest → hybrid-retrieve → rerank pipeline above is the harness's <em>portable</em>
+                        default — it runs anywhere, against FAISS/SQLite or Azure. But if you're already invested in
+                        Azure AI Search, you can hand the entire "query → ranked results" step to a server-side
+                        <strong>knowledge base</strong> instead. That backend is
+                        <code>AzureKnowledgeBaseRetriever</code>, and it implements the same
+                        <code>IHybridRetriever</code> interface as the local pipeline — so it drops in transparently.
+                    </p>
+                    <ul>
+                        <li>
+                            <strong>Opt-in, off by default.</strong> Enable it with
+                            <code>AppConfig:AI:Rag:AgenticRetrieval:Enabled = true</code>
+                            (config class <code>AgenticRetrievalConfig.cs</code>). When it's off, <code>IHybridRetriever</code>
+                            resolves to the local dense + sparse + RRF retriever exactly as described above; when it's on,
+                            it resolves to the Azure knowledge-base implementation.
+                        </li>
+                        <li>
+                            <strong>Server-side execution.</strong> It calls the stable
+                            <code>Azure.Search.Documents</code> GA surface (<code>KnowledgeBaseRetrievalClient</code>,
+                            API version <code>2026-04-01</code>), which runs parallel extractive retrieval with built-in
+                            semantic ranking on the service. The LLM query-planning and answer-synthesis features of
+                            agentic retrieval are preview-only and deliberately <em>not</em> used, so the template takes
+                            on no preview dependency.
+                        </li>
+                        <li>
+                            <strong>Bring-your-own knowledge base.</strong> The referenced knowledge base, its sources,
+                            and the underlying index must already exist on the Azure AI Search service — provisioning is
+                            an Azure-side concern, not something the harness does for you. Point it at a service via
+                            <code>Endpoint</code> + <code>KnowledgeBaseName</code>, with the API key in User Secrets or
+                            Key Vault.
+                        </li>
+                        <li>
+                            <strong>Fails soft.</strong> A missing configuration or an Azure request failure returns no
+                            results rather than throwing into the pipeline — mirroring the local retriever's
+                            graceful-degradation contract.
+                        </li>
+                    </ul>
+
                     <h2>How an agent uses RAG</h2>
                     <p>
                         From the agent's perspective, RAG is just another <code>ITool</code> — typically
@@ -186,10 +225,16 @@ Cite chunk IDs in the format [doc:chunk-id] when quoting passages.</code></pre>
 ├── Reranker           <span class="ft-comment">// strategy key (Azure | CrossEncoder | NoOp)</span>
 ├── Crag               <span class="ft-comment">// accept / refine / reject thresholds</span>
 ├── VectorStore        <span class="ft-comment">// AzureSearch | Faiss + connection</span>
-├── ModelTiering       <span class="ft-comment">// which model to use for embedding vs synthesis</span>
-└── GraphRag           <span class="ft-comment">// graph-backed knowledge layer (planned)</span>
+├── AgenticRetrieval   <span class="ft-comment">// opt-in Azure AI Search KB backend (off by default)</span>
+└── GraphRag           <span class="ft-comment">// graph-backed knowledge layer (implemented)</span>
                     </div>
                     <p>Each section maps to a class under <code>Domain.Common/Config/AI/RAG/</code>. Default values are tuned for "works well out of the box on the included demo corpus."</p>
+                    <p>
+                        One knob that used to live here has moved: <strong>model tiering</strong> (which model handles
+                        embedding vs. synthesis) is now its own top-level section at <code>AppConfig:AI:ModelRouting</code>
+                        (<code>Domain.Common/Config/AI/Routing/ModelRoutingConfig.cs</code>), so routing decisions are shared
+                        across the whole harness rather than being RAG-specific.
+                    </p>
 
                     <h2>Where the code lives</h2>
                     <div class="callout callout-jargon">
@@ -197,23 +242,24 @@ Cite chunk IDs in the format [doc:chunk-id] when quoting passages.</code></pre>
                         <div class="callout-body">
                             <div class="callout-title">Project layout note</div>
                             <p style="margin: 0">
-                                All paths below sit inside the <strong><code>Infrastructure.AI.RAG</code></strong> project
+                                Most paths below sit inside the <strong><code>Infrastructure.AI.RAG</code></strong> project
                                 (<code>src/Content/Infrastructure/Infrastructure.AI.RAG/Infrastructure.AI.RAG.csproj</code>),
                                 which is a sibling of <code>Infrastructure.AI</code> — not a subdirectory of it. The split
-                                lets consumers swap retrieval implementations without touching the agent runtime.
+                                lets consumers swap retrieval implementations without touching the agent runtime. The one
+                                exception is the <code>document_search</code> <code>ITool</code> wrapper, which lives in the
+                                sibling <code>Infrastructure.AI</code> project alongside the other agent tools.
                             </p>
                         </div>
                     </div>
                     <table>
                         <thead><tr><th>Concern</th><th>Location</th></tr></thead>
                         <tbody>
-                            <tr><td>Pipeline orchestration</td><td><code>Infrastructure.AI.RAG/Pipeline/</code></td></tr>
-                            <tr><td>Chunking strategies</td><td><code>Infrastructure.AI.RAG/Chunking/</code></td></tr>
-                            <tr><td>Embedding clients</td><td><code>Infrastructure.AI.RAG/Embedding/</code></td></tr>
-                            <tr><td>Retrieval (dense + sparse)</td><td><code>Infrastructure.AI.RAG/Retrieval/</code></td></tr>
-                            <tr><td>Rerankers (keyed DI)</td><td><code>Infrastructure.AI.RAG/Reranking/</code></td></tr>
-                            <tr><td>CRAG evaluation</td><td><code>Infrastructure.AI.RAG/Quality/</code></td></tr>
-                            <tr><td>Tool wrappers (<code>document_search</code>, etc.)</td><td><code>Infrastructure.AI.RAG/Tools/</code></td></tr>
+                            <tr><td>Pipeline orchestration</td><td><code>Infrastructure.AI.RAG/Orchestration/</code></td></tr>
+                            <tr><td>Ingestion — chunking strategies, contextual enrichment, RAPTOR, embedding</td><td><code>Infrastructure.AI.RAG/Ingestion/</code></td></tr>
+                            <tr><td>Retrieval (dense + sparse), vector/BM25 stores, and the keyed rerankers</td><td><code>Infrastructure.AI.RAG/Retrieval/</code></td></tr>
+                            <tr><td>CRAG &amp; answer-faithfulness evaluation</td><td><code>Infrastructure.AI.RAG/Evaluation/</code></td></tr>
+                            <tr><td>Context assembly (citations, pointer expansion, token budget)</td><td><code>Infrastructure.AI.RAG/Assembly/</code></td></tr>
+                            <tr><td>The <code>document_search</code> tool wrapper</td><td><code>Infrastructure.AI/Tools/DocumentSearchTool.cs</code> <span class="ft-comment">// sibling project, not RAG</span></td></tr>
                         </tbody>
                     </table>
 

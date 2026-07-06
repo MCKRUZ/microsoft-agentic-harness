@@ -38,6 +38,7 @@
         <button class="nav-dot" data-target="module-6" data-tooltip="Seeing Inside & Staying Safe" role="tab" aria-label="Module 6: Seeing Inside & Staying Safe"></button>
         <button class="nav-dot" data-target="module-7" data-tooltip="Walkthroughs: Real Requests, Line by Line" role="tab" aria-label="Module 7: Walkthroughs: Real Requests, Line by Line"></button>
         <button class="nav-dot" data-target="module-8" data-tooltip="The Quality Loop: Governance, Drift &amp; Learnings" role="tab" aria-label="Module 8: The Quality Loop"></button>
+        <button class="nav-dot" data-target="module-9" data-tooltip="The Agent Acts &amp; Shows Its Work" role="tab" aria-label="Module 9: The Agent Acts &amp; Shows Its Work"></button>
       </div>
     </div>
   </nav>
@@ -153,7 +154,7 @@
         <div class="icon-circle" style="background: var(--color-actor-2)">&#x1F4E1;</div>
         <div>
           <strong><span class="term" data-definition="AG-UI is an open protocol for streaming AI agent events over HTTP Server-Sent Events (SSE). The harness implements POST /ag-ui/run as the chat-message transport.">AG-UI SSE</span> &middot; The chat front door</strong>
-          <p>The React SPA POSTs each user message to <code>POST /ag-ui/run</code>; the server pins the response as <span class="term" data-definition="Server-Sent Events (SSE) is a one-way HTTP streaming protocol. The server sends a long series of named events to the browser over a single open connection. Simpler than WebSockets when only the server needs to push.">Server-Sent Events</span> and streams back AG-UI-protocol events until the run finishes. The LLM call is awaited fully before chunking, then sliced into 50-character <code>TEXT_MESSAGE_CONTENT</code> events &mdash; real token streaming is still on the roadmap.</p>
+          <p>The React SPA POSTs each user message to <code>POST /ag-ui/run</code>; the server pins the response as <span class="term" data-definition="Server-Sent Events (SSE) is a one-way HTTP streaming protocol. The server sends a long series of named events to the browser over a single open connection. Simpler than WebSockets when only the server needs to push.">Server-Sent Events</span> and streams back AG-UI-protocol events until the run finishes. On this browser path the response is awaited fully, then sliced into 50-character <code>TEXT_MESSAGE_CONTENT</code> events so it still &ldquo;types in.&rdquo; The harness engine itself already streams real tokens as the model produces them &mdash; carrying those live tokens all the way out to the browser transport is the one remaining step.</p>
         </div>
       </div>
       <div class="icon-row">
@@ -1744,7 +1745,7 @@
   <div class="screen">
     <h2>The Budget Tracker — Loading the Right Compartment</h2>
 
-    <p>The <code>TieredContextAssembler</code> is the component that actually opens the briefcase. It decides which compartment to load based on what the <span class="term" data-definition="A budget in this context is a limit on how many tokens can be used for a particular purpose. Just like a financial budget, once you spend your allocation, you have to stop or make room by removing something else.">budget</span> allows.</p>
+    <p>Something has to decide which compartment of the briefcase to open, based on what the <span class="term" data-definition="A budget in this context is a limit on how many tokens can be used for a particular purpose. Just like a financial budget, once you spend your allocation, you have to stop or make room by removing something else.">budget</span> allows. We'll call that logic the <code>TieredContextAssembler</code> — a teaching name for the tier-loading decision. <em>(In today's code the tiering is enforced by per-tier allocations recorded in the real <code>ContextBudgetTracker</code> and composed by the agent factory; there's no single class by this name. The Tier 1 / 2 / 3 idea below is exactly what happens.)</em></p>
 
     <!-- Code↔English: TieredContextAssembler -->
     <div class="translation-block animate-in">
@@ -2145,6 +2146,16 @@
         <p>
           External tools from <span class="term" data-definition="MCP (Model Context Protocol) is a standard way for AI agents to discover and call tools hosted on remote servers. Think of it as a universal adapter that lets you snap new blades into the Swiss Army knife without rebuilding it.">MCP</span> servers can be updated, added, or removed without recompiling the harness.
           Checking MCP first means the newest capabilities always win.
+        </p>
+      </div>
+    </div>
+
+    <div class="callout callout-info">
+      <div class="callout-icon">&#x1F3A8;</div>
+      <div class="callout-content">
+        <strong class="callout-title">Some tools hand back a picture, a form, or a chart &mdash; not just text</strong>
+        <p>
+          Most tools return words. But a few special tools let the agent reply with something you can actually <em>look at or click</em>: it can draw you a chart, lay out a table, show an image, or hand you a fill-in form right inside the chat instead of describing it in a paragraph. To the agent these are ordinary tools like any other &mdash; it &ldquo;calls&rdquo; them the same way &mdash; but what comes back is an interactive widget rather than a wall of text. Module 9 is devoted to this: the agent not only telling you things, but <em>showing</em> them.
         </p>
       </div>
     </div>
@@ -3496,7 +3507,7 @@
         <div class="step-body">
           <strong>The response streams back over SSE</strong>
           <p><code>Presentation.AgentHub/AgUi/AgUiRunHandler.cs:261&ndash;270</code> (<code>TEXT_MESSAGE_CONTENT</code> emission) + <code>AgUiEventWriter</code></p>
-          <p>Once <code>_mediator.Send</code> returns the full <code>AgentTurnResult</code>, the AG-UI handler chops the response into 50-character chunks and emits AG-UI-protocol <code>TEXT_MESSAGE_CONTENT</code> delta events, followed by a <code>RUN_FINISHED</code> event. Note: streaming is currently <em>simulated</em> &mdash; the LLM call is awaited fully before chunking. Real token streaming via <code>IAsyncEnumerable&lt;string&gt;</code> is still pending.</p>
+          <p>Once <code>_mediator.Send</code> returns the full <code>AgentTurnResult</code>, the AG-UI handler chops the response into 50-character chunks and emits AG-UI-protocol <code>TEXT_MESSAGE_CONTENT</code> delta events, followed by a <code>RUN_FINISHED</code> event. Worth being precise here: the harness itself <em>does</em> stream real tokens on its turn path &mdash; the engine hands out each word as the model produces it. What you&rsquo;re watching in <em>this browser chat</em> is a different, older transport: the AG-UI handler waits for the whole answer, then re-chops it into evenly sized chunks so it still &ldquo;types in.&rdquo; So the capability is real inside the harness; carrying those live tokens all the way through to the browser is the one remaining step.</p>
         </div>
       </div>
 
@@ -3609,8 +3620,8 @@
 
       <div class="quiz-question-block"
            data-correct="opt-c2"
-           data-explanation-right="Yes. AgUiRunHandler awaits the full LLM response, then chops it into 50-char AG-UI TEXT_MESSAGE_CONTENT delta events. Real token-level streaming requires plumbing IAsyncEnumerable end-to-end, which is not yet wired through ExecuteAgentTurnCommand."
-           data-explanation-wrong="Look at AgUiRunHandler.cs around line 261. The chunking is simulated; the LLM call is awaited in full first, then sliced into 50-char SSE events.">
+           data-explanation-right="Right — for this browser path. AgUiRunHandler awaits the full LLM response, then chops it into 50-char AG-UI TEXT_MESSAGE_CONTENT delta events, so what you see typing in is re-chunked, not live. (The harness engine itself does stream real tokens on its turn path; the open item is carrying those live tokens all the way out to the browser transport.)"
+           data-explanation-wrong="Careful: two different paths. The harness engine streams real tokens as the model produces them. But the AG-UI browser handler around AgUiRunHandler.cs line 261 waits for the full response first, then slices it into evenly sized 50-char SSE events — so what the browser shows is re-chunked, not live.">
         <h3 class="quiz-question">3. The WebUI shows the response &ldquo;typing in&rdquo; chunk by chunk over SSE. Is this real token streaming?</h3>
         <div class="quiz-options">
           <button class="quiz-option" data-value="opt-c1" onclick="selectOption(this)">
@@ -4743,6 +4754,14 @@
         <p>Integer-backed enums let you write <code>if (agent.Tier &gt;= AutonomyLevel.Supervised)</code> &mdash; concise, type-safe, and impossible to typo. The XML doc comments above each value are the source of truth for what the tier <em>means</em>; the rest of the codebase reads them, so changing the comment changes the docs everywhere.</p>
       </div>
     </div>
+
+    <div class="callout callout-accent">
+      <div class="callout-icon">&#x1F3AF;</div>
+      <div class="callout-content">
+        <strong class="callout-title">The dial isn&rsquo;t the whole story &mdash; every tool has a risk rating too</strong>
+        <p>The tier sets the agent&rsquo;s <em>default</em> trust. But not every action is equally dangerous. Reading a file is nearly harmless; deleting a folder or spending money is not. So each tool carries its own <strong>risk tier</strong> and a <strong>blast radius</strong> &mdash; a plain measure of &ldquo;how much damage could this cause if it went wrong?&rdquo; When the agent reaches for a tool, the harness combines <em>the agent&rsquo;s dial</em> with <em>the tool&rsquo;s risk rating</em>. A Supervised agent might sail through low-risk reads but still get stopped for a high-blast-radius delete. The same risk rating also decides how loudly to escalate when a human does need to be asked &mdash; a risky tool raises a louder alarm than a trivial one.</p>
+      </div>
+    </div>
   </div>
 
   <!-- ============================================================
@@ -5197,6 +5216,101 @@
   </div>
 
   <!-- ============================================================
+       SCREEN 5b — Learning From Its Own Work (Work Memory & Trust)
+       ============================================================ -->
+  <div class="screen" id="screen-8-5b">
+    <h2 class="screen-title">Learning From Its Own Work &mdash; and Not Believing Everything It Writes Down</h2>
+    <p class="screen-subtitle">Drift and learnings watch the <em>scores</em>. This is a different kind of memory: the agent keeps a diary of the jobs it actually did, then quietly studies that diary so it does better next time &mdash; while being careful not to trust every note in it.</p>
+
+    <h3>The work diary &mdash; capture, synthesise, recall</h3>
+    <p>Imagine a new employee who, at the end of every task, jots a quick note: &ldquo;Here&rsquo;s what I was asked, here&rsquo;s what I tried, here&rsquo;s what worked.&rdquo; On its own each note is just a scrap. But overnight, when nobody is waiting on an answer, a quieter process reads a whole stack of those scraps and distils them into a handful of durable <em>lessons</em> &mdash; &ldquo;when the request looks like <em>this</em>, the move that works is <em>that</em>.&rdquo; Then, the next time a similar request arrives, those lessons are pulled back up and handed to the agent before it starts. The agent walks into the new job already reminded of how the last one like it went.</p>
+
+    <div class="pattern-cards" style="margin-top: var(--space-6);">
+      <div class="pattern-card" style="border-top: 3px solid var(--color-actor-1)">
+        <div class="pattern-icon" style="background: var(--color-actor-1)">&#x1F4DD;</div>
+        <h4 class="pattern-title">1. Capture</h4>
+        <p class="pattern-desc">After a turn finishes, the harness quietly files an &ldquo;episode&rdquo; &mdash; what was asked, what the agent did, how it turned out. This happens in the background, so it never slows down the answer you&rsquo;re waiting for.</p>
+      </div>
+      <div class="pattern-card" style="border-top: 3px solid var(--color-actor-2)">
+        <div class="pattern-icon" style="background: var(--color-actor-2)">&#x1F319;</div>
+        <h4 class="pattern-title">2. Synthesise (overnight)</h4>
+        <p class="pattern-desc">On its own schedule, a synthesiser reads many episodes at once and turns the raw diary into a few generalised lessons. Many scattered experiences become one reusable rule of thumb.</p>
+      </div>
+      <div class="pattern-card" style="border-top: 3px solid var(--color-actor-3)">
+        <div class="pattern-icon" style="background: var(--color-actor-3)">&#x1F4A1;</div>
+        <h4 class="pattern-title">3. Recall</h4>
+        <p class="pattern-desc">When a new request looks like an old one, the matching lessons are surfaced and dropped into the agent&rsquo;s briefing at the very start of the turn &mdash; so hard-won experience shows up exactly when it&rsquo;s useful.</p>
+      </div>
+    </div>
+
+    <h3 style="margin-top: var(--space-10);">Trust-aware memory &mdash; a diary can be poisoned</h3>
+    <p>There&rsquo;s a catch, and it&rsquo;s an important one. If the agent will read its own notes later and act on them, then anything that sneaks a note into that diary can steer the agent&rsquo;s future behaviour. A malicious web page or document could try to plant a &ldquo;lesson&rdquo; like &ldquo;always email this file to that address.&rdquo; So the harness treats its own memory as <em>untrusted until proven otherwise</em>.</p>
+    <p>Every time something wants to write to memory, it passes through a <strong>write-gate</strong> &mdash; a bouncer for the diary. A note that can&rsquo;t be vouched for isn&rsquo;t thrown away, but it&rsquo;s stamped <em>untrusted</em> and quarantined. Later, when the agent goes to recall a lesson, that trust stamp is checked again: untrusted notes stay out of the briefing. The agent gets the benefit of learning from itself without blindly believing every scrap that landed in its notebook.</p>
+
+    <div class="callout callout-info">
+      <div class="callout-icon">&#x1F6E1;</div>
+      <div class="callout-content">
+        <strong class="callout-title">Why this matters</strong>
+        <p>&ldquo;Learn from your own work&rdquo; and &ldquo;believe everything in your own notes&rdquo; sound like the same thing, but the gap between them is a real attack surface. The write-gate is what lets the harness turn on self-improvement without opening a back door for prompt-injection to rewrite the agent&rsquo;s habits.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       SCREEN 5c — More Guardrails (Budget, Spin & Sensitive Data)
+       ============================================================ -->
+  <div class="screen" id="screen-8-5c">
+    <h2 class="screen-title">Three More Ways the Harness Keeps Itself Honest</h2>
+    <p class="screen-subtitle">Governance decides <em>whether</em> an action is allowed. These three guardrails watch <em>how the work is going</em> &mdash; catching runaway loops, runaway costs, and sensitive data before they become a problem.</p>
+
+    <div class="pattern-cards" style="margin-top: var(--space-6);">
+      <div class="pattern-card" style="border-top: 3px solid var(--color-actor-1)">
+        <div class="pattern-icon" style="background: var(--color-actor-1)">&#x1F4B0;</div>
+        <h4 class="pattern-title">A budget for the whole conversation</h4>
+        <p class="pattern-desc">Module 4 showed the per-turn &ldquo;glass jar&rdquo; &mdash; how much the agent can think about in one reply. This is a bigger jar: a ceiling on the <em>entire conversation</em>. Even if every single turn stays under its own limit, a very long back-and-forth can quietly rack up a large bill. The conversation budget watches the running total and, when it&rsquo;s nearly spent, brings the conversation to a graceful stop instead of letting it drift on forever.</p>
+      </div>
+      <div class="pattern-card" style="border-top: 3px solid var(--color-actor-2)">
+        <div class="pattern-icon" style="background: var(--color-actor-2)">&#x1F503;</div>
+        <h4 class="pattern-title">A spin detector</h4>
+        <p class="pattern-desc">Sometimes an agent gets stuck &mdash; calling the same tool with the same input over and over, making no headway, like a car with its wheels spinning in mud. A progress guard watches for exactly this. If the agent keeps repeating itself without getting anywhere, the guard halts the loop rather than burning time and money going nowhere.</p>
+      </div>
+      <div class="pattern-card" style="border-top: 3px solid var(--color-actor-3)">
+        <div class="pattern-icon" style="background: var(--color-actor-3)">&#x1F512;</div>
+        <h4 class="pattern-title">A sensitive-data checkpoint</h4>
+        <p class="pattern-desc">Some information should never leave the building &mdash; a customer&rsquo;s medical record, a secret contract. Before a tool runs, a data-classification checkpoint can look at what&rsquo;s about to be touched and, depending on how it&rsquo;s configured, block the action outright or let it run but scrub the sensitive parts out of the result.</p>
+      </div>
+    </div>
+
+    <h3 style="margin-top: var(--space-8);">The sensitive-data checkpoint, a little closer</h3>
+    <p>This checkpoint is the harness&rsquo;s tie-in to <span class="term" data-definition="Microsoft Purview is a data-governance service that labels and classifies information by sensitivity (for example: Public, Confidential, Highly Confidential) and enforces rules about what may be done with each label. DLP stands for Data Loss Prevention.">Microsoft Purview</span>-style data governance. It runs as its own gate, separate from the permission rulebook, and it has three settings so an organisation can adopt it gradually:</p>
+    <div class="pattern-cards" style="margin-top: var(--space-6);">
+      <div class="pattern-card" style="border-top: 3px solid var(--color-actor-4)">
+        <div class="pattern-icon" style="background: var(--color-actor-4)">&#x26AA;</div>
+        <h4 class="pattern-title">Off</h4>
+        <p class="pattern-desc">The checkpoint does nothing. This is the default &mdash; nothing changes until an organisation deliberately turns it on.</p>
+      </div>
+      <div class="pattern-card" style="border-top: 3px solid var(--color-actor-2)">
+        <div class="pattern-icon" style="background: var(--color-actor-2)">&#x1F441;</div>
+        <h4 class="pattern-title">Audit</h4>
+        <p class="pattern-desc">The checkpoint watches and records what sensitive data was touched, but never blocks anything. A safe way to see what <em>would</em> happen before enforcing.</p>
+      </div>
+      <div class="pattern-card" style="border-top: 3px solid var(--color-actor-1)">
+        <div class="pattern-icon" style="background: var(--color-actor-1)">&#x1F6D1;</div>
+        <h4 class="pattern-title">Enforce</h4>
+        <p class="pattern-desc">The checkpoint acts: a &ldquo;block&rdquo; verdict stops the tool and tells the agent why; a &ldquo;redact&rdquo; verdict lets the tool run, then scrubs the sensitive parts out of the answer.</p>
+      </div>
+    </div>
+
+    <div class="callout callout-accent">
+      <div class="callout-icon">&#x1F517;</div>
+      <div class="callout-content">
+        <strong class="callout-title">Three gates, stacked</strong>
+        <p>Put together, a tool call now passes through three checkpoints in a row before it runs: <strong>&ldquo;are you allowed?&rdquo;</strong> (governance and the trust dial), <strong>&ldquo;is this data safe to touch?&rdquo;</strong> (the sensitive-data checkpoint), and <strong>&ldquo;are you actually making progress?&rdquo;</strong> (the spin detector). Each is off by default and switched on when an organisation is ready for it &mdash; the harness ships cautious and lets you tighten the screws over time.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================
        SCREEN 6 — Putting It Together
        ============================================================ -->
   <div class="screen" id="screen-8-6">
@@ -5562,7 +5676,7 @@
 
     <!-- Closer (relocated from screen 8-6) -->
     <div class="animate-in" style="margin-top: var(--space-12); padding: var(--space-8); background: linear-gradient(135deg, var(--color-accent-light), var(--color-surface)); border-radius: var(--radius-md); border-left: 4px solid var(--color-accent); text-align: center;">
-      <h2 style="margin-top: 0;">The loop closes here &mdash; for now.</h2>
+      <h2 style="margin-top: 0;">The loop closes here &mdash; one module left.</h2>
       <p>
         You&rsquo;ve seen the harness as it stands today: <strong>seven modules</strong> covering what it is, who&rsquo;s in the cast, how a conversation flows, how skills load, how tools fire safely, how the system watches itself, and how to trace any of it end-to-end in the code. <strong>This eighth module</strong> shows what changes when those same systems start learning from their own behavior &mdash; on two timescales.
       </p>
@@ -5570,7 +5684,182 @@
         The <strong>online loop</strong> &mdash; governance &rarr; escalation &rarr; learnings, with EMA reinforcement and drift-bridged baselines &mdash; tunes the harness continuously, one rating at a time. The <strong>offline loop</strong> &mdash; the harness-proposer reading traces and editing skills &mdash; rewrites the playbook when tuning isn&rsquo;t enough. Together they answer the hardest question in production AI: <em>is my agent getting worse, and can I prove it?</em>
       </p>
       <p style="font-weight: 600; color: var(--color-accent);">
-        Now go put a real agent through both loops. Watch the EWMA scores in the Quality dashboard. Trigger an escalation and resolve it. Create a learning and reinforce it across a few turns. Then run the proposer over the traces and read what it suggests. That&rsquo;s when the patterns from these modules become muscle memory.
+        Now go put a real agent through both loops. Watch the EWMA scores in the Quality dashboard. Trigger an escalation and resolve it. Create a learning and reinforce it across a few turns. Then run the proposer over the traces and read what it suggests. That&rsquo;s when the patterns from these modules become muscle memory. And there&rsquo;s one more module ahead &mdash; where the agent stops only <em>telling</em> you things and starts <em>showing</em> and <em>doing</em> them on the screen in front of you.
+      </p>
+    </div>
+  </div>
+
+</section>
+<section class="module" id="module-9">
+
+  <!-- ============================================================
+       SCREEN 1 — Intro: The Agent Acts & Shows Its Work
+       ============================================================ -->
+  <div class="screen" id="screen-9-1">
+    <div class="module-number">09</div>
+
+    <h1 class="animate-in">The Agent Acts &amp; Shows Its Work</h1>
+
+    <p class="subtitle animate-in">
+      Everything so far pictured the agent as something that <em>talks</em> &mdash; you ask, it answers in words. This last module is about the two ways it steps out of the chat box: it can <strong>show</strong> you things you can look at and click, and it can <strong>act</strong> on the screen in front of you.
+    </p>
+
+    <p class="animate-in">
+      Think of the difference between a travel agent who <em>reads you</em> a list of flights over the phone, and one sitting next to you who <em>pulls up the booking screen</em>, lays the options out as a table, hands you a form to pick your seat, and then clicks through the booking while you watch. Same job &mdash; but the second one is showing their work and doing the work, right in front of you. That&rsquo;s what this module is about.
+    </p>
+
+    <div class="pattern-cards animate-in" style="margin-top: var(--space-8);">
+      <div class="pattern-card" style="border-top: 3px solid var(--color-actor-1)">
+        <div class="pattern-icon" style="background: var(--color-actor-1)">&#x1F4CA;</div>
+        <h4 class="pattern-title">Showing &mdash; interactive widgets in the chat</h4>
+        <p class="pattern-desc">Instead of describing data in a paragraph, the agent can drop a real chart, table, image, or fill-in form straight into the conversation for you to read or use.</p>
+      </div>
+      <div class="pattern-card" style="border-top: 3px solid var(--color-actor-3)">
+        <div class="pattern-icon" style="background: var(--color-actor-3)">&#x1F5A5;</div>
+        <h4 class="pattern-title">Acting &mdash; an agent that drives the screen</h4>
+        <p class="pattern-desc">Embedded inside a live dashboard, the agent can change the date range, jump to another page, refresh the data, and read what&rsquo;s currently on screen &mdash; doing the clicking for you.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       SCREEN 2 — Generative-UI Widgets (Showing)
+       ============================================================ -->
+  <div class="screen" id="screen-9-2">
+    <h2 class="screen-title">Showing Its Work &mdash; Widgets Instead of Walls of Text</h2>
+    <p class="screen-subtitle">In Module 5 you met these as ordinary tools. Here&rsquo;s what they actually put on your screen.</p>
+
+    <p>When the agent decides that a picture would say more than a paragraph, it reaches for a special kind of tool. To the agent it&rsquo;s just another tool call &mdash; but instead of returning text, the harness renders the result as a live element right there in the chat. There are four flavours:</p>
+
+    <div class="pattern-cards" style="margin-top: var(--space-6);">
+      <div class="pattern-card" style="border-top: 3px solid var(--color-actor-1)">
+        <div class="pattern-icon" style="background: var(--color-actor-1)">&#x1F5BC;</div>
+        <h4 class="pattern-title">An image</h4>
+        <p class="pattern-desc">A picture or diagram shown inline &mdash; not a link you have to open, but the actual image sitting in the reply.</p>
+      </div>
+      <div class="pattern-card" style="border-top: 3px solid var(--color-actor-2)">
+        <div class="pattern-icon" style="background: var(--color-actor-2)">&#x1F4CB;</div>
+        <h4 class="pattern-title">A table</h4>
+        <p class="pattern-desc">Rows and columns laid out cleanly, so you can scan numbers or compare items at a glance instead of parsing a run-on sentence.</p>
+      </div>
+      <div class="pattern-card" style="border-top: 3px solid var(--color-actor-3)">
+        <div class="pattern-icon" style="background: var(--color-actor-3)">&#x1F4C8;</div>
+        <h4 class="pattern-title">A chart</h4>
+        <p class="pattern-desc">A bar, line, or pie chart drawn from the data the agent gathered &mdash; the trend jumps out visually rather than hiding in a list of figures.</p>
+      </div>
+      <div class="pattern-card" style="border-top: 3px solid var(--color-actor-4)">
+        <div class="pattern-icon" style="background: var(--color-actor-4)">&#x1F4DD;</div>
+        <h4 class="pattern-title">A form</h4>
+        <p class="pattern-desc">Actual fields you fill in &mdash; a date, a dropdown, a yes/no &mdash; and when you submit, your answers travel straight back to the agent so it can continue with real input from you.</p>
+      </div>
+    </div>
+
+    <p style="margin-top: var(--space-8);">The form is the interesting one, because it turns a one-way announcement into a back-and-forth. The agent hands you a form, you fill it in and hit submit, and your answers become the agent&rsquo;s next piece of information &mdash; a genuine conversation conducted partly through the interface rather than only through typing.</p>
+
+    <div class="callout callout-info">
+      <div class="callout-icon">&#x1F4BE;</div>
+      <div class="callout-content">
+        <strong class="callout-title">The widgets stick around</strong>
+        <p>A chart or a filled-in form isn&rsquo;t a throwaway that vanishes when you reload the page. Once you&rsquo;ve confirmed a widget, it&rsquo;s saved as part of the conversation&rsquo;s history, so it&rsquo;s still there when you come back later. (There&rsquo;s a small piece of care here: the harness only saves a widget <em>after</em> you&rsquo;ve actually confirmed it, so a form you never submitted doesn&rsquo;t leave a ghost behind.)</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       SCREEN 3 — The Acting Dashboard Agent
+       ============================================================ -->
+  <div class="screen" id="screen-9-3">
+    <h2 class="screen-title">Doing the Work &mdash; An Agent That Drives the Dashboard</h2>
+    <p class="screen-subtitle">Showing you a chart is helpful. Changing the screen for you is a bigger leap &mdash; and it&rsquo;s where the agent stops being a narrator and becomes a co-pilot.</p>
+
+    <p>Picture one of the harness&rsquo;s monitoring dashboards &mdash; charts, filters, a date picker, several pages. Now picture a small chat panel tucked into the corner of that same dashboard. You can ask that panel things in plain language, and instead of just answering, it can <em>operate the dashboard for you</em>. That&rsquo;s the acting agent.</p>
+
+    <div class="pattern-cards" style="margin-top: var(--space-6);">
+      <div class="pattern-card" style="border-top: 3px solid var(--color-actor-1)">
+        <div class="pattern-icon" style="background: var(--color-actor-1)">&#x1F4C5;</div>
+        <h4 class="pattern-title">Set the time range</h4>
+        <p class="pattern-desc">&ldquo;Show me the last 24 hours&rdquo; &mdash; and the date filter actually moves, redrawing every chart on the page.</p>
+      </div>
+      <div class="pattern-card" style="border-top: 3px solid var(--color-actor-2)">
+        <div class="pattern-icon" style="background: var(--color-actor-2)">&#x1F9ED;</div>
+        <h4 class="pattern-title">Navigate</h4>
+        <p class="pattern-desc">&ldquo;Take me to the errors page&rdquo; &mdash; and the dashboard switches views, saving you the hunt through the menu.</p>
+      </div>
+      <div class="pattern-card" style="border-top: 3px solid var(--color-actor-3)">
+        <div class="pattern-icon" style="background: var(--color-actor-3)">&#x1F504;</div>
+        <h4 class="pattern-title">Refresh</h4>
+        <p class="pattern-desc">&ldquo;Pull the latest numbers&rdquo; &mdash; and it re-fetches the data so you&rsquo;re looking at the current state.</p>
+      </div>
+      <div class="pattern-card" style="border-top: 3px solid var(--color-actor-4)">
+        <div class="pattern-icon" style="background: var(--color-actor-4)">&#x1F441;</div>
+        <h4 class="pattern-title">Read what&rsquo;s on screen</h4>
+        <p class="pattern-desc">It can also <em>look</em> at the dashboard&rsquo;s current state &mdash; which range is selected, what&rsquo;s showing &mdash; so its answers match what you&rsquo;re actually seeing.</p>
+      </div>
+    </div>
+
+    <p style="margin-top: var(--space-8);">And it can still <em>show</em> at the same time: ask it a question about the data and it can draw a fresh chart right in the chat panel, on top of driving the page. So in one exchange it can read the current view, change the time range, and hand you a new chart of what changed &mdash; all from a sentence you typed in plain language.</p>
+
+    <div class="callout callout-accent">
+      <div class="callout-icon">&#x1F91D;</div>
+      <div class="callout-content">
+        <strong class="callout-title">Why this is the natural finish line</strong>
+        <p>Every earlier module made the agent more capable <em>behind</em> the screen &mdash; better memory, safer tools, tighter oversight. This module is where all of that turns outward. The same governance, the same permission gates, and the same trust dial from Module 8 still apply when the agent acts on your dashboard &mdash; acting on the UI is just another set of tools, watched by the same guards. The payoff is an assistant you don&rsquo;t just read, but work alongside.</p>
+      </div>
+    </div>
+
+    <h3 style="margin-top: var(--space-10);">Quick check</h3>
+    <div class="quiz-container" id="quiz-module9">
+
+      <div class="quiz-question-block"
+           data-correct="opt-w2"
+           data-explanation-right="Right. A render tool is called exactly like any other tool — the difference is only in what comes back: instead of text, the harness renders an interactive element (image, table, chart, or form) inline in the chat."
+           data-explanation-wrong="The agent doesn't use a separate channel or a different kind of request. To the agent, drawing a chart is an ordinary tool call — what's special is that the result is rendered as a live widget rather than returned as text.">
+        <h3 class="quiz-question">1. How does the agent &ldquo;draw you a chart&rdquo; in the chat?</h3>
+        <div class="quiz-options">
+          <button class="quiz-option" data-value="opt-w1" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div><span>Through a special separate channel reserved only for pictures</span>
+          </button>
+          <button class="quiz-option" data-value="opt-w2" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div><span>It calls an ordinary tool &mdash; the result just gets rendered as a live widget instead of text</span>
+          </button>
+          <button class="quiz-option" data-value="opt-w3" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div><span>It can&rsquo;t &mdash; charts have to be built by a human afterwards</span>
+          </button>
+        </div>
+        <div class="quiz-feedback"></div>
+      </div>
+
+      <div class="quiz-question-block"
+           data-correct="opt-a2"
+           data-explanation-right="Exactly. The dashboard agent doesn't just describe what to do — it actually operates the page: moving the date filter, switching views, refreshing data, and reading the current state. And the same governance and permission gates from Module 8 still apply to those actions."
+           data-explanation-wrong="The whole point of the acting agent is that it changes the screen itself. It can set the time range, navigate, refresh, and read the dashboard's state — all under the same safety gates as any other tool.">
+        <h3 class="quiz-question">2. What makes the embedded dashboard agent different from an ordinary chatbot?</h3>
+        <div class="quiz-options">
+          <button class="quiz-option" data-value="opt-a1" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div><span>Nothing &mdash; it only answers questions in words like any chatbot</span>
+          </button>
+          <button class="quiz-option" data-value="opt-a2" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div><span>It can act on the dashboard itself &mdash; change the range, navigate, refresh, read state &mdash; still under the usual safety gates</span>
+          </button>
+          <button class="quiz-option" data-value="opt-a3" onclick="selectOption(this)">
+            <div class="quiz-option-radio"></div><span>It bypasses all the governance and permission checks so it can move fast</span>
+          </button>
+        </div>
+        <div class="quiz-feedback"></div>
+      </div>
+
+      <button class="quiz-check-btn" onclick="checkQuiz('quiz-module9')">Check Answers</button>
+      <button class="quiz-reset-btn" onclick="resetQuiz('quiz-module9')">Try Again</button>
+    </div>
+
+    <!-- Course closer -->
+    <div class="animate-in" style="margin-top: var(--space-12); padding: var(--space-8); background: linear-gradient(135deg, var(--color-accent-light), var(--color-surface)); border-radius: var(--radius-md); border-left: 4px solid var(--color-accent); text-align: center;">
+      <h2 style="margin-top: 0;">That&rsquo;s the whole tour.</h2>
+      <p>
+        You started with a black box that answers questions and ended with an assistant that keeps a diary of its own work, refuses to trust every note in it, watches its own budget and its own progress, guards sensitive data, and &mdash; in this last module &mdash; steps out of the chat box to <strong>show</strong> you charts and forms and to <strong>act</strong> on the screen in front of you.
+      </p>
+      <p style="font-weight: 600; color: var(--color-accent);">
+        None of it is magic. Every capability you&rsquo;ve seen is a small, inspectable piece &mdash; a tool, a gate, a memory, a widget &mdash; wired together with care. That&rsquo;s the whole idea of a harness: not one clever trick, but a lot of honest parts you can trace, one at a time.
       </p>
     </div>
 

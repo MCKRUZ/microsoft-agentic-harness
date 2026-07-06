@@ -291,14 +291,55 @@
                                 <td><code>DefaultDeployment</code> is the model id (<code>gpt-4o</code> etc.).</td>
                             </tr>
                             <tr>
-                                <td>Anthropic (direct)</td>
+                                <td>Anthropic / Claude (via Azure Foundry)</td>
                                 <td><code>Anthropic</code></td>
-                                <td><code>https://api.anthropic.com</code></td>
+                                <td><code>AppConfig:AI:AgentFramework:Endpoint</code> (your Foundry resource)</td>
                                 <td><code>DefaultDeployment</code> is the model id (e.g.
-                                    <code>claude-sonnet-4-6</code>).</td>
+                                    <code>claude-sonnet-4-6</code>). Claude ships through Azure AI Foundry, not a
+                                    direct connection: the Anthropic SDK builds <code>api.anthropic.com</code> URLs, and
+                                    <code>AzureFoundryRewritingHandler</code> rewrites each request to the configured
+                                    Foundry endpoint (native Messages API at <code>/anthropic/v1/messages</code>),
+                                    keeping the <code>x-api-key</code> header.</td>
+                            </tr>
+                            <tr>
+                                <td>Azure AI Foundry (inference)</td>
+                                <td><code>AzureAIInference</code></td>
+                                <td>Your Foundry project inference endpoint</td>
+                                <td>Non-OpenAI models (Claude, Mistral, &hellip;) deployed via Foundry, called
+                                    through the Azure AI Inference SDK.</td>
+                            </tr>
+                            <tr>
+                                <td>Azure AI Foundry (hosted agent)</td>
+                                <td><code>PersistentAgents</code></td>
+                                <td>Foundry project endpoint</td>
+                                <td>Pre-configured, server-side-stateful agents managed by Foundry. Entra ID auth
+                                    from <code>AppConfig:AI:AIFoundry</code>.</td>
+                            </tr>
+                            <tr>
+                                <td>Azure AI Foundry (responses agent)</td>
+                                <td><code>FoundryResponses</code></td>
+                                <td>Foundry project endpoint</td>
+                                <td>Direct-inference Foundry agent built via <code>AIProjectClient.AsAIAgent(...)</code>
+                                    with harness-composed model/instructions/tools. Yields an <code>AIAgent</code>
+                                    (not an <code>IChatClient</code>), so it wires in at the agent-factory level.</td>
                             </tr>
                         </tbody>
                     </table>
+
+                    <div class="callout callout-info">
+                        <span class="callout-icon">i</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Foundry hosted agents</div>
+                            <p style="margin: 0">
+                                The harness ships <code>Microsoft.Agents.AI.Foundry</code> support and a dedicated
+                                <code>Presentation.FoundryHost</code> host. The <code>PersistentAgents</code> and
+                                <code>FoundryResponses</code> client types let you run agents backed by Azure AI
+                                Foundry &mdash; either server-managed (persistent state) or built at runtime from a
+                                Foundry project endpoint &mdash; while keeping the full harness middleware pipeline
+                                (OpenTelemetry, content safety, function-invocation limits) via the client-factory hook.
+                            </p>
+                        </div>
+                    </div>
 
                     <h3 id="embedding-model">Embedding model</h3>
                     <p>

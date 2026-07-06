@@ -1,6 +1,6 @@
 # Magentic Orchestration — OpenTelemetry Span Schema
 
-**Status:** Draft. Aligned to OTel Semantic Conventions **1.41.1** (GenAI sections marked *Development*; gated by `OTEL_SEMCONV_STABILITY_OPT_IN=gen_ai_latest_experimental`). MAF Magentic surface is marked *experimental* by Microsoft (`#pragma warning disable MAAIW001` in samples, even though MAF 1.0 GA shipped April 2026).
+**Status:** Draft. Aligned to OTel Semantic Conventions **1.41.1** (GenAI sections marked *Development*; gated by `OTEL_SEMCONV_STABILITY_OPT_IN=gen_ai_latest_experimental`). MAF Magentic surface is marked *experimental* by Microsoft (`#pragma warning disable MAAIW001` in samples, even though MAF 1.0 GA shipped April 2026). The harness currently pins `Microsoft.Agents.AI` at **1.10.0** (`src/Directory.Packages.props`).
 
 ## Stability & API-churn risk
 

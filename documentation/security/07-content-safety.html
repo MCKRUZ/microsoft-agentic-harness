@@ -366,8 +366,6 @@
                     <ol>
                         <li><strong>AuditTrail</strong> — records the request as it enters</li>
                         <li><strong>ContentSafety</strong> — input screening (this page)</li>
-                        <li><strong>ToolPermission</strong> — which tools may be used</li>
-                        <li><strong>GovernancePolicy</strong> — autonomy and governance gating</li>
                         <li><strong>PromptInjection</strong> — input injection scan (this page)</li>
                         <li><em>… the request handler runs …</em></li>
                         <li><strong>ResponseSanitization</strong> — output sanitization on the way back out (this page)</li>
@@ -379,6 +377,26 @@
                         the model is ever called; the response sanitizer runs on the result the handler produced, on
                         the way back to the caller.
                     </p>
+
+                    <div class="callout callout-tip">
+                        <span class="callout-icon">✓</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Tool permission and governance run on a different path</div>
+                            <p style="margin: 0">
+                                Tool <em>authorization</em> and <em>governance</em> are not MediatR behaviors. They run
+                                on the live tool-execution path: every agent tool is wrapped by
+                                <code>GovernedAIFunction</code>, whose <code>InvokeCoreAsync</code> runs three ambient
+                                gates — <code>IToolInvocationGovernor</code> (authorization),
+                                <code>IToolClassificationGate</code> (data-classification DLP), and
+                                <code>IProgressEvaluator</code> (spin guard) — before the tool runs. Two earlier
+                                MediatR behaviors named <code>ToolPermissionBehavior</code> and
+                                <code>GovernancePolicyBehavior</code> were removed as dead code (they keyed on a marker
+                                nothing implemented). See <a href="04-tools-and-permissions.html">Tools &amp;
+                                Permissions</a> and <a href="03-autonomy-and-governance.html">Autonomy &amp;
+                                Governance</a>.
+                            </p>
+                        </div>
+                    </div>
 
                     <h2 id="untrusted-everywhere">Untrusted text is everywhere — not just here</h2>
                     <p>

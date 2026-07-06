@@ -1,5 +1,7 @@
 # Module 5b: RAG & Knowledge — How the Agent Learns From Your Documents
 
+> **Build note (source/output mapping):** This brief has **no standalone `modules/05b-*.html` fragment**, and that is intentional — not a missing file. The RAG material was **folded into Module 7 (Walkthroughs) as "Walkthrough D — What Does the README Say About RAG?"** (`modules/07-walkthroughs.html`), where the full retrieve → fuse → rerank → assemble → evaluate pipeline is taught line by line against a real request. Because `build.sh` assembles `index.html` from `modules/*.html`, there is nothing to drop on a rebuild: RAG lives in the `07` fragment. This brief is retained as the plain-language design notes behind that walkthrough. If RAG is ever promoted back to its own module, create `modules/05b-*.html` from this brief **and** move the RAG walkthrough out of `07` to avoid double-coverage.
+
 ## Teaching Arc
 - **Metaphor:** A research assistant with a really good filing cabinet. The agent on its own only knows what it was trained on. RAG is the filing cabinet — a way for the agent to *look things up* in your documents before it answers, so its replies are grounded in what you actually wrote instead of what the model happens to remember.
 - **Opening hook:** "Module 5 showed you the agent's *hands* — the tools it uses to act on the world. This module is about its *memory* — the system that lets it answer questions about documents it has never seen before, with citations you can verify."

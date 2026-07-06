@@ -19,7 +19,7 @@
                     <div class="sidebar-group"><div class="sidebar-group-title">Getting Started</div><a class="sidebar-link" href="index.html"><span class="sidebar-link-num">00</span> Welcome</a><a class="sidebar-link" href="01-get-running.html"><span class="sidebar-link-num">01</span> Get Running in 10 Minutes</a></div>
                     <div class="sidebar-group"><div class="sidebar-group-title">Configuration</div><a class="sidebar-link" href="02-configuration.html"><span class="sidebar-link-num">02</span> Configuration Reference</a></div>
                     <div class="sidebar-group"><div class="sidebar-group-title">Architecture</div><a class="sidebar-link" href="03-big-picture.html"><span class="sidebar-link-num">03</span> The Big Picture</a><a class="sidebar-link" href="04-message-journey.html"><span class="sidebar-link-num">04</span> A Message's Journey</a></div>
-                    <div class="sidebar-group"><div class="sidebar-group-title">Systems</div><a class="sidebar-link" href="05-skills.html"><span class="sidebar-link-num">05</span> Skills System</a><a class="sidebar-link" href="06-tools.html"><span class="sidebar-link-num">06</span> Tools &amp; Keyed DI</a><a class="sidebar-link" href="07-rag.html"><span class="sidebar-link-num">07</span> The RAG Pipeline</a><a class="sidebar-link" href="08-mcp.html"><span class="sidebar-link-num">08</span> MCP Server &amp; Client</a></div>
+                    <div class="sidebar-group"><div class="sidebar-group-title">Systems</div><a class="sidebar-link" href="05-skills.html"><span class="sidebar-link-num">05</span> Skills System</a><a class="sidebar-link" href="06-tools.html"><span class="sidebar-link-num">06</span> Tools &amp; Keyed DI</a><a class="sidebar-link" href="07-rag.html"><span class="sidebar-link-num">07</span> The RAG Pipeline</a><a class="sidebar-link" href="08-mcp.html"><span class="sidebar-link-num">08</span> MCP Server &amp; Client</a><a class="sidebar-link" href="16-generative-ui.html"><span class="sidebar-link-num">16</span> Generative UI &amp; Widgets</a></div>
                     <div class="sidebar-group"><div class="sidebar-group-title">Patterns</div><a class="sidebar-link" href="09-patterns.html"><span class="sidebar-link-num">09</span> Patterns You'll Use Daily</a><a class="sidebar-link" href="10-observability.html"><span class="sidebar-link-num">10</span> Observability &amp; Safety</a></div>
                     <div class="sidebar-group"><div class="sidebar-group-title">Building</div><a class="sidebar-link" href="11-extending.html"><span class="sidebar-link-num">11</span> Extending the Harness</a></div>
                     <div class="sidebar-group"><div class="sidebar-group-title">Quality</div><a class="sidebar-link" href="13-evaluation.html"><span class="sidebar-link-num">13</span> Evaluation Framework</a><a class="sidebar-link" href="14-skill-training.html"><span class="sidebar-link-num">14</span> Skill Training</a></div>
@@ -64,7 +64,8 @@ dotnet run --project src/Content/Presentation/Presentation.EvalRunner -- \
                             <tr><td><code>YamlEvalDatasetLoader</code></td><td>Infrastructure.AI.Evaluation/Loaders</td><td>Parses <code>*.yaml</code> / <code>*.yml</code> dataset files.</td></tr>
                             <tr><td><code>EvalRunner</code></td><td>Infrastructure.AI.Evaluation/Runners</td><td>Single runner; serial when <code>Parallelism=1</code>, bounded-parallel above. Repeats with median aggregation.</td></tr>
                             <tr><td><code>HarnessAgentInvoker</code></td><td>Infrastructure.AI.Evaluation/Invokers</td><td>Dispatches <code>ExecuteAgentTurnCommand</code> via MediatR — full pipeline (validation, content safety, governance) runs.</td></tr>
-                            <tr><td>6 built-in metrics</td><td>Infrastructure.AI.Evaluation/Metrics</td><td><code>exact_match</code>, <code>regex_match</code>, <code>contains_all</code>, <code>does_not_contain</code>, <code>is_valid_json</code>, <code>llm_judge</code>.</td></tr>
+                            <tr><td>7 core metrics</td><td>Infrastructure.AI.Evaluation/Metrics</td><td><code>exact_match</code>, <code>regex_match</code>, <code>contains_all</code>, <code>does_not_contain</code>, <code>is_valid_json</code>, <code>llm_judge</code>, <code>routing_accuracy</code>.</td></tr>
+                            <tr><td>5 RAG judge metrics</td><td>Infrastructure.AI.Evaluation/Metrics/Rag</td><td><code>faithfulness</code>, <code>context_precision</code>, <code>context_recall</code>, <code>answer_relevance</code>, <code>answer_correctness</code> — LLM-judged RAG quality scored against the retrieved context.</td></tr>
                             <tr><td>3 reporters</td><td>Infrastructure.AI.Evaluation/Reporters</td><td>Console (Spectre), JSON (snake_case), JUnit XML (XSD-legal for CI parsers).</td></tr>
                             <tr><td><code>LlmJsonResponseParser</code></td><td>Application.AI.Common/Json</td><td>Shared LLM-response JSON extractor — depth-aware balanced scan that tolerates prose with stray braces. Used by the judge metric and three other LLM call sites.</td></tr>
                         </tbody>
@@ -72,7 +73,7 @@ dotnet run --project src/Content/Presentation/Presentation.EvalRunner -- \
 
                     <h2>Seed datasets</h2>
                     <p>
-                        <code>eval-datasets/seed/</code> ships seven datasets that exercise the patterns demonstrated
+                        <code>eval-datasets/seed/</code> ships nine datasets that exercise the patterns demonstrated
                         in <code>Presentation.ConsoleUI/Examples</code>. They use <code>agent_name: default</code>
                         as a placeholder — change to your real agent before running, or pass an overriding
                         <code>--tags</code> / per-case override.
@@ -87,8 +88,19 @@ dotnet run --project src/Content/Presentation/Presentation.EvalRunner -- \
                             <tr><td><code>tool-converter.yaml</code></td><td>Keyed-DI tool invocation, schema enforcement, denied-tool blocking.</td></tr>
                             <tr><td><code>pipeline-behaviors.yaml</code></td><td>Validation, caching, performance, tool-output compression, exception handling.</td></tr>
                             <tr><td><code>rag-pipeline-smoke.yaml</code></td><td>Twelve-case smoke covering simple lookup, multi-hop, faithfulness, citations, budgets, JSON shape, freshness honesty.</td></tr>
+                            <tr><td><code>rag-quality.yaml</code></td><td>RAG quality regression against the 5-metric judge pack — faithfulness, context precision, context recall, answer relevance, answer correctness — with per-case <code>retrieved_context</code> supplied.</td></tr>
+                            <tr><td><code>routing-accuracy.yaml</code></td><td>Routing scorecard: labeled inputs fed straight to the classifying routers (<code>query_type</code>, <code>task_complexity</code>), asserting the predicted bucket against a gold label via the <code>routing_accuracy</code> metric.</td></tr>
                         </tbody>
                     </table>
+                    <p>
+                        The last two rows back the <strong>routing-accuracy scorecard</strong>, which is
+                        <strong>shipped</strong>, not planned: the <code>RoutingAccuracyMetric</code>
+                        (<code>Infrastructure.AI.Evaluation/Metrics/RoutingAccuracyMetric.cs</code>, key
+                        <code>routing_accuracy</code>) scores router classifications against
+                        <code>eval-datasets/seed/routing-accuracy.yaml</code>, isolating routing quality from the
+                        end-to-end answer. The seed set is a deliberately unambiguous starter; curating toward a larger
+                        set with borderline inputs is follow-on work.
+                    </p>
 
                     <h2>The dataset YAML in one screen</h2>
 <pre><code>name: my-suite

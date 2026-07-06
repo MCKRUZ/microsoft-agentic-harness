@@ -67,6 +67,9 @@
                         <a class="sidebar-link" href="08-mcp.html"
                             ><span class="sidebar-link-num">08</span> MCP Server &amp; Client</a
                         >
+                        <a class="sidebar-link" href="16-generative-ui.html"
+                            ><span class="sidebar-link-num">16</span> Generative UI &amp; Widgets</a
+                        >
                     </div>
                     <div class="sidebar-group">
                         <div class="sidebar-group-title">Patterns</div>
@@ -254,10 +257,18 @@
 │   ├── Skills               <span class="ft-comment">// where SKILL.md files live</span>
 │   ├── Agents               <span class="ft-comment">// where AGENT.md files live</span>
 │   ├── Rag
+│   ├── ModelRouting         <span class="ft-comment">// model tiering (economy/standard/premium)</span>
+│   ├── Embedding
+│   ├── ToolOutputCompression
+│   ├── Plugins              <span class="ft-comment">// local plugin declarations</span>
+│   ├── Egress               <span class="ft-comment">// outbound SSRF allowlist</span>
+│   ├── SandboxCapabilities  <span class="ft-comment">// process/Docker sandbox capability model</span>
+│   ├── WorkMemory           <span class="ft-comment">// self-improving work memory</span>
+│   ├── Audit                <span class="ft-comment">// hash-chained tamper-evident audit</span>
 │   ├── Resilience
 │   ├── DriftDetection
 │   ├── Learnings
-│   └── Governance
+│   └── Governance           <span class="ft-comment">// tool-invocation gate + DataClassification DLP</span>
 ├── <span class="ft-dir">Azure</span>           <span class="ft-comment">// App Insights, SQL, B2C, Key Vault, Graph</span>
 ├── <span class="ft-dir">Cache</span>           <span class="ft-comment">// Memory | Redis</span>
 └── <span class="ft-dir">MetaHarness</span>     <span class="ft-comment">// optimization loop: iterations, eval tasks, traces</span>
@@ -384,20 +395,24 @@
                             </tr>
                             <tr>
                                 <td><code>DefaultTokenBudget</code></td>
-                                <td><code>128000</code></td>
+                                <td><code>200000</code></td>
                                 <td>
-                                    Cap on tokens the agent can spend per session — across system prompt, loaded
-                                    skills, tool schemas, and conversation history. <code>TokenBudgetBehavior</code>
-                                    enforces it. See <a href="05-skills.html">Skills</a> for how budget interacts with
-                                    progressive disclosure.
+                                    Cap on tokens the agent can spend per <strong>turn</strong> — across system prompt,
+                                    loaded skills, tool schemas, and history. <code>TokenBudgetBehavior</code> enforces
+                                    it. Bound at <code>AppConfig:AI:AgentFramework:DefaultTokenBudget</code>. See
+                                    <a href="05-skills.html">Skills</a> for how budget interacts with progressive
+                                    disclosure.
                                 </td>
                             </tr>
                             <tr>
-                                <td><code>MaxTurnsPerConversation</code></td>
-                                <td><code>10</code></td>
+                                <td><code>ConversationTokenBudget</code></td>
+                                <td><code>—</code></td>
                                 <td>
-                                    Hard upper bound on the agent loop. When reached, the conversation terminates with
-                                    a "turn limit exceeded" result regardless of agent state.
+                                    Cross-turn ceiling for the whole conversation, enforced by the
+                                    <code>IConversationBudgetTracker</code> singleton — distinct from the per-turn
+                                    <code>DefaultTokenBudget</code>. When exhausted, the loop breaks gracefully. There
+                                    is <strong>no</strong> <code>MaxTurnsPerConversation</code> property; budgets are
+                                    token-based, not turn-count-based.
                                 </td>
                             </tr>
                         </tbody>
@@ -483,8 +498,12 @@
                                 <td><code>ClientType</code></td>
                                 <td>enum</td>
                                 <td>
-                                    <code>AzureOpenAI</code> | <code>OpenAI</code> | <code>AzureAIInference</code>.
-                                    Selects which SDK is used by <code>ChatClientFactory</code>.
+                                    One of seven <code>AIAgentFrameworkClientType</code> values:
+                                    <code>AzureOpenAI</code> | <code>OpenAI</code> | <code>AzureAIInference</code> |
+                                    <code>PersistentAgents</code> | <code>Anthropic</code> | <code>Echo</code> |
+                                    <code>FoundryResponses</code>. Selects which SDK <code>ChatClientFactory</code>
+                                    uses. (There is no <code>OpenRouter</code> value — point the <code>OpenAI</code>
+                                    client at an OpenAI-compatible <code>Endpoint</code> to use OpenRouter.)
                                 </td>
                             </tr>
                             <tr>
@@ -563,7 +582,7 @@
   "Servers": {
     "bifrost": {
       "Type": "Http",
-      "Url": "http://192.168.50.189:8090/mcp",
+      "Url": "http://your-mcp-gateway:8090/mcp",
       "Description": "Bifrost MCP gateway — github, firecrawl, playwright"
     }
   }
@@ -589,8 +608,10 @@
                             <tr>
                                 <td><code>Auth</code></td>
                                 <td>
-                                    Optional. Bearer token, API key in header, or none. See
-                                    <code>McpServerAuthConfig</code>.
+                                    Optional. <code>Type</code> is <code>None</code> | <code>ApiKey</code> |
+                                    <code>Bearer</code> (static token in <code>BearerToken</code>) | <code>Entra</code>
+                                    (Azure managed identity — <code>Scopes</code>-only, via
+                                    <code>EntraTokenAuthHandler</code>). See <code>McpServerAuthConfig</code>.
                                 </td>
                             </tr>
                             <tr>
@@ -653,6 +674,26 @@
                                 <td><code>EnableAudit</code></td>
                                 <td><code>true</code></td>
                                 <td>Tamper-evident audit log of every governance decision.</td>
+                            </tr>
+                            <tr>
+                                <td><code>EnforceToolInvocation</code></td>
+                                <td><code>false</code></td>
+                                <td>
+                                    Opt-in switch that arms <code>IToolInvocationGovernor</code> — the live tool
+                                    authorization gate on the execution path (permission resolver → graded-autonomy →
+                                    capability → YAML policy). Off by default (closed-by-default enforcement is opt-in).
+                                </td>
+                            </tr>
+                            <tr>
+                                <td><code>DataClassification.Mode</code></td>
+                                <td><code>Off</code></td>
+                                <td>
+                                    Purview data-classification DLP gate (<code>IToolClassificationGate</code>):
+                                    <code>Off</code> | <code>Audit</code> | <code>Enforce</code>. In
+                                    <code>Enforce</code>, a <code>Block</code> verdict returns a model-facing message
+                                    instead of running the tool, and a <code>RedactOutput</code> verdict scrubs the
+                                    result. Requires a classification provider enabled.
+                                </td>
                             </tr>
                             <tr>
                                 <td><code>Escalation</code></td>
@@ -978,16 +1019,24 @@ dotnet user-secrets set "AppConfig:AI:AgentFramework:DefaultDeployment" "gpt-4o"
                     </div>
                     <p>Be specific — give it the exact folder, not a parent.</p>
 
-                    <h3>Raise the conversation turn cap for long-running tasks</h3>
+                    <h3>Raise the budget for long-running tasks</h3>
                     <div class="code-block">
                         <div class="code-block-header"><span class="code-block-lang">json</span></div>
                         <pre><code>"AppConfig": {
-  "Agent": {
-    "MaxTurnsPerConversation": 30
+  "AI": {
+    "AgentFramework": {
+      "DefaultTokenBudget": 300000,       // per-turn cap
+      "ConversationTokenBudget": 2000000  // cross-turn ceiling for the whole conversation
+    }
   }
 }</code></pre>
                     </div>
-                    <p>Watch your token budget — long conversations bloat conversation history fast.</p>
+                    <p>
+                        The harness has no fixed turn limit — it is governed by token budget. The per-turn
+                        <code>DefaultTokenBudget</code> bounds a single turn; the cross-turn
+                        <code>ConversationTokenBudget</code> (enforced by <code>IConversationBudgetTracker</code>)
+                        breaks the loop gracefully when a long conversation exhausts it.
+                    </p>
 
                     <h3>Add an external MCP server</h3>
                     <div class="code-block">
@@ -1002,7 +1051,7 @@ dotnet user-secrets set "AppConfig:AI:AgentFramework:DefaultDeployment" "gpt-4o"
           "Description": "Company internal toolset",
           "Auth": {
             "Type": "Bearer",
-            "Token": "${INTERNAL_MCP_TOKEN}"
+            "BearerToken": "${INTERNAL_MCP_TOKEN}"
           }
         }
       }
@@ -1011,9 +1060,25 @@ dotnet user-secrets set "AppConfig:AI:AgentFramework:DefaultDeployment" "gpt-4o"
 }</code></pre>
                     </div>
                     <p>
-                        Use <code>${ENV_NAME}</code> substitution for any token — never inline secrets in JSON. The
-                        token resolves from <code>INTERNAL_MCP_TOKEN</code> in environment or User Secrets at bind
-                        time.
+                        The property is <code>BearerToken</code> (not <code>Token</code>). Use
+                        <code>${ENV_NAME}</code> substitution for any secret — never inline it in JSON. The value
+                        resolves from <code>INTERNAL_MCP_TOKEN</code> in environment or User Secrets at bind time.
+                    </p>
+                    <p>
+                        For an Azure-hosted MCP server, use <strong>managed-identity</strong> auth instead of a static
+                        token — set <code>Type</code> to <code>Entra</code> and supply <code>Scopes</code>
+                        (<code>EntraTokenAuthHandler</code> acquires the token via <code>McpConnectionManager</code>):
+                    </p>
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-block-lang">json</span></div>
+                        <pre><code>"Auth": {
+  "Type": "Entra",
+  "Scopes": ["api://mcp-server-app-id/.default"]
+}</code></pre>
+                    </div>
+                    <p>
+                        Managed-identity config is <strong>Scopes-only</strong>: supplying a lone <code>TenantId</code>
+                        without scopes is rejected at bind time.
                     </p>
 
                     <h3>Run more autonomously (skip "Ask" prompts)</h3>
@@ -1111,8 +1176,10 @@ dotnet user-secrets set "AppConfig:AI:AgentFramework:DefaultDeployment" "gpt-4o"
 │   ├── <span class="ft-dir">Orchestration/</span>                    <span class="ft-comment">// SubagentConfig, streaming</span>
 │   ├── <span class="ft-dir">RAG/</span>                              <span class="ft-comment">// ingestion, retrieval, reranker, query xform</span>
 │   ├── <span class="ft-dir">ContextManagement/</span>                <span class="ft-comment">// compaction, tool result storage, budget</span>
-│   ├── <span class="ft-dir">Hooks/</span>, <span class="ft-dir">DriftDetection/</span>, <span class="ft-dir">Learnings/</span>
-│   └── <span class="ft-file">GovernanceConfig.cs</span>
+│   ├── <span class="ft-dir">Hooks/</span>, <span class="ft-dir">DriftDetection/</span>, <span class="ft-dir">Learnings/</span>, <span class="ft-dir">WorkMemory/</span>
+│   ├── <span class="ft-file">ModelRoutingConfig.cs</span>, <span class="ft-file">ToolOutputCompressionConfig.cs</span>
+│   ├── <span class="ft-file">PluginsConfig.cs</span>, <span class="ft-file">EgressConfig.cs</span>, <span class="ft-file">SandboxConfig.cs</span>, <span class="ft-file">AuditConfig.cs</span>
+│   └── <span class="ft-file">GovernanceConfig.cs</span>                  <span class="ft-comment">// + DataClassification DLP</span>
 ├── <span class="ft-dir">Azure/</span>                                <span class="ft-comment">// AppInsights, B2C, KeyVault, Graph, SQL</span>
 ├── <span class="ft-dir">Cache/</span>                                <span class="ft-comment">// CacheConfig</span>
 ├── <span class="ft-dir">Connectors/</span>                           <span class="ft-comment">// GitHub, Jira, AzDO, Slack</span>

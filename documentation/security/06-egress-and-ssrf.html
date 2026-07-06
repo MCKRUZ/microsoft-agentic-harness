@@ -381,11 +381,12 @@
                             connection is even attempted;
                         </li>
                         <li>
-                            <strong>routes through a named HttpClient</strong>, <code>HttpClientNames.McpEgress</code>,
-                            that applies the AntiSSRF ring. MCP servers are admin-configured and often connected
-                            <em>outside</em> an agent turn, so they ride the SSRF ring (Ring 2) rather than the
-                            per-skill allowlist (Ring 1) — there's no agent identity on the scope to resolve a per-skill
-                            policy against;
+                            <strong>routes through an SSRF-guarded HttpClient</strong> — <code>McpConnectionManager.ResolveTransportHttpClient</code>
+                            reuses the shared client carrying the AntiSSRF ring (with a per-server
+                            <code>EntraTokenAuthHandler</code> layered on when managed-identity auth is configured). MCP
+                            servers are admin-configured and often connected <em>outside</em> an agent turn, so they ride
+                            the SSRF ring (Ring 2) rather than the per-skill allowlist (Ring 1) — there's no agent
+                            identity on the scope to resolve a per-skill policy against;
                         </li>
                         <li>
                             <strong>applies a connection/initialization timeout</strong>

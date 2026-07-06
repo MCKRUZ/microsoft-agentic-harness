@@ -2,7 +2,7 @@
 
 > **Purpose:** This is a neutral, citation-grounded fact base on how the industry builds agentic DevOps as of mid-2026. It is **input, not direction.** Nothing here prescribes what this harness should do — the architectural decisions are left to the harness agent/maintainers. Each fact is attributed to a primary source. Verified and flagged (snippet-only) facts are kept separate so confidence is explicit.
 >
-> **Provenance:** Compiled 2026-06-04 via a 6-track deep-research pass (~55 primary sources fetched). Full cited report with executive summary, synthesis, and per-source verification note: `project-research/research/2026-06-04-agentic-devops-best-practices/report.md` (and `.html`).
+> **Provenance:** Compiled 2026-06-04 via a 6-track deep-research pass (~55 primary sources fetched). The full cited report (executive summary, synthesis, per-source verification note) was an ephemeral research artifact and is not checked into this repository; this findings document is the retained summary.
 >
 > **How to read confidence:** *Verified* = the supporting page was actually opened/fetched during research. *Flagged* = the claim rests on a search snippet or a page that couldn't be opened; treat as directional and re-confirm before relying on it.
 
@@ -110,4 +110,4 @@ These are the choices the facts surface. They are stated as questions, deliberat
 
 ---
 
-*Full report, per-source list, and verification note: `project-research/research/2026-06-04-agentic-devops-best-practices/`.*
+*The full report, per-source list, and verification note were part of the ephemeral 2026-06-04 research pass and are not retained in this repository; this document is the summary of record.*

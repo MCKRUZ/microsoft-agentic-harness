@@ -79,8 +79,8 @@
                                 to look at first. The full instrumentation contract (span/metric/log names, GenAI
                                 semantic-convention mappings, resource attribute requirements, sampling policy) lives
                                 in <a href="../blueprints/agentic-harness-observability.md"><code>documentation/blueprints/agentic-harness-observability.md</code></a>
-                                (v1.2) and the single emit-point in
-                                <code>Infrastructure.AI.Observability/GenAiSemconvRegistry.cs</code>. When this page
+                                (v1.3) and the single emit-point in
+                                <code>Domain.AI/Telemetry/Conventions/GenAiSemconvRegistry.cs</code>. When this page
                                 and the blueprint disagree, the blueprint wins.
                             </p>
                         </div>
@@ -185,44 +185,34 @@
                         </thead>
                         <tbody>
                             <tr>
-                                <td><code>agent.turn</code></td>
+                                <td><code>invoke_agent</code></td>
                                 <td>Agent runtime</td>
-                                <td>Full agent turn: prompt to response (includes tool calls)</td>
+                                <td>Top-level agent turn: prompt to response (parents every child span below)</td>
                             </tr>
                             <tr>
-                                <td><code>agent.tool_call</code></td>
+                                <td><code>chat</code></td>
+                                <td>Chat client</td>
+                                <td>A single LLM chat-completion call, with model, token, and finish-reason attributes</td>
+                            </tr>
+                            <tr>
+                                <td><code>execute_tool</code></td>
                                 <td>Tool executor</td>
-                                <td>Individual tool execution with args and result</td>
+                                <td>Individual tool execution with args and result. MCP tools surface here too (wrapped as <code>AITool</code>s)</td>
                             </tr>
                             <tr>
-                                <td><code>rag.retrieve</code></td>
-                                <td>RAG pipeline</td>
-                                <td>Full retrieval: query transform, search, rerank, assemble</td>
-                            </tr>
-                            <tr>
-                                <td><code>rag.embed</code></td>
+                                <td><code>embeddings</code></td>
                                 <td>Embedding service</td>
-                                <td>Embedding generation time and token count</td>
+                                <td>Embedding generation for RAG ingestion/queries, with token count</td>
                             </tr>
                             <tr>
-                                <td><code>mcp.request</code></td>
-                                <td>MCP server</td>
-                                <td>Incoming MCP tool/prompt/resource request</td>
+                                <td><code>invoke_workflow</code></td>
+                                <td>Magentic orchestration</td>
+                                <td>Root multi-agent workflow span (manager + participant rounds hang off it)</td>
                             </tr>
                             <tr>
-                                <td><code>knowledge.query</code></td>
-                                <td>Knowledge graph</td>
-                                <td>Graph traversal query with node/edge counts</td>
-                            </tr>
-                            <tr>
-                                <td><code>governance.drift</code></td>
-                                <td>Drift detector</td>
-                                <td>EWMA quality score, severity level</td>
-                            </tr>
-                            <tr>
-                                <td><code>pipeline.behavior</code></td>
-                                <td>MediatR pipeline</td>
-                                <td>Each pipeline behavior execution time</td>
+                                <td><code>invoke_a2a</code></td>
+                                <td>A2A client / server</td>
+                                <td>Agent-to-agent dispatch, correlated across caller and callee spans</td>
                             </tr>
                         </tbody>
                     </table>
@@ -238,42 +228,64 @@
                         </thead>
                         <tbody>
                             <tr>
-                                <td><code>harness.agent.turns</code></td>
+                                <td><code>agent.orchestration.turns_total</code></td>
                                 <td>Counter</td>
                                 <td>Total agent turns processed</td>
                             </tr>
                             <tr>
-                                <td><code>harness.agent.tokens</code></td>
+                                <td><code>agent.tokens.input</code> / <code>agent.tokens.output</code> / <code>agent.tokens.total</code></td>
                                 <td>Histogram</td>
-                                <td>Token usage per turn (prompt + completion)</td>
+                                <td>Token usage per turn (input, output, and combined)</td>
                             </tr>
                             <tr>
-                                <td><code>harness.rag.latency</code></td>
+                                <td><code>agent.tokens.cache_read</code> / <code>agent.tokens.cache_write</code></td>
+                                <td>Counter</td>
+                                <td>Prompt-cache token accounting (cache hits vs. cache writes)</td>
+                            </tr>
+                            <tr>
+                                <td><code>rag.retrieval.duration</code></td>
                                 <td>Histogram</td>
                                 <td>RAG retrieval latency in ms</td>
                             </tr>
                             <tr>
-                                <td><code>harness.tools.invocations</code></td>
+                                <td><code>agent.tool.invocations</code></td>
                                 <td>Counter</td>
                                 <td>Tool invocations by tool name</td>
                             </tr>
                             <tr>
-                                <td><code>harness.tools.compression_ratio</code></td>
+                                <td><code>agent.tool.duration</code></td>
                                 <td>Histogram</td>
-                                <td>Tool output compression ratio (original/compressed size) by strategy</td>
+                                <td>Tool execution latency in ms, by tool</td>
                             </tr>
                             <tr>
-                                <td><code>harness.governance.circuit_breaks</code></td>
+                                <td><code>agent.governance.decisions</code> / <code>agent.governance.violations</code></td>
                                 <td>Counter</td>
-                                <td>Circuit breaker trips by provider</td>
+                                <td>Governance decisions evaluated and policy violations raised</td>
                             </tr>
                             <tr>
-                                <td><code>harness.knowledge.graph_queries</code></td>
-                                <td>Histogram</td>
-                                <td>Graph query latency</td>
+                                <td><code>agent.safety.blocks</code></td>
+                                <td>Counter</td>
+                                <td>Content-safety blocks by category</td>
                             </tr>
                         </tbody>
                     </table>
+
+                    <div class="callout callout-info">
+                        <span class="callout-icon">i</span>
+                        <div class="callout-body">
+                            <div class="callout-title">These are SDK-side names &mdash; the collector adds the prefix</div>
+                            <p style="margin: 0">
+                                The instrument names above are exactly what the app emits (no <code>harness.</code> or
+                                service-name prefix &mdash; that would double-prefix). The full authoritative list is
+                                locked in
+                                <code>Tests/Presentation.AgentHub.Tests/Telemetry/Contracts/MetricNamingContract.cs</code>.
+                                On the Prometheus path the OTel Collector applies <code>namespace: agentic_harness</code>
+                                (<code>scripts/otel-collector/config.yaml</code>), so <code>agent.tokens.total</code>
+                                scrapes as <code>agentic_harness_agent_tokens_total</code>. Never add the prefix in app
+                                code.
+                            </p>
+                        </div>
+                    </div>
 
                     <!-- ==============================
                          Azure Monitor Setup
@@ -315,7 +327,7 @@
                             <span class="code-block-lang">kql</span>
                         </div>
 <pre><code>dependencies
-| where name startswith "agent."
+| where name in ("invoke_agent", "chat", "execute_tool", "embeddings")
 | summarize avg(duration), percentile(duration, 95), count()
   by name, bin(timestamp, 1h)
 | render timechart</code></pre>
@@ -375,9 +387,11 @@
                                 There are no pre-bundled Grafana dashboard JSON files in this template — the metric
                                 and span names listed above are the contract you build dashboards against. The shape
                                 of every span and metric attribute lives in
-                                <code>Infrastructure.AI/Observability/GenAiSemconvRegistry.cs</code> and is locked in
-                                by <code>Tests/Presentation.AgentHub.Tests/Telemetry/DashboardContractTests.cs</code>,
-                                so dashboard authors can rely on the names staying stable across releases.
+                                <code>Domain.AI/Telemetry/Conventions/GenAiSemconvRegistry.cs</code>, and the metric
+                                names are locked in by
+                                <code>Tests/Presentation.AgentHub.Tests/Telemetry/Contracts/MetricNamingContract.cs</code>
+                                (asserted by <code>DashboardContractTests.cs</code>), so dashboard authors can rely on
+                                the names staying stable across releases.
                             </p>
                         </div>
                     </div>
@@ -394,50 +408,50 @@
 
                     <div class="annotated">
                         <div class="annotated-row">
-                            <div class="annotated-code">agent.turn                     [1,240ms]</div>
+                            <div class="annotated-code">invoke_agent                   [1,240ms]</div>
                             <div class="annotated-note">
                                 <strong>Root span.</strong> Total duration of the conversation turn. Carries
-                                <code>agent.model</code>, <code>agent.tokens.prompt</code>, and
-                                <code>agent.tokens.completion</code> attributes.
+                                <code>gen_ai.agent.name</code>, <code>gen_ai.conversation.id</code>, and (on the
+                                child <code>chat</code> spans) <code>gen_ai.request.model</code>.
                             </div>
                         </div>
                         <div class="annotated-row">
-                            <div class="annotated-code">  rag.retrieve                   [380ms]</div>
+                            <div class="annotated-code">  chat                           [520ms]</div>
                             <div class="annotated-note">
-                                <strong>Child span.</strong> The RAG pipeline kicked in &mdash; query transform,
-                                search, rerank, assemble. Includes <code>rag.chunks.count</code> and
-                                <code>rag.quality.score</code>.
+                                <strong>Child span.</strong> The LLM chat-completion call. Carries
+                                <code>gen_ai.request.model</code>, <code>gen_ai.usage.input_tokens</code>, and
+                                <code>gen_ai.usage.output_tokens</code>.
                             </div>
                         </div>
                         <div class="annotated-row">
-                            <div class="annotated-code">  agent.tool_call [file_system]   [95ms]</div>
+                            <div class="annotated-code">  embeddings                     [180ms]</div>
+                            <div class="annotated-note">
+                                <strong>Child span.</strong> Query embedding for RAG retrieval. Carries
+                                <code>gen_ai.request.model</code> and <code>gen_ai.usage.input_tokens</code>.
+                            </div>
+                        </div>
+                        <div class="annotated-row">
+                            <div class="annotated-code">  execute_tool [file_system]     [95ms]</div>
                             <div class="annotated-note">
                                 <strong>Child span.</strong> The agent called the <code>file_system</code> tool.
-                                Attributes include <code>tool.name</code>, <code>tool.args</code>, and
-                                <code>tool.result.status</code>.
+                                Attributes include <code>gen_ai.tool.name</code>,
+                                <code>gen_ai.tool.call.arguments</code>, and <code>gen_ai.tool.call.result</code>.
                             </div>
                         </div>
                         <div class="annotated-row">
-                            <div class="annotated-code">  knowledge.query                [120ms]</div>
+                            <div class="annotated-code">  execute_tool [ext-mcp-tool]    [210ms]</div>
                             <div class="annotated-note">
-                                <strong>Child span.</strong> Knowledge graph was consulted. Carries
-                                <code>graph.nodes.count</code> and <code>graph.edges.count</code> for the
-                                traversal.
-                            </div>
-                        </div>
-                        <div class="annotated-row">
-                            <div class="annotated-code">  mcp.request [ext-tool]          [210ms]</div>
-                            <div class="annotated-note">
-                                <strong>Child span.</strong> An external MCP tool was invoked. Includes the
-                                MCP server name, tool name, and round-trip latency.
+                                <strong>Child span.</strong> An external MCP tool was invoked. MCP tools are wrapped
+                                as <code>AITool</code>s, so they surface as ordinary <code>execute_tool</code> spans
+                                carrying the same <code>gen_ai.tool.*</code> attributes.
                             </div>
                         </div>
                     </div>
 
                     <p>
-                        Each span carries attributes like <code>agent.model</code>,
-                        <code>agent.tokens.prompt</code>, <code>agent.tokens.completion</code>,
-                        <code>rag.chunks.count</code>, and <code>rag.quality.score</code> that let you
+                        Each span carries attributes like <code>gen_ai.request.model</code>,
+                        <code>gen_ai.usage.input_tokens</code>, <code>gen_ai.usage.output_tokens</code>,
+                        <code>gen_ai.tool.name</code>, and <code>error.type</code> that let you
                         diagnose exactly where time and tokens went.
                     </p>
 
@@ -446,10 +460,11 @@
                         <div class="callout-body">
                             <div class="callout-title">Token tracking matters for cost</div>
                             <p>
-                                The <code>harness.agent.tokens</code> histogram, combined with Azure OpenAI
-                                pricing, gives you a direct cost-per-conversation metric. Set alerting thresholds
-                                based on your budget to catch runaway agent loops before they burn through your
-                                token allocation.
+                                The <code>agent.tokens.total</code> histogram, combined with the
+                                <code>agent.tokens.cache_read</code> / <code>agent.tokens.cache_write</code>
+                                prompt-cache counters and Azure OpenAI pricing, gives you a direct
+                                cost-per-conversation metric. Set alerting thresholds based on your budget to catch
+                                runaway agent loops before they burn through your token allocation.
                             </p>
                         </div>
                     </div>
@@ -474,22 +489,22 @@
                         <tbody>
                             <tr>
                                 <td>Agent error rate &gt; 5%</td>
-                                <td><code>agent.turn</code> spans with error status</td>
+                                <td><code>invoke_agent</code> spans with the <code>error.type</code> attribute set</td>
                                 <td>Page on-call</td>
                             </tr>
                             <tr>
                                 <td>RAG latency &gt; 3s p95</td>
-                                <td><code>rag.retrieve</code> duration</td>
+                                <td><code>rag.retrieval.duration</code> histogram p95</td>
                                 <td>Scale AI Search replicas</td>
                             </tr>
                             <tr>
-                                <td>Circuit breaker open</td>
-                                <td><code>governance.circuit_breaks</code> counter spike</td>
-                                <td>Check provider health</td>
+                                <td>Governance violations spike</td>
+                                <td><code>agent.governance.violations</code> counter spike</td>
+                                <td>Check policy config and provider health</td>
                             </tr>
                             <tr>
                                 <td>Token spend &gt; daily budget</td>
-                                <td><code>harness.agent.tokens</code> sum</td>
+                                <td><code>agent.tokens.total</code> histogram sum</td>
                                 <td>Throttle non-critical requests</td>
                             </tr>
                         </tbody>

@@ -186,7 +186,7 @@
                     <ol class="steps">
                         <li class="step">
                             <div class="step-meta">Inbound &middot; screening</div>
-                            <div class="step-title"><code>AuditTrail</code> → <code>ContentSafety</code> → <code>ToolPermission</code> → <code>GovernancePolicy</code> → <code>PromptInjection</code></div>
+                            <div class="step-title"><code>AuditTrail</code> → <code>ContentSafety</code> → <code>PromptInjection</code></div>
                         </li>
                         <li class="step">
                             <div class="step-meta">Center</div>
@@ -198,14 +198,22 @@
                         </li>
                     </ol>
                     <p>
-                        So input is screened (<a href="07-content-safety.html">content safety</a>,
-                        <a href="04-tools-and-permissions.html">tool permission</a>,
-                        <a href="03-autonomy-and-governance.html">governance</a>, injection scan)
+                        So input is screened (<a href="07-content-safety.html">content safety</a>, injection scan)
                         <em>before</em> the handler ever calls the model, and tool output is sanitized
                         <em>after</em> the handler, before it can re-enter the model's context. Two more
                         Application-level behaviors —
                         <code>RequestValidation</code> (FluentValidation at the boundary) and
                         <code>Authorization</code> — run on the inner ring for every command.
+                    </p>
+                    <p>
+                        <strong>Tool permission and governance are not MediatR behaviors.</strong> They run on the live
+                        tool-execution path: every agent tool is wrapped by <code>GovernedAIFunction</code>, whose
+                        <code>InvokeCoreAsync</code> runs three ambient gates —
+                        <a href="04-tools-and-permissions.html"><code>IToolInvocationGovernor</code></a> (authorization),
+                        <a href="08-data-protection.html"><code>IToolClassificationGate</code></a> (data-classification
+                        DLP), and <code>IProgressEvaluator</code> (spin guard) — before the tool runs. Two earlier
+                        behaviors named <code>ToolPermissionBehavior</code> and <code>GovernancePolicyBehavior</code>
+                        were removed as dead code (they keyed on a marker nothing implemented).
                     </p>
 
                     <div class="callout callout-warn">
@@ -282,6 +290,11 @@
                                 <td>Content safety</td>
                                 <td><code>GovernanceConfig</code>: <code>Enabled</code>, <code>EnablePromptInjectionDetection</code>, <code>EnableResponseSanitization</code>, <code>InjectionBlockThreshold</code>, <code>ResponseBlockThreshold</code></td>
                                 <td>Toggles and thresholds for injection scanning and response sanitization.</td>
+                            </tr>
+                            <tr>
+                                <td>Data</td>
+                                <td><code>AI:Governance:DataClassification:Mode</code> (<code>Off</code> / <code>Audit</code> / <code>Enforce</code>)</td>
+                                <td>Purview data-classification DLP gate on the tool path. <code>Off</code> = inert; <code>Audit</code> = log verdicts; <code>Enforce</code> = block or redact by sensitivity label. Requires a classification provider enabled.</td>
                             </tr>
                             <tr>
                                 <td>Data</td>

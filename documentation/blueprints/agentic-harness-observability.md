@@ -1,6 +1,6 @@
 # Blueprint: Microsoft Agentic Harness Observability
 
-Status: Draft v1 (2026-06-03). Modeled after the
+Status: Draft v1.3 (2026-06-08; see change log). Modeled after the
 [OpenTelemetry Blueprints initiative](https://opentelemetry.io/blog/2026/blueprints-intro/)
 (End-User SIG + DevEx SIG, May 2026) and grounded in the published
 [reference implementations](https://opentelemetry.io/docs/guidance/reference-implementations/)
@@ -235,11 +235,13 @@ Three rules to apply in review until the mechanical check lands:
   Collector to decide.
 - **Collector tail sampling** (Mastodon's pattern): keep 100% of
   error/escalation/safety-violation traces, sample successful agent runs at
-  a ratio the operator picks. Defaults in
-  `infrastructure/collector/tail-sampling.yaml`: 100% for spans with the
-  OTel-canonical `error.type` attribute present (exposed via
+  a ratio the operator picks. The shipped collector config
+  (`scripts/otel-collector/config.yaml`) runs the minimal G4 pipeline; the
+  tail-sampling policy is documented here as the intended overlay — add a
+  `tail_sampling` processor to that config when going to prod: 100% for spans
+  with the OTel-canonical `error.type` attribute present (exposed via
   `GenAiSemconvRegistry.ErrorType`), 100% for `harness.governance.escalation.*`,
-  10% for the rest.
+  10% for the rest. It is not yet a separate committed file.
 
 This matches the safety/governance requirement that every escalation must
 be diagnosable end-to-end.
@@ -389,9 +391,9 @@ keep a new clone compliant.
 | G1        | `src/Content/Domain/Domain.AI/Telemetry/Conventions/*.cs`, `Domain.Common/Telemetry/AppSourceNames.cs`, `Domain.Common/Telemetry/AppInstrument.cs` |
 | G2        | `Domain.AI/Telemetry/Conventions/GenAiSemconvRegistry.cs` (NEW — re-exports existing `gen_ai.*` keys + fills the gaps in one place) |
 | G3        | Locked core: `Presentation.Common/Extensions/OpenTelemetryServiceCollectionExtensions.cs`. Finalization: `Infrastructure.Observability/Exporters/ObservabilityTelemetryConfigurator.cs` (Order 300). |
-| G4        | `infrastructure/collector/otelcol-config.yaml` (template)                                               |
+| G4        | `scripts/otel-collector/config.yaml` (+ `tempo.yaml`, `docker-compose.yml`)                             |
 | G5        | `Tests/Presentation.AgentHub.Tests/Telemetry/Contracts/MetricNamingContract.cs`                         |
-| G6        | `infrastructure/collector/tail-sampling.yaml` (template); SDK head config in `ObservabilityTelemetryConfigurator` |
+| G6        | Tail-sampling overlay documented for `scripts/otel-collector/config.yaml` (not yet a committed file); SDK head config in `ObservabilityTelemetryConfigurator` |
 | G7        | All exporter wiring at the Collector layer; never `AddAzureMonitorOpenTelemetry` in app code            |
 | G8        | `Presentation.AgentHub/Telemetry/SpanData.cs`, `SignalRSpanExporter.cs`, `IKnowledgeScopeValidator`     |
 | G9        | `Directory.Packages.props` pin policy + ADR                                                             |
@@ -404,7 +406,8 @@ keep a new clone compliant.
 2. Set the OTLP endpoint and headers in `AppConfig.Telemetry.Otlp`. Never
    inline a vendor SDK exporter in app code.
 3. Stand up a Collector — local docker compose stack ships in
-   `infrastructure/collector/`. Use the minimal pipeline (G4) and add the
+   `scripts/otel-collector/` (`config.yaml`, `tempo.yaml`,
+   `docker-compose.yml`). Use the minimal pipeline (G4) and add the
    tail-sampling overlay (G6) only when going to prod.
 4. Add backend-specific exporters in the Collector config. Do not touch
    `OpenTelemetryServiceCollectionExtensions` unless adding a new

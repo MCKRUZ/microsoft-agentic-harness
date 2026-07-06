@@ -19,7 +19,7 @@
                     <div class="sidebar-group"><div class="sidebar-group-title">Getting Started</div><a class="sidebar-link" href="index.html"><span class="sidebar-link-num">00</span> Welcome</a><a class="sidebar-link" href="01-get-running.html"><span class="sidebar-link-num">01</span> Get Running in 10 Minutes</a></div>
                     <div class="sidebar-group"><div class="sidebar-group-title">Configuration</div><a class="sidebar-link" href="02-configuration.html"><span class="sidebar-link-num">02</span> Configuration Reference</a></div>
                     <div class="sidebar-group"><div class="sidebar-group-title">Architecture</div><a class="sidebar-link" href="03-big-picture.html"><span class="sidebar-link-num">03</span> The Big Picture</a><a class="sidebar-link" href="04-message-journey.html"><span class="sidebar-link-num">04</span> A Message's Journey</a></div>
-                    <div class="sidebar-group"><div class="sidebar-group-title">Systems</div><a class="sidebar-link" href="05-skills.html"><span class="sidebar-link-num">05</span> Skills System</a><a class="sidebar-link" href="06-tools.html"><span class="sidebar-link-num">06</span> Tools &amp; Keyed DI</a><a class="sidebar-link" href="07-rag.html"><span class="sidebar-link-num">07</span> The RAG Pipeline</a><a class="sidebar-link" href="08-mcp.html"><span class="sidebar-link-num">08</span> MCP Server &amp; Client</a></div>
+                    <div class="sidebar-group"><div class="sidebar-group-title">Systems</div><a class="sidebar-link" href="05-skills.html"><span class="sidebar-link-num">05</span> Skills System</a><a class="sidebar-link" href="06-tools.html"><span class="sidebar-link-num">06</span> Tools &amp; Keyed DI</a><a class="sidebar-link" href="07-rag.html"><span class="sidebar-link-num">07</span> The RAG Pipeline</a><a class="sidebar-link" href="08-mcp.html"><span class="sidebar-link-num">08</span> MCP Server &amp; Client</a><a class="sidebar-link" href="16-generative-ui.html"><span class="sidebar-link-num">16</span> Generative UI &amp; Widgets</a></div>
                     <div class="sidebar-group"><div class="sidebar-group-title">Patterns</div><a class="sidebar-link" href="09-patterns.html"><span class="sidebar-link-num">09</span> Patterns You'll Use Daily</a><a class="sidebar-link" href="10-observability.html"><span class="sidebar-link-num">10</span> Observability &amp; Safety</a></div>
                     <div class="sidebar-group"><div class="sidebar-group-title">Building</div><a class="sidebar-link" href="11-extending.html"><span class="sidebar-link-num">11</span> Extending the Harness</a></div>
                     <div class="sidebar-group"><div class="sidebar-group-title">Quality</div><a class="sidebar-link" href="13-evaluation.html"><span class="sidebar-link-num">13</span> Evaluation Framework</a><a class="sidebar-link" href="14-skill-training.html"><span class="sidebar-link-num">14</span> Skill Training</a></div>
@@ -39,7 +39,7 @@
                     <span class="eyebrow">Chapter 06 · Systems</span>
                     <h1 class="page-title">Tools &amp; Keyed DI</h1>
                     <p class="page-lead">
-                        Tools are the agent's hands. A skill says "I need <code>file_system_read</code>" and the
+                        Tools are the agent's hands. A skill says "I need <code>file_system</code>" and the
                         harness resolves an implementation, wraps it in safety guarantees, and presents it to the LLM
                         as a callable function. The pattern is more interesting than it looks — let's open the hood.
                     </p>
@@ -50,14 +50,21 @@
                         <div class="code-block-header"><span class="code-block-lang">C# · ITool</span></div>
                         <pre><code>public interface ITool
 {
-    string Name { get; }                                  // "file_system_read"
+    string Name { get; }                                  // "file_system"
     string Description { get; }                           // "Reads files from disk under sandbox"
-    IReadOnlyList&lt;string&gt; SupportedOperations { get; }   // ["read", "list"]
+    IReadOnlyList&lt;string&gt; SupportedOperations { get; }    // ["read", "list", "write"]
+
+    // Concurrency + risk metadata — all defaulted, override only when it differs:
+    bool IsReadOnly => false;                             // read-only tools can batch in parallel
+    bool IsConcurrencySafe => false;                      // fail-closed: assume not safe
+    BlastRadius RiskTier => BlastRadius.Medium;           // feeds the graded-autonomy gate
+    ToolOutputCategory? OutputCategory => null;           // null ⇒ sniff the output at runtime
+    int? CompressionTokenThreshold => null;               // null ⇒ use the global default
 
     Task&lt;ToolResult&gt; ExecuteAsync(
         string operation,
         IReadOnlyDictionary&lt;string, object?&gt; parameters,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken = default);
 }</code></pre>
                     </div>
                     <p>
@@ -70,15 +77,32 @@
                     <h2>Keyed DI — the heart of the pattern</h2>
                     <p>
                         Tools are registered as <strong>keyed singletons</strong> in
-                        <code>Infrastructure.Common/DependencyInjection.cs</code>:
+                        <code>Infrastructure.AI/DependencyInjection.Tools.cs</code>. Each tool exposes its key as a
+                        <code>ToolName</code> constant, and each registration is a <em>factory lambda</em> so the tool
+                        can pull its own collaborators from the container:
                     </p>
                     <div class="code-block">
-                        <div class="code-block-header"><span class="code-block-lang">C# · DI registration</span></div>
-                        <pre><code>services.AddKeyedSingleton&lt;ITool, FileSystemTool&gt;("file_system");
-services.AddKeyedSingleton&lt;ITool, CalculationTool&gt;("calculation_engine");
-services.AddKeyedSingleton&lt;ITool, WebSearchTool&gt;("web_search");
+                        <div class="code-block-header"><span class="code-block-lang">C# · DependencyInjection.Tools.cs</span></div>
+                        <pre><code>services.AddKeyedSingleton&lt;ITool&gt;(FileSystemTool.ToolName, (sp, _) =&gt;
+    new FileSystemTool(sp.GetRequiredService&lt;IFileSystemService&gt;()));
+
+services.AddKeyedSingleton&lt;ITool&gt;(EchoCalculateTool.ToolName, (_, _) =&gt; new EchoCalculateTool());
+
+services.AddKeyedSingleton&lt;ITool&gt;(DocumentSearchTool.ToolName, (sp, _) =&gt;
+    new DocumentSearchTool(sp.GetRequiredService&lt;IRagOrchestrator&gt;()));
+
+services.AddKeyedSingleton&lt;ITool&gt;(RestrictedSearchTool.ToolName, (sp, _) =&gt;
+    new RestrictedSearchTool(/* ... */));
 // ...</code></pre>
                     </div>
+                    <p>
+                        The real built-in tools are <code>FileSystemTool</code> (<code>file_system</code>),
+                        <code>EchoCalculateTool</code> (<code>echo_calculate</code>),
+                        <code>RestrictedSearchTool</code> (<code>restricted_search</code>),
+                        <code>DocumentSearchTool</code> (<code>document_search</code>), and the generative-UI render
+                        tools (<a href="16-generative-ui.html">Chapter 16</a>). There is no
+                        <code>CalculationTool</code> or <code>WebSearchTool</code> — those names are historical.
+                    </p>
 
                     <div class="callout callout-jargon">
                         <span class="callout-icon">¶</span>
@@ -179,9 +203,10 @@ services.AddKeyedSingleton&lt;ITool, WebSearchTool&gt;("web_search");
 
                     <h2>The file system sandbox — case study</h2>
                     <p>
-                        <code>FileSystemService</code> (in <code>Infrastructure.AI/Tools/</code>) is the canonical
-                        example of why this architecture matters. It implements <code>ITool</code> for file
-                        operations, but every operation goes through a path validator:
+                        <code>FileSystemTool</code> (in <code>Infrastructure.AI/Tools/</code>) is the
+                        <code>ITool</code> the agent calls; it delegates to <code>FileSystemService</code>, which
+                        implements <code>IFileSystemService</code> and is the canonical example of why this
+                        architecture matters. Every operation goes through a path validator:
                     </p>
                     <div class="code-block">
                         <div class="code-block-header"><span class="code-block-lang">C# · sandbox check</span></div>
@@ -210,13 +235,64 @@ services.AddKeyedSingleton&lt;ITool, WebSearchTool&gt;("web_search");
                         </div>
                     </div>
 
-                    <h2>MCP tools as <code>ITool</code></h2>
+                    <h2>MCP tools join the same tool surface</h2>
                     <p>
-                        Tools discovered on external MCP servers are wrapped to implement the same
-                        <code>ITool</code> interface. Once wrapped, they're indistinguishable from internal tools —
-                        the agent doesn't know or care that <code>github_create_issue</code> lives on a remote MCP
-                        server, only that calling it produces a <code>ToolResult</code>. See
-                        <a href="08-mcp.html">MCP Server &amp; Client</a> for the wrapping flow.
+                        Tools discovered on external MCP servers do <em>not</em> go through <code>ITool</code>.
+                        <code>McpToolProvider</code> casts the SDK's <code>McpClientTool</code> straight to
+                        <code>Microsoft.Extensions.AI.AITool</code> and hands the list to the agent — no wrapper class,
+                        no per-tool keyed DI. Once converted they sit alongside the internal tools in
+                        <code>ChatOptions.Tools</code>, so the agent doesn't know or care that
+                        <code>github_create_issue</code> lives on a remote MCP server. Both internal
+                        (<code>ITool</code>→<code>AITool</code>) and MCP (<code>McpClientTool</code>→<code>AITool</code>)
+                        tools are then wrapped by <code>GovernedAIFunction</code> (see below), so governance applies
+                        uniformly regardless of source. See <a href="08-mcp.html">MCP Server &amp; Client</a> for the
+                        discovery flow.
+                    </p>
+
+                    <h2>Invocation-time governance — <code>GovernedAIFunction</code></h2>
+                    <p>
+                        Every converted tool — internal, MCP, or plugin-provided — is wrapped one more time by
+                        <code>GovernedAIFunction</code> (<code>Application.AI.Common/Services/Tools/</code>). It derives
+                        from <code>DelegatingAIFunction</code>, so the tool's name, description, and JSON schema pass
+                        through unchanged; only the <em>invocation</em> is intercepted. This is the single chokepoint
+                        for the agent's autonomous tool calls. On each call, <code>InvokeCoreAsync</code> runs three
+                        ambient gates <strong>in order</strong>, then executes, then optionally scrubs:
+                    </p>
+                    <table>
+                        <thead><tr><th>#</th><th>Gate</th><th>What it does</th></tr></thead>
+                        <tbody>
+                            <tr><td>1</td><td><code>IToolInvocationGovernor</code></td><td>Authorization. Chains permission resolution → graded-autonomy risk gate → capability enforcement → YAML policy. A denial returns the governor's model-facing message; the tool never runs. Opt-in via <code>GovernanceConfig.EnforceToolInvocation</code>.</td></tr>
+                            <tr><td>2</td><td><code>IToolClassificationGate</code></td><td>Purview data-classification DLP. A <code>Block</code> verdict returns a message instead of running; a <code>RedactOutput</code> verdict lets it run then scrubs the result. Opt-in via <code>AppConfig:AI:Governance:DataClassification:Mode</code> (<code>Off</code>/<code>Audit</code>/<code>Enforce</code>).</td></tr>
+                            <tr><td>3</td><td><code>IProgressEvaluator</code></td><td>Spin / no-progress guard. Halts a call when the agent is repeating identical invocations without progress.</td></tr>
+                        </tbody>
+                    </table>
+                    <div class="callout callout-warn">
+                        <span class="callout-icon">!</span>
+                        <div class="callout-body">
+                            <div class="callout-title">This is the live tool-gating path — not a MediatR behavior</div>
+                            <p style="margin: 0">
+                                Older drafts of this guide described two MediatR pipeline behaviors —
+                                <code>ToolPermissionBehavior</code> and <code>GovernancePolicyBehavior</code> — as the
+                                gating pipeline. <strong>Both were deleted in PR #90.</strong> They never fired in
+                                production: nothing implemented the <code>IToolRequest</code> marker they keyed on.
+                                Tool gating happens on the <em>execution</em> path via <code>GovernedAIFunction</code>,
+                                as above. All three gates are inert unless ambient <em>and</em> opt-in enabled
+                                (closed-by-default).
+                            </p>
+                        </div>
+                    </div>
+
+                    <h2>Risk tiers &amp; blast radius</h2>
+                    <p>
+                        Each <code>ITool</code> declares its intrinsic <code>RiskTier</code> — a
+                        <code>BlastRadius</code> value (<code>Trivial</code>, <code>Low</code>, <code>Medium</code>,
+                        <code>High</code>, <code>Critical</code>) describing how much damage a single call can do.
+                        The default is <code>Medium</code>, but tools should override it: a read-only lookup as
+                        <code>Trivial</code>/<code>Low</code>, a tool that runs commands or touches production state as
+                        <code>High</code>/<code>Critical</code>. The tier flows straight into the graded-autonomy
+                        engine (gate 1 above) — higher autonomy tiers may auto-approve low-radius tools while still
+                        requiring human approval for high-radius ones — and it sets the severity when a call escalates.
+                        <code>IToolRiskClassifier</code> / <code>ToolRiskClassifier</code> resolve the effective tier.
                     </p>
 
                     <h2>Local plugin system</h2>
@@ -232,7 +308,7 @@ services.AddKeyedSingleton&lt;ITool, WebSearchTool&gt;("web_search");
     {
       "Id": "code-analysis",
       "Path": "./plugins/code-analysis",
-      "AllowedTools": ["file_system_read", "ast_parser"],
+      "AllowedTools": ["file_system", "ast_parser"],
       "DeniedTools": ["file_system_write"],
       "AutonomyLevel": "Supervised"
     }
@@ -262,6 +338,17 @@ services.AddKeyedSingleton&lt;ITool, WebSearchTool&gt;("web_search");
                         </div>
                     </div>
 
+                    <h2>Generative-UI render tools</h2>
+                    <p>
+                        One special tool family lets the agent render inline UI in a connected browser instead of
+                        returning text: <code>render_image</code>, <code>render_form</code>, <code>render_table</code>,
+                        and <code>render_chart</code>. They share a base class (<code>SingleRenderProxyTool</code>) and
+                        a client round-trip bridge, and they're deduplicated so the model sees one tool per widget. The
+                        full flow — backend tools, the frontend <code>{render, validate, ack}</code> registry, widget
+                        persistence, and the acting Dashboard agent — is its own chapter. See
+                        <a href="16-generative-ui.html">Chapter 16 · Generative UI &amp; Widgets</a>.
+                    </p>
+
                     <h2>Tool output compression</h2>
                     <p>
                         Tools can return large outputs — a diagnostic dump, a JSON API response, or a verbose
@@ -270,36 +357,41 @@ services.AddKeyedSingleton&lt;ITool, WebSearchTool&gt;("web_search");
                         compressing tool outputs before they reach the agent.
                     </p>
                     <p>
-                        How it works: each tool declares a <code>ToolOutputCategory</code> (or the behavior
-                        auto-detects one). Based on the category, a strategy is selected:
+                        How it works: each tool declares an <code>OutputCategory</code> (of type
+                        <code>ToolOutputCategory</code>), or leaves it <code>null</code> and lets
+                        <code>ContentTypeDetector</code> sniff the output at runtime. Based on the category, a strategy
+                        is selected:
                     </p>
                     <table>
-                        <thead><tr><th>Category</th><th>Strategy</th><th>What it does</th></tr></thead>
+                        <thead><tr><th>Category</th><th>What it does</th></tr></thead>
                         <tbody>
-                            <tr><td><code>DataHeavy</code></td><td>JSON / XML</td><td>Structural compression — removes redundant keys, collapses arrays, preserves schema</td></tr>
-                            <tr><td><code>Diagnostic</code></td><td>Diagnostic</td><td>Extracts error lines, stack traces, and key metrics from verbose logs</td></tr>
-                            <tr><td><code>Conversational</code></td><td>FreeText</td><td>Sentence-boundary truncation with optional LLM summarization fallback</td></tr>
-                            <tr><td><code>Default</code></td><td>FreeText</td><td>Generic truncation for uncategorized outputs</td></tr>
+                            <tr><td><code>Json</code></td><td>Structural compression of JSON — removes redundant keys, collapses arrays, preserves schema</td></tr>
+                            <tr><td><code>FileContent</code></td><td>Trims large file dumps, keeping the head/tail and structurally significant regions</td></tr>
+                            <tr><td><code>SearchResults</code></td><td>Keeps the top-ranked hits and prunes low-signal result padding</td></tr>
+                            <tr><td><code>Tabular</code></td><td>Compresses row-heavy tabular output while preserving the column shape</td></tr>
+                            <tr><td><code>FreeText</code></td><td>Sentence-boundary truncation with optional LLM summarization fallback</td></tr>
                         </tbody>
                     </table>
                     <p>
-                        Compression only triggers when output exceeds the configurable threshold
-                        (<code>AppConfig.AI.Compression.ThresholdBytes</code>). Below that, tool output passes
-                        through unchanged.
+                        Compression only triggers when the output exceeds a token threshold — the global
+                        <code>ToolOutputCompressionConfig.DefaultTokenThreshold</code> (default <strong>2000
+                        tokens</strong>, under <code>AppConfig.AI.ToolOutputCompression</code>), or a per-tool override
+                        via <code>ITool.CompressionTokenThreshold</code>. Below that, tool output passes through
+                        unchanged. When <code>LlmFallbackEnabled</code> is set, an economy-tier model summarizes
+                        <code>FreeText</code> that heuristics can't shrink enough.
                     </p>
 
                     <h2>Where each tool lives in the repo</h2>
                     <table>
                         <thead><tr><th>Tool family</th><th>Project</th></tr></thead>
                         <tbody>
-                            <tr><td>File system, calculation, internal utilities</td><td><code>Infrastructure.AI/Tools/</code></td></tr>
-                            <tr><td>RAG retrieval tools (document_search, etc.)</td><td><code>Infrastructure.AI.RAG/</code></td></tr>
-                            <tr><td>External connector tools (GitHub, Jira, Slack)</td><td><code>Infrastructure.AI.Connectors/</code></td></tr>
-                            <tr><td>MCP-discovered tools (wrapped)</td><td><code>Infrastructure.AI.MCP/</code></td></tr>
+                            <tr><td>File system, echo, restricted-search, generative-UI render tools</td><td><code>Infrastructure.AI/Tools/</code></td></tr>
+                            <tr><td>RAG retrieval tool (<code>document_search</code>)</td><td><code>Infrastructure.AI/Tools/DocumentSearchTool.cs</code></td></tr>
+                            <tr><td>MCP-discovered tools</td><td>Cast to <code>AITool</code> by <code>McpToolProvider</code> (not <code>ITool</code>)</td></tr>
                             <tr><td>Plugin-provided tools</td><td>Plugin's local directory; loaded via <code>IPluginLoader</code></td></tr>
-                            <tr><td>Tool output compression</td><td><code>Application.AI.Common/MediatRBehaviors/ToolOutputCompressionBehavior.cs</code></td></tr>
-                            <tr><td>Tool DI registration</td><td><code>Infrastructure.Common/DependencyInjection.cs</code> &amp; per-project <code>DependencyInjection.cs</code></td></tr>
-                            <tr><td>Tool conversion (bridge to <code>AITool</code>)</td><td><code>Application.AI.Common/Services/Tools/AIToolConverter.cs</code></td></tr>
+                            <tr><td>Tool output compression</td><td><code>ToolOutputCompressionBehavior</code> (MediatR pipeline behavior)</td></tr>
+                            <tr><td>Tool DI registration</td><td><code>Infrastructure.AI/DependencyInjection.Tools.cs</code></td></tr>
+                            <tr><td>Invocation-time governance wrapper</td><td><code>Application.AI.Common/Services/Tools/GovernedAIFunction.cs</code></td></tr>
                         </tbody>
                     </table>
 

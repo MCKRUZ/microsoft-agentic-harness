@@ -230,7 +230,7 @@
   <div class="screen">
     <h2>The Budget Tracker — Loading the Right Compartment</h2>
 
-    <p>The <code>TieredContextAssembler</code> is the component that actually opens the briefcase. It decides which compartment to load based on what the <span class="term" data-definition="A budget in this context is a limit on how many tokens can be used for a particular purpose. Just like a financial budget, once you spend your allocation, you have to stop or make room by removing something else.">budget</span> allows.</p>
+    <p>Something has to decide which compartment of the briefcase to open, based on what the <span class="term" data-definition="A budget in this context is a limit on how many tokens can be used for a particular purpose. Just like a financial budget, once you spend your allocation, you have to stop or make room by removing something else.">budget</span> allows. We'll call that logic the <code>TieredContextAssembler</code> — a teaching name for the tier-loading decision. <em>(In today's code the tiering is enforced by per-tier allocations recorded in the real <code>ContextBudgetTracker</code> and composed by the agent factory; there's no single class by this name. The Tier 1 / 2 / 3 idea below is exactly what happens.)</em></p>
 
     <!-- Code↔English: TieredContextAssembler -->
     <div class="translation-block animate-in">

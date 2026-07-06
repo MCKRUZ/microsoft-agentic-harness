@@ -19,7 +19,7 @@
                     <div class="sidebar-group"><div class="sidebar-group-title">Getting Started</div><a class="sidebar-link" href="index.html"><span class="sidebar-link-num">00</span> Welcome</a><a class="sidebar-link" href="01-get-running.html"><span class="sidebar-link-num">01</span> Get Running in 10 Minutes</a></div>
                     <div class="sidebar-group"><div class="sidebar-group-title">Configuration</div><a class="sidebar-link" href="02-configuration.html"><span class="sidebar-link-num">02</span> Configuration Reference</a></div>
                     <div class="sidebar-group"><div class="sidebar-group-title">Architecture</div><a class="sidebar-link" href="03-big-picture.html"><span class="sidebar-link-num">03</span> The Big Picture</a><a class="sidebar-link" href="04-message-journey.html"><span class="sidebar-link-num">04</span> A Message's Journey</a></div>
-                    <div class="sidebar-group"><div class="sidebar-group-title">Systems</div><a class="sidebar-link" href="05-skills.html"><span class="sidebar-link-num">05</span> Skills System</a><a class="sidebar-link" href="06-tools.html"><span class="sidebar-link-num">06</span> Tools &amp; Keyed DI</a><a class="sidebar-link" href="07-rag.html"><span class="sidebar-link-num">07</span> The RAG Pipeline</a><a class="sidebar-link" href="08-mcp.html"><span class="sidebar-link-num">08</span> MCP Server &amp; Client</a></div>
+                    <div class="sidebar-group"><div class="sidebar-group-title">Systems</div><a class="sidebar-link" href="05-skills.html"><span class="sidebar-link-num">05</span> Skills System</a><a class="sidebar-link" href="06-tools.html"><span class="sidebar-link-num">06</span> Tools &amp; Keyed DI</a><a class="sidebar-link" href="07-rag.html"><span class="sidebar-link-num">07</span> The RAG Pipeline</a><a class="sidebar-link" href="08-mcp.html"><span class="sidebar-link-num">08</span> MCP Server &amp; Client</a><a class="sidebar-link" href="16-generative-ui.html"><span class="sidebar-link-num">16</span> Generative UI &amp; Widgets</a></div>
                     <div class="sidebar-group"><div class="sidebar-group-title">Patterns</div><a class="sidebar-link" href="09-patterns.html"><span class="sidebar-link-num">09</span> Patterns You'll Use Daily</a><a class="sidebar-link" href="10-observability.html"><span class="sidebar-link-num">10</span> Observability &amp; Safety</a></div>
                     <div class="sidebar-group"><div class="sidebar-group-title">Building</div><a class="sidebar-link" href="11-extending.html"><span class="sidebar-link-num">11</span> Extending the Harness</a></div>
                     <div class="sidebar-group"><div class="sidebar-group-title">Quality</div><a class="sidebar-link" href="13-evaluation.html"><span class="sidebar-link-num">13</span> Evaluation Framework</a><a class="sidebar-link" href="14-skill-training.html"><span class="sidebar-link-num">14</span> Skill Training</a></div>
@@ -84,10 +84,30 @@
                         <li>Every MediatR request — via <code>RequestTracingBehavior</code>.</li>
                         <li>Every agent turn — span attributes include agent name, conversation ID, turn number, input/output tokens, cost.</li>
                         <li>Every tool call — span attributes include tool name, operation, latency, success/failure.</li>
-                        <li>Every LLM request — via the Microsoft.Extensions.AI built-in tracing, augmented by our custom <code>LlmSpanProcessor</code> that recognizes spans from Agents.AI / Semantic Kernel and enriches them with agentic context.</li>
+                        <li>Every LLM request — via the Microsoft.Extensions.AI built-in tracing, augmented by our custom <code>LlmTokenTrackingProcessor</code> that recognizes spans from Agents.AI / Semantic Kernel and enriches them with agentic context (including cache-read / cache-write token counts).</li>
                         <li>RAG retrievals — span per query transform, retrieval, rerank, assembly.</li>
                         <li>Tool output compression — <code>ToolOutputCompressionBehavior</code> logs compression events, strategy used, and size reduction ratio.</li>
+                        <li>Prompt-cache usage — <code>PromptCachingPipelinePolicy</code> + <code>TokenUsageMetrics</code> track cache-read and cache-write token counts, emitted as the <code>agent.tokens.cache_read</code> / <code>agent.tokens.cache_write</code> instruments.</li>
+                        <li>Real token streaming — when a turn runs via <code>RunStreamingAsync</code>, deltas surface through <code>IAgentTurnStreamSink</code> as they arrive; the turn span captures the streamed run.</li>
                     </ul>
+                    <div class="callout callout-jargon">
+                        <span class="callout-icon">¶</span>
+                        <div class="callout-body">
+                            <div class="callout-title">A note on instrument names</div>
+                            <p style="margin: 0">
+                                Metric instruments use dotted names like <code>agent.orchestration.turns_total</code>,
+                                <code>agent.tokens.input</code>/<code>output</code>/<code>total</code>,
+                                <code>agent.tokens.cache_read</code>/<code>cache_write</code>,
+                                <code>rag.retrieval.duration</code>, and <code>agent.tool.invocations</code>. Span
+                                operation names follow the GenAI semantic conventions —
+                                <code>invoke_agent</code>, <code>chat</code>, <code>execute_tool</code>,
+                                <code>embeddings</code> — with attributes like <code>gen_ai.request.model</code> and
+                                <code>gen_ai.usage.input_tokens</code>. Never add a <code>harness.*</code> prefix in app
+                                code: the Prometheus <code>agentic_harness_</code> prefix is applied by the OTel
+                                <strong>collector</strong>, and prefixing in-app double-prefixes it.
+                            </p>
+                        </div>
+                    </div>
 
                     <h3>Setting up Jaeger locally</h3>
                     <p>Run Jaeger with one Docker command, then point the OTLP exporter at it:</p>
@@ -116,6 +136,17 @@ docker run -d --name jaeger \
                         token usage, cost, tool invocations, message previews truncated to 500 chars, plus the
                         original message body and the args + stdout for every captured tool call (PR 6 — see
                         below).
+                    </p>
+
+                    <h3>Tamper-evident audit hash-chain</h3>
+                    <p>
+                        For audit records that must be provably un-altered, the harness writes a
+                        <strong>hash-chained JSONL</strong> log via <code>HashChainedJsonlWriter</code>: each entry
+                        carries a hash over its own content plus the previous entry's hash, so any retroactive edit or
+                        deletion breaks the chain. <code>AuditChainVerificationService</code> (behind
+                        <code>IVerifiableAuditChain</code>) walks the file and reports the first broken link. This gives
+                        you a cheap, file-based tamper-evidence guarantee without a database — useful for governance
+                        and compliance trails where "nobody quietly changed the record" needs to be demonstrable.
                     </p>
 
                     <h3>Foresight deep-link endpoints (PR 6)</h3>
@@ -180,25 +211,48 @@ docker run -d --name jaeger \
                         <code>AppConfig.AI.Governance</code>.
                     </p>
 
-                    <h3>3 · Governance policy engine</h3>
+                    <h3>3 · Tool-invocation governance — <code>GovernedAIFunction</code></h3>
                     <p>
-                        <code>GovernancePolicyBehavior</code> consults YAML policy files (configured via
-                        <code>AppConfig.AI.Governance.PolicyPaths</code>) that encode organizational rules:
-                        "this tool can only be called from this autonomy tier with this approval level", "these
-                        topics escalate to a human", etc. Conflict resolution defaults to
-                        <code>PriorityFirstMatch</code>.
+                        This is the live tool-gating layer, and it runs on the <strong>tool-execution path</strong>,
+                        not the MediatR request pipeline. Every converted tool is wrapped by
+                        <code>GovernedAIFunction</code>, whose <code>InvokeCoreAsync</code> runs three ambient gates in
+                        order before the tool executes:
                     </p>
+                    <ol>
+                        <li><code>IToolInvocationGovernor</code> — authorization. Internally chains
+                            <code>IToolPermissionService</code> (<code>ThreePhasePermissionResolver</code>) → graded-autonomy
+                            risk gate → capability enforcement → the YAML policy engine. Opt-in via
+                            <code>GovernanceConfig.EnforceToolInvocation</code>.</li>
+                        <li><code>IToolClassificationGate</code> — Purview data-classification DLP; opt-in via
+                            <code>AppConfig:AI:Governance:DataClassification:Mode</code> (<code>Off</code>/<code>Audit</code>/<code>Enforce</code>).</li>
+                        <li><code>IProgressEvaluator</code> — spin / no-progress guard.</li>
+                    </ol>
+                    <div class="callout callout-warn">
+                        <span class="callout-icon">!</span>
+                        <div class="callout-body">
+                            <div class="callout-title"><code>GovernancePolicyBehavior</code> and <code>ToolPermissionBehavior</code> were deleted</div>
+                            <p style="margin: 0">
+                                Earlier drafts described these two as MediatR pipeline behaviors. Both were removed in
+                                PR #90 — they keyed on an <code>IToolRequest</code> marker nothing implemented, so they
+                                never fired. The YAML policy engine and the permission resolver still exist, but as
+                                <em>stages inside</em> <code>IToolInvocationGovernor</code>, reached from
+                                <code>GovernedAIFunction</code>.
+                            </p>
+                        </div>
+                    </div>
 
-                    <h3>4 · Tool permissions</h3>
+                    <h3>4 · Permission resolution &amp; autonomy tiers</h3>
                     <p>
-                        <code>ToolPermissionBehavior</code> evaluates each tool call against the agent's autonomy
-                        tier (<code>Restricted</code>, <code>Supervised</code>, <code>Autonomous</code>). When the
-                        decision is <code>Ask</code>, the user is prompted; <code>Deny</code> short-circuits.
-                        Repeated denials for the same pattern auto-deny after
-                        <code>DenialRateLimitThreshold</code> attempts. Permission rules are resolved across
-                        <strong>9 sources</strong> including <code>PluginDeclaration</code> — plugin-level rules
-                        feed into the same 3-phase resolver (Deny gates → Ask rules → Allow rules) as
-                        agent-level rules.
+                        The first stage of the governor is <code>IToolPermissionService</code>
+                        (<code>ThreePhasePermissionResolver</code>), which evaluates each tool call against the agent's
+                        autonomy tier (<code>Restricted</code>, <code>Supervised</code>, <code>Autonomous</code>).
+                        Rules are resolved across <strong>9 sources</strong> including <code>PluginDeclaration</code>,
+                        through a 3-phase resolver (Deny gates → Ask rules → Allow rules). When the decision is
+                        "requires approval" the governor records a <code>PendingApproval</code> and <strong>blocks
+                        fail-closed</strong> — live mid-call human escalation is deliberately deferred, so it does
+                        <em>not</em> route to <code>IEscalationService</code> in the middle of a tool call. The
+                        tool's <code>RiskTier</code> (a <code>BlastRadius</code> value) feeds the graded-autonomy gate:
+                        higher tiers may auto-approve low-radius tools while still gating high-radius ones.
                     </p>
 
                     <h3>4b · Plugin-boundary governance</h3>

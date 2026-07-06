@@ -227,37 +227,58 @@
                         </div>
                     </div>
 
-                    <h2 id="governance-behavior">The governance behavior, and why it fails closed</h2>
+                    <h2 id="governance-behavior">The governance gates, and why they fail closed</h2>
                     <p>
-                        A tier sets defaults, but a separate gate evaluates each tool request against your written
-                        governance policies. That gate is
-                        <code>src/Content/Application/Application.AI.Common/MediatRBehaviors/GovernancePolicyBehavior.cs</code>,
-                        a <strong>MediatR pipeline behavior</strong> — a piece of code that intercepts a request on its
-                        way to being handled, like middleware for the agent's internal command bus.
+                        A tier sets defaults, but the concrete gating happens on the <strong>live tool-execution
+                        path</strong>, not the MediatR request pipeline. Every agent tool is wrapped by
+                        <code>src/Content/Application/Application.AI.Common/Services/Tools/GovernedAIFunction.cs</code>,
+                        whose <code>InvokeCoreAsync</code> runs three ambient gates in order before the tool executes,
+                        then optionally scrubs the result:
                     </p>
-                    <p>
-                        It evaluates the requested tool action against YAML-defined governance policies — things like
-                        rate limiting and approval workflows. Two outcomes matter:
-                    </p>
-                    <ul>
+                    <ol>
                         <li>
-                            If a policy says the action <strong>requires approval</strong>, the behavior escalates via
-                            <code>IEscalationService</code> (the human-in-the-loop machinery below) rather than running
-                            the action.
+                            <strong><code>IToolInvocationGovernor</code></strong> — authorization
+                            (<code>Services/Governance/ToolInvocationGovernor.cs</code>). Opt-in via
+                            <code>GovernanceConfig.EnforceToolInvocation</code>. It chains the per-tool permission
+                            resolver, a graded-autonomy risk gate, capability enforcement, and the YAML policy engine
+                            (rate limits, approval workflows). If a policy says the action <strong>requires
+                            approval</strong>, the governor records a <code>PendingApproval</code> and blocks
+                            <strong>fail-closed</strong> — live mid-tool-call escalation is deliberately deferred, so it
+                            does <em>not</em> route to <code>IEscalationService</code> in the middle of a tool call.
                         </li>
-                        <li>Otherwise, if no policy clears it, the behavior can <strong>deny</strong>.</li>
-                    </ul>
+                        <li>
+                            <strong><code>IToolClassificationGate</code></strong> — Microsoft Purview data-classification
+                            DLP. Opt-in via <code>AppConfig:AI:Governance:DataClassification:Mode</code>
+                            (<code>Off</code>/<code>Audit</code>/<code>Enforce</code>). A <strong>Block</strong> verdict
+                            returns a model-facing message instead of running the tool; a <strong>RedactOutput</strong>
+                            verdict lets the tool run, then scrubs the result. See
+                            <a href="08-data-protection.html">Data Protection</a>.
+                        </li>
+                        <li>
+                            <strong><code>IProgressEvaluator</code></strong> — the spin / no-progress guard. It halts a
+                            tool call when the agent is repeating identical calls without making progress.
+                        </li>
+                    </ol>
+                    <p>
+                        All three gates are <strong>inert unless enabled</strong> — the classification gate defaults to
+                        <code>Off</code>, and the governor and progress guard are gated on their config flags. Two
+                        earlier MediatR behaviors named <code>GovernancePolicyBehavior</code> and
+                        <code>ToolPermissionBehavior</code> were <strong>removed as dead code</strong>: they keyed on a
+                        request marker that nothing in production implemented, so they never actually fired. Governance
+                        now lives on the tool path described above.
+                    </p>
 
                     <div class="callout callout-tip">
                         <span class="callout-icon">✓</span>
                         <div class="callout-body">
                             <div class="callout-title">Fail closed: the safe default is "no"</div>
                             <p style="margin: 0">
-                                The behavior <strong>fails closed</strong>. If evaluation cannot affirmatively
+                                The governor <strong>fails closed</strong>. If evaluation cannot affirmatively
                                 <em>approve</em> an action — because a policy is missing, ambiguous, or errors out — the
-                                answer is <strong>deny</strong>, never allow. A bug or a gap in your policy file makes
-                                the agent <em>more</em> restricted, not less. This is the opposite of a fail-open system,
-                                where an error would silently let the action through.
+                                answer is <strong>deny</strong> (recorded as a <code>PendingApproval</code>), never
+                                allow. A bug or a gap in your policy file makes the agent <em>more</em> restricted, not
+                                less. This is the opposite of a fail-open system, where an error would silently let the
+                                action through.
                             </p>
                         </div>
                     </div>
@@ -372,8 +393,8 @@
                                 fat-fingered to <code>0</code>.
                             </p>
                             <p style="margin-bottom: 0">
-                                Both fail. <code>GovernancePolicyBehavior</code> fails closed, so a request it cannot
-                                affirmatively approve is denied. <code>QuorumApprovalStrategy</code> returns
+                                Both fail. The <code>IToolInvocationGovernor</code> fails closed, so a request it
+                                cannot affirmatively approve is denied. <code>QuorumApprovalStrategy</code> returns
                                 <strong>denied</strong> on a threshold of <code>&le; 0</code> rather than auto-approving.
                                 And if approvers are simply unreachable, the <code>DenyAndEscalate</code> timeout action
                                 denies the request instead of waiting it out into a yes. The destructive action never

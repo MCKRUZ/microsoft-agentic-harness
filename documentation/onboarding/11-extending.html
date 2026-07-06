@@ -19,7 +19,7 @@
                     <div class="sidebar-group"><div class="sidebar-group-title">Getting Started</div><a class="sidebar-link" href="index.html"><span class="sidebar-link-num">00</span> Welcome</a><a class="sidebar-link" href="01-get-running.html"><span class="sidebar-link-num">01</span> Get Running in 10 Minutes</a></div>
                     <div class="sidebar-group"><div class="sidebar-group-title">Configuration</div><a class="sidebar-link" href="02-configuration.html"><span class="sidebar-link-num">02</span> Configuration Reference</a></div>
                     <div class="sidebar-group"><div class="sidebar-group-title">Architecture</div><a class="sidebar-link" href="03-big-picture.html"><span class="sidebar-link-num">03</span> The Big Picture</a><a class="sidebar-link" href="04-message-journey.html"><span class="sidebar-link-num">04</span> A Message's Journey</a></div>
-                    <div class="sidebar-group"><div class="sidebar-group-title">Systems</div><a class="sidebar-link" href="05-skills.html"><span class="sidebar-link-num">05</span> Skills System</a><a class="sidebar-link" href="06-tools.html"><span class="sidebar-link-num">06</span> Tools &amp; Keyed DI</a><a class="sidebar-link" href="07-rag.html"><span class="sidebar-link-num">07</span> The RAG Pipeline</a><a class="sidebar-link" href="08-mcp.html"><span class="sidebar-link-num">08</span> MCP Server &amp; Client</a></div>
+                    <div class="sidebar-group"><div class="sidebar-group-title">Systems</div><a class="sidebar-link" href="05-skills.html"><span class="sidebar-link-num">05</span> Skills System</a><a class="sidebar-link" href="06-tools.html"><span class="sidebar-link-num">06</span> Tools &amp; Keyed DI</a><a class="sidebar-link" href="07-rag.html"><span class="sidebar-link-num">07</span> The RAG Pipeline</a><a class="sidebar-link" href="08-mcp.html"><span class="sidebar-link-num">08</span> MCP Server &amp; Client</a><a class="sidebar-link" href="16-generative-ui.html"><span class="sidebar-link-num">16</span> Generative UI &amp; Widgets</a></div>
                     <div class="sidebar-group"><div class="sidebar-group-title">Patterns</div><a class="sidebar-link" href="09-patterns.html"><span class="sidebar-link-num">09</span> Patterns You'll Use Daily</a><a class="sidebar-link" href="10-observability.html"><span class="sidebar-link-num">10</span> Observability &amp; Safety</a></div>
                     <div class="sidebar-group"><div class="sidebar-group-title">Building</div><a class="sidebar-link" href="11-extending.html"><span class="sidebar-link-num">11</span> Extending the Harness</a></div>
                     <div class="sidebar-group"><div class="sidebar-group-title">Quality</div><a class="sidebar-link" href="13-evaluation.html"><span class="sidebar-link-num">13</span> Evaluation Framework</a><a class="sidebar-link" href="14-skill-training.html"><span class="sidebar-link-num">14</span> Skill Training</a></div>
@@ -140,9 +140,28 @@ public sealed class TemperatureConverterTool : ITool
             _ =&gt; double.NaN
         };
 
-        return Task.FromResult(ToolResult.Success(output.ToString("F2")));
+        return Task.FromResult(ToolResult.Ok(output.ToString("F2")));
     }
 }</code></pre>
+                            </div>
+                            <div class="callout callout-tip">
+                                <span class="callout-icon">✓</span>
+                                <div class="callout-body">
+                                    <div class="callout-title">Declare the tool's risk with <code>RiskTier</code></div>
+                                    <p style="margin: 0">
+                                        <code>ITool</code> exposes a <code>RiskTier</code> property (typed as the
+                                        <code>BlastRadius</code> enum: <code>Trivial</code> / <code>Low</code> /
+                                        <code>Medium</code> / <code>High</code> / <code>Critical</code>) that defaults
+                                        to <code>BlastRadius.Medium</code>. It feeds the graded-autonomy gate — higher
+                                        autonomy tiers may auto-approve low-radius tools while still forcing human
+                                        approval for high-radius ones — and the escalation severity is derived from it.
+                                        Temperature conversion is a pure computation with no side effects, so override
+                                        it downward:
+                                        <code>public BlastRadius RiskTier =&gt; BlastRadius.Trivial;</code>. A tool
+                                        that writes files, runs commands, or touches production state should instead
+                                        return <code>High</code> or <code>Critical</code>.
+                                    </p>
+                                </div>
                             </div>
                         </li>
 
@@ -238,15 +257,12 @@ name: Code Reviewer
 description: Reviews code changes for bugs, style, and design issues.
 category: development
 tags: [code, review, quality]
-mode: managed                       # explicit tool control (default)
+version: 1.0.0
 prerequisites: [data-gathering]     # optional: this skill waits for data-gathering to complete
-completion-tool: submit_review      # optional: calling this tool marks the skill as done
+completion_tool: submit_review      # optional: calling this tool marks the skill as done
 allowed-tools:
-  - file_system_read
+  - file_system
   - submit_review
-context-loading:
-  references:
-    - ./references/review-checklist.md
 ---
 
 # Code Reviewer
@@ -263,7 +279,7 @@ miss, you push back on premature abstractions, and you say what you mean.
 - Quote line ranges when referring to specific code.
 
 ## When invoked
-1. Use file_system_read to load the file(s) under review.
+1. Use file_system to load the file(s) under review.
 2. Check ./references/review-checklist.md for the team's standards.
 3. Produce findings grouped by category, with line references.</code></pre>
                             </div>
@@ -271,7 +287,7 @@ miss, you push back on premature abstractions, and you say what you mean.
 
                         <li class="step">
                             <div class="step-title">Add the reference content</div>
-                            <p>Create <code>skills/code-reviewer/references/review-checklist.md</code> with whatever standards your team uses. This is Tier-3 content — only loaded when the agent actually reads the file via <code>file_system_read</code>.</p>
+                            <p>Create <code>skills/code-reviewer/references/review-checklist.md</code> with whatever standards your team uses. This is Tier-3 content — only loaded when the agent actually reads the file via <code>file_system</code>.</p>
                         </li>
 
                         <li class="step">
@@ -298,13 +314,13 @@ miss, you push back on premature abstractions, and you say what you mean.
                                 <pre><code>public class CodeReviewerSkillTests
 {
     [Fact]
-    public async Task SkillLoader_LoadsCodeReviewerSkill()
+    public void SkillRegistry_LoadsCodeReviewerSkill()
     {
-        var loader = TestHarness.GetService&lt;ISkillLoaderService&gt;();
-        var skill = await loader.LoadAsync("code-reviewer");
+        var registry = TestHarness.GetService&lt;ISkillMetadataRegistry&gt;();
+        var skill = registry.TryGet("code-reviewer");
 
         skill.Should().NotBeNull();
-        skill!.AllowedTools.Should().Contain("file_system_read");
+        skill!.AllowedTools.Should().Contain("file_system");
         skill.Instructions.Should().Contain("Code Reviewer");
     }
 }</code></pre>
@@ -380,7 +396,7 @@ You are the team's automated code review assistant. For each pull request:
     "Supervised": {
       "DefaultBehavior": "Ask",
       "ToolOverrides": {
-        "file_system_read": "Allow",
+        "file_system": "Allow",
         "git_log": "Allow",
         "git_diff": "Allow"
       }
@@ -453,7 +469,7 @@ You are the team's automated code review assistant. For each pull request:
     {
       "Id": "code-analysis",
       "Path": "./plugins/code-analysis",
-      "AllowedTools": ["file_system_read", "ast_parser"],
+      "AllowedTools": ["file_system", "ast_parser"],
       "DeniedTools": ["file_system_write"],
       "AutonomyLevel": "Supervised"
     }
@@ -520,6 +536,21 @@ You are the team's automated code review assistant. For each pull request:
                         <li><strong>Skipping the SKILL.md frontmatter</strong> — without it, the loader can't discover the skill. Validate frontmatter renders correctly with the loader tests.</li>
                         <li><strong>Hardcoding paths or model names</strong> — pull from <code>AppConfig</code> via <code>IOptionsMonitor</code>. Never embed credentials or endpoints.</li>
                     </ul>
+
+                    <div class="callout callout-info">
+                        <span class="callout-icon">i</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Running on Azure AI Foundry instead of the console</div>
+                            <p style="margin: 0">
+                                None of these recipes change when you host the same agent on Azure AI Foundry. The
+                                <code>IChatClientFactory</code> already supports an AI Foundry backend (via the
+                                <code>Microsoft.Agents.AI.Foundry</code> package), and <code>Presentation.FoundryHost</code>
+                                is a ready-made host that composes the harness the same way the console UI does — your
+                                tools, skills, and plugins load unchanged. Pick the chat-client type through
+                                <code>AppConfig.AI.AgentFramework</code> config; you don't touch tool or skill code.
+                            </p>
+                        </div>
+                    </div>
 
                     <hr />
 
