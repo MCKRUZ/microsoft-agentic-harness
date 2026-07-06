@@ -50,10 +50,16 @@ public class HarmonicMemoryConfig
     public int ConsolidationTopK { get; set; } = 5;
 
     /// <summary>
-    /// When true, abstraction and consolidation are deferred from each <c>RememberAsync</c> call to the
-    /// session-flush boundary, amortizing the LLM cost across the whole session instead of paying it per
-    /// fact. When false (the default), each remembered fact is abstracted inline.
+    /// Reserved for a future deferred-batching mode that would amortize the abstraction LLM cost across a
+    /// session instead of paying it per <c>RememberAsync</c>.
     /// </summary>
+    /// <remarks>
+    /// <strong>Not supported in this build.</strong> Abstraction runs inline on each write, and there is no
+    /// session-flush seam to defer into (cross-session memory is persisted durably inline). Setting this to
+    /// <see langword="true"/> is <em>rejected at startup</em> by <c>HarmonicMemoryConfigValidator</c> rather
+    /// than silently ignored — leave it <see langword="false"/>. A future release will add the deferred path
+    /// and lift the restriction.
+    /// </remarks>
     /// <value>Default: false</value>
     public bool BatchAtSessionFlush { get; set; }
 }

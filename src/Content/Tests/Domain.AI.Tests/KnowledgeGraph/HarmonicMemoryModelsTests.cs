@@ -42,4 +42,74 @@ public sealed class HarmonicMemoryModelsTests
 
         act.Should().Throw<ArgumentException>().WithParameterName("targetId");
     }
+
+    // --- GraphNode harmonic property helpers ---
+
+    [Fact]
+    public void WithAbstraction_RoundTripsAbstractionAndCueAnchors()
+    {
+        var node = BareNode();
+
+        var stamped = node.WithAbstraction(new MemoryAbstraction
+        {
+            Abstraction = "Project Orion timeline",
+            CueAnchors = ["Orion milestones", "Orion schedule"]
+        });
+
+        stamped.GetAbstraction().Should().Be("Project Orion timeline");
+        stamped.GetCueAnchors().Should().BeEquivalentTo("Orion milestones", "Orion schedule");
+    }
+
+    [Fact]
+    public void WithAbstraction_EmptyCueAnchors_OmitsCueAnchorKey()
+    {
+        var stamped = BareNode().WithAbstraction(new MemoryAbstraction { Abstraction = "solo" });
+
+        stamped.GetCueAnchors().Should().BeEmpty();
+        stamped.Properties.Should().NotContainKey(GraphNodeMemoryExtensions.CueAnchorsPropertyKey);
+    }
+
+    [Fact]
+    public void WithAbstraction_PreservesExistingProperties_IncludingTrust()
+    {
+        var node = BareNode().WithTrust(MemoryTrust.Untrusted);
+
+        var stamped = node.WithAbstraction(new MemoryAbstraction { Abstraction = "kept" });
+
+        stamped.GetTrust().Should().Be(MemoryTrust.Untrusted, "stamping an abstraction must not drop the trust marker");
+        stamped.Properties["content"].Should().Be("body");
+        stamped.GetAbstraction().Should().Be("kept");
+    }
+
+    [Fact]
+    public void GetAbstraction_OnNodeWithoutAbstraction_ReturnsNull()
+    {
+        BareNode().GetAbstraction().Should().BeNull();
+    }
+
+    [Fact]
+    public void GetCueAnchors_OnNodeWithoutAnchors_ReturnsEmpty()
+    {
+        BareNode().GetCueAnchors().Should().BeEmpty();
+    }
+
+    [Fact]
+    public void WithAbstraction_TrimsAndDropsBlankCueAnchors()
+    {
+        var stamped = BareNode().WithAbstraction(new MemoryAbstraction
+        {
+            Abstraction = "topic",
+            CueAnchors = ["  spaced anchor  ", "   ", "second"]
+        });
+
+        stamped.GetCueAnchors().Should().BeEquivalentTo("spaced anchor", "second");
+    }
+
+    private static GraphNode BareNode() => new()
+    {
+        Id = "memory:default:anon:k",
+        Name = "k",
+        Type = "Fact",
+        Properties = new Dictionary<string, string> { ["content"] = "body" }
+    };
 }

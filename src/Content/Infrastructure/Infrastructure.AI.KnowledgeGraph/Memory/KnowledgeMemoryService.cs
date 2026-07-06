@@ -1,6 +1,7 @@
 using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Domain.AI.KnowledgeGraph.Models;
 using Domain.Common.Config;
+using Domain.Common.Config.AI.HarmonicMemory;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -16,7 +17,7 @@ namespace Infrastructure.AI.KnowledgeGraph.Memory;
 /// The session cache is flushed to the graph store when the scope is disposed,
 /// or explicitly via <see cref="ISessionKnowledgeCache.FlushToGraphAsync"/>.
 /// </remarks>
-public sealed class KnowledgeMemoryService : IKnowledgeMemory
+public sealed partial class KnowledgeMemoryService : IKnowledgeMemory
 {
     private readonly ISessionKnowledgeCache _sessionCache;
     private readonly IKnowledgeGraphStore _graphStore;
@@ -26,6 +27,8 @@ public sealed class KnowledgeMemoryService : IKnowledgeMemory
     private readonly IOptionsMonitor<AppConfig> _configMonitor;
     private readonly ILogger<KnowledgeMemoryService> _logger;
     private readonly IMemoryWriteGate? _writeGate;
+    private readonly IMemoryAbstractor? _abstractor;
+    private readonly IMemoryConsolidator? _consolidator;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="KnowledgeMemoryService"/> class.
@@ -41,6 +44,13 @@ public sealed class KnowledgeMemoryService : IKnowledgeMemory
     /// <param name="writeGate">Memory write gate that scans, classifies, and stamps provenance on
     /// facts before persistence. When <see langword="null"/> (gate not registered), writes pass
     /// through unguarded — preserving legacy behavior.</param>
+    /// <param name="abstractor">Harmonic memory abstractor that produces the primary abstraction + cue
+    /// anchors for a fact. Only reached when <c>AppConfig:AI:HarmonicMemory:Mode</c> is not
+    /// <see cref="HarmonicMemoryMode.Off"/>. In real DI the fail-fast <c>NotConfiguredMemoryAbstractor</c>
+    /// default is always registered; <see langword="null"/> only in unit tests that never raise the mode.</param>
+    /// <param name="consolidator">Harmonic memory consolidator that decides merge-vs-create against
+    /// similar existing entries. Only reached in <see cref="HarmonicMemoryMode.Full"/>; when
+    /// <see langword="null"/> the write path defaults to create-new.</param>
     public KnowledgeMemoryService(
         ISessionKnowledgeCache sessionCache,
         IKnowledgeGraphStore graphStore,
@@ -49,7 +59,9 @@ public sealed class KnowledgeMemoryService : IKnowledgeMemory
         IFeedbackStore? feedbackStore,
         IOptionsMonitor<AppConfig> configMonitor,
         ILogger<KnowledgeMemoryService> logger,
-        IMemoryWriteGate? writeGate = null)
+        IMemoryWriteGate? writeGate = null,
+        IMemoryAbstractor? abstractor = null,
+        IMemoryConsolidator? consolidator = null)
     {
         ArgumentNullException.ThrowIfNull(sessionCache);
         ArgumentNullException.ThrowIfNull(graphStore);
@@ -65,6 +77,8 @@ public sealed class KnowledgeMemoryService : IKnowledgeMemory
         _configMonitor = configMonitor;
         _logger = logger;
         _writeGate = writeGate;
+        _abstractor = abstractor;
+        _consolidator = consolidator;
     }
 
     /// <inheritdoc />
@@ -73,6 +87,31 @@ public sealed class KnowledgeMemoryService : IKnowledgeMemory
         string content,
         string entityType = "Fact",
         CancellationToken cancellationToken = default)
+    {
+        // Dispatch on the harmonic memory mode. Off (the default) takes the legacy path byte-for-byte
+        // — no abstraction, no consolidation, no LLM call. Above Off, the write is enriched with a
+        // primary abstraction (+ cue anchors) and, in Full mode, consolidated against similar existing
+        // entries before it is gated and persisted (see RememberHarmonicAsync).
+        var harmonic = _configMonitor.CurrentValue.AI.HarmonicMemory;
+        if (ShouldUseHarmonic(harmonic, content))
+        {
+            await RememberHarmonicAsync(key, content, entityType, harmonic, cancellationToken);
+            return;
+        }
+
+        await RememberLegacyAsync(key, content, entityType, cancellationToken);
+    }
+
+    /// <summary>
+    /// The legacy write path: gate, then persist the raw content under a scope-namespaced, caller-keyed
+    /// node. Unchanged from before harmonic memory existed; this is exactly what runs when
+    /// <c>HarmonicMemoryMode.Off</c> (the default).
+    /// </summary>
+    private async Task RememberLegacyAsync(
+        string key,
+        string content,
+        string entityType,
+        CancellationToken cancellationToken)
     {
         // Gate the write before anything is persisted: scan for injection, classify trust, and
         // stamp provenance. This is the single chokepoint covering every write — including the
@@ -89,7 +128,17 @@ public sealed class KnowledgeMemoryService : IKnowledgeMemory
             return;
         }
 
-        var node = new GraphNode
+        await PersistGatedNodeAsync(
+            BuildMemoryNode(key, content, entityType, decision), decision, key, entityType, cancellationToken);
+    }
+
+    /// <summary>
+    /// Builds the base memory node for a fact: scope-namespaced caller-keyed id, raw content, and the
+    /// caller's owner/tenant. Shared by the legacy path and the harmonic path (which additionally stamps
+    /// the abstraction via <see cref="GraphNodeMemoryExtensions.WithAbstraction"/>).
+    /// </summary>
+    private GraphNode BuildMemoryNode(string key, string content, string entityType, MemoryWriteDecision? decision) =>
+        new()
         {
             Id = MemoryNodeId(key),
             Name = key,
@@ -101,6 +150,19 @@ public sealed class KnowledgeMemoryService : IKnowledgeMemory
             Provenance = decision?.Provenance
         };
 
+    /// <summary>
+    /// The shared persistence tail for both the legacy and harmonic write paths: apply the quarantine
+    /// trust marker, add to the session cache (trusted facts only), and durably persist. Centralizing it
+    /// keeps the "quarantined facts are persisted-but-not-cached" invariant in one place regardless of how
+    /// the node was built.
+    /// </summary>
+    private async Task PersistGatedNodeAsync(
+        GraphNode node,
+        MemoryWriteDecision? decision,
+        string key,
+        string entityType,
+        CancellationToken cancellationToken)
+    {
         // Only quarantined facts carry an explicit trust marker. Trusted facts stay unmarked —
         // GetTrust defaults unmarked nodes to Trusted — so a trusted write, a disabled-guard write,
         // and a no-gate write are all indistinguishable and recallable.
