@@ -192,6 +192,10 @@ public static class DependencyInjection
         // Skill-training subsystem (PatchApplier, GateEvaluator, schedulers, checkpoint store, ...)
         services.AddSkillTrainingDependencies();
 
+        // Harmonic memory representation seams (Memora port) — fail-fast NotConfigured defaults, inert
+        // until AppConfig:AI:HarmonicMemory:Mode is raised above Off.
+        services.AddHarmonicMemoryDependencies();
+
         // OWASP Agentic Top-10 eval metrics — keyed by metric key for IEvalRunner resolution
         services
             .AddKeyedSingleton<IEvalMetric, OwaspAsi01GoalHijackMetric>("owasp.asi01.goal_hijack")
