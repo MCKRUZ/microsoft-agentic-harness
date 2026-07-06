@@ -195,6 +195,11 @@
       <BuildType Solution="Debug-AgentHub-Dashboard|*" Project="Debug" />
       <BuildType Solution="Debug-AgentHub-WebUI|*" Project="Debug" />
     </Project>
+    <Project Path="Content/Tests/Presentation.EvalRunner.Tests/Presentation.EvalRunner.Tests.csproj">
+      <BuildType Solution="Debug-AgentHub-All|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-Dashboard|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-WebUI|*" Project="Debug" />
+    </Project>
     <Project Path="Content/Tests/Domain.Common.Tests/Domain.Common.Tests.csproj">
       <BuildType Solution="Debug-AgentHub-All|*" Project="Debug" />
       <BuildType Solution="Debug-AgentHub-Dashboard|*" Project="Debug" />

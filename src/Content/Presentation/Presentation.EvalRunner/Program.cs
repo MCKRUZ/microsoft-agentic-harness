@@ -51,6 +51,13 @@ public static class Program
             return args.Length == 0 ? 2 : 0;
         }
 
+        // Subcommand: harmonic memory write-side eval (a different eval shape — facts + gold topics, not
+        // agent Q&A — so it has its own runner rather than the dataset/IAgentInvoker pipeline below).
+        if (args[0] == "harmonic-write")
+        {
+            return await HarmonicWriteEval.HarmonicWriteEvalCli.RunAsync(args[1..]);
+        }
+
         CliArgs parsed;
         try
         {
