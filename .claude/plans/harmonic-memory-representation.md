@@ -157,32 +157,104 @@ Make `RememberAsync` produce harmonic entries when `Mode != Off`.
   post-consolidation, tenant/owner isolation preserved through the new path, cost-guard knobs honored,
   episodic segment captured raw + cross-linked to WorkEpisode without double-capturing the seam.
 
-### 🔬 EVAL GATE — run PR4 eval here before building PR3
-Per decision 1: after PR2, run the write-side eval (below) and get Matt's go/no-go before the read path.
+### 🔬 EVAL GATE — ✅ DONE (2026-07-07, paid `--llm` run, Matt reviewed)
+Write-side eval built + MERGED (#115); judge-wiring fix MERGED (#116). Paid run ⇒ **write side ACCEPTED,
+PR3 GREENLIT.** Key finding that reshapes PR3: of the residual Full-mode fragments, **5/6 shared ≥1 token
+with their cluster** (surfaceable by *lexical* abstraction match) and only **1/6** was a pure-semantic miss.
+⇒ semantic/embedding recall has ~0 marginal leverage on this workload (**Option A abandoned**); the recall
+win comes from *using* the abstraction + cue-anchor data at all, not from embeddings. See the "EVAL GATE
+RUN" section in `memory/project_harmonic_memory_memora.md` for the full scorecard.
 
-### PR3 — Cue-anchor recall + RRF fusion — **DEFERRED to post-eval** — `feat/harmonic-memory-pr3-recall`
-Add the joint abstraction+cue read path; keep the legacy path as one fusion input.
-- **Infrastructure**: a cue-anchor index (second collection / graph label). `RecallAsync` (impact-analyze
-  first) becomes: match query against **abstraction index + cue-anchor index** → traverse shared-anchor
-  neighbors (bounded fan-out) → fuse with the existing substring/graph results via **RRF (reuse
-  `Infrastructure.AI.RAG` — we already own the primitive)**. Behind `Mode != Off`; `Off` = today's path.
-- **Tests**: cue-anchor hit surfaces a memory that substring misses; traversal returns the coherent
-  cluster; RRF ordering; isolation holds on recall; `Off` mode = byte-identical legacy behavior.
+---
 
-### PR4 — Eval harness (the gate) — runs after PR2, BEFORE PR3 — `feat/harmonic-memory-pr4-eval`
-Small LoCoMo-style eval (reuse our Phase 5 eval framework + LLM-as-judge) comparing Off vs AbstractOnly vs
-Full on a fixed multi-session fixture. Report retrieval relevance + answer score + **LLM-call cost delta**
-(the toggle's whole justification). Purpose: confirm the gain transfers before recommending anyone flip it
-on in production — benchmark numbers rarely port 1:1.
+## PR3 — Cue-anchor recall + RRF fusion — `feat/harmonic-memory-pr3-recall`  *(drafted 2026-07-07, not built)*
+
+**The problem PR3 solves.** PR2 writes a primary abstraction + cue anchors into every trusted memory node's
+`GraphNode.Properties` (`memory.abstraction`, `memory.cue_anchors`). **Recall never reads them.** Today
+`RecallAsync` → `SearchGraphAsync` → `MatchesQuery` substring-matches only `node.Name`/`node.Type`
+(`KnowledgeMemoryService.cs:332`). That is exactly why the pre-PR3 eval showed **zero recall delta across
+modes** — the harmonic write side is inert until recall consumes it. PR3 makes recall match the query against
+abstraction + cue anchors, traverse the implicit shared-anchor graph, and fuse that with the legacy path.
+
+**Corrections to the old stub (from the 2026-07-07 code map):**
+- There is **no reusable RRF** — the only impl is `private static HybridRetriever.ApplyReciprocalRankFusion`
+  (`Infrastructure.AI.RAG/Retrieval/HybridRetriever.cs:142`), coupled to `RetrievalResult`/`DocumentChunk`.
+  PR3 must **extract a generic helper**, not "reuse `Infrastructure.AI.RAG`" (and infra-to-infra dep is wrong
+  anyway).
+- Abstractions live in `GraphNode.Properties` (a string bag), **not** a separate index/collection.
+- `RecallAsync(string query, int maxResults)` takes a **bare string** — no query object, no embedder wired.
+- No property-filtered graph query exists; PR2 already accepts an **O(n) `GetAllNodesAsync` scan** (documented
+  caveat). PR3 recall inherits that tradeoff.
+
+### Recommended design — lexical joint match, no LLM on the recall hot path
+Reuse the write partial's `Tokenize`/`TokenOverlap` (`KnowledgeMemoryService.Harmonic.cs:213/229`) to score
+the **raw query** against each in-scope trusted node's abstraction + cue anchors. This is the honest default
+because (a) the eval proved lexical catches 5/6 of the fragments semantic would and (b) recall runs per-turn
+during context assembly — paying an LLM call per recall (query-abstraction) or standing up an embedder
+(semantic) buys ≤1/6 for real cost. See **Decision R1** for the fork; recommendation = lexical.
+
+### Stages
+1. **Generic RRF helper** — new `ReciprocalRankFusion` static (proposed `Domain.AI/Retrieval/`, pure algorithm,
+   zero deps): `Fuse<T>(IEnumerable<IReadOnlyList<T>> rankedLists, Func<T,string> keySelector, double k=60,
+   int topK)`. **Migrate `HybridRetriever` to call it** (replace the private method — "replace, don't
+   deprecate"; one true RRF, its existing RAG tests prove equivalence). Risk: touches RAG tests → verify green.
+2. **Harmonic recall matcher** — new partial `KnowledgeMemoryService.Harmonic.Recall.cs` mirroring the write
+   partial. `RecallHarmonicAsync(query, maxResults)`: scope-filtered trusted nodes with an abstraction (same
+   filter as `FindConsolidationCandidatesAsync`) → score by `max(TokenOverlap(qTokens, abstractionTokens),
+   TokenOverlap(qTokens, cueAnchorTokens))` → ranked list. Cue anchors are the second entry point the legacy
+   substring path lacks.
+3. **Shared-cue-anchor traversal** — from the top seeds' cue anchors, pull in-scope trusted nodes sharing ≥1
+   anchor (Memora's implicit graph), bounded by `RecallCueAnchorFanout` (new knob). These join the fusion at a
+   lower rank so a query that hits one member surfaces the coherent cluster.
+4. **Fuse in `RecallAsync`** — when `Mode != Off`: build (a) the harmonic ranked list (stages 2–3) and (b) the
+   existing `SearchGraphAsync` list, fuse via the generic RRF, keep `IsRecallable` as the single trust
+   chokepoint, `Take(maxResults)`. **`Mode == Off` = byte-identical legacy path** (guard at the top).
+5. **Config + validator** — extend `HarmonicMemoryConfig`: `RecallCueAnchorFanout` (default 3), `RecallRrfK`
+   (default 60). Extend `HarmonicMemoryConfigValidator` (fanout ≥ 0, k > 0). Optional `AbstractQueryOnRecall`
+   (default false) only if Decision R1 picks the LLM path.
+6. **DI** — inject `IMemoryAbstractor` into the `KnowledgeMemoryService` factory
+   (`Infrastructure.AI.KnowledgeGraph/DependencyInjection.cs:164`) **only if** R1 = LLM-query-abstraction;
+   the lexical default needs no new dependency (the constructor already has the abstractor arg, currently
+   null from the factory).
+7. **Tests** (`Infrastructure.AI.KnowledgeGraph.Tests/Memory/`, real `InMemoryGraphStore` + Fake seams, per
+   PR2 pattern): cue-anchor hit surfaces a node substring misses; shared-anchor traversal returns the cluster;
+   RRF ordering; **`Off` byte-identical to legacy**; tenant/owner isolation holds on recall; quarantined
+   (untrusted) nodes never surface. Plus generic-RRF unit tests + HybridRetriever regression stays green.
+
+### 🔬 Recall eval (proves PR3, mirrors the PR2 write eval)
+The write eval explicitly **under-measured** because it couldn't test recall. Add a `harmonic-recall` eval
+subcommand (template: `Presentation.EvalRunner/HarmonicWriteEval/`) over a fixture of `(query → expected
+memory-id)` pairs, reporting **recall@k / MRR for Off vs AbstractOnly vs Full** + LLM-call cost delta. This is
+the real go/no-go on whether harmonic recall beats substring — ship it with PR3.
+
+### Open decisions for PR3 (confirm before building)
+- **R1 — recall matching:** **lexical token-overlap (no LLM, recommended)** vs LLM query-abstraction (1 call
+  /recall) vs embeddings. Eval evidence + hot-path cost point to lexical; the others buy ≤1/6 for real cost.
+- **R2 — RRF placement + HybridRetriever migration:** extract generic + **migrate HybridRetriever
+  (recommended, DRY/replace-don't-deprecate)** vs add generic but leave HybridRetriever (two impls = debt).
+- **R3 — episodic grounding:** **split to a separate PR3b (recommended)** vs fold into PR3. It needs a
+  write-side change (factual nodes don't carry conversation/turn or an `EpisodicMemoryIds` link yet — the
+  `GraphNode` has no such field), so it's a clean separate unit; the greenlight was for recall+RRF specifically.
+- **R4 — O(n) recall scan:** **accept now (recommended, matches PR2's documented caveat, fixture-scale)** vs
+  add an abstraction-indexed `IKnowledgeGraphStore` primitive. Recall is hotter than write, so flag the scan
+  as the primary scaling risk with a TODO, but don't build the index speculatively (YAGNI).
+
+### PR3b (optional follow-up) — Episodic grounding — `feat/harmonic-memory-pr3b-episodic`
+Wire the deferred factual→episodic link. Add `memory.episodic_ids` (or reconstruct via `(ConversationId,
+TurnNumber)` provenance) so recall can attach raw `EpisodicSegment`s (via `IEpisodicSegmentStore
+.GetByConversationAsync`) as grounding context for a recalled factual node. Separate PR because it requires the
+write path to stamp conversation/turn onto factual nodes (which it doesn't today).
 
 ## Verification (each PR)
 `dotnet build src/AgenticHarness.slnx && dotnet test src/AgenticHarness.slnx`; `gitnexus_impact` before
 editing `RememberAsync`/`RecallAsync`; `/code-review` + `/simplify` per `rules/review-cadence.md`;
 `gitnexus_detect_changes` before commit.
 
-## Decisions — all resolved 2026-07-06 (see "Decisions locked" above)
+## Decisions — original scope resolved 2026-07-06 (see "Decisions locked" above)
 1. Scope → **PR1 + PR2, then eval gate.** 2. Provider → **`NotConfigured` seams only.**
 3. Episodic → **include + reconcile with shipped `WorkEpisode` (share seam, distinct records, cross-link).**
-4. Retriever → **Semantic only.**
+4. Retriever → **Semantic only** (superseded on the *recall* side by the 2026-07-07 eval → lexical default; see R1).
 
-Build not yet started — awaiting Matt's go to begin PR1.
+**Progress:** PR1 MERGED (#113) · PR2 write path MERGED (#114) · write-side eval + judge fix MERGED (#115/#116)
+· eval gate DONE → PR3 GREENLIT. **PR3 (recall + RRF) drafted above, NOT built — awaiting Matt's answers on
+R1–R4 before build.**

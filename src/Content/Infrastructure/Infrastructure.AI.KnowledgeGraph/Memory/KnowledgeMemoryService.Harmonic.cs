@@ -146,16 +146,14 @@ public sealed partial class KnowledgeMemoryService
 
     /// <summary>
     /// Retrieves this scope's harmonic memory nodes whose abstraction overlaps the candidate's, ranked by
-    /// token overlap, top-K. Reuses the scope-filtered <see cref="IKnowledgeGraphStore.GetAllNodesAsync"/>
-    /// (the tenant-isolating decorator filters it to the caller's visible nodes) and additionally restricts
-    /// to this scope's <c>memory:</c> nodes — excluding the node the current key itself would write to — so
-    /// consolidation never considers corpus entities, another scope's memory, or the fact being written.
+    /// token overlap, top-K. Excludes the node the current key itself would write to, so consolidation never
+    /// considers the fact being written.
     /// </summary>
     /// <remarks>
-    /// Ranking is deliberately lightweight (token-overlap, no embeddings) — semantic embedding-based recall
-    /// is the PR3 read-path concern. The full-scan is O(n) over the visible graph; acceptable at template
-    /// scale, and a follow-up would add an abstraction-indexed query primitive for large backends (the same
-    /// caveat carried by <c>GetNodeCountAsync</c> and the retention scan).
+    /// Ranking is deliberately lightweight (token-overlap, no embeddings) — a benchmark on this codebase
+    /// found embedding-based semantic matching adds negligible recall over lexical overlap for this workload.
+    /// The candidate pool comes from <see cref="GetScopedTrustedMemoryNodesAsync"/> (an O(n) visible-graph
+    /// scan; see its remarks).
     /// </remarks>
     private async Task<IReadOnlyList<GraphNode>> FindConsolidationCandidatesAsync(
         string candidateAbstraction,
@@ -163,26 +161,50 @@ public sealed partial class KnowledgeMemoryService
         int topK,
         CancellationToken cancellationToken)
     {
-        var all = await _graphStore.GetAllNodesAsync(cancellationToken);
-        var scopePrefix = $"memory:{ScopeKey()}:";
-        var selfId = MemoryNodeId(currentKey);
         var candidateTokens = Tokenize(candidateAbstraction);
         if (candidateTokens.Count == 0)
             return [];
 
-        return all
-            .Where(n => n.Id.StartsWith(scopePrefix, StringComparison.Ordinal) && n.Id != selfId)
-            // Quarantined entries are never served to recall; likewise they are never offered to the
-            // consolidator LLM, so untrusted content and its metadata cannot ride onto a trusted fact.
-            // (Quarantined facts also carry no abstraction, but this mirrors IsRecallable as defense-in-depth.)
-            .Where(n => n.GetTrust() == MemoryTrust.Trusted)
-            .Select(n => (Node: n, Abstraction: n.GetAbstraction()))
-            .Where(x => x.Abstraction is not null)
-            .Select(x => (x.Node, Score: TokenOverlap(candidateTokens, Tokenize(x.Abstraction!))))
+        var selfId = MemoryNodeId(currentKey);
+        var nodes = await GetScopedTrustedMemoryNodesAsync(cancellationToken);
+
+        return nodes
+            .Where(n => n.Id != selfId)
+            .Select(n => (Node: n, Score: TokenOverlap(candidateTokens, Tokenize(n.GetAbstraction()!))))
             .Where(x => x.Score > 0)
             .OrderByDescending(x => x.Score)
+            // Id tiebreak keeps candidate selection deterministic regardless of GetAllNodesAsync order.
+            .ThenBy(x => x.Node.Id, StringComparer.Ordinal)
             .Take(topK)
             .Select(x => x.Node)
+            .ToList();
+    }
+
+    /// <summary>
+    /// Retrieves this scope's recallable harmonic memory nodes — the shared candidate pool for both
+    /// consolidation (write) and harmonic recall (read). Reuses the scope-filtered
+    /// <see cref="IKnowledgeGraphStore.GetAllNodesAsync"/> (the tenant-isolating decorator filters it to the
+    /// caller's visible nodes) and additionally restricts to this scope's <c>memory:</c> nodes that are
+    /// trusted and carry an abstraction, so corpus entities, another scope's memory, quarantined facts, and
+    /// legacy/off nodes are all excluded.
+    /// </summary>
+    /// <remarks>
+    /// Quarantined (untrusted) entries are never served to recall and never offered to the consolidator LLM,
+    /// so untrusted content and its metadata cannot ride onto a trusted fact — the trust filter here mirrors
+    /// <see cref="IsRecallable"/> as defense-in-depth. The full scan is O(n) over the visible graph;
+    /// acceptable at template scale, and a follow-up would add an abstraction-indexed query primitive for
+    /// large backends (the same caveat carried by <c>GetNodeCountAsync</c> and the retention scan). Recall is
+    /// a hotter path than write, so that primitive is the primary scaling lever if node counts grow.
+    /// </remarks>
+    private async Task<IReadOnlyList<GraphNode>> GetScopedTrustedMemoryNodesAsync(CancellationToken cancellationToken)
+    {
+        var all = await _graphStore.GetAllNodesAsync(cancellationToken);
+        var scopePrefix = $"memory:{ScopeKey()}:";
+
+        return all
+            .Where(n => n.Id.StartsWith(scopePrefix, StringComparison.Ordinal))
+            .Where(n => n.GetTrust() == MemoryTrust.Trusted)
+            .Where(n => n.GetAbstraction() is not null)
             .ToList();
     }
 
