@@ -18,10 +18,12 @@ namespace Domain.Common.Config.AI.HarmonicMemory;
 /// </para>
 /// <code>
 /// AppConfig.AI.HarmonicMemory
-/// ├── Mode                  — Off (default) / AbstractOnly / Full — governs the write-time LLM cost
-/// ├── MinContentLengthChars — Only abstract facts at least this long (short facts stay on the legacy path)
-/// ├── ConsolidationTopK     — How many similar existing entries the consolidator sees (Full mode)
-/// └── BatchAtSessionFlush   — Defer abstraction to session flush instead of per-RememberAsync
+/// ├── Mode                   — Off (default) / AbstractOnly / Full — governs the write-time LLM cost
+/// ├── MinContentLengthChars  — Only abstract facts at least this long (short facts stay on the legacy path)
+/// ├── ConsolidationTopK      — How many similar existing entries the consolidator sees (Full mode)
+/// ├── RecallCueAnchorFanout  — How many shared-cue-anchor neighbors recall pulls into a cluster
+/// ├── RecallRrfK             — RRF constant fusing the harmonic and legacy recall lists
+/// └── BatchAtSessionFlush    — Defer abstraction to session flush instead of per-RememberAsync
 /// </code>
 /// </remarks>
 public class HarmonicMemoryConfig
@@ -48,6 +50,24 @@ public class HarmonicMemoryConfig
     /// </summary>
     /// <value>Default: 5</value>
     public int ConsolidationTopK { get; set; } = 5;
+
+    /// <summary>
+    /// Number of shared-cue-anchor neighbors the recall path pulls in around its best abstraction/cue matches
+    /// (harmonic recall only; ignored when <see cref="HarmonicMemoryMode.Off"/>). Cue anchors form an implicit
+    /// memory graph — two facts sharing an anchor are neighbors — so after ranking the query's direct hits,
+    /// recall expands the coherent cluster around them, bounded by this fan-out to keep the result focused.
+    /// Zero disables traversal (direct matches only). Must not be negative.
+    /// </summary>
+    /// <value>Default: 3</value>
+    public int RecallCueAnchorFanout { get; set; } = 3;
+
+    /// <summary>
+    /// The Reciprocal Rank Fusion constant used to blend the harmonic recall list (abstraction + cue-anchor
+    /// matches) with the legacy substring/graph list into one ranking (harmonic recall only). Higher values
+    /// flatten the influence of top ranks; 60 matches the RAG retriever's default. Must be positive.
+    /// </summary>
+    /// <value>Default: 60</value>
+    public double RecallRrfK { get; set; } = 60.0;
 
     /// <summary>
     /// Reserved for a future deferred-batching mode that would amortize the abstraction LLM cost across a

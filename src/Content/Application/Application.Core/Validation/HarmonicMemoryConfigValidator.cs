@@ -4,9 +4,10 @@ using FluentValidation;
 namespace Application.Core.Validation;
 
 /// <summary>
-/// Validates <see cref="HarmonicMemoryConfig"/>: the content-length floor must be non-negative and the
-/// consolidation fan-out must be positive. Auto-discovered via <c>AddValidatorsFromAssembly</c>,
-/// consistent with the sibling config validators (<c>WorkMemoryConfigValidator</c> et al.).
+/// Validates <see cref="HarmonicMemoryConfig"/>: the content-length floor and recall cue-anchor fan-out must
+/// be non-negative, and the consolidation top-K and recall RRF constant must be positive. Auto-discovered via
+/// <c>AddValidatorsFromAssembly</c>, consistent with the sibling config validators
+/// (<c>WorkMemoryConfigValidator</c> et al.).
 /// </summary>
 /// <remarks>
 /// <para>
@@ -33,6 +34,12 @@ public sealed class HarmonicMemoryConfigValidator : AbstractValidator<HarmonicMe
 
         RuleFor(x => x.ConsolidationTopK)
             .GreaterThan(0).WithMessage("ConsolidationTopK must be > 0.");
+
+        RuleFor(x => x.RecallCueAnchorFanout)
+            .GreaterThanOrEqualTo(0).WithMessage("RecallCueAnchorFanout must be >= 0.");
+
+        RuleFor(x => x.RecallRrfK)
+            .GreaterThan(0).WithMessage("RecallRrfK must be > 0.");
 
         RuleFor(x => x.BatchAtSessionFlush)
             .Equal(false)

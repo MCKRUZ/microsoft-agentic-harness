@@ -194,10 +194,31 @@ public sealed partial class KnowledgeMemoryService : IKnowledgeMemory
         int maxResults = 5,
         CancellationToken cancellationToken = default)
     {
-        // RecallAsync is the single chokepoint that enforces "quarantined facts are never served":
-        // both sources are passed through IsRecallable here, so the trust invariant lives in one
-        // place and cannot be bypassed by a future read path or a stray cache insertion.
+        // Dispatch on the harmonic memory mode, mirroring the write path. Off (the default) is the legacy
+        // substring/graph recall, byte-for-byte. Above Off, recall additionally matches the query against
+        // the primary abstraction + cue anchors the write path stamped on each node, and fuses that with the
+        // legacy list (see RecallHarmonicFusedAsync). Both paths funnel through IsRecallable, so the
+        // "quarantined facts are never served" invariant holds regardless of mode.
+        var harmonic = _configMonitor.CurrentValue.AI.HarmonicMemory;
+        if (harmonic.Mode != HarmonicMemoryMode.Off)
+            return await RecallHarmonicFusedAsync(query, maxResults, harmonic, cancellationToken);
 
+        return await RecallLegacyAsync(query, maxResults, cancellationToken);
+    }
+
+    /// <summary>
+    /// The legacy two-source recall path: session cache first (fast substring), then a full graph traversal.
+    /// Unchanged from before harmonic memory existed; this is exactly what runs when
+    /// <c>HarmonicMemoryMode.Off</c> (the default), and it is also reused as the legacy input to harmonic
+    /// fusion. RecallAsync is the single chokepoint that enforces "quarantined facts are never served": both
+    /// sources are passed through <see cref="IsRecallable"/> here, so the trust invariant lives in one place
+    /// and cannot be bypassed by a future read path or a stray cache insertion.
+    /// </summary>
+    private async Task<IReadOnlyList<GraphNode>> RecallLegacyAsync(
+        string query,
+        int maxResults,
+        CancellationToken cancellationToken)
+    {
         // Source 1: Session cache (fast, sub-millisecond)
         var cached = _sessionCache.Search(query, maxResults).Where(IsRecallable).ToList();
         if (cached.Count >= maxResults)

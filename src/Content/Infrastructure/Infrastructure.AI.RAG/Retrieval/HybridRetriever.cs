@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using Application.AI.Common.Interfaces.RAG;
 using Domain.AI.RAG.Models;
+using Domain.AI.Retrieval;
 using Domain.Common.Config;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -139,50 +140,31 @@ public sealed class HybridRetriever : IHybridRetriever
         }
     }
 
+    /// <summary>
+    /// Fuses the dense and sparse result lists with Reciprocal Rank Fusion (via the shared
+    /// <see cref="ReciprocalRankFusion"/> primitive), then reconstructs each fused hit's per-source scores:
+    /// the dense score from the dense list's contribution and the sparse score from the sparse list's. Chunks
+    /// are matched across the two lists by <see cref="DocumentChunk.Id"/>.
+    /// </summary>
     private static IReadOnlyList<RetrievalResult> ApplyReciprocalRankFusion(
         IReadOnlyList<RetrievalResult> denseResults,
         IReadOnlyList<RetrievalResult> sparseResults,
         double rrfK,
         int topK)
     {
-        var chunkScores = new Dictionary<string, (DocumentChunk Chunk, double DenseScore, double SparseScore, double FusedScore)>();
+        var fused = ReciprocalRankFusion.Fuse(
+            [denseResults, sparseResults],
+            static r => r.Chunk.Id,
+            rrfK,
+            topK);
 
-        for (var rank = 0; rank < denseResults.Count; rank++)
-        {
-            var result = denseResults[rank];
-            var rrfScore = 1.0 / (rrfK + rank + 1);
-
-            chunkScores[result.Chunk.Id] = (result.Chunk, result.DenseScore, 0.0, rrfScore);
-        }
-
-        for (var rank = 0; rank < sparseResults.Count; rank++)
-        {
-            var result = sparseResults[rank];
-            var rrfScore = 1.0 / (rrfK + rank + 1);
-
-            if (chunkScores.TryGetValue(result.Chunk.Id, out var existing))
+        return fused
+            .Select(f => new RetrievalResult
             {
-                chunkScores[result.Chunk.Id] = (
-                    existing.Chunk,
-                    existing.DenseScore,
-                    result.SparseScore,
-                    existing.FusedScore + rrfScore);
-            }
-            else
-            {
-                chunkScores[result.Chunk.Id] = (result.Chunk, 0.0, result.SparseScore, rrfScore);
-            }
-        }
-
-        return chunkScores.Values
-            .OrderByDescending(s => s.FusedScore)
-            .Take(topK)
-            .Select(s => new RetrievalResult
-            {
-                Chunk = s.Chunk,
-                DenseScore = s.DenseScore,
-                SparseScore = s.SparseScore,
-                FusedScore = s.FusedScore,
+                Chunk = f.Item.Chunk,
+                DenseScore = f.PerListItems[0]?.DenseScore ?? 0.0,
+                SparseScore = f.PerListItems[1]?.SparseScore ?? 0.0,
+                FusedScore = f.Score,
             })
             .ToList();
     }

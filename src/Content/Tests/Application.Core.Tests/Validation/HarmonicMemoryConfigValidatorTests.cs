@@ -55,6 +55,35 @@ public sealed class HarmonicMemoryConfigValidatorTests
     }
 
     [Fact]
+    public void Validate_NegativeRecallCueAnchorFanout_Fails()
+    {
+        var result = _sut.Validate(new HarmonicMemoryConfig { RecallCueAnchorFanout = -1 });
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName == nameof(HarmonicMemoryConfig.RecallCueAnchorFanout));
+    }
+
+    [Fact]
+    public void Validate_ZeroRecallCueAnchorFanout_Passes()
+    {
+        // Zero is valid — it disables shared-anchor traversal (direct matches only).
+        var result = _sut.Validate(new HarmonicMemoryConfig { RecallCueAnchorFanout = 0 });
+
+        result.IsValid.Should().BeTrue();
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void Validate_NonPositiveRecallRrfK_Fails(double rrfK)
+    {
+        var result = _sut.Validate(new HarmonicMemoryConfig { RecallRrfK = rrfK });
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName == nameof(HarmonicMemoryConfig.RecallRrfK));
+    }
+
+    [Fact]
     public void Validate_BatchAtSessionFlushTrue_Fails()
     {
         // The flag is not supported in this build (no session-flush seam to defer into). It must fail
