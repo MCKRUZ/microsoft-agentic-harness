@@ -697,6 +697,37 @@ return quality.MaxScore switch
                         <li><code>Infrastructure.AI.RAG/GraphRag/CrossSessionMemoryStore.cs</code></li>
                     </ul>
 
+                    <h3 id="harmonic-memory">Harmonic memory — abstraction + cue-anchor recall</h3>
+                    <p>
+                        A representation layer over cross-session memory, modeled on Microsoft Research's
+                        <strong>Memora</strong>. Instead of remembering only the raw fact, each trusted fact also gets a
+                        lightweight <em>scaffolding</em>: a <strong>primary abstraction</strong> (a canonical "what is
+                        this memory about" summary) and one to three <strong>cue anchors</strong> (short
+                        <code>[Entity] + [Aspect]</code> phrases). Facts that share a cue anchor form an implicit graph,
+                        so related memories cluster without any explicit edge-building. The raw value is always kept
+                        verbatim — the scaffolding is indexed <em>over</em> it, never a lossy replacement.
+                    </p>
+                    <p>
+                        <strong>On write</strong> (<code>Full</code> mode) the service can consolidate: a new fact that
+                        matches a similar existing entry <em>adopts that entry's abstraction</em> so the two share one
+                        topic — a logical topic-adoption, not a physical merge, so every fact keeps its own key, content,
+                        and trust marker. <strong>On read</strong>, the query is matched against the abstractions and cue
+                        anchors, the shared-anchor cluster around the best hits is pulled in, and that ranking is fused
+                        with the legacy substring/graph recall via <strong>Reciprocal Rank Fusion</strong>. Matching is
+                        lexical — no LLM on the recall path. The whole layer is a graduated, off-by-default toggle
+                        (<code>Off</code> / <code>AbstractOnly</code> / <code>Full</code> under
+                        <code>AppConfig:AI:HarmonicMemory</code>) because abstraction costs one to two LLM calls per
+                        write; <code>Off</code> is the byte-identical legacy path. The abstractor and consolidator ship as
+                        <code>NotConfigured</code> seams — the consumer supplies the agent-backed implementations.
+                    </p>
+                    <ul>
+                        <li><code>Memory/KnowledgeMemoryService.Harmonic.cs</code> — write path (abstraction + consolidation)</li>
+                        <li><code>Memory/KnowledgeMemoryService.Harmonic.Recall.cs</code> — cue-anchor recall + RRF fusion</li>
+                        <li><code>Domain.AI/Retrieval/ReciprocalRankFusion.cs</code> — generic RRF primitive (shared with hybrid RAG retrieval)</li>
+                        <li><code>Domain.AI/KnowledgeGraph/Models/GraphNodeMemoryExtensions.cs</code> — abstraction + cue anchors stored in node properties</li>
+                        <li><code>Domain.Common/Config/AI/HarmonicMemory/HarmonicMemoryConfig.cs</code> — the mode toggle + cost/recall knobs</li>
+                    </ul>
+
                     <h3 id="memory-decay">Memory decay tiers</h3>
                     <p>
                         Three tiers with configurable exponential half-lives: <strong>CRITICAL</strong> (never decay),

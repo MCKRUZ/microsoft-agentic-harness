@@ -322,6 +322,14 @@ Cite chunk IDs in the format [doc:chunk-id] when quoting passages.</code></pre>
                             decay tiers (CRITICAL / STANDARD / EPHEMERAL).
                         </li>
                         <li>
+                            <strong>Harmonic memory</strong> (opt-in, Memora-style) — indexes a lightweight
+                            <em>abstraction</em> + <em>cue-anchor</em> scaffolding over each remembered fact so recall
+                            matches on meaning and topic, not just literal text, and related facts cluster together.
+                            Recall fuses those matches with the legacy path via Reciprocal Rank Fusion. Gated behind
+                            <code>AppConfig:AI:HarmonicMemory:Mode</code> (<code>Off</code> by default — it costs an LLM
+                            call per write); <code>Off</code> is the unchanged legacy behavior.
+                        </li>
+                        <li>
                             <strong>Provenance + compliance</strong> — <code>DefaultProvenanceStamper</code> tags every
                             node and edge with source, pipeline, and timestamp. <code>ComplianceAwareGraphStore</code>
                             enforces retention; <code>DefaultErasureOrchestrator</code> handles right-to-erasure with
