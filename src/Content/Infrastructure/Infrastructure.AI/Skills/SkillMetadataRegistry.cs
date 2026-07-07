@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces;
+using Application.AI.Common.Interfaces.Plugins;
 using Domain.AI.Skills;
 using Domain.Common.Config;
 using Microsoft.Extensions.Logging;
@@ -26,19 +27,35 @@ public sealed class SkillMetadataRegistry : ISkillMetadataRegistry
     private readonly ILogger<SkillMetadataRegistry> _logger;
     private readonly IOptionsMonitor<AppConfig> _appConfig;
     private readonly SkillMetadataParser _parser;
+    private readonly IPluginRegistry? _pluginRegistry;
 
     private Dictionary<string, SkillDefinition>? _cache;
     private IReadOnlyList<string> _searchedPaths = [];
     private readonly Lock _lock = new();
 
+    /// <summary>
+    /// Initializes a new instance of the <see cref="SkillMetadataRegistry"/> class.
+    /// </summary>
+    /// <param name="logger">Logger for discovery diagnostics.</param>
+    /// <param name="appConfig">Monitor over the live application configuration (skill search paths).</param>
+    /// <param name="parser">Parser that reads a SKILL.md file into a <see cref="SkillDefinition"/>.</param>
+    /// <param name="pluginRegistry">
+    /// Optional registry of loaded plugins. When supplied, each discovered skill whose directory
+    /// falls under a loaded plugin's <c>SkillPaths</c> is attributed to that plugin via
+    /// <see cref="SkillDefinition.PluginSource"/>, which activates plugin boundary governance
+    /// (AllowedTools/DeniedTools and Injected tool-resolution mode). Null in hosts that do not load
+    /// plugins (for example the standalone MCP server), where all skills are treated as built-in.
+    /// </param>
     public SkillMetadataRegistry(
         ILogger<SkillMetadataRegistry> logger,
         IOptionsMonitor<AppConfig> appConfig,
-        SkillMetadataParser parser)
+        SkillMetadataParser parser,
+        IPluginRegistry? pluginRegistry = null)
     {
         _logger = logger;
         _appConfig = appConfig;
         _parser = parser;
+        _pluginRegistry = pluginRegistry;
     }
 
     /// <inheritdoc />
@@ -137,9 +154,10 @@ public sealed class SkillMetadataRegistry : ISkillMetadataRegistry
         }
 
         var result = new Dictionary<string, SkillDefinition>(StringComparer.OrdinalIgnoreCase);
+        var pluginPaths = ResolvePluginSkillPaths();
 
         foreach (var rootPath in resolvedPaths)
-            DiscoverInDirectory(rootPath, rootPath, depth: 0, result);
+            DiscoverInDirectory(rootPath, depth: 0, pluginPaths, result);
 
         _logger.LogInformation(
             "Skill discovery complete: {Count} skills found across {PathCount} path(s)",
@@ -148,10 +166,37 @@ public sealed class SkillMetadataRegistry : ISkillMetadataRegistry
         return result;
     }
 
+    /// <summary>
+    /// Snapshots the skill directories of every successfully-loaded plugin, paired with the
+    /// plugin name. Used to attribute each discovered skill to its owning plugin so boundary
+    /// governance can apply. Empty when no plugin registry is available or no plugins are loaded.
+    /// </summary>
+    private IReadOnlyList<(string Path, string PluginName)> ResolvePluginSkillPaths()
+    {
+        if (_pluginRegistry is null)
+            return [];
+
+        var pairs = new List<(string Path, string PluginName)>();
+        foreach (var plugin in _pluginRegistry.GetLoadedPlugins())
+        {
+            if (plugin.Status != PluginLoadStatus.Loaded)
+                continue;
+
+            foreach (var skillPath in plugin.SkillPaths)
+            {
+                if (string.IsNullOrWhiteSpace(skillPath))
+                    continue;
+                pairs.Add((NormalizePath(skillPath), plugin.Name));
+            }
+        }
+
+        return pairs;
+    }
+
     private void DiscoverInDirectory(
         string directory,
-        string rootPath,
         int depth,
+        IReadOnlyList<(string Path, string PluginName)> pluginPaths,
         Dictionary<string, SkillDefinition> result)
     {
         if (depth > MaxSearchDepth)
@@ -161,19 +206,7 @@ public sealed class SkillMetadataRegistry : ISkillMetadataRegistry
 
         if (File.Exists(skillFile))
         {
-            try
-            {
-                var definition = _parser.ParseFromFile(skillFile, directory);
-                if (!string.IsNullOrEmpty(definition.Id))
-                {
-                    result[definition.Id] = definition;
-                    _logger.LogDebug("Discovered skill: {SkillId} from {Path}", definition.Id, directory);
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Failed to parse skill from {Path}", skillFile);
-            }
+            TryAddSkill(skillFile, directory, pluginPaths, result);
 
             // A directory with SKILL.md is a skill — don't recurse into it
             return;
@@ -183,11 +216,91 @@ public sealed class SkillMetadataRegistry : ISkillMetadataRegistry
         try
         {
             foreach (var subDir in Directory.EnumerateDirectories(directory))
-                DiscoverInDirectory(subDir, rootPath, depth + 1, result);
+                DiscoverInDirectory(subDir, depth + 1, pluginPaths, result);
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Could not enumerate directory: {Path}", directory);
         }
     }
+
+    private void TryAddSkill(
+        string skillFile,
+        string directory,
+        IReadOnlyList<(string Path, string PluginName)> pluginPaths,
+        Dictionary<string, SkillDefinition> result)
+    {
+        try
+        {
+            var pluginSource = ResolveOwningPlugin(directory, pluginPaths);
+            var definition = _parser.ParseFromFile(skillFile, directory, pluginSource);
+            if (string.IsNullOrEmpty(definition.Id))
+                return;
+
+            // Config/built-in paths are walked before plugin paths (see SkillsConfig.AllPaths),
+            // so the first definition for an ID wins. This prevents a plugin from shadowing a
+            // built-in skill's system prompt via an ID collision.
+            if (result.TryGetValue(definition.Id, out var existing))
+            {
+                _logger.LogWarning(
+                    "Skill ID collision on '{SkillId}': keeping first from {ExistingPath} (source: {ExistingSource}); " +
+                    "ignoring duplicate from {DuplicatePath} (source: {DuplicateSource})",
+                    definition.Id,
+                    existing.BaseDirectory, existing.PluginSource ?? "built-in",
+                    directory, pluginSource ?? "built-in");
+                return;
+            }
+
+            result[definition.Id] = definition;
+            _logger.LogDebug(
+                "Discovered skill: {SkillId} from {Path} (source: {Source})",
+                definition.Id, directory, pluginSource ?? "built-in");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to parse skill from {Path}", skillFile);
+        }
+    }
+
+    /// <summary>
+    /// Returns the name of the loaded plugin that owns <paramref name="skillDirectory"/>, or null
+    /// when the skill is built-in. A plugin owns the directory when the directory equals, or is
+    /// nested under, one of the plugin's skill paths. The most specific (longest) matching path
+    /// wins so nested plugin layouts attribute correctly.
+    /// </summary>
+    private static string? ResolveOwningPlugin(
+        string skillDirectory,
+        IReadOnlyList<(string Path, string PluginName)> pluginPaths)
+    {
+        if (pluginPaths.Count == 0)
+            return null;
+
+        var normalizedDir = NormalizePath(skillDirectory);
+        string? bestName = null;
+        var bestLength = -1;
+
+        foreach (var (path, pluginName) in pluginPaths)
+        {
+            if (IsSameOrUnder(normalizedDir, path) && path.Length > bestLength)
+            {
+                bestName = pluginName;
+                bestLength = path.Length;
+            }
+        }
+
+        return bestName;
+    }
+
+    private static bool IsSameOrUnder(string normalizedTarget, string normalizedBase)
+    {
+        var comparison = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+
+        return string.Equals(normalizedTarget, normalizedBase, comparison)
+            || normalizedTarget.StartsWith(normalizedBase + Path.DirectorySeparatorChar, comparison);
+    }
+
+    private static string NormalizePath(string path) =>
+        Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
 }

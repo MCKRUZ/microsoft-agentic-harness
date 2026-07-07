@@ -162,6 +162,39 @@ public class ToolChainBuilderTests
         tools.Should().ContainSingle(t => t.Name == "safe");
     }
 
+    [Fact]
+    public async Task BuildToolsAsync_ManagedModePluginSkill_DeniedToolsRemovesBlacklisted()
+    {
+        // A plugin skill with pre-created tools resolves in Managed mode (it has Tools),
+        // yet its plugin's DeniedTools boundary must still filter — the boundary is not
+        // exclusive to Injected mode.
+        var pluginRegistry = new Mock<IPluginRegistry>();
+        pluginRegistry.Setup(r => r.GetPlugin("p")).Returns(
+            new LoadedPlugin("p", "1.0", "/plugins/p", new PluginManifest(),
+                PluginLoadStatus.Loaded, [], ["p:server"],
+                new PluginDeclaration { Name = "p", DeniedTools = ["dangerous"] }));
+
+        var services = new ServiceCollection();
+        services.AddSingleton(pluginRegistry.Object);
+
+        var builder = CreateBuilder(serviceProvider: services.BuildServiceProvider());
+
+        var skill = new SkillDefinition
+        {
+            Id = "p-skill", Name = "p-skill", Instructions = "Test", PluginSource = "p",
+            Tools =
+            [
+                AIFunctionFactory.Create(() => "r", "safe"),
+                AIFunctionFactory.Create(() => "r", "dangerous")
+            ]
+        };
+
+        var tools = await builder.BuildToolsAsync(skill, new SkillAgentOptions());
+
+        tools.Select(t => t.Name).Should().NotContain("dangerous");
+        tools.Should().ContainSingle(t => t.Name == "safe");
+    }
+
     // --- Managed mode: pre-created tools ---
 
     [Fact]

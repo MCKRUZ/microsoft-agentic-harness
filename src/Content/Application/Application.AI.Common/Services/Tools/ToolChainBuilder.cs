@@ -61,13 +61,7 @@ public class ToolChainBuilder : IToolChainBuilder
             if (options.AdditionalTools?.Count > 0)
                 tools.AddRange(options.AdditionalTools);
 
-            if (!string.IsNullOrEmpty(skill.PluginSource))
-            {
-                var pluginRegistry = _serviceProvider.GetService<IPluginRegistry>();
-                var loadedPlugin = pluginRegistry?.GetPlugin(skill.PluginSource);
-                if (loadedPlugin != null)
-                    tools = ApplyPluginToolBoundary(tools, loadedPlugin.Declaration);
-            }
+            tools = ApplyPluginBoundaryIfPluginSkill(skill, tools);
 
             _logger.LogInformation(
                 "Injected mode: skill {SkillId} from plugin {Plugin} received {Count} MCP tools",
@@ -104,8 +98,29 @@ public class ToolChainBuilder : IToolChainBuilder
         if (options.AdditionalTools?.Count > 0)
             tools.AddRange(options.AdditionalTools);
 
+        tools = ApplyPluginBoundaryIfPluginSkill(skill, tools);
+
         var seen2 = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         return WrapGoverned(tools.Where(t => seen2.Add(t.Name)));
+    }
+
+    /// <summary>
+    /// Applies the owning plugin's AllowedTools/DeniedTools boundary to <paramref name="tools"/>
+    /// whenever the skill is plugin-sourced and the plugin is loaded. This runs on both the
+    /// Injected and Managed resolution paths so a plugin's <c>DeniedTools</c> are enforced
+    /// regardless of how the skill resolves its tools. A no-op for built-in skills or when the
+    /// plugin registry is unavailable.
+    /// </summary>
+    private List<AITool> ApplyPluginBoundaryIfPluginSkill(SkillDefinition skill, List<AITool> tools)
+    {
+        if (string.IsNullOrEmpty(skill.PluginSource))
+            return tools;
+
+        var pluginRegistry = _serviceProvider.GetService<IPluginRegistry>();
+        var loadedPlugin = pluginRegistry?.GetPlugin(skill.PluginSource);
+        return loadedPlugin is null
+            ? tools
+            : ApplyPluginToolBoundary(tools, loadedPlugin.Declaration);
     }
 
     /// <summary>
