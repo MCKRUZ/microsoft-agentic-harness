@@ -1,5 +1,8 @@
+using Application.AI.Common.Evaluation.Models;
+using Domain.Common.Config;
 using Infrastructure.AI.Evaluation;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using Presentation.Common.Extensions;
 
 namespace Presentation.EvalRunner.HarmonicWriteEval;
@@ -125,8 +128,24 @@ public static class HarmonicWriteEvalCli
         {
             services.GetServices(includeHealthChecksUI: false);
             services.AddEvaluationDependencies();
+            ConfigureJudgeFromAgentFramework(services);
         }
         return services.BuildServiceProvider();
+    }
+
+    // The quality judge resolves its model from JudgeOptions — a DIFFERENT config section than the
+    // abstractor/consolidator, which read AppConfig:AI:AgentFramework. AddEvaluationDependencies leaves
+    // JudgeOptions.Deployment empty, so GetJudgeAsync throws "Deployment must be configured", DefaultLlmJudge
+    // soft-fails every call, and the abstraction-quality column comes back blank on a paid run. Bind the judge
+    // to the same model the eval already exercises so --llm actually scores abstraction quality.
+    internal static void ConfigureJudgeFromAgentFramework(IServiceCollection services)
+    {
+        services.AddOptions<JudgeOptions>().Configure<IOptionsMonitor<AppConfig>>((judge, appConfig) =>
+        {
+            var framework = appConfig.CurrentValue.AI.AgentFramework;
+            judge.ClientType = framework.ClientType;
+            judge.Deployment = framework.DefaultDeployment;
+        });
     }
 
     private static void PrintUsage()
