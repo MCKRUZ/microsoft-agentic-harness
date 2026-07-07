@@ -245,6 +245,14 @@
                         <li>
                             <strong>Feedback weights</strong> &mdash; historical retrieval quality scores per node/edge
                         </li>
+                        <li>
+                            <strong>Harmonic scaffolding</strong> &mdash; when harmonic memory is enabled, each trusted
+                            memory node also carries a <strong>primary abstraction</strong> and <strong>cue anchors</strong>
+                            (short entity+aspect phrases) in its properties. On write, related facts can consolidate onto
+                            a shared abstraction (topic-adoption, not physical merge); on read, the query matches those
+                            fields and the result is fused with legacy recall. Off by default
+                            (<code>AppConfig:AI:HarmonicMemory:Mode</code>).
+                        </li>
                     </ul>
 
                     <h3 id="knowledge-graph-data-flow">Knowledge graph data flow</h3>
