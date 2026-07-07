@@ -239,11 +239,23 @@ the real go/no-go on whether harmonic recall beats substring — ship it with PR
   add an abstraction-indexed `IKnowledgeGraphStore` primitive. Recall is hotter than write, so flag the scan
   as the primary scaling risk with a TODO, but don't build the index speculatively (YAGNI).
 
-### PR3b (optional follow-up) — Episodic grounding — `feat/harmonic-memory-pr3b-episodic`
-Wire the deferred factual→episodic link. Add `memory.episodic_ids` (or reconstruct via `(ConversationId,
-TurnNumber)` provenance) so recall can attach raw `EpisodicSegment`s (via `IEpisodicSegmentStore
-.GetByConversationAsync`) as grounding context for a recalled factual node. Separate PR because it requires the
-write path to stamp conversation/turn onto factual nodes (which it doesn't today).
+### PR3b (episodic grounding) — ❌ DECIDED NOT TO BUILD (Matt, 2026-07-07)
+Would have wired the deferred factual→episodic link so recall attaches raw `EpisodicSegment`s as grounding.
+**Skipped after investigation** (agent-mapped the episodic capture + write-context flow) surfaced a poor
+trade:
+- **Value is thin.** Factual nodes already store the raw fact value verbatim (we index the abstraction but
+  store the full content), so grounding mostly adds surrounding-turn chatter that bloats the recall prompt.
+  Memora's grounding is the smallest of its gains; the big one (cue-anchor recall) shipped in PR3.
+- **Cost is high / touches load-bearing code.** `TurnNumber` is not a first-class value at factual-write time
+  and `_scope.ConversationId` is **null** in the background auto-extraction scope. The only place `(conv,turn)`
+  survives is baked into the extraction fact key (`"conv:turn:index"`) — extraction-path only; other writers
+  (MetaSkillUpdate) use unrelated key formats. Robust linking would need a change to the **`IKnowledgeMemory
+  .RememberAsync` public interface** (+ plumb conv/turn through `KnowledgeExtractionBehavior`) plus an
+  `IEpisodicSegmentStore` dependency and per-recall I/O on the hot path.
+- **Verdict:** fails YAGNI for marginal, partly-redundant value against a core-interface change. The harmonic
+  write+read loop is complete and useful without it. Do NOT re-open without a concrete consumer need for raw
+  turn grounding. (Episodic segments are still captured by PR2 and cross-linked to `WorkEpisode`; only the
+  factual→episodic *read-time join* is unbuilt.)
 
 ## Verification (each PR)
 `dotnet build src/AgenticHarness.slnx && dotnet test src/AgenticHarness.slnx`; `gitnexus_impact` before
