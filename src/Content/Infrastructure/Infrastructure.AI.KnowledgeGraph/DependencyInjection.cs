@@ -4,6 +4,7 @@ using Application.AI.Common.Interfaces.Learnings;
 using Application.AI.Common.Interfaces.RAG;
 using Application.AI.Common.Interfaces.Skills;
 using Application.AI.Common.Interfaces.WorkMemory;
+using Application.AI.Common.Extensions;
 using Domain.Common.Config;
 using Infrastructure.AI.KnowledgeGraph.Audit;
 using Infrastructure.AI.KnowledgeGraph.Compliance;
@@ -159,6 +160,14 @@ public static class DependencyInjection
                 sp.GetService<IPromptInjectionScanner>(),
                 sp.GetService<IGovernanceAuditService>()));
 
+        // Harmonic memory (Memora port) Application seams. TryAdd-based, so this is idempotent with the
+        // Application layer's own AddHarmonicMemoryDependencies() call and a consumer's agent-backed
+        // replacement still wins. Registered here so the IKnowledgeMemory factory below can always resolve
+        // the fail-fast NotConfigured defaults — mirroring the IAmbientRequestScope self-sufficiency guard
+        // above — instead of silently passing null (which throws on the AbstractOnly write path and
+        // degrades Full mode to AbstractOnly).
+        services.AddHarmonicMemoryDependencies();
+
         // Cross-session knowledge persistence (scoped per request/session)
         services.AddScoped<ISessionKnowledgeCache, InMemorySessionCache>();
         services.AddScoped<IKnowledgeMemory>(sp =>
@@ -170,7 +179,12 @@ public static class DependencyInjection
                 sp.GetService<IFeedbackStore>(),
                 sp.GetRequiredService<IOptionsMonitor<AppConfig>>(),
                 sp.GetRequiredService<ILogger<KnowledgeMemoryService>>(),
-                sp.GetRequiredService<IMemoryWriteGate>()));
+                sp.GetRequiredService<IMemoryWriteGate>(),
+                // Harmonic memory producers — resolved so raising AppConfig:AI:HarmonicMemory:Mode above Off
+                // actually reaches the abstractor/consolidator. Optional (GetService): null only when the
+                // harmonic seams were never registered, and only ever touched when Mode is not Off.
+                sp.GetService<IMemoryAbstractor>(),
+                sp.GetService<IMemoryConsolidator>()));
 
         // Conversation-to-Knowledge Bridge — LLM-based fact extraction from agent turns
         services.AddTransient<IConversationFactExtractor, ConversationFactExtractor>();
