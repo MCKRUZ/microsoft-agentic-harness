@@ -132,6 +132,12 @@ public sealed class PlanExecutorResumeRecoveryTests : IDisposable
 
     // === Manual retry: a retried failed step must re-execute on next run ===
 
+    // End-to-end coverage of the retry loop: a retried step's persisted state must flow back through
+    // Resume -> InitializeStepStates -> enqueue and actually re-run against the real store. This does
+    // NOT isolate RetryStepAsync's reset value on its own — InitializeStepStates now normalizes
+    // Ready->Pending, so the loop would re-run even if RetryStepAsync reverted to Ready. The exact
+    // reset-to-Pending value is pinned separately by the mocked unit test
+    // PlanExecutorTests.RetryStepAsync_FailedStep_ResetsToPending.
     [Fact]
     public async Task RetryStep_ThenExecute_ReExecutesFailedStep()
     {
