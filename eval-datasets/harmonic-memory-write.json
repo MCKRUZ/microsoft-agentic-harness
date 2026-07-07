@@ -1,0 +1,29 @@
+{
+  "description": "Harmonic memory write-side gate: 20 facts across 5 gold topics, each topic phrased several different ways to test whether consolidation clusters related facts under one canonical abstraction.",
+  "facts": [
+    { "key": "diet-1", "content": "I'm a vegetarian and don't eat any meat at all.", "goldTopic": "dietary-preferences" },
+    { "key": "diet-2", "content": "Please keep fish and seafood out of any recipe suggestions for me.", "goldTopic": "dietary-preferences" },
+    { "key": "diet-3", "content": "I do eat eggs and dairy, just nothing with animal flesh.", "goldTopic": "dietary-preferences" },
+    { "key": "diet-4", "content": "When we order lunch, I need a meat-free option every time.", "goldTopic": "dietary-preferences" },
+
+    { "key": "orion-1", "content": "Project Orion officially kicks off in March next year.", "goldTopic": "project-orion-timeline" },
+    { "key": "orion-2", "content": "The first Orion milestone is shipping the public API.", "goldTopic": "project-orion-timeline" },
+    { "key": "orion-3", "content": "We pushed the Orion launch date back to the third quarter.", "goldTopic": "project-orion-timeline" },
+    { "key": "orion-4", "content": "Orion's beta review is scheduled two weeks before launch.", "goldTopic": "project-orion-timeline" },
+
+    { "key": "team-1", "content": "Sarah is the lead engineer on our team.", "goldTopic": "team-structure" },
+    { "key": "team-2", "content": "Sarah reports directly to the CTO.", "goldTopic": "team-structure" },
+    { "key": "team-3", "content": "The engineering team currently has five developers.", "goldTopic": "team-structure" },
+    { "key": "team-4", "content": "Priya recently joined us as the product designer.", "goldTopic": "team-structure" },
+
+    { "key": "travel-1", "content": "I always prefer a window seat when I fly.", "goldTopic": "travel-preferences" },
+    { "key": "travel-2", "content": "Book me on early morning departures whenever possible.", "goldTopic": "travel-preferences" },
+    { "key": "travel-3", "content": "I like to keep layovers under two hours.", "goldTopic": "travel-preferences" },
+    { "key": "travel-4", "content": "For hotels I want something within walking distance of the venue.", "goldTopic": "travel-preferences" },
+
+    { "key": "office-1", "content": "My home desk has two monitors side by side.", "goldTopic": "home-office-setup" },
+    { "key": "office-2", "content": "I use a mechanical keyboard and a vertical mouse at home.", "goldTopic": "home-office-setup" },
+    { "key": "office-3", "content": "There's a standing desk in my home office that I raise most afternoons.", "goldTopic": "home-office-setup" },
+    { "key": "office-4", "content": "My home internet runs on a wired gigabit connection.", "goldTopic": "home-office-setup" }
+  ]
+}
