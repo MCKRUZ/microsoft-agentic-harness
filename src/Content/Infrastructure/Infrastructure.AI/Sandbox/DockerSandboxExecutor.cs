@@ -47,6 +47,12 @@ public sealed class DockerSandboxExecutor : ISandboxExecutor
         if (!_sandboxConfig.CurrentValue.Enabled)
             throw new InvalidOperationException("Sandbox execution is disabled by configuration (Sandbox:Enabled=false).");
 
+        // NanoCPUs = 0 means "unlimited" to Docker, so a non-positive (or NaN) core limit
+        // must be rejected as invalid input rather than silently granting the container the
+        // whole host. Validated at the boundary, before any container work happens.
+        if (!(request.Limits.CpuCoreLimit > 0))
+            return await RejectInvalidCpuLimitAsync(request, ct);
+
         var egress = await RunEgressPreflightAsync(request, ct);
         if (egress.Blocked is { } block)
             return block;
@@ -109,9 +115,36 @@ public sealed class DockerSandboxExecutor : ISandboxExecutor
         }
         finally
         {
-            await RemoveContainerSafeAsync(containerId, ct);
+            await RemoveContainerSafeAsync(containerId);
             CleanupWorkspace(workspaceDir);
         }
+    }
+
+    /// <summary>
+    /// Rejects a request whose <c>CpuCoreLimit</c> is not a positive core count and leaves a
+    /// signed failure attestation for the audit trail. Mapping such values to Docker would
+    /// produce <c>NanoCPUs = 0</c>, which Docker interprets as unlimited CPU.
+    /// </summary>
+    private async Task<SandboxExecutionResult> RejectInvalidCpuLimitAsync(
+        SandboxExecutionRequest request, CancellationToken ct)
+    {
+        _logger.LogWarning(
+            "Docker sandbox refused request for tool {ToolName}: CpuCoreLimit {CpuCoreLimit} is not a positive core count",
+            request.ToolName, request.Limits.CpuCoreLimit);
+
+        var errorMessage =
+            $"Invalid resource limits: CpuCoreLimit must be a positive number of cores (was {request.Limits.CpuCoreLimit}). " +
+            "A non-positive value would map to NanoCPUs=0, which Docker treats as unlimited.";
+
+        var attestation = await _attestationService.SignFailureAsync(
+            request.ToolName, request.Input, errorMessage, ct);
+
+        return new SandboxExecutionResult
+        {
+            Success = false,
+            ErrorMessage = errorMessage,
+            Attestation = attestation
+        };
     }
 
     private async Task<bool> IsDockerAvailableAsync(CancellationToken ct)
@@ -182,6 +215,10 @@ public sealed class DockerSandboxExecutor : ISandboxExecutor
             HostConfig = new HostConfig
             {
                 Memory = request.Limits.MemoryLimitBytes,
+                // CPU cap alongside the memory cap: an unlimited container can starve the
+                // host. NanoCPUs is the core count scaled by 1e9 (Docker's CpuQuota/CpuPeriod
+                // shorthand); 1.0 core by default, callers opt into more via ResourceLimits.
+                NanoCPUs = (long)(request.Limits.CpuCoreLimit * 1_000_000_000),
                 NetworkMode = hasNetworkAccess ? "bridge" : "none",
                 ReadonlyRootfs = true,
                 AutoRemove = false,
@@ -306,9 +343,15 @@ public sealed class DockerSandboxExecutor : ISandboxExecutor
     {
         _logger.LogWarning("Container exited with code {ExitCode}", exitCode);
 
-        var attestation = await SignFailureAsync(
-            request.ToolName, request.Input,
-            $"Container exited with code {exitCode}: {logs}", egressDigest, ct);
+        // When the crashed container produced workspace output, that output is returned to
+        // the caller and must therefore be bound into the signed attestation. Only when no
+        // output exists does the legacy (output-less) failure shape apply.
+        var failureReason = $"Container exited with code {exitCode}: {logs}";
+        var attestation = output is not null
+            ? await _attestationService.SignFailureWithOutputAsync(
+                request.ToolName, request.Input, failureReason, output, egressDigest, ct)
+            : await SignFailureAsync(
+                request.ToolName, request.Input, failureReason, egressDigest, ct);
 
         return new SandboxExecutionResult
         {
@@ -387,19 +430,30 @@ public sealed class DockerSandboxExecutor : ISandboxExecutor
             : _attestationService.SignWithEgressAsync(toolName, input, output, egressDigest, ct);
     }
 
-    private async Task RemoveContainerSafeAsync(string? containerId, CancellationToken ct)
+    /// <summary>
+    /// Force-kills and removes the container on a dedicated cleanup token. The caller's
+    /// token is deliberately NOT used: when an execution is cancelled or times out, that
+    /// token is already cancelled, and using it here would abort the removal call and leak
+    /// the container running unbounded on the host. Cleanup gets its own bounded window
+    /// (<c>ContainerSandboxOptions.CleanupTimeoutSeconds</c>) instead.
+    /// </summary>
+    private async Task RemoveContainerSafeAsync(string? containerId)
     {
         if (containerId is null)
             return;
 
+        using var cleanupCts = new CancellationTokenSource(
+            TimeSpan.FromSeconds(_options.CurrentValue.Container.CleanupTimeoutSeconds));
+
         try
         {
             await _dockerClient.Containers.RemoveContainerAsync(containerId,
-                new ContainerRemoveParameters { Force = true }, ct);
+                new ContainerRemoveParameters { Force = true }, cleanupCts.Token);
         }
         catch (Exception ex)
         {
-            _logger.LogDebug(ex, "Container removal failed (may already be removed)");
+            _logger.LogWarning(ex,
+                "Container {ContainerId} removal failed — it may still be running on the host", containerId);
         }
     }
 

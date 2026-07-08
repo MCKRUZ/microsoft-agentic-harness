@@ -35,6 +35,13 @@ public sealed class ContainerSandboxOptions
     public int StopGracePeriodSeconds { get; init; } = 10;
 
     /// <summary>
+    /// Maximum time in seconds allowed for container cleanup (force kill + remove) after an
+    /// execution ends. Cleanup runs on its own token so a cancelled or timed-out execution
+    /// still removes its container instead of leaking it running on the host.
+    /// </summary>
+    public int CleanupTimeoutSeconds { get; init; } = 30;
+
+    /// <summary>
     /// Allowed image registry prefixes. Only images starting with one of these
     /// prefixes can be used. Defaults to Microsoft Container Registry only.
     /// Add additional prefixes in appsettings to allow other registries.

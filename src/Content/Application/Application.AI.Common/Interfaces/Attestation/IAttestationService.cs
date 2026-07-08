@@ -58,10 +58,47 @@ public interface IAttestationService
     Task<ToolExecutionAttestation> SignFailureWithEgressAsync(string toolName, string input, string failureReason, string egressDigest, CancellationToken ct);
 
     /// <summary>
+    /// Signs a failed tool execution that nevertheless produced output (e.g. a process that
+    /// wrote to stdout before exiting non-zero). The content hash of the produced output is
+    /// bound into the signed payload alongside the failure reason, so the output returned to
+    /// the caller cannot silently diverge from the attested record. Legacy failure
+    /// attestations (no output hash) remain verifiable.
+    /// </summary>
+    /// <param name="toolName">Name of the tool that was executed.</param>
+    /// <param name="input">Serialized tool input.</param>
+    /// <param name="failureReason">Description of the failure.</param>
+    /// <param name="output">The output actually produced before the failure.</param>
+    /// <param name="egressDigest">Optional SHA-256 digest of the recorded egress decisions; null when no preflight ran.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>A signed failure attestation whose output hash covers the produced output.</returns>
+    Task<ToolExecutionAttestation> SignFailureWithOutputAsync(string toolName, string input, string failureReason, string output, string? egressDigest, CancellationToken ct);
+
+    /// <summary>
     /// Verifies the HMAC signature of an existing attestation.
     /// </summary>
+    /// <remarks>
+    /// This validates only the attestation's own fields. It does NOT prove that a separately
+    /// stored output still matches what was signed — use
+    /// <see cref="VerifyBoundAsync"/> when the actual output bytes are available.
+    /// </remarks>
     /// <param name="attestation">The attestation to verify.</param>
     /// <param name="ct">Cancellation token.</param>
     /// <returns>True if the attestation signature is valid; false otherwise.</returns>
     Task<bool> VerifyAsync(ToolExecutionAttestation attestation, CancellationToken ct);
+
+    /// <summary>
+    /// Verifies that an attestation is authentic AND that it was signed over exactly the
+    /// given output. Recomputes the content hash of <paramref name="actualOutput"/>, compares
+    /// it to the attested output hash, then verifies the HMAC signature. This binds the
+    /// attestation to the real output bytes: a result whose output was tampered after signing
+    /// fails this check even though the signature alone would still validate.
+    /// </summary>
+    /// <param name="attestation">The attestation to verify.</param>
+    /// <param name="actualOutput">The output the caller currently holds for this execution.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>
+    /// True only when the attestation recorded an output hash, that hash matches
+    /// <paramref name="actualOutput"/>, and the signature is valid.
+    /// </returns>
+    Task<bool> VerifyBoundAsync(ToolExecutionAttestation attestation, string actualOutput, CancellationToken ct);
 }

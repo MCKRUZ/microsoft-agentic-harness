@@ -183,6 +183,54 @@ public sealed class HmacAttestationService : IAttestationService
     }
 
     /// <inheritdoc />
+    public Task<ToolExecutionAttestation> SignFailureWithOutputAsync(
+        string toolName,
+        string input,
+        string failureReason,
+        string output,
+        string? egressDigest,
+        CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(output);
+
+        var options = _optionsMonitor.CurrentValue;
+        var currentKey = GetKey(options, options.CurrentKeyVersion);
+        try
+        {
+            var timestamp = _timeProvider.GetUtcNow();
+            var inputHash = ComputeSha256Hex(input);
+            var outputHash = ComputeSha256Hex(output);
+            var failureHash = ComputeSha256Hex(failureReason);
+            // Failure payload with the produced output's content hash occupying the output
+            // slot (instead of the literal "null" used by output-less failures). The
+            // discriminator during verification is OutputHash being non-null on a failure
+            // attestation, so legacy failure attestations remain verifiable.
+            var basePayload = $"{toolName}|{inputHash}|{outputHash}|{failureHash}|{timestamp:O}";
+            var payload = egressDigest is null ? basePayload : $"{basePayload}|egress:{egressDigest}";
+            var signature = ComputeHmac(currentKey, payload);
+
+            var attestation = new ToolExecutionAttestation
+            {
+                ToolName = toolName,
+                InputHash = inputHash,
+                OutputHash = outputHash,
+                Timestamp = timestamp,
+                Signature = signature,
+                KeyVersion = options.CurrentKeyVersion,
+                IsFailureAttestation = true,
+                FailureReason = failureReason,
+                EgressDigest = egressDigest
+            };
+
+            return Task.FromResult(attestation);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(currentKey);
+        }
+    }
+
+    /// <inheritdoc />
     public Task<bool> VerifyAsync(ToolExecutionAttestation attestation, CancellationToken ct)
     {
         var options = _optionsMonitor.CurrentValue;
@@ -222,19 +270,49 @@ public sealed class HmacAttestationService : IAttestationService
         }
     }
 
+    /// <inheritdoc />
+    public async Task<bool> VerifyBoundAsync(ToolExecutionAttestation attestation, string actualOutput, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(actualOutput);
+
+        if (attestation.OutputHash is null)
+        {
+            _logger.LogWarning(
+                "Output-bound verification rejected for tool {ToolName}: attestation recorded no output hash",
+                attestation.ToolName);
+            return false;
+        }
+
+        var actualHashBytes = Encoding.UTF8.GetBytes(ComputeSha256Hex(actualOutput));
+        var attestedHashBytes = Encoding.UTF8.GetBytes(attestation.OutputHash);
+
+        if (actualHashBytes.Length != attestedHashBytes.Length
+            || !CryptographicOperations.FixedTimeEquals(actualHashBytes, attestedHashBytes))
+        {
+            _logger.LogWarning(
+                "Output-bound verification failed for tool {ToolName}: actual output diverges from the attested output hash",
+                attestation.ToolName);
+            return false;
+        }
+
+        return await VerifyAsync(attestation, ct);
+    }
+
     private static string BuildVerificationPayload(ToolExecutionAttestation attestation)
     {
-        // Two payload shapes coexist: the PR-3a baseline (no egress digest) and
-        // the PR-3c extended shape (egress digest trailing). The discriminator
-        // is the presence of EgressDigest on the record. The baseline shape
-        // is preserved verbatim so PR-3a attestations remain verifiable after
-        // the PR-3c upgrade.
+        // Payload shapes coexist: the PR-3a baseline (no egress digest), the PR-3c
+        // extended shape (egress digest trailing), and the failure-with-output shape
+        // (produced output hash occupying the output slot). Discriminators are field
+        // presence on the record — EgressDigest for the egress suffix, OutputHash on a
+        // failure attestation for the output slot — so earlier attestations remain
+        // verifiable after each extension.
         if (attestation.IsFailureAttestation)
         {
             var failureHash = attestation.FailureReason is not null
                 ? ComputeSha256Hex(attestation.FailureReason)
                 : ComputeSha256Hex(string.Empty);
-            var baselineFailure = $"{attestation.ToolName}|{attestation.InputHash}|null|{failureHash}|{attestation.Timestamp:O}";
+            var outputSlot = attestation.OutputHash ?? "null";
+            var baselineFailure = $"{attestation.ToolName}|{attestation.InputHash}|{outputSlot}|{failureHash}|{attestation.Timestamp:O}";
             return attestation.EgressDigest is null
                 ? baselineFailure
                 : $"{baselineFailure}|egress:{attestation.EgressDigest}";

@@ -38,6 +38,13 @@ public class ProcessSandboxExecutorTests : IDisposable
             .ReturnsAsync((string tool, string _, string reason, CancellationToken ___) =>
                 CreateAttestation(tool, isFailure: true, failureReason: reason));
 
+        _attestation
+            .Setup(x => x.SignFailureWithOutputAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
+                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((string tool, string _, string reason, string __, string? ___, CancellationToken ____) =>
+                CreateAttestation(tool, isFailure: true, failureReason: reason));
+
         var sandboxConfig = new Mock<IOptionsMonitor<SandboxConfig>>();
         sandboxConfig.Setup(x => x.CurrentValue).Returns(new SandboxConfig());
 
