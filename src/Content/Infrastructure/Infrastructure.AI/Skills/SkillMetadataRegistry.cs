@@ -121,6 +121,8 @@ public sealed class SkillMetadataRegistry : ISkillMetadataRegistry
 
     private Dictionary<string, SkillDefinition> Discover()
     {
+        GuardPluginRegistryPresent();
+
         var skillsConfig = _appConfig.CurrentValue.AI?.Skills;
         var paths = skillsConfig?.AllPaths.ToList() ?? [];
 
@@ -164,6 +166,27 @@ public sealed class SkillMetadataRegistry : ISkillMetadataRegistry
             result.Count, resolvedPaths.Count);
 
         return result;
+    }
+
+    /// <summary>
+    /// Fails fast when the host declares plugins but no <see cref="IPluginRegistry"/> was registered.
+    /// Without the registry, discovered skills can never be attributed to their owning plugin, so
+    /// plugin boundary governance (AllowedTools/DeniedTools and AutonomyLevel) would silently no-op —
+    /// a security-relevant misconfiguration. A clear startup exception is preferable to ungoverned
+    /// plugin tools. Hosts that declare no plugins (for example the standalone MCP server) are
+    /// unaffected: the registry stays legitimately optional there.
+    /// </summary>
+    private void GuardPluginRegistryPresent()
+    {
+        var declaredPlugins = _appConfig.CurrentValue.AI?.Plugins?.Packages?.Count ?? 0;
+        if (declaredPlugins > 0 && _pluginRegistry is null)
+        {
+            throw new InvalidOperationException(
+                $"{declaredPlugins} plugin(s) are declared under AppConfig.AI.Plugins.Packages, but no " +
+                $"{nameof(IPluginRegistry)} is registered. Plugin boundary governance " +
+                "(AllowedTools/DeniedTools/AutonomyLevel) cannot be enforced without it. Register the " +
+                "plugin services (which include IPluginRegistry) or remove the plugin declarations.");
+        }
     }
 
     /// <summary>

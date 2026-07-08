@@ -136,4 +136,64 @@ public sealed class ThreePhasePermissionResolverAutonomyTests
         // Ask(*) matches in Phase 2 before Allow(query_kg) in Phase 3
         decision.Behavior.Should().Be(PermissionBehaviorType.Ask);
     }
+
+    [Fact]
+    public async Task AuthoritativeBaselineAllow_BeatsGenericTierAsk()
+    {
+        // A plugin's Autonomous baseline (authoritative Allow scoped to its tool) must LOOSEN a
+        // stricter generic default: it wins over the tier's "*" Ask despite Allow living in the
+        // later phase, because the authoritative-baseline phase runs before Ask/Allow ordering.
+        var provider = BuildProvider(
+            new ToolPermissionRule("*", null, PermissionBehaviorType.Ask, PermissionRuleSource.AutonomyTier, 0),
+            new ToolPermissionRule("deploy_widget", null, PermissionBehaviorType.Allow,
+                PermissionRuleSource.PluginDeclaration, 5, IsAuthoritativeBaseline: true));
+
+        var resolver = CreateResolver(provider.Object);
+
+        var decision = await resolver.ResolvePermissionAsync("agent", "deploy_widget");
+
+        decision.Behavior.Should().Be(PermissionBehaviorType.Allow);
+        decision.MatchedRule!.Source.Should().Be(PermissionRuleSource.PluginDeclaration);
+
+        // A tool NOT covered by the baseline still gets the generic tier Ask.
+        var other = await resolver.ResolvePermissionAsync("agent", "unrelated_tool");
+        other.Behavior.Should().Be(PermissionBehaviorType.Ask);
+    }
+
+    [Fact]
+    public async Task AuthoritativeBaselineAsk_BeatsGenericTierAllow()
+    {
+        // A plugin's Supervised baseline (authoritative Ask) must TIGHTEN a looser generic default:
+        // it wins over the tier's "*" Allow for the plugin's tool.
+        var provider = BuildProvider(
+            new ToolPermissionRule("*", null, PermissionBehaviorType.Allow, PermissionRuleSource.AutonomyTier, 0),
+            new ToolPermissionRule("deploy_widget", null, PermissionBehaviorType.Ask,
+                PermissionRuleSource.PluginDeclaration, 5, IsAuthoritativeBaseline: true));
+
+        var resolver = CreateResolver(provider.Object);
+
+        var decision = await resolver.ResolvePermissionAsync("agent", "deploy_widget");
+
+        decision.Behavior.Should().Be(PermissionBehaviorType.Ask);
+        decision.MatchedRule!.Source.Should().Be(PermissionRuleSource.PluginDeclaration);
+    }
+
+    [Fact]
+    public async Task BypassImmuneDeny_BeatsAuthoritativeBaselineAllow()
+    {
+        // DeniedTools (bypass-immune Deny) must still win over a plugin's Autonomous Allow baseline:
+        // the Deny phase runs before the authoritative-baseline phase, so a plugin cannot auto-allow
+        // a tool the operator explicitly denied.
+        var provider = BuildProvider(
+            new ToolPermissionRule("deploy_widget", null, PermissionBehaviorType.Deny,
+                PermissionRuleSource.PluginDeclaration, 1, IsBypassImmune: true),
+            new ToolPermissionRule("deploy_widget", null, PermissionBehaviorType.Allow,
+                PermissionRuleSource.PluginDeclaration, 5, IsAuthoritativeBaseline: true));
+
+        var resolver = CreateResolver(provider.Object);
+
+        var decision = await resolver.ResolvePermissionAsync("agent", "deploy_widget");
+
+        decision.Behavior.Should().Be(PermissionBehaviorType.Deny);
+    }
 }

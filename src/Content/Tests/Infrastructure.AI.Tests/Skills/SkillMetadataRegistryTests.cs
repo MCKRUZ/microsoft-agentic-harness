@@ -37,6 +37,37 @@ public sealed class SkillMetadataRegistryTests
     }
 
     [Fact]
+    public void GetAll_PluginsDeclaredButNoPluginRegistry_ThrowsFailFast()
+    {
+        // Fail-fast guard: declaring plugins without an IPluginRegistry would silently no-op plugin
+        // boundary governance (attribution never happens). A clear startup exception is required.
+        var appConfig = new AppConfig
+        {
+            AI = new AIConfig
+            {
+                Skills = new SkillsConfig { BasePath = SkillsPath },
+                Plugins = new Domain.Common.Config.AI.Plugins.PluginsConfig
+                {
+                    Packages =
+                    [
+                        new Domain.Common.Config.AI.Plugins.PluginDeclaration { Name = "some-plugin", Path = "./plugins/some-plugin" }
+                    ]
+                }
+            }
+        };
+        var registry = new SkillMetadataRegistry(
+            NullLogger<SkillMetadataRegistry>.Instance,
+            new OptionsMonitorStub(appConfig),
+            new SkillMetadataParser(NullLogger<SkillMetadataParser>.Instance),
+            pluginRegistry: null);
+
+        var act = () => registry.GetAll();
+
+        act.Should().Throw<InvalidOperationException>()
+            .WithMessage("*IPluginRegistry*");
+    }
+
+    [Fact]
     public void GetAll_WithValidSkillsPath_ReturnsDiscoveredSkills()
     {
         if (!Directory.Exists(SkillsPath))

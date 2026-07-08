@@ -42,6 +42,10 @@ public sealed class PluginGovernanceCompositionTests : IDisposable
     private const string HostSkillId = "host-skill";
     private const string DeniedToolName = "dangerous_tool";
 
+    // A real tool the plugin's skill declares. The plugin's AutonomyLevel baseline is scoped to
+    // this name (not a synthetic "{plugin}:*" wildcard), mirroring how a live plugin tool is named.
+    private const string PluginToolName = "deploy_widget";
+
     private readonly string _tempRoot;
     private readonly string _builtInSkillsDir;
     private readonly string _pluginDir;
@@ -69,7 +73,8 @@ public sealed class PluginGovernanceCompositionTests : IDisposable
         WriteSkill(Path.Combine(_pluginDir, "skills", "do-thing"), $"""
             ---
             name: {PluginSkillId}
-            description: A plugin skill with no tool declarations.
+            description: A plugin skill declaring one tool so the autonomy baseline can scope to it.
+            allowed-tools: [{PluginToolName}]
             ---
             Plugin instructions.
             """);
@@ -176,71 +181,72 @@ public sealed class PluginGovernanceCompositionTests : IDisposable
     }
 
     [Fact]
-    public async Task GovernedTool_PluginScopedSupervisedBaseline_RequiresApprovalForPluginPrefixedTool()
+    public async Task GovernedTool_PluginSupervisedBaseline_TightensRealDeclaredToolToPendingApproval()
     {
-        // The {plugin}:* case that IS enforced: a Supervised/Restricted plugin baseline emits an
-        // Ask rule scoped "sentinel:*". Ask rules resolve in phase 2, BEFORE any Allow rule, so
-        // the plugin baseline tightens an otherwise Allow-by-default environment for tools whose
-        // names carry the plugin prefix — while unprefixed tools stay allowed.
+        // A Supervised plugin baseline maps to an authoritative Ask scoped to the plugin's REAL
+        // declared tool ("deploy_widget"), enumerated from the plugin skill's allowed-tools. The
+        // authoritative baseline tightens the otherwise Allow-by-default environment for that tool,
+        // while an unrelated tool stays allowed. (Pre-fix this used a synthetic "{plugin}:*"
+        // wildcard that no live tool name ever matched, so the baseline was inert.)
         await using var provider = CompositionRootTestHost.BuildProvider(BaseSettings("Supervised"));
         await CompositionRootTestHost.RunPluginStartupLoaderAsync(provider);
 
-        var prefixedExecuted = false;
+        var pluginToolExecuted = false;
         var plainExecuted = false;
-        var prefixed = await BuildGovernedHostTool(provider,
-            AIFunctionFactory.Create(() => { prefixedExecuted = true; return "ran"; }, $"{PluginName}:deploy"));
+        var pluginTool = await BuildGovernedHostTool(provider,
+            AIFunctionFactory.Create(() => { pluginToolExecuted = true; return "ran"; }, PluginToolName));
         var plain = await BuildGovernedHostTool(provider,
             AIFunctionFactory.Create(() => { plainExecuted = true; return "ran"; }, "plain_tool"));
 
         using var scope = provider.CreateScope();
-        var (results, trace) = await InvokeUnderGovernedTurn(scope, prefixed, plain);
+        var (results, trace) = await InvokeUnderGovernedTurn(scope, pluginTool, plain);
 
         ResultText(results[0]).Should().Contain("is not permitted",
             "the plugin's Supervised baseline maps to Ask, which fail-closes to a block pending approval");
-        prefixedExecuted.Should().BeFalse();
-        plainExecuted.Should().BeTrue("an unprefixed tool is outside the plugin baseline and stays allowed");
+        pluginToolExecuted.Should().BeFalse();
+        plainExecuted.Should().BeTrue("a tool outside the plugin's declared surface stays allowed");
         trace.ToolDecisions.Should().Contain(d =>
-            d.ToolName == $"{PluginName}:deploy" && d.Outcome == ToolDecisionOutcome.PendingApproval);
+            d.ToolName == PluginToolName && d.Outcome == ToolDecisionOutcome.PendingApproval);
         trace.ToolDecisions.Should().Contain(d =>
             d.ToolName == "plain_tool" && d.Outcome == ToolDecisionOutcome.Allowed);
     }
 
     [Fact]
-    public async Task GovernedTool_AutonomousPluginBaseline_KnownInert_CannotLoosenDefaultAskEnvironment()
+    public async Task GovernedTool_AutonomousPluginBaseline_LoosensRealDeclaredToolUnderStricterDefault()
     {
-        // KNOWN-INERT AUTONOMY BASELINE — tracked follow-up, deliberately NOT fixed here.
+        // ENFORCED AUTONOMY BASELINE (was "known-inert" before the fix).
         //
-        // A plugin declaring AutonomyLevel=Autonomous emits an Allow rule scoped "{plugin}:*"
-        // (phase 3). It is inert on the live path for two independent reasons:
-        //
-        //   1. Phase masking: AutonomyTierRuleProvider ALWAYS emits a "*" rule from
-        //      PermissionsConfig.DefaultBehavior (default "Ask"). Ask rules resolve in phase 2,
-        //      before ANY Allow rule is consulted, so the plugin's Allow can never loosen the
-        //      environment. (Under DefaultBehavior=Allow the tier's own "*" Allow at priority 0
-        //      wins instead, so the plugin rule is redundant there too.)
-        //   2. Tool naming: tools resolved by ToolChainBuilder keep their original names —
-        //      nothing on the live path namespaces them "{plugin}:", so the pattern only ever
-        //      matches synthetic names like the probe below.
-        //
-        // This test PINS the current inert behavior so the follow-up that makes Autonomous
-        // plugin baselines effective must consciously update it.
+        // A plugin declaring AutonomyLevel=Autonomous now emits an *authoritative* Allow baseline
+        // scoped to its REAL declared tool ("deploy_widget"). The resolver's authoritative-baseline
+        // phase runs before the Ask/Allow phases, so the plugin's Allow LOOSENS an otherwise
+        // stricter (DefaultBehavior=Ask) environment for that tool — while an unrelated tool still
+        // gets the strict tier Ask. This is the operator's per-plugin trust decision winning over
+        // the generic default, without touching the resolver's fail-safe Deny precedence.
         var settings = BaseSettings("Autonomous");
-        settings["AppConfig:AI:Permissions:DefaultBehavior"] = "Ask"; // resolver default
+        settings["AppConfig:AI:Permissions:DefaultBehavior"] = "Ask"; // stricter generic default
         await using var provider = CompositionRootTestHost.BuildProvider(settings);
         await CompositionRootTestHost.RunPluginStartupLoaderAsync(provider);
 
-        var executed = false;
-        var wrapped = await BuildGovernedHostTool(provider,
-            AIFunctionFactory.Create(() => { executed = true; return "ran"; }, $"{PluginName}:deploy"));
+        var pluginToolExecuted = false;
+        var plainExecuted = false;
+        var pluginTool = await BuildGovernedHostTool(provider,
+            AIFunctionFactory.Create(() => { pluginToolExecuted = true; return "ran"; }, PluginToolName));
+        var plain = await BuildGovernedHostTool(provider,
+            AIFunctionFactory.Create(() => { plainExecuted = true; return "ran"; }, "plain_tool"));
 
         using var scope = provider.CreateScope();
-        var (results, trace) = await InvokeUnderGovernedTurn(scope, wrapped);
+        var (results, trace) = await InvokeUnderGovernedTurn(scope, pluginTool, plain);
 
-        ResultText(results[0]).Should().Contain("is not permitted",
-            "the tier's '*' Ask baseline masks the plugin's Autonomous Allow rule (known-inert, see remarks)");
-        executed.Should().BeFalse();
-        trace.ToolDecisions.Should().ContainSingle(d =>
-            d.ToolName == $"{PluginName}:deploy" && d.Outcome == ToolDecisionOutcome.PendingApproval);
+        pluginToolExecuted.Should().BeTrue(
+            "the plugin's Autonomous authoritative baseline loosens its declared tool to Allow");
+        ResultText(results[0]).Should().Be("ran");
+        ResultText(results[1]).Should().Contain("is not permitted",
+            "a tool outside the plugin's declared surface still hits the strict tier Ask default");
+        plainExecuted.Should().BeFalse();
+        trace.ToolDecisions.Should().Contain(d =>
+            d.ToolName == PluginToolName && d.Outcome == ToolDecisionOutcome.Allowed);
+        trace.ToolDecisions.Should().Contain(d =>
+            d.ToolName == "plain_tool" && d.Outcome == ToolDecisionOutcome.PendingApproval);
     }
 
     /// <summary>

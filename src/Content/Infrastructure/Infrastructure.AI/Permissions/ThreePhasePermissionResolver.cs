@@ -102,6 +102,24 @@ public sealed class ThreePhasePermissionResolver : IToolPermissionService
             return denyDecision;
         }
 
+        // Phase 1.5: Authoritative baseline (e.g. a plugin's AutonomyLevel scoped to its own tools).
+        // Runs after Deny so a bypass-immune DeniedTools rule or a safety gate still wins, but before
+        // Ask/Allow phase ordering so an operator-set per-plugin baseline takes precedence over the
+        // generic tier/default rules in BOTH directions (Allow can loosen, Ask can tighten). Ordinary
+        // rules never set this flag, so this phase is a no-op for every non-plugin deployment.
+        var baselineRule = FindFirstAuthoritativeBaseline(sortedRules, toolName, operation);
+        if (baselineRule is not null)
+        {
+            var baselineDecision = new PermissionDecision(
+                baselineRule.Behavior,
+                $"Authoritative baseline from {baselineRule.Source} (pattern: '{baselineRule.ToolPattern}').",
+                baselineRule,
+                baselineRule.Source);
+
+            LogDecision(agentId, toolName, baselineDecision);
+            return baselineDecision;
+        }
+
         // Phase 2: Ask rules
         var askRule = FindFirstMatchingRule(sortedRules, toolName, operation, PermissionBehaviorType.Ask);
         if (askRule is not null)
@@ -181,6 +199,41 @@ public sealed class ThreePhasePermissionResolver : IToolPermissionService
             }
 
             // If rule has an operation pattern but no operation was provided, skip
+            if (rule.OperationPattern is not null && operation is null)
+                continue;
+
+            return rule;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Finds the highest-precedence (lowest <see cref="ToolPermissionRule.Priority"/>) rule flagged
+    /// <see cref="ToolPermissionRule.IsAuthoritativeBaseline"/> that matches the tool name and
+    /// operation, regardless of its <see cref="PermissionBehaviorType"/>. Returns null when no
+    /// authoritative-baseline rule matches (the overwhelmingly common case).
+    /// </summary>
+    private ToolPermissionRule? FindFirstAuthoritativeBaseline(
+        IReadOnlyList<ToolPermissionRule> rules,
+        string toolName,
+        string? operation)
+    {
+        foreach (var rule in rules)
+        {
+            if (!rule.IsAuthoritativeBaseline)
+                continue;
+
+            if (!_patternMatcher.IsMatch(rule.ToolPattern, toolName))
+                continue;
+
+            if (rule.OperationPattern is not null
+                && operation is not null
+                && !_patternMatcher.IsMatch(rule.OperationPattern, operation))
+            {
+                continue;
+            }
+
             if (rule.OperationPattern is not null && operation is null)
                 continue;
 

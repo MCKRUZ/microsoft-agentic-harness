@@ -311,10 +311,36 @@
                             <tr>
                                 <td><code>AutonomyLevel</code></td>
                                 <td>Tier</td>
-                                <td>Overrides the tier policy for the whole plugin (e.g. force a noisier plugin to Supervised).</td>
+                                <td>
+                                    Overrides the tier policy for the plugin's own tools. The provider enumerates the
+                                    real tool names the plugin's skills declare (their <code>allowed-tools</code> /
+                                    tool declarations) and emits one <em>authoritative baseline</em> rule per name —
+                                    <code>Autonomous</code> → Allow (can loosen a stricter default),
+                                    <code>Supervised</code>/<code>Restricted</code> → Ask (tightens). The baseline runs
+                                    after the Deny phase, so a <code>DeniedTools</code> entry still wins over it.
+                                </td>
                             </tr>
                         </tbody>
                     </table>
+
+                    <div class="callout callout-info">
+                        <span class="callout-icon">i</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Scope: <code>DeniedTools</code> is plugin-wide and turn-global, not per-skill</div>
+                            <p style="margin: 0">
+                                <code>AllowedTools</code>, <code>DeniedTools</code>, and <code>AutonomyLevel</code> are
+                                declared on the <em>plugin</em>, so they apply to <strong>every skill the plugin
+                                contributes</strong> — there is no per-skill knob inside a plugin. A tool listed in a
+                                plugin's <code>DeniedTools</code> is enforced two ways: it is filtered out of that
+                                plugin's own resolved tool set at build time (per-skill provisioning), <em>and</em> it
+                                emits a bypass-immune Deny rule keyed on the tool <em>name</em>. Because the resolver
+                                matches Deny rules by name across the whole turn, that name stays denied even if a
+                                different (non-plugin) skill surfaces a tool of the same name — the deny is
+                                cross-skill, not confined to the plugin that declared it. Scope a denial narrowly by
+                                naming a tool only that plugin exposes.
+                            </p>
+                        </div>
+                    </div>
 
                     <h2 id="bypass-immune">The bypass-immune DeniedTools rule</h2>
                     <p>
@@ -324,7 +350,7 @@
                     </p>
                     <p>
                         For each entry in <code>DeniedTools</code>, <code>PluginPermissionRuleProvider</code>
-                        (around lines 76–86) constructs this rule:
+                        constructs this rule:
                     </p>
 
                     <div class="code-block">
