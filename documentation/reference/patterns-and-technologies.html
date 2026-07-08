@@ -475,6 +475,30 @@ know the exact filename. Cite file paths in `path:line` form.</code></pre>
                         <code>Partial</code> (summarise older turns), or <code>Micro</code> (drop redundant tool
                         outputs). <code>AutoCompactStateMachine</code> picks the right strategy.
                     </p>
+                    <p>
+                        On the <strong>live agent turn</strong>, compaction runs as a chat-client middleware,
+                        <code>ContextCompactionMiddleware</code> (<code>Application.AI.Common/Middleware/ContextCompactionMiddleware.cs</code>).
+                        Before each model call it estimates the incoming history's token footprint and, once it exceeds
+                        <code>MiddlewareMaxContextTokens</code> (default 128&nbsp;000) scaled by
+                        <code>AutoCompactThresholdRatio</code> (default 0.85), summarises the older history and rebuilds
+                        the request as <code>[system summary] + [current turn]</code>.
+                    </p>
+                    <p>
+                        <strong>Opt-in, default OFF.</strong> The middleware is wired by <code>AgentFactory</code> only
+                        when <code>AppConfig:AI:ContextManagement:Compaction:MiddlewareEnabled</code> is <code>true</code>
+                        <em>and</em> an <code>IContextCompactionService</code> is registered; otherwise the pipeline omits
+                        it entirely and history is never compacted on the live path (legacy behaviour preserved). It is
+                        also <strong>fail-open</strong>: if the compaction service fails (LLM summariser unavailable,
+                        circuit breaker open), the original untrimmed history is forwarded unchanged — a compaction
+                        problem never breaks a live turn.
+                    </p>
+                    <p>
+                        <strong>Known limitation.</strong> The <code>Full</code> strategy sends the entire transcript to
+                        the LLM on <em>every</em> triggering turn with no cross-turn caching of the summary, so a long
+                        conversation that stays over budget re-summarises repeatedly and pays the summarisation cost each
+                        turn. Prefer <code>Partial</code>/<code>Micro</code> for cost-sensitive long sessions until
+                        summary caching is added.
+                    </p>
 
                     <h3 id="subagents">Subagent dispatch &amp; mailbox</h3>
                     <p>
@@ -734,6 +758,23 @@ return quality.MaxScore switch
                         <strong>STANDARD</strong> (slow decay), <strong>EPHEMERAL</strong> (fast decay). Scheduled
                         pruning removes anything below threshold.
                         <code>Infrastructure.AI.RAG/GraphRag/MemoryDecayService.cs</code>
+                    </p>
+                    <p>
+                        The decay service is inert on its own — it only ages weights when something calls it. A
+                        <code>BackgroundService</code>, <code>MemoryDecayScheduler</code>
+                        (<code>Infrastructure.AI.RAG/GraphRag/MemoryDecayScheduler.cs</code>), drives it on a timer:
+                        each pass runs <code>ApplyDecayAsync</code> then <code>PruneAsync</code>. It is
+                        <strong>opt-in, default OFF</strong> — registered only when
+                        <code>AppConfig:AI:Rag:CrossSessionMemory:DecayScheduler:Enabled</code> is <code>true</code>, so
+                        cloning the template never silently starts mutating stored memory weights. Cadence comes from
+                        <code>...:DecayScheduler:Interval</code> (default 6 hours) and the prune cut-off from
+                        <code>...:CrossSessionMemory:PruneThreshold</code>.
+                    </p>
+                    <p>
+                        <strong>Known limitation.</strong> The scheduler's <code>Interval</code> is read <em>once</em> at
+                        service start; changing it at runtime needs a host restart to take effect. The prune threshold,
+                        by contrast, is re-read live on every pass (via <code>IOptionsMonitor</code>), so it hot-reloads
+                        without a restart.
                     </p>
 
                     <h3 id="provenance">Entity-level provenance</h3>

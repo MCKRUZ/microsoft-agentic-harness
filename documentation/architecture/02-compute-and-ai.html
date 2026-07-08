@@ -180,6 +180,24 @@
                         </div>
                     </div>
 
+                    <div class="callout callout-info">
+                        <span class="callout-icon">i</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Health probes on <code>harness-mcp</code>: don't point them at an authed endpoint</div>
+                            <p style="margin: 0">
+                                The MCP server is <strong>fail-closed</strong>: when authentication is configured, a
+                                fallback authorization policy (<code>RequireAuthenticatedUser</code>) protects
+                                <em>every</em> endpoint that lacks explicit authorization metadata. An unauthenticated
+                                liveness/readiness probe hitting the MCP endpoint (or any other route) therefore gets a
+                                <strong>401</strong>, which Container Apps reads as an unhealthy replica and will restart
+                                in a crash loop. Configure the probe as a <strong>TCP probe</strong> against the
+                                container port, or expose a dedicated <strong>anonymous</strong> <code>/health</code>
+                                endpoint (map it with <code>.AllowAnonymous()</code>) and point the probe there. Do not
+                                relax the fallback policy to make an authed route probe-friendly.
+                            </p>
+                        </div>
+                    </div>
+
                     <h3 id="bicep-example">Bicep example</h3>
                     <p>
                         A representative Container App resource definition for the main API. Note how secrets reference
