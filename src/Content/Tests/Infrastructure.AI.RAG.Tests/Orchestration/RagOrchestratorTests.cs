@@ -39,7 +39,8 @@ public sealed class RagOrchestratorTests
     private RagOrchestrator CreateOrchestrator(
         Action<AppConfig>? configure = null,
         QueryRouter? router = null,
-        IRetrievalSource? webSearchSource = null)
+        IRetrievalSource? webSearchSource = null,
+        IFeedbackWeightedScorer? feedbackScorer = null)
     {
         var config = RagTestData.CreateConfigMonitor(configure);
         var queryRouter = router ?? new QueryRouter(
@@ -54,7 +55,7 @@ public sealed class RagOrchestratorTests
             _mockCrag.Object,
             _mockAssembler.Object,
             _mockGraphRag.Object,
-            feedbackScorer: null,
+            feedbackScorer: feedbackScorer,
             queryRouter,
             _mockMultiSource.Object,
             _mockComplexityClassifier.Object,
@@ -606,6 +607,100 @@ public sealed class RagOrchestratorTests
         assembled.Should().NotBeNull();
         assembled!.Should().Contain(r => r.RetrievalResult.Chunk.Id == "web-1");
         assembled!.Should().OnlyContain(r => r.RerankScore <= 1.0);
+    }
+
+    [Fact]
+    public async Task SearchAsync_WebFallbackWithFeedbackScorer_ReAppliesFeedbackToMergedSet()
+    {
+        // Pre-CRAG the local set is reranked then feedback-blended, so a registered scorer's historical
+        // weighting is baked into the local ordering. Re-ranking the local+web union resets scores to
+        // the reranker's output — discarding that signal — so feedback blending must be re-applied to
+        // the merged set. This test proves the local feedback signal survives web-fallback.
+        const double feedbackSentinel = 5.0; // Off the reranker's [0,1] scale, so its presence is unambiguous.
+
+        var webResults = new[]
+        {
+            RagTestData.CreateRetrievalResult(id: "web-1", content: "Web content 1.", fusedScore: 999.0),
+        };
+        var webSource = new Mock<IRetrievalSource>();
+        webSource.SetupGet(s => s.SourceName).Returns("web_search");
+        webSource
+            .Setup(s => s.RetrieveAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<TaskComplexity>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new SourceRetrievalResult
+            {
+                SourceName = "web_search",
+                Results = webResults,
+                Latency = TimeSpan.FromMilliseconds(200),
+                TokensUsed = 90,
+            });
+
+        _mockRetriever
+            .Setup(r => r.RetrieveAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(RagTestData.CreateRetrievalResults(3));
+
+        // Reranker assigns calibrated [0,1] scores; chunk-3 lands last (score 0.7).
+        _mockReranker
+            .Setup(r => r.RerankAsync(It.IsAny<string>(), It.IsAny<IReadOnlyList<RetrievalResult>>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((string _, IReadOnlyList<RetrievalResult> results, int topK, CancellationToken _) =>
+                results
+                    .Take(topK)
+                    .Select((r, i) => new RerankedResult
+                    {
+                        RetrievalResult = r,
+                        RerankScore = Math.Max(0.0, 0.9 - (i * 0.1)),
+                        OriginalRank = i + 1,
+                        RerankRank = i + 1,
+                    })
+                    .ToList());
+
+        // Feedback scorer boosts chunk-3 to a sentinel score (historical weighting) and re-sorts.
+        // Web results have no feedback history, so they pass through unchanged.
+        var feedbackScorer = new Mock<IFeedbackWeightedScorer>();
+        feedbackScorer
+            .Setup(f => f.BlendFeedbackAsync(It.IsAny<IReadOnlyList<RerankedResult>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((IReadOnlyList<RerankedResult> results, string _, CancellationToken _) =>
+                results
+                    .Select(r => r.RetrievalResult.Chunk.Id == "chunk-3"
+                        ? r with { RerankScore = feedbackSentinel }
+                        : r)
+                    .OrderByDescending(r => r.RerankScore)
+                    .ToList());
+
+        _mockCrag
+            .Setup(e => e.EvaluateAsync(It.IsAny<string>(), It.IsAny<IReadOnlyList<RetrievalResult>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(RagTestData.CreateWebFallbackEvaluation());
+
+        IReadOnlyList<RerankedResult>? assembled = null;
+        _mockAssembler
+            .Setup(a => a.AssembleAsync(It.IsAny<IReadOnlyList<RerankedResult>>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .Callback<IReadOnlyList<RerankedResult>, int, CancellationToken>((results, _, _) => assembled = results)
+            .ReturnsAsync(_expectedContext);
+
+        var orchestrator = CreateOrchestrator(
+            configure: cfg =>
+            {
+                cfg.AI.ModelRouting.Enabled = false;
+                cfg.AI.Rag.Crag.AllowWebFallback = true;
+                cfg.AI.Rag.MultiSource.EnabledSources = ["vector", "graph", "web_search"];
+            },
+            webSearchSource: webSource.Object,
+            feedbackScorer: feedbackScorer.Object);
+
+        await orchestrator.SearchAsync("query needing web fallback");
+
+        // Feedback blending must run on the merged set (a candidate list that includes the web chunk),
+        // not just the pre-CRAG local-only set that the union rerank discarded.
+        feedbackScorer.Verify(
+            f => f.BlendFeedbackAsync(
+                It.Is<IReadOnlyList<RerankedResult>>(list => list.Any(x => x.RetrievalResult.Chunk.Id.StartsWith("web", StringComparison.Ordinal))),
+                It.IsAny<string>(),
+                It.IsAny<CancellationToken>()),
+            Times.Once);
+
+        // The sentinel boost survived to assembly — local feedback weighting was preserved after merge.
+        assembled.Should().NotBeNull();
+        assembled!.Should().Contain(r =>
+            r.RetrievalResult.Chunk.Id == "chunk-3" && r.RerankScore == feedbackSentinel);
     }
 
     [Fact]
