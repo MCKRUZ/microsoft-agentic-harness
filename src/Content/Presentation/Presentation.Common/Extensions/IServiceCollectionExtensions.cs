@@ -102,6 +102,17 @@ public static class IServiceCollectionExtensions
         services.Configure<ConnectorsConfig>(configuration.GetSection("AppConfig:Connectors"));
         services.Configure<ObservabilityConfig>(configuration.GetSection("AppConfig:Observability"));
         services.Configure<AIConfig>(configuration.GetSection("AppConfig:AI"));
+        // Governance switches consumed via IOptionsMonitor<GovernanceConfig> on the live
+        // agent path: ToolInvocationGovernor (EnforceToolInvocation), ProgressEvaluator
+        // (ProgressGuard), DefaultToolClassificationGate (DataClassification mode), and the
+        // PromptInjectionBehavior / ResponseSanitizationBehavior MediatR behaviors (Enabled +
+        // thresholds). Without this binding those services run on compiled defaults
+        // regardless of appsettings ("inert machinery", audit item I2). The Escalation and
+        // DataClassification subsections additionally have their own validated bindings in
+        // RegisterValidatedConfigSections; no FluentValidation validator exists yet for the
+        // parent GovernanceConfig — adding one is a tracked follow-up.
+        services.Configure<Domain.Common.Config.AI.GovernanceConfig>(
+            configuration.GetSection("AppConfig:AI:Governance"));
         services.Configure<EmbeddingConfig>(configuration.GetSection("AppConfig:AI:Embedding"));
         services.Configure<AzureConfig>(configuration.GetSection("AppConfig:Azure"));
         services.Configure<CacheConfig>(configuration.GetSection("AppConfig:Cache"));
