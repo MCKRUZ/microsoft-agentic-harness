@@ -24,6 +24,9 @@
     <!-- The ASI06 memory-poisoning fixture drives the real KnowledgeMemoryService quarantine
          runtime (write gate + trust-aware recall) instead of a hardcoded stub. -->
     <ProjectReference Include="../../Infrastructure/Infrastructure.AI.KnowledgeGraph/Infrastructure.AI.KnowledgeGraph.csproj" />
+    <!-- Drives the real ContentCapturePolicy (backed by AppConfig) through the AgentFactory
+         sensitive-data gate so the test proves the config default (off), not a stub. -->
+    <ProjectReference Include="../../Infrastructure/Infrastructure.AI/Infrastructure.AI.csproj" />
   </ItemGroup>
 
 </Project>
