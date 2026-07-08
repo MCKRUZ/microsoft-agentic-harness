@@ -28,7 +28,7 @@ namespace Domain.Common.Config;
 /// ├── Http           — HTTP settings (CORS, authorization, maintenance)
 /// ├── Infrastructure — State management, content providers
 /// ├── Connectors     — External system connector integrations
-/// ├── Observability  — Sampling, PII filtering, rate limiting, exporters
+/// ├── Observability  — PII filtering, rate limiting, exporters
 /// ├── AI             — MCP server/client, agent framework, model selection
 /// ├── Azure          — Azure platform services (AppInsights, SQL, B2C, KeyVault)
 /// ├── Cache          — Caching strategy and Redis configuration

@@ -12,8 +12,8 @@ namespace Infrastructure.Observability.Exporters;
 
 /// <summary>
 /// Finalization-stage telemetry configurator that wires infrastructure-level
-/// processors (sampling, PII, rate limiting) and multi-backend exporters
-/// into the OTel pipeline.
+/// processors (PII, rate limiting, cost/tool enrichment) and multi-backend
+/// exporters into the OTel pipeline.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -26,10 +26,18 @@ namespace Infrastructure.Observability.Exporters;
 /// <list type="number">
 ///   <item><description>PII filtering — scrub sensitive attributes first</description></item>
 ///   <item><description>Rate limiting — drop excess throughput</description></item>
-///   <item><description>Tail-based sampling — buffer and evaluate complete traces</description></item>
+///   <item><description>Cost and tool enrichment — record token cost and tool metrics</description></item>
 /// </list>
-/// PII filtering runs first so that even dropped/sampled-out spans never have
-/// sensitive data in memory longer than necessary.
+/// PII filtering runs first so that even dropped spans never have sensitive data
+/// in memory longer than necessary.
+/// </para>
+/// <para>
+/// Trace sampling is not performed here. Tail-based sampling is a Collector-tier
+/// concern (see the observability architecture guide): the SDK exports every span
+/// and the OpenTelemetry Collector's <c>tail_sampling</c> processor decides what to
+/// keep. A prior in-app tail sampler was removed because a <see cref="BaseProcessor{T}.OnEnd"/>
+/// no-op cannot prevent the OTLP/Azure Monitor exporters from having already enqueued
+/// every span.
 /// </para>
 /// </remarks>
 public sealed class ObservabilityTelemetryConfigurator : ITelemetryConfigurator
@@ -119,15 +127,10 @@ public sealed class ObservabilityTelemetryConfigurator : ITelemetryConfigurator
             _loggerFactory.CreateLogger<CausalSpanAttributionProcessor>()));
         _logger.LogInformation("Causal span attribution processor registered");
 
-        // Processor 7: Tail-based sampling (last — all metrics already recorded)
-        if (config.Sampling.Enabled)
-        {
-            builder.AddProcessor(new TailBasedSamplingProcessor(
-                _loggerFactory.CreateLogger<TailBasedSamplingProcessor>(),
-                optionsSnapshot));
-            _logger.LogInformation("Tail-based sampling processor registered ({SampleRate}%)",
-                config.Sampling.DefaultSamplingPercentage);
-        }
+        // Trace sampling is intentionally NOT done here. Tail-based sampling belongs at the
+        // OpenTelemetry Collector tier (tail_sampling processor); see the observability
+        // architecture guide. An in-app BaseProcessor cannot drop spans the exporters have
+        // already enqueued, so the SDK exports every span and the collector decides.
 
         // OTLP exporter is registered in OpenTelemetryServiceCollectionExtensions (pre-build phase)
 

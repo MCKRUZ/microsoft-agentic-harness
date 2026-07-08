@@ -17,7 +17,6 @@ Unit and integration tests for the **Infrastructure.Observability** layer — Op
 |------------|---------------|
 | `ToolEffectivenessProcessorTests` | Tool success/failure effectiveness tracking |
 | `PiiFilteringProcessorTests` | PII redaction from telemetry spans |
-| `TailBasedSamplingProcessorTests` | Error-biased tail sampling decisions |
 | `EndToEndPipelineTests` | Full write-through to PostgreSQL read-back |
 | `OverviewDashboardTests` | Grafana dashboard SQL query correctness |
 

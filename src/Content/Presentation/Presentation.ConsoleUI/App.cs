@@ -361,7 +361,6 @@ public class App
 		table.AddRow("MCP Servers", config.AI?.McpServers?.Servers?.Count.ToString() ?? "0");
 		table.AddRow("Logs Path", config.Logging?.LogsBasePath ?? "[grey]not set[/]");
 		table.AddRow("Cache Type", config.Cache?.CacheType.ToString() ?? "[grey]not set[/]");
-		table.AddRow("OTel Sampling", config.Observability?.Sampling?.Enabled.ToString() ?? "[grey]not set[/]");
 
 		AnsiConsole.Write(table);
 	}
