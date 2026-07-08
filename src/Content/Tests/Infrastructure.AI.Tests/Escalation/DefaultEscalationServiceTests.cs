@@ -188,8 +188,14 @@ public sealed class DefaultEscalationServiceTests : IDisposable
 
 		var task = Task.Run(() => _sut.RequestEscalationAsync(request, CancellationToken.None));
 
-		var completedEarly = await Task.WhenAny(task, Task.Delay(200)) == task;
-		completedEarly.Should().BeFalse("RequestEscalationAsync should block until resolved");
+		// Wait for the escalation to be registered before submitting: a decision submitted
+		// pre-registration is silently dropped (DefaultEscalationService.cs:88-92) and the
+		// request then resolves only via its 5-minute timeout with IsApproved=false — the
+		// same race documented on RequestEscalationAsync_AfterRegistrationSignal_*.
+		await WaitForRegistrationAsync(request.EscalationId);
+
+		// Registered but undecided: the blocking call must still be pending.
+		task.IsCompleted.Should().BeFalse("RequestEscalationAsync should block until resolved");
 
 		await _sut.SubmitDecisionAsync(request.EscalationId, CreateApproval(), CancellationToken.None);
 		var outcome = await task;
