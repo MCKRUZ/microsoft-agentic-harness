@@ -132,7 +132,12 @@ public sealed partial class PlanExecutor
         {
             if (existingStates is not null && existingStates.TryGetValue(step.Id, out var existing))
             {
-                var state = existing.Status == StepExecutionStatus.Running
+                // A resumed step that was in-flight (Running) or merely queued (Ready) when the host
+                // crashed must be renormalised to Pending so the scheduler re-evaluates its
+                // dependencies and re-enqueues it through the canonical Pending -> Ready promotion
+                // path. Leaving it as Ready would strand it: EnqueueInitialReadyStepsAsync only picks
+                // up Pending steps, so the step would never run yet the plan would report Completed.
+                var state = existing.Status is StepExecutionStatus.Running or StepExecutionStatus.Ready
                     ? existing with { Status = StepExecutionStatus.Pending }
                     : existing;
                 stepStates[step.Id] = state;

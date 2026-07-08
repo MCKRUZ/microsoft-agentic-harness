@@ -844,7 +844,7 @@ public sealed class PlanExecutorTests : IDisposable
     // === RetryStepAsync ===
 
     [Fact]
-    public async Task RetryStepAsync_FailedStep_ResetsToReady()
+    public async Task RetryStepAsync_FailedStep_ResetsToPending()
     {
         var planId = PlanId.New();
         var stepId = new PlanStepId(Guid.NewGuid());
@@ -872,7 +872,7 @@ public sealed class PlanExecutorTests : IDisposable
         _stateStore.Verify(s => s.UpdateStepStateAsync(
             It.Is<StepExecutionState>(st =>
                 st.StepId == stepId &&
-                st.Status == StepExecutionStatus.Ready &&
+                st.Status == StepExecutionStatus.Pending &&
                 st.AttemptCount == 2 &&
                 st.ErrorMessage == null &&
                 st.CompletedAt == null),

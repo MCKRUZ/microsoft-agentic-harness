@@ -17,14 +17,23 @@ public sealed partial class PlanExecutor
         var hasFailures = states.Any(s => s.Status == StepExecutionStatus.Failed);
         var hasBlocked = states.Any(s => s.Status == StepExecutionStatus.Blocked);
         var hasCancelled = states.Any(s => s.Status == StepExecutionStatus.Cancelled);
+        var hasNonTerminal = states.Any(s => s.Status is StepExecutionStatus.Pending
+            or StepExecutionStatus.Ready
+            or StepExecutionStatus.Running);
 
+        // Blocked/Cancelled are legitimate terminal outcomes and take precedence — a Blocked step
+        // with a waiting Pending downstream is a paused plan, not a failure. But if the scheduler
+        // exits with non-terminal steps and nothing explains the pause (no failure, no block, no
+        // cancellation), the plan did NOT complete: report Failed rather than dishonestly Completed.
         var finalStatus = hasFailures
             ? StepExecutionStatus.Failed
             : hasBlocked
                 ? StepExecutionStatus.Blocked
                 : hasCancelled
                     ? StepExecutionStatus.Cancelled
-                    : StepExecutionStatus.Completed;
+                    : hasNonTerminal
+                        ? StepExecutionStatus.Failed
+                        : StepExecutionStatus.Completed;
 
         return new PlanExecutionSummary
         {

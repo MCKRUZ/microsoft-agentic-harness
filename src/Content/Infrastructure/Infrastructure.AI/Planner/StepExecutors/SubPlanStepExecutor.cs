@@ -88,20 +88,30 @@ public sealed class SubPlanStepExecutor : IPlanStepExecutor
             var childResult = await childExecutor.ExecuteAsync(childPlanId.Value, childContext, ct);
             sw.Stop();
 
-            if (childResult.IsSuccess)
+            // A successful Result only means the child executor ran to a conclusion — the plan's
+            // actual outcome lives in FinalStatus. A child that failed, blocked, or was cancelled
+            // (or was left with non-terminal steps) now returns Result.Success with a non-Completed
+            // FinalStatus, so the parent step is Completed ONLY when the child genuinely completed.
+            // Keying off IsSuccess alone would mark the parent step Completed for a failed child —
+            // the same "plan lies about success" bug, one level up.
+            if (childResult.IsSuccess && childResult.Value!.FinalStatus == StepExecutionStatus.Completed)
             {
                 return new StepExecutionResult
                 {
                     Status = StepExecutionStatus.Completed,
-                    Output = childResult.Value is not null ? JsonSerializer.Serialize(childResult.Value) : null,
+                    Output = JsonSerializer.Serialize(childResult.Value),
                     Duration = sw.Elapsed
                 };
             }
 
+            var errorMessage = childResult.IsSuccess
+                ? $"Child plan {childPlanId.Value} did not complete: final status {childResult.Value!.FinalStatus}."
+                : childResult.Errors.Count > 0 ? string.Join("; ", childResult.Errors) : "Child plan execution failed.";
+
             return new StepExecutionResult
             {
                 Status = StepExecutionStatus.Failed,
-                ErrorMessage = childResult.Errors.Count > 0 ? string.Join("; ", childResult.Errors) : "Child plan execution failed.",
+                ErrorMessage = errorMessage,
                 Duration = sw.Elapsed
             };
         }

@@ -171,10 +171,14 @@ public sealed partial class PlanExecutor : IPlanExecutor
             if (currentState.Status != StepExecutionStatus.Failed)
                 return Result.Fail($"Only failed steps can be retried. Step {stepId} is {currentState.Status}.");
 
+            // Reset to Pending — not Ready — so the next ExecuteAsync re-evaluates the step's
+            // dependencies and re-enqueues it through the canonical Pending -> Ready promotion path.
+            // A persisted Ready step is never picked up by EnqueueInitialReadyStepsAsync, so the
+            // retried step would never actually re-run.
             var resetState = new StepExecutionState
             {
                 StepId = stepId,
-                Status = StepExecutionStatus.Ready,
+                Status = StepExecutionStatus.Pending,
                 AttemptCount = currentState.AttemptCount,
                 StartedAt = null,
                 CompletedAt = null,
@@ -187,7 +191,7 @@ public sealed partial class PlanExecutor : IPlanExecutor
                 return Result.Fail(updateResult.Errors.ToArray());
 
             _logger.LogInformation(
-                "Step {StepId} in plan {PlanId} reset to Ready for retry (attempt {AttemptCount} total)",
+                "Step {StepId} in plan {PlanId} reset to Pending for retry (attempt {AttemptCount} total)",
                 stepId, planId, currentState.AttemptCount);
 
             return Result.Success();
@@ -363,10 +367,9 @@ public sealed partial class PlanExecutor : IPlanExecutor
         sw.Stop();
         var summary = BuildSummary(planId, stepStates, sw.Elapsed);
 
-        if (summary.FailedStepCount > 0)
+        if (summary.FinalStatus == StepExecutionStatus.Failed)
         {
-            var failedStep = summary.StepStates.First(s => s.Status == StepExecutionStatus.Failed);
-            await _notifier.NotifyPlanFailedAsync(planId, failedStep.StepId, failedStep.ErrorMessage ?? "Unknown error", ct);
+            await NotifyPlanFailureAsync(planId, summary, ct);
             PlanExecutionsCounter.Add(1, new KeyValuePair<string, object?>("status", "failed"));
         }
         else if (summary.StepStates.All(s => s.Status is StepExecutionStatus.Completed or StepExecutionStatus.Skipped))
@@ -376,5 +379,29 @@ public sealed partial class PlanExecutor : IPlanExecutor
         }
 
         return Result<PlanExecutionSummary>.Success(summary);
+    }
+
+    /// <summary>
+    /// Emits the plan-level failure notification. Reports the first failed step's error when one
+    /// exists; otherwise reports an incomplete plan — the scheduler exited with steps that never
+    /// reached a terminal state — so the outcome is never silently dropped.
+    /// </summary>
+    private async Task NotifyPlanFailureAsync(PlanId planId, PlanExecutionSummary summary, CancellationToken ct)
+    {
+        var failedStep = summary.StepStates.FirstOrDefault(s => s.Status == StepExecutionStatus.Failed);
+        if (failedStep is not null)
+        {
+            await _notifier.NotifyPlanFailedAsync(planId, failedStep.StepId, failedStep.ErrorMessage ?? "Unknown error", ct);
+            return;
+        }
+
+        var unexecuted = summary.StepStates
+            .Where(s => s.Status is StepExecutionStatus.Pending or StepExecutionStatus.Ready or StepExecutionStatus.Running)
+            .ToList();
+        await _notifier.NotifyPlanFailedAsync(
+            planId,
+            unexecuted[0].StepId,
+            $"Plan did not complete: {unexecuted.Count} step(s) never reached a terminal state",
+            ct);
     }
 }
