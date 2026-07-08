@@ -87,19 +87,6 @@ internal sealed class AgentConversationCache : IAgentConversationCache
             : new Dictionary<string, object>(options.AdditionalProperties);
         scopedProperties[AgentFactory.ConversationIdPropertyKey] = conversationId;
 
-        return new SkillAgentOptions
-        {
-            SkillPaths = options.SkillPaths,
-            AgentNameOverride = options.AgentNameOverride,
-            DeploymentName = options.DeploymentName,
-            AgentId = options.AgentId,
-            FrameworkType = options.FrameworkType,
-            AdditionalContext = options.AdditionalContext,
-            Temperature = options.Temperature,
-            AdditionalTools = options.AdditionalTools,
-            MiddlewareTypes = options.MiddlewareTypes,
-            AdditionalProperties = scopedProperties,
-            TraceScope = options.TraceScope
-        };
+        return options with { AdditionalProperties = scopedProperties };
     }
 }
