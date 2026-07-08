@@ -1,23 +1,25 @@
 using Application.Common.Interfaces.Idempotency;
-using Application.Common.Interfaces.MediatR;
 using Application.Common.MediatRBehaviors;
 using Application.Common.Services.Idempotency;
 using Domain.Common;
 using FluentAssertions;
 using MediatR;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
 namespace Application.Common.Tests.MediatRBehaviors;
 
 /// <summary>
-/// Regression tests for the idempotency wiring defect (solution-review finding 25):
-/// IdempotencyBehavior was dead code — never registered and IIdempotencyStore had no
-/// implementation — and the behavior cached failure results unconditionally.
+/// Regression tests for the idempotency wiring and store contract:
+/// the behavior must be registered (not dead code), the store must not cache failures,
+/// concurrent duplicates must run once, and — critically — idempotency must be ordered
+/// after authorization so a replayed key cannot bypass the auth check.
 /// </summary>
 public sealed class IdempotencyWiringTests
 {
+    private static readonly Func<object, bool> PersistSuccesses =
+        value => value is not Result { IsSuccess: false };
+
     [Fact]
     public void AddApplicationCommonDependencies_RegistersIdempotencyStore()
     {
@@ -26,8 +28,7 @@ public sealed class IdempotencyWiringTests
         services.AddApplicationCommonDependencies();
         using var provider = services.BuildServiceProvider();
 
-        var store = provider.GetService<IIdempotencyStore>();
-        store.Should().BeOfType<InMemoryIdempotencyStore>(
+        provider.GetService<IIdempotencyStore>().Should().BeOfType<InMemoryIdempotencyStore>(
             "the behavior throws on an unresolvable IIdempotencyStore if no default is registered");
     }
 
@@ -38,9 +39,6 @@ public sealed class IdempotencyWiringTests
 
         services.AddApplicationCommonDependencies();
 
-        // Inspect the registration rather than resolving the whole pipeline (which would also
-        // construct the pre-existing AuthorizationBehavior and its auth-stack dependencies). The
-        // behavior is registered as an open-generic pipeline behavior.
         services.Should().ContainSingle(d =>
             d.ServiceType == typeof(IPipelineBehavior<,>) &&
             d.ImplementationType == typeof(IdempotencyBehavior<,>),
@@ -48,74 +46,83 @@ public sealed class IdempotencyWiringTests
     }
 
     [Fact]
-    public async Task Handle_FailureResult_IsNotCached()
+    public void IdempotencyBehavior_IsRegisteredAfterAuthorizationBehavior()
     {
-        var store = new InMemoryIdempotencyStore(TimeProvider.System);
-        var sut = new IdempotencyBehavior<IdempotentCommand, Result<string>>(
-            store, NullLogger<IdempotencyBehavior<IdempotentCommand, Result<string>>>.Instance);
-        var request = new IdempotentCommand("key-fail");
+        var services = new ServiceCollection();
+        services.AddApplicationCommonDependencies();
 
-        var first = await sut.Handle(request, () => Task.FromResult(Result<string>.Fail("transient")), CancellationToken.None);
-        var cached = await store.TryGetAsync("key-fail", CancellationToken.None);
+        var pipeline = services
+            .Where(d => d.ServiceType == typeof(IPipelineBehavior<,>))
+            .Select(d => d.ImplementationType)
+            .ToList();
 
-        first.IsSuccess.Should().BeFalse();
-        cached.Should().BeNull("a failed Result must never be cached and replayed to legitimate retries");
+        var authIndex = pipeline.IndexOf(typeof(AuthorizationBehavior<,>));
+        var idempotencyIndex = pipeline.IndexOf(typeof(IdempotencyBehavior<,>));
+
+        authIndex.Should().BeGreaterThanOrEqualTo(0);
+        idempotencyIndex.Should().BeGreaterThan(authIndex,
+            "a replayed idempotency key must clear authorization before any cached response is served");
     }
 
     [Fact]
-    public async Task Handle_FailureThenSuccess_SecondCallReExecutesAndCachesSuccess()
+    public async Task Store_FailureResult_IsNotPersisted_SoNextCallReExecutes()
     {
         var store = new InMemoryIdempotencyStore(TimeProvider.System);
-        var sut = new IdempotencyBehavior<IdempotentCommand, Result<string>>(
-            store, NullLogger<IdempotencyBehavior<IdempotentCommand, Result<string>>>.Instance);
-        var request = new IdempotentCommand("key-retry");
         var calls = 0;
+        Func<Task<object>> execute = () => { calls++; return Task.FromResult<object>(Result<string>.Fail("transient")); };
 
-        RequestHandlerDelegate<Result<string>> handler = () =>
-        {
-            calls++;
-            return Task.FromResult(calls == 1
-                ? Result<string>.Fail("transient")
-                : Result<string>.Success("ok"));
-        };
+        await store.GetOrExecuteAsync("k", execute, PersistSuccesses, CancellationToken.None);
+        await store.GetOrExecuteAsync("k", execute, PersistSuccesses, CancellationToken.None);
 
-        await sut.Handle(request, handler, CancellationToken.None);
-        var second = await sut.Handle(request, handler, CancellationToken.None);
-
-        calls.Should().Be(2, "the failure must not be cached, so the retry re-executes the handler");
-        second.IsSuccess.Should().BeTrue();
-        (await store.TryGetAsync("key-retry", CancellationToken.None)).Should().NotBeNull(
-            "the eventual success must be cached for subsequent retries");
+        calls.Should().Be(2, "a failed Result must never be cached and replayed to legitimate retries");
     }
 
     [Fact]
-    public async Task Store_SuccessResult_RoundTripsExactRuntimeType()
+    public async Task Store_SuccessResult_IsPersisted_SoNextCallDoesNotReExecute()
     {
         var store = new InMemoryIdempotencyStore(TimeProvider.System);
-        var response = Result<string>.Success("value");
+        var calls = 0;
+        Func<Task<object>> execute = () => { calls++; return Task.FromResult<object>(Result<string>.Success("ok")); };
 
-        await store.SetAsync("k", response, CancellationToken.None);
-        var cached = await store.TryGetAsync("k", CancellationToken.None);
+        await store.GetOrExecuteAsync("k", execute, PersistSuccesses, CancellationToken.None);
+        var second = await store.GetOrExecuteAsync("k", execute, PersistSuccesses, CancellationToken.None);
 
-        cached.Should().BeOfType<Result<string>>(
-            "the in-memory store caches by reference so the behavior's 'cached is TResponse' check holds");
+        calls.Should().Be(1, "a persisted success must be replayed from cache, not re-executed");
+        second.Should().BeOfType<Result<string>>("the store caches by reference and returns the exact runtime type");
     }
 
     [Fact]
-    public async Task Store_ExpiredEntry_ReturnsNull()
+    public async Task Store_ExpiredEntry_ReExecutes()
     {
         var time = new MutableTimeProvider(DateTimeOffset.UnixEpoch);
         var store = new InMemoryIdempotencyStore(time);
+        var calls = 0;
+        Func<Task<object>> execute = () => { calls++; return Task.FromResult<object>(Result<string>.Success("ok")); };
 
-        await store.SetAsync("k", "v", CancellationToken.None);
+        await store.GetOrExecuteAsync("k", execute, PersistSuccesses, CancellationToken.None);
         time.Advance(InMemoryIdempotencyStore.DefaultTtl + TimeSpan.FromSeconds(1));
-        var cached = await store.TryGetAsync("k", CancellationToken.None);
+        await store.GetOrExecuteAsync("k", execute, PersistSuccesses, CancellationToken.None);
 
-        cached.Should().BeNull("entries must expire after their TTL");
+        calls.Should().Be(2, "an expired entry must be treated as a miss and re-executed");
     }
 
-    private sealed record IdempotentCommand(string IdempotencyKey)
-        : IRequest<Result<string>>, IIdempotentRequest;
+    [Fact]
+    public async Task Store_ExecuteThrows_PropagatesAndDoesNotPersist()
+    {
+        var store = new InMemoryIdempotencyStore(TimeProvider.System);
+        var calls = 0;
+        Func<Task<object>> execute = () =>
+        {
+            calls++;
+            throw new InvalidOperationException("boom");
+        };
+
+        var act = () => store.GetOrExecuteAsync("k", execute, PersistSuccesses, CancellationToken.None);
+        await act.Should().ThrowAsync<InvalidOperationException>();
+        await act.Should().ThrowAsync<InvalidOperationException>();
+
+        calls.Should().Be(2, "a faulted execution must release its reservation so a retry re-executes");
+    }
 
     private sealed class MutableTimeProvider(DateTimeOffset start) : TimeProvider
     {

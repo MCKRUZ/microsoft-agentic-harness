@@ -27,9 +27,9 @@ namespace Application.Common;
 /// <para>
 /// <strong>MediatR Pipeline Behavior Order (outermost → innermost):</strong>
 /// <list type="number">
-///   <item><description><c>IdempotencyBehavior</c> — short-circuits duplicate <c>IIdempotentRequest</c> retries before validation/handler work</description></item>
 ///   <item><description><c>RequestValidationBehavior</c> — FluentValidation, returns Result failure</description></item>
 ///   <item><description><c>AuthorizationBehavior</c> — checks [Authorize] attributes</description></item>
+///   <item><description><c>IdempotencyBehavior</c> — deduplicates <c>IIdempotentRequest</c> retries; runs after authorization so a replayed key cannot bypass the auth check, and scopes cached responses per user</description></item>
 ///   <item><description><c>CachingBehavior</c> — hybrid memory/distributed cache</description></item>
 ///   <item><description><c>RequestTracingBehavior</c> — OTel spans with duration</description></item>
 ///   <item><description><c>TimeoutBehavior</c> — enforces IHasTimeout deadlines</description></item>
@@ -67,11 +67,14 @@ public static class DependencyInjection
         services.AddSingleton<IIdempotencyStore, InMemoryIdempotencyStore>();
 
         // Pipeline behaviors — registration order = execution order (outermost first)
-        // Agent-specific behaviors registered in Application.AI.Common.DependencyInjection
+        // Agent-specific behaviors registered in Application.AI.Common.DependencyInjection.
+        // IdempotencyBehavior is registered AFTER AuthorizationBehavior on purpose: a replayed
+        // idempotency key must still clear authorization before any cached response is served,
+        // otherwise a cache hit would bypass the auth check (access-control bypass).
         services
-            .AddTransient(typeof(IPipelineBehavior<,>), typeof(IdempotencyBehavior<,>))
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(RequestValidationBehavior<,>))
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(AuthorizationBehavior<,>))
+            .AddTransient(typeof(IPipelineBehavior<,>), typeof(IdempotencyBehavior<,>))
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(CachingBehavior<,>))
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(RequestTracingBehavior<,>))
             .AddTransient(typeof(IPipelineBehavior<,>), typeof(TimeoutBehavior<,>));
