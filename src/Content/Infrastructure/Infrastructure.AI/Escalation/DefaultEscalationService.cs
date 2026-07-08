@@ -310,10 +310,6 @@ public sealed class DefaultEscalationService : IEscalationService, IDisposable
 		state.TimeoutCts.Cancel();
 		_activeEscalations.TryRemove(state.Request.EscalationId, out _);
 
-		// Retain the verdict so GetOutcomeAsync can report it after the escalation leaves the
-		// active set — this is what lets a resumed plan unblock or fail a gated step.
-		_resolvedOutcomes[outcome.EscalationId] = outcome;
-
 		EscalationMetrics.Pending.Add(-1);
 		RecordResolutionMetrics(state, outcome);
 
@@ -338,6 +334,11 @@ public sealed class DefaultEscalationService : IEscalationService, IDisposable
 			state.Completion.TrySetException(ex);
 			throw;
 		}
+
+		// Retain the verdict ONLY after it has been durably audited, so GetOutcomeAsync — and thus
+		// the plan executor's resume reconciliation — can never act on a verdict that failed the
+		// fail-closed audit write above and was rolled back to the awaiting caller.
+		_resolvedOutcomes[outcome.EscalationId] = outcome;
 
 		await SafeExecuteAsync(
 			() => _notifier.NotifyEscalationResolvedAsync(outcome, CancellationToken.None),
