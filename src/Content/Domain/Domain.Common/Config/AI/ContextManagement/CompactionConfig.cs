@@ -19,6 +19,25 @@ namespace Domain.Common.Config.AI.ContextManagement;
 public class CompactionConfig
 {
     /// <summary>
+    /// Gets or sets a value indicating whether the per-turn context-compaction middleware is
+    /// inserted into the agent chat-client pipeline. When <see langword="false"/> (the default),
+    /// conversation history is never compacted on the live turn path, preserving legacy behaviour.
+    /// When <see langword="true"/>, each turn whose estimated history exceeds
+    /// <see cref="MiddlewareMaxContextTokens"/> scaled by <see cref="AutoCompactThresholdRatio"/>
+    /// is summarized before being sent to the model.
+    /// </summary>
+    public bool MiddlewareEnabled { get; set; }
+
+    /// <summary>
+    /// Gets or sets the maximum context-window token budget used by the compaction middleware to
+    /// decide when a turn's history should be compacted. The middleware triggers once the estimated
+    /// history tokens reach this value scaled by <see cref="AutoCompactThresholdRatio"/>. Defaults
+    /// to a high value so that, even when <see cref="MiddlewareEnabled"/> is turned on, compaction
+    /// only fires for genuinely large conversations.
+    /// </summary>
+    public int MiddlewareMaxContextTokens { get; set; } = 128_000;
+
+    /// <summary>
     /// Gets or sets the ratio of token usage to max context window that triggers auto-compaction.
     /// For example, 0.85 means compaction triggers when 85% of the context window is consumed.
     /// </summary>

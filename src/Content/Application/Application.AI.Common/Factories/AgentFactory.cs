@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces;
+using Application.AI.Common.Interfaces.Compaction;
 using Application.AI.Common.Interfaces.Routing;
 using Application.AI.Common.Interfaces.Skills;
 using Application.AI.Common.Interfaces.Telemetry;
@@ -279,6 +280,24 @@ public class AgentFactory : IAgentFactory
                 _loggerFactory.CreateLogger<Middleware.ObservabilityMiddleware>()))
             .Use(inner => new Middleware.ToolDiagnosticsMiddleware(
                 inner, _loggerFactory.CreateLogger<Middleware.ToolDiagnosticsMiddleware>()));
+
+        // Per-turn context compaction — only when enabled in config AND a compaction service is
+        // registered. Summarizes conversation history before the model call once its estimated
+        // token footprint exceeds the configured budget. Fail-open: a compaction problem forwards
+        // the untrimmed history rather than breaking the turn.
+        var compactionConfig = _appConfig.CurrentValue.AI?.ContextManagement?.Compaction;
+        var compactionService = _serviceProvider.GetService<IContextCompactionService>();
+        if (compactionConfig?.MiddlewareEnabled == true && compactionService is not null)
+        {
+            chatClientBuilder = chatClientBuilder.Use(inner =>
+                new Middleware.ContextCompactionMiddleware(
+                    inner,
+                    compactionService,
+                    agentContext.Name ?? "unknown",
+                    compactionConfig.MiddlewareMaxContextTokens,
+                    Domain.AI.Compaction.CompactionStrategy.Full,
+                    _loggerFactory.CreateLogger<Middleware.ContextCompactionMiddleware>()));
+        }
 
         // Cache-stats enrichment — only when a generation-stats client is registered (i.e. the
         // configured provider is the OpenRouter path with prompt caching enabled). For every other
