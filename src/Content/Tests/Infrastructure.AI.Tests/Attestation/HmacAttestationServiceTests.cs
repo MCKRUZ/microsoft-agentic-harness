@@ -40,7 +40,7 @@ public sealed class HmacAttestationServiceTests
     {
         var service = CreateService();
 
-        var attestation = await service.SignAsync("calculator", "{\"a\":1}", "{\"result\":2}", CancellationToken.None);
+        var attestation = await service.SignAsync(AttestationRequest.Success("calculator", "{\"a\":1}", "{\"result\":2}"), CancellationToken.None);
 
         attestation.ToolName.Should().Be("calculator");
         attestation.InputHash.Should().NotBeNullOrEmpty().And.HaveLength(64);
@@ -56,7 +56,7 @@ public sealed class HmacAttestationServiceTests
     public async Task Verify_AcceptsValidSignature()
     {
         var service = CreateService();
-        var attestation = await service.SignAsync("calculator", "{\"a\":1}", "{\"result\":2}", CancellationToken.None);
+        var attestation = await service.SignAsync(AttestationRequest.Success("calculator", "{\"a\":1}", "{\"result\":2}"), CancellationToken.None);
 
         var result = await service.VerifyAsync(attestation, CancellationToken.None);
 
@@ -67,7 +67,7 @@ public sealed class HmacAttestationServiceTests
     public async Task Verify_RejectsTamperedOutput()
     {
         var service = CreateService();
-        var attestation = await service.SignAsync("calculator", "{\"a\":1}", "{\"result\":2}", CancellationToken.None);
+        var attestation = await service.SignAsync(AttestationRequest.Success("calculator", "{\"a\":1}", "{\"result\":2}"), CancellationToken.None);
 
         var tampered = attestation with
         {
@@ -83,7 +83,7 @@ public sealed class HmacAttestationServiceTests
     public async Task Verify_RejectsTamperedInput()
     {
         var service = CreateService();
-        var attestation = await service.SignAsync("calculator", "{\"a\":1}", "{\"result\":2}", CancellationToken.None);
+        var attestation = await service.SignAsync(AttestationRequest.Success("calculator", "{\"a\":1}", "{\"result\":2}"), CancellationToken.None);
 
         var tampered = attestation with
         {
@@ -99,7 +99,7 @@ public sealed class HmacAttestationServiceTests
     public async Task Verify_RejectsTamperedTimestamp()
     {
         var service = CreateService();
-        var attestation = await service.SignAsync("calculator", "{\"a\":1}", "{\"result\":2}", CancellationToken.None);
+        var attestation = await service.SignAsync(AttestationRequest.Success("calculator", "{\"a\":1}", "{\"result\":2}"), CancellationToken.None);
 
         var tampered = attestation with { Timestamp = attestation.Timestamp.AddSeconds(1) };
 
@@ -113,7 +113,7 @@ public sealed class HmacAttestationServiceTests
     {
         var service = CreateService();
 
-        var attestation = await service.SignFailureAsync("calculator", "{\"a\":1}", "OOM kill", CancellationToken.None);
+        var attestation = await service.SignAsync(AttestationRequest.Failure("calculator", "{\"a\":1}", "OOM kill"), CancellationToken.None);
 
         attestation.OutputHash.Should().BeNull();
         attestation.IsFailureAttestation.Should().BeTrue();
@@ -138,7 +138,7 @@ public sealed class HmacAttestationServiceTests
             ]
         };
         var serviceV1 = CreateService(optionsV1);
-        var attestation = await serviceV1.SignAsync("calculator", "{\"a\":1}", "{\"result\":2}", CancellationToken.None);
+        var attestation = await serviceV1.SignAsync(AttestationRequest.Success("calculator", "{\"a\":1}", "{\"result\":2}"), CancellationToken.None);
         attestation.KeyVersion.Should().Be("v1");
 
         var optionsV2 = new AttestationKeyOptions
@@ -171,7 +171,7 @@ public sealed class HmacAttestationServiceTests
         };
         var service = CreateService(options);
 
-        var attestation = await service.SignAsync("calculator", "{\"a\":1}", "{\"result\":2}", CancellationToken.None);
+        var attestation = await service.SignAsync(AttestationRequest.Success("calculator", "{\"a\":1}", "{\"result\":2}"), CancellationToken.None);
 
         attestation.KeyVersion.Should().Be("v2");
     }
@@ -210,7 +210,7 @@ public sealed class HmacAttestationServiceTests
     public async Task Verify_ReturnsFalse_WhenKeyVersionRetired()
     {
         var service = CreateService();
-        var attestation = await service.SignAsync("calc", "{}", "{}", CancellationToken.None);
+        var attestation = await service.SignAsync(AttestationRequest.Success("calc", "{}", "{}"), CancellationToken.None);
 
         var retiredOptions = new AttestationKeyOptions
         {
@@ -228,7 +228,7 @@ public sealed class HmacAttestationServiceTests
     public async Task Verify_RejectsTamperedFailureReason()
     {
         var service = CreateService();
-        var attestation = await service.SignFailureAsync("calculator", "{\"a\":1}", "OOM kill", CancellationToken.None);
+        var attestation = await service.SignAsync(AttestationRequest.Failure("calculator", "{\"a\":1}", "OOM kill"), CancellationToken.None);
 
         var tampered = attestation with { FailureReason = "Permission denied" };
 

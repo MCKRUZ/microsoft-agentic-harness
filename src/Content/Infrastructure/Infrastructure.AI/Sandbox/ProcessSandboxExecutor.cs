@@ -174,11 +174,12 @@ public sealed class ProcessSandboxExecutor : ISandboxExecutor
                 "Sandbox refused to spawn process for tool {ToolName}: egress preflight denied '{Host}'",
                 request.ToolName, denied.Target.Host);
 
-            var attestation = await _attestationService.SignFailureWithEgressAsync(
-                request.ToolName,
-                request.Input,
-                $"Egress preflight denied: {denied.Target} ({denied.Reason})",
-                digest,
+            var attestation = await _attestationService.SignAsync(
+                Domain.AI.Attestation.AttestationRequest.Failure(
+                    request.ToolName,
+                    request.Input,
+                    $"Egress preflight denied: {denied.Target} ({denied.Reason})",
+                    egressDigest: digest),
                 ct);
 
             return (new SandboxExecutionResult
@@ -194,19 +195,15 @@ public sealed class ProcessSandboxExecutor : ISandboxExecutor
 
     private Task<Domain.AI.Attestation.ToolExecutionAttestation> SignFailureAsync(
         string toolName, string input, string failureReason, string? egressDigest, CancellationToken ct)
-    {
-        return egressDigest is null
-            ? _attestationService.SignFailureAsync(toolName, input, failureReason, ct)
-            : _attestationService.SignFailureWithEgressAsync(toolName, input, failureReason, egressDigest, ct);
-    }
+        => _attestationService.SignAsync(
+            Domain.AI.Attestation.AttestationRequest.Failure(toolName, input, failureReason, egressDigest: egressDigest),
+            ct);
 
     private Task<Domain.AI.Attestation.ToolExecutionAttestation> SignSuccessAsync(
         string toolName, string input, string output, string? egressDigest, CancellationToken ct)
-    {
-        return egressDigest is null
-            ? _attestationService.SignAsync(toolName, input, output, ct)
-            : _attestationService.SignWithEgressAsync(toolName, input, output, egressDigest, ct);
-    }
+        => _attestationService.SignAsync(
+            Domain.AI.Attestation.AttestationRequest.Success(toolName, input, output, egressDigest),
+            ct);
 
     private Process StartProcess(SandboxExecutionRequest request, string workspaceDir)
     {
@@ -277,8 +274,8 @@ public sealed class ProcessSandboxExecutor : ISandboxExecutor
             $"Environment grant rejected: '{reservedGrant}' collides with a reserved variable " +
             "(pinned temp or security-critical) and cannot be overridden by per-request grants.";
 
-        var attestation = await _attestationService.SignFailureAsync(
-            request.ToolName, request.Input, errorMessage, ct);
+        var attestation = await _attestationService.SignAsync(
+            Domain.AI.Attestation.AttestationRequest.Failure(request.ToolName, request.Input, errorMessage), ct);
 
         return new SandboxExecutionResult
         {
@@ -397,9 +394,11 @@ public sealed class ProcessSandboxExecutor : ISandboxExecutor
         // The crash result carries the stdout produced before the failure, so that output
         // must be bound into the signed attestation — otherwise a stored result's Output
         // could diverge from the attested record without detection.
-        var attestation = await _attestationService.SignFailureWithOutputAsync(
-            request.ToolName, request.Input,
-            $"Process exited with code {exitCode}: {stderr}", stdout, egressDigest, ct);
+        var attestation = await _attestationService.SignAsync(
+            Domain.AI.Attestation.AttestationRequest.Failure(
+                request.ToolName, request.Input,
+                $"Process exited with code {exitCode}: {stderr}", output: stdout, egressDigest: egressDigest),
+            ct);
 
         return new SandboxExecutionResult
         {

@@ -49,17 +49,10 @@ public class SandboxAttestationBindingTests
                 .Returns(true);
 
             _attestation
-                .Setup(x => x.SignFailureWithOutputAsync(
-                    It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
-                    It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
-                .ReturnsAsync((string tool, string _, string __, string ___, string? ____, CancellationToken _____) =>
-                    CreateAttestation(tool, isFailure: true, outputHash: "bound-hash"));
-
-            _attestation
-                .Setup(x => x.SignFailureAsync(
-                    It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
-                .ReturnsAsync((string tool, string _, string __, CancellationToken ___) =>
-                    CreateAttestation(tool, isFailure: true));
+                .Setup(x => x.SignAsync(It.IsAny<AttestationRequest>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync((AttestationRequest r, CancellationToken _) =>
+                    CreateAttestation(r.ToolName, isFailure: r.IsFailure,
+                        outputHash: r.Output is not null ? "bound-hash" : null));
 
             var sandboxConfig = new Mock<IOptionsMonitor<SandboxConfig>>();
             sandboxConfig.Setup(x => x.CurrentValue).Returns(new SandboxConfig());
@@ -98,12 +91,12 @@ public class SandboxAttestationBindingTests
             result.ExitCode.Should().Be(3);
             result.Output.Should().Contain("crash-stdout-data");
 
-            _attestation.Verify(x => x.SignFailureWithOutputAsync(
-                    "test_tool",
-                    It.IsAny<string>(),
-                    It.IsAny<string>(),
-                    It.Is<string>(o => o == result.Output),
-                    null,
+            _attestation.Verify(x => x.SignAsync(
+                    It.Is<AttestationRequest>(r =>
+                        r.ToolName == "test_tool"
+                        && r.IsFailure
+                        && r.Output == result.Output
+                        && r.EgressDigest == null),
                     It.IsAny<CancellationToken>()),
                 Times.Once,
                 "the crash output returned to the caller must be the exact bytes bound into the attestation");
@@ -156,17 +149,10 @@ public class SandboxAttestationBindingTests
                 .Returns(Task.CompletedTask);
 
             _attestation
-                .Setup(x => x.SignFailureWithOutputAsync(
-                    It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
-                    It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
-                .ReturnsAsync((string tool, string _, string __, string ___, string? ____, CancellationToken _____) =>
-                    CreateAttestation(tool, isFailure: true, outputHash: "bound-hash"));
-
-            _attestation
-                .Setup(x => x.SignFailureAsync(
-                    It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
-                .ReturnsAsync((string tool, string _, string __, CancellationToken ___) =>
-                    CreateAttestation(tool, isFailure: true));
+                .Setup(x => x.SignAsync(It.IsAny<AttestationRequest>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync((AttestationRequest r, CancellationToken _) =>
+                    CreateAttestation(r.ToolName, isFailure: r.IsFailure,
+                        outputHash: r.Output is not null ? "bound-hash" : null));
 
             _options.Setup(x => x.CurrentValue).Returns(new SandboxExecutionOptions());
 
@@ -199,12 +185,12 @@ public class SandboxAttestationBindingTests
             result.Success.Should().BeFalse();
             result.Output.Should().Be(producedOutput);
 
-            _attestation.Verify(x => x.SignFailureWithOutputAsync(
-                    "test_tool",
-                    It.IsAny<string>(),
-                    It.IsAny<string>(),
-                    producedOutput,
-                    null,
+            _attestation.Verify(x => x.SignAsync(
+                    It.Is<AttestationRequest>(r =>
+                        r.ToolName == "test_tool"
+                        && r.IsFailure
+                        && r.Output == producedOutput
+                        && r.EgressDigest == null),
                     It.IsAny<CancellationToken>()),
                 Times.Once,
                 "the workspace output returned on a container crash must be bound into the attestation");
@@ -221,12 +207,14 @@ public class SandboxAttestationBindingTests
             result.Success.Should().BeFalse();
             result.Output.Should().BeNull();
 
-            _attestation.Verify(x => x.SignFailureAsync(
-                    "test_tool", It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            _attestation.Verify(x => x.SignAsync(
+                    It.Is<AttestationRequest>(r =>
+                        r.ToolName == "test_tool" && r.IsFailure && r.Output == null),
+                    It.IsAny<CancellationToken>()),
                 Times.Once);
-            _attestation.Verify(x => x.SignFailureWithOutputAsync(
-                    It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
-                    It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()),
+            _attestation.Verify(x => x.SignAsync(
+                    It.Is<AttestationRequest>(r => r.IsFailure && r.Output != null),
+                    It.IsAny<CancellationToken>()),
                 Times.Never,
                 "when no output was produced there is nothing to bind — the legacy failure shape applies");
         }

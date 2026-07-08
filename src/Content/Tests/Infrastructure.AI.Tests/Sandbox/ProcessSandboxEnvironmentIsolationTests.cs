@@ -32,18 +32,10 @@ public class ProcessSandboxEnvironmentIsolationTests
             .Returns(true);
 
         _attestation
-            .Setup(x => x.SignAsync(
-                It.IsAny<string>(), It.IsAny<string>(),
-                It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync((string tool, string _, string __, CancellationToken ___) =>
-                CreateAttestation(tool));
-
-        _attestation
-            .Setup(x => x.SignFailureAsync(
-                It.IsAny<string>(), It.IsAny<string>(),
-                It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync((string tool, string _, string reason, CancellationToken ___) =>
-                CreateAttestation(tool) with { IsFailureAttestation = true, OutputHash = null, FailureReason = reason });
+            .Setup(x => x.SignAsync(It.IsAny<AttestationRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((AttestationRequest r, CancellationToken _) => r.IsFailure
+                ? CreateAttestation(r.ToolName) with { IsFailureAttestation = true, OutputHash = null, FailureReason = r.FailureReason }
+                : CreateAttestation(r.ToolName));
 
         _sandboxConfig.Setup(x => x.CurrentValue).Returns(new SandboxConfig());
     }

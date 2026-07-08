@@ -17,7 +17,7 @@ namespace Infrastructure.AI.Tests.Attestation;
 /// fields, so a <c>SandboxExecutionResult.Output</c> tampered after signing still "verified".
 /// Crash results carried output that the failure attestation never covered at all.
 /// These tests pin the output-bound verification path (<c>VerifyBoundAsync</c>) and the
-/// failure-with-output signing shape (<c>SignFailureWithOutputAsync</c>).
+/// failure-with-output signing shape (<c>AttestationRequest.Failure</c> with an output).
 /// </summary>
 public sealed class HmacAttestationOutputBindingTests
 {
@@ -47,7 +47,7 @@ public sealed class HmacAttestationOutputBindingTests
     public async Task VerifyBound_ActualOutputMatches_ReturnsTrue()
     {
         var service = CreateService();
-        var attestation = await service.SignAsync("calculator", "{\"a\":1}", "{\"result\":2}", CancellationToken.None);
+        var attestation = await service.SignAsync(AttestationRequest.Success("calculator", "{\"a\":1}", "{\"result\":2}"), CancellationToken.None);
 
         var result = await service.VerifyBoundAsync(attestation, "{\"result\":2}", CancellationToken.None);
 
@@ -58,7 +58,7 @@ public sealed class HmacAttestationOutputBindingTests
     public async Task VerifyBound_ActualOutputDiverges_ReturnsFalse()
     {
         var service = CreateService();
-        var attestation = await service.SignAsync("calculator", "{\"a\":1}", "{\"result\":2}", CancellationToken.None);
+        var attestation = await service.SignAsync(AttestationRequest.Success("calculator", "{\"a\":1}", "{\"result\":2}"), CancellationToken.None);
 
         // The gap this closes: signature-only verification cannot see the real output,
         // so a tampered stored output still passes VerifyAsync.
@@ -74,7 +74,7 @@ public sealed class HmacAttestationOutputBindingTests
     public async Task VerifyBound_NoOutputHashOnAttestation_ReturnsFalse()
     {
         var service = CreateService();
-        var attestation = await service.SignFailureAsync("calculator", "{\"a\":1}", "boom", CancellationToken.None);
+        var attestation = await service.SignAsync(AttestationRequest.Failure("calculator", "{\"a\":1}", "boom"), CancellationToken.None);
 
         var result = await service.VerifyBoundAsync(attestation, "any-output", CancellationToken.None);
 
@@ -86,8 +86,8 @@ public sealed class HmacAttestationOutputBindingTests
     {
         var service = CreateService();
 
-        var attestation = await service.SignFailureWithOutputAsync(
-            "compiler", "{\"src\":\"x\"}", "exit code 1", "partial diagnostics", egressDigest: null, CancellationToken.None);
+        var attestation = await service.SignAsync(
+            AttestationRequest.Failure("compiler", "{\"src\":\"x\"}", "exit code 1", output: "partial diagnostics"), CancellationToken.None);
 
         attestation.IsFailureAttestation.Should().BeTrue();
         attestation.FailureReason.Should().Be("exit code 1");
@@ -101,8 +101,8 @@ public sealed class HmacAttestationOutputBindingTests
     public async Task SignFailureWithOutput_TamperedOutputHash_FailsSignatureVerification()
     {
         var service = CreateService();
-        var attestation = await service.SignFailureWithOutputAsync(
-            "compiler", "{\"src\":\"x\"}", "exit code 1", "real output", egressDigest: null, CancellationToken.None);
+        var attestation = await service.SignAsync(
+            AttestationRequest.Failure("compiler", "{\"src\":\"x\"}", "exit code 1", output: "real output"), CancellationToken.None);
 
         var tampered = attestation with { OutputHash = Sha256Hex("forged output") };
 
@@ -117,8 +117,8 @@ public sealed class HmacAttestationOutputBindingTests
     {
         var service = CreateService();
 
-        var attestation = await service.SignFailureWithOutputAsync(
-            "fetcher", "{}", "exit code 7", "stdout before crash", egressDigest: "abc123", CancellationToken.None);
+        var attestation = await service.SignAsync(
+            AttestationRequest.Failure("fetcher", "{}", "exit code 7", output: "stdout before crash", egressDigest: "abc123"), CancellationToken.None);
 
         attestation.EgressDigest.Should().Be("abc123");
         (await service.VerifyAsync(attestation, CancellationToken.None)).Should().BeTrue();
@@ -131,7 +131,7 @@ public sealed class HmacAttestationOutputBindingTests
     public async Task LegacyFailureAttestation_WithoutOutputHash_StillVerifies()
     {
         var service = CreateService();
-        var legacy = await service.SignFailureAsync("calculator", "{\"a\":1}", "timed out", CancellationToken.None);
+        var legacy = await service.SignAsync(AttestationRequest.Failure("calculator", "{\"a\":1}", "timed out"), CancellationToken.None);
 
         legacy.OutputHash.Should().BeNull();
         var result = await service.VerifyAsync(legacy, CancellationToken.None);

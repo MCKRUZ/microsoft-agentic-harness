@@ -136,8 +136,8 @@ public sealed class DockerSandboxExecutor : ISandboxExecutor
             $"Invalid resource limits: CpuCoreLimit must be a positive number of cores (was {request.Limits.CpuCoreLimit}). " +
             "A non-positive value would map to NanoCPUs=0, which Docker treats as unlimited.";
 
-        var attestation = await _attestationService.SignFailureAsync(
-            request.ToolName, request.Input, errorMessage, ct);
+        var attestation = await _attestationService.SignAsync(
+            Domain.AI.Attestation.AttestationRequest.Failure(request.ToolName, request.Input, errorMessage), ct);
 
         return new SandboxExecutionResult
         {
@@ -172,9 +172,11 @@ public sealed class DockerSandboxExecutor : ISandboxExecutor
                 "Docker unavailable but tool {ToolName} requires container isolation. Refusing execution",
                 request.ToolName);
 
-            var attestation = await _attestationService.SignFailureAsync(
-                request.ToolName, request.Input,
-                "Container isolation required but Docker is unavailable", ct);
+            var attestation = await _attestationService.SignAsync(
+                Domain.AI.Attestation.AttestationRequest.Failure(
+                    request.ToolName, request.Input,
+                    "Container isolation required but Docker is unavailable"),
+                ct);
 
             return new SandboxExecutionResult
             {
@@ -348,8 +350,10 @@ public sealed class DockerSandboxExecutor : ISandboxExecutor
         // output exists does the legacy (output-less) failure shape apply.
         var failureReason = $"Container exited with code {exitCode}: {logs}";
         var attestation = output is not null
-            ? await _attestationService.SignFailureWithOutputAsync(
-                request.ToolName, request.Input, failureReason, output, egressDigest, ct)
+            ? await _attestationService.SignAsync(
+                Domain.AI.Attestation.AttestationRequest.Failure(
+                    request.ToolName, request.Input, failureReason, output: output, egressDigest: egressDigest),
+                ct)
             : await SignFailureAsync(
                 request.ToolName, request.Input, failureReason, egressDigest, ct);
 
@@ -396,11 +400,12 @@ public sealed class DockerSandboxExecutor : ISandboxExecutor
                 "Docker sandbox refused to spawn container for tool {ToolName}: egress preflight denied '{Host}'",
                 request.ToolName, denied.Target.Host);
 
-            var attestation = await _attestationService.SignFailureWithEgressAsync(
-                request.ToolName,
-                request.Input,
-                $"Egress preflight denied: {denied.Target} ({denied.Reason})",
-                digest,
+            var attestation = await _attestationService.SignAsync(
+                Domain.AI.Attestation.AttestationRequest.Failure(
+                    request.ToolName,
+                    request.Input,
+                    $"Egress preflight denied: {denied.Target} ({denied.Reason})",
+                    egressDigest: digest),
                 ct);
 
             return (new SandboxExecutionResult
@@ -416,19 +421,15 @@ public sealed class DockerSandboxExecutor : ISandboxExecutor
 
     private Task<Domain.AI.Attestation.ToolExecutionAttestation> SignFailureAsync(
         string toolName, string input, string failureReason, string? egressDigest, CancellationToken ct)
-    {
-        return egressDigest is null
-            ? _attestationService.SignFailureAsync(toolName, input, failureReason, ct)
-            : _attestationService.SignFailureWithEgressAsync(toolName, input, failureReason, egressDigest, ct);
-    }
+        => _attestationService.SignAsync(
+            Domain.AI.Attestation.AttestationRequest.Failure(toolName, input, failureReason, egressDigest: egressDigest),
+            ct);
 
     private Task<Domain.AI.Attestation.ToolExecutionAttestation> SignSuccessAsync(
         string toolName, string input, string output, string? egressDigest, CancellationToken ct)
-    {
-        return egressDigest is null
-            ? _attestationService.SignAsync(toolName, input, output, ct)
-            : _attestationService.SignWithEgressAsync(toolName, input, output, egressDigest, ct);
-    }
+        => _attestationService.SignAsync(
+            Domain.AI.Attestation.AttestationRequest.Success(toolName, input, output, egressDigest),
+            ct);
 
     /// <summary>
     /// Force-kills and removes the container on a dedicated cleanup token. The caller's
