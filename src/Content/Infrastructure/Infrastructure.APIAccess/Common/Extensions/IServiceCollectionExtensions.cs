@@ -257,32 +257,43 @@ public static class IServiceCollectionExtensions
     }
 
     /// <summary>
-    /// Configures Polly resilience pipelines with retry, timeout, circuit breaker, and rate limiting.
+    /// Attaches the harness Polly resilience pipeline (retry, timeout, circuit breaker, rate
+    /// limiter) to an HTTP client so every request the client sends executes through it.
+    /// Retries are safe for requests with content — the underlying
+    /// <c>Microsoft.Extensions.Http.Resilience</c> handler snapshots the request message
+    /// before each attempt.
     /// </summary>
-    /// <param name="services">The service collection to configure.</param>
-    /// <param name="configurationName">The name of the resilience pipeline configuration.</param>
-    /// <returns>The service collection for chaining.</returns>
+    /// <param name="httpClientBuilder">The HTTP client builder to attach the handler to.</param>
+    /// <returns>The HTTP client builder for chaining.</returns>
     /// <remarks>
-    /// Strategies applied in order:
+    /// Strategies applied in order (outermost to innermost):
     /// <list type="bullet">
     ///   <item>Retry - Exponential backoff with jitter for retryable exceptions</item>
     ///   <item>Timeout - Prevents operations from running too long</item>
     ///   <item>Circuit Breaker - Stops calling failing services after a threshold</item>
     ///   <item>Rate Limiter - Sliding window rate limiting (100 requests/minute)</item>
     /// </list>
+    /// All tuning values come from <c>AppConfig:Http:Policies</c> (<see cref="HttpPolicyConfig"/>).
+    /// <see cref="AddDefaultHttpClient"/> applies this handler to every client created via
+    /// <c>IHttpClientFactory</c>; do not attach it a second time to individual clients or
+    /// retries will compound multiplicatively.
     /// </remarks>
-    public static IServiceCollection AddResiliencePipelines(
-        this IServiceCollection services,
-        string configurationName)
+    public static IHttpClientBuilder AddCustomResilienceHandler(this IHttpClientBuilder httpClientBuilder)
     {
-        services.AddResiliencePipeline(configurationName, (builder, context) =>
+        httpClientBuilder.AddResilienceHandler("harness-http", (builder, context) =>
         {
-            var serviceProvider = context.ServiceProvider;
-            var httpConfig = serviceProvider.GetService<IOptionsMonitor<HttpConfig>>()!.CurrentValue;
+            var httpConfig = context.ServiceProvider
+                .GetRequiredService<IOptionsMonitor<HttpConfig>>().CurrentValue;
 
-            builder.AddRetry(new RetryStrategyOptions
+            builder.AddRetry(new RetryStrategyOptions<HttpResponseMessage>
             {
-                ShouldHandle = ex => new ValueTask<bool>(RetryableExceptions.Contains(ex.GetType())),
+                // Retry only when the ATTEMPT'S EXCEPTION is a declared retryable type. The
+                // predicate receives Polly's predicate-arguments struct — inspecting the struct
+                // itself (a former bug: RetryableExceptions.Contains(args.GetType())) can never
+                // match, silently disabling all retries.
+                ShouldHandle = args => new ValueTask<bool>(
+                    args.Outcome.Exception is { } exception
+                    && RetryableExceptions.Contains(exception.GetType())),
                 BackoffType = DelayBackoffType.Exponential,
                 UseJitter = true,
                 MaxRetryAttempts = httpConfig.Policies.HttpRetry.Count,
@@ -294,7 +305,7 @@ public static class IServiceCollectionExtensions
                 Timeout = httpConfig.Policies.HttpTimeout.Timeout,
             });
 
-            builder.AddCircuitBreaker(new CircuitBreakerStrategyOptions
+            builder.AddCircuitBreaker(new CircuitBreakerStrategyOptions<HttpResponseMessage>
             {
                 FailureRatio = httpConfig.Policies.HttpCircuitBreaker.FailureRatio,
                 SamplingDuration = TimeSpan.FromSeconds(30),
@@ -309,17 +320,9 @@ public static class IServiceCollectionExtensions
                     SegmentsPerWindow = 4,
                     Window = TimeSpan.FromMinutes(1),
                 }));
-
-            // TODO: Register telemetry enrichers when HttpClientCustomMeteringEnricher is ported.
-            // var telemetryOptions = new TelemetryOptions();
-            // telemetryOptions.MeteringEnrichers.Add(new HttpClientCustomMeteringEnricher());
-            // builder.ConfigureTelemetry(telemetryOptions);
         });
 
-        // TODO: AddResilienceEnricher() — requires Microsoft.Extensions.Http.Resilience enricher registration.
-        // services.AddResilienceEnricher();
-
-        return services;
+        return httpClientBuilder;
     }
 
     /// <summary>
@@ -330,7 +333,8 @@ public static class IServiceCollectionExtensions
     /// <returns>The service collection for chaining.</returns>
     /// <remarks>
     /// Configures <c>HttpClientDefaults</c> so every HTTP client created via
-    /// <c>IHttpClientFactory</c> inherits these handlers and the default timeout.
+    /// <c>IHttpClientFactory</c> inherits these handlers, the default timeout, and the harness
+    /// resilience pipeline (see <see cref="AddCustomResilienceHandler"/>).
     /// </remarks>
     public static IServiceCollection AddDefaultHttpClient(this IServiceCollection services)
     {
@@ -352,9 +356,12 @@ public static class IServiceCollectionExtensions
                 httpClientBuilder.AddHttpMessageHandler<CorrelationIdDelegatingHandler>();
                 httpClientBuilder.AddHttpMessageHandler<LoggingDelegatingHandler>();
                 httpClientBuilder.AddHttpMessageHandler<UserAgentDelegatingHandler>();
-            });
 
-        services.AddResiliencePipelines("");
+                // Attach the resilience pipeline to EVERY factory-created client. Registering
+                // the pipeline in the Polly registry alone (the previous approach) leaves it
+                // inert — nothing executes a registry pipeline unless a handler runs it.
+                httpClientBuilder.AddCustomResilienceHandler();
+            });
 
         return services;
     }
@@ -372,9 +379,12 @@ public static class IServiceCollectionExtensions
     /// </param>
     /// <returns>The service collection for chaining.</returns>
     /// <remarks>
-    /// Configures BaseAddress and Timeout from AppConfig, adds standard delegating
-    /// handlers, and applies resilience policies for retry, timeout, circuit breaker,
-    /// and rate limiting.
+    /// Configures BaseAddress and Timeout from AppConfig and adds standard delegating handlers.
+    /// The resilience pipeline (retry, timeout, circuit breaker, rate limiting) is inherited
+    /// from the client defaults registered by <see cref="AddDefaultHttpClient"/> — it is not
+    /// attached here a second time, because duplicate handlers compound retries
+    /// multiplicatively. Hosts must call <see cref="AddDefaultHttpClient"/> (done by
+    /// <c>AddInfrastructureApiAccessDependencies</c>) for typed clients to be resilient.
     /// </remarks>
     public static IServiceCollection AddHttpClient<TClient, TImplementation, TClientOptions>(
         this IServiceCollection services,
@@ -405,8 +415,6 @@ public static class IServiceCollectionExtensions
             .AddHttpMessageHandler<CorrelationIdDelegatingHandler>()
             .AddHttpMessageHandler<LoggingDelegatingHandler>()
             .AddHttpMessageHandler<UserAgentDelegatingHandler>();
-
-        services.AddResiliencePipelines(configurationSectionName);
 
         return services;
     }

@@ -72,7 +72,10 @@ Every `HttpClient` created via `IHttpClientFactory` inherits four delegating han
 
 ### Polly Resilience Pipeline
 
-`AddResiliencePipelines()` configures four strategies that protect against downstream failures:
+`AddCustomResilienceHandler()` attaches four strategies to every client created via
+`IHttpClientFactory` (wired once in `AddDefaultHttpClient()` through
+`ConfigureHttpClientDefaults`, so each request actually executes through the pipeline — do
+not attach it a second time per client, or retries compound multiplicatively):
 
 | Strategy | Behavior | Config Source |
 |----------|----------|---------------|
