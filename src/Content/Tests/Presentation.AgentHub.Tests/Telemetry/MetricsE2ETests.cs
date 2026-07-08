@@ -180,21 +180,22 @@ public class MetricsE2ETests : IClassFixture<PrometheusFixture>, IAsyncLifetime
     {
         await SendChatAsync("e2e-range-agent", "Range query test");
 
-        await _infra.WaitForMetric(
+        var found = await _infra.WaitForMetric(
             "agentic_harness_agent_session_started_total",
             TimeSpan.FromSeconds(30));
 
-        var now = DateTimeOffset.UtcNow;
-        var start = now.AddMinutes(-5).ToUnixTimeSeconds();
-        var end = now.ToUnixTimeSeconds();
+        found.Should().BeTrue(
+            "agent_session_started_total should propagate through collector → Prometheus within 30s");
 
-        var response = await _client.GetAsync(
-            $"/api/metrics/range?query=agentic_harness_agent_session_started_total" +
-            $"&start={start}&end={end}&step=15s");
-
-        response.StatusCode.Should().Be(HttpStatusCode.OK);
-
-        var result = await response.Content.ReadFromJsonAsync<MetricsQueryResponse>();
+        // An instant query proving the sample exists does NOT guarantee a range query sees it
+        // yet: start/end are truncated to whole Unix seconds, so right after the metric lands
+        // via the very first 2s Prometheus scrape, floor(now) can fall BEFORE the sample's
+        // timestamp — every range evaluation step then precedes the only sample and the query
+        // is legitimately empty for up to one scrape interval. Poll with a deadline instead
+        // of assuming a single shot works.
+        var result = await WaitForRangeSeriesAsync(
+            "agentic_harness_agent_session_started_total",
+            TimeSpan.FromSeconds(30));
 
         result.Should().NotBeNull();
         result!.Success.Should().BeTrue();
@@ -279,6 +280,38 @@ public class MetricsE2ETests : IClassFixture<PrometheusFixture>, IAsyncLifetime
     // ─────────────────────────────────────────────────────────────────────────
     // Helpers
     // ─────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Polls <c>/api/metrics/range</c> for <paramref name="promql"/> until it returns a successful
+    /// response with at least one series, or <paramref name="timeout"/> elapses. The 5-minute query
+    /// window is recomputed on every attempt because <see cref="DateTimeOffset.ToUnixTimeSeconds"/>
+    /// truncates: immediately after the metric's first scrape, floor(now) can precede the only
+    /// sample's timestamp, making a one-shot range query empty for up to one scrape interval (~2s).
+    /// Returns the last response so the caller's assertions produce the real failure message on timeout.
+    /// </summary>
+    private async Task<MetricsQueryResponse?> WaitForRangeSeriesAsync(string promql, TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+
+        while (true)
+        {
+            var now = DateTimeOffset.UtcNow;
+            var start = now.AddMinutes(-5).ToUnixTimeSeconds();
+            var end = now.ToUnixTimeSeconds();
+
+            var response = await _client.GetAsync(
+                $"/api/metrics/range?query={Uri.EscapeDataString(promql)}" +
+                $"&start={start}&end={end}&step=15s");
+
+            response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+            var result = await response.Content.ReadFromJsonAsync<MetricsQueryResponse>();
+            if (result is { Success: true, Series.Count: > 0 } || DateTime.UtcNow >= deadline)
+                return result;
+
+            await Task.Delay(500);
+        }
+    }
 
     private async Task SendChatAsync(string agentName, string message)
     {

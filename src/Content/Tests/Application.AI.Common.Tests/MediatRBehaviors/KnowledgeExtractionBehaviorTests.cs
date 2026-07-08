@@ -16,6 +16,11 @@ namespace Application.AI.Common.Tests.MediatRBehaviors;
 
 public class KnowledgeExtractionBehaviorTests
 {
+    // Deadline for polling the fire-and-forget background extraction. Generous because the work
+    // runs on the thread pool (Task.Run) and a CI machine under a parallel test load can delay
+    // scheduling far past a tight deadline; polling means passing runs still finish in ~10ms.
+    private static readonly TimeSpan ExtractionTimeout = TimeSpan.FromSeconds(30);
+
     private readonly Mock<IConversationFactExtractor> _mockExtractor = new();
     private readonly Mock<IKnowledgeMemory> _mockMemory = new();
     private readonly KnowledgeBridgeConfig _config;
@@ -118,7 +123,7 @@ public class KnowledgeExtractionBehaviorTests
         // until both facts land (or fail loudly on timeout) rather than racing a fixed delay.
         await WaitForAsync(
             () => MemoryInvocationCount() == 2,
-            TimeSpan.FromSeconds(2));
+            ExtractionTimeout);
 
         _mockMemory.Verify(m => m.RememberAsync("conv-1:3:0", "User prefers PostgreSQL", "Preference", It.IsAny<CancellationToken>()), Times.Once);
         _mockMemory.Verify(m => m.RememberAsync("conv-1:3:1", "Deadline is June 15", "Decision", It.IsAny<CancellationToken>()), Times.Once);
@@ -148,7 +153,7 @@ public class KnowledgeExtractionBehaviorTests
         // "extractor was called" would be vacuous because the task may not have started yet.
         await WaitForAsync(
             () => Volatile.Read(ref extractorInvocations) == 1,
-            TimeSpan.FromSeconds(2));
+            ExtractionTimeout);
 
         // The extractor threw before yielding any facts, so nothing should be persisted, and
         // the behavior's catch block must have absorbed the exception (no unobserved fault,
@@ -185,7 +190,7 @@ public class KnowledgeExtractionBehaviorTests
         // throws); a fixed delay would race the background task under CI load.
         await WaitForAsync(
             () => SecondFactRemembered(),
-            TimeSpan.FromSeconds(2));
+            ExtractionTimeout);
 
         // Second fact should still be remembered despite first one throwing
         _mockMemory.Verify(m => m.RememberAsync("conv-1:1:1", "Fact B", "Fact", It.IsAny<CancellationToken>()), Times.Once);

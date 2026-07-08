@@ -20,6 +20,11 @@ namespace Application.AI.Common.Tests.MediatRBehaviors;
 
 public sealed class WorkEpisodeCaptureBehaviorTests
 {
+    // Deadline for polling the fire-and-forget background capture. Generous because the capture
+    // runs on the thread pool (Task.Run) and a CI machine under a parallel test load can delay
+    // scheduling far past a tight deadline; polling means passing runs still finish in ~10ms.
+    private static readonly TimeSpan CaptureTimeout = TimeSpan.FromSeconds(30);
+
     private readonly Mock<IWorkEpisodeStore> _store = new();
     private readonly Mock<IEpisodicSegmentStore> _segmentStore = new();
     private readonly AppConfig _appConfig = new();
@@ -66,7 +71,7 @@ public sealed class WorkEpisodeCaptureBehaviorTests
 
         await behavior.Handle(CreateCommand("the task", "conv-9", 4), () => Task.FromResult(response), CancellationToken.None);
 
-        await WaitForAsync(() => captured.Count == 1, TimeSpan.FromSeconds(2));
+        await WaitForAsync(() => CountOf(captured) == 1, CaptureTimeout);
 
         var episode = captured.Single();
         episode.AgentId.Should().Be("test-agent"); // ExecuteAgentTurnCommand.AgentId => AgentName
@@ -90,7 +95,7 @@ public sealed class WorkEpisodeCaptureBehaviorTests
 
         await behavior.Handle(CreateCommand("do it"), () => Task.FromResult(response), CancellationToken.None);
 
-        await WaitForAsync(() => captured.Count == 1, TimeSpan.FromSeconds(2));
+        await WaitForAsync(() => CountOf(captured) == 1, CaptureTimeout);
         captured.Single().Outcome.Should().Be(EpisodeOutcome.Failure);
     }
 
@@ -104,7 +109,7 @@ public sealed class WorkEpisodeCaptureBehaviorTests
 
         await behavior.Handle(CreateCommand("summarize"), () => Task.FromResult(response), CancellationToken.None);
 
-        await WaitForAsync(() => captured.Count == 1, TimeSpan.FromSeconds(2));
+        await WaitForAsync(() => CountOf(captured) == 1, CaptureTimeout);
         captured.Single().ResponseSummary.Should().HaveLength(10);
     }
 
@@ -120,7 +125,7 @@ public sealed class WorkEpisodeCaptureBehaviorTests
 
         await behavior.Handle(CreateCommand("emoji"), () => Task.FromResult(response), CancellationToken.None);
 
-        await WaitForAsync(() => captured.Count == 1, TimeSpan.FromSeconds(2));
+        await WaitForAsync(() => CountOf(captured) == 1, CaptureTimeout);
         var summary = captured.Single().ResponseSummary;
         summary.Should().HaveLength(4); // backed off one char to keep whole pairs
         char.IsHighSurrogate(summary[^1]).Should().BeFalse();
@@ -143,7 +148,7 @@ public sealed class WorkEpisodeCaptureBehaviorTests
         result.Should().BeSameAs(response);
 
         // Prove the background body ran (and threw) without faulting the test process.
-        await WaitForAsync(() => Volatile.Read(ref attempts) == 1, TimeSpan.FromSeconds(2));
+        await WaitForAsync(() => Volatile.Read(ref attempts) == 1, CaptureTimeout);
     }
 
     // --- Harmonic episodic-segment capture (shared turn-boundary seam) ---
@@ -160,7 +165,7 @@ public sealed class WorkEpisodeCaptureBehaviorTests
 
         await behavior.Handle(CreateCommand("the task", "conv-7", 3), () => Task.FromResult(response), CancellationToken.None);
 
-        await WaitForAsync(() => episodes.Count == 1 && segments.Count == 1, TimeSpan.FromSeconds(2));
+        await WaitForAsync(() => CountOf(episodes) == 1 && CountOf(segments) == 1, CaptureTimeout);
 
         var episode = episodes.Single();
         var segment = segments.Single();
@@ -186,7 +191,7 @@ public sealed class WorkEpisodeCaptureBehaviorTests
 
         await behavior.Handle(CreateCommand("q"), () => Task.FromResult(response), CancellationToken.None);
 
-        await WaitForAsync(() => segments.Count == 1, TimeSpan.FromSeconds(2));
+        await WaitForAsync(() => CountOf(segments) == 1, CaptureTimeout);
         // The episode is persisted before the segment in PersistAsync; once the segment lands, a
         // work-episode write (had it been enabled) would already have run. It must not have.
         _store.Verify(s => s.SaveAsync(It.IsAny<WorkEpisode>(), It.IsAny<CancellationToken>()), Times.Never);
@@ -224,7 +229,7 @@ public sealed class WorkEpisodeCaptureBehaviorTests
 
         await behavior.Handle(CreateCommand("q"), () => Task.FromResult(response), CancellationToken.None);
 
-        await WaitForAsync(() => segments.Count == 1, TimeSpan.FromSeconds(2));
+        await WaitForAsync(() => CountOf(segments) == 1, CaptureTimeout);
     }
 
     [Fact]
@@ -284,6 +289,18 @@ public sealed class WorkEpisodeCaptureBehaviorTests
             await Task.Delay(10);
         }
         throw new TimeoutException($"Predicate did not become true within {timeout.TotalMilliseconds}ms.");
+    }
+
+    /// <summary>
+    /// Reads the capture list's count under the same lock the mock callbacks take when adding,
+    /// so poll predicates never race the background writer with an unsynchronized read.
+    /// </summary>
+    private static int CountOf<T>(List<T> items)
+    {
+        lock (items)
+        {
+            return items.Count;
+        }
     }
 
     private IServiceScopeFactory BuildScopeFactory()
