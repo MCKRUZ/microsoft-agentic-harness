@@ -64,11 +64,26 @@ public sealed class ProcessSandboxExecutor : ISandboxExecutor
             File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
     }
 
+    /// <summary>
+    /// Environment variable names that per-request grants may never override, compared
+    /// case-insensitively (Windows environment lookups ignore case). Covers the pinned temp
+    /// set (always redirected into the workspace) and the security-critical variables the
+    /// allowlist controls — a grant of <c>temp</c>, <c>Path</c>, or <c>COMSPEC</c> would
+    /// otherwise un-pin or re-smuggle them.
+    /// </summary>
+    private static readonly string[] ReservedEnvironmentVariableNames =
+    [
+        "TEMP", "TMP", "TMPDIR", "PATH", "COMSPEC", "PATHEXT", "SYSTEMROOT"
+    ];
+
     public async Task<SandboxExecutionResult> ExecuteAsync(
         SandboxExecutionRequest request, CancellationToken ct)
     {
         if (!_sandboxConfig.CurrentValue.Enabled)
             throw new InvalidOperationException("Sandbox execution is disabled by configuration (Sandbox:Enabled=false).");
+
+        if (FindReservedEnvironmentGrant(request) is { } reservedGrant)
+            return await RejectReservedGrantAsync(request, reservedGrant, ct);
 
         var egress = await RunEgressPreflightAsync(request, ct);
         if (egress.Blocked is { } block)
@@ -233,11 +248,63 @@ public sealed class ProcessSandboxExecutor : ISandboxExecutor
     }
 
     /// <summary>
-    /// Rebuilds the child process environment from scratch. The host environment (secrets,
-    /// tokens, credential paths) is never inherited: only variables named in the configured
-    /// allowlist are copied from the host, temp variables are pinned to the disposable
-    /// workspace, and explicit per-request grants are applied last.
+    /// Returns the first per-request environment grant whose name collides
+    /// (case-insensitively) with a reserved variable, or null when all grants are benign.
     /// </summary>
+    private static string? FindReservedEnvironmentGrant(SandboxExecutionRequest request)
+    {
+        if (request.EnvironmentVariables is null)
+            return null;
+
+        return request.EnvironmentVariables.Keys.FirstOrDefault(
+            name => ReservedEnvironmentVariableNames.Contains(name, StringComparer.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// Rejects a request whose environment grants collide with reserved variables — before
+    /// any process is spawned — and leaves a signed failure attestation for the audit trail.
+    /// Explicit rejection (rather than silently skipping the grant) makes the policy
+    /// violation visible to the caller and the audit log.
+    /// </summary>
+    private async Task<SandboxExecutionResult> RejectReservedGrantAsync(
+        SandboxExecutionRequest request, string reservedGrant, CancellationToken ct)
+    {
+        _logger.LogWarning(
+            "Sandbox refused to spawn process for tool {ToolName}: environment grant '{GrantName}' collides with a reserved variable",
+            request.ToolName, reservedGrant);
+
+        var errorMessage =
+            $"Environment grant rejected: '{reservedGrant}' collides with a reserved variable " +
+            "(pinned temp or security-critical) and cannot be overridden by per-request grants.";
+
+        var attestation = await _attestationService.SignFailureAsync(
+            request.ToolName, request.Input, errorMessage, ct);
+
+        return new SandboxExecutionResult
+        {
+            Success = false,
+            ErrorMessage = errorMessage,
+            Attestation = attestation
+        };
+    }
+
+    /// <summary>
+    /// Rebuilds the child process environment from scratch: only variables named in the
+    /// configured allowlist are copied from the host, temp variables are pinned to the
+    /// disposable workspace, and pre-validated per-request grants are applied last (grants
+    /// colliding with reserved names were already rejected in
+    /// <see cref="ExecuteAsync"/>, so they can never un-pin these values).
+    /// </summary>
+    /// <remarks>
+    /// This is environment-level isolation only, and it is deliberately documented as
+    /// partial: the child still runs as the same OS user with the same token (no privilege
+    /// drop), so it can read anything the host user can read through the file system. PATH
+    /// is copied verbatim by default (cmd/child executable resolution needs it), which leaks
+    /// host directory layout and carries binary-planting risk if PATH contains
+    /// user-writable directories — operators can remove PATH from
+    /// <c>SandboxConfig.ProcessEnvironmentAllowlist</c> when tools do not need it. Use
+    /// container isolation for a real security boundary.
+    /// </remarks>
     private void ConfigureIsolatedEnvironment(
         ProcessStartInfo psi, SandboxExecutionRequest request, string workspaceDir)
     {

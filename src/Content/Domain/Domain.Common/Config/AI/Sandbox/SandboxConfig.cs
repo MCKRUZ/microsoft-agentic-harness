@@ -45,8 +45,8 @@ public sealed class SandboxConfig
     /// <summary>
     /// Names of host environment variables copied into sandboxed child processes.
     /// The child environment is cleared before launch (closed-by-default) and rebuilt from
-    /// this allowlist, so host secrets, tokens, and credentials never leak into tools.
-    /// The default set is the minimum a Windows/POSIX child needs to function:
+    /// this allowlist, so host secrets, tokens, and credentials are not inherited via the
+    /// environment. The default set is the minimum a Windows/POSIX child needs to function:
     /// <c>SystemRoot</c> (required by most Win32 APIs), <c>ComSpec</c> and <c>PATHEXT</c>
     /// (command resolution inside cmd), and <c>PATH</c> (executable lookup).
     /// <c>TEMP</c>/<c>TMP</c>/<c>TMPDIR</c> are never copied from the host — the executor
@@ -54,6 +54,15 @@ public sealed class SandboxConfig
     /// Additional per-execution values are granted explicitly via
     /// <c>SandboxExecutionRequest.EnvironmentVariables</c>, not by widening this list.
     /// </summary>
+    /// <remarks>
+    /// This is PARTIAL isolation — environment-level only. The child process runs as the
+    /// same OS user with the same token (no privilege drop), so secrets reachable through
+    /// the file system or OS APIs remain reachable. Copying <c>PATH</c> verbatim leaks the
+    /// host's directory layout and is a binary-planting surface when PATH contains
+    /// user-writable directories; remove <c>PATH</c> from this list for tools that do not
+    /// resolve executables. For a real security boundary use container isolation
+    /// (<c>SandboxIsolationLevel.Container</c>).
+    /// </remarks>
     public List<string> ProcessEnvironmentAllowlist { get; init; } =
     [
         "SystemRoot", "ComSpec", "PATHEXT", "PATH"

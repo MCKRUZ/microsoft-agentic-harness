@@ -47,6 +47,12 @@ public sealed class DockerSandboxExecutor : ISandboxExecutor
         if (!_sandboxConfig.CurrentValue.Enabled)
             throw new InvalidOperationException("Sandbox execution is disabled by configuration (Sandbox:Enabled=false).");
 
+        // NanoCPUs = 0 means "unlimited" to Docker, so a non-positive (or NaN) core limit
+        // must be rejected as invalid input rather than silently granting the container the
+        // whole host. Validated at the boundary, before any container work happens.
+        if (!(request.Limits.CpuCoreLimit > 0))
+            return await RejectInvalidCpuLimitAsync(request, ct);
+
         var egress = await RunEgressPreflightAsync(request, ct);
         if (egress.Blocked is { } block)
             return block;
@@ -112,6 +118,33 @@ public sealed class DockerSandboxExecutor : ISandboxExecutor
             await RemoveContainerSafeAsync(containerId);
             CleanupWorkspace(workspaceDir);
         }
+    }
+
+    /// <summary>
+    /// Rejects a request whose <c>CpuCoreLimit</c> is not a positive core count and leaves a
+    /// signed failure attestation for the audit trail. Mapping such values to Docker would
+    /// produce <c>NanoCPUs = 0</c>, which Docker interprets as unlimited CPU.
+    /// </summary>
+    private async Task<SandboxExecutionResult> RejectInvalidCpuLimitAsync(
+        SandboxExecutionRequest request, CancellationToken ct)
+    {
+        _logger.LogWarning(
+            "Docker sandbox refused request for tool {ToolName}: CpuCoreLimit {CpuCoreLimit} is not a positive core count",
+            request.ToolName, request.Limits.CpuCoreLimit);
+
+        var errorMessage =
+            $"Invalid resource limits: CpuCoreLimit must be a positive number of cores (was {request.Limits.CpuCoreLimit}). " +
+            "A non-positive value would map to NanoCPUs=0, which Docker treats as unlimited.";
+
+        var attestation = await _attestationService.SignFailureAsync(
+            request.ToolName, request.Input, errorMessage, ct);
+
+        return new SandboxExecutionResult
+        {
+            Success = false,
+            ErrorMessage = errorMessage,
+            Attestation = attestation
+        };
     }
 
     private async Task<bool> IsDockerAvailableAsync(CancellationToken ct)

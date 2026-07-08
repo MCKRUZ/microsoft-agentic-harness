@@ -94,7 +94,14 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
 
         if (sandboxResult.Attestation is not null)
         {
-            var verified = await _attestationService.VerifyAsync(sandboxResult.Attestation, ct);
+            // When the attestation carries an output hash, verify BOUND to the actual
+            // returned output — signature-only verification cannot detect a result whose
+            // Output was tampered after signing. Legacy/output-less attestations (timeouts,
+            // spawn refusals) have nothing to bind and fall back to signature verification.
+            var verified = sandboxResult.Attestation.OutputHash is not null
+                ? await _attestationService.VerifyBoundAsync(
+                    sandboxResult.Attestation, sandboxResult.Output ?? string.Empty, ct)
+                : await _attestationService.VerifyAsync(sandboxResult.Attestation, ct);
             if (!verified)
             {
                 sw.Stop();

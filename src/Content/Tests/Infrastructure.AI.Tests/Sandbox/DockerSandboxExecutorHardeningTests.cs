@@ -157,6 +157,29 @@ public class DockerSandboxExecutorHardeningTests
             "closed-by-default: a request that does not opt into more CPU gets one core");
     }
 
+    [Theory]
+    [InlineData(0.0)]
+    [InlineData(-1.0)]
+    [InlineData(double.NaN)]
+    public async Task ExecuteAsync_NonPositiveCpuLimit_RejectsRequestInsteadOfRunningUnlimited(double cpuCoreLimit)
+    {
+        // NanoCPUs = 0 means "unlimited" to Docker, so a zero/negative CpuCoreLimit must be
+        // rejected as invalid rather than silently granting the container the whole host.
+        var request = CreateRequest() with
+        {
+            Limits = new ResourceLimits { CpuCoreLimit = cpuCoreLimit }
+        };
+
+        var result = await _sut.ExecuteAsync(request, CancellationToken.None);
+
+        result.Success.Should().BeFalse();
+        result.ErrorMessage.Should().Contain("CpuCoreLimit");
+        result.Attestation.Should().NotBeNull("the rejection must leave a signed audit record");
+        result.Attestation!.IsFailureAttestation.Should().BeTrue();
+        _containers.Verify(x => x.CreateContainerAsync(
+            It.IsAny<CreateContainerParameters>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
     private static SandboxExecutionRequest CreateRequest() => new()
     {
         ToolName = "test_tool",

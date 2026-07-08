@@ -38,6 +38,13 @@ public class ProcessSandboxEnvironmentIsolationTests
             .ReturnsAsync((string tool, string _, string __, CancellationToken ___) =>
                 CreateAttestation(tool));
 
+        _attestation
+            .Setup(x => x.SignFailureAsync(
+                It.IsAny<string>(), It.IsAny<string>(),
+                It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((string tool, string _, string reason, CancellationToken ___) =>
+                CreateAttestation(tool) with { IsFailureAttestation = true, OutputHash = null, FailureReason = reason });
+
         _sandboxConfig.Setup(x => x.CurrentValue).Returns(new SandboxConfig());
     }
 
@@ -158,6 +165,34 @@ public class ProcessSandboxEnvironmentIsolationTests
         result.Success.Should().BeTrue();
         result.Output!.Trim().Should().Be(workspaceDir,
             "TEMP must point inside the disposable sandbox workspace, not at the host temp directory");
+    }
+
+    [Theory]
+    [InlineData("temp")]
+    [InlineData("TMP")]
+    [InlineData("tmpdir")]
+    [InlineData("Path")]
+    [InlineData("COMSPEC")]
+    [InlineData("PathExt")]
+    [InlineData("systemroot")]
+    public async Task ExecuteAsync_ReservedEnvironmentGrant_RejectsRequestBeforeSpawning(string grantName)
+    {
+        // Reserved names are checked case-insensitively: Windows environment lookups are
+        // case-insensitive, so a grant of "temp" or "Path" would otherwise override the
+        // pinned temp redirection or the allowlisted PATH.
+        var request = CreateRequest(argumentList: ["/c", "echo", "should-not-run"]) with
+        {
+            EnvironmentVariables = new Dictionary<string, string> { [grantName] = @"C:\attacker-controlled" }
+        };
+
+        var result = await CreateSut().ExecuteAsync(request, CancellationToken.None);
+
+        result.Success.Should().BeFalse(
+            "grants colliding with pinned or security-critical variables must be rejected, not silently applied or skipped");
+        result.ErrorMessage.Should().Contain(grantName);
+        result.Output.Should().BeNull("the child process must never be spawned for a rejected request");
+        result.Attestation.Should().NotBeNull("the rejection must leave a signed audit record");
+        result.Attestation!.IsFailureAttestation.Should().BeTrue();
     }
 
     private static SandboxExecutionRequest CreateRequest(string[] argumentList) => new()

@@ -65,8 +65,12 @@ public sealed record SandboxExecutionRequest
     /// Explicit environment variables granted to the sandboxed process for this execution.
     /// The child process environment is cleared and rebuilt from the configured host
     /// allowlist (<c>SandboxConfig.ProcessEnvironmentAllowlist</c>) plus these grants —
-    /// nothing else from the host environment is visible to the tool. Grants are applied
-    /// last and may override allowlisted values. Null or empty means no extra variables.
+    /// nothing else from the host environment is visible to the tool via the environment.
+    /// Null or empty means no extra variables. Grant names colliding (case-insensitively)
+    /// with reserved variables — the pinned temp set (<c>TEMP</c>/<c>TMP</c>/<c>TMPDIR</c>)
+    /// and security-critical names (<c>PATH</c>, <c>COMSPEC</c>, <c>PATHEXT</c>,
+    /// <c>SystemRoot</c>) — cause the whole request to be REJECTED with a signed failure
+    /// attestation: grants can extend the environment, never override the sandbox's pins.
     /// </summary>
     public IReadOnlyDictionary<string, string>? EnvironmentVariables { get; init; }
 }
