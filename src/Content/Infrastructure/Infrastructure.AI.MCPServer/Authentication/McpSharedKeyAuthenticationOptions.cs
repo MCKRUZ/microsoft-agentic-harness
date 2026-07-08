@@ -15,8 +15,10 @@ public sealed class McpSharedKeyAuthenticationOptions : AuthenticationSchemeOpti
     public string HeaderName { get; set; } = "X-API-Key";
 
     /// <summary>
-    /// Gets or sets the required prefix of the header value, stripped before comparison.
-    /// Empty for raw API keys; <c>"Bearer "</c> for the static bearer scheme.
+    /// Gets or sets the auth-scheme prefix of the header value, stripped before
+    /// comparison. Empty for raw API keys; <c>"Bearer "</c> for the static bearer
+    /// scheme. Per RFC 7235 the scheme token is matched case-insensitively and any
+    /// amount of whitespace between scheme and credential is tolerated.
     /// </summary>
     public string ValuePrefix { get; set; } = string.Empty;
 

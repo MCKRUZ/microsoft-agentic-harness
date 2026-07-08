@@ -35,10 +35,17 @@ public sealed class McpSharedKeyAuthenticationHandler(
 
         if (Options.ValuePrefix.Length > 0)
         {
-            if (!presented.StartsWith(Options.ValuePrefix, StringComparison.Ordinal))
+            // RFC 7235: the auth-scheme token is case-insensitive and separated from
+            // the credential by at least one space (extra whitespace tolerated).
+            var scheme = Options.ValuePrefix.TrimEnd(' ');
+            if (presented.Length <= scheme.Length
+                || !presented.StartsWith(scheme, StringComparison.OrdinalIgnoreCase)
+                || presented[scheme.Length] != ' ')
                 return Task.FromResult(AuthenticateResult.NoResult());
 
-            presented = presented[Options.ValuePrefix.Length..];
+            presented = presented[scheme.Length..].TrimStart(' ');
+            if (presented.Length == 0)
+                return Task.FromResult(AuthenticateResult.NoResult());
         }
 
         if (!CredentialsMatch(presented, Options.ExpectedCredential))

@@ -172,6 +172,59 @@ public sealed class McpServerAuthFailClosedTests
             $"a correctly authenticated MCP initialize must be served (got {(int)response.StatusCode})");
     }
 
+    // RFC 7235: the auth-scheme token is case-insensitive and standards-compliant
+    // clients may send extra whitespace between scheme and credential.
+
+    [Theory]
+    [InlineData("bearer")]
+    [InlineData("BEARER")]
+    [InlineData("BeArEr")]
+    public async Task Request_BearerConfigured_SchemeCaseInsensitive_IsServed(string scheme)
+    {
+        using var factory = CreateBearerFactory();
+        using var client = factory.CreateClient();
+
+        var request = CreateInitializeRequest();
+        request.Headers.TryAddWithoutValidation("Authorization", $"{scheme} {TestBearerToken}")
+            .Should().BeTrue();
+
+        using var response = await client.SendAsync(request);
+
+        response.IsSuccessStatusCode.Should().BeTrue(
+            $"RFC 7235 auth-scheme names are case-insensitive (got {(int)response.StatusCode})");
+    }
+
+    [Fact]
+    public async Task Request_BearerConfigured_ExtraWhitespaceAfterScheme_IsServed()
+    {
+        using var factory = CreateBearerFactory();
+        using var client = factory.CreateClient();
+
+        var request = CreateInitializeRequest();
+        request.Headers.TryAddWithoutValidation("Authorization", $"Bearer   {TestBearerToken}")
+            .Should().BeTrue();
+
+        using var response = await client.SendAsync(request);
+
+        response.IsSuccessStatusCode.Should().BeTrue(
+            $"whitespace between scheme and credential is tolerated (got {(int)response.StatusCode})");
+    }
+
+    [Fact]
+    public async Task Request_BearerConfigured_WrongTokenUnderLowercaseScheme_Returns401()
+    {
+        using var factory = CreateBearerFactory();
+        using var client = factory.CreateClient();
+
+        var request = CreateInitializeRequest();
+        request.Headers.TryAddWithoutValidation("Authorization", "bearer wrong-token")
+            .Should().BeTrue();
+
+        using var response = await client.SendAsync(request);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+    }
+
     // -- Entra (JWT) enforcement --
 
     [Fact]
