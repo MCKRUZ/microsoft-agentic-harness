@@ -21,10 +21,20 @@ namespace Infrastructure.AI.Escalation;
 /// durable compliance records, but automatic recovery from audit logs is not
 /// implemented (Phase 3+).
 /// </para>
+/// <para>
+/// Resolved outcomes are also retained in memory (see <see cref="_resolvedOutcomes"/>) so callers
+/// such as the plan executor can query a verdict via <see cref="GetOutcomeAsync"/> after the
+/// escalation has left the active set. Retention is process-lifetime and consistent with the
+/// active-state model above: a restart that loses a pending escalation would equally lose its
+/// resolved outcome, and such an escalation could never have been approved post-restart anyway.
+/// Escalations are human-scale, low-frequency events, so this retention does not grow unbounded in
+/// practice.
+/// </para>
 /// </remarks>
 public sealed class DefaultEscalationService : IEscalationService, IDisposable
 {
 	private readonly ConcurrentDictionary<Guid, EscalationState> _activeEscalations = new();
+	private readonly ConcurrentDictionary<Guid, EscalationOutcome> _resolvedOutcomes = new();
 	private readonly IServiceProvider _serviceProvider;
 	private readonly IEscalationNotifier _notifier;
 	private readonly IEscalationAuditStore _auditStore;
@@ -167,6 +177,13 @@ public sealed class DefaultEscalationService : IEscalationService, IDisposable
 	{
 		_activeEscalations.TryGetValue(escalationId, out var state);
 		return Task.FromResult<EscalationRequest?>(state?.Request);
+	}
+
+	/// <inheritdoc />
+	public Task<EscalationOutcome?> GetOutcomeAsync(Guid escalationId, CancellationToken ct)
+	{
+		_resolvedOutcomes.TryGetValue(escalationId, out var outcome);
+		return Task.FromResult(outcome);
 	}
 
 	/// <inheritdoc />
@@ -317,6 +334,11 @@ public sealed class DefaultEscalationService : IEscalationService, IDisposable
 			state.Completion.TrySetException(ex);
 			throw;
 		}
+
+		// Retain the verdict ONLY after it has been durably audited, so GetOutcomeAsync — and thus
+		// the plan executor's resume reconciliation — can never act on a verdict that failed the
+		// fail-closed audit write above and was rolled back to the awaiting caller.
+		_resolvedOutcomes[outcome.EscalationId] = outcome;
 
 		await SafeExecuteAsync(
 			() => _notifier.NotifyEscalationResolvedAsync(outcome, CancellationToken.None),

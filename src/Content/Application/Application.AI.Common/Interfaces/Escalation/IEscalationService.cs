@@ -39,6 +39,20 @@ public interface IEscalationService
     Task<EscalationRequest?> GetPendingEscalationAsync(Guid escalationId, CancellationToken ct);
 
     /// <summary>
+    /// Returns the resolved <see cref="EscalationOutcome"/> for an escalation, or null if it is
+    /// still pending or unknown.
+    /// </summary>
+    /// <remarks>
+    /// Unlike <see cref="GetPendingEscalationAsync"/> — which reports only whether a request is
+    /// still open — this reports the final verdict (approved, denied, timed out, or escalated) once
+    /// the escalation has resolved. It is the query the plan executor uses on resume to decide the
+    /// fate of a step parked in <c>Blocked</c> awaiting a human decision: an approved outcome lets
+    /// the step complete and release its downstream, a non-approved outcome fails it. A null result
+    /// means "no decision yet" and the step remains blocked.
+    /// </remarks>
+    Task<EscalationOutcome?> GetOutcomeAsync(Guid escalationId, CancellationToken ct);
+
+    /// <summary>
     /// Returns all pending escalations assigned to a specific approver.
     /// </summary>
     Task<IReadOnlyList<EscalationRequest>> GetPendingEscalationsAsync(string approverName, CancellationToken ct);

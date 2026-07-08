@@ -513,4 +513,62 @@ public sealed class DefaultEscalationServiceTests : IDisposable
 			request.EscalationId, CancellationToken.None);
 		pending.Should().BeNull();
 	}
+
+	// ===== GetOutcome (resolved-outcome cache) =====
+
+	[Fact]
+	public async Task GetOutcomeAsync_WhilePending_ReturnsNull()
+	{
+		var request = CreateTestRequest(strategy: ApprovalStrategyType.AllOf);
+		SetupStrategyNeverResolves(ApprovalStrategyType.AllOf);
+		await _sut.QueueEscalationAsync(request, CancellationToken.None);
+
+		var outcome = await _sut.GetOutcomeAsync(request.EscalationId, CancellationToken.None);
+
+		outcome.Should().BeNull("a still-pending escalation has no resolved verdict to report");
+	}
+
+	[Fact]
+	public async Task GetOutcomeAsync_UnknownId_ReturnsNull()
+	{
+		var outcome = await _sut.GetOutcomeAsync(Guid.NewGuid(), CancellationToken.None);
+
+		outcome.Should().BeNull();
+	}
+
+	[Fact]
+	public async Task GetOutcomeAsync_AfterApprovalResolves_ReturnsResolvedOutcome()
+	{
+		// Directly exercises the real _resolvedOutcomes population that the plan-executor resume
+		// bridge relies on: once a decision resolves the escalation, GetOutcomeAsync must surface it.
+		var request = CreateTestRequest();
+		SetupStrategyResolvesOnFirstApproval();
+		await _sut.QueueEscalationAsync(request, CancellationToken.None);
+
+		var submitted = await _sut.SubmitDecisionAsync(
+			request.EscalationId, CreateApproval(), CancellationToken.None);
+		submitted.Should().NotBeNull();
+
+		var outcome = await _sut.GetOutcomeAsync(request.EscalationId, CancellationToken.None);
+
+		outcome.Should().NotBeNull("the resolved verdict must be retrievable after resolution");
+		outcome!.EscalationId.Should().Be(request.EscalationId);
+		outcome.IsApproved.Should().BeTrue();
+		outcome.ResolutionType.Should().Be(EscalationResolutionType.Approved);
+	}
+
+	[Fact]
+	public async Task GetOutcomeAsync_AfterTimeoutResolves_ReturnsResolvedOutcome()
+	{
+		// The resolved-outcome cache must be populated on every resolution path, including timeout.
+		var request = CreateTestRequest(timeoutSeconds: 1, timeoutAction: EscalationTimeoutAction.Deny);
+
+		await _sut.RequestEscalationAsync(request, CancellationToken.None);
+
+		var outcome = await _sut.GetOutcomeAsync(request.EscalationId, CancellationToken.None);
+
+		outcome.Should().NotBeNull();
+		outcome!.ResolutionType.Should().Be(EscalationResolutionType.TimedOut);
+		outcome.IsApproved.Should().BeFalse();
+	}
 }

@@ -125,7 +125,11 @@ public sealed partial class PlanExecutor
                 break;
 
             case StepExecutionStatus.Blocked:
-                await TransitionStepAsync(ctx.PlanId, step.Id, StepExecutionStatus.Blocked, ctx.StepStates, ct);
+                // Persist the executor's output on the Blocked transition. For a human gate this
+                // output carries the escalation identifier, which the resume path
+                // (ReconcileBlockedStepsAsync) reads back to correlate the parked step to its
+                // escalation. Dropping it here would strand the step permanently in Blocked.
+                await TransitionStepAsync(ctx.PlanId, step.Id, StepExecutionStatus.Blocked, ctx.StepStates, ct, output: result.Output);
                 break;
 
             case StepExecutionStatus.Failed:
