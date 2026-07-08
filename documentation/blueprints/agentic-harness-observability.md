@@ -179,8 +179,9 @@ collector). In this harness the two tiers are:
   `Infrastructure.Observability/Exporters/ObservabilityTelemetryConfigurator.cs`
   (Order 300, runs after domain configurators) owns the harness-specific
   processor chain: PII filter → rate limiter → LLM token tracking →
-  tool effectiveness/usefulness → causal span attribution → tail-based
-  sampling, then the Azure Monitor exporter behind a config flag.
+  tool effectiveness/usefulness → causal span attribution, then the Azure
+  Monitor exporter behind a config flag. No in-app tail sampling — that is a
+  Collector-tier concern (G6); the SDK exports every span.
 - **Consumer extension point**: net-new sources are registered by adding an
   `ITelemetryConfigurator` implementation in the appropriate layer. Net-new
   exporters belong at the Collector tier (G7), not in either of the above

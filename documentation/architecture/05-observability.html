@@ -397,6 +397,114 @@
                     </div>
 
                     <!-- ==============================
+                         Trace Sampling at the Collector
+                         ============================== -->
+                    <h2 id="trace-sampling">Trace sampling &mdash; do it at the collector</h2>
+                    <p>
+                        High-traffic production traces are expensive to store. You keep the ones that matter
+                        (errors, slow requests, agent runs) and sample down the routine ones. The right place
+                        to make that decision is <strong>tail-based sampling at the OpenTelemetry Collector</strong>,
+                        not in application code.
+                    </p>
+
+                    <div class="callout callout-warn">
+                        <span class="callout-icon">!</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Why not in the app?</div>
+                            <p style="margin: 0">
+                                The harness deliberately ships <strong>no in-app tail sampler</strong>. An earlier
+                                version had one (a custom OTel <code>BaseProcessor&lt;Activity&gt;</code>), but it
+                                could not actually drop spans: by the time a processor's <code>OnEnd</code> runs,
+                                the OTLP and Azure Monitor exporters have already enqueued the span for export. It
+                                exported 100% of spans regardless of the configured rate. Tail sampling needs to
+                                buffer <em>whole traces</em> across process boundaries and decide after the trace
+                                completes &mdash; that is exactly what the Collector's <code>tail_sampling</code>
+                                processor is built for. The SDK exports every span; the collector decides what to keep.
+                            </p>
+                        </div>
+                    </div>
+
+                    <p>
+                        Add a <code>tail_sampling</code> processor to your collector pipeline
+                        (<code>scripts/otel-collector/config.yaml</code>). The policy below reproduces the intent of
+                        the removed in-app sampler: <strong>always keep</strong> error traces, traces slower than 5s,
+                        and agent-execution traces; <strong>probabilistically sample ~10%</strong> of everything else.
+                        Policies are OR-combined &mdash; a trace matching any keep policy is retained.
+                    </p>
+
+                    <div class="code-block">
+                        <div class="code-block-header">
+                            <span class="code-block-lang">yaml</span>
+                        </div>
+<pre><code>processors:
+  tail_sampling:
+    # Buffer a trace this long after its last span before deciding.
+    decision_wait: 10s
+    # Cap on traces held in memory at once (tune for your throughput).
+    num_traces: 50000
+    expected_new_traces_per_second: 200
+    policies:
+      # 1. Always keep error traces.
+      - name: keep-errors
+        type: status_code
+        status_code:
+          status_codes: [ERROR]
+
+      # 2. Always keep slow traces (> 5s end-to-end).
+      - name: keep-slow
+        type: latency
+        latency:
+          threshold_ms: 5000
+
+      # 3. Always keep agent-execution traces (gen_ai.system set by the harness).
+      - name: keep-agent-by-genai-system
+        type: string_attribute
+        string_attribute:
+          key: gen_ai.system
+          values: [az.ai.agent, microsoft.extensions.ai, semantic_kernel]
+          enabled_regex_matching: false
+
+      # 3b. Also keep any trace that carries the agent.phase attribute.
+      - name: keep-agent-by-phase
+        type: string_attribute
+        string_attribute:
+          key: agent.phase
+          values: ['.+']
+          enabled_regex_matching: true
+
+      # 4. Sample ~10% of everything that matched none of the above.
+      - name: sample-the-rest
+        type: probabilistic
+        probabilistic:
+          sampling_percentage: 10
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, tail_sampling, batch]
+      exporters: [otlp/tempo]   # or your backend of choice</code></pre>
+                    </div>
+
+                    <div class="callout callout-info">
+                        <span class="callout-icon">i</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Keep the SDK exporting everything</div>
+                            <p style="margin: 0">
+                                For tail sampling to work, every span for a trace must reach the collector, so keep
+                                the app-side sampler at <code>AlwaysOn</code> (dev) or
+                                <code>ParentBased(TraceIdRatioBased(1.0))</code> (prod) and let the collector do the
+                                thinning. If you run more than one collector instance, put a
+                                <code>loadbalancing</code> exporter in front so all spans of a trace land on the same
+                                collector &mdash; <code>tail_sampling</code> buffers per-collector and cannot see spans
+                                routed elsewhere. The full sampling rationale lives in
+                                <a href="../blueprints/agentic-harness-observability.md"><code>documentation/blueprints/agentic-harness-observability.md</code></a>
+                                (gate G6).
+                            </p>
+                        </div>
+                    </div>
+
+                    <!-- ==============================
                          Tracing an Agent Conversation
                          ============================== -->
                     <h2 id="tracing-an-agent-conversation">Tracing an agent conversation</h2>

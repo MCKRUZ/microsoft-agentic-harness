@@ -1,6 +1,8 @@
 # Infrastructure.Observability
 
-LLM-powered agents are notoriously hard to debug. A single conversation can generate hundreds of spans across tool calls, sub-agents, and LLM invocations -- and a trace that goes sideways is invisible from the outside. This project makes the invisible visible by providing the finalization stage of the OpenTelemetry pipeline: PII scrubbing, rate limiting, LLM cost tracking, intelligent tail-based sampling, tool effectiveness measurement, and multi-backend export (Jaeger, Azure Monitor, Prometheus).
+LLM-powered agents are notoriously hard to debug. A single conversation can generate hundreds of spans across tool calls, sub-agents, and LLM invocations -- and a trace that goes sideways is invisible from the outside. This project makes the invisible visible by providing the finalization stage of the OpenTelemetry pipeline: PII scrubbing, rate limiting, LLM cost tracking, tool effectiveness measurement, and multi-backend export (Jaeger, Azure Monitor, Prometheus).
+
+> **Trace sampling is a Collector-tier concern, not an in-app one.** The SDK exports every span; the OpenTelemetry Collector's `tail_sampling` processor decides what to keep. A prior in-app tail sampler was removed because an OTel `BaseProcessor.OnEnd` no-op cannot prevent the OTLP / Azure Monitor exporters from having already enqueued the span — it exported 100% regardless of the configured rate. See the observability architecture guide for the concrete collector `tail_sampling` config.
 
 By the time a trace reaches this layer, it has already been instrumented by `Application.AI.Common` (AI-specific metrics and sources). This project applies the final processing at Order 300 (Finalization) before export, plus provides services for budget tracking, session health monitoring, and observability data persistence.
 
@@ -14,7 +16,7 @@ Order 100: Application.AI.Common.AiTelemetryConfigurator
            → Registers AI activity sources, custom metrics (session, orchestration, safety, RAG)
 
 Order 300: Infrastructure.Observability.ObservabilityTelemetryConfigurator  ← THIS PROJECT
-           → Adds processors (PII → Rate Limit → Token Track → Tool Effectiveness → Sampling)
+           → Adds processors (PII → Rate Limit → Token Track → Tool Effectiveness → Causal)
            → Configures exporters (OTLP/Jaeger, Azure Monitor)
 
                          ┌──────────────────────────────┐
@@ -24,10 +26,12 @@ Order 300: Infrastructure.Observability.ObservabilityTelemetryConfigurator  ← 
         [Processors]  →  │  ToolEffectivenessProcessor  │  Result quality enrichment
              │           │  ToolUsefulnessProcessor     │  Composite 0-1 score
              ▼           │  CausalSpanAttributionProcessor │  Cross-span attribute bridging
-        [Sampling]       │  TailBasedSamplingProcessor  │  Keep errors/slow/AI, sample rest
              │           └──────────────────────────────┘
              ▼
         [Exporters]  →  OTLP (Jaeger/Tempo) | Azure Monitor | Prometheus
+             │
+             ▼
+        [Collector]  →  tail_sampling processor decides keep/drop (see architecture guide)
 ```
 
 **Additional services:**
@@ -40,7 +44,7 @@ Order 300: Infrastructure.Observability.ObservabilityTelemetryConfigurator  ← 
 
 ### Processor Pipeline (Order Matters)
 
-The seven processors execute in strict sequence. PII scrubbing runs first (sensitive data never lingers in memory), cost tracking runs before sampling (cost is always recorded even for sampled-out spans), and tail-based sampling runs last (all metrics are already captured).
+The six processors execute in strict sequence. PII scrubbing runs first (sensitive data never lingers in memory), then rate limiting, then the cost/tool enrichment processors. Trace-level keep/drop decisions are made downstream at the Collector, not here (see [Trace Sampling](#trace-sampling) below).
 
 #### 1. PII Filtering Processor
 
@@ -75,29 +79,16 @@ Computes a composite 0-1 usefulness score per tool call based on multiple heuris
 
 Bridges attributes between related spans (e.g., `agent.tool.name` to `gen_ai.tool.name`). Adds input hashes and result categories. Reads eval context from Activity baggage for cross-span correlation.
 
-#### 7. Tail-Based Sampling
+### Trace Sampling
 
-Unlike head-based sampling (decided at trace start with incomplete info), tail-based sampling buffers spans by trace ID and evaluates the complete trace before deciding:
+Trace sampling is **not** performed in-app. Tail-based sampling — which needs the complete trace before deciding whether to keep or drop it — is a Collector-tier responsibility. The SDK exports every span; the OpenTelemetry Collector's `tail_sampling` processor applies the policy:
 
 - **Always keep** traces containing error spans
-- **Always keep** traces exceeding the slow-request threshold
+- **Always keep** traces exceeding the slow-request threshold (5s)
 - **Always keep** traces with AI agent execution attributes
-- **Probabilistically sample** remaining traces at configurable percentage
+- **Probabilistically sample** ~10% of the rest
 
-```csharp
-// Config: AppConfig.Observability.Sampling
-{
-  "Enabled": true,
-  "DefaultSamplingPercentage": 25,
-  "SlowRequestThresholdMs": 5000,
-  "AlwaysKeepErrors": true,
-  "AlwaysKeepAgentExecutions": true,
-  "MaxBufferedTraces": 10000,
-  "DecisionWait": "00:00:10"
-}
-```
-
-The buffer includes overflow eviction (oldest traces dropped first) to prevent unbounded memory growth during burst traffic.
+A previous in-app `TailBasedSamplingProcessor` was removed: an OTel `BaseProcessor.OnEnd` override runs *after* the OTLP / Azure Monitor exporters have already enqueued the span, so it exported 100% of spans regardless of the configured rate — the sampling decision had no effect. The concrete collector `tail_sampling` config that reproduces the policy above lives in the observability architecture guide (`documentation/architecture/05-observability.html`).
 
 ### Export Targets
 
@@ -130,7 +121,6 @@ Infrastructure.Observability/
 │   ├── PiiFilteringProcessor.cs                  SHA-256 hashing of sensitive attributes
 │   ├── RateLimitingProcessor.cs                  Token bucket span throttling
 │   ├── LlmTokenTrackingProcessor.cs             Cost estimation + cache hit tracking
-│   ├── TailBasedSamplingProcessor.cs            Error/slow/AI-aware trace sampling
 │   ├── ToolEffectivenessProcessor.cs            Result quality enrichment + metrics
 │   ├── ToolUsefulnessProcessor.cs               Composite 0-1 usefulness score
 │   └── CausalSpanAttributionProcessor.cs        Cross-span attribute bridging
@@ -147,7 +137,6 @@ Infrastructure.Observability/
 | Type | Purpose | Lifetime |
 |------|---------|----------|
 | `ObservabilityTelemetryConfigurator` | Wires processors + exporters into OTel pipeline | Singleton |
-| `TailBasedSamplingProcessor` | Deferred trace-level keep/drop decisions | Created by configurator |
 | `PiiFilteringProcessor` | Scrub sensitive span attributes | Created by configurator |
 | `LlmTokenTrackingProcessor` | Token count → cost metrics | Created by configurator |
 | `ToolEffectivenessProcessor` | Tool result quality enrichment | Created by configurator |
@@ -167,15 +156,6 @@ Infrastructure.Observability/
       "PiiFiltering": { "Enabled": true },
       "RateLimiting": { "Enabled": true, "SpansPerSecond": 100 },
       "BudgetTracking": { "Enabled": false },
-      "Sampling": {
-        "Enabled": true,
-        "DefaultSamplingPercentage": 25,
-        "SlowRequestThresholdMs": 5000,
-        "AlwaysKeepErrors": true,
-        "AlwaysKeepAgentExecutions": true,
-        "MaxBufferedTraces": 10000,
-        "DecisionWait": "00:00:10"
-      },
       "Exporters": {
         "Otlp": {
           "Enabled": true,
@@ -223,7 +203,7 @@ dotnet run --project src/Content/Presentation/Presentation.AgentHub
 
 ### Debugging Missing Spans
 
-1. Check `AppConfig.Observability.Sampling.Enabled` -- if true, non-error/non-slow traces may be sampled out
+1. Check the Collector's `tail_sampling` policy -- non-error/non-slow traces may be sampled out downstream (this is where sampling now happens, not in-app)
 2. Check `RateLimiting.SpansPerSecond` -- high-throughput scenarios may be throttled
 3. Check the OTLP endpoint is reachable: `curl http://localhost:4317`
 
@@ -251,8 +231,6 @@ dotnet test src/AgenticHarness.slnx --filter "FullyQualifiedName~Infrastructure.
 ```
 
 **Coverage areas:**
-- Tail-based sampling decisions (error keeps, slow keeps, probabilistic)
-- Buffer overflow eviction ordering
 - PII attribute detection and hashing
 - Rate limiter token bucket behavior
 - LLM cost calculation with model pricing
