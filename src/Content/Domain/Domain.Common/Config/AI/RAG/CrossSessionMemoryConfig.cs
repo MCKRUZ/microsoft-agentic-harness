@@ -22,4 +22,10 @@ public sealed class CrossSessionMemoryConfig
 
     /// <summary>Interval between background syncs to graph backend. Default: 5 minutes.</summary>
     public TimeSpan SyncInterval { get; set; } = TimeSpan.FromMinutes(5);
+
+    /// <summary>
+    /// Background decay scheduler settings. Disabled by default (opt-in) — when enabled a
+    /// hosted service periodically applies decay and prunes low-weight memories.
+    /// </summary>
+    public MemoryDecaySchedulerConfig DecayScheduler { get; set; } = new();
 }
