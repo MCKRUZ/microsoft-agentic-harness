@@ -102,6 +102,24 @@ public sealed class ThreePhasePermissionResolver : IToolPermissionService
             return denyDecision;
         }
 
+        // Phase 1.5: Authoritative baseline (e.g. a plugin's AutonomyLevel scoped to its own tools).
+        // Runs after Deny so a bypass-immune DeniedTools rule or a safety gate still wins, but before
+        // Ask/Allow phase ordering so an operator-set per-plugin baseline takes precedence over the
+        // generic tier/default rules in BOTH directions (Allow can loosen, Ask can tighten). Ordinary
+        // rules never set this flag, so this phase is a no-op for every non-plugin deployment.
+        var baselineRule = FindFirstAuthoritativeBaseline(sortedRules, toolName, operation);
+        if (baselineRule is not null)
+        {
+            var baselineDecision = new PermissionDecision(
+                baselineRule.Behavior,
+                $"Authoritative baseline from {baselineRule.Source} (pattern: '{baselineRule.ToolPattern}').",
+                baselineRule,
+                baselineRule.Source);
+
+            LogDecision(agentId, toolName, baselineDecision);
+            return baselineDecision;
+        }
+
         // Phase 2: Ask rules
         var askRule = FindFirstMatchingRule(sortedRules, toolName, operation, PermissionBehaviorType.Ask);
         if (askRule is not null)
@@ -189,6 +207,71 @@ public sealed class ThreePhasePermissionResolver : IToolPermissionService
 
         return null;
     }
+
+    /// <summary>
+    /// Selects the governing rule flagged <see cref="ToolPermissionRule.IsAuthoritativeBaseline"/>
+    /// among all that match the tool name and operation. When more than one matches (for example two
+    /// plugins declaring the same tool name with opposite autonomy levels), the <b>most restrictive</b>
+    /// behavior wins — Deny &gt; Ask &gt; Allow — so a permissive baseline can never silently override a
+    /// restrictive one on iteration/load order. Ties within the same behavior fall back to the lowest
+    /// <see cref="ToolPermissionRule.Priority"/>. Returns null when no authoritative-baseline rule
+    /// matches (the overwhelmingly common case).
+    /// </summary>
+    private ToolPermissionRule? FindFirstAuthoritativeBaseline(
+        IReadOnlyList<ToolPermissionRule> rules,
+        string toolName,
+        string? operation)
+    {
+        ToolPermissionRule? best = null;
+
+        foreach (var rule in rules)
+        {
+            if (!rule.IsAuthoritativeBaseline)
+                continue;
+
+            if (!_patternMatcher.IsMatch(rule.ToolPattern, toolName))
+                continue;
+
+            if (rule.OperationPattern is not null
+                && operation is not null
+                && !_patternMatcher.IsMatch(rule.OperationPattern, operation))
+            {
+                continue;
+            }
+
+            if (rule.OperationPattern is not null && operation is null)
+                continue;
+
+            if (best is null || IsMoreRestrictive(rule, best))
+                best = rule;
+        }
+
+        return best;
+    }
+
+    /// <summary>
+    /// Orders permission behaviors by restrictiveness for authoritative-baseline arbitration:
+    /// Deny (0) is most restrictive, then Ask (1), then Allow (2). A <paramref name="candidate"/> wins
+    /// over the <paramref name="incumbent"/> when it is strictly more restrictive, or equally
+    /// restrictive but with a lower (earlier) priority.
+    /// </summary>
+    private static bool IsMoreRestrictive(ToolPermissionRule candidate, ToolPermissionRule incumbent)
+    {
+        var candidateRank = RestrictivenessRank(candidate.Behavior);
+        var incumbentRank = RestrictivenessRank(incumbent.Behavior);
+
+        if (candidateRank != incumbentRank)
+            return candidateRank < incumbentRank;
+
+        return candidate.Priority < incumbent.Priority;
+    }
+
+    private static int RestrictivenessRank(PermissionBehaviorType behavior) => behavior switch
+    {
+        PermissionBehaviorType.Deny => 0,
+        PermissionBehaviorType.Ask => 1,
+        _ => 2
+    };
 
     private void LogDecision(string agentId, string toolName, PermissionDecision decision)
     {
