@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.IO;
 using Application.AI.Common.Interfaces.Escalation;
 using Domain.AI.Escalation;
 using Domain.Common.Config.AI.Governance;
@@ -316,6 +317,67 @@ public sealed class DefaultEscalationServiceTests : IDisposable
 		_auditStore.Verify(
 			a => a.RecordDecisionAsync(It.IsAny<Guid>(), It.IsAny<ApproverDecision>(), It.IsAny<CancellationToken>()),
 			Times.Never);
+	}
+
+	[Fact]
+	public async Task SubmitDecisionAsync_NonRosterApprover_RejectedNotRecordedNotEvaluated()
+	{
+		var request = CreateTestRequest(); // roster: approver-1, approver-2
+		SetupStrategyResolvesOnFirstApproval();
+		await _sut.QueueEscalationAsync(request, CancellationToken.None);
+
+		var outcome = await _sut.SubmitDecisionAsync(
+			request.EscalationId, CreateApproval("mallory"), CancellationToken.None);
+
+		outcome.Should().BeNull("a decision from an identity outside the approver roster must not resolve the escalation");
+		_auditStore.Verify(
+			a => a.RecordDecisionAsync(It.IsAny<Guid>(), It.IsAny<ApproverDecision>(), It.IsAny<CancellationToken>()),
+			Times.Never);
+		_anyOfStrategy.Verify(
+			s => s.EvaluateDecision(It.IsAny<EscalationRequest>(), It.IsAny<IReadOnlyList<ApproverDecision>>()),
+			Times.Never);
+	}
+
+	[Fact]
+	public async Task SubmitDecisionAsync_OutcomeAuditThrows_FailsClosed_NotReportedResolved()
+	{
+		var request = CreateTestRequest();
+		SetupStrategyResolvesOnFirstApproval();
+		_auditStore
+			.Setup(a => a.RecordOutcomeAsync(It.IsAny<EscalationOutcome>(), It.IsAny<CancellationToken>()))
+			.ThrowsAsync(new IOException("audit sink unavailable"));
+		await _sut.QueueEscalationAsync(request, CancellationToken.None);
+
+		var act = () => _sut.SubmitDecisionAsync(
+			request.EscalationId, CreateApproval(), CancellationToken.None);
+
+		await act.Should().ThrowAsync<IOException>(
+			"a resolved escalation whose outcome cannot be durably audited must fail closed, not deliver an unaudited approval");
+		_notifier.Verify(
+			n => n.NotifyEscalationResolvedAsync(It.IsAny<EscalationOutcome>(), It.IsAny<CancellationToken>()),
+			Times.Never);
+	}
+
+	[Fact]
+	public async Task QueueEscalationAsync_EmptyApproverRoster_FailsClosed()
+	{
+		var request = CreateTestRequest(approvers: Array.Empty<string>());
+
+		var act = () => _sut.QueueEscalationAsync(request, CancellationToken.None);
+
+		await act.Should().ThrowAsync<InvalidOperationException>(
+			"an escalation with no approvers can never be legitimately approved and must be rejected at creation");
+	}
+
+	[Fact]
+	public async Task RequestEscalationAsync_EmptyApproverRoster_FailsClosed()
+	{
+		var request = CreateTestRequest(approvers: Array.Empty<string>());
+
+		var act = () => _sut.RequestEscalationAsync(request, CancellationToken.None);
+
+		await act.Should().ThrowAsync<InvalidOperationException>(
+			"a blocking escalation with no approvers must fail closed rather than await an unapprovable request");
 	}
 
 	// ===== Timeout =====

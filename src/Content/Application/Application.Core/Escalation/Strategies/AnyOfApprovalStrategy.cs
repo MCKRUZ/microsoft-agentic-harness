@@ -16,32 +16,25 @@ public sealed class AnyOfApprovalStrategy : IApprovalStrategy
         EscalationRequest request,
         IReadOnlyList<ApproverDecision> decisions)
     {
-        var deduplicated = DeduplicateByApprover(decisions);
-        var respondedNames = deduplicated.Select(d => d.ApproverName).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var pending = request.Approvers.Where(a => !respondedNames.Contains(a)).ToArray();
+        var scoped = ApproverRoster.Scope(request, decisions);
 
-        if (deduplicated.Count == 0)
+        // Only decisions from listed approvers count; a non-roster vote must never resolve.
+        if (scoped.Decisions.Count == 0)
         {
             return new ApprovalEvaluation
             {
                 IsResolved = false,
                 IsApproved = false,
-                PendingApprovers = pending
+                PendingApprovers = scoped.Pending
             };
         }
 
-        var firstDecision = deduplicated.MinBy(d => d.RespondedAt)!;
+        var firstDecision = scoped.Decisions.MinBy(d => d.RespondedAt)!;
         return new ApprovalEvaluation
         {
             IsResolved = true,
             IsApproved = firstDecision.Approved,
-            PendingApprovers = pending
+            PendingApprovers = scoped.Pending
         };
     }
-
-    private static IReadOnlyList<ApproverDecision> DeduplicateByApprover(IReadOnlyList<ApproverDecision> decisions) =>
-        decisions
-            .GroupBy(d => d.ApproverName, StringComparer.OrdinalIgnoreCase)
-            .Select(g => g.MinBy(d => d.RespondedAt)!)
-            .ToArray();
 }

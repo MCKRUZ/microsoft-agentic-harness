@@ -17,16 +17,12 @@ public sealed class QuorumApprovalStrategy : IApprovalStrategy
         EscalationRequest request,
         IReadOnlyList<ApproverDecision> decisions)
     {
-        var approverSet = request.Approvers.ToHashSet(StringComparer.OrdinalIgnoreCase);
-
         // Only count decisions from identities that are actually listed as approvers.
         // Votes from non-listed identities must not satisfy quorum nor corrupt the
-        // remaining-vote math (mirrors the membership filter used for `pending`).
-        var deduplicated = DeduplicateByApprover(decisions)
-            .Where(d => approverSet.Contains(d.ApproverName))
-            .ToArray();
-        var respondedNames = deduplicated.Select(d => d.ApproverName).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var pending = request.Approvers.Where(a => !respondedNames.Contains(a)).ToArray();
+        // remaining-vote math (shared with AnyOf/AllOf via ApproverRoster.Scope).
+        var scoped = ApproverRoster.Scope(request, decisions);
+        var deduplicated = scoped.Decisions;
+        var pending = scoped.Pending;
 
         var quorumThreshold = request.QuorumThreshold;
         if (quorumThreshold <= 0)
@@ -74,10 +70,4 @@ public sealed class QuorumApprovalStrategy : IApprovalStrategy
             PendingApprovers = pending
         };
     }
-
-    private static IReadOnlyList<ApproverDecision> DeduplicateByApprover(IReadOnlyList<ApproverDecision> decisions) =>
-        decisions
-            .GroupBy(d => d.ApproverName, StringComparer.OrdinalIgnoreCase)
-            .Select(g => g.MinBy(d => d.RespondedAt)!)
-            .ToArray();
 }

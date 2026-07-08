@@ -93,4 +93,52 @@ public class AllOfApprovalStrategyTests
     {
         _sut.StrategyType.Should().Be(ApprovalStrategyType.AllOf);
     }
+
+    // ---- roster-membership enforcement (security fix) ----
+
+    [Fact]
+    public void EvaluateDecision_OnlyNonRosterDecision_DoesNotResolve()
+    {
+        var request = CreateRequest("alice", "bob");
+
+        var result = _sut.EvaluateDecision(request, new[] { Deny("mallory") });
+
+        result.IsResolved.Should().BeFalse("a decision from an identity outside the roster must not resolve an AllOf escalation");
+        result.PendingApprovers.Should().BeEquivalentTo(["alice", "bob"]);
+    }
+
+    [Fact]
+    public void EvaluateDecision_NonRosterDenial_DoesNotOverrideRosterApproval()
+    {
+        var request = CreateRequest("alice");
+
+        var result = _sut.EvaluateDecision(request, new[] { Approve("alice"), Deny("mallory") });
+
+        result.IsResolved.Should().BeTrue();
+        result.IsApproved.Should().BeTrue("a non-roster denial must not override the sole listed approver's approval");
+    }
+
+    // ---- empty-roster fail-closed (security fix) ----
+
+    [Fact]
+    public void EvaluateDecision_EmptyRosterWithDecision_FailsClosed()
+    {
+        var request = CreateRequest();
+
+        var result = _sut.EvaluateDecision(request, new[] { Approve("mallory") });
+
+        result.IsResolved.Should().BeTrue();
+        result.IsApproved.Should().BeFalse("an escalation with no approvers must never auto-approve");
+    }
+
+    [Fact]
+    public void EvaluateDecision_EmptyRosterNoDecisions_FailsClosed()
+    {
+        var request = CreateRequest();
+
+        var result = _sut.EvaluateDecision(request, Array.Empty<ApproverDecision>());
+
+        result.IsResolved.Should().BeTrue();
+        result.IsApproved.Should().BeFalse("an empty roster must fail closed, not auto-approve as vacuously unanimous");
+    }
 }
