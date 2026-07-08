@@ -28,11 +28,9 @@ namespace Presentation.Common.Tests.Composition;
 /// directly — the exact "inert machinery" failure mode audit item I2 exists to catch.
 /// </para>
 /// <para>
-/// The fix is the <c>Configure&lt;GovernanceConfig&gt;</c> binding in
-/// <c>RegisterConfigSections</c>. Tracked follow-up: the parent <c>GovernanceConfig</c> has no
-/// FluentValidation config validator (its Escalation and DataClassification subsections do) —
-/// when one is added, move the binding into <c>RegisterValidatedConfigSections</c> with
-/// <c>ValidateOnStart()</c> like its siblings.
+/// The fix is the validated <c>GovernanceConfig</c> binding, now living in
+/// <c>RegisterValidatedConfigSections</c> with a <c>GovernanceConfigValidator</c> and
+/// <c>ValidateOnStart()</c> like its siblings (the tracked follow-up is closed).
 /// </para>
 /// </remarks>
 public sealed class GovernanceConfigBindingTests
@@ -40,21 +38,23 @@ public sealed class GovernanceConfigBindingTests
     [Fact]
     public async Task RegisterConfigSections_GovernanceSection_ReachesGovernanceConfigMonitor()
     {
-        // Deliberately probes with Enabled=false: EnforceToolInvocation and
-        // EnablePromptInjectionDetection are independent of Enabled, and Enabled=true would
-        // route composition into AddGovernanceDependencies (the AGT kernel path), which has
-        // its own config requirements — this test isolates the options BINDING only.
+        // Deliberately probes with Enabled=false so composition stays off the AGT kernel path
+        // (AddGovernanceDependencies), isolating the options BINDING only. EnforceToolInvocation is
+        // consumed on the live tool path independent of Enabled, and InjectionBlockThreshold is a
+        // non-default value — together they prove the parent GovernanceConfig binding reaches the
+        // monitor. Both are valid with Enabled=false, so the GovernanceConfigValidator (which reading
+        // CurrentValue now runs) passes.
         await using var provider = CompositionRootTestHost.BuildProvider(new Dictionary<string, string?>
         {
             ["AppConfig:AI:Governance:EnforceToolInvocation"] = "true",
-            ["AppConfig:AI:Governance:EnablePromptInjectionDetection"] = "true",
+            ["AppConfig:AI:Governance:InjectionBlockThreshold"] = "Critical",
         });
 
         var governance = provider.GetRequiredService<IOptionsMonitor<GovernanceConfig>>().CurrentValue;
 
         governance.EnforceToolInvocation.Should().BeTrue(
             "the live tool-invocation gate must be switchable from configuration");
-        governance.EnablePromptInjectionDetection.Should().BeTrue(
+        governance.InjectionBlockThreshold.Should().Be(ThreatLevel.Critical,
             "AppConfig:AI:Governance values must reach IOptionsMonitor<GovernanceConfig> consumers");
     }
 

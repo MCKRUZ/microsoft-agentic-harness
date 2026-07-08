@@ -49,13 +49,36 @@ public static class DependencyInjection
 
         services.AddSingleton(kernel);
         services.AddSingleton(kernel.PolicyEngine);
-        // non-null when prompt-injection detection is enabled; AddSingleton throws on a null instance
-        // regardless, so the null-forgiving here does not change runtime behavior.
-        services.AddSingleton(kernel.InjectionDetector!);
         services.AddSingleton<AuditLogger>();
 
         services.AddSingleton<IGovernancePolicyEngine, AgtPolicyEngineAdapter>();
-        services.AddSingleton<IPromptInjectionScanner, AgtPromptInjectionAdapter>();
+
+        // Prompt-injection detection is optional. The AGT kernel only builds an InjectionDetector when
+        // GovernanceConfig.EnablePromptInjectionDetection is true, so registering kernel.InjectionDetector
+        // (or the AgtPromptInjectionAdapter that requires it) unconditionally crashes composition for the
+        // valid Enabled=true, EnablePromptInjectionDetection=false configuration — AddSingleton throws on a
+        // null instance. When detection is off, satisfy IPromptInjectionScanner with the no-op scanner so
+        // every consumer resolves and the PromptInjectionBehavior simply passes through.
+        if (config.EnablePromptInjectionDetection)
+        {
+            // Fail closed: if detection is configured on, the kernel must have produced a detector.
+            // Silently falling back to the no-op scanner here would leave a *configured* security
+            // control inert — the exact silent-degradation failure this hardening pass targets.
+            if (kernel.InjectionDetector is null)
+            {
+                throw new InvalidOperationException(
+                    "GovernanceConfig.EnablePromptInjectionDetection is true but the governance kernel " +
+                    "produced no InjectionDetector; refusing to start with the configured control disabled.");
+            }
+
+            services.AddSingleton(kernel.InjectionDetector);
+            services.AddSingleton<IPromptInjectionScanner, AgtPromptInjectionAdapter>();
+        }
+        else
+        {
+            services.AddSingleton<IPromptInjectionScanner, NoOpInjectionScanner>();
+        }
+
         services.AddSingleton<IGovernanceAuditService, AgtAuditAdapter>();
         services.AddSingleton<IMcpSecurityScanner, McpSecurityScannerAdapter>();
 
