@@ -6,7 +6,6 @@ using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
-using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Presentation.AgentHub.Config;
@@ -69,17 +68,6 @@ public class IntegrationTestFactory : WebApplicationFactory<Program>
             services.RemoveAll<IChatClientFactory>();
             services.AddSingleton<IChatClientFactory>(FakeChatClientFactory);
         });
-    }
-
-    /// <inheritdoc/>
-    protected override IHost CreateHost(IHostBuilder builder)
-    {
-        builder.UseDefaultServiceProvider(options =>
-        {
-            options.ValidateScopes = false;
-            options.ValidateOnBuild = false;
-        });
-        return base.CreateHost(builder);
     }
 
     /// <inheritdoc/>

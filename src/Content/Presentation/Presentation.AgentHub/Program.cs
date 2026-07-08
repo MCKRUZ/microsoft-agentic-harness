@@ -17,17 +17,19 @@ builder.Services.GetServices(includeHealthChecksUI: true);
 // Register AgentHub-specific services (auth, SignalR, CORS, rate limiting, config).
 builder.Services.AddAgentHubServices(builder.Configuration, builder.Environment);
 
-// MemoizedPromptComposer (singleton) → IPromptSectionProvider (transient) → IAgentExecutionContext (scoped)
-// creates a captive dependency that ASP.NET Core rejects by default. Scope validation is suppressed
-// in Development only. Production runs with validation enabled to catch data leakage between requests.
-if (builder.Environment.IsDevelopment())
+builder.Host.UseDefaultServiceProvider(options =>
 {
-    builder.Host.UseDefaultServiceProvider(options =>
-    {
-        options.ValidateScopes = false;
-        options.ValidateOnBuild = false;
-    });
-}
+    // ValidateScopes guards against captive dependencies — a singleton capturing scoped
+    // per-request state (the bug class behind the formerly-singleton prompt composer, which is
+    // now SCOPED via AddSystemPromptComposition). Enabled in ALL environments: the resolution
+    // cost is negligible and cross-request state bleed is a production correctness hazard.
+    options.ValidateScopes = true;
+    // ValidateOnBuild stays off: MediatR assembly scanning registers handlers whose
+    // dependencies are conditionally registered (e.g. IPromptUsageStore only when prompt-usage
+    // persistence is enabled, IEvalRunner only in the eval host), so eager build-time
+    // validation false-positives on handlers this host never dispatches.
+    options.ValidateOnBuild = false;
+});
 
 var app = builder.Build();
 

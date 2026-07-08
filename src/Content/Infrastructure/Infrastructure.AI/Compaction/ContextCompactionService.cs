@@ -18,7 +18,7 @@ public sealed class ContextCompactionService : IContextCompactionService
 {
     private readonly IReadOnlyDictionary<CompactionStrategy, ICompactionStrategyExecutor> _strategies;
     private readonly IHookExecutor _hookExecutor;
-    private readonly ISystemPromptComposer _promptComposer;
+    private readonly IPromptSectionCache _sectionCache;
     private readonly IAutoCompactStateMachine _stateMachine;
     private readonly IOptionsMonitor<AppConfig> _options;
     private readonly ILogger<ContextCompactionService> _logger;
@@ -28,21 +28,23 @@ public sealed class ContextCompactionService : IContextCompactionService
     /// </summary>
     /// <param name="strategies">All registered compaction strategy executors.</param>
     /// <param name="hookExecutor">Hook executor for PreCompact/PostCompact lifecycle events.</param>
-    /// <param name="promptComposer">System prompt composer whose cache is invalidated after compaction.</param>
+    /// <param name="sectionCache">Prompt section cache invalidated after compaction. Injected
+    /// directly (not via the scoped <c>ISystemPromptComposer</c>) so this singleton never
+    /// captures per-request composition state.</param>
     /// <param name="stateMachine">Circuit breaker state machine for auto-compact tracking.</param>
     /// <param name="options">Application configuration containing compaction settings.</param>
     /// <param name="logger">Logger for compaction operations.</param>
     public ContextCompactionService(
         IEnumerable<ICompactionStrategyExecutor> strategies,
         IHookExecutor hookExecutor,
-        ISystemPromptComposer promptComposer,
+        IPromptSectionCache sectionCache,
         IAutoCompactStateMachine stateMachine,
         IOptionsMonitor<AppConfig> options,
         ILogger<ContextCompactionService> logger)
     {
         _strategies = strategies.ToDictionary(s => s.Strategy);
         _hookExecutor = hookExecutor;
-        _promptComposer = promptComposer;
+        _sectionCache = sectionCache;
         _stateMachine = stateMachine;
         _options = options;
         _logger = logger;
@@ -84,7 +86,7 @@ public sealed class ContextCompactionService : IContextCompactionService
             };
 
             await _hookExecutor.ExecuteHooksAsync(HookEvent.PostCompact, postContext, cancellationToken);
-            _promptComposer.InvalidateAll();
+            _sectionCache.InvalidateAll();
             _stateMachine.RecordSuccess(agentId);
 
             _logger.LogInformation(

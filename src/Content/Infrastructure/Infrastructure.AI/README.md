@@ -113,8 +113,8 @@ var decision = await _permissionService.ResolvePermissionAsync(
 **Why it exists:** System prompts are complex. They include agent identity, tool schemas, permission rules, skill instructions, and session state. Each section changes at different rates (tool schemas change when MCP servers connect; session state changes every turn). Section-based caching avoids regenerating the entire prompt when only one part changes.
 
 **How it works:**
-- `MemoizedPromptComposer` iterates `IPromptSectionProvider` instances, each contributing a section.
-- `InMemoryPromptSectionCache` caches each section independently.
+- `MemoizedPromptComposer` (scoped — its providers read the scoped `IAgentExecutionContext`, so each request composes against its own conversation state) iterates `IPromptSectionProvider` instances, each contributing a section.
+- `InMemoryPromptSectionCache` (singleton) caches each section independently, so memoization survives across request scopes.
 - `Sha256PromptCacheTracker` detects which section caused a prompt cache break between turns.
 
 Four built-in section providers:
@@ -345,7 +345,7 @@ Infrastructure.AI/
 | `ChatClientFactory` | Multi-provider LLM client creation | `IChatClientFactory` | Singleton |
 | `ThreePhasePermissionResolver` | Tool permission evaluation | `IToolPermissionService` | Singleton |
 | `ContextCompactionService` | Context reduction orchestration | `IContextCompactionService` | Singleton |
-| `MemoizedPromptComposer` | Section-based prompt assembly | `ISystemPromptComposer` | Singleton |
+| `MemoizedPromptComposer` | Section-based prompt assembly | `ISystemPromptComposer` | Scoped |
 | `CompositeHookExecutor` | Lifecycle hook execution | `IHookExecutor` | Transient |
 | `BatchedToolExecutionStrategy` | Concurrent/serial tool dispatch | `IToolExecutionStrategy` | Transient |
 | `FileSystemService` | Sandboxed file I/O | `IFileSystemService` | Singleton |

@@ -215,13 +215,7 @@ public static partial class DependencyInjection
 
         // --- System prompt composition ---
 
-        services.AddSingleton<IPromptSectionCache, InMemoryPromptSectionCache>();
-        services.AddSingleton<ISystemPromptComposer, MemoizedPromptComposer>();
-        services.AddTransient<IPromptSectionProvider, AgentIdentitySectionProvider>();
-        services.AddTransient<IPromptSectionProvider, ToolSchemasSectionProvider>();
-        services.AddTransient<IPromptSectionProvider, PermissionRulesSectionProvider>();
-        services.AddTransient<IPromptSectionProvider, SessionStateSectionProvider>();
-        services.AddSingleton<IPromptCacheTracker, Sha256PromptCacheTracker>();
+        services.AddSystemPromptComposition();
 
         // --- Context compaction ---
 
