@@ -12,9 +12,17 @@ namespace Infrastructure.AI.Planner;
 
 /// <summary>
 /// Core DAG scheduling engine that drives plan execution. Implements dynamic ready-queue
-/// scheduling with bounded concurrency, checkpoint/resume, blocked step polling,
-/// conditional branching, and per-plan serialization.
+/// scheduling with bounded concurrency, checkpoint/resume, escalation-gated step reconciliation on
+/// resume, conditional branching, and per-plan serialization.
 /// </summary>
+/// <remarks>
+/// A step that reaches <see cref="Domain.AI.Planner.StepExecutionStatus.Blocked"/> (a human gate, or
+/// an escalate-on-failure step) is not polled in-loop. Instead the escalation identifier is persisted
+/// with the step, the scheduler drains when only blocked steps remain, and the block is resolved on
+/// the next call to <see cref="ExecuteAsync(Domain.AI.Planner.PlanId, System.Threading.CancellationToken)"/>
+/// via <c>ReconcileBlockedStepsAsync</c>: an approved escalation completes the step and continues the
+/// plan, a rejected one fails it through recovery.
+/// </remarks>
 public sealed partial class PlanExecutor : IPlanExecutor
 {
     private static readonly ActivitySource ActivitySource = new("PlanExecution");
@@ -339,13 +347,18 @@ public sealed partial class PlanExecutor : IPlanExecutor
         }
 
         var readyQueue = new ConcurrentQueue<PlanStep>();
-        await EnqueueInitialReadyStepsAsync(plan, stepStates, dependencyMap, readyQueue, planId, planCts.Token);
-
         using var concurrency = new SemaphoreSlim(plan.Configuration.MaxParallelSteps, plan.Configuration.MaxParallelSteps);
         var runningTasks = new HashSet<Task>();
 
         var execCtx = new PlanExecutionRuntime(
             planId, stepStates, stepOutputs, dependencyMap, dependentMap, stepLookup, readyQueue, concurrency);
+
+        // Resolve any steps parked in Blocked whose escalation has since been decided. Approved gates
+        // complete and release their downstream (which this may enqueue), rejected ones fail through
+        // recovery. Runs before the initial enqueue so freshly-released downstream steps are scheduled
+        // in this same execution.
+        await ReconcileBlockedStepsAsync(plan, execCtx, planCts.Token);
+        await EnqueueInitialReadyStepsAsync(plan, stepStates, dependencyMap, readyQueue, planId, planCts.Token);
 
         try
         {

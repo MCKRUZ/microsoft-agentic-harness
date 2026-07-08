@@ -10,9 +10,15 @@ using Microsoft.Extensions.Logging;
 namespace Infrastructure.AI.Planner.StepExecutors;
 
 /// <summary>
-/// Non-blocking human approval gate. Queues an escalation and transitions
-/// the step to Blocked. The plan executor polls for resolution.
+/// Non-blocking human approval gate. Queues an escalation and transitions the step to Blocked,
+/// carrying the escalation identifier in its <see cref="StepExecutionResult.Output"/>.
 /// </summary>
+/// <remarks>
+/// The gate does not poll. The plan executor persists the returned escalation id with the blocked
+/// step and, on a subsequent resume, reconciles the block against the escalation's outcome: an
+/// approval completes the gate and releases its downstream, a rejection fails it. The gate's job ends
+/// the moment the escalation is queued.
+/// </remarks>
 public sealed class HumanGateStepExecutor : IPlanStepExecutor
 {
     private readonly IEscalationService _escalationService;

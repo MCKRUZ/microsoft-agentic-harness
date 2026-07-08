@@ -57,6 +57,8 @@ public sealed class ChangeProposalStartupValidatorTests
             Task.FromResult<EscalationOutcome?>(null);
         public Task<EscalationRequest?> GetPendingEscalationAsync(Guid escalationId, CancellationToken ct) =>
             Task.FromResult<EscalationRequest?>(null);
+        public Task<EscalationOutcome?> GetOutcomeAsync(Guid escalationId, CancellationToken ct) =>
+            Task.FromResult<EscalationOutcome?>(null);
         public Task<IReadOnlyList<EscalationRequest>> GetPendingEscalationsAsync(string approverName, CancellationToken ct) =>
             Task.FromResult<IReadOnlyList<EscalationRequest>>([]);
         public Task<EscalationOutcome> CancelEscalationAsync(Guid escalationId, string reason, CancellationToken ct) =>
