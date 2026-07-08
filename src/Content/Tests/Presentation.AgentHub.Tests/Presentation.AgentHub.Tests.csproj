@@ -27,4 +27,16 @@
     <ProjectReference Include="..\..\Presentation\Presentation.AgentHub\Presentation.AgentHub.csproj" />
   </ItemGroup>
 
+  <!--
+    Guard test inputs: the SHIPPED base appsettings.json for every host. Copied verbatim into the
+    test output so SafeDefaultHostPostureTests can assert the out-of-box posture (localhost bind,
+    scoped file-system base path) against the real files consumers clone.
+  -->
+  <ItemGroup>
+    <Content Include="..\..\Presentation\Presentation.AgentHub\appsettings.json" Link="host-config\agenthub.appsettings.json" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\Presentation\Presentation.ConsoleUI\appsettings.json" Link="host-config\consoleui.appsettings.json" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\Presentation\Presentation.EvalRunner\appsettings.json" Link="host-config\evalrunner.appsettings.json" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\Presentation\Presentation.FoundryHost\appsettings.json" Link="host-config\foundryhost.appsettings.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>
