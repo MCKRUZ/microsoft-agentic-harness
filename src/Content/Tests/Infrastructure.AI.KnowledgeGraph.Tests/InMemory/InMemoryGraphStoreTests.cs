@@ -228,6 +228,53 @@ public sealed class InMemoryGraphStoreTests
         await _store.AddEdgesAsync([edge]);
     }
 
+    [Fact]
+    public async Task DeleteNodes_ReturnsActualCountsAndCascadedEdgeIds()
+    {
+        await _store.AddNodesAsync([
+            CreateNode("n1", "A", "Entity"),
+            CreateNode("n2", "B", "Entity"),
+            CreateNode("n3", "C", "Entity")
+        ]);
+        await _store.AddEdgesAsync([
+            CreateEdge("e1", "n1", "n2", "uses", "c1"),
+            CreateEdge("e2", "n3", "n1", "uses", "c1"),
+            CreateEdge("e3", "n2", "n3", "uses", "c1") // untouched by deleting n1
+        ]);
+
+        var result = await _store.DeleteNodesAsync(["n1", "missing"]);
+
+        result.NodesDeleted.Should().Be(1, "only n1 existed");
+        result.DeletedEdgeIds.Should().BeEquivalentTo(["e1", "e2"]);
+        (await _store.GetEdgeCountAsync()).Should().Be(1);
+        (await _store.GetNodeCountAsync()).Should().Be(2);
+    }
+
+    [Fact]
+    public async Task DeleteNodes_EmptyInput_ReturnsEmptyResult()
+    {
+        var result = await _store.DeleteNodesAsync([]);
+
+        result.NodesDeleted.Should().Be(0);
+        result.DeletedEdgeIds.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task DeleteEdgesByOwner_RemovesOnlyThatOwnersEdges()
+    {
+        await _store.AddNodesAsync([CreateNode("n1", "A", "Entity"), CreateNode("n2", "B", "Entity")]);
+        await _store.AddEdgesAsync([
+            CreateEdge("e-owned", "n1", "n2", "uses", "c1") with { OwnerId = "user-1" },
+            CreateEdge("e-foreign", "n2", "n1", "uses", "c1") with { OwnerId = "user-2" },
+            CreateEdge("e-unowned", "n1", "n2", "cites", "c1")
+        ]);
+
+        var deleted = await _store.DeleteEdgesByOwnerAsync("user-1");
+
+        deleted.Should().BeEquivalentTo(["e-owned"]);
+        (await _store.GetEdgeCountAsync()).Should().Be(2, "foreign and unowned edges must survive");
+    }
+
     private static GraphNode CreateNode(
         string id, string name, string type, string[]? chunkIds = null) =>
         new()

@@ -184,6 +184,50 @@ public sealed class ComplianceAwareGraphStore : IKnowledgeGraphStore
     }
 
     /// <inheritdoc />
+    public async Task<NodeDeletionResult> DeleteNodesAsync(
+        IReadOnlyList<string> nodeIds,
+        CancellationToken cancellationToken = default)
+    {
+        var result = await _inner.DeleteNodesAsync(nodeIds, cancellationToken);
+
+        await _auditSink.EmitAsync(new MemoryAuditEvent
+        {
+            EventId = Guid.NewGuid().ToString(),
+            Action = MemoryAuditAction.Forget,
+            ActorId = CurrentUserId ?? "system",
+            Timestamp = _timeProvider.GetUtcNow(),
+            ScopeId = CurrentUserId ?? "system",
+            AffectedNodeIds = nodeIds,
+            AffectedEdgeIds = result.DeletedEdgeIds
+        }, cancellationToken);
+
+        return result;
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<string>> DeleteEdgesByOwnerAsync(
+        string ownerId,
+        CancellationToken cancellationToken = default)
+    {
+        var deleted = await _inner.DeleteEdgesByOwnerAsync(ownerId, cancellationToken);
+
+        if (deleted.Count > 0)
+        {
+            await _auditSink.EmitAsync(new MemoryAuditEvent
+            {
+                EventId = Guid.NewGuid().ToString(),
+                Action = MemoryAuditAction.Forget,
+                ActorId = CurrentUserId ?? "system",
+                Timestamp = _timeProvider.GetUtcNow(),
+                ScopeId = ownerId,
+                AffectedEdgeIds = deleted
+            }, cancellationToken);
+        }
+
+        return deleted;
+    }
+
+    /// <inheritdoc />
     public Task<int> GetNodeCountAsync(CancellationToken cancellationToken = default)
         => _inner.GetNodeCountAsync(cancellationToken);
 

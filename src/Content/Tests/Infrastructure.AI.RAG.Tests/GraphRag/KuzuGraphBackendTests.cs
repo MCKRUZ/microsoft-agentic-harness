@@ -223,4 +223,66 @@ public sealed class KuzuGraphBackendTests : IDisposable
         var triplets = await _sut.GetTripletsAsync(["n2"]);
         Assert.Empty(triplets);
     }
+
+    // ── DeleteNodesAsync / DeleteEdgesByOwnerAsync (erasure primitives) ──────
+
+    [Fact]
+    public async Task DeleteNodesAsync_ReturnsActualCountsAndCascadedEdgeIds()
+    {
+        // Arrange
+        await _sut.AddNodesAsync([
+            new GraphNode { Id = "n1", Name = "A", Type = "T", ChunkIds = ["c1"] },
+            new GraphNode { Id = "n2", Name = "B", Type = "T", ChunkIds = ["c1"] },
+            new GraphNode { Id = "n3", Name = "C", Type = "T", ChunkIds = ["c1"] }
+        ]);
+        await _sut.AddEdgesAsync([
+            new GraphEdge { Id = "e1", SourceNodeId = "n1", TargetNodeId = "n2", Predicate = "links", ChunkId = "c1" },
+            new GraphEdge { Id = "e2", SourceNodeId = "n3", TargetNodeId = "n1", Predicate = "links", ChunkId = "c1" },
+            new GraphEdge { Id = "e3", SourceNodeId = "n2", TargetNodeId = "n3", Predicate = "links", ChunkId = "c1" }
+        ]);
+
+        // Act — one requested id does not exist and must not be counted
+        var result = await _sut.DeleteNodesAsync(["n1", "missing"]);
+
+        // Assert
+        Assert.Equal(1, result.NodesDeleted);
+        Assert.Equal(["e1", "e2"], result.DeletedEdgeIds.OrderBy(x => x, StringComparer.Ordinal));
+        Assert.Null(await _sut.GetNodeAsync("n1"));
+        Assert.Equal(1, await _sut.GetEdgeCountAsync());
+        Assert.Equal(2, await _sut.GetNodeCountAsync());
+    }
+
+    [Fact]
+    public async Task DeleteEdgesByOwnerAsync_RemovesOnlyThatOwnersEdges()
+    {
+        // Arrange
+        await _sut.AddNodesAsync([
+            new GraphNode { Id = "n1", Name = "A", Type = "T", ChunkIds = ["c1"] },
+            new GraphNode { Id = "n2", Name = "B", Type = "T", ChunkIds = ["c1"] }
+        ]);
+        await _sut.AddEdgesAsync([
+            new GraphEdge
+            {
+                Id = "e-owned", SourceNodeId = "n1", TargetNodeId = "n2",
+                Predicate = "links", ChunkId = "c1", OwnerId = "user-1"
+            },
+            new GraphEdge
+            {
+                Id = "e-foreign", SourceNodeId = "n2", TargetNodeId = "n1",
+                Predicate = "links", ChunkId = "c1", OwnerId = "user-2"
+            },
+            new GraphEdge
+            {
+                Id = "e-unowned", SourceNodeId = "n1", TargetNodeId = "n2",
+                Predicate = "cites", ChunkId = "c1"
+            }
+        ]);
+
+        // Act
+        var deleted = await _sut.DeleteEdgesByOwnerAsync("user-1");
+
+        // Assert
+        Assert.Equal(["e-owned"], deleted);
+        Assert.Equal(2, await _sut.GetEdgeCountAsync());
+    }
 }

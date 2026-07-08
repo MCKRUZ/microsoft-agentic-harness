@@ -53,7 +53,7 @@ public sealed class DefaultErasureOrchestrator : IErasureOrchestrator
         var nodeIds = nodes.Select(n => n.Id).ToList();
 
         return await ExecuteErasureAsync(
-            requestId, ownerId, nodes, nodeIds, requestedAt, cancellationToken);
+            requestId, ownerId, ownerId, nodes, nodeIds, requestedAt, cancellationToken);
     }
 
     /// <inheritdoc />
@@ -72,38 +72,61 @@ public sealed class DefaultErasureOrchestrator : IErasureOrchestrator
         }
 
         var scopeId = nodes.FirstOrDefault()?.OwnerId ?? "system";
+        // Node-scoped erasure has no owner to sweep edges for; the node cascade covers it.
         return await ExecuteErasureAsync(
-            requestId, scopeId, nodes, nodeIds.ToList(), requestedAt, cancellationToken);
+            requestId, scopeId, ownerId: null, nodes, nodeIds.ToList(), requestedAt, cancellationToken);
     }
 
     private async Task<ErasureReceipt> ExecuteErasureAsync(
         string requestId,
         string scopeId,
+        string? ownerId,
         IReadOnlyList<GraphNode> nodes,
         List<string> nodeIds,
         DateTimeOffset requestedAt,
         CancellationToken cancellationToken)
     {
-        // 1. Delete graph nodes (DeleteNodeAsync also removes connected edges)
-        foreach (var nodeId in nodeIds)
-            await _graphStore.DeleteNodeAsync(nodeId, cancellationToken);
+        // 1. Delete graph nodes and their connected edges. The store reports what it
+        //    actually removed — the receipt must never echo the requested counts.
+        var nodeDeletion = nodeIds.Count > 0
+            ? await _graphStore.DeleteNodesAsync(nodeIds, cancellationToken)
+            : NodeDeletionResult.Empty;
 
-        // 2. Delete feedback weights
-        if (nodeIds.Count > 0)
-            await _feedbackStore.DeleteWeightsByNodeIdsAsync(nodeIds, cancellationToken);
+        // 2. Delete edges owned by the erased subject. The node cascade only removes edges
+        //    touching the subject's nodes; edges the subject created between SURVIVING nodes
+        //    would otherwise outlive the erasure.
+        var ownerEdgeIds = ownerId is not null
+            ? await _graphStore.DeleteEdgesByOwnerAsync(ownerId, cancellationToken)
+            : [];
 
-        // 3. Delete vector embeddings (optional — not all deployments use vectors)
+        var deletedEdgeIds = nodeDeletion.DeletedEdgeIds
+            .Concat(ownerEdgeIds)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+
+        // 3. Purge feedback weights for every erased node AND edge — dangling feedback both
+        //    leaks signal about erased data and skews feedback-weighted retrieval.
+        var nodeWeightsDeleted = nodeIds.Count > 0
+            ? await _feedbackStore.DeleteWeightsByNodeIdsAsync(nodeIds, cancellationToken)
+            : 0;
+        var edgeWeightsDeleted = deletedEdgeIds.Count > 0
+            ? await _feedbackStore.DeleteWeightsByEdgeIdsAsync(deletedEdgeIds, cancellationToken)
+            : 0;
+
+        // 4. Delete vector embeddings (optional — not all deployments use vectors).
+        //    IVectorStore.DeleteAsync returns no per-item confirmation, so this count is the
+        //    number of chunk IDs submitted for deletion (each call either succeeds or throws).
         var chunkIds = nodes.SelectMany(n => n.ChunkIds).Distinct().ToList();
         var embeddingsDeleted = 0;
         if (_vectorStore is not null && chunkIds.Count > 0)
         {
             // IVectorStore does not yet have DeleteByDocumentIdsAsync (batch).
             // When added, replace the loop below with a single batch call.
-            // For now, use the existing DeleteAsync per-document method.
             foreach (var chunkId in chunkIds)
+            {
                 await _vectorStore.DeleteAsync(chunkId, cancellationToken: cancellationToken);
-
-            embeddingsDeleted = chunkIds.Count;
+                embeddingsDeleted++;
+            }
         }
 
         var receipt = new ErasureReceipt
@@ -112,13 +135,13 @@ public sealed class DefaultErasureOrchestrator : IErasureOrchestrator
             ScopeId = scopeId,
             RequestedAt = requestedAt,
             CompletedAt = _timeProvider.GetUtcNow(),
-            NodesDeleted = nodeIds.Count,
-            EdgesDeleted = 0,
-            FeedbackWeightsDeleted = nodeIds.Count,
+            NodesDeleted = nodeDeletion.NodesDeleted,
+            EdgesDeleted = deletedEdgeIds.Count,
+            FeedbackWeightsDeleted = nodeWeightsDeleted + edgeWeightsDeleted,
             VectorEmbeddingsDeleted = embeddingsDeleted
         };
 
-        // 4. Emit audit event
+        // 5. Emit audit event covering everything that was actually erased.
         await _auditSink.EmitAsync(new MemoryAuditEvent
         {
             EventId = requestId,
@@ -126,12 +149,15 @@ public sealed class DefaultErasureOrchestrator : IErasureOrchestrator
             ActorId = scopeId,
             Timestamp = receipt.CompletedAt,
             ScopeId = scopeId,
-            AffectedNodeIds = nodeIds
+            AffectedNodeIds = nodeIds,
+            AffectedEdgeIds = deletedEdgeIds
         }, cancellationToken);
 
         _logger.LogInformation(
-            "Erasure completed: RequestId={RequestId}, Nodes={Nodes}, Embeddings={Embeddings}",
-            requestId, nodeIds.Count, embeddingsDeleted);
+            "Erasure completed: RequestId={RequestId}, Nodes={Nodes}, Edges={Edges}, " +
+            "FeedbackWeights={FeedbackWeights}, Embeddings={Embeddings}",
+            requestId, receipt.NodesDeleted, receipt.EdgesDeleted,
+            receipt.FeedbackWeightsDeleted, embeddingsDeleted);
 
         return receipt;
     }

@@ -225,6 +225,60 @@ public sealed class TenantIsolatedGraphStore : IKnowledgeGraphStore
         => _inner.DeleteEdgeAsync(edgeId, cancellationToken);
 
     /// <inheritdoc />
+    public async Task<NodeDeletionResult> DeleteNodesAsync(
+        IReadOnlyList<string> nodeIds,
+        CancellationToken cancellationToken = default)
+    {
+        var scope = CurrentScope;
+        if (scope is null)
+            return await _inner.DeleteNodesAsync(nodeIds, cancellationToken);
+
+        // Same per-record gate as DeleteNodeAsync, applied to the batch: a scoped caller may
+        // only cascade-delete nodes they can access. Missing nodes pass through (idempotent
+        // no-op at the backend); foreign nodes are dropped from the batch and logged.
+        var permitted = new List<string>(nodeIds.Count);
+        foreach (var nodeId in nodeIds)
+        {
+            var node = await _inner.GetNodeAsync(nodeId, cancellationToken);
+            if (node is null || CanAccess(node.TenantId, node.OwnerId, scope))
+            {
+                permitted.Add(nodeId);
+                continue;
+            }
+
+            _logger.LogWarning(
+                "Tenant isolation: blocked batch delete of foreign node {NodeId} for User={UserId}",
+                nodeId, scope.UserId);
+        }
+
+        return permitted.Count == 0
+            ? NodeDeletionResult.Empty
+            : await _inner.DeleteNodesAsync(permitted, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<string>> DeleteEdgesByOwnerAsync(
+        string ownerId,
+        CancellationToken cancellationToken = default)
+    {
+        var scope = CurrentScope;
+        if (scope is null)
+            return await _inner.DeleteEdgesByOwnerAsync(ownerId, cancellationToken);
+
+        // Owner-scoped erasure normally runs system-scoped (no ambient request scope). A scoped
+        // caller may only erase edges of an owner dataset they can access — i.e. their own.
+        if (!_validator.CanAccessDataset(scope, ownerId))
+        {
+            _logger.LogWarning(
+                "Tenant isolation: blocked owner-edge erasure of {OwnerId} for User={UserId}",
+                ownerId, scope.UserId);
+            return [];
+        }
+
+        return await _inner.DeleteEdgesByOwnerAsync(ownerId, cancellationToken);
+    }
+
+    /// <inheritdoc />
     public async Task<int> GetNodeCountAsync(CancellationToken cancellationToken = default)
     {
         var scope = CurrentScope;

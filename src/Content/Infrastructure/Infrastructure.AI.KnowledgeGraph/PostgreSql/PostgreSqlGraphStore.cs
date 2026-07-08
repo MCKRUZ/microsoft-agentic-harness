@@ -303,6 +303,71 @@ public sealed class PostgreSqlGraphStore : IKnowledgeGraphStore
     }
 
     /// <inheritdoc />
+    public async Task<NodeDeletionResult> DeleteNodesAsync(
+        IReadOnlyList<string> nodeIds,
+        CancellationToken cancellationToken = default)
+    {
+        if (nodeIds.Count == 0) return NodeDeletionResult.Empty;
+
+        using var activity = ActivitySource.StartActivity("kg.postgresql.delete_nodes");
+        await using var conn = await OpenConnectionAsync(cancellationToken);
+        await using var tx = await conn.BeginTransactionAsync(cancellationToken);
+
+        // Delete connected edges first, capturing their ids for feedback-weight cleanup.
+        var deletedEdgeIds = new List<string>();
+        await using (var edgeCmd = new NpgsqlCommand(
+            "DELETE FROM kg_edges WHERE source_node_id = ANY(@ids) OR target_node_id = ANY(@ids) RETURNING id",
+            conn, tx))
+        {
+            edgeCmd.Parameters.AddWithValue("ids", nodeIds.ToArray());
+            await using var reader = await edgeCmd.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+                deletedEdgeIds.Add(reader.GetString(0));
+        }
+
+        // Then the nodes; the command's rows-affected is the true deleted count.
+        int nodesDeleted;
+        await using (var nodeCmd = new NpgsqlCommand(
+            "DELETE FROM kg_nodes WHERE id = ANY(@ids)", conn, tx))
+        {
+            nodeCmd.Parameters.AddWithValue("ids", nodeIds.ToArray());
+            nodesDeleted = await nodeCmd.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await tx.CommitAsync(cancellationToken);
+
+        _logger.LogDebug(
+            "PostgreSQL: deleted {NodeCount} of {Requested} nodes and {EdgeCount} connected edges",
+            nodesDeleted, nodeIds.Count, deletedEdgeIds.Count);
+
+        return new NodeDeletionResult
+        {
+            NodesDeleted = nodesDeleted,
+            DeletedEdgeIds = deletedEdgeIds
+        };
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<string>> DeleteEdgesByOwnerAsync(
+        string ownerId,
+        CancellationToken cancellationToken = default)
+    {
+        using var activity = ActivitySource.StartActivity("kg.postgresql.delete_edges_by_owner");
+        await using var conn = await OpenConnectionAsync(cancellationToken);
+        await using var cmd = new NpgsqlCommand(
+            "DELETE FROM kg_edges WHERE owner_id = @ownerId RETURNING id", conn);
+        cmd.Parameters.AddWithValue("ownerId", ownerId);
+
+        var deleted = new List<string>();
+        await using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+            deleted.Add(reader.GetString(0));
+
+        _logger.LogDebug("PostgreSQL: deleted {Count} edges owned by {OwnerId}", deleted.Count, ownerId);
+        return deleted;
+    }
+
+    /// <inheritdoc />
     public async Task<int> GetNodeCountAsync(CancellationToken cancellationToken = default)
     {
         await using var conn = await OpenConnectionAsync(cancellationToken);

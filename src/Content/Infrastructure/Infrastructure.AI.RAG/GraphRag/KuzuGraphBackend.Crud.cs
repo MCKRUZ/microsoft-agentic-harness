@@ -237,6 +237,90 @@ public sealed partial class KuzuGraphBackend
     }
 
     /// <inheritdoc />
+    public async Task<NodeDeletionResult> DeleteNodesAsync(
+        IReadOnlyList<string> nodeIds,
+        CancellationToken cancellationToken = default)
+    {
+        if (nodeIds.Count == 0) return NodeDeletionResult.Empty;
+
+        await PopulateTempTableAsync(nodeIds, cancellationToken).ConfigureAwait(false);
+
+        // Capture connected edge ids BEFORE deleting so feedback-weight cleanup and the
+        // erasure receipt reflect what was actually removed.
+        var deletedEdgeIds = new List<string>();
+        using (var selectCmd = _connection.CreateCommand())
+        {
+            selectCmd.CommandText = """
+                SELECT id FROM Edges
+                WHERE source_node_id IN (SELECT id FROM _TempIds)
+                   OR target_node_id  IN (SELECT id FROM _TempIds)
+                """;
+            using var reader = await selectCmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                deletedEdgeIds.Add(reader.GetString(0));
+        }
+
+        using (var cmd = _connection.CreateCommand())
+        {
+            cmd.CommandText = """
+                DELETE FROM Edges
+                WHERE source_node_id IN (SELECT id FROM _TempIds)
+                   OR target_node_id  IN (SELECT id FROM _TempIds)
+                """;
+            await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        using (var cmd = _connection.CreateCommand())
+        {
+            cmd.CommandText = "DELETE FROM CommunityAssignments WHERE node_id IN (SELECT id FROM _TempIds)";
+            await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        int nodesDeleted;
+        using (var cmd = _connection.CreateCommand())
+        {
+            cmd.CommandText = "DELETE FROM Nodes WHERE id IN (SELECT id FROM _TempIds)";
+            nodesDeleted = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        _logger.LogDebug(
+            "Deleted {NodeCount} of {Requested} nodes and {EdgeCount} connected edges",
+            nodesDeleted, nodeIds.Count, deletedEdgeIds.Count);
+
+        return new NodeDeletionResult
+        {
+            NodesDeleted = nodesDeleted,
+            DeletedEdgeIds = deletedEdgeIds
+        };
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<string>> DeleteEdgesByOwnerAsync(
+        string ownerId,
+        CancellationToken cancellationToken = default)
+    {
+        var deleted = new List<string>();
+        using (var selectCmd = _connection.CreateCommand())
+        {
+            selectCmd.CommandText = "SELECT id FROM Edges WHERE owner_id = @owner";
+            selectCmd.Parameters.AddWithValue("@owner", ownerId);
+            using var reader = await selectCmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                deleted.Add(reader.GetString(0));
+        }
+
+        using (var cmd = _connection.CreateCommand())
+        {
+            cmd.CommandText = "DELETE FROM Edges WHERE owner_id = @owner";
+            cmd.Parameters.AddWithValue("@owner", ownerId);
+            await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        _logger.LogDebug("Deleted {Count} edges owned by {OwnerId}", deleted.Count, ownerId);
+        return deleted;
+    }
+
+    /// <inheritdoc />
     public async Task<int> GetNodeCountAsync(CancellationToken cancellationToken = default)
     {
         using var cmd = _connection.CreateCommand();

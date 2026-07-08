@@ -258,6 +258,83 @@ public sealed class Neo4jGraphStore : IKnowledgeGraphStore, IAsyncDisposable
     }
 
     /// <inheritdoc />
+    public async Task<NodeDeletionResult> DeleteNodesAsync(
+        IReadOnlyList<string> nodeIds,
+        CancellationToken cancellationToken = default)
+    {
+        if (nodeIds.Count == 0) return NodeDeletionResult.Empty;
+
+        using var activity = ActivitySource.StartActivity("kg.neo4j.delete_nodes");
+        await using var session = _driver.AsyncSession();
+
+        return await session.ExecuteWriteAsync(async tx =>
+        {
+            // Delete connected edges first, capturing their ids for feedback-weight cleanup.
+            // DISTINCT guards against an edge matching twice when both endpoints are in the set.
+            var edgeCursor = await tx.RunAsync("""
+                MATCH (n:Entity)-[r:RELATES]-() WHERE n.id IN $ids
+                WITH DISTINCT r, r.id AS rid
+                DELETE r
+                RETURN rid
+                """, new { ids = nodeIds.ToList() });
+
+            var deletedEdgeIds = new List<string>();
+            while (await edgeCursor.FetchAsync())
+                deletedEdgeIds.Add(edgeCursor.Current["rid"].As<string>());
+
+            // Then the nodes themselves; size(nodes) is the true deleted count because
+            // MATCH only binds nodes that exist. DETACH is belt-and-braces for edges
+            // added concurrently between the two statements.
+            var nodeCursor = await tx.RunAsync("""
+                MATCH (n:Entity) WHERE n.id IN $ids
+                WITH collect(n) AS nodes
+                FOREACH (x IN nodes | DETACH DELETE x)
+                RETURN size(nodes) AS cnt
+                """, new { ids = nodeIds.ToList() });
+
+            var nodesDeleted = await nodeCursor.FetchAsync()
+                ? nodeCursor.Current["cnt"].As<int>()
+                : 0;
+
+            _logger.LogDebug(
+                "Neo4j: deleted {NodeCount} of {Requested} nodes and {EdgeCount} connected edges",
+                nodesDeleted, nodeIds.Count, deletedEdgeIds.Count);
+
+            return new NodeDeletionResult
+            {
+                NodesDeleted = nodesDeleted,
+                DeletedEdgeIds = deletedEdgeIds
+            };
+        });
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<string>> DeleteEdgesByOwnerAsync(
+        string ownerId,
+        CancellationToken cancellationToken = default)
+    {
+        using var activity = ActivitySource.StartActivity("kg.neo4j.delete_edges_by_owner");
+        await using var session = _driver.AsyncSession();
+
+        return await session.ExecuteWriteAsync(async tx =>
+        {
+            var cursor = await tx.RunAsync("""
+                MATCH ()-[r:RELATES]->() WHERE r.owner_id = $ownerId
+                WITH r, r.id AS rid
+                DELETE r
+                RETURN rid
+                """, new { ownerId });
+
+            var deleted = new List<string>();
+            while (await cursor.FetchAsync())
+                deleted.Add(cursor.Current["rid"].As<string>());
+
+            _logger.LogDebug("Neo4j: deleted {Count} edges owned by {OwnerId}", deleted.Count, ownerId);
+            return (IReadOnlyList<string>)deleted;
+        });
+    }
+
+    /// <inheritdoc />
     public async Task<int> GetNodeCountAsync(CancellationToken cancellationToken = default)
     {
         await using var session = _driver.AsyncSession();

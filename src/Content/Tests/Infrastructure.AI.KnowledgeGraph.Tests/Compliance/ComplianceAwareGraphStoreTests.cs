@@ -189,6 +189,65 @@ public sealed class ComplianceAwareGraphStoreTests
                 e.AffectedNodeIds!.Contains("n1")),
             It.IsAny<CancellationToken>()), Times.Once);
     }
+
+    [Fact]
+    public async Task DeleteNodesAsync_DelegatesAndEmitsForgetAuditWithEdgeIds()
+    {
+        await _innerStore.AddNodesAsync([
+            new GraphNode { Id = "n1", Name = "A", Type = "Fact" },
+            new GraphNode { Id = "n2", Name = "B", Type = "Fact" }
+        ]);
+        await _innerStore.AddEdgesAsync([new GraphEdge
+        {
+            Id = "e1", SourceNodeId = "n1", TargetNodeId = "n2",
+            Predicate = "relates_to", ChunkId = "c1"
+        }]);
+
+        var result = await _store.DeleteNodesAsync(["n1"]);
+
+        result.NodesDeleted.Should().Be(1);
+        result.DeletedEdgeIds.Should().BeEquivalentTo(["e1"]);
+        _auditSink.Verify(s => s.EmitAsync(
+            It.Is<MemoryAuditEvent>(e =>
+                e.Action == MemoryAuditAction.Forget &&
+                e.AffectedNodeIds!.Contains("n1") &&
+                e.AffectedEdgeIds!.Contains("e1")),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task DeleteEdgesByOwnerAsync_DelegatesAndEmitsForgetAudit()
+    {
+        await _innerStore.AddNodesAsync([
+            new GraphNode { Id = "n1", Name = "A", Type = "Fact" },
+            new GraphNode { Id = "n2", Name = "B", Type = "Fact" }
+        ]);
+        await _innerStore.AddEdgesAsync([new GraphEdge
+        {
+            Id = "e1", SourceNodeId = "n1", TargetNodeId = "n2",
+            Predicate = "relates_to", ChunkId = "c1", OwnerId = "owner-x"
+        }]);
+
+        var deleted = await _store.DeleteEdgesByOwnerAsync("owner-x");
+
+        deleted.Should().BeEquivalentTo(["e1"]);
+        _auditSink.Verify(s => s.EmitAsync(
+            It.Is<MemoryAuditEvent>(e =>
+                e.Action == MemoryAuditAction.Forget &&
+                e.ScopeId == "owner-x" &&
+                e.AffectedEdgeIds!.Contains("e1")),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task DeleteEdgesByOwnerAsync_NothingDeleted_EmitsNoAudit()
+    {
+        var deleted = await _store.DeleteEdgesByOwnerAsync("owner-with-no-edges");
+
+        deleted.Should().BeEmpty();
+        _auditSink.Verify(s => s.EmitAsync(
+            It.IsAny<MemoryAuditEvent>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
 }
 
 /// <summary>

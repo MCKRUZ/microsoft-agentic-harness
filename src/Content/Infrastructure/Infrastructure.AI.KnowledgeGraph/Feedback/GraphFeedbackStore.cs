@@ -137,7 +137,7 @@ public sealed class GraphFeedbackStore : IFeedbackStore
     }
 
     /// <inheritdoc />
-    public Task DeleteWeightsByNodeIdsAsync(
+    public Task<int> DeleteWeightsByNodeIdsAsync(
         IReadOnlyList<string> nodeIds,
         CancellationToken cancellationToken = default)
     {
@@ -149,7 +149,23 @@ public sealed class GraphFeedbackStore : IFeedbackStore
         }
 
         _logger.LogDebug("Deleted {Count} feedback weights for {Total} node IDs", deleted, nodeIds.Count);
-        return Task.CompletedTask;
+        return Task.FromResult(deleted);
+    }
+
+    /// <inheritdoc />
+    public Task<int> DeleteWeightsByEdgeIdsAsync(
+        IReadOnlyList<string> edgeIds,
+        CancellationToken cancellationToken = default)
+    {
+        var deleted = 0;
+        foreach (var edgeId in edgeIds)
+        {
+            if (_edgeWeights.TryRemove(edgeId, out _))
+                deleted++;
+        }
+
+        _logger.LogDebug("Deleted {Count} feedback weights for {Total} edge IDs", deleted, edgeIds.Count);
+        return Task.FromResult(deleted);
     }
 
     private static double NormalizeScore(double score) =>

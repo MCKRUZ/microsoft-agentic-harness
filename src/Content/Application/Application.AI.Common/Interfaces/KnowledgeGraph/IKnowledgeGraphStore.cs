@@ -112,6 +112,33 @@ public interface IKnowledgeGraphStore
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Deletes a batch of nodes and all edges connected to them (both incoming and
+    /// outgoing), reporting what was actually removed. Requested IDs that do not exist
+    /// are ignored and not counted. This is the accounting primitive used by the erasure
+    /// orchestrator: unlike <see cref="DeleteNodeAsync"/>, it returns the true node count
+    /// and the IDs of every cascade-deleted edge so receipts and feedback-weight cleanup
+    /// reflect reality.
+    /// </summary>
+    /// <param name="nodeIds">The node identifiers to delete.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    Task<NodeDeletionResult> DeleteNodesAsync(
+        IReadOnlyList<string> nodeIds,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Deletes every edge owned by the specified owner (<see cref="GraphEdge.OwnerId"/>)
+    /// and returns the IDs of the edges actually removed. Used by right-to-erasure:
+    /// node-cascade deletion alone leaves behind edges the erased owner created between
+    /// surviving nodes, which this method removes. Edges owned by other owners (or
+    /// unowned edges) are never touched.
+    /// </summary>
+    /// <param name="ownerId">The owner identifier whose edges must be deleted.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    Task<IReadOnlyList<string>> DeleteEdgesByOwnerAsync(
+        string ownerId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Returns the total number of nodes in the graph (optionally scoped by tenant/dataset
     /// when multi-tenant isolation is enabled).
     /// </summary>
