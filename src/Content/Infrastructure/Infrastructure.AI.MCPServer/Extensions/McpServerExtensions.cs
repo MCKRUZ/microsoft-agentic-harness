@@ -3,8 +3,10 @@ using System.Diagnostics;
 using Domain.Common.Config;
 using Domain.Common.Config.AI.MCP;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.IdentityModel.Tokens;
-using Microsoft.Extensions.Hosting;
+using Microsoft.Net.Http.Headers;
+using Infrastructure.AI.MCPServer.Authentication;
 using Infrastructure.AI.MCPServer.Authorization;
 using ModelContextProtocol;
 using ModelContextProtocol.AspNetCore;
@@ -29,11 +31,12 @@ public static class McpServerExtensions
         var subscriptions = new ConcurrentDictionary<string, byte>();
         services.AddSingleton(subscriptions);
 
-        // Auth is configured in all non-Development environments (AddMcpAuthentication
-        // enforces this). When it is, every inbound tool call must carry an
-        // authenticated principal — re-checked at the tool-dispatch layer below as
-        // defense-in-depth behind the endpoint's RequireAuthorization().
-        var authenticationRequired = mcpConfig.Auth.IsConfigured;
+        // AddMcpAuthentication is fail-closed: the host only boots with a configured
+        // scheme or the explicit AllowAnonymous opt-in. Unless that opt-in is set,
+        // every inbound tool call must carry an authenticated principal — re-checked
+        // at the tool-dispatch layer below as defense-in-depth behind the endpoint's
+        // RequireAuthorization().
+        var authenticationRequired = !mcpConfig.Auth.AllowAnonymous;
 
         services
             .AddMcpServer(options =>
@@ -112,63 +115,163 @@ public static class McpServerExtensions
     }
 
     /// <summary>
-    /// Configures JWT Bearer authentication for the MCP server.
+    /// Configures fail-closed authentication for the MCP server host: ApiKey, static
+    /// Bearer token, or Entra ID (JWT) enforcement on every MCP endpoint.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>Fail-closed contract:</strong> if no authentication scheme is properly
+    /// configured (<c>Type=None</c>, or a type missing its credential material), this
+    /// method throws and the host refuses to start — in <em>every</em> environment.
+    /// The single escape hatch is the explicit
+    /// <c>AppConfig:AI:MCP:Auth:AllowAnonymous=true</c> opt-in, which boots the server
+    /// open and logs a prominent startup warning. Combining that opt-in with a
+    /// configured type is rejected as contradictory.
+    /// </para>
+    /// <para>
+    /// When authentication is configured, a fallback authorization policy requiring an
+    /// authenticated user is installed, so any endpoint mapped without explicit
+    /// authorization metadata is still protected.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="InvalidOperationException">
+    /// Authentication is unconfigured without the anonymous opt-in, misconfigured for
+    /// the selected type, or contradictorily combined with <c>AllowAnonymous</c>.
+    /// </exception>
     public static IServiceCollection AddMcpAuthentication(
-        this IServiceCollection services, AppConfig appConfig, IConfiguration configuration,
-        IHostEnvironment environment)
+        this IServiceCollection services, AppConfig appConfig)
     {
         var auth = appConfig.AI.MCP.Auth;
 
+        if (auth.AllowAnonymous && auth.IsConfigured)
+            throw new InvalidOperationException(
+                "AppConfig:AI:MCP:Auth is contradictory: AllowAnonymous=true cannot be combined " +
+                $"with a configured authentication type ({auth.Type}). Remove AllowAnonymous to " +
+                "enforce the configured scheme, or set Type=None to run anonymously.");
+
         if (!auth.IsConfigured)
         {
-            if (!environment.IsDevelopment())
+            if (!auth.AllowAnonymous)
                 throw new InvalidOperationException(
-                    "MCP server authentication must be configured in non-Development environments. " +
-                    "Set AppConfig:AI:MCP:Auth in appsettings or User Secrets.");
+                    "MCP server authentication is not configured — refusing to start (fail-closed). " +
+                    "Set AppConfig:AI:MCP:Auth:Type to ApiKey, Bearer, or Entra and supply the matching " +
+                    "credential material via User Secrets or Key Vault. For local development only, " +
+                    "authentication can be consciously disabled with AppConfig:AI:MCP:Auth:AllowAnonymous=true; " +
+                    "running under Environment=Development alone does not disable it.");
 
+            // Explicit anonymous opt-in — boot open, loudly.
             services.AddAuthentication();
-            services.AddAuthorization(options =>
-            {
-                options.FallbackPolicy = null;
-            });
+            services.AddAuthorization();
+            services.AddHostedService<McpAnonymousModeStartupWarning>();
             return services;
         }
 
-        if (auth.Type == McpServerAuthType.Entra)
-        {
-            var authority = $"https://login.microsoftonline.com/{auth.TenantId}/v2.0";
-            var audience = $"api://{auth.ClientId}";
+        if (!auth.IsValidForServer)
+            throw new InvalidOperationException(
+                $"AppConfig:AI:MCP:Auth:Type={auth.Type} is missing required credential material: " +
+                $"{RequiredServerMaterial(auth.Type)}. Refusing to start (fail-closed).");
 
-            services
-                .AddAuthentication(options =>
-                {
-                    options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
-                    options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
-                })
-                .AddJwtBearer(options =>
-                {
-                    options.Authority = authority;
-                    options.Audience = audience;
-                    options.TokenValidationParameters = new TokenValidationParameters
-                    {
-                        ValidateIssuer = true,
-                        ValidIssuers =
-                        [
-                            $"https://sts.windows.net/{auth.TenantId}/",
-                            $"https://login.microsoftonline.com/{auth.TenantId}/v2.0"
-                        ],
-                        ValidateAudience = true,
-                        ValidAudience = audience,
-                        ValidateLifetime = true,
-                        ValidateIssuerSigningKey = true,
-                        ClockSkew = TimeSpan.Zero
-                    };
-                });
+        switch (auth.Type)
+        {
+            case McpServerAuthType.ApiKey:
+                AddApiKeyScheme(services, auth);
+                break;
+            case McpServerAuthType.Bearer:
+                AddSharedBearerScheme(services, auth);
+                break;
+            case McpServerAuthType.Entra:
+                AddEntraScheme(services, auth);
+                break;
+            default:
+                throw new InvalidOperationException(
+                    $"Unsupported MCP server authentication type '{auth.Type}'. Refusing to start (fail-closed).");
         }
 
-        services.AddAuthorization();
+        // Fallback policy closes the unmapped-endpoint gap: an endpoint added without
+        // explicit authorization metadata still requires an authenticated caller.
+        services.AddAuthorization(options =>
+            options.FallbackPolicy = new AuthorizationPolicyBuilder()
+                .RequireAuthenticatedUser()
+                .Build());
+
         return services;
+    }
+
+    /// <summary>
+    /// Describes the credential material a server-side auth type requires, for
+    /// startup error messages (names config keys only — never secret values).
+    /// </summary>
+    private static string RequiredServerMaterial(McpServerAuthType type) => type switch
+    {
+        McpServerAuthType.ApiKey => "ApiKey (the shared key inbound requests must present)",
+        McpServerAuthType.Bearer => "BearerToken (the shared token inbound requests must present)",
+        McpServerAuthType.Entra => "TenantId and ClientId (issuer and audience validation)",
+        _ => "a supported authentication type"
+    };
+
+    /// <summary>Registers API-key authentication on the configured header.</summary>
+    private static void AddApiKeyScheme(IServiceCollection services, McpServerAuthConfig auth)
+    {
+        services
+            .AddAuthentication(McpSharedKeyAuthenticationDefaults.ApiKeyScheme)
+            .AddScheme<McpSharedKeyAuthenticationOptions, McpSharedKeyAuthenticationHandler>(
+                McpSharedKeyAuthenticationDefaults.ApiKeyScheme, options =>
+                {
+                    options.HeaderName = auth.ApiKeyHeader;
+                    options.ExpectedCredential = auth.ApiKey!;
+                });
+    }
+
+    /// <summary>
+    /// Registers static shared-token authentication on <c>Authorization: Bearer</c>.
+    /// </summary>
+    private static void AddSharedBearerScheme(IServiceCollection services, McpServerAuthConfig auth)
+    {
+        services
+            .AddAuthentication(McpSharedKeyAuthenticationDefaults.BearerScheme)
+            .AddScheme<McpSharedKeyAuthenticationOptions, McpSharedKeyAuthenticationHandler>(
+                McpSharedKeyAuthenticationDefaults.BearerScheme, options =>
+                {
+                    options.HeaderName = HeaderNames.Authorization;
+                    options.ValuePrefix = "Bearer ";
+                    options.ExpectedCredential = auth.BearerToken!;
+                });
+    }
+
+    /// <summary>
+    /// Registers Entra ID JWT bearer validation (issuer + audience + lifetime +
+    /// signing key, zero clock skew) per the repo security baseline.
+    /// </summary>
+    private static void AddEntraScheme(IServiceCollection services, McpServerAuthConfig auth)
+    {
+        var authority = $"https://login.microsoftonline.com/{auth.TenantId}/v2.0";
+        var audience = $"api://{auth.ClientId}";
+
+        services
+            .AddAuthentication(options =>
+            {
+                options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
+                options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
+            })
+            .AddJwtBearer(options =>
+            {
+                options.Authority = authority;
+                options.Audience = audience;
+                options.TokenValidationParameters = new TokenValidationParameters
+                {
+                    ValidateIssuer = true,
+                    ValidIssuers =
+                    [
+                        $"https://sts.windows.net/{auth.TenantId}/",
+                        $"https://login.microsoftonline.com/{auth.TenantId}/v2.0"
+                    ],
+                    ValidateAudience = true,
+                    ValidAudience = audience,
+                    ValidateLifetime = true,
+                    ValidateIssuerSigningKey = true,
+                    ClockSkew = TimeSpan.Zero
+                };
+            });
     }
 
     private static McpRequestHandler<SubscribeRequestParams, EmptyResult>

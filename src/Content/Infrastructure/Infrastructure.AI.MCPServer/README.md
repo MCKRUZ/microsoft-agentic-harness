@@ -22,7 +22,7 @@ External MCP Clients
 |       Infrastructure.AI.MCPServer              |
 |                                                |
 |  ASP.NET Core Pipeline:                        |
-|    Authentication (JWT Bearer / anonymous)     |
+|    Authentication (ApiKey / Bearer / Entra)    |
 |    Authorization                               |
 |    Rate Limiting (fixed window)                |
 |    MCP Endpoint (/mcp)                         |
@@ -53,16 +53,18 @@ External MCP Clients
 **How the startup works (Program.cs):**
 1. Bind `AppConfig` from configuration.
 2. Register MCP server services with HTTP transport.
-3. Configure JWT Bearer authentication (Entra ID or anonymous for dev).
+3. Configure authentication **fail-closed**: ApiKey, static Bearer token, or Entra ID (JWT). If no scheme is properly configured and `Auth.AllowAnonymous` is not explicitly `true`, the host throws at startup — in every environment, including Development.
 4. Register the skill catalog (`SkillMetadataRegistry`) for tool queries.
 5. Add rate limiting (100 requests/minute per client).
 6. Build the pipeline: Authentication -> Authorization -> Rate Limiter -> MCP endpoint.
-7. Map the MCP endpoint at the root with auth + rate limiting required.
+7. Map the MCP endpoint at the root with auth + rate limiting required (or a deliberate `.AllowAnonymous()` when the opt-in is set).
 
 ```csharp
-app.MapMcp()
-    .RequireAuthorization()
-    .RequireRateLimiting("mcp");
+var mcpEndpoints = app.MapMcp().RequireRateLimiting("mcp");
+if (appConfig.AI.MCP.Auth.AllowAnonymous)
+    mcpEndpoints.AllowAnonymous();
+else
+    mcpEndpoints.RequireAuthorization();
 ```
 
 ### SkillTools (Built-in MCP Tools)
@@ -107,18 +109,23 @@ app.MapMcp()
 - Each loads assemblies by name via `Assembly.Load()` and registers any types decorated with `[McpServerToolType]`, `[McpServerPromptType]`, or `[McpServerResourceType]`.
 - The built-in assembly (containing `SkillTools`) is always loaded first.
 
-### Authentication
+### Authentication (fail-closed)
 
-**What it is:** JWT Bearer authentication using Microsoft Entra ID (Azure AD).
+**What it is:** Mandatory authentication on every MCP endpoint, supporting three schemes — API key header, static Bearer token, and Entra ID JWT — with a fail-closed startup contract.
 
-**Why it exists:** MCP servers should not be open to the internet without authentication. The server validates JWT tokens issued by Entra ID, checking issuer, audience, lifetime, and signing key.
+**Why it exists:** MCP servers must never silently end up open. If authentication is absent or misconfigured, the host refuses to start with a clear error instead of booting anonymous. The environment name is never an implicit bypass.
 
 **How it works:**
-- When `McpConfig.Auth.IsConfigured` is true and `Auth.Type == Entra`:
+- `Auth.Type == ApiKey`: inbound requests must present the shared key in the configured header (default `X-API-Key`). Compared in constant time.
+- `Auth.Type == Bearer`: inbound requests must present the shared token as `Authorization: Bearer {token}`. Compared in constant time.
+- `Auth.Type == Entra`: JWT Bearer validation —
   - Authority: `https://login.microsoftonline.com/{TenantId}/v2.0`
   - Audience: `api://{ClientId}`
   - Token validation: issuer, audience, lifetime, signing key, zero clock skew
-- When auth is not configured (development): anonymous access is allowed via null fallback policy.
+- `Auth.Type == None` and `Auth.AllowAnonymous == false` (the default): the host **throws at startup** in every environment.
+- `Auth.Type == None` and `Auth.AllowAnonymous == true`: the explicit local-development opt-in. The server serves anonymously and logs a prominent warning at startup. Combining `AllowAnonymous=true` with a configured type is rejected as contradictory.
+- A configured type missing its credential material (e.g. `ApiKey` with no key, `Entra` with no `TenantId`) also fails at startup.
+- When authentication is configured, a fallback authorization policy (`RequireAuthenticatedUser`) covers any endpoint mapped without explicit authorization metadata, and a per-tool-call gate (`McpToolAuthorizationFilter`) re-checks the principal at the dispatch layer as defense-in-depth.
 
 ### Rate Limiting
 
@@ -167,8 +174,15 @@ External MCP Client (e.g., Claude Desktop)
 
 ```
 Infrastructure.AI.MCPServer/
+├── Authentication/
+│   ├── McpSharedKeyAuthenticationDefaults.cs   Scheme name constants (ApiKey / shared Bearer)
+│   ├── McpSharedKeyAuthenticationOptions.cs    Header, prefix, expected credential + validation
+│   ├── McpSharedKeyAuthenticationHandler.cs    Constant-time shared-secret authentication
+│   └── McpAnonymousModeStartupWarning.cs       Prominent warning while AllowAnonymous=true
+├── Authorization/
+│   └── McpToolAuthorizationFilter.cs   Per-tool-call gate (defense-in-depth)
 ├── Extensions/
-│   ├── McpServerExtensions.cs          Server setup, auth, subscription handlers
+│   ├── McpServerExtensions.cs          Server setup, fail-closed auth, subscription handlers
 │   └── McpServerBuilderExtensions.cs   Assembly scanning for tools/prompts/resources
 ├── Tools/
 │   └── SkillTools.cs                   list_skills, get_skill, find_skills_by_tag
@@ -202,10 +216,12 @@ Infrastructure.AI.MCPServer/
           "MyCustomTools.Assembly"
         ],
         "Auth": {
-          "IsConfigured": true,                    // false = anonymous (dev only)
-          "Type": "Entra",                         // Only Entra supported currently
-          "TenantId": "xxxxxxxx-xxxx-...",         // Azure AD tenant
-          "ClientId": "yyyyyyyy-yyyy-..."          // App registration client ID
+          "Type": "Entra",                         // None | ApiKey | Bearer | Entra
+          "AllowAnonymous": false,                 // Explicit dev-only opt-in; default false (fail-closed)
+          "TenantId": "xxxxxxxx-xxxx-...",         // Entra: Azure AD tenant
+          "ClientId": "yyyyyyyy-yyyy-...",         // Entra: app registration client ID
+          "ApiKeyHeader": "X-API-Key"              // ApiKey: header name (key itself via User Secrets/Key Vault)
+          // "ApiKey" / "BearerToken": supply via User Secrets or Key Vault — never appsettings.json
         }
       }
     }
@@ -217,7 +233,10 @@ Infrastructure.AI.MCPServer/
 
 | Setting | Purpose | Recommendation |
 |---------|---------|---------------|
-| `Auth.IsConfigured` | Enables/disables auth | Always `true` in production |
+| `Auth.Type` | Selects the enforcement scheme (`ApiKey`, `Bearer`, `Entra`) | `Entra` in production; `None` refuses to start unless `AllowAnonymous=true` |
+| `Auth.AllowAnonymous` | Explicit opt-in to serve without authentication | Never in production; logs a prominent startup warning while on |
+| `Auth.ApiKey` / `Auth.BearerToken` | Shared credential inbound requests must present | User Secrets or Key Vault only |
+| `Auth.ApiKeyHeader` | Header carrying the API key | Default `X-API-Key` |
 | `Auth.TenantId` | Entra tenant for token validation | Your organization's tenant |
 | `Auth.ClientId` | App registration for audience validation | Dedicated app registration |
 | Rate limit | 100 requests per minute per partition | Tune based on expected load |
@@ -278,7 +297,7 @@ Or configure Claude Desktop's `claude_desktop_config.json`:
 1. Verify `Auth.TenantId` and `Auth.ClientId` match your Entra app registration.
 2. Check that the token's `aud` claim matches `api://{ClientId}`.
 3. Check that the token's `iss` claim matches one of the two valid issuer patterns.
-4. For development, set `Auth.IsConfigured = false` to bypass auth entirely.
+4. If the host refuses to start with a fail-closed error, that is intentional: configure `Auth.Type` with its credential material, or — for local development only — consciously set `Auth.AllowAnonymous = true` (a warning is logged at startup while it is on). Running under `ASPNETCORE_ENVIRONMENT=Development` does not bypass authentication.
 
 ## Dependencies
 

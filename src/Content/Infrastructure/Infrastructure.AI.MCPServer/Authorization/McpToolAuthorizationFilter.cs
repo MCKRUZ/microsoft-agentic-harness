@@ -11,9 +11,10 @@ namespace Infrastructure.AI.MCPServer.Authorization;
 /// </summary>
 /// <remarks>
 /// <para>
-/// This is the baseline gate: when authentication is configured (all non-Development
-/// environments), every tool call must carry an authenticated principal. The logic is
-/// extracted from the server-builder wiring so it can be unit-tested in isolation.
+/// This is the baseline gate: unless the operator explicitly opted into anonymous
+/// serving (<c>AppConfig:AI:MCP:Auth:AllowAnonymous=true</c>), every tool call must
+/// carry an authenticated principal. The logic is extracted from the server-builder
+/// wiring so it can be unit-tested in isolation.
 /// </para>
 /// <para>
 /// Finer-grained, per-tool restriction is layered on top via standard
@@ -29,9 +30,9 @@ internal static class McpToolAuthorizationFilter
     /// Evaluates whether an inbound tool call is permitted to proceed.
     /// </summary>
     /// <param name="authenticationRequired">
-    /// True when the server has authentication configured (non-Development). When false
-    /// (Development with no configured auth) the gate is inert, matching the server's
-    /// existing unauthenticated-development posture.
+    /// True whenever the server enforces authentication — every mode except the
+    /// explicit <c>AllowAnonymous=true</c> opt-in, where the gate is deliberately
+    /// inert to match the operator's conscious choice to serve anonymously.
     /// </param>
     /// <param name="user">The caller principal carried on the request, if any.</param>
     /// <returns>
