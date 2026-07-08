@@ -16,32 +16,38 @@ public sealed class AllOfApprovalStrategy : IApprovalStrategy
         EscalationRequest request,
         IReadOnlyList<ApproverDecision> decisions)
     {
-        var deduplicated = DeduplicateByApprover(decisions);
-        var respondedNames = deduplicated.Select(d => d.ApproverName).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var pending = request.Approvers.Where(a => !respondedNames.Contains(a)).ToArray();
+        if (request.Approvers.Count == 0)
+        {
+            // Fail closed: an empty roster is a misconfigured gate. Treating "no approvers
+            // pending" as vacuously unanimous would auto-approve on the first decision (or
+            // even with none). Governance code must never approve a gate that nobody owns.
+            return new ApprovalEvaluation
+            {
+                IsResolved = true,
+                IsApproved = false,
+                PendingApprovers = []
+            };
+        }
 
-        if (deduplicated.Any(d => !d.Approved))
+        var scoped = ApproverRoster.Scope(request, decisions);
+
+        // A single denial from a listed approver resolves immediately as denied.
+        if (scoped.Decisions.Any(d => !d.Approved))
         {
             return new ApprovalEvaluation
             {
                 IsResolved = true,
                 IsApproved = false,
-                PendingApprovers = pending
+                PendingApprovers = scoped.Pending
             };
         }
 
-        var allResponded = pending.Length == 0;
+        var allResponded = scoped.Pending.Count == 0;
         return new ApprovalEvaluation
         {
             IsResolved = allResponded,
             IsApproved = allResponded,
-            PendingApprovers = pending
+            PendingApprovers = scoped.Pending
         };
     }
-
-    private static IReadOnlyList<ApproverDecision> DeduplicateByApprover(IReadOnlyList<ApproverDecision> decisions) =>
-        decisions
-            .GroupBy(d => d.ApproverName, StringComparer.OrdinalIgnoreCase)
-            .Select(g => g.MinBy(d => d.RespondedAt)!)
-            .ToArray();
 }

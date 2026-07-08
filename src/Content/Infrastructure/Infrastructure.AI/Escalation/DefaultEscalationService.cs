@@ -58,7 +58,15 @@ public sealed class DefaultEscalationService : IEscalationService, IDisposable
 		EscalationRequest request, CancellationToken ct)
 	{
 		var state = InitializeEscalation(request);
-		await RecordAndNotifyRequestAsync(state, ct);
+		try
+		{
+			await RecordAndNotifyRequestAsync(state, ct);
+		}
+		catch
+		{
+			RemoveFailedEscalation(state);
+			throw;
+		}
 		_ = RunTimeoutAsync(state);
 
 		try
@@ -76,7 +84,15 @@ public sealed class DefaultEscalationService : IEscalationService, IDisposable
 	public async Task<Guid> QueueEscalationAsync(EscalationRequest request, CancellationToken ct)
 	{
 		var state = InitializeEscalation(request);
-		await RecordAndNotifyRequestAsync(state, ct);
+		try
+		{
+			await RecordAndNotifyRequestAsync(state, ct);
+		}
+		catch
+		{
+			RemoveFailedEscalation(state);
+			throw;
+		}
 		_ = RunTimeoutAsync(state);
 		return request.EscalationId;
 	}
@@ -88,6 +104,18 @@ public sealed class DefaultEscalationService : IEscalationService, IDisposable
 		if (!_activeEscalations.TryGetValue(escalationId, out var state))
 		{
 			_logger.LogWarning("Decision submitted for unknown escalation {EscalationId}", escalationId);
+			return null;
+		}
+
+		// Authorization chokepoint: reject decisions from identities outside the approver
+		// roster before they are recorded, evaluated, or allowed to resolve the escalation.
+		// The strategies also filter non-roster votes (defense in depth), but stopping here
+		// keeps unauthorized decisions out of the audit trail and strategy evaluation entirely.
+		if (!state.Request.Approvers.Contains(decision.ApproverName, StringComparer.OrdinalIgnoreCase))
+		{
+			_logger.LogWarning(
+				"Rejected decision from non-roster identity {ApproverName} for escalation {EscalationId}",
+				decision.ApproverName, escalationId);
 			return null;
 		}
 
@@ -195,6 +223,18 @@ public sealed class DefaultEscalationService : IEscalationService, IDisposable
 
 	private EscalationState InitializeEscalation(EscalationRequest request)
 	{
+		if (request.Approvers.Count == 0)
+		{
+			// Fail closed at creation: an escalation with no approver roster can never be
+			// legitimately approved. Admitting it would let the AllOf strategy treat "nobody
+			// pending" as vacuously unanimous, or the timeout Approve action grant it silently.
+			_logger.LogWarning(
+				"Rejected escalation {EscalationId} for agent {AgentId}: empty approver roster",
+				request.EscalationId, request.AgentId);
+			throw new InvalidOperationException(
+				$"Escalation {request.EscalationId} has no approvers; refusing to create an escalation that cannot be approved.");
+		}
+
 		var state = new EscalationState
 		{
 			Request = request,
@@ -221,13 +261,24 @@ public sealed class DefaultEscalationService : IEscalationService, IDisposable
 
 	private async Task RecordAndNotifyRequestAsync(EscalationState state, CancellationToken ct)
 	{
-		await SafeExecuteAsync(
-			() => _auditStore.RecordRequestAsync(state.Request, ct),
-			"record request", state.Request.EscalationId);
+		// Durable request audit is fail-CLOSED: refuse to open an approvable escalation that
+		// could not be recorded for compliance. If it throws, the caller cleans up the
+		// half-created escalation and surfaces the failure. Notification stays best-effort.
+		await _auditStore.RecordRequestAsync(state.Request, ct);
 
 		await SafeExecuteAsync(
 			() => _notifier.NotifyEscalationRequestedAsync(state.Request, ct),
 			"notify request", state.Request.EscalationId);
+	}
+
+	private void RemoveFailedEscalation(EscalationState state)
+	{
+		if (_activeEscalations.TryRemove(state.Request.EscalationId, out _))
+		{
+			state.TimeoutCts.Cancel();
+			state.TimeoutCts.Dispose();
+			EscalationMetrics.Pending.Add(-1);
+		}
 	}
 
 	private async Task ResolveEscalationAsync(EscalationState state, EscalationOutcome outcome)
@@ -249,14 +300,23 @@ public sealed class DefaultEscalationService : IEscalationService, IDisposable
 			"Escalation {EscalationId} resolved: {ResolutionType}, approved={IsApproved}",
 			outcome.EscalationId, outcome.ResolutionType, outcome.IsApproved);
 
-		// Record the audit outcome and notify BEFORE releasing the caller awaiting
-		// Completion.Task. This guarantees that when RequestEscalationAsync returns an
-		// outcome (notably on the timeout path), that outcome has already been durably
-		// audited — a caller can never observe a resolved escalation that has not yet
-		// been recorded for compliance.
-		await SafeExecuteAsync(
-			() => _auditStore.RecordOutcomeAsync(outcome, CancellationToken.None),
-			"record outcome", outcome.EscalationId);
+		// Record the audit outcome BEFORE releasing the caller awaiting Completion.Task.
+		// The durable outcome write is fail-CLOSED: if it throws, the escalation must NOT
+		// be reported as resolved. Propagate the failure to the awaiting caller instead of
+		// delivering an approval that was never recorded for compliance. (SafeExecuteAsync
+		// is reserved for best-effort notification, never for the durable audit write.)
+		try
+		{
+			await _auditStore.RecordOutcomeAsync(outcome, CancellationToken.None);
+		}
+		catch (Exception ex)
+		{
+			_logger.LogError(ex,
+				"Failed to record outcome for escalation {EscalationId}; failing closed (escalation not reported resolved)",
+				outcome.EscalationId);
+			state.Completion.TrySetException(ex);
+			throw;
+		}
 
 		await SafeExecuteAsync(
 			() => _notifier.NotifyEscalationResolvedAsync(outcome, CancellationToken.None),

@@ -93,4 +93,34 @@ public class AnyOfApprovalStrategyTests
     {
         _sut.StrategyType.Should().Be(ApprovalStrategyType.AnyOf);
     }
+
+    // ---- roster-membership enforcement (security fix) ----
+
+    [Fact]
+    public void EvaluateDecision_OnlyNonRosterApproval_DoesNotResolve()
+    {
+        var request = CreateRequest("alice", "bob", "carol");
+
+        var result = _sut.EvaluateDecision(request, new[] { Approve("mallory") });
+
+        result.IsResolved.Should().BeFalse("a decision from an identity outside the approver roster must not resolve an AnyOf escalation");
+        result.PendingApprovers.Should().BeEquivalentTo(["alice", "bob", "carol"]);
+    }
+
+    [Fact]
+    public void EvaluateDecision_NonRosterEarliestDecision_Ignored_RosterDecisionWins()
+    {
+        var request = CreateRequest("alice", "bob", "carol");
+        var now = DateTimeOffset.UtcNow;
+        var decisions = new[]
+        {
+            new ApproverDecision { ApproverName = "mallory", Approved = false, Reason = "hijack", RespondedAt = now },
+            new ApproverDecision { ApproverName = "alice", Approved = true, RespondedAt = now.AddSeconds(1) }
+        };
+
+        var result = _sut.EvaluateDecision(request, decisions);
+
+        result.IsResolved.Should().BeTrue();
+        result.IsApproved.Should().BeTrue("a non-roster decision (even the earliest) must be ignored; only alice's vote counts");
+    }
 }
