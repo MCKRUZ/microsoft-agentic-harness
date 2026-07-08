@@ -381,18 +381,39 @@ public static class IServiceCollectionExtensions
     /// <c>(HttpRetry.Count + 1) × per-attempt timeout</c> plus exponential-backoff headroom
     /// (<c>Delay × 2^Count</c>), capped at 24 hours (Polly's strategy maximum).
     /// </summary>
-    private static TimeSpan ResolveTotalTimeout(HttpPolicyConfig policies)
+    internal static TimeSpan ResolveTotalTimeout(HttpPolicyConfig policies)
     {
         if (policies.HttpTimeout.TotalTimeout is { } configured)
             return configured;
 
-        var attempts = policies.HttpRetry.Count + 1;
-        var backoffFactor = 1L << Math.Min(policies.HttpRetry.Count, 10);
-        var computed = TimeSpan.FromTicks(policies.HttpTimeout.Timeout.Ticks * attempts)
-            + TimeSpan.FromTicks(policies.HttpRetry.Delay.Ticks * backoffFactor);
-
         var max = TimeSpan.FromHours(24);
-        return computed < max ? computed : max;
+
+        // Clamp the retry count defensively before it drives any arithmetic: a negative or absurd
+        // value (config binding does not cap it) would otherwise overflow the (Count + 1) attempt
+        // multiplier or the 1 << Count backoff shift. 30 is far beyond any sane retry budget and
+        // any resulting duration is capped at `max` regardless.
+        var count = Math.Clamp(policies.HttpRetry.Count, 0, 30);
+        var attempts = count + 1L;
+        var backoffFactor = 1L << Math.Min(count, 10);
+
+        try
+        {
+            // `checked` promotes the tick multiplications to overflow-throwing; TimeSpan addition
+            // already throws on overflow. A pathological per-attempt timeout or delay therefore
+            // surfaces as OverflowException rather than silently wrapping to a negative budget.
+            var computed = checked(
+                TimeSpan.FromTicks(policies.HttpTimeout.Timeout.Ticks * attempts)
+                + TimeSpan.FromTicks(policies.HttpRetry.Delay.Ticks * backoffFactor));
+
+            // A non-positive result means the config itself is nonsensical (e.g. a negative
+            // per-attempt timeout); fall back to the strategy maximum rather than handing Polly a
+            // zero/negative budget that would fail every request instantly.
+            return computed > TimeSpan.Zero && computed < max ? computed : max;
+        }
+        catch (OverflowException)
+        {
+            return max;
+        }
     }
 
     /// <summary>

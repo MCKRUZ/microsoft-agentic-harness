@@ -203,6 +203,32 @@ public sealed class DependencyInjectionTests
         channels.Should().NotContain(c => c.GetType() == typeof(CompositeEscalationNotifier));
     }
 
+    [Fact]
+    public void RegisterGenerationStatsClient_OpenRouterPath_LeavesTypedClientTimeoutInfinite()
+    {
+        // The OpenRouter generation-stats client is a typed HttpClient created via the factory, so
+        // it inherits the harness resilience pipeline (per-attempt + total timeout). A finite
+        // HttpClient.Timeout would race that pipeline and could truncate the retry budget
+        // mid-attempt; the registration must leave the client timeout infinite so the pipeline
+        // owns the budget — consistent with the default (non-typed) clients.
+        var config = new AppConfig();
+        config.AI.AgentFramework.ClientType = Domain.Common.Config.AI.AIAgentFrameworkClientType.OpenAI;
+        config.AI.AgentFramework.EnablePromptCaching = true;
+        config.AI.AgentFramework.Endpoint = "https://openrouter.ai/api/v1";
+        config.AI.AgentFramework.ApiKey = "test-key";
+
+        var services = CreateBaseServices(config);
+        services.AddInfrastructureAIDependencies(config);
+        using var provider = services.BuildServiceProvider();
+
+        var factory = provider.GetRequiredService<IHttpClientFactory>();
+        var client = factory.CreateClient(nameof(IGenerationStatsClient));
+
+        client.Timeout.Should().Be(
+            Timeout.InfiniteTimeSpan,
+            "the resilience pipeline owns the timeout; the typed client must not set a finite one that races it");
+    }
+
     /// <summary>
     /// Minimal IOptionsMonitor stub that returns a fixed value.
     /// </summary>

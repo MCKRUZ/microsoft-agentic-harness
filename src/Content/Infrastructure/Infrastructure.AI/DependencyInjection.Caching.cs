@@ -8,8 +8,6 @@ namespace Infrastructure.AI;
 
 public static partial class DependencyInjection
 {
-    private const int GenerationStatsTimeoutSeconds = 30;
-
     /// <summary>
     /// Registers the <see cref="IGenerationStatsClient"/> used to fetch out-of-band prompt-cache
     /// telemetry, but only on the OpenRouter path with prompt caching enabled — the one shape where
@@ -44,7 +42,12 @@ public static partial class DependencyInjection
         services.AddHttpClient<IGenerationStatsClient, OpenRouterGenerationStatsClient>(client =>
         {
             client.BaseAddress = new Uri(baseAddress);
-            client.Timeout = TimeSpan.FromSeconds(GenerationStatsTimeoutSeconds);
+            // The harness resilience pipeline (attached to every factory-created client by
+            // AddDefaultHttpClient) owns BOTH the per-attempt and the total timeout. A finite
+            // HttpClient.Timeout here would race that pipeline and could truncate the retry
+            // budget mid-attempt, so the client timeout is left infinite — consistent with the
+            // default (non-typed) clients.
+            client.Timeout = Timeout.InfiniteTimeSpan;
             if (!string.IsNullOrWhiteSpace(apiKey))
                 client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
         });

@@ -202,7 +202,12 @@ public static class DependencyInjection
             {
                 var config = sp.GetRequiredService<IOptions<PrometheusConfig>>().Value;
                 client.BaseAddress = new Uri(config.BaseUrl.TrimEnd('/') + '/');
-                client.Timeout = TimeSpan.FromSeconds(config.TimeoutSeconds);
+                // The harness resilience pipeline (attached to every factory-created client by
+                // AddDefaultHttpClient) owns BOTH the per-attempt and the total timeout. A finite
+                // HttpClient.Timeout here would race that pipeline and could truncate the retry
+                // budget mid-attempt, so the client timeout is left infinite — consistent with the
+                // default (non-typed) clients.
+                client.Timeout = Timeout.InfiniteTimeSpan;
             });
         }
 
