@@ -4,6 +4,7 @@ using Domain.AI.Changes;
 using Domain.AI.GitOps;
 using Domain.Common;
 using MediatR;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
 namespace Infrastructure.AI.GitOps;
@@ -32,16 +33,21 @@ namespace Infrastructure.AI.GitOps;
 /// </remarks>
 public sealed class GitOpsRemediationDispatcher : IGitOpsRemediationDispatcher
 {
-    private readonly IMediator _mediator;
+    private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<GitOpsRemediationDispatcher> _logger;
 
     /// <summary>Initializes a new <see cref="GitOpsRemediationDispatcher"/>.</summary>
-    public GitOpsRemediationDispatcher(IMediator mediator, ILogger<GitOpsRemediationDispatcher> logger)
+    /// <param name="scopeFactory">Scope factory used to resolve <see cref="IMediator"/> per dispatch.
+    /// The dispatcher is a SINGLETON, but a mediator dispatch constructs pipeline behaviors that
+    /// ctor-inject the SCOPED <c>IAgentExecutionContext</c>, so each dispatch runs inside a fresh
+    /// scope rather than against a root-bound mediator.</param>
+    /// <param name="logger">Logger for dispatch diagnostics.</param>
+    public GitOpsRemediationDispatcher(IServiceScopeFactory scopeFactory, ILogger<GitOpsRemediationDispatcher> logger)
     {
-        ArgumentNullException.ThrowIfNull(mediator);
+        ArgumentNullException.ThrowIfNull(scopeFactory);
         ArgumentNullException.ThrowIfNull(logger);
 
-        _mediator = mediator;
+        _scopeFactory = scopeFactory;
         _logger = logger;
     }
 
@@ -72,7 +78,12 @@ public sealed class GitOpsRemediationDispatcher : IGitOpsRemediationDispatcher
 
         try
         {
-            var result = await _mediator.Send(command, cancellationToken).ConfigureAwait(false);
+            // Dispatch inside a fresh scope: the MediatR pipeline resolves scoped services
+            // (IAgentExecutionContext et al.), which a singleton must never pull from the root.
+            await using var scope = _scopeFactory.CreateAsyncScope();
+            var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
+
+            var result = await mediator.Send(command, cancellationToken).ConfigureAwait(false);
             if (!result.IsSuccess)
             {
                 _logger.LogWarning(

@@ -3,6 +3,7 @@ using Domain.AI.Changes;
 using Domain.AI.Identity;
 using Domain.Common;
 using FluentAssertions;
+using Infrastructure.AI.Tests.Support;
 using Infrastructure.AI.Tests.Tools.Workspace.Support;
 using Infrastructure.AI.Tools.Workspace;
 using MediatR;
@@ -25,7 +26,7 @@ public sealed class WorkspaceWriteFileToolTests
         using var fx = new WorkspaceTestFixture();
         var existingPath = fx.WriteFile("foo.txt", "original-content");
         var mediator = new RecordingMediator(SuccessProposal());
-        var sut = new WorkspaceWriteFileTool(fx.Accessor, mediator);
+        var sut = new WorkspaceWriteFileTool(fx.Accessor, TestScopeFactory.For(mediator));
 
         var result = await sut.ExecuteAsync(
             "submit",
@@ -59,7 +60,7 @@ public sealed class WorkspaceWriteFileToolTests
     {
         using var fx = new WorkspaceTestFixture();
         var mediator = new RecordingMediator(SuccessProposal());
-        var sut = new WorkspaceWriteFileTool(fx.Accessor, mediator);
+        var sut = new WorkspaceWriteFileTool(fx.Accessor, TestScopeFactory.For(mediator));
 
         var result = await sut.ExecuteAsync(
             "submit",
@@ -81,7 +82,7 @@ public sealed class WorkspaceWriteFileToolTests
     {
         var bareAccessor = new WorkspaceContextAccessor();
         var mediator = new RecordingMediator(SuccessProposal());
-        var sut = new WorkspaceWriteFileTool(bareAccessor, mediator);
+        var sut = new WorkspaceWriteFileTool(bareAccessor, TestScopeFactory.For(mediator));
 
         var result = await sut.ExecuteAsync(
             "submit",
@@ -101,7 +102,7 @@ public sealed class WorkspaceWriteFileToolTests
     {
         using var fx = new WorkspaceTestFixture();
         var mediator = new RecordingMediator(SuccessProposal());
-        var sut = new WorkspaceWriteFileTool(fx.Accessor, mediator);
+        var sut = new WorkspaceWriteFileTool(fx.Accessor, TestScopeFactory.For(mediator));
 
         var result = await sut.ExecuteAsync(
             "submit",
@@ -123,7 +124,7 @@ public sealed class WorkspaceWriteFileToolTests
         using var fx = new WorkspaceTestFixture();
         var failureResult = Result<ChangeProposal>.Fail(["validation failed: target unsupported"]);
         var mediator = new RecordingMediator(failureResult);
-        var sut = new WorkspaceWriteFileTool(fx.Accessor, mediator);
+        var sut = new WorkspaceWriteFileTool(fx.Accessor, TestScopeFactory.For(mediator));
 
         var result = await sut.ExecuteAsync(
             "submit",
@@ -143,7 +144,7 @@ public sealed class WorkspaceWriteFileToolTests
     {
         using var fx = new WorkspaceTestFixture();
         var mediator = new RecordingMediator(SuccessProposal());
-        var sut = new WorkspaceWriteFileTool(fx.Accessor, mediator);
+        var sut = new WorkspaceWriteFileTool(fx.Accessor, TestScopeFactory.For(mediator));
 
         await sut.ExecuteAsync(
             "submit",

@@ -105,6 +105,44 @@ public sealed class PromptComposerScopeIsolationTests
     }
 
     [Fact]
+    public async Task ComposeAsync_CacheableIdentitySection_NotPoisonedByScopeContext()
+    {
+        using var provider = BuildProvider();
+
+        // A scope bound to agent-b composes for cache key "agent-a" (e.g. a
+        // supervisor composing a subagent's prompt). The cacheable identity
+        // section is stored under the agent-a key, so its content must derive
+        // from that key — not from the composing scope's execution context.
+        using (var scope1 = provider.CreateScope())
+        {
+            scope1.ServiceProvider.GetRequiredService<IAgentExecutionContext>()
+                .Initialize("agent-b", "conv-1", turnNumber: 1);
+
+            var prompt = await scope1.ServiceProvider
+                .GetRequiredService<ISystemPromptComposer>()
+                .ComposeAsync("agent-a", tokenBudget: 10_000);
+
+            prompt.Should().Contain("You are agent-a.");
+            prompt.Should().NotContain("You are agent-b.",
+                "the cacheable identity section must be a pure function of the cache key");
+        }
+
+        // A later scope composing for agent-a must get agent-a content from the
+        // shared cache — not whatever identity the first scope happened to carry.
+        using var scope2 = provider.CreateScope();
+        scope2.ServiceProvider.GetRequiredService<IAgentExecutionContext>()
+            .Initialize("agent-a", "conv-2", turnNumber: 1);
+
+        var prompt2 = await scope2.ServiceProvider
+            .GetRequiredService<ISystemPromptComposer>()
+            .ComposeAsync("agent-a", tokenBudget: 10_000);
+
+        prompt2.Should().Contain("You are agent-a.");
+        prompt2.Should().NotContain("You are agent-b.",
+            "a cached section must never carry another conversation's identity");
+    }
+
+    [Fact]
     public void Composer_ResolvesFromRequestScope_UnderScopeValidation()
     {
         // Regression: the singleton registration forced the AgentHub host and its test

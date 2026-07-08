@@ -1,5 +1,4 @@
 using Application.AI.Common.Helpers;
-using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Prompts;
 using Domain.AI.Prompts;
 
@@ -10,20 +9,16 @@ namespace Infrastructure.AI.Prompts.Sections;
 /// This is always the highest-priority section (Priority = 10) and is cacheable
 /// because agent identity does not change within a conversation.
 /// </summary>
+/// <remarks>
+/// The section content is a pure function of the <c>agentId</c> parameter — the
+/// same value the singleton <c>IPromptSectionCache</c> keys on. It must NOT be
+/// derived from the scoped <c>IAgentExecutionContext</c>: a cacheable section
+/// whose content depends on per-scope state but whose cache key does not would
+/// let one conversation's identity poison the cached section served to another
+/// conversation composing for the same <c>agentId</c>.
+/// </remarks>
 public sealed class AgentIdentitySectionProvider : IPromptSectionProvider
 {
-    private readonly IAgentExecutionContext _executionContext;
-
-    /// <summary>
-    /// Initializes a new instance of <see cref="AgentIdentitySectionProvider"/>.
-    /// </summary>
-    /// <param name="executionContext">The scoped agent execution context.</param>
-    public AgentIdentitySectionProvider(IAgentExecutionContext executionContext)
-    {
-        ArgumentNullException.ThrowIfNull(executionContext);
-        _executionContext = executionContext;
-    }
-
     /// <inheritdoc />
     public SystemPromptSectionType SectionType => SystemPromptSectionType.AgentIdentity;
 
@@ -32,13 +27,11 @@ public sealed class AgentIdentitySectionProvider : IPromptSectionProvider
         string agentId,
         CancellationToken cancellationToken = default)
     {
-        var agentName = _executionContext.AgentId ?? agentId;
-
         // Without identity info, we can't produce a meaningful section
-        if (string.IsNullOrEmpty(agentName))
+        if (string.IsNullOrEmpty(agentId))
             return Task.FromResult<SystemPromptSection?>(null);
 
-        var content = $"You are {agentName}.";
+        var content = $"You are {agentId}.";
 
         var section = new SystemPromptSection(
             Name: "Agent Identity",

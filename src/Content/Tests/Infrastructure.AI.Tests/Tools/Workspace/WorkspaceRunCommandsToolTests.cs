@@ -1,6 +1,7 @@
 using Application.AI.Common.Interfaces.Sandbox;
 using Domain.AI.Sandbox;
 using FluentAssertions;
+using Infrastructure.AI.Tests.Support;
 using Infrastructure.AI.Tests.Tools.Workspace.Support;
 using Infrastructure.AI.Tools.Workspace;
 using Xunit;
@@ -21,7 +22,7 @@ public sealed class WorkspaceRunCommandsToolTests
     {
         using var fx = new WorkspaceTestFixture(testCommand: "dotnet test src/Solution.slnx");
         var sandbox = new RecordingSandbox(success: true, exitCode: 0, output: "12 tests passed");
-        var sut = new WorkspaceRunTestsTool(fx.Accessor, sandbox);
+        var sut = new WorkspaceRunTestsTool(fx.Accessor, TestScopeFactory.ForSandbox(sandbox));
 
         var result = await sut.ExecuteAsync(
             "run",
@@ -52,7 +53,7 @@ public sealed class WorkspaceRunCommandsToolTests
     {
         using var fx = new WorkspaceTestFixture(testCommand: "");
         var sandbox = new RecordingSandbox(success: true, exitCode: 0, output: "");
-        var sut = new WorkspaceRunTestsTool(fx.Accessor, sandbox);
+        var sut = new WorkspaceRunTestsTool(fx.Accessor, TestScopeFactory.ForSandbox(sandbox));
 
         var result = await sut.ExecuteAsync("run", new Dictionary<string, object?>());
 
@@ -66,7 +67,7 @@ public sealed class WorkspaceRunCommandsToolTests
     {
         using var fx = new WorkspaceTestFixture(testCommand: "dotnet test");
         var sandbox = new RecordingSandbox(success: false, exitCode: 1, output: "2 tests failed");
-        var sut = new WorkspaceRunTestsTool(fx.Accessor, sandbox);
+        var sut = new WorkspaceRunTestsTool(fx.Accessor, TestScopeFactory.ForSandbox(sandbox));
 
         var result = await sut.ExecuteAsync("run", new Dictionary<string, object?>());
 
@@ -79,7 +80,7 @@ public sealed class WorkspaceRunCommandsToolTests
     {
         using var fx = new WorkspaceTestFixture(lintCommand: "dotnet format --verify-no-changes");
         var sandbox = new RecordingSandbox(success: true, exitCode: 0, output: "lint clean");
-        var sut = new WorkspaceRunLintTool(fx.Accessor, sandbox);
+        var sut = new WorkspaceRunLintTool(fx.Accessor, TestScopeFactory.ForSandbox(sandbox));
 
         var result = await sut.ExecuteAsync("run", new Dictionary<string, object?>());
 
@@ -95,7 +96,7 @@ public sealed class WorkspaceRunCommandsToolTests
     {
         using var fx = new WorkspaceTestFixture();
         var sandbox = new RecordingSandbox(success: true, exitCode: 0, output: "");
-        var sut = new WorkspaceRunLintTool(fx.Accessor, sandbox);
+        var sut = new WorkspaceRunLintTool(fx.Accessor, TestScopeFactory.ForSandbox(sandbox));
 
         var result = await sut.ExecuteAsync("run", new Dictionary<string, object?>());
 
@@ -108,7 +109,7 @@ public sealed class WorkspaceRunCommandsToolTests
     {
         var bareAccessor = new WorkspaceContextAccessor();
         var sandbox = new RecordingSandbox(success: true, exitCode: 0, output: "");
-        var sut = new WorkspaceRunTestsTool(bareAccessor, sandbox);
+        var sut = new WorkspaceRunTestsTool(bareAccessor, TestScopeFactory.ForSandbox(sandbox));
 
         var result = await sut.ExecuteAsync("run", new Dictionary<string, object?>());
 

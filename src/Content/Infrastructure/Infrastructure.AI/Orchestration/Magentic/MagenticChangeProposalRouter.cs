@@ -2,6 +2,7 @@ using Application.AI.Common.CQRS.Changes.SubmitChangeProposal;
 using Domain.AI.Changes;
 using Domain.Common;
 using MediatR;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
 namespace Infrastructure.AI.Orchestration.Magentic;
@@ -35,7 +36,7 @@ namespace Infrastructure.AI.Orchestration.Magentic;
 /// </remarks>
 public sealed class MagenticChangeProposalRouter
 {
-    private readonly IMediator _mediator;
+    private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<MagenticChangeProposalRouter> _logger;
 
     private static readonly string[] DefaultStateChangeVerbs =
@@ -53,9 +54,17 @@ public sealed class MagenticChangeProposalRouter
     /// <summary>
     /// Creates a router that submits qualifying replans via MediatR.
     /// </summary>
-    public MagenticChangeProposalRouter(IMediator mediator, ILogger<MagenticChangeProposalRouter> logger)
+    /// <param name="scopeFactory">Scope factory used to resolve <see cref="IMediator"/> per routed replan.
+    /// The router is a SINGLETON, but a mediator dispatch constructs pipeline behaviors that
+    /// ctor-inject the SCOPED <c>IAgentExecutionContext</c>, so each submission runs inside a
+    /// fresh scope rather than against a root-bound mediator.</param>
+    /// <param name="logger">Logger for routing diagnostics.</param>
+    public MagenticChangeProposalRouter(IServiceScopeFactory scopeFactory, ILogger<MagenticChangeProposalRouter> logger)
     {
-        _mediator = mediator;
+        ArgumentNullException.ThrowIfNull(scopeFactory);
+        ArgumentNullException.ThrowIfNull(logger);
+
+        _scopeFactory = scopeFactory;
         _logger = logger;
     }
 
@@ -101,7 +110,12 @@ public sealed class MagenticChangeProposalRouter
         Result<ChangeProposal> result;
         try
         {
-            result = await _mediator.Send(command, ct).ConfigureAwait(false);
+            // Dispatch inside a fresh scope: the MediatR pipeline resolves scoped services
+            // (IAgentExecutionContext et al.), which a singleton must never pull from the root.
+            await using var scope = _scopeFactory.CreateAsyncScope();
+            var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
+
+            result = await mediator.Send(command, ct).ConfigureAwait(false);
         }
         catch (Exception ex)
         {

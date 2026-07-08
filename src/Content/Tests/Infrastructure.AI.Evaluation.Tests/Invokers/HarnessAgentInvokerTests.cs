@@ -2,6 +2,7 @@ using Application.Core.CQRS.Agents.ExecuteAgentTurn;
 using Domain.AI.Evaluation;
 using FluentAssertions;
 using MediatR;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using Xunit;
@@ -34,8 +35,18 @@ public sealed class HarnessAgentInvokerTests
 
     private static Infrastructure.AI.Evaluation.Invokers.HarnessAgentInvoker MakeSut(
         IMediator mediator) => new(
-            mediator,
+            ScopeFactoryFor(mediator),
             NullLogger<Infrastructure.AI.Evaluation.Invokers.HarnessAgentInvoker>.Instance);
+
+    /// <summary>
+    /// Minimal scope factory whose scopes resolve <see cref="IMediator"/> to the supplied
+    /// double — the invoker resolves the mediator per invocation from a fresh scope.
+    /// </summary>
+    private static IServiceScopeFactory ScopeFactoryFor(IMediator mediator) =>
+        new ServiceCollection()
+            .AddScoped(_ => mediator)
+            .BuildServiceProvider()
+            .GetRequiredService<IServiceScopeFactory>();
 
     [Fact]
     public async Task Sends_command_with_agent_name_from_case_overrides()

@@ -1,24 +1,24 @@
-using Application.AI.Common.Interfaces.Agent;
 using Domain.AI.Prompts;
 using FluentAssertions;
 using Infrastructure.AI.Prompts.Sections;
-using Moq;
 using Xunit;
 
 namespace Infrastructure.AI.Tests.Prompts.Sections;
 
+/// <summary>
+/// Tests for <see cref="AgentIdentitySectionProvider"/>. The cacheable identity
+/// content must be a pure function of the <c>agentId</c> parameter — the cache
+/// key — never of ambient scoped state, so a cached section can never carry one
+/// conversation's identity into another (cross-agent cache poisoning).
+/// </summary>
 public class AgentIdentitySectionProviderTests
 {
-    private readonly Mock<IAgentExecutionContext> _contextMock = new();
+    private readonly AgentIdentitySectionProvider _provider = new();
 
     [Fact]
     public async Task GetSectionAsync_ReturnsAgentIdentity()
     {
-        _contextMock.Setup(c => c.AgentId).Returns("ResearchAgent");
-
-        var provider = new AgentIdentitySectionProvider(_contextMock.Object);
-
-        var section = await provider.GetSectionAsync("ResearchAgent");
+        var section = await _provider.GetSectionAsync("ResearchAgent");
 
         section.Should().NotBeNull();
         section!.Content.Should().Contain("ResearchAgent");
@@ -29,37 +29,28 @@ public class AgentIdentitySectionProviderTests
     [Fact]
     public async Task GetSectionAsync_IsCacheable()
     {
-        _contextMock.Setup(c => c.AgentId).Returns("TestAgent");
-
-        var provider = new AgentIdentitySectionProvider(_contextMock.Object);
-
-        var section = await provider.GetSectionAsync("TestAgent");
+        var section = await _provider.GetSectionAsync("TestAgent");
 
         section.Should().NotBeNull();
         section!.IsCacheable.Should().BeTrue();
     }
 
     [Fact]
-    public async Task GetSectionAsync_FallsBackToAgentIdParameter_WhenContextNull()
+    public async Task GetSectionAsync_ContentDerivesOnlyFromCacheKeyInput()
     {
-        _contextMock.Setup(c => c.AgentId).Returns((string?)null);
-
-        var provider = new AgentIdentitySectionProvider(_contextMock.Object);
-
-        var section = await provider.GetSectionAsync("fallback-agent");
+        // Regression: the cache keys on the agentId PARAMETER. Content derived
+        // from anything else (e.g. the scoped IAgentExecutionContext) would let
+        // a scope bound to agent-b poison the cached section under agent-a's key.
+        var section = await _provider.GetSectionAsync("agent-a");
 
         section.Should().NotBeNull();
-        section!.Content.Should().Contain("fallback-agent");
+        section!.Content.Should().Be("You are agent-a.");
     }
 
     [Fact]
-    public async Task GetSectionAsync_ReturnsNull_WhenBothIdsEmpty()
+    public async Task GetSectionAsync_ReturnsNull_WhenAgentIdEmpty()
     {
-        _contextMock.Setup(c => c.AgentId).Returns((string?)null);
-
-        var provider = new AgentIdentitySectionProvider(_contextMock.Object);
-
-        var section = await provider.GetSectionAsync("");
+        var section = await _provider.GetSectionAsync("");
 
         section.Should().BeNull();
     }
@@ -67,19 +58,13 @@ public class AgentIdentitySectionProviderTests
     [Fact]
     public void SectionType_IsAgentIdentity()
     {
-        var provider = new AgentIdentitySectionProvider(_contextMock.Object);
-
-        provider.SectionType.Should().Be(SystemPromptSectionType.AgentIdentity);
+        _provider.SectionType.Should().Be(SystemPromptSectionType.AgentIdentity);
     }
 
     [Fact]
     public async Task GetSectionAsync_EstimatedTokens_IsPositive()
     {
-        _contextMock.Setup(c => c.AgentId).Returns("Agent");
-
-        var provider = new AgentIdentitySectionProvider(_contextMock.Object);
-
-        var section = await provider.GetSectionAsync("Agent");
+        var section = await _provider.GetSectionAsync("Agent");
 
         section.Should().NotBeNull();
         section!.EstimatedTokens.Should().BeGreaterThan(0);
