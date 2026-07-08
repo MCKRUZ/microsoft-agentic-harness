@@ -122,7 +122,15 @@ public static partial class DependencyInjection
                 ? Path.GetFullPath(lp, exeDir)
                 : string.Empty)
             .Where(p => !string.IsNullOrEmpty(p))
-            .Distinct();
+            .Distinct()
+            .ToArray();
+
+        // Ensure each configured sandbox base path exists so the file-system tool can read/list an
+        // out-of-box 'workspace' directory instead of failing on a missing folder. Idempotent for
+        // pre-existing paths (repo root, logs). A genuinely uncreatable path is a misconfiguration
+        // and surfaces loudly at startup rather than being silently masked.
+        foreach (var basePath in allowedBasePaths)
+            Directory.CreateDirectory(basePath);
 
         RegisterToolServices(services, appConfig, allowedBasePaths);
 
