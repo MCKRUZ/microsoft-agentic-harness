@@ -109,6 +109,33 @@ public sealed class PluginPermissionRuleProviderTests
     }
 
     [Fact]
+    public async Task GetRulesAsync_DeniedToolsWithoutAutonomyLevel_StillEmitsBypassImmuneDenyRules()
+    {
+        // DeniedTools are bypass-immune and must be enforced regardless of whether the
+        // plugin also sets an AutonomyLevel. A plugin that only denies tools (no autonomy
+        // override) must still contribute its Deny rules.
+        var declaration = new PluginDeclaration
+        {
+            Name = "deny-only",
+            AutonomyLevel = null,
+            DeniedTools = ["bash", "deploy_production"]
+        };
+        _registryMock.Setup(r => r.GetLoadedPlugins()).Returns(new List<LoadedPlugin>
+        {
+            new("deny-only", "1.0", "/plugins/deny-only", new PluginManifest(),
+                PluginLoadStatus.Loaded, [], ["deny-only:server"], declaration)
+        });
+
+        var rules = await CreateProvider().GetRulesAsync("any-agent");
+
+        rules.Should().HaveCount(2, "no baseline autonomy rule, but both Deny rules must be present");
+        rules.Should().OnlyContain(r =>
+            r.Behavior == PermissionBehaviorType.Deny && r.IsBypassImmune);
+        rules.Should().Contain(r => r.ToolPattern == "bash");
+        rules.Should().Contain(r => r.ToolPattern == "deploy_production");
+    }
+
+    [Fact]
     public async Task GetRulesAsync_DenyRules_HaveHigherPriorityThanBaseline()
     {
         var declaration = new PluginDeclaration
