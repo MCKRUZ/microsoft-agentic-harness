@@ -53,16 +53,28 @@ public sealed class StartupRegistrationSmokeCheck : IHostedService
     }
 
     /// <summary>
-    /// Runs every smoke check and throws an aggregated <see cref="InvalidOperationException"/>
-    /// when any required binding or registration is missing.
+    /// Runs startup options validation plus every smoke check, throwing an aggregated
+    /// <see cref="InvalidOperationException"/> when any required binding or registration
+    /// is missing.
     /// </summary>
     /// <param name="cancellationToken">Token to observe while starting.</param>
     /// <returns>A completed task when all checks pass.</returns>
+    /// <exception cref="OptionsValidationException">
+    /// Thrown when a config section registered with <c>ValidateOnStart()</c> holds invalid values.
+    /// </exception>
     /// <exception cref="InvalidOperationException">
     /// Thrown when one or more critical options bindings or services cannot be resolved.
     /// </exception>
     public Task StartAsync(CancellationToken cancellationToken)
     {
+        // Startup options validation (every ValidateOnStart() binding). IHost-based hosts run
+        // IStartupValidator natively inside Host.StartAsync, but console-style hosts (ConsoleUI,
+        // EvalRunner, FoundryHost) compose a bare ServiceCollection and start hosted services
+        // manually — without this call they would never trigger it and invalid config would
+        // boot silently. Runs first and rethrows as-is: OptionsValidationException already
+        // carries the per-property messages the operator needs.
+        _serviceProvider.GetService<IStartupValidator>()?.Validate();
+
         var failures = new List<string>();
 
         // Options bindings: resolving CurrentValue forces the bind to run. A missing

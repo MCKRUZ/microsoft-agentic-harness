@@ -1,11 +1,18 @@
 using Application.AI.Common;
 using Application.Common;
+using Application.Common.Extensions;
 using Application.Common.Interfaces.Security;
 using Application.Core;
+using Application.Core.Validation;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
+using Domain.Common.Config.AI.GitOps;
 using Domain.Common.Config.AI.Governance;
+using Domain.Common.Config.AI.HarmonicMemory;
+using Domain.Common.Config.AI.Iac;
 using Domain.Common.Config.AI.Resilience;
+using Domain.Common.Config.AI.Telemetry;
+using Domain.Common.Config.AI.WorkMemory;
 using Domain.Common.Config.Azure;
 using Domain.Common.Config.Cache;
 using Domain.Common.Config.Connectors;
@@ -69,8 +76,18 @@ public static class IServiceCollectionExtensions
     /// </param>
     /// <returns>The service collection for chaining.</returns>
     /// <remarks>
+    /// <para>
     /// Each subsection path maps to <c>AppConfig:{SectionName}</c> in appsettings.json.
     /// All config classes support runtime reload via <c>IOptionsMonitor&lt;T&gt;</c>.
+    /// </para>
+    /// <para>
+    /// Sections that have a FluentValidation config validator (Application.Core/Validation)
+    /// are bound through <c>AddOptions&lt;T&gt;().Bind(...)</c> with the validator attached and
+    /// <c>ValidateOnStart()</c>, so invalid appsettings values fail the host at boot instead
+    /// of passing silently. IHost-based hosts run this natively inside <c>StartAsync</c>;
+    /// console-style hosts that start hosted services manually get the same guarantee via
+    /// <see cref="Startup.StartupRegistrationSmokeCheck"/>.
+    /// </para>
     /// </remarks>
     public static IServiceCollection RegisterConfigSections(
         this IServiceCollection services,
@@ -88,12 +105,6 @@ public static class IServiceCollectionExtensions
         services.Configure<EmbeddingConfig>(configuration.GetSection("AppConfig:AI:Embedding"));
         services.Configure<AzureConfig>(configuration.GetSection("AppConfig:Azure"));
         services.Configure<CacheConfig>(configuration.GetSection("AppConfig:Cache"));
-        services.Configure<EscalationConfig>(configuration.GetSection("AppConfig:AI:Governance:Escalation"));
-        services.Configure<ResilienceConfig>(configuration.GetSection("AppConfig:AI:Resilience"));
-        services.Configure<Domain.Common.Config.AI.DriftDetection.DriftDetectionConfig>(
-            configuration.GetSection("AppConfig:AI:DriftDetection"));
-        services.Configure<Domain.Common.Config.AI.Learnings.LearningsConfig>(
-            configuration.GetSection("AppConfig:AI:Learnings"));
         // Sandbox capability-enforcement knobs (SandboxConfig). Bound under a distinct
         // path from AppConfig:AI:Sandbox (which binds the unrelated SandboxOptions class).
         // Composes over the AddOptions<SandboxConfig>() defaults registered in
@@ -101,6 +112,90 @@ public static class IServiceCollectionExtensions
         // WorkspaceRoot / Enabled actually reach IOptionsMonitor<SandboxConfig> consumers.
         services.Configure<Domain.Common.Config.AI.Sandbox.SandboxConfig>(
             configuration.GetSection("AppConfig:AI:SandboxCapabilities"));
+
+        return services.RegisterValidatedConfigSections(configuration);
+    }
+
+    /// <summary>
+    /// Binds every AppConfig subsection that has a FluentValidation config validator, attaching
+    /// the validator to the options pipeline and enforcing it at host start.
+    /// </summary>
+    /// <param name="services">The service collection to configure.</param>
+    /// <param name="configuration">
+    /// The root <see cref="IConfiguration"/> containing the <c>AppConfig</c> section.
+    /// </param>
+    /// <returns>The service collection for chaining.</returns>
+    /// <remarks>
+    /// This is the single wiring point that keeps the config validators in
+    /// <c>Application.Core/Validation</c> live ("inert machinery" defense): each binding names
+    /// its section path and its validator, and <c>ValidateOnStart()</c> converts an invalid
+    /// value into an <see cref="Microsoft.Extensions.Options.OptionsValidationException"/> at
+    /// boot. Validators whose rules are conditional on an <c>Enabled</c> flag impose no
+    /// constraints while the feature is off, so hosts that omit these sections keep booting
+    /// on class defaults.
+    /// </remarks>
+    private static IServiceCollection RegisterValidatedConfigSections(
+        this IServiceCollection services,
+        IConfiguration configuration)
+    {
+        services.AddOptions<EscalationConfig>()
+            .Bind(configuration.GetSection("AppConfig:AI:Governance:Escalation"))
+            .ValidateFluentValidation<EscalationConfig, EscalationConfigValidator>()
+            .ValidateOnStart();
+
+        services.AddOptions<ResilienceConfig>()
+            .Bind(configuration.GetSection("AppConfig:AI:Resilience"))
+            .ValidateFluentValidation<ResilienceConfig, ResilienceConfigValidator>()
+            .ValidateOnStart();
+
+        services.AddOptions<Domain.Common.Config.AI.DriftDetection.DriftDetectionConfig>()
+            .Bind(configuration.GetSection("AppConfig:AI:DriftDetection"))
+            .ValidateFluentValidation<
+                Domain.Common.Config.AI.DriftDetection.DriftDetectionConfig,
+                DriftDetectionConfigValidator>()
+            .ValidateOnStart();
+
+        services.AddOptions<Domain.Common.Config.AI.Learnings.LearningsConfig>()
+            .Bind(configuration.GetSection("AppConfig:AI:Learnings"))
+            .ValidateFluentValidation<
+                Domain.Common.Config.AI.Learnings.LearningsConfig,
+                LearningsConfigValidator>()
+            .ValidateOnStart();
+
+        services.AddOptions<WorkMemoryConfig>()
+            .Bind(configuration.GetSection("AppConfig:AI:WorkMemory"))
+            .ValidateFluentValidation<WorkMemoryConfig, WorkMemoryConfigValidator>()
+            .ValidateOnStart();
+
+        services.AddOptions<HarmonicMemoryConfig>()
+            .Bind(configuration.GetSection("AppConfig:AI:HarmonicMemory"))
+            .ValidateFluentValidation<HarmonicMemoryConfig, HarmonicMemoryConfigValidator>()
+            .ValidateOnStart();
+
+        services.AddOptions<LearningsRecallConfig>()
+            .Bind(configuration.GetSection("AppConfig:AI:LearningsRecall"))
+            .ValidateFluentValidation<LearningsRecallConfig, LearningsRecallConfigValidator>()
+            .ValidateOnStart();
+
+        services.AddOptions<GitOpsConfig>()
+            .Bind(configuration.GetSection("AppConfig:AI:GitOps"))
+            .ValidateFluentValidation<GitOpsConfig, GitOpsConfigValidator>()
+            .ValidateOnStart();
+
+        services.AddOptions<IacConfig>()
+            .Bind(configuration.GetSection("AppConfig:AI:Iac"))
+            .ValidateFluentValidation<IacConfig, IacConfigValidator>()
+            .ValidateOnStart();
+
+        services.AddOptions<DataClassificationConfig>()
+            .Bind(configuration.GetSection("AppConfig:AI:Governance:DataClassification"))
+            .ValidateFluentValidation<DataClassificationConfig, DataClassificationConfigValidator>()
+            .ValidateOnStart();
+
+        services.AddOptions<ContentCaptureConfig>()
+            .Bind(configuration.GetSection("AppConfig:AI:Telemetry:ContentCapture"))
+            .ValidateFluentValidation<ContentCaptureConfig, ContentCaptureConfigValidator>()
+            .ValidateOnStart();
 
         return services;
     }
