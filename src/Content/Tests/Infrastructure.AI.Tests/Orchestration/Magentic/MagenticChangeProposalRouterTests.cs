@@ -4,6 +4,7 @@ using Domain.AI.Identity;
 using Domain.Common;
 using FluentAssertions;
 using Infrastructure.AI.Orchestration.Magentic;
+using Infrastructure.AI.Tests.Support;
 using MediatR;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
@@ -28,7 +29,7 @@ public sealed class MagenticChangeProposalRouterTests
             .Callback<object, CancellationToken>((cmd, _) => captured = (SubmitChangeProposalCommand)cmd)
             .ReturnsAsync((object cmd, CancellationToken _) => Result<ChangeProposal>.Success(StubProposal((SubmitChangeProposalCommand)cmd)));
 
-        var router = new MagenticChangeProposalRouter(mediator.Object, NullLogger<MagenticChangeProposalRouter>.Instance);
+        var router = new MagenticChangeProposalRouter(TestScopeFactory.For(mediator.Object), NullLogger<MagenticChangeProposalRouter>.Instance);
 
         var proposal = await router.TryRouteAsync(new MagenticReplanInfo
         {
@@ -49,7 +50,7 @@ public sealed class MagenticChangeProposalRouterTests
     public async Task Non_state_change_replan_is_dropped()
     {
         var mediator = new Mock<IMediator>();
-        var router = new MagenticChangeProposalRouter(mediator.Object, NullLogger<MagenticChangeProposalRouter>.Instance);
+        var router = new MagenticChangeProposalRouter(TestScopeFactory.For(mediator.Object), NullLogger<MagenticChangeProposalRouter>.Instance);
 
         var proposal = await router.TryRouteAsync(new MagenticReplanInfo
         {

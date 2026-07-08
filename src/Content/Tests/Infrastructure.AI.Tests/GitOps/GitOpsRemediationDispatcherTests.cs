@@ -6,6 +6,7 @@ using Domain.AI.SkillTraining;
 using Domain.Common;
 using FluentAssertions;
 using Infrastructure.AI.GitOps;
+using Infrastructure.AI.Tests.Support;
 using MediatR;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
@@ -24,7 +25,7 @@ public sealed class GitOpsRemediationDispatcherTests
     private readonly Mock<IMediator> _mediator = new();
 
     private GitOpsRemediationDispatcher CreateSut()
-        => new(_mediator.Object, NullLogger<GitOpsRemediationDispatcher>.Instance);
+        => new(TestScopeFactory.For(_mediator.Object), NullLogger<GitOpsRemediationDispatcher>.Instance);
 
     private static RemediationPlan ValidPlan(
         GitOpsControllerKind kind = GitOpsControllerKind.Flux,

@@ -45,8 +45,9 @@ public sealed class IacDependencyInjectionTests
         services.AddLogging();
         services.AddSingleton(IacTestConfig.ValidMonitor());
         services.AddSingleton(TimeProvider.System);
-        // The generators resolve the keyed Process sandbox executor at construction.
-        services.AddKeyedSingleton<ISandboxExecutor>(SandboxIsolationLevel.Process, Mock.Of<ISandboxExecutor>());
+        // Production lifetime (DependencyInjection.Planner.cs): keyed SCOPED executor.
+        // The generators resolve it per CLI run from a fresh scope — never at construction.
+        services.AddKeyedScoped<ISandboxExecutor>(SandboxIsolationLevel.Process, (_, _) => Mock.Of<ISandboxExecutor>());
         return services;
     }
 

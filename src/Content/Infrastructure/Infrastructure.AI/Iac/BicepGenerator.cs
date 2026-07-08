@@ -4,6 +4,7 @@ using Domain.AI.Iac;
 using Domain.AI.Sandbox;
 using Domain.Common;
 using Domain.Common.Config;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -37,27 +38,33 @@ public sealed class BicepGenerator : IIacGenerator
     private const string MainFile = "main.bicep";
 
     private readonly IOptionsMonitor<AppConfig> _config;
-    private readonly ISandboxExecutor _sandbox;
+    private readonly IServiceScopeFactory _scopeFactory;
+    private readonly SandboxIsolationLevel _isolationLevel;
     private readonly ILogger<BicepGenerator> _logger;
     private readonly TimeProvider _timeProvider;
 
     /// <summary>Initialises a new <see cref="BicepGenerator"/>.</summary>
     /// <param name="config">Application configuration monitor — supplies version pins, registry allowlist, and blocking severity.</param>
-    /// <param name="sandbox">The Process-isolation sandbox executor the CLIs run inside.</param>
+    /// <param name="scopeFactory">Scope factory used to resolve the keyed-SCOPED <see cref="ISandboxExecutor"/> per CLI run.
+    /// The generator is a keyed SINGLETON, so a construction-time executor would be a captive dependency
+    /// that scope validation rejects and that shares scoped state across requests.</param>
     /// <param name="logger">Structured logger.</param>
     /// <param name="timeProvider">Clock abstraction (injected for parity and future use).</param>
+    /// <param name="isolationLevel">The sandbox isolation level to resolve the executor for. Defaults to <see cref="SandboxIsolationLevel.Process"/>.</param>
     public BicepGenerator(
         IOptionsMonitor<AppConfig> config,
-        ISandboxExecutor sandbox,
+        IServiceScopeFactory scopeFactory,
         ILogger<BicepGenerator> logger,
-        TimeProvider timeProvider)
+        TimeProvider timeProvider,
+        SandboxIsolationLevel isolationLevel = SandboxIsolationLevel.Process)
     {
         ArgumentNullException.ThrowIfNull(config);
-        ArgumentNullException.ThrowIfNull(sandbox);
+        ArgumentNullException.ThrowIfNull(scopeFactory);
         ArgumentNullException.ThrowIfNull(logger);
         ArgumentNullException.ThrowIfNull(timeProvider);
         _config = config;
-        _sandbox = sandbox;
+        _scopeFactory = scopeFactory;
+        _isolationLevel = isolationLevel;
         _logger = logger;
         _timeProvider = timeProvider;
     }
@@ -167,7 +174,12 @@ public sealed class BicepGenerator : IIacGenerator
     {
         try
         {
-            return await IacSandboxRunner.RunAsync(program, args, moduleDirectory, allowlist, _sandbox, toolName, cancellationToken: cancellationToken);
+            // The executor is SCOPED — resolve it from a fresh scope per run
+            // so this singleton generator never captures scope-bound state.
+            await using var scope = _scopeFactory.CreateAsyncScope();
+            var sandbox = scope.ServiceProvider.GetRequiredKeyedService<ISandboxExecutor>(_isolationLevel);
+
+            return await IacSandboxRunner.RunAsync(program, args, moduleDirectory, allowlist, sandbox, toolName, cancellationToken: cancellationToken);
         }
         catch (OperationCanceledException)
         {

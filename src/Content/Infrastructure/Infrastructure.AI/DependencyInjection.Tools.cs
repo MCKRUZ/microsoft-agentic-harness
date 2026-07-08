@@ -54,9 +54,11 @@ public static partial class DependencyInjection
         services.AddKeyedSingleton<ITool>(DocumentSearchTool.ToolName, (sp, _) =>
             new DocumentSearchTool(sp.GetRequiredService<IRagOrchestrator>()));
 
-        // Document ingest tool — RAG pipeline ingestion for LLM consumption
+        // Document ingest tool — RAG pipeline ingestion for LLM consumption.
+        // Takes the scope factory (not IMediator): the mediator pipeline resolves
+        // scoped services, so the singleton tool dispatches inside a fresh scope.
         services.AddKeyedSingleton<ITool>(DocumentIngestTool.ToolName, (sp, _) =>
-            new DocumentIngestTool(sp.GetRequiredService<IMediator>()));
+            new DocumentIngestTool(sp.GetRequiredService<IServiceScopeFactory>()));
 
         // Echo tools — deterministic tools for E2E testing pipeline verification
         services.AddKeyedSingleton<ITool>(EchoLookupTool.ToolName, (_, _) => new EchoLookupTool());

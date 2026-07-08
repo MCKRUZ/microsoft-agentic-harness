@@ -5,6 +5,7 @@ using Domain.AI.Evaluation;
 using FluentAssertions;
 using Infrastructure.AI.Evaluation.Invokers;
 using MediatR;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using Xunit;
@@ -115,9 +116,19 @@ public sealed class RouterEvalInvokerTests
 
     private static RouterEvalInvoker MakeSut(Mock<IMediator> mediator, params IRouterEvalProbe[] probes)
     {
-        var inner = new HarnessAgentInvoker(mediator.Object, NullLogger<HarnessAgentInvoker>.Instance);
+        var inner = new HarnessAgentInvoker(ScopeFactoryFor(mediator.Object), NullLogger<HarnessAgentInvoker>.Instance);
         return new RouterEvalInvoker(inner, probes, NullLogger<RouterEvalInvoker>.Instance);
     }
+
+    /// <summary>
+    /// Minimal scope factory whose scopes resolve <see cref="IMediator"/> to the supplied
+    /// double — the invoker resolves the mediator per invocation from a fresh scope.
+    /// </summary>
+    private static IServiceScopeFactory ScopeFactoryFor(IMediator mediator) =>
+        new ServiceCollection()
+            .AddScoped(_ => mediator)
+            .BuildServiceProvider()
+            .GetRequiredService<IServiceScopeFactory>();
 
     private static Mock<IMediator> MediatorReturning(string response)
     {

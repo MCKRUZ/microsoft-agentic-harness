@@ -3,6 +3,7 @@ using Application.AI.Common.Interfaces.Orchestration.Magentic;
 using Application.AI.Common.Interfaces.Telemetry;
 using Domain.AI.Telemetry.Conventions;
 using Infrastructure.AI.Orchestration.Magentic;
+using Infrastructure.AI.Tests.Support;
 using MediatR;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -90,7 +91,9 @@ internal static class MagenticTestHelpers
     {
         bridge = new Mock<IMagenticPlanReviewBridge>();
         mediator = new Mock<IMediator>();
-        var router = new MagenticChangeProposalRouter(mediator.Object, NullLogger<MagenticChangeProposalRouter>.Instance);
+        var router = new MagenticChangeProposalRouter(
+            TestScopeFactory.For(mediator.Object),
+            NullLogger<MagenticChangeProposalRouter>.Instance);
         return new MagenticEventSubscriber(
             emitter ?? new MagenticSpanEmitter(),
             bridge.Object,

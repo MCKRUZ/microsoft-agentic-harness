@@ -30,11 +30,14 @@ namespace Infrastructure.AI.Tools.Iac;
 /// </list>
 /// </para>
 /// <para>
-/// The generators are keyed singletons that resolve the <c>Process</c>-isolation
-/// <see cref="ISandboxExecutor"/> at construction — the same pattern the workspace
-/// skill pack uses for its verifier tools. Registrations are unconditional (the
-/// tools are inert until a skill resolves them); <see cref="IacStartupValidator"/>
-/// turns a bad config into a fail-loud boot error whenever the skill pack is enabled.
+/// The generators are keyed SINGLETONS but <see cref="ISandboxExecutor"/> is keyed
+/// SCOPED, so each generator resolves the <c>Process</c>-isolation executor per CLI
+/// run from a fresh DI scope (via <see cref="IServiceScopeFactory"/>) — the same
+/// pattern the workspace skill pack uses for its verifier tools. A construction-time
+/// executor would be a captive dependency rejected by scope validation. Registrations
+/// are unconditional (the tools are inert until a skill resolves them);
+/// <see cref="IacStartupValidator"/> turns a bad config into a fail-loud boot error
+/// whenever the skill pack is enabled.
 /// </para>
 /// </remarks>
 public static class IacDependencyInjection
@@ -50,19 +53,24 @@ public static class IacDependencyInjection
         ArgumentNullException.ThrowIfNull(services);
 
         // --- Generators, keyed by backend canonical key ---
+        // The generators take the scope factory (not ISandboxExecutor): the executor is
+        // keyed SCOPED, so each CLI run resolves it from a fresh scope instead of the
+        // singleton factory capturing it from the root provider.
         services.AddKeyedSingleton<IIacGenerator>(IacBackendKeys.Terraform, static (sp, _) =>
             new TerraformGenerator(
                 sp.GetRequiredService<IOptionsMonitor<AppConfig>>(),
-                sp.GetRequiredKeyedService<ISandboxExecutor>(SandboxIsolationLevel.Process),
+                sp.GetRequiredService<IServiceScopeFactory>(),
                 sp.GetRequiredService<ILogger<TerraformGenerator>>(),
-                sp.GetRequiredService<TimeProvider>()));
+                sp.GetRequiredService<TimeProvider>(),
+                SandboxIsolationLevel.Process));
 
         services.AddKeyedSingleton<IIacGenerator>(IacBackendKeys.Bicep, static (sp, _) =>
             new BicepGenerator(
                 sp.GetRequiredService<IOptionsMonitor<AppConfig>>(),
-                sp.GetRequiredKeyedService<ISandboxExecutor>(SandboxIsolationLevel.Process),
+                sp.GetRequiredService<IServiceScopeFactory>(),
                 sp.GetRequiredService<ILogger<BicepGenerator>>(),
-                sp.GetRequiredService<TimeProvider>()));
+                sp.GetRequiredService<TimeProvider>(),
+                SandboxIsolationLevel.Process));
 
         // --- Agent-facing tools (keyed by ToolName) ---
         services.AddKeyedSingleton<ITool>(IacGenerateTool.ToolName, static (sp, _) =>

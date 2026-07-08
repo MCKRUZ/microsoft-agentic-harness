@@ -12,6 +12,12 @@ namespace Infrastructure.AI.Prompts;
 /// Non-cacheable sections are recomputed on every call. Sections exceeding the token
 /// budget are dropped from the end (lowest priority = highest number).
 /// </summary>
+/// <remarks>
+/// Registered SCOPED: section providers consume the scoped <c>IAgentExecutionContext</c>,
+/// so each request scope must compose against its own live conversation state. Memoized
+/// cacheable sections still survive across requests via the singleton
+/// <see cref="IPromptSectionCache"/>.
+/// </remarks>
 public sealed class MemoizedPromptComposer : ISystemPromptComposer
 {
     private readonly IReadOnlyList<IPromptSectionProvider> _providers;

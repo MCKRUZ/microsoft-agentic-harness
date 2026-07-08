@@ -5,6 +5,7 @@ using Application.AI.Common.Evaluation.Models;
 using Application.Core.CQRS.Agents.ExecuteAgentTurn;
 using Domain.AI.Evaluation;
 using MediatR;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
 namespace Infrastructure.AI.Evaluation.Invokers;
@@ -33,20 +34,24 @@ public sealed class HarnessAgentInvoker : IAgentInvoker
     private const string DeploymentKey = "deployment";
     private const string TemperatureKey = "temperature";
 
-    private readonly IMediator _mediator;
+    private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<HarnessAgentInvoker> _logger;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="HarnessAgentInvoker"/> class.
     /// </summary>
-    /// <param name="mediator">MediatR dispatcher used to send the agent-turn command.</param>
+    /// <param name="scopeFactory">Scope factory used to resolve <see cref="IMediator"/> per invocation.
+    /// The invoker is a SINGLETON, but an agent-turn dispatch constructs pipeline behaviors that
+    /// ctor-inject the SCOPED <c>IAgentExecutionContext</c>, so each invocation runs inside a
+    /// fresh scope rather than against a root-bound mediator — which also gives every eval case
+    /// its own execution context instead of sharing one across the whole run.</param>
     /// <param name="logger">Logger for invocation diagnostics.</param>
-    public HarnessAgentInvoker(IMediator mediator, ILogger<HarnessAgentInvoker> logger)
+    public HarnessAgentInvoker(IServiceScopeFactory scopeFactory, ILogger<HarnessAgentInvoker> logger)
     {
-        ArgumentNullException.ThrowIfNull(mediator);
+        ArgumentNullException.ThrowIfNull(scopeFactory);
         ArgumentNullException.ThrowIfNull(logger);
 
-        _mediator = mediator;
+        _scopeFactory = scopeFactory;
         _logger = logger;
     }
 
@@ -78,7 +83,12 @@ public sealed class HarnessAgentInvoker : IAgentInvoker
 
         try
         {
-            var turn = await _mediator.Send(command, cancellationToken).ConfigureAwait(false);
+            // Dispatch inside a fresh scope: the MediatR pipeline resolves scoped services
+            // (IAgentExecutionContext et al.), which a singleton must never pull from the root.
+            await using var scope = _scopeFactory.CreateAsyncScope();
+            var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
+
+            var turn = await mediator.Send(command, cancellationToken).ConfigureAwait(false);
             sw.Stop();
 
             // Per AgentInvocationResult contract: Output must be empty when Success is false.

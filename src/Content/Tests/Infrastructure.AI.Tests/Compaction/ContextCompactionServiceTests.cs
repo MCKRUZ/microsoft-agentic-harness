@@ -20,7 +20,7 @@ public sealed class ContextCompactionServiceTests
 {
     private readonly Mock<ICompactionStrategyExecutor> _fullExecutor;
     private readonly Mock<IHookExecutor> _hookExecutor;
-    private readonly Mock<ISystemPromptComposer> _promptComposer;
+    private readonly Mock<IPromptSectionCache> _sectionCache;
     private readonly Mock<IAutoCompactStateMachine> _stateMachine;
     private readonly IOptionsMonitor<AppConfig> _options;
     private readonly ContextCompactionService _sut;
@@ -35,7 +35,7 @@ public sealed class ContextCompactionServiceTests
             .Setup(x => x.ExecuteHooksAsync(It.IsAny<HookEvent>(), It.IsAny<HookExecutionContext>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(Array.Empty<HookResult>());
 
-        _promptComposer = new Mock<ISystemPromptComposer>();
+        _sectionCache = new Mock<IPromptSectionCache>();
         _stateMachine = new Mock<IAutoCompactStateMachine>();
 
         var appConfig = new AppConfig
@@ -59,7 +59,7 @@ public sealed class ContextCompactionServiceTests
         _sut = new ContextCompactionService(
             new[] { _fullExecutor.Object },
             _hookExecutor.Object,
-            _promptComposer.Object,
+            _sectionCache.Object,
             _stateMachine.Object,
             _options,
             NullLogger<ContextCompactionService>.Instance);
@@ -148,7 +148,7 @@ public sealed class ContextCompactionServiceTests
         var messages = new List<ChatMessage> { new(ChatRole.User, "Hello") };
         await _sut.CompactAsync("agent-1", messages, CompactionStrategy.Full);
 
-        _promptComposer.Verify(x => x.InvalidateAll(), Times.Once);
+        _sectionCache.Verify(x => x.InvalidateAll(), Times.Once);
     }
 
     [Fact]
@@ -164,7 +164,7 @@ public sealed class ContextCompactionServiceTests
         result.Success.Should().BeFalse();
         _stateMachine.Verify(x => x.RecordFailure("agent-1"), Times.Once);
         _stateMachine.Verify(x => x.RecordSuccess(It.IsAny<string>()), Times.Never);
-        _promptComposer.Verify(x => x.InvalidateAll(), Times.Never);
+        _sectionCache.Verify(x => x.InvalidateAll(), Times.Never);
     }
 
     [Fact]

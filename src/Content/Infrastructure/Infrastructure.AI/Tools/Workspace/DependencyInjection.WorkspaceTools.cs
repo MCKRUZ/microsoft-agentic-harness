@@ -2,7 +2,6 @@ using Application.AI.Common.Interfaces.Sandbox;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Interfaces.Workspace;
 using Domain.AI.Sandbox;
-using MediatR;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace Infrastructure.AI.Tools.Workspace;
@@ -27,16 +26,20 @@ namespace Infrastructure.AI.Tools.Workspace;
 /// </para>
 /// <para>
 /// The accessor is a singleton because the backing store is per-async-flow,
-/// not per-DI-scope. Tools are singletons; their only state is the injected
-/// accessor + executor + mediator.
+/// not per-DI-scope. Tools are singletons; scope-bound collaborators (the
+/// keyed-SCOPED <see cref="ISandboxExecutor"/>, the request-scoped MediatR
+/// pipeline) are resolved per execution from a fresh scope via
+/// <see cref="IServiceScopeFactory"/> — never captured at construction, so a
+/// singleton tool can never hold captive scoped state.
 /// </para>
 /// <para>
-/// The sandbox executor is resolved as a keyed singleton on
+/// The sandbox executor is registered keyed SCOPED on
 /// <see cref="SandboxIsolationLevel"/> elsewhere in the DI graph. The
 /// workspace tools pull the <c>Process</c> isolation level by default — the
 /// sandbox lives on the host but enforces capability + resource limits via
 /// Job Objects (Windows) / cgroups (Linux). Consumers that prefer Docker can
-/// override the registration after calling this method.
+/// override the registration after calling this method (the tools accept the
+/// isolation level as a constructor argument).
 /// </para>
 /// </remarks>
 public static class WorkspaceDependencyInjection
@@ -63,17 +66,19 @@ public static class WorkspaceDependencyInjection
         services.AddKeyedSingleton<ITool>(WorkspaceWriteFileTool.ToolName, (sp, _) =>
             new WorkspaceWriteFileTool(
                 sp.GetRequiredService<IWorkspaceContextAccessor>(),
-                sp.GetRequiredService<IMediator>()));
+                sp.GetRequiredService<IServiceScopeFactory>()));
 
         services.AddKeyedSingleton<ITool>(WorkspaceRunTestsTool.ToolName, (sp, _) =>
             new WorkspaceRunTestsTool(
                 sp.GetRequiredService<IWorkspaceContextAccessor>(),
-                sp.GetRequiredKeyedService<ISandboxExecutor>(SandboxIsolationLevel.Process)));
+                sp.GetRequiredService<IServiceScopeFactory>(),
+                SandboxIsolationLevel.Process));
 
         services.AddKeyedSingleton<ITool>(WorkspaceRunLintTool.ToolName, (sp, _) =>
             new WorkspaceRunLintTool(
                 sp.GetRequiredService<IWorkspaceContextAccessor>(),
-                sp.GetRequiredKeyedService<ISandboxExecutor>(SandboxIsolationLevel.Process)));
+                sp.GetRequiredService<IServiceScopeFactory>(),
+                SandboxIsolationLevel.Process));
 
         return services;
     }

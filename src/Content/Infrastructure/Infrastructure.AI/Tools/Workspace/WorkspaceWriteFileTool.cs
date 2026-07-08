@@ -5,6 +5,7 @@ using Domain.AI.Changes;
 using Domain.AI.Models;
 using Domain.AI.SkillTraining;
 using MediatR;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Infrastructure.AI.Tools.Workspace;
 
@@ -38,19 +39,22 @@ public sealed class WorkspaceWriteFileTool : ITool
     private static readonly IReadOnlyList<string> Operations = ["submit"];
 
     private readonly IWorkspaceContextAccessor _workspace;
-    private readonly IMediator _mediator;
+    private readonly IServiceScopeFactory _scopeFactory;
 
     /// <summary>
     /// Initialises a new instance of the <see cref="WorkspaceWriteFileTool"/> class.
     /// </summary>
     /// <param name="workspace">Ambient accessor exposing the active sandbox workspace.</param>
-    /// <param name="mediator">MediatR dispatcher used to submit the <see cref="SubmitChangeProposalCommand"/>.</param>
-    public WorkspaceWriteFileTool(IWorkspaceContextAccessor workspace, IMediator mediator)
+    /// <param name="scopeFactory">Scope factory used to resolve <see cref="IMediator"/> per submission.
+    /// The tool is a keyed SINGLETON, but a mediator dispatch constructs pipeline behaviors that
+    /// ctor-inject the SCOPED <c>IAgentExecutionContext</c>, so the dispatch must run inside a
+    /// created scope rather than against a root-bound mediator.</param>
+    public WorkspaceWriteFileTool(IWorkspaceContextAccessor workspace, IServiceScopeFactory scopeFactory)
     {
         ArgumentNullException.ThrowIfNull(workspace);
-        ArgumentNullException.ThrowIfNull(mediator);
+        ArgumentNullException.ThrowIfNull(scopeFactory);
         _workspace = workspace;
-        _mediator = mediator;
+        _scopeFactory = scopeFactory;
     }
 
     /// <inheritdoc />
@@ -140,7 +144,12 @@ public sealed class WorkspaceWriteFileTool : ITool
             IsStateChange = true
         };
 
-        var result = await _mediator.Send(command, cancellationToken);
+        // Dispatch inside a fresh scope: the MediatR pipeline resolves scoped services
+        // (IAgentExecutionContext et al.), which a singleton must never pull from the root.
+        await using var scope = _scopeFactory.CreateAsyncScope();
+        var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
+
+        var result = await mediator.Send(command, cancellationToken);
         if (!result.IsSuccess)
         {
             var reason = result.Errors.Count > 0

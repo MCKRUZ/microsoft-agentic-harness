@@ -4,6 +4,7 @@ using Application.Core.CQRS.RAG.IngestDocument;
 using Domain.AI.Changes;
 using Domain.AI.Models;
 using MediatR;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Infrastructure.AI.Tools;
 
@@ -17,13 +18,20 @@ namespace Infrastructure.AI.Tools;
 /// Register via keyed DI:
 /// <code>
 /// services.AddKeyedSingleton&lt;ITool&gt;("document_ingest", (sp, _) =&gt;
-///     new DocumentIngestTool(sp.GetRequiredService&lt;IMediator&gt;()));
+///     new DocumentIngestTool(sp.GetRequiredService&lt;IServiceScopeFactory&gt;()));
 /// </code>
 /// </para>
 /// <para>
 /// This tool is write-oriented and not concurrency-safe because ingestion
 /// modifies vector store and BM25 index state. The batched tool execution
 /// strategy will serialize calls to this tool.
+/// </para>
+/// <para>
+/// The tool is a keyed SINGLETON, but a mediator dispatch constructs pipeline
+/// behaviors that ctor-inject the SCOPED <c>IAgentExecutionContext</c>, so
+/// each ingestion resolves <see cref="IMediator"/> from a fresh DI scope via
+/// <see cref="IServiceScopeFactory"/> — a root-bound mediator would be a
+/// captive dependency rejected by scope validation.
 /// </para>
 /// </remarks>
 public sealed class DocumentIngestTool : ITool
@@ -33,16 +41,16 @@ public sealed class DocumentIngestTool : ITool
 
     private static readonly IReadOnlyList<string> Operations = ["ingest"];
 
-    private readonly IMediator _mediator;
+    private readonly IServiceScopeFactory _scopeFactory;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="DocumentIngestTool"/> class.
     /// </summary>
-    /// <param name="mediator">MediatR mediator for dispatching ingestion commands.</param>
-    public DocumentIngestTool(IMediator mediator)
+    /// <param name="scopeFactory">Scope factory used to resolve <see cref="IMediator"/> per ingestion dispatch.</param>
+    public DocumentIngestTool(IServiceScopeFactory scopeFactory)
     {
-        ArgumentNullException.ThrowIfNull(mediator);
-        _mediator = mediator;
+        ArgumentNullException.ThrowIfNull(scopeFactory);
+        _scopeFactory = scopeFactory;
     }
 
     /// <inheritdoc />
@@ -102,7 +110,12 @@ public sealed class DocumentIngestTool : ITool
             CollectionName = collection
         };
 
-        var result = await _mediator.Send(command, cancellationToken);
+        // Dispatch inside a fresh scope: the MediatR pipeline resolves scoped services
+        // (IAgentExecutionContext et al.), which a singleton must never pull from the root.
+        await using var scope = _scopeFactory.CreateAsyncScope();
+        var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
+
+        var result = await mediator.Send(command, cancellationToken);
 
         if (!result.Success)
             return ToolResult.Fail($"Ingestion failed: {result.Error}");
