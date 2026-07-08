@@ -104,27 +104,6 @@ public sealed class PluginGovernanceCompositionTests : IDisposable
         ["AppConfig:AI:Permissions:DefaultBehavior"] = "Allow",
     };
 
-    /// <summary>
-    /// Builds the composition-root provider WITH the missing <c>GovernanceConfig</c> binding
-    /// supplied test-side.
-    /// </summary>
-    /// <remarks>
-    /// WORKAROUND for a REAL wiring bug these tests exposed (pinned red by
-    /// <see cref="GovernanceConfigBindingTests"/>): no production composition root binds
-    /// <c>GovernanceConfig</c> to <c>AppConfig:AI:Governance</c>, so
-    /// <c>EnforceToolInvocation</c> — and every other <c>IOptionsMonitor&lt;GovernanceConfig&gt;</c>
-    /// switch — can never be enabled from configuration. The single <c>Configure</c> call below
-    /// supplies ONLY that missing binding so the rest of the governance chain
-    /// (PluginPermissionRuleProvider → ThreePhasePermissionResolver → ToolInvocationGovernor →
-    /// GovernedAIFunction) can be proven wired. DELETE this override when the production
-    /// binding lands and rely on config alone.
-    /// </remarks>
-    private static Microsoft.Extensions.DependencyInjection.ServiceProvider BuildGovernanceProvider(
-        Dictionary<string, string?> settings) =>
-        CompositionRootTestHost.BuildProvider(settings, (services, configuration) =>
-            services.Configure<Domain.Common.Config.AI.GovernanceConfig>(
-                configuration.GetSection("AppConfig:AI:Governance")));
-
     [Fact]
     public async Task PluginStartupLoader_DeclaredPlugin_LoadsAndAttributesSkillThroughCompositionRoot()
     {
@@ -179,7 +158,7 @@ public sealed class PluginGovernanceCompositionTests : IDisposable
         // filter cannot remove it) must still be blocked at invocation time: the plugin's
         // bypass-immune Deny rule flows PluginPermissionRuleProvider → ThreePhasePermissionResolver
         // → ToolInvocationGovernor → GovernedAIFunction, all resolved from the production graph.
-        await using var provider = BuildGovernanceProvider(BaseSettings());
+        await using var provider = CompositionRootTestHost.BuildProvider(BaseSettings());
         await CompositionRootTestHost.RunPluginStartupLoaderAsync(provider);
 
         var executed = false;
@@ -203,7 +182,7 @@ public sealed class PluginGovernanceCompositionTests : IDisposable
         // Ask rule scoped "sentinel:*". Ask rules resolve in phase 2, BEFORE any Allow rule, so
         // the plugin baseline tightens an otherwise Allow-by-default environment for tools whose
         // names carry the plugin prefix — while unprefixed tools stay allowed.
-        await using var provider = BuildGovernanceProvider(BaseSettings("Supervised"));
+        await using var provider = CompositionRootTestHost.BuildProvider(BaseSettings("Supervised"));
         await CompositionRootTestHost.RunPluginStartupLoaderAsync(provider);
 
         var prefixedExecuted = false;
@@ -247,7 +226,7 @@ public sealed class PluginGovernanceCompositionTests : IDisposable
         // plugin baselines effective must consciously update it.
         var settings = BaseSettings("Autonomous");
         settings["AppConfig:AI:Permissions:DefaultBehavior"] = "Ask"; // resolver default
-        await using var provider = BuildGovernanceProvider(settings);
+        await using var provider = CompositionRootTestHost.BuildProvider(settings);
         await CompositionRootTestHost.RunPluginStartupLoaderAsync(provider);
 
         var executed = false;
