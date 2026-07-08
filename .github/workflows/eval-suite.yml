@@ -6,8 +6,9 @@ name: Eval Suite
 # Enable per-repo: Settings → Secrets and variables → Actions → Variables tab
 #                   → New repository variable → EVAL_ENABLED = true
 #
-# Always-available trigger: workflow_dispatch (manual "Run workflow" button).
-# Scheduled / push triggers fire only when EVAL_ENABLED == "true".
+# Manual-only trigger: workflow_dispatch (the "Run workflow" button).
+# The daily schedule was removed; to run automatically again, re-add a `schedule:`
+# trigger below and set the EVAL_ENABLED repo variable to "true".
 
 on:
   workflow_dispatch:
@@ -24,10 +25,6 @@ on:
         description: 'Max acceptable failure fraction for overall Pass (0.0–1.0)'
         required: false
         default: '0.10'
-
-  schedule:
-    # Daily at 06:00 UTC. Only runs if EVAL_ENABLED repo variable is "true".
-    - cron: '0 6 * * *'
 
 permissions:
   contents: read
