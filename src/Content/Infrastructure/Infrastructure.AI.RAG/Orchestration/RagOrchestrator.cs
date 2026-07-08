@@ -349,7 +349,7 @@ public sealed partial class RagOrchestrator : IRagOrchestrator
                     _logger.LogInformation(
                         "CRAG web fallback: score={Score:F2}, augmenting with web search results",
                         evaluation.RelevanceScore);
-                    var augmented = await AppendWebResultsAsync(
+                    var augmented = await MergeAndRerankWebResultsAsync(
                         currentQuery, reranked, topK, cancellationToken);
                     return await _contextAssembler.AssembleAsync(
                         augmented, DefaultMaxTokens, cancellationToken);
@@ -544,11 +544,21 @@ public sealed partial class RagOrchestrator : IRagOrchestrator
     }
 
     /// <summary>
-    /// Invokes the web-search retrieval source and appends its results to the existing reranked set
-    /// (ranks continue after the local results). Returns the original set unchanged when web search
-    /// yields nothing.
+    /// Invokes the web-search retrieval source, merges its results with the existing reranked local
+    /// set, and re-ranks the combined candidate pool through the configured <see cref="IReranker"/> so
+    /// local and web hits are scored on a single comparable scale before assembly. Returns the original
+    /// set unchanged when web search yields nothing.
     /// </summary>
-    private async Task<IReadOnlyList<RerankedResult>> AppendWebResultsAsync(
+    /// <remarks>
+    /// The <see cref="IRagContextAssembler"/> orders purely by <see cref="RerankedResult.RerankScore"/>.
+    /// Web results arrive carrying a <see cref="RetrievalResult.FusedScore"/> on a foreign scale (the web
+    /// source's own scoring), so copying that raw value into <c>RerankScore</c> and concatenating it —
+    /// as the previous implementation did — let web hits dominate the context or sink to the bottom
+    /// regardless of true relevance, and risked blowing the token budget. Re-ranking the union puts every
+    /// hit through the same cross-encoder / semantic scorer, which is the single comparable scale the
+    /// assembler needs to make web and local compete fairly.
+    /// </remarks>
+    private async Task<IReadOnlyList<RerankedResult>> MergeAndRerankWebResultsAsync(
         string query,
         IReadOnlyList<RerankedResult> existing,
         int topK,
@@ -560,16 +570,14 @@ public sealed partial class RagOrchestrator : IRagOrchestrator
         if (webResult.Results.Count == 0)
             return existing;
 
-        var startRank = existing.Count;
-        var webReranked = webResult.Results.Select((r, i) => new RerankedResult
-        {
-            RetrievalResult = r,
-            RerankScore = r.FusedScore,
-            OriginalRank = startRank + i + 1,
-            RerankRank = startRank + i + 1,
-        });
+        var merged = existing
+            .Select(r => r.RetrievalResult)
+            .Concat(webResult.Results)
+            .ToList();
 
-        return existing.Concat(webReranked).ToList();
+        // Re-rank the full union so both local and web hits are scored on one comparable scale.
+        // topK = merged.Count keeps every candidate (the assembler enforces the token budget).
+        return await _reranker.RerankAsync(query, merged, merged.Count, cancellationToken);
     }
 
     private static RagAssembledContext CreateEmptyContext(string reasoning) => new()

@@ -522,6 +522,93 @@ public sealed class RagOrchestratorTests
     }
 
     [Fact]
+    public async Task SearchAsync_WebFallback_ReranksMergedSet_SoWebHitsCompeteOnOneScale()
+    {
+        // Local candidates are reranked onto a calibrated [0,1] scale. Web results arrive carrying a
+        // huge raw FusedScore on a foreign scale (999/888). Pre-fix, AppendWebResultsAsync copied that
+        // raw score into RerankScore and concatenated it; the assembler orders by RerankScore alone,
+        // so the web hits dominated the context purely by scale. The fix re-ranks the merged
+        // (local + web) candidate set through the same reranker so every hit is scored on one
+        // comparable scale before assembly.
+        var webResults = new[]
+        {
+            RagTestData.CreateRetrievalResult(id: "web-1", content: "Web content 1.", fusedScore: 999.0),
+            RagTestData.CreateRetrievalResult(id: "web-2", content: "Web content 2.", fusedScore: 888.0),
+        };
+        var webSourceResult = new SourceRetrievalResult
+        {
+            SourceName = "web_search",
+            Results = webResults,
+            Latency = TimeSpan.FromMilliseconds(250),
+            TokensUsed = 120,
+        };
+
+        var webSource = new Mock<IRetrievalSource>();
+        webSource.SetupGet(s => s.SourceName).Returns("web_search");
+        webSource
+            .Setup(s => s.RetrieveAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<TaskComplexity>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(webSourceResult);
+
+        _mockRetriever
+            .Setup(r => r.RetrieveAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(RagTestData.CreateRetrievalResults(3));
+
+        // Reranker simulates a cross-encoder: it assigns calibrated [0,1] scores to whatever candidate
+        // set it is handed, ignoring the incoming (foreign-scale) FusedScore. This is what makes local
+        // and web hits comparable — and it means a hit only reaches the assembler with score > 1.0 if
+        // its raw FusedScore was copied through WITHOUT going via the reranker (the bug).
+        _mockReranker
+            .Setup(r => r.RerankAsync(It.IsAny<string>(), It.IsAny<IReadOnlyList<RetrievalResult>>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((string _, IReadOnlyList<RetrievalResult> results, int topK, CancellationToken _) =>
+                results
+                    .Take(topK)
+                    .Select((r, i) => new RerankedResult
+                    {
+                        RetrievalResult = r,
+                        RerankScore = Math.Max(0.0, 0.9 - (i * 0.1)),
+                        OriginalRank = i + 1,
+                        RerankRank = i + 1,
+                    })
+                    .ToList());
+
+        _mockCrag
+            .Setup(e => e.EvaluateAsync(It.IsAny<string>(), It.IsAny<IReadOnlyList<RetrievalResult>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(RagTestData.CreateWebFallbackEvaluation());
+
+        IReadOnlyList<RerankedResult>? assembled = null;
+        _mockAssembler
+            .Setup(a => a.AssembleAsync(It.IsAny<IReadOnlyList<RerankedResult>>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .Callback<IReadOnlyList<RerankedResult>, int, CancellationToken>((results, _, _) => assembled = results)
+            .ReturnsAsync(_expectedContext);
+
+        var orchestrator = CreateOrchestrator(
+            configure: cfg =>
+            {
+                cfg.AI.ModelRouting.Enabled = false;
+                cfg.AI.Rag.Crag.AllowWebFallback = true;
+                cfg.AI.Rag.MultiSource.EnabledSources = ["vector", "graph", "web_search"];
+            },
+            webSearchSource: webSource.Object);
+
+        await orchestrator.SearchAsync("query needing web fallback");
+
+        // The reranker must see the merged set — i.e., a candidate list that contains the web chunks.
+        _mockReranker.Verify(
+            r => r.RerankAsync(
+                It.IsAny<string>(),
+                It.Is<IReadOnlyList<RetrievalResult>>(list => list.Any(x => x.Chunk.Id.StartsWith("web", StringComparison.Ordinal))),
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()),
+            Times.Once);
+
+        // Nothing handed to the assembler may carry a foreign-scale score: web hits went through the
+        // reranker, so every RerankScore sits on the calibrated [0,1] scale (never the raw 999/888).
+        assembled.Should().NotBeNull();
+        assembled!.Should().Contain(r => r.RetrievalResult.Chunk.Id == "web-1");
+        assembled!.Should().OnlyContain(r => r.RerankScore <= 1.0);
+    }
+
+    [Fact]
     public async Task SearchAsync_WebFallbackWithWebDisabled_DoesNotInvokeWebSource()
     {
         var webSource = new Mock<IRetrievalSource>();
