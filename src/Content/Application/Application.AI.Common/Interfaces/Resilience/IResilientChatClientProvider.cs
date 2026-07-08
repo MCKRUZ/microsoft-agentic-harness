@@ -25,6 +25,15 @@ namespace Application.AI.Common.Interfaces.Resilience;
 public interface IResilientChatClientProvider
 {
 	/// <summary>
+	/// Key under which <c>AgentExecutionContextFactory</c> stashes the composed resilient
+	/// chat client in <c>AgentExecutionContext.AdditionalProperties</c> when
+	/// <c>ResilienceConfig.Enabled</c> is true. <c>AgentFactory</c> consumes this key when
+	/// building the agent's chat-client pipeline so that live turns execute through the
+	/// per-provider Polly pipelines and the fallback chain instead of the raw provider client.
+	/// </summary>
+	const string AdditionalPropertiesKey = "__resilientChatClient";
+
+	/// <summary>
 	/// Returns a resilient chat client wrapping the full provider fallback chain.
 	/// The result is cached -- the provider chain does not change at runtime.
 	/// </summary>

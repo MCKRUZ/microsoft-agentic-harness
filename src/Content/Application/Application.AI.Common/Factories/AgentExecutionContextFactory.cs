@@ -141,11 +141,17 @@ public class AgentExecutionContextFactory
         if (prerequisiteMap.HasAnyPrerequisites)
             additionalProps[SkillPrerequisiteMap.AdditionalPropertiesKey] = prerequisiteMap;
 
-        // Stash resilient chat client for transparent fallback when resilience is enabled
-        if (_resilientChatClientProvider is not null)
+        // Stash the composed resilient chat client for AgentFactory to consume. Gated on
+        // ResilienceConfig.Enabled: when resilience is off the provider would return the PRIMARY
+        // raw client (AppConfig.AI.AgentFramework), which must not override the per-context
+        // deployment/framework resolved above — disabled means byte-identical legacy behavior.
+        if (_resilientChatClientProvider is not null
+            && _appConfig.CurrentValue.AI?.Resilience?.Enabled == true)
         {
             var resilientClient = await _resilientChatClientProvider.GetResilientChatClientAsync();
-            additionalProps["__resilientChatClient"] = resilientClient;
+            additionalProps[IResilientChatClientProvider.AdditionalPropertiesKey] = resilientClient;
+
+            _logger.LogDebug("Stashed resilient chat client (fallback chain) for agent {AgentName}", agentName);
         }
 
         // Start a trace run when a store is wired in

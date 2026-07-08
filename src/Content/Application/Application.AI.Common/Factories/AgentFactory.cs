@@ -158,6 +158,15 @@ public class AgentFactory : IAgentFactory
     /// Inference, Persistent Agents, Anthropic, Echo): resolves the chat client, wraps it in the
     /// harness middleware pipeline, and constructs a <see cref="ChatClientAgent"/>.
     /// </summary>
+    /// <remarks>
+    /// When <see cref="AgentExecutionContextFactory"/> stashed a resilient chat client in the
+    /// context (only done when <c>ResilienceConfig.Enabled</c> is true), that client — which
+    /// spans the configured provider fallback chain with per-provider Polly retry, circuit
+    /// breaker, and timeout pipelines — replaces the raw per-provider client so every live turn
+    /// executes through the resilience pipelines. When resilience is disabled nothing is
+    /// stashed and the raw client resolved from <see cref="IChatClientFactory"/> is used,
+    /// preserving the per-context deployment and framework selection unchanged.
+    /// </remarks>
     private async Task<AIAgent> CreateChatClientAgentAsync(
         AgentExecutionContext agentContext,
         AIAgentFrameworkClientType clientType,
@@ -165,12 +174,35 @@ public class AgentFactory : IAgentFactory
         ChatClientAgentOptions agentOptions,
         CancellationToken cancellationToken)
     {
-        var chatClient = await _chatClientFactory.GetChatClientAsync(
-            clientType, deploymentOrAgentId, cancellationToken);
+        var chatClient = ResolveStashedResilientClient(agentContext)
+            ?? await _chatClientFactory.GetChatClientAsync(
+                clientType, deploymentOrAgentId, cancellationToken);
 
         var middlewareEnabledChatClient = BuildMiddlewarePipeline(chatClient, agentContext);
 
         return new ChatClientAgent(middlewareEnabledChatClient, agentOptions);
+    }
+
+    /// <summary>
+    /// Returns the resilient chat client stashed in the execution context under
+    /// <see cref="Interfaces.Resilience.IResilientChatClientProvider.AdditionalPropertiesKey"/>,
+    /// or <see langword="null"/> when resilience is disabled (nothing stashed) so the caller
+    /// falls back to the raw per-provider client.
+    /// </summary>
+    private IChatClient? ResolveStashedResilientClient(AgentExecutionContext agentContext)
+    {
+        if (agentContext.AdditionalProperties?.TryGetValue(
+                Interfaces.Resilience.IResilientChatClientProvider.AdditionalPropertiesKey,
+                out var stashed) == true
+            && stashed is IChatClient resilientClient)
+        {
+            _logger.LogInformation(
+                "Agent {AgentName} using resilient chat client (provider fallback chain) instead of raw provider client",
+                agentContext.Name);
+            return resilientClient;
+        }
+
+        return null;
     }
 
     /// <summary>
