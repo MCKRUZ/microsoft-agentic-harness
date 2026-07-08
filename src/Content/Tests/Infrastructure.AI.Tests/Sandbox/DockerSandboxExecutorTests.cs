@@ -58,16 +58,9 @@ public class DockerSandboxExecutorTests
             .Returns(Task.CompletedTask);
 
         _attestation
-            .Setup(x => x.SignAsync(It.IsAny<string>(), It.IsAny<string>(),
-                It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync((string tool, string _, string __, CancellationToken ___) =>
-                CreateAttestation(tool, false));
-
-        _attestation
-            .Setup(x => x.SignFailureAsync(It.IsAny<string>(), It.IsAny<string>(),
-                It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync((string tool, string _, string reason, CancellationToken ___) =>
-                CreateAttestation(tool, true, reason));
+            .Setup(x => x.SignAsync(It.IsAny<AttestationRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((AttestationRequest r, CancellationToken _) =>
+                CreateAttestation(r.ToolName, r.IsFailure, r.FailureReason));
 
         _options.Setup(x => x.CurrentValue).Returns(new SandboxExecutionOptions());
 

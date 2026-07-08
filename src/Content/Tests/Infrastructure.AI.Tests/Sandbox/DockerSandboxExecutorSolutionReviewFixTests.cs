@@ -93,8 +93,7 @@ public class DockerSandboxExecutorSolutionReviewFixTests
     {
         _sandboxConfig.Setup(x => x.CurrentValue).Returns(new SandboxConfig { Enabled = true });
         _attestation
-            .Setup(x => x.SignAsync(It.IsAny<string>(), It.IsAny<string>(),
-                It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Setup(x => x.SignAsync(It.IsAny<Domain.AI.Attestation.AttestationRequest>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(CreateAttestation("test_tool", isFailure: false));
         var sut = CreateSut();
         var request = CreateRequest();

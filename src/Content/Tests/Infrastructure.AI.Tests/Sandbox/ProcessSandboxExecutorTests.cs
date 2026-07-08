@@ -25,25 +25,9 @@ public class ProcessSandboxExecutorTests : IDisposable
         _limiter.Setup(x => x.IsSupported).Returns(true);
 
         _attestation
-            .Setup(x => x.SignAsync(
-                It.IsAny<string>(), It.IsAny<string>(),
-                It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync((string tool, string _, string __, CancellationToken ___) =>
-                CreateAttestation(tool, isFailure: false));
-
-        _attestation
-            .Setup(x => x.SignFailureAsync(
-                It.IsAny<string>(), It.IsAny<string>(),
-                It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync((string tool, string _, string reason, CancellationToken ___) =>
-                CreateAttestation(tool, isFailure: true, failureReason: reason));
-
-        _attestation
-            .Setup(x => x.SignFailureWithOutputAsync(
-                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
-                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync((string tool, string _, string reason, string __, string? ___, CancellationToken ____) =>
-                CreateAttestation(tool, isFailure: true, failureReason: reason));
+            .Setup(x => x.SignAsync(It.IsAny<AttestationRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((AttestationRequest r, CancellationToken _) =>
+                CreateAttestation(r.ToolName, isFailure: r.IsFailure, failureReason: r.FailureReason));
 
         var sandboxConfig = new Mock<IOptionsMonitor<SandboxConfig>>();
         sandboxConfig.Setup(x => x.CurrentValue).Returns(new SandboxConfig());

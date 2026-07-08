@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Planner;
 using Application.AI.Common.Interfaces.Sandbox;
+using Domain.AI.Attestation;
 using Domain.AI.Governance;
 using Domain.AI.Planner;
 using Domain.AI.Sandbox;
@@ -90,7 +91,7 @@ public sealed class ToolUseStepExecutorAttestationBindingTests
     {
         // A valid signature over "genuine-output" — then the result's Output diverges.
         var attestation = await _attestationService.SignAsync(
-            "file_system", "{}", "genuine-output", CancellationToken.None);
+            AttestationRequest.Success("file_system", "{}", "genuine-output"), CancellationToken.None);
 
         _sandboxExecutor.Setup(s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new SandboxExecutionResult
@@ -111,7 +112,7 @@ public sealed class ToolUseStepExecutorAttestationBindingTests
     public async Task ExecuteAsync_OutputMatchesSignedBytes_ReturnsCompleted()
     {
         var attestation = await _attestationService.SignAsync(
-            "file_system", "{}", "genuine-output", CancellationToken.None);
+            AttestationRequest.Success("file_system", "{}", "genuine-output"), CancellationToken.None);
 
         _sandboxExecutor.Setup(s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new SandboxExecutionResult
@@ -134,8 +135,8 @@ public sealed class ToolUseStepExecutorAttestationBindingTests
         // Output-less failure attestations (timeout, spawn refusal) have no OutputHash to
         // bind against — signature-only verification still applies, and the step reports
         // the sandbox failure, not an attestation failure.
-        var attestation = await _attestationService.SignFailureAsync(
-            "file_system", "{}", "Process timed out", CancellationToken.None);
+        var attestation = await _attestationService.SignAsync(
+            AttestationRequest.Failure("file_system", "{}", "Process timed out"), CancellationToken.None);
 
         _sandboxExecutor.Setup(s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new SandboxExecutionResult

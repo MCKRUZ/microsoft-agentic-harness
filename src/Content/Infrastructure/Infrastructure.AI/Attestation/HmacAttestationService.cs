@@ -30,28 +30,37 @@ public sealed class HmacAttestationService : IAttestationService
     }
 
     /// <inheritdoc />
-    public Task<ToolExecutionAttestation> SignAsync(string toolName, string input, string output, CancellationToken ct)
+    public Task<ToolExecutionAttestation> SignAsync(AttestationRequest request, CancellationToken ct)
     {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(request.ToolName);
+        ArgumentNullException.ThrowIfNull(request.Input);
+
         var options = _optionsMonitor.CurrentValue;
         var currentKey = GetKey(options, options.CurrentKeyVersion);
         try
         {
             var timestamp = _timeProvider.GetUtcNow();
-            var inputHash = ComputeSha256Hex(input);
-            var outputHash = ComputeSha256Hex(output);
-            var payload = $"{toolName}|{inputHash}|{outputHash}|{timestamp:O}";
+            var inputHash = ComputeSha256Hex(request.Input);
+            // Algorithm and key derivation are fixed (HMAC-SHA256 over the UTF-8 payload
+            // string); only the payload *shape* varies by request kind. All shapes coexist so
+            // that attestations produced before egress/output-binding was added remain
+            // verifiable — field presence on the record is the discriminator during
+            // verification (see BuildVerificationPayload).
+            var payload = BuildSigningPayload(request, inputHash, timestamp, out var outputHash);
             var signature = ComputeHmac(currentKey, payload);
 
             var attestation = new ToolExecutionAttestation
             {
-                ToolName = toolName,
+                ToolName = request.ToolName,
                 InputHash = inputHash,
                 OutputHash = outputHash,
                 Timestamp = timestamp,
                 Signature = signature,
                 KeyVersion = options.CurrentKeyVersion,
-                IsFailureAttestation = false,
-                FailureReason = null
+                IsFailureAttestation = request.IsFailure,
+                FailureReason = request.IsFailure ? request.FailureReason : null,
+                EgressDigest = request.EgressDigest
             };
 
             return Task.FromResult(attestation);
@@ -62,172 +71,30 @@ public sealed class HmacAttestationService : IAttestationService
         }
     }
 
-    /// <inheritdoc />
-    public Task<ToolExecutionAttestation> SignFailureAsync(string toolName, string input, string failureReason, CancellationToken ct)
+    /// <summary>
+    /// Builds the HMAC payload string for a signing request and reports the output hash that
+    /// belongs on the resulting attestation. Success attestations bind the output hash; failure
+    /// attestations use a literal <c>null</c> output slot unless the tool produced output before
+    /// failing, in which case that output's content hash occupies the slot. A non-null egress
+    /// digest is appended to any shape.
+    /// </summary>
+    private static string BuildSigningPayload(
+        AttestationRequest request, string inputHash, DateTimeOffset timestamp, out string? outputHash)
     {
-        var options = _optionsMonitor.CurrentValue;
-        var currentKey = GetKey(options, options.CurrentKeyVersion);
-        try
+        if (!request.IsFailure)
         {
-            var timestamp = _timeProvider.GetUtcNow();
-            var inputHash = ComputeSha256Hex(input);
-            var failureHash = ComputeSha256Hex(failureReason);
-            var payload = $"{toolName}|{inputHash}|null|{failureHash}|{timestamp:O}";
-            var signature = ComputeHmac(currentKey, payload);
-
-            var attestation = new ToolExecutionAttestation
-            {
-                ToolName = toolName,
-                InputHash = inputHash,
-                OutputHash = null,
-                Timestamp = timestamp,
-                Signature = signature,
-                KeyVersion = options.CurrentKeyVersion,
-                IsFailureAttestation = true,
-                FailureReason = failureReason
-            };
-
-            return Task.FromResult(attestation);
+            ArgumentNullException.ThrowIfNull(request.Output);
+            outputHash = ComputeSha256Hex(request.Output);
+            var success = $"{request.ToolName}|{inputHash}|{outputHash}|{timestamp:O}";
+            return request.EgressDigest is null ? success : $"{success}|egress:{request.EgressDigest}";
         }
-        finally
-        {
-            CryptographicOperations.ZeroMemory(currentKey);
-        }
-    }
 
-    /// <inheritdoc />
-    public Task<ToolExecutionAttestation> SignWithEgressAsync(
-        string toolName,
-        string input,
-        string output,
-        string egressDigest,
-        CancellationToken ct)
-    {
-        ArgumentNullException.ThrowIfNull(egressDigest);
-
-        var options = _optionsMonitor.CurrentValue;
-        var currentKey = GetKey(options, options.CurrentKeyVersion);
-        try
-        {
-            var timestamp = _timeProvider.GetUtcNow();
-            var inputHash = ComputeSha256Hex(input);
-            var outputHash = ComputeSha256Hex(output);
-            // Payload schema extended (egress trailing field). Algorithm and
-            // key derivation unchanged — HMAC-SHA256 over UTF-8 of the payload
-            // string. PR-3a's existing payload shape is preserved by the
-            // SignAsync overload; new callers opt in to the extended shape
-            // explicitly.
-            var payload = $"{toolName}|{inputHash}|{outputHash}|{timestamp:O}|egress:{egressDigest}";
-            var signature = ComputeHmac(currentKey, payload);
-
-            var attestation = new ToolExecutionAttestation
-            {
-                ToolName = toolName,
-                InputHash = inputHash,
-                OutputHash = outputHash,
-                Timestamp = timestamp,
-                Signature = signature,
-                KeyVersion = options.CurrentKeyVersion,
-                IsFailureAttestation = false,
-                FailureReason = null,
-                EgressDigest = egressDigest
-            };
-
-            return Task.FromResult(attestation);
-        }
-        finally
-        {
-            CryptographicOperations.ZeroMemory(currentKey);
-        }
-    }
-
-    /// <inheritdoc />
-    public Task<ToolExecutionAttestation> SignFailureWithEgressAsync(
-        string toolName,
-        string input,
-        string failureReason,
-        string egressDigest,
-        CancellationToken ct)
-    {
-        ArgumentNullException.ThrowIfNull(egressDigest);
-
-        var options = _optionsMonitor.CurrentValue;
-        var currentKey = GetKey(options, options.CurrentKeyVersion);
-        try
-        {
-            var timestamp = _timeProvider.GetUtcNow();
-            var inputHash = ComputeSha256Hex(input);
-            var failureHash = ComputeSha256Hex(failureReason);
-            var payload = $"{toolName}|{inputHash}|null|{failureHash}|{timestamp:O}|egress:{egressDigest}";
-            var signature = ComputeHmac(currentKey, payload);
-
-            var attestation = new ToolExecutionAttestation
-            {
-                ToolName = toolName,
-                InputHash = inputHash,
-                OutputHash = null,
-                Timestamp = timestamp,
-                Signature = signature,
-                KeyVersion = options.CurrentKeyVersion,
-                IsFailureAttestation = true,
-                FailureReason = failureReason,
-                EgressDigest = egressDigest
-            };
-
-            return Task.FromResult(attestation);
-        }
-        finally
-        {
-            CryptographicOperations.ZeroMemory(currentKey);
-        }
-    }
-
-    /// <inheritdoc />
-    public Task<ToolExecutionAttestation> SignFailureWithOutputAsync(
-        string toolName,
-        string input,
-        string failureReason,
-        string output,
-        string? egressDigest,
-        CancellationToken ct)
-    {
-        ArgumentNullException.ThrowIfNull(output);
-
-        var options = _optionsMonitor.CurrentValue;
-        var currentKey = GetKey(options, options.CurrentKeyVersion);
-        try
-        {
-            var timestamp = _timeProvider.GetUtcNow();
-            var inputHash = ComputeSha256Hex(input);
-            var outputHash = ComputeSha256Hex(output);
-            var failureHash = ComputeSha256Hex(failureReason);
-            // Failure payload with the produced output's content hash occupying the output
-            // slot (instead of the literal "null" used by output-less failures). The
-            // discriminator during verification is OutputHash being non-null on a failure
-            // attestation, so legacy failure attestations remain verifiable.
-            var basePayload = $"{toolName}|{inputHash}|{outputHash}|{failureHash}|{timestamp:O}";
-            var payload = egressDigest is null ? basePayload : $"{basePayload}|egress:{egressDigest}";
-            var signature = ComputeHmac(currentKey, payload);
-
-            var attestation = new ToolExecutionAttestation
-            {
-                ToolName = toolName,
-                InputHash = inputHash,
-                OutputHash = outputHash,
-                Timestamp = timestamp,
-                Signature = signature,
-                KeyVersion = options.CurrentKeyVersion,
-                IsFailureAttestation = true,
-                FailureReason = failureReason,
-                EgressDigest = egressDigest
-            };
-
-            return Task.FromResult(attestation);
-        }
-        finally
-        {
-            CryptographicOperations.ZeroMemory(currentKey);
-        }
+        ArgumentNullException.ThrowIfNull(request.FailureReason);
+        var failureHash = ComputeSha256Hex(request.FailureReason);
+        outputHash = request.Output is null ? null : ComputeSha256Hex(request.Output);
+        var outputSlot = outputHash ?? "null";
+        var failure = $"{request.ToolName}|{inputHash}|{outputSlot}|{failureHash}|{timestamp:O}";
+        return request.EgressDigest is null ? failure : $"{failure}|egress:{request.EgressDigest}";
     }
 
     /// <inheritdoc />
