@@ -121,6 +121,14 @@ internal static class RagTestData
             Reasoning = "Results are not relevant"
         };
 
+    public static CragEvaluation CreateWebFallbackEvaluation(double score = 0.2) =>
+        new()
+        {
+            Action = CorrectionAction.WebFallback,
+            RelevanceScore = score,
+            Reasoning = "Local results insufficient; recommend web fallback"
+        };
+
     public static TaskComplexityAssessment CreateTrivialClassification(double confidence = 0.9) =>
         new()
         {

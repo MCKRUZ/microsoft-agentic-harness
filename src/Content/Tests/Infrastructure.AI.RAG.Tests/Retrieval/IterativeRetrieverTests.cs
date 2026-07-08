@@ -256,6 +256,66 @@ public sealed class IterativeRetrieverTests
     }
 
     [Fact]
+    public async Task RetrieveIterativelyAsync_InsufficientHop_TriggersBoundedReRetrieval()
+    {
+        var decomposed = new DecomposedQuery
+        {
+            OriginalQuery = "Needs more detail",
+            SubQueries = [new SubQuery { Text = "Detailed question", Order = 1 }],
+        };
+        _mockDecomposer
+            .Setup(d => d.DecomposeAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(decomposed);
+        _mockRetriever
+            .Setup(r => r.RetrieveAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(RagTestData.CreateRetrievalResults(3));
+        // First verdict insufficient (0.2), re-retrieval verdict sufficient (0.9).
+        _mockSufficiency
+            .SetupSequence(s => s.EvaluateAsync(It.IsAny<string>(), It.IsAny<IReadOnlyList<RetrievalResult>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(0.2)
+            .ReturnsAsync(0.9);
+
+        var retriever = CreateIterativeRetriever(c => c.AI.Rag.MultiHop.MaxReRetriesPerHop = 1);
+        var result = await retriever.RetrieveIterativelyAsync("Needs more detail", topKPerHop: 5);
+
+        // Initial retrieval + one bounded re-retrieval for the insufficient hop.
+        _mockRetriever.Verify(
+            r => r.RetrieveAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()),
+            Times.Exactly(2));
+        result.Hops.Should().HaveCount(1);
+        result.Hops[0].IsSufficient.Should().BeTrue();
+        result.Hops[0].SufficiencyScore.Should().Be(0.9);
+    }
+
+    [Fact]
+    public async Task RetrieveIterativelyAsync_InsufficientHop_ReRetryCapZero_DoesNotReRetrieve()
+    {
+        var decomposed = new DecomposedQuery
+        {
+            OriginalQuery = "Needs more detail",
+            SubQueries = [new SubQuery { Text = "Detailed question", Order = 1 }],
+        };
+        _mockDecomposer
+            .Setup(d => d.DecomposeAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(decomposed);
+        _mockRetriever
+            .Setup(r => r.RetrieveAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(RagTestData.CreateRetrievalResults(3));
+        _mockSufficiency
+            .Setup(s => s.EvaluateAsync(It.IsAny<string>(), It.IsAny<IReadOnlyList<RetrievalResult>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(0.2);
+
+        // Default cap (0) — insufficient hop advances immediately, legacy behavior preserved.
+        var retriever = CreateIterativeRetriever();
+        var result = await retriever.RetrieveIterativelyAsync("Needs more detail", topKPerHop: 5);
+
+        _mockRetriever.Verify(
+            r => r.RetrieveAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()),
+            Times.Once);
+        result.Hops[0].IsSufficient.Should().BeFalse();
+    }
+
+    [Fact]
     public async Task RetrieveIterativelyAsync_DeduplicatesChunksAcrossHops()
     {
         var decomposed = new DecomposedQuery

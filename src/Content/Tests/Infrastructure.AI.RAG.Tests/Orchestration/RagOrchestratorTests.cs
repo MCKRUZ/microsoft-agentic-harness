@@ -9,7 +9,9 @@ using FluentAssertions;
 using Infrastructure.AI.RAG.Orchestration;
 using Infrastructure.AI.RAG.QueryTransform;
 using Infrastructure.AI.RAG.Tests.Helpers;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Moq;
 using Xunit;
 
@@ -34,10 +36,13 @@ public sealed class RagOrchestratorTests
         WasTruncated = false
     };
 
-    private RagOrchestrator CreateOrchestrator(Action<AppConfig>? configure = null)
+    private RagOrchestrator CreateOrchestrator(
+        Action<AppConfig>? configure = null,
+        QueryRouter? router = null,
+        IRetrievalSource? webSearchSource = null)
     {
         var config = RagTestData.CreateConfigMonitor(configure);
-        var queryRouter = new QueryRouter(
+        var queryRouter = router ?? new QueryRouter(
             Mock.Of<IQueryClassifier>(),
             Mock.Of<IServiceProvider>(),
             config,
@@ -56,7 +61,45 @@ public sealed class RagOrchestratorTests
             _mockCostTracker.Object,
             config,
             Mock.Of<ILogger<RagOrchestrator>>(),
-            _mockDecisionGate.Object);
+            _mockDecisionGate.Object,
+            iterativeRetriever: null,
+            faithfulnessEvaluator: null,
+            webSearchSource: webSearchSource);
+    }
+
+    /// <summary>
+    /// Builds a real <see cref="QueryRouter"/> that classifies queries as
+    /// <paramref name="classifiedType"/> and returns <paramref name="variants"/> from a stub
+    /// "rag_fusion" transformer resolved via a real keyed service provider — mirroring the live
+    /// classify → transform flow so the orchestrator can fan retrieval out across the variants.
+    /// </summary>
+    private static QueryRouter CreateVariantRouter(
+        IOptionsMonitor<AppConfig> config,
+        QueryType classifiedType,
+        RetrievalStrategy strategy,
+        IReadOnlyList<string> variants)
+    {
+        var classifier = new Mock<IQueryClassifier>();
+        classifier
+            .Setup(c => c.ClassifyAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new QueryClassification
+            {
+                Type = classifiedType,
+                Strategy = strategy,
+                Confidence = 0.9,
+                Reasoning = "test classification"
+            });
+
+        var transformer = new Mock<IQueryTransformer>();
+        transformer
+            .Setup(t => t.TransformAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(variants);
+
+        var services = new ServiceCollection();
+        services.AddKeyedSingleton<IQueryTransformer>("rag_fusion", transformer.Object);
+        var provider = services.BuildServiceProvider();
+
+        return new QueryRouter(classifier.Object, provider, config, Mock.Of<ILogger<QueryRouter>>());
     }
 
     private void SetupHappyPath(int chunkCount = 3)
@@ -353,6 +396,159 @@ public sealed class RagOrchestratorTests
         result.AssembledText.Should().Contain("No relevant documents found across any source");
         _mockAssembler.Verify(
             a => a.AssembleAsync(It.IsAny<IReadOnlyList<RerankedResult>>(), It.IsAny<int>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task SearchAsync_FusionRetrievalEnabled_FansOutAcrossVariantsAndFuses()
+    {
+        var variants = new[] { "original query", "variant one", "variant two" };
+        var config = RagTestData.CreateConfigMonitor(cfg =>
+        {
+            cfg.AI.ModelRouting.Enabled = false;
+            cfg.AI.Rag.QueryTransform.EnableClassification = true;
+            cfg.AI.Rag.QueryTransform.EnableRagFusion = true;
+            cfg.AI.Rag.QueryTransform.EnableFusionRetrieval = true;
+        });
+        var router = CreateVariantRouter(
+            config, QueryType.MultiHop, RetrievalStrategy.HybridVectorBm25, variants);
+
+        _mockRetriever
+            .Setup(r => r.RetrieveAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(RagTestData.CreateRetrievalResults(3));
+        _mockReranker
+            .Setup(r => r.RerankAsync(It.IsAny<string>(), It.IsAny<IReadOnlyList<RetrievalResult>>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(RagTestData.CreateRerankedResults(3));
+        _mockCrag
+            .Setup(e => e.EvaluateAsync(It.IsAny<string>(), It.IsAny<IReadOnlyList<RetrievalResult>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(RagTestData.CreateAcceptEvaluation());
+        _mockAssembler
+            .Setup(a => a.AssembleAsync(It.IsAny<IReadOnlyList<RerankedResult>>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(_expectedContext);
+
+        var orchestrator = CreateOrchestrator(
+            configure: cfg =>
+            {
+                cfg.AI.ModelRouting.Enabled = false;
+                cfg.AI.Rag.QueryTransform.EnableClassification = true;
+                cfg.AI.Rag.QueryTransform.EnableRagFusion = true;
+                cfg.AI.Rag.QueryTransform.EnableFusionRetrieval = true;
+            },
+            router: router);
+
+        var result = await orchestrator.SearchAsync("original query");
+
+        result.AssembledText.Should().Be("assembled text");
+        // Fan-out: one retrieval per variant (proves the variants are no longer discarded).
+        _mockRetriever.Verify(
+            r => r.RetrieveAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()),
+            Times.Exactly(3));
+    }
+
+    [Fact]
+    public async Task SearchAsync_FusionRetrievalDisabled_RetrievesOriginalQueryOnly()
+    {
+        var variants = new[] { "original query", "variant one", "variant two" };
+        var config = RagTestData.CreateConfigMonitor(cfg =>
+        {
+            cfg.AI.ModelRouting.Enabled = false;
+            cfg.AI.Rag.QueryTransform.EnableClassification = true;
+            cfg.AI.Rag.QueryTransform.EnableRagFusion = true;
+            cfg.AI.Rag.QueryTransform.EnableFusionRetrieval = false;
+        });
+        var router = CreateVariantRouter(
+            config, QueryType.MultiHop, RetrievalStrategy.HybridVectorBm25, variants);
+
+        SetupHappyPath();
+
+        var orchestrator = CreateOrchestrator(
+            configure: cfg =>
+            {
+                cfg.AI.ModelRouting.Enabled = false;
+                cfg.AI.Rag.QueryTransform.EnableClassification = true;
+                cfg.AI.Rag.QueryTransform.EnableRagFusion = true;
+                cfg.AI.Rag.QueryTransform.EnableFusionRetrieval = false;
+            },
+            router: router);
+
+        await orchestrator.SearchAsync("original query");
+
+        // Fan-out gated off — legacy single retrieval even though variants were produced.
+        _mockRetriever.Verify(
+            r => r.RetrieveAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task SearchAsync_WebFallbackWithWebEnabled_InvokesWebSourceAndAssembles()
+    {
+        var webSource = new Mock<IRetrievalSource>();
+        webSource.SetupGet(s => s.SourceName).Returns("web_search");
+        webSource
+            .Setup(s => s.RetrieveAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<TaskComplexity>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(RagTestData.CreateSourceResult("web_search", resultCount: 2));
+
+        _mockRetriever
+            .Setup(r => r.RetrieveAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(RagTestData.CreateRetrievalResults(3));
+        _mockReranker
+            .Setup(r => r.RerankAsync(It.IsAny<string>(), It.IsAny<IReadOnlyList<RetrievalResult>>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(RagTestData.CreateRerankedResults(3));
+        _mockCrag
+            .Setup(e => e.EvaluateAsync(It.IsAny<string>(), It.IsAny<IReadOnlyList<RetrievalResult>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(RagTestData.CreateWebFallbackEvaluation());
+        _mockAssembler
+            .Setup(a => a.AssembleAsync(It.IsAny<IReadOnlyList<RerankedResult>>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(_expectedContext);
+
+        var orchestrator = CreateOrchestrator(
+            configure: cfg =>
+            {
+                cfg.AI.ModelRouting.Enabled = false;
+                cfg.AI.Rag.Crag.AllowWebFallback = true;
+                cfg.AI.Rag.MultiSource.EnabledSources = ["vector", "graph", "web_search"];
+            },
+            webSearchSource: webSource.Object);
+
+        var result = await orchestrator.SearchAsync("query needing web fallback");
+
+        result.AssembledText.Should().Be("assembled text");
+        webSource.Verify(
+            s => s.RetrieveAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<TaskComplexity>(), It.IsAny<CancellationToken>()),
+            Times.Once);
+        _mockAssembler.Verify(
+            a => a.AssembleAsync(It.IsAny<IReadOnlyList<RerankedResult>>(), It.IsAny<int>(), It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task SearchAsync_WebFallbackWithWebDisabled_DoesNotInvokeWebSource()
+    {
+        var webSource = new Mock<IRetrievalSource>();
+        webSource.SetupGet(s => s.SourceName).Returns("web_search");
+
+        _mockRetriever
+            .Setup(r => r.RetrieveAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(RagTestData.CreateRetrievalResults(3));
+        _mockReranker
+            .Setup(r => r.RerankAsync(It.IsAny<string>(), It.IsAny<IReadOnlyList<RetrievalResult>>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(RagTestData.CreateRerankedResults(3));
+        _mockCrag
+            .Setup(e => e.EvaluateAsync(It.IsAny<string>(), It.IsAny<IReadOnlyList<RetrievalResult>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(RagTestData.CreateWebFallbackEvaluation());
+        _mockAssembler
+            .Setup(a => a.AssembleAsync(It.IsAny<IReadOnlyList<RerankedResult>>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(_expectedContext);
+
+        // Web source registered but "web_search" NOT in EnabledSources (default) → graceful degrade.
+        var orchestrator = CreateOrchestrator(
+            configure: cfg => cfg.AI.ModelRouting.Enabled = false,
+            webSearchSource: webSource.Object);
+
+        await orchestrator.SearchAsync("query needing web fallback");
+
+        webSource.Verify(
+            s => s.RetrieveAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<TaskComplexity>(), It.IsAny<CancellationToken>()),
             Times.Never);
     }
 

@@ -4,6 +4,7 @@ using Application.AI.Common.Interfaces.Routing;
 using Application.AI.Common.OpenTelemetry.Metrics;
 using Domain.AI.RAG.Enums;
 using Domain.AI.RAG.Models;
+using Domain.AI.Retrieval;
 using Domain.AI.Routing.Enums;
 using Domain.AI.Routing.Models;
 using Domain.AI.Telemetry.Conventions;
@@ -63,6 +64,7 @@ public sealed partial class RagOrchestrator : IRagOrchestrator
     private readonly IRetrievalDecisionGate? _decisionGate;
     private readonly IIterativeRetriever? _iterativeRetriever;
     private readonly IAnswerFaithfulnessEvaluator? _faithfulnessEvaluator;
+    private readonly IRetrievalSource? _webSearchSource;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="RagOrchestrator"/> class.
@@ -82,6 +84,9 @@ public sealed partial class RagOrchestrator : IRagOrchestrator
     /// <param name="decisionGate">Optional retrieval decision gate. Null disables complexity routing.</param>
     /// <param name="iterativeRetriever">Optional multi-hop iterative retriever for complex queries. Null disables multi-hop.</param>
     /// <param name="faithfulnessEvaluator">Optional post-assembly faithfulness evaluator. Null disables faithfulness checks.</param>
+    /// <param name="webSearchSource">Optional web-search retrieval source (keyed "web_search"). Invoked only when
+    /// CRAG returns <see cref="CorrectionAction.WebFallback"/> and web search is enabled in
+    /// <see cref="Domain.Common.Config.AI.RAG.MultiSourceConfig.EnabledSources"/>. Null disables web fallback.</param>
     public RagOrchestrator(
         IHybridRetriever hybridRetriever,
         IReranker reranker,
@@ -97,7 +102,8 @@ public sealed partial class RagOrchestrator : IRagOrchestrator
         ILogger<RagOrchestrator> logger,
         IRetrievalDecisionGate? decisionGate = null,
         IIterativeRetriever? iterativeRetriever = null,
-        IAnswerFaithfulnessEvaluator? faithfulnessEvaluator = null)
+        IAnswerFaithfulnessEvaluator? faithfulnessEvaluator = null,
+        IRetrievalSource? webSearchSource = null)
     {
         ArgumentNullException.ThrowIfNull(hybridRetriever);
         ArgumentNullException.ThrowIfNull(reranker);
@@ -123,6 +129,7 @@ public sealed partial class RagOrchestrator : IRagOrchestrator
         _decisionGate = decisionGate;
         _iterativeRetriever = iterativeRetriever;
         _faithfulnessEvaluator = faithfulnessEvaluator;
+        _webSearchSource = webSearchSource;
     }
 
     /// <inheritdoc />
@@ -183,8 +190,18 @@ public sealed partial class RagOrchestrator : IRagOrchestrator
             }
         }
 
-        // Step 1: Determine retrieval strategy
-        var strategy = strategyOverride ?? await ClassifyStrategyAsync(query, cancellationToken);
+        // Step 1: Determine retrieval strategy (and any RAG-Fusion query variants).
+        RetrievalStrategy strategy;
+        IReadOnlyList<string> queryVariants = [query];
+        if (strategyOverride is not null)
+        {
+            strategy = strategyOverride.Value;
+        }
+        else
+        {
+            (strategy, queryVariants) = await ClassifyStrategyAsync(query, cancellationToken);
+        }
+
         var strategyTag = strategy.ToString().ToLowerInvariant();
         activity?.SetTag(RagConventions.RetrievalStrategy, strategyTag);
 
@@ -214,7 +231,7 @@ public sealed partial class RagOrchestrator : IRagOrchestrator
             else
             {
                 result = await ExecuteVectorPipelineAsync(
-                    query, effectiveTopK, collectionName, cancellationToken);
+                    query, effectiveTopK, collectionName, queryVariants, cancellationToken);
             }
 
             _costTracker?.RecordCall(result.TotalTokens, 0, sw.Elapsed);
@@ -227,18 +244,18 @@ public sealed partial class RagOrchestrator : IRagOrchestrator
         }
     }
 
-    private async Task<RetrievalStrategy> ClassifyStrategyAsync(
+    private async Task<(RetrievalStrategy Strategy, IReadOnlyList<string> Variants)> ClassifyStrategyAsync(
         string query, CancellationToken cancellationToken)
     {
         try
         {
-            var (classification, _) = await _queryRouter.RouteAsync(query, cancellationToken);
-            return classification.Strategy;
+            var (classification, variants) = await _queryRouter.RouteAsync(query, cancellationToken);
+            return (classification.Strategy, variants);
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Query classification failed; falling back to HybridVectorBm25");
-            return RetrievalStrategy.HybridVectorBm25;
+            return (RetrievalStrategy.HybridVectorBm25, [query]);
         }
     }
 
@@ -255,6 +272,7 @@ public sealed partial class RagOrchestrator : IRagOrchestrator
         string query,
         int topK,
         string? collectionName,
+        IReadOnlyList<string> queryVariants,
         CancellationToken cancellationToken)
     {
         using var activity = ActivitySource.StartActivity("rag.orchestrator.vector_pipeline");
@@ -265,9 +283,13 @@ public sealed partial class RagOrchestrator : IRagOrchestrator
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            // Retrieve
-            var candidates = await _hybridRetriever.RetrieveAsync(
-                currentQuery, topK, collectionName, cancellationToken);
+            // Retrieve — fan out across RAG-Fusion variants on the first (unrefined) pass;
+            // refined passes re-query the single refined string.
+            var candidates = currentQuery == query
+                ? await RetrieveWithFanOutAsync(
+                    currentQuery, queryVariants, topK, collectionName, cancellationToken)
+                : await _hybridRetriever.RetrieveAsync(
+                    currentQuery, topK, collectionName, cancellationToken);
 
             if (candidates.Count == 0)
             {
@@ -322,6 +344,17 @@ public sealed partial class RagOrchestrator : IRagOrchestrator
                     return CreateEmptyContext(
                         evaluation.Reasoning ?? "Retrieved content not relevant to the query.");
 
+                case CorrectionAction.WebFallback when IsWebFallbackEnabled():
+                {
+                    _logger.LogInformation(
+                        "CRAG web fallback: score={Score:F2}, augmenting with web search results",
+                        evaluation.RelevanceScore);
+                    var augmented = await AppendWebResultsAsync(
+                        currentQuery, reranked, topK, cancellationToken);
+                    return await _contextAssembler.AssembleAsync(
+                        augmented, DefaultMaxTokens, cancellationToken);
+                }
+
                 default:
                     // Refine exhausted or WebFallback — assemble what we have
                     _logger.LogInformation(
@@ -357,11 +390,13 @@ public sealed partial class RagOrchestrator : IRagOrchestrator
                 query, decision.TopK, collectionName, cancellationToken);
         }
 
-        // Step 1: CRAG evaluation path (reuses existing vector pipeline loop with refinement)
+        // Step 1: CRAG evaluation path (reuses existing vector pipeline loop with refinement).
+        // The complexity-routed path does not carry RAG-Fusion variants, so retrieval runs on
+        // the single query.
         if (decision.UseCragEvaluation)
         {
             return await ExecuteVectorPipelineAsync(
-                query, decision.TopK, collectionName, cancellationToken);
+                query, decision.TopK, collectionName, [query], cancellationToken);
         }
 
         // Step 2: Retrieve with decision's topK
@@ -455,6 +490,86 @@ public sealed partial class RagOrchestrator : IRagOrchestrator
         }
 
         return await _contextAssembler.AssembleAsync(reranked, DefaultMaxTokens, cancellationToken);
+    }
+
+    /// <summary>
+    /// Retrieves candidates for the query. When RAG-Fusion fan-out is enabled and the router
+    /// produced more than one variant, retrieves for each (bounded) variant concurrently and fuses
+    /// the per-variant result sets with the shared <see cref="ReciprocalRankFusion"/> primitive.
+    /// Otherwise falls back to a single retrieval on the primary query (legacy behavior).
+    /// </summary>
+    private async Task<IReadOnlyList<RetrievalResult>> RetrieveWithFanOutAsync(
+        string primaryQuery,
+        IReadOnlyList<string> queryVariants,
+        int topK,
+        string? collectionName,
+        CancellationToken cancellationToken)
+    {
+        var ragConfig = _configMonitor.CurrentValue.AI.Rag;
+
+        if (!ragConfig.QueryTransform.EnableFusionRetrieval || queryVariants.Count <= 1)
+        {
+            return await _hybridRetriever.RetrieveAsync(
+                primaryQuery, topK, collectionName, cancellationToken);
+        }
+
+        var cap = Math.Max(1, ragConfig.QueryTransform.FusionVariantCount + 1);
+        var boundedVariants = queryVariants.Take(cap).ToList();
+
+        var perVariantResults = await Task.WhenAll(boundedVariants.Select(v =>
+            _hybridRetriever.RetrieveAsync(v, topK, collectionName, cancellationToken)));
+
+        var rrfK = ragConfig.Retrieval.RrfK > 0 ? ragConfig.Retrieval.RrfK : ReciprocalRankFusion.DefaultK;
+        var fused = ReciprocalRankFusion.Fuse(perVariantResults, static r => r.Chunk.Id, rrfK, topK);
+
+        _logger.LogInformation(
+            "RAG-Fusion fan-out: retrieved across {VariantCount} variants, fused to {FusedCount} results",
+            boundedVariants.Count, fused.Count);
+
+        return fused.Select(f => f.Item with { FusedScore = f.Score }).ToList();
+    }
+
+    /// <summary>
+    /// Determines whether a CRAG <see cref="CorrectionAction.WebFallback"/> should actually invoke
+    /// web search: the web source must be registered and "web_search" must be listed in
+    /// <see cref="Domain.Common.Config.AI.RAG.MultiSourceConfig.EnabledSources"/>. When either is
+    /// absent, the pipeline degrades gracefully to assembling the best local results.
+    /// </summary>
+    private bool IsWebFallbackEnabled()
+    {
+        if (_webSearchSource is null) return false;
+
+        var enabledSources = _configMonitor.CurrentValue.AI.Rag.MultiSource.EnabledSources;
+        return enabledSources.Contains("web_search", StringComparer.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Invokes the web-search retrieval source and appends its results to the existing reranked set
+    /// (ranks continue after the local results). Returns the original set unchanged when web search
+    /// yields nothing.
+    /// </summary>
+    private async Task<IReadOnlyList<RerankedResult>> AppendWebResultsAsync(
+        string query,
+        IReadOnlyList<RerankedResult> existing,
+        int topK,
+        CancellationToken cancellationToken)
+    {
+        var webResult = await _webSearchSource!.RetrieveAsync(
+            query, topK, TaskComplexity.Moderate, cancellationToken);
+
+        if (webResult.Results.Count == 0)
+            return existing;
+
+        var startRank = existing.Count;
+        var webReranked = webResult.Results.Select((r, i) => new RerankedResult
+        {
+            RetrievalResult = r,
+            RerankScore = r.FusedScore,
+            OriginalRank = startRank + i + 1,
+            RerankRank = startRank + i + 1,
+        });
+
+        return existing.Concat(webReranked).ToList();
     }
 
     private static RagAssembledContext CreateEmptyContext(string reasoning) => new()

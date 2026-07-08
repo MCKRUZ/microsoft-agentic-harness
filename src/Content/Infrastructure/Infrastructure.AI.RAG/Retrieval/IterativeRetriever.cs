@@ -77,6 +77,7 @@ public sealed class IterativeRetriever : IIterativeRetriever
         var maxHops = multiHopConfig.MaxHops;
         var tokenBudgetPerHop = multiHopConfig.TokenBudgetPerHop;
         var minSufficiency = multiHopConfig.MinSufficiencyScore;
+        var maxReRetriesPerHop = multiHopConfig.MaxReRetriesPerHop;
         var totalTokenBudget = maxHops * tokenBudgetPerHop;
 
         var decomposed = await _decomposer.DecomposeAsync(query, cancellationToken);
@@ -126,6 +127,24 @@ public sealed class IterativeRetriever : IIterativeRetriever
 
             var sufficiencyScore = await _sufficiencyEvaluator.EvaluateAsync(
                 subQuery.Text, candidates, cancellationToken);
+
+            // Bounded re-retrieval: an insufficient hop widens top-k and refines the sub-query,
+            // keeping the best-scoring attempt, up to MaxReRetriesPerHop tries or until the
+            // per-run token budget runs out. Disabled (behavior-preserving) when the cap is 0.
+            if (maxReRetriesPerHop > 0 && sufficiencyScore < minSufficiency)
+            {
+                var (improved, improvedScore, extraTokens) = await ReRetrieveUntilSufficientAsync(
+                    subQuery, effectiveQuery, candidates, sufficiencyScore, topKPerHop, collectionName,
+                    maxReRetriesPerHop, minSufficiency, totalTokenBudget - totalTokensUsed,
+                    hopNumber, cancellationToken);
+
+                candidates = improved;
+                sufficiencyScore = improvedScore;
+                totalTokensUsed += extraTokens;
+                if (totalTokensUsed > totalTokenBudget)
+                    budgetExhausted = true;
+            }
+
             var isSufficient = sufficiencyScore >= minSufficiency;
 
             var hopResult = new HopResult
@@ -189,6 +208,63 @@ public sealed class IterativeRetriever : IIterativeRetriever
             TotalTokensUsed = totalTokensUsed,
             BudgetExhausted = budgetExhausted,
         };
+    }
+
+    /// <summary>
+    /// Runs bounded re-retrieval for a hop whose sufficiency verdict is below threshold. Each attempt
+    /// widens the top-k (proportional to the attempt number) and appends a refinement instruction to the
+    /// effective query, retaining the highest-scoring candidate set seen. Stops after
+    /// <paramref name="maxReRetries"/> attempts, once the score clears <paramref name="minSufficiency"/>,
+    /// or when the extra tokens consumed reach <paramref name="remainingTokenBudget"/>.
+    /// </summary>
+    /// <returns>The best candidate set, its sufficiency score, and the total extra tokens consumed.</returns>
+    private async Task<(IReadOnlyList<RetrievalResult> Candidates, double Score, int ExtraTokens)>
+        ReRetrieveUntilSufficientAsync(
+            SubQuery subQuery,
+            string effectiveQuery,
+            IReadOnlyList<RetrievalResult> initial,
+            double initialScore,
+            int topKPerHop,
+            string? collectionName,
+            int maxReRetries,
+            double minSufficiency,
+            int remainingTokenBudget,
+            int hopNumber,
+            CancellationToken cancellationToken)
+    {
+        var bestCandidates = initial;
+        var bestScore = initialScore;
+        var extraTokens = 0;
+        var attempt = 0;
+
+        while (bestScore < minSufficiency
+            && attempt < maxReRetries
+            && extraTokens < remainingTokenBudget)
+        {
+            attempt++;
+            var widenedTopK = topKPerHop * (attempt + 1);
+            var refinedQuery =
+                $"{effectiveQuery}\n\n(Insufficient detail; broaden and re-answer: {subQuery.Text})";
+
+            var retry = await _hybridRetriever.RetrieveAsync(
+                refinedQuery, widenedTopK, collectionName, cancellationToken);
+            extraTokens += retry.Sum(r => r.Chunk.Tokens);
+
+            var retryScore = await _sufficiencyEvaluator.EvaluateAsync(
+                subQuery.Text, retry, cancellationToken);
+
+            if (retryScore > bestScore)
+            {
+                bestCandidates = retry;
+                bestScore = retryScore;
+            }
+
+            _logger.LogDebug(
+                "Hop {Hop} re-retry {Attempt}/{Max}: widenedTopK={TopK}, score={Score:F2}",
+                hopNumber, attempt, maxReRetries, widenedTopK, retryScore);
+        }
+
+        return (bestCandidates, bestScore, extraTokens);
     }
 
     private string BuildEffectiveQuery(

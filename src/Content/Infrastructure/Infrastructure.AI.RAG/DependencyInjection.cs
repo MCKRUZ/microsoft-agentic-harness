@@ -72,6 +72,7 @@ public static partial class DependencyInjection
                 sp.GetRequiredService<ILogger<RagOrchestrator>>(),
                 sp.GetService<IRetrievalDecisionGate>(),
                 sp.GetService<IIterativeRetriever>(),
-                sp.GetService<IAnswerFaithfulnessEvaluator>()));
+                sp.GetService<IAnswerFaithfulnessEvaluator>(),
+                sp.GetKeyedService<IRetrievalSource>("web_search")));
     }
 }
