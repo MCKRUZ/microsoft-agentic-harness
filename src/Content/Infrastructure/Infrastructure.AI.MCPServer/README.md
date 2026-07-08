@@ -55,7 +55,7 @@ External MCP Clients
 2. Register MCP server services with HTTP transport.
 3. Configure authentication **fail-closed**: ApiKey, static Bearer token, or Entra ID (JWT). If no scheme is properly configured and `Auth.AllowAnonymous` is not explicitly `true`, the host throws at startup — in every environment, including Development.
 4. Register the skill catalog (`SkillMetadataRegistry`) for tool queries.
-5. Add rate limiting (100 requests/minute per client).
+5. Add rate limiting (100 requests/minute, shared **globally** across all clients — a single fixed-window partition, not per-client).
 6. Build the pipeline: Authentication -> Authorization -> Rate Limiter -> MCP endpoint.
 7. Map the MCP endpoint at the root with auth + rate limiting required (or a deliberate `.AllowAnonymous()` when the opt-in is set).
 
@@ -132,6 +132,8 @@ else
 **What it is:** A fixed-window rate limiter that caps MCP requests at 100 per minute.
 
 **Why it exists:** MCP tools can trigger expensive operations (LLM calls, database queries). Rate limiting prevents abuse and protects downstream resources.
+
+**Scope — global, not per-client:** the limiter is registered with a **constant partition key** (`RateLimitPartition.GetFixedWindowLimiter("mcp", ...)` in `Program.cs`), so every inbound request maps to the *same* partition. The 100 req/min budget is therefore shared across all callers, not allocated per authenticated client or per IP. One busy client can exhaust the window for everyone. If you need per-client fairness, replace the constant key with a per-caller partition key (e.g. derived from the authenticated principal or an `X-Forwarded-For` value). Note this differs from the AgentHub SignalR limiter, which *is* partitioned per user id.
 
 ### Resource Subscriptions
 
@@ -239,7 +241,7 @@ Infrastructure.AI.MCPServer/
 | `Auth.ApiKeyHeader` | Header carrying the API key | Default `X-API-Key` |
 | `Auth.TenantId` | Entra tenant for token validation | Your organization's tenant |
 | `Auth.ClientId` | App registration for audience validation | Dedicated app registration |
-| Rate limit | 100 requests per minute per partition | Tune based on expected load |
+| Rate limit | 100 requests per minute, global (single shared partition — not per-client) | Tune based on expected load; re-key the partition for per-client fairness |
 
 ## Common Tasks
 
@@ -273,6 +275,8 @@ dotnet run --project src/Content/Infrastructure/Infrastructure.AI.MCPServer
 ```
 
 The server starts on the configured URLs (default: `http://localhost:5000`). Connect any MCP client to `http://localhost:5000/mcp`.
+
+> **Health probes (fail-closed auth):** because a fallback `RequireAuthenticatedUser` policy protects every endpoint without explicit authorization metadata, an unauthenticated liveness/readiness probe gets a **401** — which an orchestrator (Kubernetes, Container Apps) treats as unhealthy and restarts in a crash loop. Use a **TCP probe** against the listening port, or map a dedicated **anonymous** `/health` endpoint with `.AllowAnonymous()` and probe that. Do not weaken the fallback policy to make an authed route probe-friendly.
 
 ### How to Test MCP Tools Locally
 
