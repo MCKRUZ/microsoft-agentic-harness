@@ -1,8 +1,10 @@
+using Application.Core;
 using Application.Core.Validation.Planner;
 using Domain.AI.Planner;
 using FluentAssertions;
 using FluentValidation;
 using Infrastructure.AI.Planner;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using Xunit;
@@ -386,6 +388,59 @@ public sealed class PlanValidatorTests
 
         result.IsSuccess.Should().BeFalse();
         result.Errors.Should().Contain(e => e.Contains("ApprovalStrategy"));
+    }
+
+    // --- Real DI Wiring (step-config validators resolved from Application.Core) ---
+    //
+    // Regression guard for the "inert machinery" audit finding: the five planner step-config
+    // validators (LlmCall/ToolUse/HumanGate/ConditionalBranch/SubPlan) are registered implicitly
+    // by AddApplicationCoreDependencies -> AddValidatorsFromAssembly, so a name grep shows no
+    // explicit registration and they can look dead. These tests prove PlanValidator's
+    // ValidateStepConfigurations actually resolves and applies them from the real container —
+    // if either the assembly scan or the delegation regresses, an invalid step config would
+    // silently pass and these tests would fail.
+
+    [Fact]
+    public async Task Validate_InvalidToolUseConfig_WithRealDiContainer_ReturnsFail()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddApplicationCoreDependencies();
+        using var provider = services.BuildServiceProvider();
+        using var scope = provider.CreateScope();
+
+        var sut = new PlanValidator(scope.ServiceProvider, NullLogger<PlanValidator>.Instance);
+        var step = CreateStep(
+            name: "BadTool",
+            type: StepType.ToolUse,
+            config: new ToolUseConfig { ToolName = "" });
+        var graph = CreateGraph([step]);
+
+        var result = await sut.ValidateAsync(graph, CancellationToken.None);
+
+        result.IsSuccess.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.Contains("ToolName"));
+    }
+
+    [Fact]
+    public async Task Validate_InvalidLlmCallConfig_WithRealDiContainer_ReturnsFail()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddApplicationCoreDependencies();
+        using var provider = services.BuildServiceProvider();
+        using var scope = provider.CreateScope();
+
+        var sut = new PlanValidator(scope.ServiceProvider, NullLogger<PlanValidator>.Instance);
+        var step = CreateStep(
+            name: "BadLlm",
+            config: new LlmCallConfig { SystemPrompt = "test", ModelDeploymentKey = "" });
+        var graph = CreateGraph([step]);
+
+        var result = await sut.ValidateAsync(graph, CancellationToken.None);
+
+        result.IsSuccess.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.Contains("ModelDeploymentKey"));
     }
 
     // --- Resource Estimation ---
