@@ -66,6 +66,12 @@ public static partial class DependencyInjection
                 sp.GetRequiredService<ICrossSessionMemoryStore>(),
                 sp.GetRequiredService<IOptionsMonitor<AppConfig>>(),
                 sp.GetRequiredService<ILogger<MemoryDecayService>>()));
+
+        // Background scheduler that actually runs decay+prune over time. Opt-in: without it the
+        // decay service is inert (only ever invoked by tests). Resolves the decay service from a
+        // fresh scope per tick so it stays valid under ValidateScopes=true.
+        if (memoryConfig.DecayScheduler.Enabled)
+            services.AddHostedService<GraphRag.MemoryDecayScheduler>();
     }
 
     /// <summary>
