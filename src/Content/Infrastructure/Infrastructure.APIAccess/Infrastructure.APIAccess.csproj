@@ -19,6 +19,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Exposes internal helpers (e.g. ResolveTotalTimeout) to the unit-test assembly so
+         the resilience-pipeline timeout arithmetic can be asserted directly. -->
+    <InternalsVisibleTo Include="Infrastructure.APIAccess.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\..\Application\Application.Common\Application.Common.csproj" />
     <ProjectReference Include="..\Infrastructure.Common\Infrastructure.Common.csproj" />
   </ItemGroup>
