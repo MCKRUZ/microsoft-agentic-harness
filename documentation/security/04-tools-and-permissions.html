@@ -342,6 +342,26 @@
                         </div>
                     </div>
 
+                    <div class="callout callout-warn">
+                        <span class="callout-icon">!</span>
+                        <div class="callout-body">
+                            <div class="callout-title"><code>Autonomous</code> auto-approves agent-wide — pair it with <code>DeniedTools</code></div>
+                            <p style="margin: 0">
+                                An <code>Autonomous</code> plugin baseline resolves an <em>authoritative Allow</em> by
+                                tool <em>name</em>, so the named tools auto-approve for the whole turn — for every
+                                caller, not just the plugin. To keep this from becoming a privilege-escalation path,
+                                the provider only emits the baseline for names on the plugin's <strong>own</strong>
+                                tool surface: a name that resolves to a globally-registered keyed-DI tool (a shared
+                                harness tool such as <code>file_system</code> or a shell) is excluded, even if the
+                                plugin's <code>SKILL.md</code> lists it. The plugin may still <em>use</em> that tool —
+                                it just cannot auto-approve it. When you mark a plugin <code>Autonomous</code>, treat
+                                the named tools as auto-approved agent-wide and add any sensitive global tool to that
+                                plugin's <code>DeniedTools</code> (bypass-immune) to be certain it can never be
+                                auto-run.
+                            </p>
+                        </div>
+                    </div>
+
                     <h2 id="bypass-immune">The bypass-immune DeniedTools rule</h2>
                     <p>
                         This is the most important behavior on the page, and the most counter-intuitive: a tool in a

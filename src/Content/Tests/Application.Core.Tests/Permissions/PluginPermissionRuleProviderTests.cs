@@ -1,21 +1,25 @@
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Plugins;
+using Application.AI.Common.Interfaces.Tools;
 using Application.Core.Permissions;
 using Domain.AI.Governance;
 using Domain.AI.Permissions;
 using Domain.AI.Skills;
 using Domain.Common.Config.AI.Plugins;
 using FluentAssertions;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using Xunit;
 
 namespace Application.Core.Tests.Permissions;
 
-public sealed class PluginPermissionRuleProviderTests
+public sealed class PluginPermissionRuleProviderTests : IDisposable
 {
     private readonly Mock<IPluginRegistry> _registryMock = new();
     private readonly Mock<ISkillMetadataRegistry> _skillRegistryMock = new();
+    private readonly ServiceCollection _services = new();
+    private ServiceProvider? _serviceProvider;
 
     public PluginPermissionRuleProviderTests()
     {
@@ -23,11 +27,19 @@ public sealed class PluginPermissionRuleProviderTests
         _skillRegistryMock.Setup(r => r.GetAll()).Returns(new List<SkillDefinition>());
     }
 
+    public void Dispose() => _serviceProvider?.Dispose();
+
+    /// <summary>Registers <paramref name="toolName"/> as a global keyed-DI tool (i.e. NOT plugin-owned).</summary>
+    private void GivenGlobalKeyedTool(string toolName) =>
+        _services.AddKeyedSingleton<ITool>(toolName, (_, _) => Mock.Of<ITool>());
+
     private PluginPermissionRuleProvider CreateProvider()
     {
+        _serviceProvider = _services.BuildServiceProvider();
         return new PluginPermissionRuleProvider(
             _registryMock.Object,
             _skillRegistryMock.Object,
+            _serviceProvider,
             NullLogger<PluginPermissionRuleProvider>.Instance);
     }
 
@@ -138,6 +150,26 @@ public sealed class PluginPermissionRuleProviderTests
             "the Supervised baseline must apply to the plugin skill's real declared tool");
         rules.Should().NotContain(r => r.ToolPattern == "sentinel:*",
             "the inert synthetic wildcard must be gone");
+    }
+
+    [Fact]
+    public async Task GetRulesAsync_AutonomousPlugin_CannotLoosenGlobalToolItDoesNotOwn()
+    {
+        // Security (F2): a plugin's SKILL.md names a powerful GLOBAL tool ("bash") alongside its own
+        // tool ("run_x"). Marking the plugin Autonomous must NOT emit an authoritative Allow baseline
+        // for "bash" (which would auto-approve it agent-wide for every caller) — only the plugin's own
+        // "run_x" gets the baseline. The plugin can still use "bash"; it just cannot auto-approve it.
+        var declaration = new PluginDeclaration { Name = "trusted", AutonomyLevel = "Autonomous" };
+        _registryMock.Setup(r => r.GetLoadedPlugins()).Returns(new List<LoadedPlugin> { Loaded(declaration) });
+        GivenPluginSkillDeclaresTools("trusted", "run_x", "bash");
+        GivenGlobalKeyedTool("bash"); // bash is a shared harness tool, not owned by the plugin
+
+        var rules = await CreateProvider().GetRulesAsync("any-agent");
+
+        rules.Should().Contain(r => r.ToolPattern == "run_x"
+            && r.Behavior == PermissionBehaviorType.Allow && r.IsAuthoritativeBaseline);
+        rules.Should().NotContain(r => r.ToolPattern == "bash",
+            "a global keyed-DI tool the plugin does not own must be excluded from its autonomy baseline");
     }
 
     [Fact]

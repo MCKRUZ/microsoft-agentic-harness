@@ -209,16 +209,21 @@ public sealed class ThreePhasePermissionResolver : IToolPermissionService
     }
 
     /// <summary>
-    /// Finds the highest-precedence (lowest <see cref="ToolPermissionRule.Priority"/>) rule flagged
-    /// <see cref="ToolPermissionRule.IsAuthoritativeBaseline"/> that matches the tool name and
-    /// operation, regardless of its <see cref="PermissionBehaviorType"/>. Returns null when no
-    /// authoritative-baseline rule matches (the overwhelmingly common case).
+    /// Selects the governing rule flagged <see cref="ToolPermissionRule.IsAuthoritativeBaseline"/>
+    /// among all that match the tool name and operation. When more than one matches (for example two
+    /// plugins declaring the same tool name with opposite autonomy levels), the <b>most restrictive</b>
+    /// behavior wins — Deny &gt; Ask &gt; Allow — so a permissive baseline can never silently override a
+    /// restrictive one on iteration/load order. Ties within the same behavior fall back to the lowest
+    /// <see cref="ToolPermissionRule.Priority"/>. Returns null when no authoritative-baseline rule
+    /// matches (the overwhelmingly common case).
     /// </summary>
     private ToolPermissionRule? FindFirstAuthoritativeBaseline(
         IReadOnlyList<ToolPermissionRule> rules,
         string toolName,
         string? operation)
     {
+        ToolPermissionRule? best = null;
+
         foreach (var rule in rules)
         {
             if (!rule.IsAuthoritativeBaseline)
@@ -237,11 +242,36 @@ public sealed class ThreePhasePermissionResolver : IToolPermissionService
             if (rule.OperationPattern is not null && operation is null)
                 continue;
 
-            return rule;
+            if (best is null || IsMoreRestrictive(rule, best))
+                best = rule;
         }
 
-        return null;
+        return best;
     }
+
+    /// <summary>
+    /// Orders permission behaviors by restrictiveness for authoritative-baseline arbitration:
+    /// Deny (0) is most restrictive, then Ask (1), then Allow (2). A <paramref name="candidate"/> wins
+    /// over the <paramref name="incumbent"/> when it is strictly more restrictive, or equally
+    /// restrictive but with a lower (earlier) priority.
+    /// </summary>
+    private static bool IsMoreRestrictive(ToolPermissionRule candidate, ToolPermissionRule incumbent)
+    {
+        var candidateRank = RestrictivenessRank(candidate.Behavior);
+        var incumbentRank = RestrictivenessRank(incumbent.Behavior);
+
+        if (candidateRank != incumbentRank)
+            return candidateRank < incumbentRank;
+
+        return candidate.Priority < incumbent.Priority;
+    }
+
+    private static int RestrictivenessRank(PermissionBehaviorType behavior) => behavior switch
+    {
+        PermissionBehaviorType.Deny => 0,
+        PermissionBehaviorType.Ask => 1,
+        _ => 2
+    };
 
     private void LogDecision(string agentId, string toolName, PermissionDecision decision)
     {

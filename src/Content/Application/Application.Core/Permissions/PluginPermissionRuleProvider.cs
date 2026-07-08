@@ -1,9 +1,11 @@
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Permissions;
 using Application.AI.Common.Interfaces.Plugins;
+using Application.AI.Common.Interfaces.Tools;
 using Domain.AI.Governance;
 using Domain.AI.Permissions;
 using Domain.AI.Skills;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
 namespace Application.Core.Permissions;
@@ -32,6 +34,17 @@ namespace Application.Core.Permissions;
 /// still wins.
 /// </para>
 /// <para>
+/// <b>Own-surface constraint (security).</b> The baseline only covers names that are genuinely part of
+/// the plugin's own tool surface — tools it contributes (MCP or skill-provided). A name that resolves
+/// to a globally-registered keyed-DI tool (the shared, powerful harness tools such as
+/// <c>file_system</c> or a shell) is <em>not</em> owned by the plugin and is excluded from the
+/// baseline (with a warning), even if the plugin's <c>SKILL.md</c> names it. Otherwise an operator who
+/// marks a third-party plugin <c>Autonomous</c> — intending to auto-run that plugin's own narrow tools
+/// — would silently auto-approve a powerful global tool agent-wide (for every caller, not just the
+/// plugin). The plugin can still <em>use</em> such a tool; it just does not get to auto-approve it.
+/// Bypass-immune <c>DeniedTools</c> remains the backstop for sensitive global tools.
+/// </para>
+/// <para>
 /// <b>Limitation.</b> A plugin whose skills declare no tools (Injected mode — the skill receives all
 /// MCP tools at runtime) exposes no statically-enumerable tool names, so its autonomy baseline cannot
 /// be scoped to specific tools and is skipped with a warning. Operators who need an autonomy baseline
@@ -43,6 +56,7 @@ public sealed class PluginPermissionRuleProvider : IPermissionRuleProvider
 {
     private readonly IPluginRegistry _registry;
     private readonly ISkillMetadataRegistry _skillRegistry;
+    private readonly IServiceProvider _serviceProvider;
     private readonly ILogger<PluginPermissionRuleProvider> _logger;
 
     /// <summary>
@@ -53,14 +67,20 @@ public sealed class PluginPermissionRuleProvider : IPermissionRuleProvider
     /// The skill metadata registry, used to enumerate the tools declared by a plugin's skills so the
     /// autonomy baseline can be scoped to real tool names.
     /// </param>
+    /// <param name="serviceProvider">
+    /// Used to detect globally-registered keyed-DI tools so the autonomy baseline can exclude shared
+    /// harness tools the plugin does not own.
+    /// </param>
     /// <param name="logger">Logger for invalid autonomy level and unscoped-baseline warnings.</param>
     public PluginPermissionRuleProvider(
         IPluginRegistry registry,
         ISkillMetadataRegistry skillRegistry,
+        IServiceProvider serviceProvider,
         ILogger<PluginPermissionRuleProvider> logger)
     {
         _registry = registry;
         _skillRegistry = skillRegistry;
+        _serviceProvider = serviceProvider;
         _logger = logger;
     }
 
@@ -144,7 +164,9 @@ public sealed class PluginPermissionRuleProvider : IPermissionRuleProvider
     /// <paramref name="pluginName"/>, drawn from each skill's <see cref="SkillDefinition.AllowedTools"/>,
     /// <see cref="SkillDefinition.ToolDeclarations"/>, and pre-created <see cref="SkillDefinition.Tools"/>.
     /// Names are matched at invocation against the live tool set, so they mirror the names the agent
-    /// actually calls.
+    /// actually calls. Names that are <em>not</em> part of the plugin's own tool surface — i.e. tools
+    /// that resolve to a globally-registered keyed-DI tool — are excluded so the autonomy baseline
+    /// cannot loosen a shared harness tool the plugin does not own (see the type remarks).
     /// </summary>
     private IReadOnlyCollection<string> EnumeratePluginToolNames(string pluginName)
     {
@@ -157,23 +179,41 @@ public sealed class PluginPermissionRuleProvider : IPermissionRuleProvider
 
             if (skill.AllowedTools is { Count: > 0 } allowed)
                 foreach (var name in allowed)
-                    AddIfNamed(names, name);
+                    AddIfOwned(names, name, pluginName);
 
             if (skill.ToolDeclarations is { Count: > 0 } declarations)
                 foreach (var declaration in declarations)
-                    AddIfNamed(names, declaration.Name);
+                    AddIfOwned(names, declaration.Name, pluginName);
 
             if (skill.Tools is { Count: > 0 } tools)
                 foreach (var tool in tools)
-                    AddIfNamed(names, tool.Name);
+                    AddIfOwned(names, tool.Name, pluginName);
         }
 
         return names;
     }
 
-    private static void AddIfNamed(HashSet<string> names, string? name)
+    /// <summary>
+    /// Adds <paramref name="name"/> to the baseline set only when it is a non-empty name genuinely
+    /// owned by the plugin. A name that resolves to a globally-registered keyed-DI tool is a shared
+    /// harness tool the plugin does not own; it is skipped with a warning so the plugin's autonomy
+    /// baseline can never auto-approve it agent-wide.
+    /// </summary>
+    private void AddIfOwned(HashSet<string> names, string? name, string pluginName)
     {
-        if (!string.IsNullOrWhiteSpace(name))
-            names.Add(name);
+        if (string.IsNullOrWhiteSpace(name))
+            return;
+
+        if (_serviceProvider.GetKeyedService<ITool>(name) is not null)
+        {
+            _logger.LogWarning(
+                "Plugin {Name}: tool '{Tool}' named in the plugin's skills is a global keyed-DI tool the plugin " +
+                "does not own — excluded from the plugin's autonomy baseline. Use a per-tool AutonomyTier override " +
+                "or DeniedTools to govern shared tools.",
+                pluginName, name);
+            return;
+        }
+
+        names.Add(name);
     }
 }

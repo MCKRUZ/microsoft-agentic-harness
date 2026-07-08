@@ -178,6 +178,28 @@ public sealed class ThreePhasePermissionResolverAutonomyTests
         decision.MatchedRule!.Source.Should().Be(PermissionRuleSource.PluginDeclaration);
     }
 
+    [Theory]
+    [InlineData(false)] // Allow rule listed first
+    [InlineData(true)]  // Ask rule listed first
+    public async Task AuthoritativeBaseline_MostRestrictiveWins_RegardlessOfOrder(bool askFirst)
+    {
+        // F1: two plugins declare the SAME tool name with opposite autonomy — plugin A Autonomous
+        // (Allow) and plugin B Restricted (Ask), both authoritative at Priority 5. The MOST
+        // RESTRICTIVE behavior (Ask) must win, never decided by rule/load order.
+        var allow = new ToolPermissionRule("deploy_widget", null, PermissionBehaviorType.Allow,
+            PermissionRuleSource.PluginDeclaration, 5, IsAuthoritativeBaseline: true);
+        var ask = new ToolPermissionRule("deploy_widget", null, PermissionBehaviorType.Ask,
+            PermissionRuleSource.PluginDeclaration, 5, IsAuthoritativeBaseline: true);
+
+        var provider = askFirst ? BuildProvider(ask, allow) : BuildProvider(allow, ask);
+        var resolver = CreateResolver(provider.Object);
+
+        var decision = await resolver.ResolvePermissionAsync("agent", "deploy_widget");
+
+        decision.Behavior.Should().Be(PermissionBehaviorType.Ask,
+            "the restrictive baseline must win over the permissive one irrespective of order");
+    }
+
     [Fact]
     public async Task BypassImmuneDeny_BeatsAuthoritativeBaselineAllow()
     {
