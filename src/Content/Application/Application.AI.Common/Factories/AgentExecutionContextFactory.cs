@@ -141,17 +141,30 @@ public class AgentExecutionContextFactory
         if (prerequisiteMap.HasAnyPrerequisites)
             additionalProps[SkillPrerequisiteMap.AdditionalPropertiesKey] = prerequisiteMap;
 
-        // Stash the composed resilient chat client for AgentFactory to consume. Gated on
-        // ResilienceConfig.Enabled: when resilience is off the provider would return the PRIMARY
-        // raw client (AppConfig.AI.AgentFramework), which must not override the per-context
-        // deployment/framework resolved above — disabled means byte-identical legacy behavior.
+        // Stash the composed resilient chat client for AgentFactory to consume. Gated on:
+        // (a) ResilienceConfig.Enabled — when off the provider would return the PRIMARY raw
+        //     client, which must not override the per-context resolution above; and
+        // (b) ResilientClientEligibility — the fallback chain can only stand in for a context
+        //     that resolved to exactly the primary configured provider + default deployment.
+        //     Per-skill/per-options overrides, PersistentAgents (AgentId-bound), FoundryResponses,
+        //     and Echo contexts keep their raw client.
         if (_resilientChatClientProvider is not null
             && _appConfig.CurrentValue.AI?.Resilience?.Enabled == true)
         {
-            var resilientClient = await _resilientChatClientProvider.GetResilientChatClientAsync();
-            additionalProps[IResilientChatClientProvider.AdditionalPropertiesKey] = resilientClient;
+            if (ResilientClientEligibility.IsEligible(
+                    frameworkType, deploymentName, _appConfig.CurrentValue.AI?.AgentFramework))
+            {
+                var resilientClient = await _resilientChatClientProvider.GetResilientChatClientAsync();
+                additionalProps[IResilientChatClientProvider.AdditionalPropertiesKey] = resilientClient;
 
-            _logger.LogDebug("Stashed resilient chat client (fallback chain) for agent {AgentName}", agentName);
+                _logger.LogDebug("Stashed resilient chat client (fallback chain) for agent {AgentName}", agentName);
+            }
+            else
+            {
+                _logger.LogDebug(
+                    "Resilience enabled but agent {AgentName} keeps its raw client: resolved {FrameworkType}/{Deployment} is not the primary configured provider/deployment",
+                    agentName, frameworkType, deploymentName);
+            }
         }
 
         // Start a trace run when a store is wired in

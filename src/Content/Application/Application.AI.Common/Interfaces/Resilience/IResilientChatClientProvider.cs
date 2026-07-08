@@ -26,11 +26,19 @@ public interface IResilientChatClientProvider
 {
 	/// <summary>
 	/// Key under which <c>AgentExecutionContextFactory</c> stashes the composed resilient
-	/// chat client in <c>AgentExecutionContext.AdditionalProperties</c> when
-	/// <c>ResilienceConfig.Enabled</c> is true. <c>AgentFactory</c> consumes this key when
-	/// building the agent's chat-client pipeline so that live turns execute through the
-	/// per-provider Polly pipelines and the fallback chain instead of the raw provider client.
+	/// chat client in <c>AgentExecutionContext.AdditionalProperties</c>. Stashed only when
+	/// <c>ResilienceConfig.Enabled</c> is true AND the context resolved to the primary
+	/// configured provider and default deployment (see <c>ResilientClientEligibility</c>).
+	/// <c>AgentFactory</c> consumes this key when building the agent's chat-client pipeline so
+	/// that live turns execute through the per-provider Polly pipelines and the fallback chain
+	/// instead of the raw provider client.
 	/// </summary>
+	/// <remarks>
+	/// Coverage: skill-built <c>IChatClient</c>-style agents only. Contexts constructed
+	/// manually (evaluation harnesses, ad-hoc <c>AgentExecutionContext</c> callers),
+	/// PersistentAgents (AgentId-bound), FoundryResponses, Echo, and contexts with per-skill or
+	/// per-options framework/deployment overrides do NOT route through the resilient client.
+	/// </remarks>
 	const string AdditionalPropertiesKey = "__resilientChatClient";
 
 	/// <summary>

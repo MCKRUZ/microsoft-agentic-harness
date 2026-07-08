@@ -160,12 +160,17 @@ public class AgentFactory : IAgentFactory
     /// </summary>
     /// <remarks>
     /// When <see cref="AgentExecutionContextFactory"/> stashed a resilient chat client in the
-    /// context (only done when <c>ResilienceConfig.Enabled</c> is true), that client — which
-    /// spans the configured provider fallback chain with per-provider Polly retry, circuit
-    /// breaker, and timeout pipelines — replaces the raw per-provider client so every live turn
-    /// executes through the resilience pipelines. When resilience is disabled nothing is
-    /// stashed and the raw client resolved from <see cref="IChatClientFactory"/> is used,
-    /// preserving the per-context deployment and framework selection unchanged.
+    /// context (only done when <c>ResilienceConfig.Enabled</c> is true AND the context resolved
+    /// to the primary configured provider + default deployment), that client — which spans the
+    /// configured provider fallback chain with per-provider Polly retry, circuit breaker, and
+    /// timeout pipelines — replaces the raw per-provider client so live turns execute through
+    /// the resilience pipelines. The consume side re-checks eligibility
+    /// (<see cref="ResilientClientEligibility"/>) as defense in depth: PersistentAgents contexts
+    /// keep their provisioned AgentId path, and per-context deployment/framework overrides keep
+    /// their raw client even if a stash is present. Coverage note: only contexts built by
+    /// <see cref="AgentExecutionContextFactory"/> (skill-built agents) ever carry a stash —
+    /// callers constructing <see cref="AgentExecutionContext"/> manually (e.g. evaluation
+    /// harnesses) and FoundryResponses agents do not route through the resilient client.
     /// </remarks>
     private async Task<AIAgent> CreateChatClientAgentAsync(
         AgentExecutionContext agentContext,
@@ -174,7 +179,7 @@ public class AgentFactory : IAgentFactory
         ChatClientAgentOptions agentOptions,
         CancellationToken cancellationToken)
     {
-        var chatClient = ResolveStashedResilientClient(agentContext)
+        var chatClient = ResolveStashedResilientClient(agentContext, clientType, deploymentOrAgentId)
             ?? await _chatClientFactory.GetChatClientAsync(
                 clientType, deploymentOrAgentId, cancellationToken);
 
@@ -186,23 +191,37 @@ public class AgentFactory : IAgentFactory
     /// <summary>
     /// Returns the resilient chat client stashed in the execution context under
     /// <see cref="Interfaces.Resilience.IResilientChatClientProvider.AdditionalPropertiesKey"/>,
-    /// or <see langword="null"/> when resilience is disabled (nothing stashed) so the caller
-    /// falls back to the raw per-provider client.
+    /// or <see langword="null"/> when nothing is stashed (resilience disabled) or the context is
+    /// not eligible for substitution — PersistentAgents (AgentId-bound), Echo, or a per-context
+    /// framework/deployment override differing from the primary configured provider. Ineligible
+    /// contexts always fall back to the raw per-provider client, even if a stash is present.
     /// </summary>
-    private IChatClient? ResolveStashedResilientClient(AgentExecutionContext agentContext)
+    private IChatClient? ResolveStashedResilientClient(
+        AgentExecutionContext agentContext,
+        AIAgentFrameworkClientType clientType,
+        string deploymentOrAgentId)
     {
         if (agentContext.AdditionalProperties?.TryGetValue(
                 Interfaces.Resilience.IResilientChatClientProvider.AdditionalPropertiesKey,
-                out var stashed) == true
-            && stashed is IChatClient resilientClient)
+                out var stashed) != true
+            || stashed is not IChatClient resilientClient)
         {
-            _logger.LogInformation(
-                "Agent {AgentName} using resilient chat client (provider fallback chain) instead of raw provider client",
-                agentContext.Name);
-            return resilientClient;
+            return null;
         }
 
-        return null;
+        if (!ResilientClientEligibility.IsEligible(
+                clientType, deploymentOrAgentId, _appConfig.CurrentValue.AI?.AgentFramework))
+        {
+            _logger.LogDebug(
+                "Agent {AgentName} carries a stashed resilient client but resolved {ClientType}/{Deployment} is not eligible — using raw provider client",
+                agentContext.Name, clientType, deploymentOrAgentId);
+            return null;
+        }
+
+        _logger.LogInformation(
+            "Agent {AgentName} using resilient chat client (provider fallback chain) instead of raw provider client",
+            agentContext.Name);
+        return resilientClient;
     }
 
     /// <summary>

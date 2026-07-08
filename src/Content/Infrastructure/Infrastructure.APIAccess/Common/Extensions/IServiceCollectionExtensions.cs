@@ -1,6 +1,7 @@
 using Asp.Versioning;
 using CorrelationId.HttpClient;
 using Domain.Common.Config.Http;
+using Domain.Common.Config.Http.Policies;
 using Domain.Common.Constants;
 using Infrastructure.APIAccess.Handlers;
 using Infrastructure.APIAccess.Services;
@@ -8,6 +9,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Http.Resilience;
 using Microsoft.Extensions.Options;
 using Microsoft.OpenApi;
 using Polly;
@@ -37,13 +39,16 @@ public static class IServiceCollectionExtensions
     ];
 
     /// <summary>
-    /// Exception types related to resilience strategies and eligible for retry.
+    /// Resilience-strategy exception types eligible for retry. Only the per-attempt timeout
+    /// qualifies: it sits INSIDE the retry strategy, so retrying a timed-out attempt is the
+    /// point of having it. <c>BrokenCircuitException</c> and <c>RateLimiterRejectedException</c>
+    /// are deliberately NOT retryable — they are raised by strategies inside this same
+    /// pipeline, so retrying them only burns exponential backoff on self-inflicted rejections;
+    /// callers should fast-fail and let the circuit/limiter recover.
     /// </summary>
     private static readonly ImmutableArray<Type> StrategyExceptions =
     [
         typeof(TimeoutRejectedException),
-        typeof(BrokenCircuitException),
-        typeof(RateLimiterRejectedException),
     ];
 
     /// <summary>
@@ -51,6 +56,36 @@ public static class IServiceCollectionExtensions
     /// </summary>
     private static readonly ImmutableArray<Type> RetryableExceptions =
         NetworkExceptions.Union(StrategyExceptions).ToImmutableArray();
+
+    /// <summary>
+    /// HTTP methods that are idempotent by contract and therefore safe to retry
+    /// automatically. Kept deliberately conservative (GET/HEAD/OPTIONS): although RFC 9110
+    /// also declares PUT and DELETE idempotent, harness consumers routinely front
+    /// non-idempotent handlers with them, so those are excluded too.
+    /// </summary>
+    private static readonly ImmutableArray<HttpMethod> IdempotentHttpMethods =
+    [
+        HttpMethod.Get,
+        HttpMethod.Head,
+        HttpMethod.Options,
+    ];
+
+    /// <summary>
+    /// Decides whether a failed HTTP attempt may be retried automatically: the failure must be
+    /// a declared transient exception type AND the request method must be idempotent
+    /// (GET/HEAD/OPTIONS). Non-idempotent requests (POST, PATCH, ...) are never retried — a
+    /// "transient" network failure can surface AFTER the server processed the request
+    /// (connection dropped on the response path), so retrying would duplicate side effects
+    /// (A2A messages, GitOps syncs, connector mutations, webhooks, label operations).
+    /// </summary>
+    /// <param name="exception">The exception the attempt failed with, if any.</param>
+    /// <param name="requestMethod">The HTTP method of the request being executed, if known.</param>
+    /// <returns><see langword="true"/> when the attempt may be retried.</returns>
+    public static bool IsRetryableHttpFailure(Exception? exception, HttpMethod? requestMethod)
+        => exception is not null
+           && RetryableExceptions.Contains(exception.GetType())
+           && requestMethod is not null
+           && IdempotentHttpMethods.Contains(requestMethod);
 
     /// <summary>
     /// Configures Kestrel server options with production-ready limits.
@@ -257,26 +292,32 @@ public static class IServiceCollectionExtensions
     }
 
     /// <summary>
-    /// Attaches the harness Polly resilience pipeline (retry, timeout, circuit breaker, rate
-    /// limiter) to an HTTP client so every request the client sends executes through it.
-    /// Retries are safe for requests with content — the underlying
-    /// <c>Microsoft.Extensions.Http.Resilience</c> handler snapshots the request message
-    /// before each attempt.
+    /// Attaches the harness Polly resilience pipeline (total timeout, retry, per-attempt
+    /// timeout, circuit breaker, rate limiter) to an HTTP client so every request the client
+    /// sends executes through it. The underlying <c>Microsoft.Extensions.Http.Resilience</c>
+    /// handler snapshots the request message before each attempt, which makes a request
+    /// RE-SENDABLE — it does not make resending SAFE. Retries are therefore restricted to
+    /// idempotent methods (GET/HEAD/OPTIONS); POST and other non-idempotent requests are
+    /// deliberately never retried, because a transient failure can surface after the server
+    /// already processed the request and a retry would duplicate its side effects.
     /// </summary>
     /// <param name="httpClientBuilder">The HTTP client builder to attach the handler to.</param>
     /// <returns>The HTTP client builder for chaining.</returns>
     /// <remarks>
     /// Strategies applied in order (outermost to innermost):
     /// <list type="bullet">
-    ///   <item>Retry - Exponential backoff with jitter for retryable exceptions</item>
-    ///   <item>Timeout - Prevents operations from running too long</item>
+    ///   <item>Total Timeout - Bounds the whole operation across all attempts (see
+    ///   <c>HttpTimeoutPolicyConfig.TotalTimeout</c>; computed from the retry budget when unset)</item>
+    ///   <item>Retry - Exponential backoff with jitter, idempotent methods only</item>
+    ///   <item>Per-Attempt Timeout - Cancels a single slow attempt so the next one can start</item>
     ///   <item>Circuit Breaker - Stops calling failing services after a threshold</item>
     ///   <item>Rate Limiter - Sliding window rate limiting (100 requests/minute)</item>
     /// </list>
     /// All tuning values come from <c>AppConfig:Http:Policies</c> (<see cref="HttpPolicyConfig"/>).
     /// <see cref="AddDefaultHttpClient"/> applies this handler to every client created via
-    /// <c>IHttpClientFactory</c>; do not attach it a second time to individual clients or
-    /// retries will compound multiplicatively.
+    /// <c>IHttpClientFactory</c> and sets <c>HttpClient.Timeout</c> to infinite so the outer
+    /// client timeout cannot race the pipeline and truncate the retry budget; do not attach the
+    /// handler a second time to individual clients or retries will compound multiplicatively.
     /// </remarks>
     public static IHttpClientBuilder AddCustomResilienceHandler(this IHttpClientBuilder httpClientBuilder)
     {
@@ -285,21 +326,30 @@ public static class IServiceCollectionExtensions
             var httpConfig = context.ServiceProvider
                 .GetRequiredService<IOptionsMonitor<HttpConfig>>().CurrentValue;
 
+            // Total timeout (outermost): bounds attempts + backoff. HttpClient.Timeout is
+            // infinite, so this strategy owns the overall budget.
+            builder.AddTimeout(new TimeoutStrategyOptions
+            {
+                Timeout = ResolveTotalTimeout(httpConfig.Policies),
+            });
+
             builder.AddRetry(new RetryStrategyOptions<HttpResponseMessage>
             {
-                // Retry only when the ATTEMPT'S EXCEPTION is a declared retryable type. The
-                // predicate receives Polly's predicate-arguments struct — inspecting the struct
-                // itself (a former bug: RetryableExceptions.Contains(args.GetType())) can never
-                // match, silently disabling all retries.
-                ShouldHandle = args => new ValueTask<bool>(
-                    args.Outcome.Exception is { } exception
-                    && RetryableExceptions.Contains(exception.GetType())),
+                // Retry only when the ATTEMPT'S EXCEPTION is a declared retryable type AND the
+                // request method is idempotent. The predicate receives Polly's
+                // predicate-arguments struct — inspecting the struct itself (a former bug:
+                // RetryableExceptions.Contains(args.GetType())) can never match, silently
+                // disabling all retries.
+                ShouldHandle = args => new ValueTask<bool>(IsRetryableHttpFailure(
+                    args.Outcome.Exception, args.Context.GetRequestMessage()?.Method)),
                 BackoffType = DelayBackoffType.Exponential,
                 UseJitter = true,
                 MaxRetryAttempts = httpConfig.Policies.HttpRetry.Count,
                 Delay = httpConfig.Policies.HttpRetry.Delay,
             });
 
+            // Per-attempt timeout (inside retry): cancels one slow attempt; the retry strategy
+            // decides whether another attempt is allowed.
             builder.AddTimeout(new TimeoutStrategyOptions
             {
                 Timeout = httpConfig.Policies.HttpTimeout.Timeout,
@@ -326,6 +376,26 @@ public static class IServiceCollectionExtensions
     }
 
     /// <summary>
+    /// Resolves the total-operation timeout for the resilience pipeline: the configured
+    /// <c>HttpTimeoutPolicyConfig.TotalTimeout</c> when set, otherwise
+    /// <c>(HttpRetry.Count + 1) × per-attempt timeout</c> plus exponential-backoff headroom
+    /// (<c>Delay × 2^Count</c>), capped at 24 hours (Polly's strategy maximum).
+    /// </summary>
+    private static TimeSpan ResolveTotalTimeout(HttpPolicyConfig policies)
+    {
+        if (policies.HttpTimeout.TotalTimeout is { } configured)
+            return configured;
+
+        var attempts = policies.HttpRetry.Count + 1;
+        var backoffFactor = 1L << Math.Min(policies.HttpRetry.Count, 10);
+        var computed = TimeSpan.FromTicks(policies.HttpTimeout.Timeout.Ticks * attempts)
+            + TimeSpan.FromTicks(policies.HttpRetry.Delay.Ticks * backoffFactor);
+
+        var max = TimeSpan.FromHours(24);
+        return computed < max ? computed : max;
+    }
+
+    /// <summary>
     /// Adds the default HTTP client configuration with standard delegating handlers
     /// for correlation, logging, and User-Agent propagation.
     /// </summary>
@@ -346,8 +416,11 @@ public static class IServiceCollectionExtensions
             {
                 httpClientBuilder.ConfigureHttpClient((serviceProvider, httpClient) =>
                 {
-                    var httpConfig = serviceProvider.GetRequiredService<IOptionsMonitor<HttpConfig>>().CurrentValue;
-                    httpClient.Timeout = httpConfig.Policies.HttpTimeout.Timeout;
+                    // The resilience pipeline owns BOTH the per-attempt timeout and the total
+                    // timeout (see AddCustomResilienceHandler). HttpClient.Timeout must not
+                    // race it: when both are 30s the outer timeout cancels the whole operation
+                    // on the first slow attempt, making timeout-triggered retries dead code.
+                    httpClient.Timeout = System.Threading.Timeout.InfiniteTimeSpan;
                 });
 
                 httpClientBuilder.ConfigurePrimaryHttpMessageHandler(_ => new DefaultHttpClientHandler());

@@ -43,7 +43,8 @@ public sealed class AgentFactoryResilienceWiringTests
     // AgentFactory: consumption of the stashed resilient client
     // ---------------------------------------------------------------------
 
-    private static AgentFactory CreateAgentFactory(FakeChatClient rawClient)
+    private static (AgentFactory Factory, Mock<IChatClientFactory> ChatClientFactory) CreateAgentFactory(
+        FakeChatClient rawClient)
     {
         var chatClientFactory = new Mock<IChatClientFactory>();
         chatClientFactory
@@ -76,7 +77,7 @@ public sealed class AgentFactoryResilienceWiringTests
             NullLoggerFactory.Instance,
             null!, null!, null!, null!, null!, null!);
 
-        return new AgentFactory(
+        var factory = new AgentFactory(
             NullLogger<AgentFactory>.Instance,
             monitor,
             new MemoryDistributedCache(Options.Create(new MemoryDistributedCacheOptions())),
@@ -86,6 +87,8 @@ public sealed class AgentFactoryResilienceWiringTests
             chatClientFactory.Object,
             new ServiceCollection().BuildServiceProvider(),
             new InMemorySkillCompletionTracker());
+
+        return (factory, chatClientFactory);
     }
 
     [Fact]
@@ -95,7 +98,7 @@ public sealed class AgentFactoryResilienceWiringTests
         // stashed resilient client was never consumed — the raw factory client took the call.
         var resilientCanary = new FakeChatClient().WithDefaultResponse("from-resilient-chain");
         var rawClient = new FakeChatClient().WithDefaultResponse("from-raw-client");
-        var factory = CreateAgentFactory(rawClient);
+        var (factory, _) = CreateAgentFactory(rawClient);
 
         var context = new AgentExecutionContext
         {
@@ -124,7 +127,7 @@ public sealed class AgentFactoryResilienceWiringTests
         // Resilience disabled (nothing stashed) => shipped default behavior is unchanged:
         // the per-context raw client from IChatClientFactory carries the turn.
         var rawClient = new FakeChatClient().WithDefaultResponse("from-raw-client");
-        var factory = CreateAgentFactory(rawClient);
+        var (factory, _) = CreateAgentFactory(rawClient);
 
         var context = new AgentExecutionContext
         {
@@ -139,6 +142,78 @@ public sealed class AgentFactoryResilienceWiringTests
 
         rawClient.RequestHistory.Should().NotBeEmpty();
         response.Text.Should().Contain("from-raw-client");
+    }
+
+    [Fact]
+    public async Task CreateAgentAsync_PersistentAgentsContext_IgnoresStashedResilientClient()
+    {
+        // A PersistentAgents context carries a provisioned AgentId in its deployment slot.
+        // The resilient client only knows the generic FallbackChain — substituting it would
+        // silently abandon the provisioned Foundry persistent agent. The stash must be ignored.
+        var resilientCanary = new FakeChatClient().WithDefaultResponse("from-resilient-chain");
+        var rawClient = new FakeChatClient().WithDefaultResponse("from-raw-client");
+        var (factory, chatClientFactory) = CreateAgentFactory(rawClient);
+
+        var context = new AgentExecutionContext
+        {
+            Name = "persistent-agent",
+            Instruction = "You are a test agent.",
+            AIAgentFrameworkType = AIAgentFrameworkClientType.PersistentAgents,
+            AgentId = "agent-123",
+            AdditionalProperties = new Dictionary<string, object>
+            {
+                [ResilientClientKey] = resilientCanary
+            }
+        };
+
+        var agent = await factory.CreateAgentAsync(context);
+        var response = await agent.RunAsync("hello");
+
+        rawClient.RequestHistory.Should().NotBeEmpty(
+            "PersistentAgents contexts must keep their AgentId-bound raw client");
+        resilientCanary.RequestHistory.Should().BeEmpty(
+            "the generic fallback chain must never hijack a provisioned persistent agent");
+        response.Text.Should().Contain("from-raw-client");
+        chatClientFactory.Verify(
+            f => f.GetChatClientAsync(
+                AIAgentFrameworkClientType.PersistentAgents, "agent-123", It.IsAny<CancellationToken>()),
+            Times.Once,
+            "the validated AgentId path must be used");
+    }
+
+    [Fact]
+    public async Task CreateAgentAsync_DeploymentOverrideContext_IgnoresStashedResilientClient()
+    {
+        // A context resolved to a deployment other than the primary configured default (per-skill
+        // ModelOverride, options.DeploymentName, ...) must keep its raw client: the resilient
+        // client can only talk to the FallbackChain, not the overridden deployment.
+        var resilientCanary = new FakeChatClient().WithDefaultResponse("from-resilient-chain");
+        var rawClient = new FakeChatClient().WithDefaultResponse("from-raw-client");
+        var (factory, chatClientFactory) = CreateAgentFactory(rawClient);
+
+        var context = new AgentExecutionContext
+        {
+            Name = "override-agent",
+            Instruction = "You are a test agent.",
+            AIAgentFrameworkType = AIAgentFrameworkClientType.AzureOpenAI,
+            DeploymentName = "custom-model", // differs from configured default "gpt-4o"
+            AdditionalProperties = new Dictionary<string, object>
+            {
+                [ResilientClientKey] = resilientCanary
+            }
+        };
+
+        var agent = await factory.CreateAgentAsync(context);
+        var response = await agent.RunAsync("hello");
+
+        rawClient.RequestHistory.Should().NotBeEmpty(
+            "deployment overrides must win over the generic fallback chain");
+        resilientCanary.RequestHistory.Should().BeEmpty();
+        response.Text.Should().Contain("from-raw-client");
+        chatClientFactory.Verify(
+            f => f.GetChatClientAsync(
+                AIAgentFrameworkClientType.AzureOpenAI, "custom-model", It.IsAny<CancellationToken>()),
+            Times.Once);
     }
 
     // ---------------------------------------------------------------------
@@ -215,5 +290,58 @@ public sealed class AgentFactoryResilienceWiringTests
         context.AdditionalProperties.Should().ContainKey(ResilientClientKey);
         context.AdditionalProperties![ResilientClientKey].Should().BeSameAs(canary,
             "the exact composed resilient client must flow to AgentFactory");
+    }
+
+    [Fact]
+    public async Task MapToAgentContextAsync_PerSkillDeploymentOverride_DoesNotStashResilientClient()
+    {
+        // A per-context deployment override means the caller explicitly chose a model the
+        // FallbackChain knows nothing about. The stash must be skipped (and the chain not
+        // composed) so the override keeps winning.
+        var provider = new Mock<IResilientChatClientProvider>(MockBehavior.Strict);
+        var factory = CreateContextFactory(resilienceEnabled: true, provider.Object);
+        var options = new SkillAgentOptions { DeploymentName = "custom-model" };
+
+        var context = await factory.MapToAgentContextAsync(SimpleSkill(), options);
+
+        context.DeploymentName.Should().Be("custom-model");
+        context.AdditionalProperties.Should().NotContainKey(ResilientClientKey,
+            "a deployment override differing from the configured default disqualifies the fallback chain");
+        provider.Verify(
+            p => p.GetResilientChatClientAsync(It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task MapToAgentContextAsync_FrameworkTypeOverride_DoesNotStashResilientClient()
+    {
+        // A framework override to a different provider than the primary configured ClientType
+        // must not be silently replaced by the fallback chain.
+        var provider = new Mock<IResilientChatClientProvider>(MockBehavior.Strict);
+        var factory = CreateContextFactory(resilienceEnabled: true, provider.Object);
+        var options = new SkillAgentOptions { FrameworkType = AIAgentFrameworkClientType.OpenAI };
+
+        var context = await factory.MapToAgentContextAsync(SimpleSkill(), options);
+
+        context.AIAgentFrameworkType.Should().Be(AIAgentFrameworkClientType.OpenAI);
+        context.AdditionalProperties.Should().NotContainKey(ResilientClientKey,
+            "a framework override differing from the primary configured provider disqualifies the fallback chain");
+        provider.Verify(
+            p => p.GetResilientChatClientAsync(It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task MapToAgentContextAsync_FoundryResponsesFramework_DoesNotStashResilientClient()
+    {
+        // FoundryResponses agents never flow through the chat-client path, so a stash would be
+        // a dead entry at best and misleading at worst.
+        var provider = new Mock<IResilientChatClientProvider>(MockBehavior.Strict);
+        var factory = CreateContextFactory(resilienceEnabled: true, provider.Object);
+        var options = new SkillAgentOptions { FrameworkType = AIAgentFrameworkClientType.FoundryResponses };
+
+        var context = await factory.MapToAgentContextAsync(SimpleSkill(), options);
+
+        context.AdditionalProperties.Should().NotContainKey(ResilientClientKey);
+        provider.Verify(
+            p => p.GetResilientChatClientAsync(It.IsAny<CancellationToken>()), Times.Never);
     }
 }

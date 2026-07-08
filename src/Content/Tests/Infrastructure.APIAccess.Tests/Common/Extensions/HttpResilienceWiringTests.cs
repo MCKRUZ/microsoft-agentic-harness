@@ -2,6 +2,7 @@ using CorrelationId.DependencyInjection;
 using Domain.Common.Config.Http;
 using FluentAssertions;
 using Infrastructure.APIAccess.Common.Extensions;
+using ApiAccessExtensions = Infrastructure.APIAccess.Common.Extensions.IServiceCollectionExtensions;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
@@ -83,6 +84,39 @@ public sealed class HttpResilienceWiringTests
     }
 
     [Fact]
+    public async Task HttpClient_TransientFailureOnPost_DoesNotRetry()
+    {
+        // POST is not idempotent: a "transient" HttpRequestException can surface AFTER the
+        // server processed the request (connection dropped on the response path). Retrying
+        // would duplicate side effects (A2A messages, GitOps syncs, connector mutations,
+        // webhooks). Only idempotent methods (GET/HEAD/OPTIONS) may be retried.
+        var handler = new CountingFailingHandler();
+        await using var provider = BuildProvider(handler);
+        var client = provider.GetRequiredService<IHttpClientFactory>().CreateClient("resilience-canary");
+
+        var act = () => client.PostAsync("http://localhost/canary", new StringContent("payload"));
+
+        await act.Should().ThrowAsync<HttpRequestException>();
+        handler.Attempts.Should().Be(1,
+            "non-idempotent requests must never be retried, even on transient network failures");
+    }
+
+    [Fact]
+    public void HttpClient_OuterTimeout_IsInfinite_SoPipelineOwnsTimeouts()
+    {
+        // If HttpClient.Timeout equals the pipeline's per-attempt timeout, timeout-triggered
+        // retries are dead code (the outer timeout cancels the whole operation first). The
+        // pipeline owns both the per-attempt and the total timeout; the client must not race it.
+        var handler = new CountingFailingHandler();
+        using var provider = BuildProvider(handler);
+
+        var client = provider.GetRequiredService<IHttpClientFactory>().CreateClient("resilience-canary");
+
+        client.Timeout.Should().Be(System.Threading.Timeout.InfiniteTimeSpan,
+            "the resilience pipeline's total-timeout strategy bounds the request, not HttpClient.Timeout");
+    }
+
+    [Fact]
     public async Task HttpClient_NonRetryableFailure_DoesNotRetry()
     {
         // The predicate must stay selective: only the declared retryable exception types
@@ -99,5 +133,64 @@ public sealed class HttpResilienceWiringTests
         await act.Should().ThrowAsync<InvalidOperationException>();
         handler.Attempts.Should().Be(1,
             "non-retryable exceptions must not trigger retries");
+    }
+
+    // ---------------------------------------------------------------------
+    // Retry predicate unit tests (IsRetryableHttpFailure drives ShouldHandle)
+    // ---------------------------------------------------------------------
+
+    [Fact]
+    public void IsRetryableHttpFailure_RateLimiterRejection_IsNotRetried()
+    {
+        // The rate limiter sits INSIDE this same pipeline: retrying its rejection only burns
+        // exponential backoff on a self-inflicted rejection. Callers must fast-fail.
+        ApiAccessExtensions
+            .IsRetryableHttpFailure(new Polly.RateLimiting.RateLimiterRejectedException(), HttpMethod.Get)
+            .Should().BeFalse("rate-limiter rejections are self-inflicted and must not be retried");
+    }
+
+    [Fact]
+    public void IsRetryableHttpFailure_BrokenCircuit_IsNotRetried()
+    {
+        ApiAccessExtensions
+            .IsRetryableHttpFailure(new Polly.CircuitBreaker.BrokenCircuitException(), HttpMethod.Get)
+            .Should().BeFalse("an open circuit means the downstream is known-bad; retrying inside the same pipeline is pointless");
+    }
+
+    [Theory]
+    [InlineData("GET")]
+    [InlineData("HEAD")]
+    [InlineData("OPTIONS")]
+    public void IsRetryableHttpFailure_TransientExceptionOnIdempotentMethod_IsRetried(string method)
+    {
+        ApiAccessExtensions
+            .IsRetryableHttpFailure(new HttpRequestException("transient"), new HttpMethod(method))
+            .Should().BeTrue();
+        ApiAccessExtensions
+            .IsRetryableHttpFailure(new Polly.Timeout.TimeoutRejectedException(), new HttpMethod(method))
+            .Should().BeTrue("the per-attempt timeout sits inside the retry strategy — retrying a timed-out attempt is its purpose");
+    }
+
+    [Theory]
+    [InlineData("POST")]
+    [InlineData("PATCH")]
+    [InlineData("PUT")]
+    [InlineData("DELETE")]
+    public void IsRetryableHttpFailure_TransientExceptionOnNonIdempotentMethod_IsNotRetried(string method)
+    {
+        ApiAccessExtensions
+            .IsRetryableHttpFailure(new HttpRequestException("transient"), new HttpMethod(method))
+            .Should().BeFalse("a transient failure can surface after the server processed the request; retrying duplicates side effects");
+    }
+
+    [Fact]
+    public void IsRetryableHttpFailure_UnknownMethodOrNoException_IsNotRetried()
+    {
+        ApiAccessExtensions
+            .IsRetryableHttpFailure(new HttpRequestException("transient"), requestMethod: null)
+            .Should().BeFalse("without a known request method, retrying cannot be proven safe");
+        ApiAccessExtensions
+            .IsRetryableHttpFailure(exception: null, HttpMethod.Get)
+            .Should().BeFalse();
     }
 }

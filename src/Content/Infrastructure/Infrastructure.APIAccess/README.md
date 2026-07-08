@@ -72,17 +72,22 @@ Every `HttpClient` created via `IHttpClientFactory` inherits four delegating han
 
 ### Polly Resilience Pipeline
 
-`AddCustomResilienceHandler()` attaches four strategies to every client created via
+`AddCustomResilienceHandler()` attaches five strategies to every client created via
 `IHttpClientFactory` (wired once in `AddDefaultHttpClient()` through
 `ConfigureHttpClientDefaults`, so each request actually executes through the pipeline — do
 not attach it a second time per client, or retries compound multiplicatively):
 
 | Strategy | Behavior | Config Source |
 |----------|----------|---------------|
-| Retry | Exponential backoff + jitter for `SocketException`, `HttpRequestException`, `TimeoutRejectedException`, `BrokenCircuitException`, `RateLimiterRejectedException` | `HttpRetry.Count`, `HttpRetry.Delay` |
-| Timeout | Per-operation timeout | `HttpTimeout.Timeout` |
+| Total Timeout | Bounds the whole operation across all attempts + backoff; `HttpClient.Timeout` is set to infinite so it cannot race the pipeline and truncate the retry budget | `HttpTimeout.TotalTimeout` (computed from the retry budget when unset) |
+| Retry | Exponential backoff + jitter for `SocketException`, `HttpRequestException`, `TimeoutRejectedException` — **idempotent methods only (GET/HEAD/OPTIONS)**. POST/PATCH/PUT/DELETE are never retried: a transient failure can surface after the server already processed the request, so a retry would duplicate side effects. Circuit-breaker and rate-limiter rejections are not retried — they come from strategies inside this same pipeline | `HttpRetry.Count`, `HttpRetry.Delay` |
+| Per-Attempt Timeout | Cancels a single slow attempt so the retry strategy can start the next one | `HttpTimeout.Timeout` |
 | Circuit Breaker | Opens after failure ratio exceeds threshold; 30s sampling window | `HttpCircuitBreaker.FailureRatio`, `.DurationOfBreak` |
 | Rate Limiter | Sliding window: 100 requests/min, 4 segments | Hardcoded |
+
+Note: the `Microsoft.Extensions.Http.Resilience` handler snapshots requests, which makes them
+**re-sendable** — it does not make resending **safe**. Safety comes from the idempotent-method
+restriction above.
 
 ### API Endpoint Resolution
 
