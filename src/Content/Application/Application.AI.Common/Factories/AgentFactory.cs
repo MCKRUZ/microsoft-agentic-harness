@@ -1,6 +1,7 @@
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Routing;
 using Application.AI.Common.Interfaces.Skills;
+using Application.AI.Common.Interfaces.Telemetry;
 using Application.AI.Common.Models;
 using Domain.AI.Agents;
 using Domain.AI.Routing.Models;
@@ -143,9 +144,12 @@ public class AgentFactory : IAgentFactory
             ? await CreateFoundryResponsesAgentAsync(agentContext, deploymentOrAgentId, agentOptions, cancellationToken)
             : await CreateChatClientAgentAsync(agentContext, clientType, deploymentOrAgentId, agentOptions, cancellationToken);
 
-        // Wrap with agent-level OpenTelemetry (sensitive data off at this level)
+        // Wrap with agent-level OpenTelemetry. Sensitive-data capture is gated by the
+        // configured content-capture policy (default off) — never hardcoded on.
+        var captureSensitive = ShouldEnableSensitiveData(
+            _serviceProvider.GetService<IContentCapturePolicy>());
         return agent.AsBuilder()
-            .UseOpenTelemetry(configure: c => c.EnableSensitiveData = false)
+            .UseOpenTelemetry(configure: c => c.EnableSensitiveData = captureSensitive)
             .Build();
     }
 
@@ -203,8 +207,14 @@ public class AgentFactory : IAgentFactory
     /// </summary>
     private IChatClient BuildMiddlewarePipeline(IChatClient chatClient, AgentExecutionContext agentContext)
     {
+        // Gate prompt/completion/tool-argument capture behind the configured content-capture
+        // policy (default off). Previously hardcoded true, which exported sensitive content to
+        // every trace exporter in every deployment.
+        var captureSensitive = ShouldEnableSensitiveData(
+            _serviceProvider.GetService<IContentCapturePolicy>());
+
         var chatClientBuilder = chatClient.AsBuilder()
-            .UseOpenTelemetry(configure: c => c.EnableSensitiveData = true)
+            .UseOpenTelemetry(configure: c => c.EnableSensitiveData = captureSensitive)
             .UseFunctionInvocation(configure: c =>
             {
                 c.AllowConcurrentInvocation = true;
@@ -254,6 +264,35 @@ public class AgentFactory : IAgentFactory
 
         return chatClientBuilder.Build();
     }
+
+    /// <summary>
+    /// Computes whether the OpenTelemetry chat/agent instrumentation may attach sensitive GenAI
+    /// content — prompts, completions, and tool-call arguments/results — to spans. Returns
+    /// <see langword="true"/> only when the configured <see cref="IContentCapturePolicy"/> permits
+    /// at least one such capture; defaults to <see langword="false"/> (the secure default) when no
+    /// policy is registered.
+    /// </summary>
+    /// <param name="policy">
+    /// The content-capture policy resolved from configuration, or <see langword="null"/> when the
+    /// content-capture pipeline is not wired into the container.
+    /// </param>
+    /// <returns>
+    /// <see langword="true"/> to enable OpenTelemetry sensitive-data capture; otherwise
+    /// <see langword="false"/>.
+    /// </returns>
+    /// <remarks>
+    /// The single OTel <c>EnableSensitiveData</c> boolean cannot express the policy's finer-grained
+    /// per-attribute toggles (prompt vs. output vs. tool arguments vs. tool result). It is therefore
+    /// driven by the "is any sensitive capture enabled" decision. Enforcing each attribute
+    /// independently would require a dedicated GenAI span processor that strips the disallowed
+    /// attributes after the built-in instrumentation writes them — tracked as a follow-up.
+    /// </remarks>
+    internal static bool ShouldEnableSensitiveData(IContentCapturePolicy? policy)
+        => policy is not null
+           && (policy.ShouldCapturePromptContent()
+               || policy.ShouldCaptureOutputContent()
+               || policy.ShouldCaptureToolCallArguments()
+               || policy.ShouldCaptureToolCallResult());
 
     /// <inheritdoc />
     public async Task<(AIAgent Agent, string AgentId)> CreatePersistentAgentAsync(
