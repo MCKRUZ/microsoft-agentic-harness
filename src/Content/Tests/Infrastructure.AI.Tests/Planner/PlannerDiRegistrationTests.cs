@@ -65,6 +65,16 @@ public sealed class PlannerDiRegistrationTests : IDisposable
     }
 
     [Fact]
+    public void DependencyInjection_AttestationKeyOptionsValidator_WiredIntoOptionsPipeline()
+    {
+        // Regression guard for the "inert machinery" audit finding: the validator existed but
+        // was never registered as IValidateOptions, so misconfigured key material was only
+        // caught by the service's own runtime check instead of the options pipeline.
+        _provider.GetService<IValidateOptions<AttestationKeyOptions>>()
+            .Should().NotBeNull().And.BeOfType<AttestationKeyOptionsValidator>();
+    }
+
+    [Fact]
     public void DependencyInjection_KeyedStepExecutors_ResolveAllFiveTypes()
     {
         using var scope = _provider.CreateScope();

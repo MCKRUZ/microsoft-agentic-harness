@@ -165,6 +165,9 @@ public sealed class IServiceCollectionExtensionsTests
             {
                 ["AppConfig:AI:Governance:Escalation:Enabled"] = "true",
                 ["AppConfig:AI:Governance:Escalation:DefaultTimeoutSeconds"] = "600",
+                // Escalation is enabled above, so the now-enforced config validator requires
+                // at least one priority level (as every real host appsettings.json provides).
+                ["AppConfig:AI:Governance:Escalation:PriorityLevels:Blocking:TimeoutSeconds"] = "300",
             })
             .Build();
 
@@ -184,6 +187,10 @@ public sealed class IServiceCollectionExtensionsTests
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
                 ["AppConfig:AI:Resilience:Enabled"] = "true",
+                // Resilience is enabled above, so the now-enforced config validator requires a
+                // non-empty fallback chain (as every real host appsettings.json provides).
+                ["AppConfig:AI:Resilience:FallbackChain:0:ClientType"] = "AzureOpenAI",
+                ["AppConfig:AI:Resilience:FallbackChain:0:DeploymentId"] = "gpt-4o",
             })
             .Build();
 

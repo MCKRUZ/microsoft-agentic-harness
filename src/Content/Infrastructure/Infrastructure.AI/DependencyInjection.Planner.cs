@@ -92,6 +92,16 @@ public static partial class DependencyInjection
 
         services.AddScoped<IAttestationService, HmacAttestationService>();
 
+        // Options-pipeline validation for the attestation key material. Deliberately NOT
+        // ValidateOnStart(): AttestationKeyOptions is unbound by default (keys come from
+        // User Secrets / Key Vault, never appsettings), so eager validation would fail every
+        // host that doesn't use sandbox attestation. Instead the validator fires when the
+        // options are first materialized (and on every reload), turning bad key material
+        // into an OptionsValidationException at the point of use.
+        services.AddSingleton<
+            Microsoft.Extensions.Options.IValidateOptions<AttestationKeyOptions>,
+            AttestationKeyOptionsValidator>();
+
         if (OperatingSystem.IsWindows())
             services.AddSingleton<IProcessResourceLimiter, WindowsProcessResourceLimiter>();
         else
