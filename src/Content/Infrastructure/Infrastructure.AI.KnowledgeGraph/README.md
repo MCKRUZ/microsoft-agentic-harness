@@ -58,7 +58,7 @@ Application.AI.Common/Interfaces/KnowledgeGraph/
 **Why it exists:** Different deployment environments need different graph databases. Development uses in-memory (zero setup). Simple production uses PostgreSQL (which teams likely already have). High-scale graph workloads use Neo4j (purpose-built for traversals).
 
 **How it works:**
-- All three backends implement `IKnowledgeGraphStore` with operations: `AddNodesAsync`, `AddEdgesAsync`, `GetNodeAsync`, `GetNeighborsAsync`, `GetTripletsAsync`, `DeleteNodeAsync`, `DeleteEdgeAsync`, `NodeExistsAsync`, `GetNodeCountAsync`, `GetEdgeCountAsync`.
+- All three backends implement `IKnowledgeGraphStore` with operations: `AddNodesAsync`, `AddEdgesAsync`, `GetNodeAsync`, `GetNeighborsAsync`, `GetTripletsAsync`, `DeleteNodeAsync`, `DeleteEdgeAsync`, `DeleteNodesAsync` (batch; returns the actual node count and cascade-deleted edge IDs), `DeleteEdgesByOwnerAsync` (right-to-erasure sweep of an owner's edges), `NodeExistsAsync`, `GetNodeCountAsync`, `GetEdgeCountAsync`.
 - Registered with keyed DI (`"in_memory"`, `"postgresql"`, `"neo4j"`).
 - The default (non-keyed) registration resolves from `AppConfig.AI.Rag.GraphRag.GraphProvider`.
 
