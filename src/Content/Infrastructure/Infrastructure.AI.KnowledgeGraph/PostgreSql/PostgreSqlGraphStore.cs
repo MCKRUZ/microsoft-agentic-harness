@@ -325,24 +325,26 @@ public sealed class PostgreSqlGraphStore : IKnowledgeGraphStore
                 deletedEdgeIds.Add(reader.GetString(0));
         }
 
-        // Then the nodes; the command's rows-affected is the true deleted count.
-        int nodesDeleted;
+        // Then the nodes, RETURNING the ids actually removed so audits record actuals.
+        var deletedNodeIds = new List<string>();
         await using (var nodeCmd = new NpgsqlCommand(
-            "DELETE FROM kg_nodes WHERE id = ANY(@ids)", conn, tx))
+            "DELETE FROM kg_nodes WHERE id = ANY(@ids) RETURNING id", conn, tx))
         {
             nodeCmd.Parameters.AddWithValue("ids", nodeIds.ToArray());
-            nodesDeleted = await nodeCmd.ExecuteNonQueryAsync(cancellationToken);
+            await using var reader = await nodeCmd.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+                deletedNodeIds.Add(reader.GetString(0));
         }
 
         await tx.CommitAsync(cancellationToken);
 
         _logger.LogDebug(
             "PostgreSQL: deleted {NodeCount} of {Requested} nodes and {EdgeCount} connected edges",
-            nodesDeleted, nodeIds.Count, deletedEdgeIds.Count);
+            deletedNodeIds.Count, nodeIds.Count, deletedEdgeIds.Count);
 
         return new NodeDeletionResult
         {
-            NodesDeleted = nodesDeleted,
+            DeletedNodeIds = deletedNodeIds,
             DeletedEdgeIds = deletedEdgeIds
         };
     }

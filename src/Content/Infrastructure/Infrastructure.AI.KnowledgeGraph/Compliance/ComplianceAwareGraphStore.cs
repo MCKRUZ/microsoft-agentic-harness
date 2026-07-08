@@ -98,10 +98,19 @@ public sealed class ComplianceAwareGraphStore : IKnowledgeGraphStore
     {
         var now = _timeProvider.GetUtcNow();
         var tenantId = CurrentTenantId;
+        var edgeOwnerId = CurrentUserId;
+        // Unlike node ownership (which gates read visibility and is therefore
+        // writer-authoritative — see StampNode), edge ownership is pure right-to-erasure
+        // attribution: triplet visibility is decided by the endpoint nodes, never the edge
+        // owner. Defaulting OwnerId to the writing user is what makes
+        // DeleteEdgesByOwnerAsync able to match edges the harness itself writes — without
+        // this stamp the owner-edge sweep is inert on every shipped write path. Background/
+        // system writes (edgeOwnerId == null) stay unowned, and an explicit owner always wins.
         var stamped = edges.Select(e => e with
         {
             CreatedAt = e.CreatedAt ?? now,
-            TenantId = e.TenantId ?? tenantId
+            TenantId = e.TenantId ?? tenantId,
+            OwnerId = e.OwnerId ?? edgeOwnerId
         }).ToList();
 
         await _inner.AddEdgesAsync(stamped, cancellationToken);
@@ -190,16 +199,22 @@ public sealed class ComplianceAwareGraphStore : IKnowledgeGraphStore
     {
         var result = await _inner.DeleteNodesAsync(nodeIds, cancellationToken);
 
-        await _auditSink.EmitAsync(new MemoryAuditEvent
+        // Audit what was ACTUALLY deleted, and only when something was: a Forget event for
+        // IDs that never existed (or a fully missed batch) would be a false audit record.
+        // Mirrors DeleteEdgesByOwnerAsync below.
+        if (result.DeletedNodeIds.Count > 0 || result.DeletedEdgeIds.Count > 0)
         {
-            EventId = Guid.NewGuid().ToString(),
-            Action = MemoryAuditAction.Forget,
-            ActorId = CurrentUserId ?? "system",
-            Timestamp = _timeProvider.GetUtcNow(),
-            ScopeId = CurrentUserId ?? "system",
-            AffectedNodeIds = nodeIds,
-            AffectedEdgeIds = result.DeletedEdgeIds
-        }, cancellationToken);
+            await _auditSink.EmitAsync(new MemoryAuditEvent
+            {
+                EventId = Guid.NewGuid().ToString(),
+                Action = MemoryAuditAction.Forget,
+                ActorId = CurrentUserId ?? "system",
+                Timestamp = _timeProvider.GetUtcNow(),
+                ScopeId = CurrentUserId ?? "system",
+                AffectedNodeIds = result.DeletedNodeIds,
+                AffectedEdgeIds = result.DeletedEdgeIds
+            }, cancellationToken);
+        }
 
         return result;
     }

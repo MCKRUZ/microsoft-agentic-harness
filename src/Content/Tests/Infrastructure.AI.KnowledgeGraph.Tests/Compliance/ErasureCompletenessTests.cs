@@ -1,9 +1,12 @@
+using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.KnowledgeGraph;
+using Domain.AI.KnowledgeGraph;
 using Domain.AI.KnowledgeGraph.Models;
 using FluentAssertions;
 using Infrastructure.AI.KnowledgeGraph.Compliance;
 using Infrastructure.AI.KnowledgeGraph.Feedback;
 using Infrastructure.AI.KnowledgeGraph.InMemory;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using Xunit;
@@ -140,6 +143,85 @@ public sealed class ErasureCompletenessTests
         var weight = await _feedbackStore.GetEdgeWeightAsync("e-cascade");
         weight.UpdateCount.Should().Be(0,
             "feedback recorded against an erased edge is a dangling reference that leaks signal about erased data");
+    }
+
+    // ------------------------------------------------------------------
+    // Live write path — edges must be erasable WITHOUT hand-stamped OwnerId
+    // ------------------------------------------------------------------
+
+    [Fact]
+    public async Task EraseByOwner_DeletesEdgeWrittenThroughLiveDecoratedStorePath()
+    {
+        // The shipped write path: callers write through ComplianceAwareGraphStore, which is
+        // responsible for stamping ownership metadata. If it does not stamp GraphEdge.OwnerId,
+        // the owner-edge sweep matches nothing the harness itself writes and erasure is inert.
+        var scope = Mock.Of<IKnowledgeScope>(s => s.UserId == "user-1" && s.TenantId == null);
+        var services = new ServiceCollection();
+        services.AddSingleton(scope);
+        var ambient = Mock.Of<IAmbientRequestScope>(a => a.Current == services.BuildServiceProvider());
+
+        var retention = new Mock<IRetentionPolicyProvider>();
+        retention.Setup(r => r.GetPolicy(It.IsAny<string>()))
+            .Returns(new RetentionPolicy { EntityType = "Entity", RetentionPeriod = TimeSpan.FromDays(365) });
+
+        var decoratedStore = new ComplianceAwareGraphStore(
+            _graphStore,
+            Mock.Of<IMemoryAuditSink>(),
+            ambient,
+            retention.Object,
+            TimeProvider.System,
+            NullLogger<ComplianceAwareGraphStore>.Instance);
+
+        // user-1 writes an edge between two SHARED (unowned) nodes through the live path,
+        // without setting OwnerId — exactly what every production call site does.
+        await decoratedStore.AddNodesAsync([Node("s1"), Node("s2")]);
+        await decoratedStore.AddEdgesAsync([Edge("e-live", "s1", "s2")]);
+
+        var orchestrator = new DefaultErasureOrchestrator(
+            decoratedStore,
+            _feedbackStore,
+            vectorStore: null,
+            Mock.Of<IMemoryAuditSink>(),
+            TimeProvider.System,
+            NullLogger<DefaultErasureOrchestrator>.Instance);
+
+        await orchestrator.EraseByOwnerAsync("user-1");
+
+        var remaining = (await _graphStore.GetTripletsAsync(["s1", "s2"]))
+            .Select(t => t.Edge.Id).Distinct().ToList();
+        remaining.Should().NotContain("e-live",
+            "an edge the erased user wrote through the live decorated store path must be erased");
+    }
+
+    // ------------------------------------------------------------------
+    // Audit truthfulness — audits must record what was DELETED, not requested
+    // ------------------------------------------------------------------
+
+    [Fact]
+    public async Task EraseByNodeIds_AuditReportsOnlyNodesActuallyDeleted()
+    {
+        var auditSink = new Mock<IMemoryAuditSink>();
+        MemoryAuditEvent? captured = null;
+        auditSink.Setup(a => a.EmitAsync(It.IsAny<MemoryAuditEvent>(), It.IsAny<CancellationToken>()))
+            .Callback<MemoryAuditEvent, CancellationToken>((e, _) => captured = e)
+            .Returns(Task.CompletedTask);
+
+        var orchestrator = new DefaultErasureOrchestrator(
+            _graphStore,
+            _feedbackStore,
+            vectorStore: null,
+            auditSink.Object,
+            TimeProvider.System,
+            NullLogger<DefaultErasureOrchestrator>.Instance);
+
+        await _graphStore.AddNodesAsync([Node("n1", "user-1")]);
+
+        await orchestrator.EraseByNodeIdsAsync(["n1", "does-not-exist"]);
+
+        captured.Should().NotBeNull();
+        captured!.Action.Should().Be(MemoryAuditAction.Erasure);
+        captured.AffectedNodeIds.Should().BeEquivalentTo(["n1"],
+            "the erasure audit must record the nodes actually deleted, not the requested IDs");
     }
 
     [Fact]

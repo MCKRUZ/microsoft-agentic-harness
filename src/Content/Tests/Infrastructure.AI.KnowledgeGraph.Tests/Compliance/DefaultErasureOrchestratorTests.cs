@@ -29,7 +29,7 @@ public sealed class DefaultErasureOrchestratorTests
         _graphStore.Setup(g => g.DeleteNodesAsync(
                 It.IsAny<IReadOnlyList<string>>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((IReadOnlyList<string> ids, CancellationToken _) =>
-                new NodeDeletionResult { NodesDeleted = ids.Count, DeletedEdgeIds = [] });
+                new NodeDeletionResult { DeletedNodeIds = ids.ToList(), DeletedEdgeIds = [] });
         _graphStore.Setup(g => g.DeleteEdgesByOwnerAsync(
                 It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync([]);
@@ -91,7 +91,7 @@ public sealed class DefaultErasureOrchestratorTests
         // The store reports fewer deletions than requested (e.g. a concurrent delete won).
         _graphStore.Setup(g => g.DeleteNodesAsync(
                 It.IsAny<IReadOnlyList<string>>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new NodeDeletionResult { NodesDeleted = 1, DeletedEdgeIds = ["e-cascade"] });
+            .ReturnsAsync(new NodeDeletionResult { DeletedNodeIds = ["n1"], DeletedEdgeIds = ["e-cascade"] });
         _graphStore.Setup(g => g.DeleteEdgesByOwnerAsync("user-1", It.IsAny<CancellationToken>()))
             .ReturnsAsync(["e-owned"]);
         _feedbackStore.Setup(f => f.DeleteWeightsByNodeIdsAsync(
@@ -115,7 +115,7 @@ public sealed class DefaultErasureOrchestratorTests
             .ReturnsAsync([new GraphNode { Id = "n1", Name = "T", Type = "Fact", OwnerId = "user-1" }]);
         _graphStore.Setup(g => g.DeleteNodesAsync(
                 It.IsAny<IReadOnlyList<string>>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new NodeDeletionResult { NodesDeleted = 1, DeletedEdgeIds = ["e1", "e2"] });
+            .ReturnsAsync(new NodeDeletionResult { DeletedNodeIds = ["n1"], DeletedEdgeIds = ["e1", "e2"] });
         _graphStore.Setup(g => g.DeleteEdgesByOwnerAsync("user-1", It.IsAny<CancellationToken>()))
             .ReturnsAsync(["e2", "e3"]);
 
@@ -125,6 +125,29 @@ public sealed class DefaultErasureOrchestratorTests
         _feedbackStore.Verify(f => f.DeleteWeightsByEdgeIdsAsync(
             It.Is<IReadOnlyList<string>>(ids =>
                 ids.Count == 3 && ids.Contains("e1") && ids.Contains("e2") && ids.Contains("e3")),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task EraseByOwner_AuditRecordsActualDeletedIds_NotRequested()
+    {
+        _graphStore.Setup(g => g.GetNodesByOwnerAsync("user-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync([
+                new GraphNode { Id = "n1", Name = "T1", Type = "Fact", OwnerId = "user-1" },
+                new GraphNode { Id = "n2", Name = "T2", Type = "Fact", OwnerId = "user-1" }
+            ]);
+        // The store only actually removed n1 (n2 raced away).
+        _graphStore.Setup(g => g.DeleteNodesAsync(
+                It.IsAny<IReadOnlyList<string>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new NodeDeletionResult { DeletedNodeIds = ["n1"], DeletedEdgeIds = ["e1"] });
+
+        await _orchestrator.EraseByOwnerAsync("user-1");
+
+        _auditSink.Verify(a => a.EmitAsync(
+            It.Is<MemoryAuditEvent>(e =>
+                e.Action == MemoryAuditAction.Erasure &&
+                e.AffectedNodeIds!.Count == 1 && e.AffectedNodeIds.Contains("n1") &&
+                e.AffectedEdgeIds!.Contains("e1")),
             It.IsAny<CancellationToken>()), Times.Once);
     }
 

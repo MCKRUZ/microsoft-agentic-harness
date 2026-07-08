@@ -141,7 +141,10 @@ public sealed class DefaultErasureOrchestrator : IErasureOrchestrator
             VectorEmbeddingsDeleted = embeddingsDeleted
         };
 
-        // 5. Emit audit event covering everything that was actually erased.
+        // 5. Emit audit event covering everything that was ACTUALLY erased — the deleted
+        //    IDs reported by the stores, never the requested IDs. (The event itself is
+        //    always emitted: it is the proof the erasure REQUEST was processed, receipt
+        //    and all, even when nothing matched.)
         await _auditSink.EmitAsync(new MemoryAuditEvent
         {
             EventId = requestId,
@@ -149,7 +152,7 @@ public sealed class DefaultErasureOrchestrator : IErasureOrchestrator
             ActorId = scopeId,
             Timestamp = receipt.CompletedAt,
             ScopeId = scopeId,
-            AffectedNodeIds = nodeIds,
+            AffectedNodeIds = nodeDeletion.DeletedNodeIds,
             AffectedEdgeIds = deletedEdgeIds
         }, cancellationToken);
 

@@ -159,11 +159,13 @@ public sealed partial class KuzuGraphBackend : IGraphDatabaseBackend, IDisposabl
     /// </summary>
     private async Task PopulateTempTableAsync(
         IEnumerable<string> ids,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        SqliteTransaction? transaction = null)
     {
         // Create (idempotent) and clear.
         using (var createCmd = _connection.CreateCommand())
         {
+            createCmd.Transaction = transaction;
             createCmd.CommandText = """
                 CREATE TEMP TABLE IF NOT EXISTS _TempIds (id TEXT PRIMARY KEY);
                 DELETE FROM _TempIds;
@@ -173,6 +175,7 @@ public sealed partial class KuzuGraphBackend : IGraphDatabaseBackend, IDisposabl
 
         // Insert each ID individually via a prepared statement — safe by construction.
         using var insertCmd = _connection.CreateCommand();
+        insertCmd.Transaction = transaction;
         insertCmd.CommandText = "INSERT OR IGNORE INTO _TempIds (id) VALUES (@id)";
         var param = insertCmd.Parameters.Add("@id", SqliteType.Text);
 

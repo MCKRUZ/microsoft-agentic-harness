@@ -278,31 +278,26 @@ public sealed class Neo4jGraphStore : IKnowledgeGraphStore, IAsyncDisposable
                 RETURN rid
                 """, new { ids = nodeIds.ToList() });
 
-            var deletedEdgeIds = new List<string>();
-            while (await edgeCursor.FetchAsync())
-                deletedEdgeIds.Add(edgeCursor.Current["rid"].As<string>());
+            var deletedEdgeIds = await MaterializeIdsAsync(edgeCursor, "rid");
 
-            // Then the nodes themselves; size(nodes) is the true deleted count because
-            // MATCH only binds nodes that exist. DETACH is belt-and-braces for edges
-            // added concurrently between the two statements.
+            // Then the nodes themselves, projecting each id BEFORE the delete so the audit
+            // trail records what was actually removed (MATCH only binds nodes that exist).
             var nodeCursor = await tx.RunAsync("""
                 MATCH (n:Entity) WHERE n.id IN $ids
-                WITH collect(n) AS nodes
-                FOREACH (x IN nodes | DETACH DELETE x)
-                RETURN size(nodes) AS cnt
+                WITH n, n.id AS nid
+                DETACH DELETE n
+                RETURN nid
                 """, new { ids = nodeIds.ToList() });
 
-            var nodesDeleted = await nodeCursor.FetchAsync()
-                ? nodeCursor.Current["cnt"].As<int>()
-                : 0;
+            var deletedNodeIds = await MaterializeIdsAsync(nodeCursor, "nid");
 
             _logger.LogDebug(
                 "Neo4j: deleted {NodeCount} of {Requested} nodes and {EdgeCount} connected edges",
-                nodesDeleted, nodeIds.Count, deletedEdgeIds.Count);
+                deletedNodeIds.Count, nodeIds.Count, deletedEdgeIds.Count);
 
             return new NodeDeletionResult
             {
-                NodesDeleted = nodesDeleted,
+                DeletedNodeIds = deletedNodeIds,
                 DeletedEdgeIds = deletedEdgeIds
             };
         });
@@ -325,13 +320,30 @@ public sealed class Neo4jGraphStore : IKnowledgeGraphStore, IAsyncDisposable
                 RETURN rid
                 """, new { ownerId });
 
-            var deleted = new List<string>();
-            while (await cursor.FetchAsync())
-                deleted.Add(cursor.Current["rid"].As<string>());
+            var deleted = await MaterializeIdsAsync(cursor, "rid");
 
             _logger.LogDebug("Neo4j: deleted {Count} edges owned by {OwnerId}", deleted.Count, ownerId);
             return (IReadOnlyList<string>)deleted;
         });
+    }
+
+    /// <summary>
+    /// Drains a cursor of projected IDs into a list, skipping <see langword="null"/> values.
+    /// Legacy graph elements written before the <c>id</c> property was mandatory materialize
+    /// a null projection — propagating it would fault downstream feedback-weight cleanup
+    /// (dictionary keys cannot be null) and abort the whole erasure.
+    /// </summary>
+    private static async Task<List<string>> MaterializeIdsAsync(IResultCursor cursor, string column)
+    {
+        var ids = new List<string>();
+        while (await cursor.FetchAsync())
+        {
+            var value = cursor.Current[column];
+            if (value is not null)
+                ids.Add(value.As<string>());
+        }
+
+        return ids;
     }
 
     /// <inheritdoc />

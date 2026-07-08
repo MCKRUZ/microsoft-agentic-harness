@@ -10,10 +10,16 @@ namespace Domain.AI.KnowledgeGraph.Models;
 public record NodeDeletionResult
 {
     /// <summary>
-    /// Number of nodes the store actually removed. Requested IDs that did not exist
-    /// are not counted.
+    /// IDs of the nodes the store actually removed. Requested IDs that did not exist are
+    /// absent. Audit events must record these actuals — never the requested IDs.
     /// </summary>
-    public required int NodesDeleted { get; init; }
+    public required IReadOnlyList<string> DeletedNodeIds { get; init; }
+
+    /// <summary>
+    /// Number of nodes the store actually removed. Always equals
+    /// <see cref="DeletedNodeIds"/>.Count — computed so count and IDs can never drift.
+    /// </summary>
+    public int NodesDeleted => DeletedNodeIds.Count;
 
     /// <summary>
     /// IDs of the edges removed by the cascade (every edge whose source or target was
@@ -24,7 +30,7 @@ public record NodeDeletionResult
     /// <summary>A result representing no deletions (empty input or nothing matched).</summary>
     public static NodeDeletionResult Empty { get; } = new()
     {
-        NodesDeleted = 0,
+        DeletedNodeIds = [],
         DeletedEdgeIds = []
     };
 }

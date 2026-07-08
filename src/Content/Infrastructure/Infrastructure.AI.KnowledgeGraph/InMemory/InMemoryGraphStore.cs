@@ -182,11 +182,11 @@ public sealed class InMemoryGraphStore : IKnowledgeGraphStore
             return Task.FromResult(NodeDeletionResult.Empty);
 
         var idSet = nodeIds.ToHashSet(StringComparer.Ordinal);
-        var nodesDeleted = 0;
+        var deletedNodeIds = new List<string>(idSet.Count);
         foreach (var nodeId in idSet)
         {
             if (_nodes.TryRemove(nodeId, out _))
-                nodesDeleted++;
+                deletedNodeIds.Add(nodeId);
         }
 
         var cascadeEdgeIds = _edges.Values
@@ -203,11 +203,11 @@ public sealed class InMemoryGraphStore : IKnowledgeGraphStore
 
         _logger.LogDebug(
             "Deleted {NodeCount} of {Requested} nodes and {EdgeCount} connected edges",
-            nodesDeleted, nodeIds.Count, deletedEdgeIds.Count);
+            deletedNodeIds.Count, nodeIds.Count, deletedEdgeIds.Count);
 
         return Task.FromResult(new NodeDeletionResult
         {
-            NodesDeleted = nodesDeleted,
+            DeletedNodeIds = deletedNodeIds,
             DeletedEdgeIds = deletedEdgeIds
         });
     }

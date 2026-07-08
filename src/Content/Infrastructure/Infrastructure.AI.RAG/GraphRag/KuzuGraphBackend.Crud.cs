@@ -243,13 +243,31 @@ public sealed partial class KuzuGraphBackend
     {
         if (nodeIds.Count == 0) return NodeDeletionResult.Empty;
 
-        await PopulateTempTableAsync(nodeIds, cancellationToken).ConfigureAwait(false);
+        // The whole populate/select/delete sequence is one SQLite transaction: a crash
+        // midway must not leave orphaned edges or community assignments, and the _TempIds
+        // population is atomic with the DELETEs that read it, so no interleaved
+        // PopulateTempTableAsync caller can repoint the temp table at a different id set
+        // between our statements.
+        using var transaction = _connection.BeginTransaction();
 
-        // Capture connected edge ids BEFORE deleting so feedback-weight cleanup and the
-        // erasure receipt reflect what was actually removed.
+        await PopulateTempTableAsync(nodeIds, cancellationToken, transaction).ConfigureAwait(false);
+
+        // Capture node and edge ids BEFORE deleting so feedback-weight cleanup, the erasure
+        // receipt, and audit events reflect what was actually removed.
+        var deletedNodeIds = new List<string>();
+        using (var selectCmd = _connection.CreateCommand())
+        {
+            selectCmd.Transaction = transaction;
+            selectCmd.CommandText = "SELECT id FROM Nodes WHERE id IN (SELECT id FROM _TempIds)";
+            using var reader = await selectCmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                deletedNodeIds.Add(reader.GetString(0));
+        }
+
         var deletedEdgeIds = new List<string>();
         using (var selectCmd = _connection.CreateCommand())
         {
+            selectCmd.Transaction = transaction;
             selectCmd.CommandText = """
                 SELECT id FROM Edges
                 WHERE source_node_id IN (SELECT id FROM _TempIds)
@@ -262,6 +280,7 @@ public sealed partial class KuzuGraphBackend
 
         using (var cmd = _connection.CreateCommand())
         {
+            cmd.Transaction = transaction;
             cmd.CommandText = """
                 DELETE FROM Edges
                 WHERE source_node_id IN (SELECT id FROM _TempIds)
@@ -272,24 +291,27 @@ public sealed partial class KuzuGraphBackend
 
         using (var cmd = _connection.CreateCommand())
         {
+            cmd.Transaction = transaction;
             cmd.CommandText = "DELETE FROM CommunityAssignments WHERE node_id IN (SELECT id FROM _TempIds)";
             await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
 
-        int nodesDeleted;
         using (var cmd = _connection.CreateCommand())
         {
+            cmd.Transaction = transaction;
             cmd.CommandText = "DELETE FROM Nodes WHERE id IN (SELECT id FROM _TempIds)";
-            nodesDeleted = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
+
+        transaction.Commit();
 
         _logger.LogDebug(
             "Deleted {NodeCount} of {Requested} nodes and {EdgeCount} connected edges",
-            nodesDeleted, nodeIds.Count, deletedEdgeIds.Count);
+            deletedNodeIds.Count, nodeIds.Count, deletedEdgeIds.Count);
 
         return new NodeDeletionResult
         {
-            NodesDeleted = nodesDeleted,
+            DeletedNodeIds = deletedNodeIds,
             DeletedEdgeIds = deletedEdgeIds
         };
     }
@@ -299,9 +321,14 @@ public sealed partial class KuzuGraphBackend
         string ownerId,
         CancellationToken cancellationToken = default)
     {
+        // Transactional so the captured id list and the DELETE observe the same edge set,
+        // and a crash between them cannot report deletions that never happened.
+        using var transaction = _connection.BeginTransaction();
+
         var deleted = new List<string>();
         using (var selectCmd = _connection.CreateCommand())
         {
+            selectCmd.Transaction = transaction;
             selectCmd.CommandText = "SELECT id FROM Edges WHERE owner_id = @owner";
             selectCmd.Parameters.AddWithValue("@owner", ownerId);
             using var reader = await selectCmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
@@ -311,10 +338,13 @@ public sealed partial class KuzuGraphBackend
 
         using (var cmd = _connection.CreateCommand())
         {
+            cmd.Transaction = transaction;
             cmd.CommandText = "DELETE FROM Edges WHERE owner_id = @owner";
             cmd.Parameters.AddWithValue("@owner", ownerId);
             await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
+
+        transaction.Commit();
 
         _logger.LogDebug("Deleted {Count} edges owned by {OwnerId}", deleted.Count, ownerId);
         return deleted;
