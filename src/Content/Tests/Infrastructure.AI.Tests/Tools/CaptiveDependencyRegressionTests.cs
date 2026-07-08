@@ -1,11 +1,15 @@
 using Application.AI.Common.Interfaces.GitOps;
+using Application.AI.Common.Interfaces.Iac;
 using Application.AI.Common.Interfaces.Sandbox;
 using Application.AI.Common.Interfaces.Tools;
+using Domain.AI.Iac;
 using Domain.AI.Sandbox;
 using FluentAssertions;
 using Infrastructure.AI.Orchestration.Magentic;
+using Infrastructure.AI.Tests.Iac;
 using Infrastructure.AI.Tests.Tools.Workspace.Support;
 using Infrastructure.AI.Tools.GitOps;
+using Infrastructure.AI.Tools.Iac;
 using Infrastructure.AI.Tools.Workspace;
 using MediatR;
 using Microsoft.Extensions.DependencyInjection;
@@ -120,6 +124,36 @@ public sealed class CaptiveDependencyRegressionTests
 
         result.Success.Should().BeTrue();
         recorded.Should().ContainSingle("the tool must dispatch through the scoped executor resolved per execution");
+    }
+
+    [Fact]
+    public void IacGenerators_ResolveFromRoot_UnderScopeValidation()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton(IacTestConfig.ValidMonitor());
+        services.AddSingleton(TimeProvider.System);
+
+        // Production lifetime (DependencyInjection.Planner.cs): the sandbox
+        // executor is keyed SCOPED on the isolation level.
+        services.AddKeyedScoped<ISandboxExecutor>(
+            SandboxIsolationLevel.Process, (_, _) => Mock.Of<ISandboxExecutor>());
+
+        // Production registrations under test (DependencyInjection.Iac.cs).
+        services.AddIacSkillTools();
+
+        using var provider = services.BuildServiceProvider(new ServiceProviderOptions
+        {
+            ValidateScopes = true,
+        });
+
+        var terraform = () => provider.GetRequiredKeyedService<IIacGenerator>(IacBackendKeys.Terraform);
+        var bicep = () => provider.GetRequiredKeyedService<IIacGenerator>(IacBackendKeys.Bicep);
+
+        terraform.Should().NotThrow(
+            "the keyed-singleton generator factory must not resolve the keyed-scoped ISandboxExecutor from the root provider");
+        bicep.Should().NotThrow(
+            "the keyed-singleton generator factory must not resolve the keyed-scoped ISandboxExecutor from the root provider");
     }
 
     [Fact]

@@ -17,7 +17,7 @@ public sealed class BicepGeneratorTests
     private static BicepGenerator Create(Application.AI.Common.Interfaces.Sandbox.ISandboxExecutor sandbox, string blockingSeverity = "High")
         => new(
             IacTestConfig.ValidMonitor(blockingSeverity),
-            sandbox,
+            Support.TestScopeFactory.ForSandbox(sandbox),
             NullLogger<BicepGenerator>.Instance,
             TimeProvider.System);
 

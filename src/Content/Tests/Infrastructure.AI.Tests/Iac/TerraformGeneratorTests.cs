@@ -17,7 +17,7 @@ public sealed class TerraformGeneratorTests
     private static TerraformGenerator Create(Application.AI.Common.Interfaces.Sandbox.ISandboxExecutor sandbox, string blockingSeverity = "High")
         => new(
             IacTestConfig.ValidMonitor(blockingSeverity),
-            sandbox,
+            Support.TestScopeFactory.ForSandbox(sandbox),
             NullLogger<TerraformGenerator>.Instance,
             TimeProvider.System);
 
