@@ -174,6 +174,66 @@ public sealed class InMemoryGraphStore : IKnowledgeGraphStore
     }
 
     /// <inheritdoc />
+    public Task<NodeDeletionResult> DeleteNodesAsync(
+        IReadOnlyList<string> nodeIds,
+        CancellationToken cancellationToken = default)
+    {
+        if (nodeIds.Count == 0)
+            return Task.FromResult(NodeDeletionResult.Empty);
+
+        var idSet = nodeIds.ToHashSet(StringComparer.Ordinal);
+        var deletedNodeIds = new List<string>(idSet.Count);
+        foreach (var nodeId in idSet)
+        {
+            if (_nodes.TryRemove(nodeId, out _))
+                deletedNodeIds.Add(nodeId);
+        }
+
+        var cascadeEdgeIds = _edges.Values
+            .Where(e => idSet.Contains(e.SourceNodeId) || idSet.Contains(e.TargetNodeId))
+            .Select(e => e.Id)
+            .ToList();
+
+        var deletedEdgeIds = new List<string>(cascadeEdgeIds.Count);
+        foreach (var edgeId in cascadeEdgeIds)
+        {
+            if (_edges.TryRemove(edgeId, out _))
+                deletedEdgeIds.Add(edgeId);
+        }
+
+        _logger.LogDebug(
+            "Deleted {NodeCount} of {Requested} nodes and {EdgeCount} connected edges",
+            deletedNodeIds.Count, nodeIds.Count, deletedEdgeIds.Count);
+
+        return Task.FromResult(new NodeDeletionResult
+        {
+            DeletedNodeIds = deletedNodeIds,
+            DeletedEdgeIds = deletedEdgeIds
+        });
+    }
+
+    /// <inheritdoc />
+    public Task<IReadOnlyList<string>> DeleteEdgesByOwnerAsync(
+        string ownerId,
+        CancellationToken cancellationToken = default)
+    {
+        var ownedEdgeIds = _edges.Values
+            .Where(e => string.Equals(e.OwnerId, ownerId, StringComparison.Ordinal))
+            .Select(e => e.Id)
+            .ToList();
+
+        var deleted = new List<string>(ownedEdgeIds.Count);
+        foreach (var edgeId in ownedEdgeIds)
+        {
+            if (_edges.TryRemove(edgeId, out _))
+                deleted.Add(edgeId);
+        }
+
+        _logger.LogDebug("Deleted {Count} edges owned by {OwnerId}", deleted.Count, ownerId);
+        return Task.FromResult<IReadOnlyList<string>>(deleted);
+    }
+
+    /// <inheritdoc />
     public Task<int> GetNodeCountAsync(CancellationToken cancellationToken = default)
     {
         return Task.FromResult(_nodes.Count);

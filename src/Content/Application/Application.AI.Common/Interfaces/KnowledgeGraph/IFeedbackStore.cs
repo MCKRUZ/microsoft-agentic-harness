@@ -77,7 +77,21 @@ public interface IFeedbackStore
     /// </summary>
     /// <param name="nodeIds">The node IDs whose feedback weights should be deleted.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
-    Task DeleteWeightsByNodeIdsAsync(
+    /// <returns>The number of feedback weight entries actually removed.</returns>
+    Task<int> DeleteWeightsByNodeIdsAsync(
         IReadOnlyList<string> nodeIds,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Deletes feedback weights for the specified edge IDs. Used during
+    /// right-to-erasure cascading: feedback recorded against an erased edge is a
+    /// dangling reference that both leaks signal about erased data and skews
+    /// feedback-weighted retrieval. No-op for edge IDs without recorded feedback.
+    /// </summary>
+    /// <param name="edgeIds">The edge IDs whose feedback weights should be deleted.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The number of feedback weight entries actually removed.</returns>
+    Task<int> DeleteWeightsByEdgeIdsAsync(
+        IReadOnlyList<string> edgeIds,
         CancellationToken cancellationToken = default);
 }

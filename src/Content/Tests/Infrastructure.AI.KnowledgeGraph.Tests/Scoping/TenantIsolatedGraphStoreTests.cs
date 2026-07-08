@@ -244,6 +244,72 @@ public sealed class TenantIsolatedGraphStoreTests
         ids.Should().BeEquivalentTo(["mine", "tenantShared", "global"]);
     }
 
+    // --- Batch deletion (right-to-erasure primitives) ---
+
+    [Fact]
+    public async Task DeleteNodes_ScopedCaller_SkipsForeignNodesButDeletesOwn()
+    {
+        await SeedNode("mine", owner: UserA);
+        await SeedNode("theirs", owner: UserB);
+        var store = StoreFor(UserA);
+
+        var result = await store.DeleteNodesAsync(["mine", "theirs"]);
+
+        result.NodesDeleted.Should().Be(1);
+        (await _innerStore.GetNodeAsync("mine")).Should().BeNull();
+        (await _innerStore.GetNodeAsync("theirs")).Should().NotBeNull(
+            "a scoped caller must never cascade-delete another user's node");
+    }
+
+    [Fact]
+    public async Task DeleteNodes_NoAmbientScope_DeletesEverythingRequested()
+    {
+        // Right-to-erasure runs system-scoped and must reach foreign-owned nodes.
+        await SeedNode("theirs", owner: UserB);
+        var store = SystemStore();
+
+        var result = await store.DeleteNodesAsync(["theirs"]);
+
+        result.NodesDeleted.Should().Be(1);
+        (await _innerStore.GetNodeAsync("theirs")).Should().BeNull();
+    }
+
+    [Fact]
+    public async Task DeleteEdgesByOwner_ScopedCaller_ForeignOwner_IsBlocked()
+    {
+        await SeedNode("s", owner: null);
+        await SeedNode("t", owner: null);
+        await _innerStore.AddEdgesAsync([new GraphEdge
+        {
+            Id = "e1", SourceNodeId = "s", TargetNodeId = "t",
+            Predicate = "relates_to", ChunkId = "c1", OwnerId = UserB
+        }]);
+        var store = StoreFor(UserA);
+
+        var deleted = await store.DeleteEdgesByOwnerAsync(UserB);
+
+        deleted.Should().BeEmpty("a scoped caller cannot erase another owner's edges");
+        (await _innerStore.GetEdgeCountAsync()).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task DeleteEdgesByOwner_NoAmbientScope_DeletesOwnersEdges()
+    {
+        await SeedNode("s", owner: null);
+        await SeedNode("t", owner: null);
+        await _innerStore.AddEdgesAsync([new GraphEdge
+        {
+            Id = "e1", SourceNodeId = "s", TargetNodeId = "t",
+            Predicate = "relates_to", ChunkId = "c1", OwnerId = UserB
+        }]);
+        var store = SystemStore();
+
+        var deleted = await store.DeleteEdgesByOwnerAsync(UserB);
+
+        deleted.Should().BeEquivalentTo(["e1"]);
+        (await _innerStore.GetEdgeCountAsync()).Should().Be(0);
+    }
+
     private Task SeedNode(string id, string? owner) =>
         _innerStore.AddNodesAsync([new GraphNode { Id = id, Name = id, Type = "Fact", OwnerId = owner }]);
 

@@ -131,6 +131,41 @@ public sealed class GraphFeedbackStoreTests
         weight.Weight.Should().Be(1.0);
     }
 
+    [Fact]
+    public async Task DeleteWeightsByNodeIds_ReturnsActualDeletedCount()
+    {
+        await _store.ApplyNodeFeedbackAsync("n1", feedbackScore: 5.0, alpha: 0.3);
+
+        var deleted = await _store.DeleteWeightsByNodeIdsAsync(["n1", "never-had-feedback"]);
+
+        deleted.Should().Be(1, "only n1 had a recorded weight");
+        (await _store.GetNodeWeightAsync("n1")).UpdateCount.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task DeleteWeightsByEdgeIds_RemovesEdgeWeightsAndReturnsActualCount()
+    {
+        await _store.ApplyEdgeFeedbackAsync("e1", feedbackScore: 5.0, alpha: 0.3);
+        await _store.ApplyEdgeFeedbackAsync("e2", feedbackScore: 2.0, alpha: 0.3);
+
+        var deleted = await _store.DeleteWeightsByEdgeIdsAsync(["e1", "e2", "never-had-feedback"]);
+
+        deleted.Should().Be(2);
+        (await _store.GetEdgeWeightAsync("e1")).UpdateCount.Should().Be(0);
+        (await _store.GetEdgeWeightAsync("e2")).UpdateCount.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task DeleteWeightsByEdgeIds_DoesNotTouchNodeWeights()
+    {
+        await _store.ApplyNodeFeedbackAsync("shared-id", feedbackScore: 5.0, alpha: 0.3);
+
+        var deleted = await _store.DeleteWeightsByEdgeIdsAsync(["shared-id"]);
+
+        deleted.Should().Be(0);
+        (await _store.GetNodeWeightAsync("shared-id")).UpdateCount.Should().Be(1);
+    }
+
     private sealed class FakeTimeProvider : TimeProvider
     {
         private readonly DateTimeOffset _utcNow;

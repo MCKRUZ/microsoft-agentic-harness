@@ -135,4 +135,70 @@ public sealed class PostgreSqlGraphStoreTests : IClassFixture<PostgreSqlStoreFix
         triplets[0].Source.TenantId.Should().Be("tenant-a");
         triplets[0].Target.Id.Should().Be("pg-t");
     }
+
+    [Fact]
+    public async Task DeleteNodesAsync_ReturnsActualCountsAndCascadedEdgeIds()
+    {
+        await _store.AddNodesAsync([
+            new GraphNode { Id = "pg-del-1", Name = "A", Type = "Entity" },
+            new GraphNode { Id = "pg-del-2", Name = "B", Type = "Entity" },
+            new GraphNode { Id = "pg-del-3", Name = "C", Type = "Entity" }
+        ]);
+        await _store.AddEdgesAsync([
+            new GraphEdge
+            {
+                Id = "pg-del-e1", SourceNodeId = "pg-del-1", TargetNodeId = "pg-del-2",
+                Predicate = "links", ChunkId = "c1"
+            },
+            new GraphEdge
+            {
+                Id = "pg-del-e2", SourceNodeId = "pg-del-3", TargetNodeId = "pg-del-1",
+                Predicate = "links", ChunkId = "c1"
+            },
+            new GraphEdge
+            {
+                Id = "pg-del-e3", SourceNodeId = "pg-del-2", TargetNodeId = "pg-del-3",
+                Predicate = "links", ChunkId = "c1"
+            }
+        ]);
+
+        // One requested id does not exist and must not be counted.
+        var result = await _store.DeleteNodesAsync(["pg-del-1", "pg-del-missing"]);
+
+        result.NodesDeleted.Should().Be(1);
+        result.DeletedEdgeIds.Should().BeEquivalentTo(["pg-del-e1", "pg-del-e2"]);
+        (await _store.GetNodeAsync("pg-del-1")).Should().BeNull();
+        (await _store.GetNodeAsync("pg-del-2")).Should().NotBeNull();
+        (await _store.GetTripletsAsync(["pg-del-2", "pg-del-3"]))
+            .Select(t => t.Edge.Id).Should().Contain("pg-del-e3");
+    }
+
+    [Fact]
+    public async Task DeleteEdgesByOwnerAsync_RemovesOnlyThatOwnersEdges()
+    {
+        await _store.AddNodesAsync([
+            new GraphNode { Id = "pg-oe-1", Name = "A", Type = "Entity" },
+            new GraphNode { Id = "pg-oe-2", Name = "B", Type = "Entity" }
+        ]);
+        await _store.AddEdgesAsync([
+            new GraphEdge
+            {
+                Id = "pg-oe-owned", SourceNodeId = "pg-oe-1", TargetNodeId = "pg-oe-2",
+                Predicate = "links", ChunkId = "c1", OwnerId = "pg-erase-owner"
+            },
+            new GraphEdge
+            {
+                Id = "pg-oe-foreign", SourceNodeId = "pg-oe-2", TargetNodeId = "pg-oe-1",
+                Predicate = "links", ChunkId = "c1", OwnerId = "pg-other-owner"
+            }
+        ]);
+
+        var deleted = await _store.DeleteEdgesByOwnerAsync("pg-erase-owner");
+
+        deleted.Should().BeEquivalentTo(["pg-oe-owned"]);
+        var remaining = (await _store.GetTripletsAsync(["pg-oe-1", "pg-oe-2"]))
+            .Select(t => t.Edge.Id).Distinct().ToList();
+        remaining.Should().Contain("pg-oe-foreign");
+        remaining.Should().NotContain("pg-oe-owned");
+    }
 }
