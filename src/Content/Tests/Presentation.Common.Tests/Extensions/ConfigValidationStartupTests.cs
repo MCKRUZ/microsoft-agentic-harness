@@ -58,6 +58,16 @@ public class ConfigValidationStartupTests
             new Dictionary<string, string?> { ["AppConfig:AI:Governance:Escalation:DefaultTimeoutAction"] = "NotAnAction" }
         },
         {
+            // Landmine: injection detection requested while governance is disabled. It only runs on the
+            // AGT kernel path (composed only when Enabled=true), so the flag is silently ineffective.
+            "GovernanceConfig",
+            new Dictionary<string, string?>
+            {
+                ["AppConfig:AI:Governance:Enabled"] = "false",
+                ["AppConfig:AI:Governance:EnablePromptInjectionDetection"] = "true",
+            }
+        },
+        {
             "WorkMemoryConfig",
             new Dictionary<string, string?> { ["AppConfig:AI:WorkMemory:StoreProvider"] = "not_a_provider" }
         },
