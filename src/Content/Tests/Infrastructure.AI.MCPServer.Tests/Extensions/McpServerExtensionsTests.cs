@@ -3,11 +3,9 @@ using Domain.Common.Config;
 using Domain.Common.Config.AI;
 using Domain.Common.Config.AI.MCP;
 using FluentAssertions;
+using Infrastructure.AI.MCPServer.Authentication;
 using Infrastructure.AI.MCPServer.Extensions;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
-using Moq;
 using Xunit;
 
 namespace Infrastructure.AI.MCPServer.Tests.Extensions;
@@ -18,13 +16,6 @@ namespace Infrastructure.AI.MCPServer.Tests.Extensions;
 /// </summary>
 public sealed class McpServerExtensionsTests
 {
-    private static IHostEnvironment CreateDevelopmentEnvironment()
-    {
-        var mock = new Mock<IHostEnvironment>();
-        mock.Setup(e => e.EnvironmentName).Returns("Development");
-        return mock.Object;
-    }
-
     private static AppConfig CreateAppConfig(
         string serverName = "test-harness",
         string serverVersion = "1.0.0",
@@ -97,15 +88,76 @@ public sealed class McpServerExtensionsTests
     // -- AddMcpAuthentication --
 
     [Fact]
-    public void AddMcpAuthentication_NoAuthConfigured_RegistersAnonymousAuth()
+    public void AddMcpAuthentication_NoAuthConfigured_ThrowsFailClosed()
     {
         var services = new ServiceCollection();
         var appConfig = CreateAppConfig();
-        var configuration = new ConfigurationBuilder().Build();
 
-        services.AddMcpAuthentication(appConfig, configuration, CreateDevelopmentEnvironment());
+        var act = () => services.AddMcpAuthentication(appConfig);
+
+        act.Should().Throw<InvalidOperationException>()
+            .WithMessage("*fail-closed*");
+    }
+
+    [Fact]
+    public void AddMcpAuthentication_AllowAnonymous_RegistersAuthAndStartupWarning()
+    {
+        var services = new ServiceCollection();
+        var appConfig = CreateAppConfig(auth: new McpServerAuthConfig { AllowAnonymous = true });
+
+        services.AddMcpAuthentication(appConfig);
 
         services.Any(d => d.ServiceType.Name.Contains("Authentication")).Should().BeTrue();
+        services.Any(d => d.ServiceType.Name.Contains("Authorization")).Should().BeTrue();
+        services.Any(d => d.ImplementationType == typeof(McpAnonymousModeStartupWarning))
+            .Should().BeTrue("anonymous mode must log a prominent startup warning");
+    }
+
+    [Fact]
+    public void AddMcpAuthentication_AllowAnonymousWithConfiguredType_ThrowsContradiction()
+    {
+        var services = new ServiceCollection();
+        var appConfig = CreateAppConfig(auth: new McpServerAuthConfig
+        {
+            Type = McpServerAuthType.ApiKey,
+            ApiKey = "test-key-not-a-real-secret",
+            AllowAnonymous = true
+        });
+
+        var act = () => services.AddMcpAuthentication(appConfig);
+
+        act.Should().Throw<InvalidOperationException>()
+            .WithMessage("*AllowAnonymous*");
+    }
+
+    [Theory]
+    [InlineData(McpServerAuthType.ApiKey)]
+    [InlineData(McpServerAuthType.Bearer)]
+    public void AddMcpAuthentication_TypeWithoutKeyMaterial_ThrowsFailClosed(McpServerAuthType type)
+    {
+        var services = new ServiceCollection();
+        var appConfig = CreateAppConfig(auth: new McpServerAuthConfig { Type = type });
+
+        var act = () => services.AddMcpAuthentication(appConfig);
+
+        act.Should().Throw<InvalidOperationException>()
+            .WithMessage("*missing required credential material*");
+    }
+
+    [Fact]
+    public void AddMcpAuthentication_EntraMissingTenant_ThrowsFailClosed()
+    {
+        var services = new ServiceCollection();
+        var appConfig = CreateAppConfig(auth: new McpServerAuthConfig
+        {
+            Type = McpServerAuthType.Entra,
+            ClientId = "test-client-id"
+        });
+
+        var act = () => services.AddMcpAuthentication(appConfig);
+
+        act.Should().Throw<InvalidOperationException>()
+            .WithMessage("*missing required credential material*");
     }
 
     [Fact]
@@ -119,22 +171,29 @@ public sealed class McpServerExtensionsTests
             ClientId = "test-client-id"
         };
         var appConfig = CreateAppConfig(auth: auth);
-        var configuration = new ConfigurationBuilder().Build();
 
-        services.AddMcpAuthentication(appConfig, configuration, CreateDevelopmentEnvironment());
+        services.AddMcpAuthentication(appConfig);
 
         services.Any(d => d.ServiceType.Name.Contains("Authentication")).Should().BeTrue();
     }
 
-    [Fact]
-    public void AddMcpAuthentication_NoAuth_RegistersAuthorizationServices()
+    [Theory]
+    [InlineData(McpServerAuthType.ApiKey)]
+    [InlineData(McpServerAuthType.Bearer)]
+    public void AddMcpAuthentication_SharedKeyTypes_RegisterAuthenticationServices(McpServerAuthType type)
     {
         var services = new ServiceCollection();
-        var appConfig = CreateAppConfig();
-        var configuration = new ConfigurationBuilder().Build();
+        var auth = new McpServerAuthConfig
+        {
+            Type = type,
+            ApiKey = "test-key-not-a-real-secret",
+            BearerToken = "test-token-not-a-real-secret"
+        };
+        var appConfig = CreateAppConfig(auth: auth);
 
-        services.AddMcpAuthentication(appConfig, configuration, CreateDevelopmentEnvironment());
+        services.AddMcpAuthentication(appConfig);
 
+        services.Any(d => d.ServiceType.Name.Contains("Authentication")).Should().BeTrue();
         services.Any(d => d.ServiceType.Name.Contains("Authorization")).Should().BeTrue();
     }
 
@@ -142,12 +201,9 @@ public sealed class McpServerExtensionsTests
     public void AddMcpAuthentication_ReturnsSameServiceCollection()
     {
         var services = new ServiceCollection();
-        var appConfig = CreateAppConfig();
-        var configuration = new ConfigurationBuilder().Build();
+        var appConfig = CreateAppConfig(auth: new McpServerAuthConfig { AllowAnonymous = true });
 
-        var environment = CreateDevelopmentEnvironment();
-
-        var result = services.AddMcpAuthentication(appConfig, configuration, environment);
+        var result = services.AddMcpAuthentication(appConfig);
 
         result.Should().BeSameAs(services);
     }

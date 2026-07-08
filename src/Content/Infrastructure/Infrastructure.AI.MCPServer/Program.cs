@@ -11,7 +11,11 @@ namespace Infrastructure.AI.MCPServer;
 /// Entry point for the agentic harness MCP server.
 /// Exposes tools, prompts, and resources via MCP protocol over HTTP transport.
 /// </summary>
-public static class Program
+/// <remarks>
+/// Non-static so integration tests can host the full pipeline via
+/// <c>WebApplicationFactory&lt;Program&gt;</c> (static types cannot be type arguments).
+/// </remarks>
+public class Program
 {
     public static void Main(string[] args)
     {
@@ -27,7 +31,9 @@ public static class Program
             .Get<AppConfig>() ?? new AppConfig();
 
         builder.Services.AddMcpServerServices(appConfig);
-        builder.Services.AddMcpAuthentication(appConfig, builder.Configuration, builder.Environment);
+        // Fail-closed: throws unless an auth scheme is configured or the operator
+        // explicitly opted into anonymous serving — regardless of environment.
+        builder.Services.AddMcpAuthentication(appConfig);
 
         // Skill catalog — discovered from the configured skills directory
         builder.Services.AddSingleton<SkillMetadataParser>();
@@ -57,10 +63,16 @@ public static class Program
         app.UseAuthorization();
         app.UseRateLimiter();
 
-        // Map MCP endpoints with auth + rate limiting
-        app.MapMcp()
-            .RequireAuthorization()
-            .RequireRateLimiting("mcp");
+        // Map MCP endpoints with auth + rate limiting. Authorization is mandatory on
+        // every MCP endpoint; the only exception is the explicit AllowAnonymous
+        // opt-in, made visible here as a deliberate .AllowAnonymous() rather than a
+        // silently weakened policy. AddMcpAuthentication has already validated the
+        // config, so these two flags are mutually exclusive.
+        var mcpEndpoints = app.MapMcp().RequireRateLimiting("mcp");
+        if (appConfig.AI.MCP.Auth.AllowAnonymous)
+            mcpEndpoints.AllowAnonymous();
+        else
+            mcpEndpoints.RequireAuthorization();
 
         app.Run();
     }

@@ -76,8 +76,51 @@ public class McpServerAuthConfig
     /// </remarks>
     public List<string> Scopes { get; set; } = [];
 
+    /// <summary>
+    /// Gets or sets the explicit opt-in that lets this application's own MCP server
+    /// (<see cref="McpConfig.Auth"/>) serve anonymously when <see cref="Type"/> is
+    /// <see cref="McpServerAuthType.None"/>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Default: <c>false</c> — the MCP server host is fail-closed and refuses to start
+    /// without a configured authentication scheme, in <strong>every</strong> environment.
+    /// Running <c>ASPNETCORE_ENVIRONMENT=Development</c> alone is never sufficient to
+    /// disable authentication; a developer must consciously set this flag, and the host
+    /// logs a prominent warning at startup while it is on.
+    /// </para>
+    /// <para>
+    /// Only honored when this config is used server-side. Outbound client connections
+    /// (<see cref="McpServerDefinition"/>) ignore it — a client with
+    /// <see cref="McpServerAuthType.None"/> simply sends no credential.
+    /// </para>
+    /// </remarks>
+    public bool AllowAnonymous { get; set; }
+
     /// <summary>Gets whether authentication is configured.</summary>
     public bool IsConfigured => Type != McpServerAuthType.None;
+
+    /// <summary>
+    /// Gets whether the configuration is valid for <em>server-side</em> enforcement —
+    /// when this application is the MCP server validating inbound credentials.
+    /// </summary>
+    /// <remarks>
+    /// Server-side requirements differ from <see cref="IsValid"/> (the client-side,
+    /// credential-minting shape): the server never mints tokens, so
+    /// <see cref="McpServerAuthType.Entra"/> only needs <see cref="TenantId"/> and
+    /// <see cref="ClientId"/> to validate issuer and audience — no secret, certificate,
+    /// or <see cref="Scopes"/>. ApiKey/Bearer require the shared credential material
+    /// the server compares inbound requests against.
+    /// </remarks>
+    public bool IsValidForServer => Type switch
+    {
+        McpServerAuthType.None => true,
+        McpServerAuthType.ApiKey => !string.IsNullOrWhiteSpace(ApiKey),
+        McpServerAuthType.Bearer => !string.IsNullOrWhiteSpace(BearerToken),
+        McpServerAuthType.Entra => !string.IsNullOrWhiteSpace(TenantId)
+                                   && !string.IsNullOrWhiteSpace(ClientId),
+        _ => false
+    };
 
     /// <summary>Gets whether the configuration is valid for the selected type.</summary>
     /// <remarks>
