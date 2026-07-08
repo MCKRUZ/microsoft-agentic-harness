@@ -13,7 +13,11 @@ public sealed record ToolExecutionAttestation
     /// <summary>SHA-256 hash of the tool input parameters.</summary>
     public required string InputHash { get; init; }
 
-    /// <summary>SHA-256 hash of the tool output. Null if execution crashed before producing output.</summary>
+    /// <summary>
+    /// SHA-256 hash of the tool output actually produced. Null only when execution ended
+    /// without producing any output. Populated on failure attestations too when the tool
+    /// emitted output before failing, so the returned output stays bound to the signed record.
+    /// </summary>
     public string? OutputHash { get; init; }
 
     /// <summary>When the tool execution occurred.</summary>

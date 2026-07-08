@@ -193,7 +193,7 @@ public sealed class ProcessSandboxExecutor : ISandboxExecutor
             : _attestationService.SignWithEgressAsync(toolName, input, output, egressDigest, ct);
     }
 
-    private static Process StartProcess(SandboxExecutionRequest request, string workspaceDir)
+    private Process StartProcess(SandboxExecutionRequest request, string workspaceDir)
     {
         var command = request.Command ?? request.ToolName;
 
@@ -219,6 +219,8 @@ public sealed class ProcessSandboxExecutor : ISandboxExecutor
             CreateNoWindow = true
         };
 
+        ConfigureIsolatedEnvironment(psi, request, workspaceDir);
+
         if (request.ArgumentList is { Count: > 0 })
         {
             foreach (var arg in request.ArgumentList)
@@ -228,6 +230,38 @@ public sealed class ProcessSandboxExecutor : ISandboxExecutor
         var process = new Process { StartInfo = psi };
         process.Start();
         return process;
+    }
+
+    /// <summary>
+    /// Rebuilds the child process environment from scratch. The host environment (secrets,
+    /// tokens, credential paths) is never inherited: only variables named in the configured
+    /// allowlist are copied from the host, temp variables are pinned to the disposable
+    /// workspace, and explicit per-request grants are applied last.
+    /// </summary>
+    private void ConfigureIsolatedEnvironment(
+        ProcessStartInfo psi, SandboxExecutionRequest request, string workspaceDir)
+    {
+        // Closed-by-default: drop everything inherited from the host process.
+        psi.EnvironmentVariables.Clear();
+
+        foreach (var name in _sandboxConfig.CurrentValue.ProcessEnvironmentAllowlist)
+        {
+            var value = Environment.GetEnvironmentVariable(name);
+            if (value is not null)
+                psi.EnvironmentVariables[name] = value;
+        }
+
+        // Temp always points inside the per-execution workspace (deleted after the run),
+        // never at the host temp directory — regardless of the allowlist contents.
+        psi.EnvironmentVariables["TEMP"] = workspaceDir;
+        psi.EnvironmentVariables["TMP"] = workspaceDir;
+        psi.EnvironmentVariables["TMPDIR"] = workspaceDir;
+
+        if (request.EnvironmentVariables is not null)
+        {
+            foreach (var (name, value) in request.EnvironmentVariables)
+                psi.EnvironmentVariables[name] = value;
+        }
     }
 
     private void ApplyResourceLimits(Process process, ResourceLimits limits)
@@ -293,9 +327,12 @@ public sealed class ProcessSandboxExecutor : ISandboxExecutor
     {
         _logger.LogWarning("Process exited with code {ExitCode}: {Stderr}", exitCode, stderr);
 
-        var attestation = await SignFailureAsync(
+        // The crash result carries the stdout produced before the failure, so that output
+        // must be bound into the signed attestation — otherwise a stored result's Output
+        // could diverge from the attested record without detection.
+        var attestation = await _attestationService.SignFailureWithOutputAsync(
             request.ToolName, request.Input,
-            $"Process exited with code {exitCode}: {stderr}", egressDigest, ct);
+            $"Process exited with code {exitCode}: {stderr}", stdout, egressDigest, ct);
 
         return new SandboxExecutionResult
         {

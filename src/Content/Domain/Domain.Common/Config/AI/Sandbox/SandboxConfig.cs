@@ -41,4 +41,21 @@ public sealed class SandboxConfig
     /// Overrides can restrict (never expand) compile-time <c>[ToolCapabilityAttribute]</c> declarations.
     /// </summary>
     public Dictionary<string, ToolOverrideConfig> ToolOverrides { get; init; } = new();
+
+    /// <summary>
+    /// Names of host environment variables copied into sandboxed child processes.
+    /// The child environment is cleared before launch (closed-by-default) and rebuilt from
+    /// this allowlist, so host secrets, tokens, and credentials never leak into tools.
+    /// The default set is the minimum a Windows/POSIX child needs to function:
+    /// <c>SystemRoot</c> (required by most Win32 APIs), <c>ComSpec</c> and <c>PATHEXT</c>
+    /// (command resolution inside cmd), and <c>PATH</c> (executable lookup).
+    /// <c>TEMP</c>/<c>TMP</c>/<c>TMPDIR</c> are never copied from the host — the executor
+    /// always points them at the disposable per-execution workspace directory.
+    /// Additional per-execution values are granted explicitly via
+    /// <c>SandboxExecutionRequest.EnvironmentVariables</c>, not by widening this list.
+    /// </summary>
+    public List<string> ProcessEnvironmentAllowlist { get; init; } =
+    [
+        "SystemRoot", "ComSpec", "PATHEXT", "PATH"
+    ];
 }

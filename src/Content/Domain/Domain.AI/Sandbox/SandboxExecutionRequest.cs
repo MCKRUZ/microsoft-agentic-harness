@@ -60,4 +60,13 @@ public sealed record SandboxExecutionRequest
     /// </para>
     /// </remarks>
     public IReadOnlyList<Uri>? EgressPrecheckTargets { get; init; }
+
+    /// <summary>
+    /// Explicit environment variables granted to the sandboxed process for this execution.
+    /// The child process environment is cleared and rebuilt from the configured host
+    /// allowlist (<c>SandboxConfig.ProcessEnvironmentAllowlist</c>) plus these grants —
+    /// nothing else from the host environment is visible to the tool. Grants are applied
+    /// last and may override allowlisted values. Null or empty means no extra variables.
+    /// </summary>
+    public IReadOnlyDictionary<string, string>? EnvironmentVariables { get; init; }
 }

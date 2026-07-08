@@ -13,6 +13,13 @@ public sealed record ResourceLimits
     /// <summary>Maximum CPU time in seconds. Default: 30 seconds.</summary>
     public double CpuTimeSeconds { get; init; } = 30;
 
+    /// <summary>
+    /// Maximum CPU rate as a number of cores (e.g. 0.5 = half a core, 2.0 = two cores).
+    /// Enforced by the Docker sandbox via <c>NanoCPUs</c> so a runaway container cannot
+    /// starve the host. Default: 1 core (closed-by-default — callers opt into more).
+    /// </summary>
+    public double CpuCoreLimit { get; init; } = 1.0;
+
     /// <summary>Maximum number of child processes. Default: 5.</summary>
     public int MaxSubprocesses { get; init; } = 5;
 
