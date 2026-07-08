@@ -59,8 +59,18 @@ public static class DependencyInjection
         // valid Enabled=true, EnablePromptInjectionDetection=false configuration — AddSingleton throws on a
         // null instance. When detection is off, satisfy IPromptInjectionScanner with the no-op scanner so
         // every consumer resolves and the PromptInjectionBehavior simply passes through.
-        if (config.EnablePromptInjectionDetection && kernel.InjectionDetector is not null)
+        if (config.EnablePromptInjectionDetection)
         {
+            // Fail closed: if detection is configured on, the kernel must have produced a detector.
+            // Silently falling back to the no-op scanner here would leave a *configured* security
+            // control inert — the exact silent-degradation failure this hardening pass targets.
+            if (kernel.InjectionDetector is null)
+            {
+                throw new InvalidOperationException(
+                    "GovernanceConfig.EnablePromptInjectionDetection is true but the governance kernel " +
+                    "produced no InjectionDetector; refusing to start with the configured control disabled.");
+            }
+
             services.AddSingleton(kernel.InjectionDetector);
             services.AddSingleton<IPromptInjectionScanner, AgtPromptInjectionAdapter>();
         }
