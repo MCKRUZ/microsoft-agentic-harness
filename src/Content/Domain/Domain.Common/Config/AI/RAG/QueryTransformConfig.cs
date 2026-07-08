@@ -21,6 +21,16 @@ public class QueryTransformConfig
     public int FusionVariantCount { get; set; } = 3;
 
     /// <summary>
+    /// Gets or sets whether the orchestrator fans retrieval out across the
+    /// RAG-Fusion query variants and fuses the per-variant result sets with
+    /// Reciprocal Rank Fusion (RRF). When <c>false</c> (the default) the
+    /// orchestrator retrieves only for the original query even if variants were
+    /// generated, preserving legacy single-query retrieval behavior. The number
+    /// of variants actually retrieved is bounded by <see cref="FusionVariantCount"/>.
+    /// </summary>
+    public bool EnableFusionRetrieval { get; set; }
+
+    /// <summary>
     /// Gets or sets whether HyDE (Hypothetical Document Embeddings) is enabled.
     /// When <c>true</c>, the LLM generates a hypothetical answer which is then
     /// embedded and used for retrieval instead of the raw query.
