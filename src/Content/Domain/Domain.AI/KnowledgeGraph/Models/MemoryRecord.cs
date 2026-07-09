@@ -29,4 +29,20 @@ public sealed record MemoryRecord
 
     /// <summary>Arbitrary metadata (entity types, topic tags). Strings for graph portability.</summary>
     public IReadOnlyDictionary<string, string> Metadata { get; init; } = new Dictionary<string, string>();
+
+    /// <summary>
+    /// The knowledge-scope owner (user/tenant ID) this memory belongs to, or <see langword="null"/>
+    /// for a global/unscoped memory. Canonicalized via
+    /// <see cref="Scoping.ScopeIdentity.Canonicalize"/> when the record is written, so owner
+    /// comparisons and right-to-erasure purges match regardless of casing. Right-to-erasure of an
+    /// owner deletes every memory record carrying that owner.
+    /// </summary>
+    /// <remarks>
+    /// This property is <c>required</c> — not to forbid global memories (an explicit
+    /// <see langword="null"/> is a legitimate global record) but to force every writer to make a
+    /// conscious ownership decision. A record whose owner is left <see langword="null"/> by
+    /// oversight is unreachable by an owner-scoped right-to-erasure purge, so ownership must never
+    /// be defaulted silently.
+    /// </remarks>
+    public required string? OwnerId { get; init; }
 }

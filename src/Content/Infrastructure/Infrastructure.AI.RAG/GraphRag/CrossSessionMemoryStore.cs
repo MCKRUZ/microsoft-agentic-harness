@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Domain.AI.KnowledgeGraph.Models;
+using Domain.AI.KnowledgeGraph.Scoping;
 using Domain.Common.Config;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -35,6 +36,13 @@ public sealed class CrossSessionMemoryStore : ICrossSessionMemoryStore, IDisposa
 {
     private static readonly ActivitySource _activitySource =
         new("Infrastructure.AI.RAG.GraphRag");
+
+    /// <summary>
+    /// Graph node type used when a memory record is synced to the backend. Owner-scoped purge
+    /// filters on this so a right-to-erasure over the shared backend only removes memory nodes,
+    /// never corpus or other subsystems' owned nodes.
+    /// </summary>
+    private const string MemoryNodeType = "Memory";
 
     private readonly IGraphDatabaseBackend _graphBackend;
     private readonly IOptionsMonitor<AppConfig> _configMonitor;
@@ -74,8 +82,11 @@ public sealed class CrossSessionMemoryStore : ICrossSessionMemoryStore, IDisposa
         using var activity = _activitySource.StartActivity("CrossSessionMemory.Remember");
         activity?.SetTag("memory.id", memory.Id);
 
-        _cache.AddOrUpdate(memory.Id, memory, (_, _) => memory);
-        _dirty[memory.Id] = true;
+        // Canonicalize the owner on write so owner-scoped recall and right-to-erasure purge
+        // match regardless of casing (mirrors ComplianceAwareGraphStore's owner stamping).
+        var canonical = memory with { OwnerId = ScopeIdentity.Canonicalize(memory.OwnerId) };
+        _cache.AddOrUpdate(canonical.Id, canonical, (_, _) => canonical);
+        _dirty[canonical.Id] = true;
 
         PruneToCapacity();
 
@@ -131,6 +142,54 @@ public sealed class CrossSessionMemoryStore : ICrossSessionMemoryStore, IDisposa
         _dirty.TryRemove(memoryId, out _);
 
         await _graphBackend.DeleteNodeAsync(memoryId, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <inheritdoc/>
+    public async Task<int> PurgeByOwnerAsync(string ownerId, CancellationToken cancellationToken = default)
+    {
+        using var activity = _activitySource.StartActivity("CrossSessionMemory.PurgeByOwner");
+
+        var canonical = ScopeIdentity.Canonicalize(ownerId);
+        if (canonical is null)
+            return 0;
+
+        activity?.SetTag("memory.owner", canonical);
+
+        // 1. Purge the in-memory cache (authoritative for records not yet synced or already
+        //    loaded this session). Compare canonically — cached owners are canonicalized on write.
+        var cacheVictims = _cache.Values
+            .Where(r => ScopeIdentity.AreSame(r.OwnerId, canonical))
+            .Select(r => r.Id)
+            .ToList();
+        foreach (var id in cacheVictims)
+        {
+            _cache.TryRemove(id, out _);
+            _dirty.TryRemove(id, out _);
+        }
+
+        // 2. Purge the durable backend. The backend is shared with other subsystems (corpus,
+        //    episodic segments), so restrict deletion to memory nodes owned by this owner —
+        //    never another subsystem's owned nodes.
+        var ownedNodes = await _graphBackend
+            .GetNodesByOwnerAsync(canonical, cancellationToken)
+            .ConfigureAwait(false);
+        var backendMemoryIds = ownedNodes
+            .Where(n => string.Equals(n.Type, MemoryNodeType, StringComparison.Ordinal))
+            .Select(n => n.Id)
+            .ToList();
+        if (backendMemoryIds.Count > 0)
+            await _graphBackend.DeleteNodesAsync(backendMemoryIds, cancellationToken).ConfigureAwait(false);
+
+        var purged = cacheVictims
+            .Concat(backendMemoryIds)
+            .Distinct(StringComparer.Ordinal)
+            .Count();
+
+        _logger.LogInformation(
+            "CrossSessionMemoryStore: purged {Count} memory records for owner {Owner}",
+            purged, canonical);
+
+        return purged;
     }
 
     /// <inheritdoc/>
@@ -191,7 +250,10 @@ public sealed class CrossSessionMemoryStore : ICrossSessionMemoryStore, IDisposa
             {
                 Id = record.Id,
                 Name = record.Id,
-                Type = "Memory",
+                Type = MemoryNodeType,
+                // Persist the owner so the durable backend row can be found by an owner-scoped
+                // right-to-erasure purge even after the cache entry is evicted.
+                OwnerId = record.OwnerId,
                 Properties = new Dictionary<string, string>
                 {
                     ["content"] = record.Content,

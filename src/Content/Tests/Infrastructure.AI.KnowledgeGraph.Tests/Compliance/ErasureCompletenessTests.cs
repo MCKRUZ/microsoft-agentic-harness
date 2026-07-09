@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.KnowledgeGraph;
+using Application.AI.Common.Interfaces.RAG;
 using Domain.AI.KnowledgeGraph;
 using Domain.AI.KnowledgeGraph.Models;
 using FluentAssertions;
@@ -235,5 +236,72 @@ public sealed class ErasureCompletenessTests
 
         var weight = await _feedbackStore.GetEdgeWeightAsync("e-owned-by-u1");
         weight.UpdateCount.Should().Be(0);
+    }
+
+    // ------------------------------------------------------------------
+    // Gap 4 — retention must purge derived content for EXPIRED nodes even
+    // though the compliance-aware store returns null when re-fetching them
+    // ------------------------------------------------------------------
+
+    [Fact]
+    public async Task RetentionEnforcement_PurgesDerivedContentForExpiredNodes_ThroughComplianceStore()
+    {
+        // Seed an EXPIRED node carrying derived chunk IDs directly into the inner store, so we
+        // control ExpiresAt (bypassing the decorator's retention stamping).
+        await _graphStore.AddNodesAsync([new GraphNode
+        {
+            Id = "expired-1", Name = "Old", Type = "Fact",
+            CreatedAt = DateTimeOffset.UtcNow.AddDays(-400),
+            ExpiresAt = DateTimeOffset.UtcNow.AddDays(-1),
+            ChunkIds = ["docExpired_chunk_0", "docExpired_raptor_L0_C0"]
+        }]);
+
+        // Live decorated store: ComplianceAwareGraphStore.GetNodeAsync returns null for an expired
+        // node, so an id-based re-fetch would drop its ChunkIds and skip the vector purge.
+        var scope = Mock.Of<IKnowledgeScope>(s => s.UserId == null && s.TenantId == null);
+        var services = new ServiceCollection();
+        services.AddSingleton(scope);
+        var ambient = Mock.Of<IAmbientRequestScope>(a => a.Current == services.BuildServiceProvider());
+
+        var retention = new Mock<IRetentionPolicyProvider>();
+        retention.Setup(r => r.GetPolicy(It.IsAny<string>()))
+            .Returns(new RetentionPolicy { EntityType = "Fact", RetentionPeriod = TimeSpan.FromDays(365) });
+
+        var decorated = new ComplianceAwareGraphStore(
+            _graphStore, Mock.Of<IMemoryAuditSink>(), ambient, retention.Object,
+            TimeProvider.System, NullLogger<ComplianceAwareGraphStore>.Instance);
+
+        var vectorStore = new Mock<IVectorStore>();
+        var bm25Store = new Mock<IBm25Store>();
+
+        var orchestrator = new DefaultErasureOrchestrator(
+            decorated, _feedbackStore, vectorStore.Object, Mock.Of<IMemoryAuditSink>(),
+            TimeProvider.System, NullLogger<DefaultErasureOrchestrator>.Instance,
+            bm25Store.Object);
+
+        var service = new RetentionEnforcementService(
+            decorated, ScopeFactoryFor(orchestrator),
+            NullLogger<RetentionEnforcementService>.Instance);
+
+        await service.EnforceRetentionAsync(DateTimeOffset.UtcNow, CancellationToken.None);
+
+        vectorStore.Verify(
+            v => v.DeleteAsync("docExpired", It.IsAny<string?>(), It.IsAny<CancellationToken>()),
+            Times.Once,
+            "the expired node's derived embeddings must be purged — its chunk IDs must survive to the derived-content sweep");
+        bm25Store.Verify(
+            b => b.DeleteAsync("docExpired", It.IsAny<string?>(), It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    /// <summary>
+    /// Builds a real <see cref="IServiceScopeFactory"/> that resolves the given orchestrator from a
+    /// fresh scope, mirroring how the singleton retention service obtains its scoped dependency.
+    /// </summary>
+    private static IServiceScopeFactory ScopeFactoryFor(IErasureOrchestrator orchestrator)
+    {
+        var services = new ServiceCollection();
+        services.AddScoped(_ => orchestrator);
+        return services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
     }
 }

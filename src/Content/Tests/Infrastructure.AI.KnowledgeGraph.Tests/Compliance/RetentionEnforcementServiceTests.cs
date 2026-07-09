@@ -18,7 +18,7 @@ public sealed class RetentionEnforcementServiceTests
         var store = new InMemoryGraphStore(Mock.Of<ILogger<InMemoryGraphStore>>());
         var erasureOrchestrator = new Mock<IErasureOrchestrator>();
         erasureOrchestrator
-            .Setup(e => e.EraseByNodeIdsAsync(It.IsAny<IReadOnlyList<string>>(), It.IsAny<CancellationToken>()))
+            .Setup(e => e.EraseByNodesAsync(It.IsAny<IReadOnlyList<GraphNode>>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new ErasureReceipt
             {
                 RequestId = "test", ScopeId = "system",
@@ -49,8 +49,11 @@ public sealed class RetentionEnforcementServiceTests
 
         await service.EnforceRetentionAsync(now, CancellationToken.None);
 
-        erasureOrchestrator.Verify(e => e.EraseByNodeIdsAsync(
-            It.Is<IReadOnlyList<string>>(ids => ids.Contains("expired") && !ids.Contains("valid")),
+        // Passes the full node instances (not ids) so their ChunkIds survive for the
+        // derived-content purge — see EraseByNodesAsync.
+        erasureOrchestrator.Verify(e => e.EraseByNodesAsync(
+            It.Is<IReadOnlyList<GraphNode>>(ns =>
+                ns.Any(n => n.Id == "expired") && ns.All(n => n.Id != "valid")),
             It.IsAny<CancellationToken>()), Times.Once);
     }
 
@@ -76,7 +79,7 @@ public sealed class RetentionEnforcementServiceTests
         await service.EnforceRetentionAsync(DateTimeOffset.UtcNow, CancellationToken.None);
 
         erasureOrchestrator.Verify(
-            e => e.EraseByNodeIdsAsync(It.IsAny<IReadOnlyList<string>>(), It.IsAny<CancellationToken>()),
+            e => e.EraseByNodesAsync(It.IsAny<IReadOnlyList<GraphNode>>(), It.IsAny<CancellationToken>()),
             Times.Never);
     }
 
