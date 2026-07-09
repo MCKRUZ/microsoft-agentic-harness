@@ -17,8 +17,12 @@ namespace Application.Core.CQRS.Compliance.EraseMyData;
 /// <b>Self-scope is enforced here, not taken from the request.</b> The command has no owner field; the
 /// subject is always <see cref="IKnowledgeScope.UserId"/>. When no authenticated user scope is present
 /// (anonymous context, or an authenticated token that carries no user id) the handler fails closed with
-/// <see cref="Result{T}.Forbidden(string)"/> and erases nothing — a defence-in-depth check that holds
-/// even if the validator or entry-point authorization were ever misconfigured.
+/// <see cref="Result{T}.Forbidden(string)"/> and erases nothing — a check that holds even if the
+/// entry-point authorization were ever misconfigured. This fail-closed check lives in the handler (not a
+/// pre-handler validator) on purpose: the handler is the innermost pipeline stage, so the denial is
+/// still captured by <c>AuditTrailBehavior</c> as <c>AuditOutcome.Denied</c>. A validator that
+/// short-circuited in <c>RequestValidationBehavior</c> — which is registered outer to the audit
+/// behavior — would produce an unaudited denial, defeating the point of auditing a destructive action.
 /// </para>
 /// <para>
 /// Store-level faults are caught, logged with full structured detail, and surfaced as a scrubbed
