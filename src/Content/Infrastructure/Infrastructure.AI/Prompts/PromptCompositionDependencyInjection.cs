@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces.Prompts;
+using Application.AI.Common.Services.Prompts;
 using Infrastructure.AI.Prompts.Sections;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -31,7 +32,15 @@ public static class PromptCompositionDependencyInjection
 
         services.AddSingleton<IPromptSectionCache, InMemoryPromptSectionCache>();
         services.AddScoped<ISystemPromptComposer, MemoizedPromptComposer>();
+        // Scoped holder that carries the current request's merged skill instructions from the
+        // singleton AgentExecutionContextFactory into the (scoped) SkillInstructions section.
+        services.AddScoped<ISkillInstructionAccessor, SkillInstructionAccessor>();
         services.AddTransient<IPromptSectionProvider, AgentIdentitySectionProvider>();
+        services.AddTransient<IPromptSectionProvider, SkillInstructionsSectionProvider>();
+        // ToolSchemas and SessionState remain registered as available building blocks. They are
+        // excluded from the AUTHORITATIVE static prompt (AuthoritativePromptSections.Default) — the
+        // SDK already sends tool schemas via ChatOptions.Tools, and session state is per-turn dynamic
+        // context served on the AIContextProvider rail — but stay available for direct/full composition.
         services.AddTransient<IPromptSectionProvider, ToolSchemasSectionProvider>();
         services.AddTransient<IPromptSectionProvider, PermissionRulesSectionProvider>();
         services.AddTransient<IPromptSectionProvider, SessionStateSectionProvider>();

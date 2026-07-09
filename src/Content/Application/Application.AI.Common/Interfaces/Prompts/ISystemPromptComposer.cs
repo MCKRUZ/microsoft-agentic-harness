@@ -9,17 +9,25 @@ namespace Application.AI.Common.Interfaces.Prompts;
 public interface ISystemPromptComposer
 {
     /// <summary>
-    /// Composes the full system prompt for the specified agent within the given token budget.
+    /// Composes the system prompt for the specified agent within the given token budget.
     /// Sections are resolved from providers, cached when cacheable, sorted by priority,
     /// and concatenated. Low-priority sections are dropped if the budget is exceeded.
     /// </summary>
     /// <param name="agentId">The agent to compose the prompt for.</param>
     /// <param name="tokenBudget">Maximum token budget for the assembled prompt.</param>
+    /// <param name="sectionTypes">
+    /// Optional allowlist of section types to include. When <see langword="null"/> (the default),
+    /// every registered provider contributes. When supplied, only providers whose
+    /// <see cref="IPromptSectionProvider.SectionType"/> is in the set are composed — used to build
+    /// an authoritative <em>static</em> prompt (see
+    /// <see cref="AuthoritativePromptSections.Default"/>) that excludes per-turn dynamic sections.
+    /// </param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>The assembled system prompt string.</returns>
     Task<string> ComposeAsync(
         string agentId,
         int tokenBudget,
+        IReadOnlySet<SystemPromptSectionType>? sectionTypes = null,
         CancellationToken cancellationToken = default);
 
     /// <summary>Invalidates all cached sections of the specified type.</summary>

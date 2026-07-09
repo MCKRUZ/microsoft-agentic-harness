@@ -151,6 +151,71 @@ public class MemoizedPromptComposerTests
     }
 
     [Fact]
+    public async Task ComposeAsync_SectionTypesFilter_ExcludesNonAuthoritativeSections()
+    {
+        var identity = CreateSection("Identity", SystemPromptSectionType.AgentIdentity, 10, false, 5, "You are agent-1.");
+        var skills = CreateSection("Skills", SystemPromptSectionType.SkillInstructions, 20, false, 5, "SKILL BODY");
+        var tools = CreateSection("Tools", SystemPromptSectionType.ToolSchemas, 30, false, 5, "TOOL SCHEMAS");
+        var state = CreateSection("State", SystemPromptSectionType.SessionState, 50, false, 5, "SESSION STATE");
+
+        SystemPromptSection? nullSection = null;
+        _cacheMock.Setup(c => c.TryGet(It.IsAny<string>(), It.IsAny<SystemPromptSectionType>(), out nullSection))
+            .Returns(false);
+
+        var composer = CreateComposer(
+            CreateProviderMock(SystemPromptSectionType.AgentIdentity, identity).Object,
+            CreateProviderMock(SystemPromptSectionType.SkillInstructions, skills).Object,
+            CreateProviderMock(SystemPromptSectionType.ToolSchemas, tools).Object,
+            CreateProviderMock(SystemPromptSectionType.SessionState, state).Object);
+
+        var authoritative = new HashSet<SystemPromptSectionType>
+        {
+            SystemPromptSectionType.AgentIdentity,
+            SystemPromptSectionType.SkillInstructions,
+            SystemPromptSectionType.PermissionRules,
+        };
+
+        var result = await composer.ComposeAsync("agent-1", 10_000, authoritative);
+
+        result.Should().Contain("You are agent-1.");
+        result.Should().Contain("SKILL BODY");
+        result.Should().NotContain("TOOL SCHEMAS", "tool schemas are excluded from the authoritative static prompt");
+        result.Should().NotContain("SESSION STATE", "session state is excluded from the authoritative static prompt");
+    }
+
+    [Fact]
+    public async Task ComposeAsync_TightBudget_DropsPermissionRulesBeforeSkillInstructions()
+    {
+        // Authoritative set at production priorities: identity(10) < skill instructions(20) < permission rules(40).
+        var identity = CreateSection("Identity", SystemPromptSectionType.AgentIdentity, 10, false, 50, "IDENTITY");
+        var skills = CreateSection("Skills", SystemPromptSectionType.SkillInstructions, 20, false, 50, "SKILL BODY");
+        var permissions = CreateSection("Permissions", SystemPromptSectionType.PermissionRules, 40, false, 50, "PERMISSION RULES");
+
+        SystemPromptSection? nullSection = null;
+        _cacheMock.Setup(c => c.TryGet(It.IsAny<string>(), It.IsAny<SystemPromptSectionType>(), out nullSection))
+            .Returns(false);
+
+        var composer = CreateComposer(
+            CreateProviderMock(SystemPromptSectionType.AgentIdentity, identity).Object,
+            CreateProviderMock(SystemPromptSectionType.SkillInstructions, skills).Object,
+            CreateProviderMock(SystemPromptSectionType.PermissionRules, permissions).Object);
+
+        var authoritative = new HashSet<SystemPromptSectionType>
+        {
+            SystemPromptSectionType.AgentIdentity,
+            SystemPromptSectionType.SkillInstructions,
+            SystemPromptSectionType.PermissionRules,
+        };
+
+        // Budget fits identity(50) + skill instructions(50) = 100, but not the tail permission rules(150 > 120).
+        var result = await composer.ComposeAsync("agent-1", 120, authoritative);
+
+        result.Should().Contain("IDENTITY");
+        result.Should().Contain("SKILL BODY", "skill instructions must never be dropped before the lower-priority permission rules");
+        result.Should().NotContain("PERMISSION RULES", "the lowest-priority tail section is dropped first when over budget");
+    }
+
+    [Fact]
     public void InvalidateSection_ClearsSpecificType()
     {
         var composer = CreateComposer();
