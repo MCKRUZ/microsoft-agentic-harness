@@ -63,6 +63,9 @@ public sealed class IngestDocumentCommandHandler
 		var sw = Stopwatch.StartNew();
 		var jobId = Guid.NewGuid().ToString("N")[..12];
 
+		// Captured once chunks exist so the catch path can compensate partial store writes.
+		string? documentId = null;
+
 		try
 		{
 			_logger.LogInformation(
@@ -80,6 +83,11 @@ public sealed class IngestDocumentCommandHandler
 			var chunks = await _chunker.ChunkAsync(
 				markdown, structure, request.DocumentUri, cancellationToken);
 			activity?.SetTag(RagConventions.IngestChunksProduced, chunks.Count);
+
+			// All chunks (including RAPTOR summaries) share the source DocumentId, which is
+			// what both stores key deletion by. Capturing it here makes document-scoped
+			// compensation possible if a later parallel store write partially fails.
+			documentId = chunks.Count > 0 ? chunks[0].DocumentId : null;
 
 			// 4. Contextual enrichment (if enabled)
 			var ragConfig = _appConfigMonitor.CurrentValue.AI.Rag;
@@ -130,6 +138,16 @@ public sealed class IngestDocumentCommandHandler
 			_logger.LogError(ex, "RAG ingestion failed: {JobId}", jobId);
 			RagIngestionMetrics.Errors.Add(1);
 
+			// Compensate partial writes: the vector and BM25 stores are written in parallel,
+			// so a single-store failure can leave the other store's derived copies (chunks,
+			// RAPTOR summaries) persisted with no clean way to erase them later. Both deletes
+			// are document-scoped and idempotent, so calling them is safe even for the store
+			// that wrote nothing.
+			if (documentId is not null)
+			{
+				await CompensatePartialIngestAsync(documentId, request.CollectionName, jobId);
+			}
+
 			return new IngestDocumentResult
 			{
 				JobId = jobId,
@@ -139,6 +157,42 @@ public sealed class IngestDocumentCommandHandler
 				Success = false,
 				Error = "Document ingestion failed. Check server logs for details."
 			};
+		}
+	}
+
+	/// <summary>
+	/// Best-effort rollback of already-written derived copies for a failed ingest.
+	/// Deletes the document's entries from both the vector and BM25 stores so a partial
+	/// write does not leave un-erasable orphans. A compensating delete that itself fails
+	/// is logged and swallowed: it must not mask the original ingestion failure or abort
+	/// the sibling store's cleanup.
+	/// </summary>
+	private async Task CompensatePartialIngestAsync(
+		string documentId, string? collectionName, string jobId)
+	{
+		// Use CancellationToken.None: cleanup must complete even when the original
+		// ingestion failed due to cancellation — abandoning it would defeat the purpose.
+		await TryDeleteAsync(
+			ct => _vectorStore.DeleteAsync(documentId, collectionName, ct),
+			documentId, jobId, "vector");
+		await TryDeleteAsync(
+			ct => _bm25Store.DeleteAsync(documentId, collectionName, ct),
+			documentId, jobId, "BM25");
+	}
+
+	private async Task TryDeleteAsync(
+		Func<CancellationToken, Task> delete, string documentId, string jobId, string storeName)
+	{
+		try
+		{
+			await delete(CancellationToken.None);
+		}
+		catch (Exception ex)
+		{
+			_logger.LogError(
+				ex,
+				"RAG ingestion compensation failed to delete {DocumentId} from {StoreName} store: {JobId}",
+				documentId, storeName, jobId);
 		}
 	}
 }
