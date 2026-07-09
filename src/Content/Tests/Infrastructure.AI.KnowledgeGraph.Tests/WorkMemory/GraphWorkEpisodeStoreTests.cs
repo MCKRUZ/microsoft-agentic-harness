@@ -2,6 +2,7 @@ using Application.AI.Common.Interfaces.WorkMemory;
 using Domain.AI.WorkMemory;
 using FluentAssertions;
 using Infrastructure.AI.KnowledgeGraph.InMemory;
+using Infrastructure.AI.KnowledgeGraph.Tests.TestSupport;
 using Infrastructure.AI.KnowledgeGraph.WorkMemory;
 using Microsoft.Extensions.Logging;
 using Moq;
@@ -17,7 +18,8 @@ public sealed class GraphWorkEpisodeStoreTests
     public GraphWorkEpisodeStoreTests()
     {
         _graphStore = new InMemoryGraphStore(Mock.Of<ILogger<InMemoryGraphStore>>());
-        _sut = new GraphWorkEpisodeStore(_graphStore, Mock.Of<ILogger<GraphWorkEpisodeStore>>());
+        _sut = new GraphWorkEpisodeStore(
+            _graphStore, StubAmbientRequestScope.None(), Mock.Of<ILogger<GraphWorkEpisodeStore>>());
     }
 
     private static WorkEpisode BuildEpisode(
@@ -128,5 +130,25 @@ public sealed class GraphWorkEpisodeStoreTests
         var node = await _graphStore.GetNodeAsync($"workepisode:{id}".ToLowerInvariant(), CancellationToken.None);
         node.Should().NotBeNull();
         node!.Type.Should().Be("WorkEpisode");
+    }
+
+    [Fact]
+    public async Task Save_StampsCallerCanonicalOwner_SoOwnerScopedErasureCanFindIt()
+    {
+        // D3 owner-stamp: the compliance decorator leaves OwnerId writer-authoritative, so unless the
+        // store stamps the caller's owner the node persists owner-less and owner-scoped right-to-erasure
+        // (GetNodesByOwnerAsync) can never match it. Owner is canonicalized (trimmed/lowercased).
+        var sut = new GraphWorkEpisodeStore(
+            _graphStore, StubAmbientRequestScope.ForOwner("  User-42  "), Mock.Of<ILogger<GraphWorkEpisodeStore>>());
+        var episode = BuildEpisode();
+
+        await sut.SaveAsync(episode, CancellationToken.None);
+
+        var node = await _graphStore.GetNodeAsync($"workepisode:{episode.EpisodeId}".ToLowerInvariant(), CancellationToken.None);
+        node!.OwnerId.Should().Be("user-42", "the saved node must carry the caller's canonical owner");
+
+        var owned = await _graphStore.GetNodesByOwnerAsync("user-42", CancellationToken.None);
+        owned.Should().Contain(n => n.Id == node.Id,
+            "owner-scoped erasure resolves nodes via GetNodesByOwnerAsync and must reach the work-memory node");
     }
 }

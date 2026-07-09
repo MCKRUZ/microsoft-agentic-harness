@@ -1,7 +1,10 @@
 using System.Globalization;
+using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Domain.AI.KnowledgeGraph.Models;
+using Domain.AI.KnowledgeGraph.Scoping;
 using Domain.Common;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
 namespace Infrastructure.AI.KnowledgeGraph.Memory;
@@ -13,13 +16,24 @@ namespace Infrastructure.AI.KnowledgeGraph.Memory;
 /// <c>(ConversationId, TurnNumber)</c> pair.
 /// </summary>
 /// <remarks>
-/// Tenant/owner isolation is <strong>not</strong> implemented here — it is inherited from the injected
-/// <see cref="IKnowledgeGraphStore"/>, which in production is the tenant-isolating / compliance-aware
-/// decorator chain (stamps tenant on write, filters on read), exactly as <c>GraphWorkEpisodeStore</c> does.
+/// <para>
+/// Tenant isolation is inherited from the injected <see cref="IKnowledgeGraphStore"/>, which in
+/// production is the tenant-isolating / compliance-aware decorator chain (stamps tenant on write,
+/// filters on read), exactly as <c>GraphWorkEpisodeStore</c> does.
+/// </para>
+/// <para>
+/// Owner attribution is stamped <strong>here</strong> for the same reason as
+/// <c>GraphWorkEpisodeStore</c>: the compliance decorator leaves <see cref="GraphNode.OwnerId"/>
+/// writer-authoritative, so an unstamped segment node would persist owner-less and escape
+/// owner-scoped right-to-erasure. Each saved node is stamped with the caller's canonical owner,
+/// resolved per-operation from the ambient request scope so this singleton store never captures the
+/// scoped <see cref="IKnowledgeScope"/>.
+/// </para>
 /// </remarks>
 public sealed class GraphEpisodicSegmentStore : IEpisodicSegmentStore
 {
     private readonly IKnowledgeGraphStore _graphStore;
+    private readonly IAmbientRequestScope _ambientScope;
     private readonly ILogger<GraphEpisodicSegmentStore> _logger;
 
     private const string NodePrefix = "episodicsegment:";
@@ -30,16 +44,30 @@ public sealed class GraphEpisodicSegmentStore : IEpisodicSegmentStore
     private const string ChunkId = "episodicsegmentindex";
 
     /// <summary>Initializes a new instance of the <see cref="GraphEpisodicSegmentStore"/> class.</summary>
+    /// <param name="graphStore">The knowledge graph store nodes are persisted to.</param>
+    /// <param name="ambientScope">The ambient request scope used to resolve the caller's owner
+    /// per-operation for owner stamping (see the class remarks).</param>
+    /// <param name="logger">Logger for recording episodic-segment persistence operations.</param>
     public GraphEpisodicSegmentStore(
         IKnowledgeGraphStore graphStore,
+        IAmbientRequestScope ambientScope,
         ILogger<GraphEpisodicSegmentStore> logger)
     {
         ArgumentNullException.ThrowIfNull(graphStore);
+        ArgumentNullException.ThrowIfNull(ambientScope);
         ArgumentNullException.ThrowIfNull(logger);
 
         _graphStore = graphStore;
+        _ambientScope = ambientScope;
         _logger = logger;
     }
+
+    /// <summary>
+    /// The canonical owner ID of the caller in flight, resolved per-operation from the ambient
+    /// request scope. <see langword="null"/> for background/system work outside any request scope.
+    /// </summary>
+    private string? CurrentOwnerId =>
+        ScopeIdentity.Canonicalize(_ambientScope.Current?.GetService<IKnowledgeScope>()?.UserId);
 
     /// <inheritdoc />
     public async Task<Result> SaveAsync(EpisodicSegment segment, CancellationToken ct)
@@ -53,7 +81,8 @@ public sealed class GraphEpisodicSegmentStore : IEpisodicSegmentStore
                 Id = nodeId,
                 Name = $"Segment: {segment.ConversationId}#{segment.TurnNumber}",
                 Type = NodeType,
-                Properties = SerializeProperties(segment)
+                Properties = SerializeProperties(segment),
+                OwnerId = CurrentOwnerId
             };
 
             await _graphStore.AddNodesAsync([node], ct);

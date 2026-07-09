@@ -1,9 +1,12 @@
 using System.Globalization;
+using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Application.AI.Common.Interfaces.WorkMemory;
 using Domain.AI.KnowledgeGraph.Models;
+using Domain.AI.KnowledgeGraph.Scoping;
 using Domain.AI.WorkMemory;
 using Domain.Common;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
 namespace Infrastructure.AI.KnowledgeGraph.WorkMemory;
@@ -14,13 +17,25 @@ namespace Infrastructure.AI.KnowledgeGraph.WorkMemory;
 /// <c>"graph"</c>.
 /// </summary>
 /// <remarks>
-/// Tenant/owner isolation is <strong>not</strong> implemented here — it is inherited from the injected
-/// <see cref="IKnowledgeGraphStore"/>, which in production is the tenant-isolating / compliance-aware
-/// decorator chain (stamps tenant on write, filters on read). This mirrors <c>GraphLearningsStore</c>.
+/// <para>
+/// Tenant isolation is inherited from the injected <see cref="IKnowledgeGraphStore"/>, which in
+/// production is the tenant-isolating / compliance-aware decorator chain (stamps tenant on write,
+/// filters on read). This mirrors <c>GraphLearningsStore</c>.
+/// </para>
+/// <para>
+/// Owner attribution, however, is stamped <strong>here</strong>: the compliance decorator leaves
+/// <see cref="GraphNode.OwnerId"/> writer-authoritative (it only defaults tenant), so a work-memory
+/// node that does not set its own owner would persist with a null owner and become invisible to
+/// owner-scoped right-to-erasure (<c>IKnowledgeGraphStore.GetNodesByOwnerAsync</c>). Each saved node
+/// is therefore stamped with the caller's canonical owner, resolved per-operation from the ambient
+/// request scope — the same mechanism the singleton compliance decorator uses, which keeps this
+/// singleton store from capturing the scoped <see cref="IKnowledgeScope"/>.
+/// </para>
 /// </remarks>
 public sealed class GraphWorkEpisodeStore : IWorkEpisodeStore
 {
     private readonly IKnowledgeGraphStore _graphStore;
+    private readonly IAmbientRequestScope _ambientScope;
     private readonly ILogger<GraphWorkEpisodeStore> _logger;
 
     private const string NodePrefix = "workepisode:";
@@ -31,16 +46,31 @@ public sealed class GraphWorkEpisodeStore : IWorkEpisodeStore
     private const string ChunkId = "workepisodeindex";
 
     /// <summary>Initializes a new instance of the <see cref="GraphWorkEpisodeStore"/> class.</summary>
+    /// <param name="graphStore">The knowledge graph store nodes are persisted to.</param>
+    /// <param name="ambientScope">The ambient request scope used to resolve the caller's owner
+    /// per-operation for owner stamping (see the class remarks).</param>
+    /// <param name="logger">Logger for recording work-episode persistence operations.</param>
     public GraphWorkEpisodeStore(
         IKnowledgeGraphStore graphStore,
+        IAmbientRequestScope ambientScope,
         ILogger<GraphWorkEpisodeStore> logger)
     {
         ArgumentNullException.ThrowIfNull(graphStore);
+        ArgumentNullException.ThrowIfNull(ambientScope);
         ArgumentNullException.ThrowIfNull(logger);
 
         _graphStore = graphStore;
+        _ambientScope = ambientScope;
         _logger = logger;
     }
+
+    /// <summary>
+    /// The canonical owner ID of the caller in flight, resolved per-operation from the ambient
+    /// request scope. <see langword="null"/> for background/system work outside any request scope
+    /// (such nodes stay owner-less/global, matching the compliance decorator's behavior).
+    /// </summary>
+    private string? CurrentOwnerId =>
+        ScopeIdentity.Canonicalize(_ambientScope.Current?.GetService<IKnowledgeScope>()?.UserId);
 
     /// <inheritdoc />
     public async Task<Result> SaveAsync(WorkEpisode episode, CancellationToken ct)
@@ -54,7 +84,8 @@ public sealed class GraphWorkEpisodeStore : IWorkEpisodeStore
                 Id = nodeId,
                 Name = $"Episode: {episode.ConversationId}#{episode.TurnNumber}",
                 Type = NodeType,
-                Properties = SerializeProperties(episode)
+                Properties = SerializeProperties(episode),
+                OwnerId = CurrentOwnerId
             };
 
             await _graphStore.AddNodesAsync([node], ct);
