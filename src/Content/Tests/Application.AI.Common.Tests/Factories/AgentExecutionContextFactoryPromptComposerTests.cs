@@ -110,23 +110,65 @@ public sealed class AgentExecutionContextFactoryPromptComposerTests
     // --- OFF: byte-identical to the legacy merged instruction ---
 
     [Fact]
-    public async Task MapToAgentContext_PromptCompositionDisabled_InstructionIsByteIdenticalToLegacyMerge()
+    public async Task MapToAgentContext_PromptCompositionDisabled_InstructionMatchesExactLegacyFormat()
     {
         await using var root = BuildCompositionProvider();
         var factory = CreateFactory(Config(promptCompositionEnabled: false), root);
         var skills = new List<SkillDefinition>
         {
-            Skill("research", "Search sources."),
-            Skill("present", "Make slides."),
+            Skill("Research", "Search sources."),
+            Skill("Present", "Make slides."),
         };
         var options = new SkillAgentOptions { AdditionalContext = "Extra context." };
 
         var context = await factory.MapToAgentContextAsync(skills, options);
 
-        var legacy = SkillInstructionMerger.Merge(skills, options.AdditionalContext);
-        context.Instruction.Should().Be(legacy);
+        // Hardcoded expected format (multi-skill => "## Skill: {name}\n\n{instructions}" wrapping,
+        // AdditionalContext appended, blocks joined by a blank line). Pinned literally so a future
+        // change to the merge format is caught, not silently mirrored.
+        const string expected =
+            "## Skill: Research\n\nSearch sources.\n\n" +
+            "## Skill: Present\n\nMake slides.\n\n" +
+            "Extra context.";
+        context.Instruction.Should().Be(expected);
         // The legacy path must NOT carry the composer's identity framing.
         context.Instruction.Should().NotContain("You are ");
+    }
+
+    [Fact]
+    public async Task MapToAgentContext_SingleSkill_DisabledInstructionIsVerbatim()
+    {
+        await using var root = BuildCompositionProvider();
+        var factory = CreateFactory(Config(promptCompositionEnabled: false), root);
+
+        var context = await factory.MapToAgentContextAsync(
+            Skill("Research", "Search sources."), new SkillAgentOptions());
+
+        // Single skill, no additional context => instructions used verbatim, no header.
+        context.Instruction.Should().Be("Search sources.");
+    }
+
+    // --- Budget MUST NOT silently drop the core skill instructions (ON path) ---
+
+    [Fact]
+    public async Task MapToAgentContext_EnabledWithTinyBudget_StillContainsSkillInstructions()
+    {
+        // A pathologically small budget (1 token) cannot fit the skill body. The composer must
+        // degrade to a prompt that STILL contains the skill instructions — never one without them.
+        await using var root = BuildCompositionProvider();
+        var factory = CreateFactory(Config(promptCompositionEnabled: true, tokenBudget: 1), root);
+        var longBody = string.Join(" ", Enumerable.Repeat("SYNTHESIZE-SOURCES-CAREFULLY", 40));
+        var skill = Skill("research", longBody);
+
+        var ambient = root.GetRequiredService<IAmbientRequestScope>();
+        using var scope = root.CreateScope();
+        using (ambient.BeginScope(scope.ServiceProvider))
+        {
+            var context = await factory.MapToAgentContextAsync(skill, new SkillAgentOptions());
+
+            context.Instruction.Should().Contain(longBody,
+                "the agent's core job description must survive even a too-small token budget");
+        }
     }
 
     [Fact]

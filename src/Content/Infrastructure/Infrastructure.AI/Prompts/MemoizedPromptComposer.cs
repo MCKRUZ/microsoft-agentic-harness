@@ -151,7 +151,11 @@ public sealed class MemoizedPromptComposer : ISystemPromptComposer
         foreach (var section in sortedSections)
         {
             var sectionTokens = section.EstimatedTokens;
-            if (runningTokens + sectionTokens > tokenBudget)
+
+            // Required sections (e.g. the agent's core skill instructions) are never dropped — the
+            // budget bounds only the optional sections. They still accrue toward runningTokens so
+            // subsequent optional sections see the real total.
+            if (!section.IsRequired && runningTokens + sectionTokens > tokenBudget)
             {
                 _logger.LogInformation(
                     "Dropping section {SectionName} ({SectionType}) for agent {AgentId}: " +

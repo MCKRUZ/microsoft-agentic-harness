@@ -60,7 +60,11 @@ public sealed class SkillInstructionsSectionProvider : IPromptSectionProvider
             Priority: 20,
             IsCacheable: false,
             EstimatedTokens: TokenEstimationHelper.EstimateTokens(instructions),
-            Content: instructions);
+            Content: instructions)
+        {
+            // The agent's core job description must never be silently dropped by a too-small budget.
+            IsRequired = true,
+        };
 
         return Task.FromResult<SystemPromptSection?>(section);
     }

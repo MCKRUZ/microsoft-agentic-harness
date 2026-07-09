@@ -216,6 +216,29 @@ public class MemoizedPromptComposerTests
     }
 
     [Fact]
+    public async Task ComposeAsync_RequiredSection_NeverDroppedEvenWhenAloneOverBudget()
+    {
+        // A required section larger than the entire budget must still be included, while optional
+        // sections that would exceed the budget are dropped.
+        var requiredSkills = CreateSection("Skills", SystemPromptSectionType.SkillInstructions, 20, false, 500, "SKILL BODY")
+            with { IsRequired = true };
+        var optionalPermissions = CreateSection("Permissions", SystemPromptSectionType.PermissionRules, 40, false, 500, "PERMISSION RULES");
+
+        SystemPromptSection? nullSection = null;
+        _cacheMock.Setup(c => c.TryGet(It.IsAny<string>(), It.IsAny<SystemPromptSectionType>(), out nullSection))
+            .Returns(false);
+
+        var composer = CreateComposer(
+            CreateProviderMock(SystemPromptSectionType.SkillInstructions, requiredSkills).Object,
+            CreateProviderMock(SystemPromptSectionType.PermissionRules, optionalPermissions).Object);
+
+        var result = await composer.ComposeAsync("agent-1", tokenBudget: 10);
+
+        result.Should().Contain("SKILL BODY", "a required section is never dropped by the budget assembler");
+        result.Should().NotContain("PERMISSION RULES", "optional sections over budget are still dropped");
+    }
+
+    [Fact]
     public void InvalidateSection_ClearsSpecificType()
     {
         var composer = CreateComposer();
