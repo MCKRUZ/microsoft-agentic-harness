@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Domain.AI.KnowledgeGraph.Models;
+using Domain.AI.KnowledgeGraph.Scoping;
 using Microsoft.Extensions.Logging;
 
 namespace Infrastructure.AI.KnowledgeGraph.InMemory;
@@ -36,9 +37,17 @@ public sealed class InMemoryGraphStore : IKnowledgeGraphStore
         IReadOnlyList<GraphNode> nodes,
         CancellationToken cancellationToken = default)
     {
-        foreach (var node in nodes)
+        foreach (var rawNode in nodes)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            // Canonicalize owner/tenant on write so the case-sensitive owner filter below matches the
+            // case-insensitive authorization gate. The decorator normally pre-canonicalizes, but this
+            // backend is also used directly (dev + tests), so it must guarantee canonical storage itself.
+            var node = rawNode with
+            {
+                OwnerId = ScopeIdentity.Canonicalize(rawNode.OwnerId),
+                TenantId = ScopeIdentity.Canonicalize(rawNode.TenantId)
+            };
             _nodes.AddOrUpdate(
                 node.Id,
                 node,
@@ -64,7 +73,13 @@ public sealed class InMemoryGraphStore : IKnowledgeGraphStore
         foreach (var edge in edges)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            _edges.TryAdd(edge.Id, edge);
+            // Canonicalize owner/tenant on write (see AddNodesAsync) so the owner-edge erasure sweep
+            // below matches regardless of the casing the caller supplied.
+            _edges.TryAdd(edge.Id, edge with
+            {
+                OwnerId = ScopeIdentity.Canonicalize(edge.OwnerId),
+                TenantId = ScopeIdentity.Canonicalize(edge.TenantId)
+            });
         }
 
         _logger.LogDebug("Added {Count} edges, total: {Total}", edges.Count, _edges.Count);
@@ -217,8 +232,20 @@ public sealed class InMemoryGraphStore : IKnowledgeGraphStore
         string ownerId,
         CancellationToken cancellationToken = default)
     {
+        // Canonicalize the incoming owner before the exact match: stored identity is already
+        // canonical (see AddEdgesAsync), so both sides are normalized and Ordinal is correct.
+        var canonicalOwner = ScopeIdentity.Canonicalize(ownerId);
+
+        // A null canonical owner denotes an ABSENT/global owner, never an erasable subject. Without
+        // this guard, string.Equals(record.OwnerId, null) would be true for every owner-null record
+        // (the entire shared corpus/learnings/skill-memory), so an empty/whitespace erase request
+        // would mass-delete the shared graph. Match nothing instead. (SQL backends already no-match
+        // on null via SQL null semantics; this keeps all three backends in agreement.)
+        if (canonicalOwner is null)
+            return Task.FromResult<IReadOnlyList<string>>([]);
+
         var ownedEdgeIds = _edges.Values
-            .Where(e => string.Equals(e.OwnerId, ownerId, StringComparison.Ordinal))
+            .Where(e => string.Equals(e.OwnerId, canonicalOwner, StringComparison.Ordinal))
             .Select(e => e.Id)
             .ToList();
 
@@ -250,8 +277,16 @@ public sealed class InMemoryGraphStore : IKnowledgeGraphStore
         string ownerId,
         CancellationToken cancellationToken = default)
     {
+        // Canonicalize the incoming owner before the exact match (see DeleteEdgesByOwnerAsync).
+        var canonicalOwner = ScopeIdentity.Canonicalize(ownerId);
+
+        // A null canonical owner is absent/global, never a queryable subject — match nothing rather
+        // than equating null with every owner-null (shared) record. See DeleteEdgesByOwnerAsync.
+        if (canonicalOwner is null)
+            return Task.FromResult<IReadOnlyList<GraphNode>>([]);
+
         var owned = _nodes.Values
-            .Where(n => string.Equals(n.OwnerId, ownerId, StringComparison.Ordinal))
+            .Where(n => string.Equals(n.OwnerId, canonicalOwner, StringComparison.Ordinal))
             .ToList();
 
         return Task.FromResult<IReadOnlyList<GraphNode>>(owned);
