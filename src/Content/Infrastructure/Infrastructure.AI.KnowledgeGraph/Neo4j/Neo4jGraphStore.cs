@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Text.Json;
 using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Domain.AI.KnowledgeGraph.Models;
+using Domain.AI.KnowledgeGraph.Scoping;
 using Domain.Common.Config;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -87,8 +88,10 @@ public sealed class Neo4jGraphStore : IKnowledgeGraphStore, IAsyncDisposable
                         id = node.Id, name = node.Name, type = node.Type,
                         props = JsonSerializer.Serialize(node.Properties, JsonOptions),
                         chunks = node.ChunkIds.ToList(),
-                        owner_id = node.OwnerId,
-                        tenant_id = node.TenantId,
+                        // Canonicalize owner/tenant on write so the case-insensitive gate and the
+                        // case-sensitive `= $ownerId` filters below compare identically.
+                        owner_id = ScopeIdentity.Canonicalize(node.OwnerId),
+                        tenant_id = ScopeIdentity.Canonicalize(node.TenantId),
                         created_at = node.CreatedAt?.ToString("O"),
                         expires_at = node.ExpiresAt?.ToString("O"),
                         prov = node.Provenance is not null
@@ -131,8 +134,9 @@ public sealed class Neo4jGraphStore : IKnowledgeGraphStore, IAsyncDisposable
                         target = edge.TargetNodeId, pred = edge.Predicate,
                         props = JsonSerializer.Serialize(edge.Properties, JsonOptions),
                         chunk = edge.ChunkId,
-                        owner_id = edge.OwnerId,
-                        tenant_id = edge.TenantId,
+                        // Canonicalize owner/tenant on write (see AddNodesAsync).
+                        owner_id = ScopeIdentity.Canonicalize(edge.OwnerId),
+                        tenant_id = ScopeIdentity.Canonicalize(edge.TenantId),
                         created_at = edge.CreatedAt?.ToString("O"),
                         expires_at = edge.ExpiresAt?.ToString("O"),
                         prov = edge.Provenance is not null
@@ -313,12 +317,15 @@ public sealed class Neo4jGraphStore : IKnowledgeGraphStore, IAsyncDisposable
 
         return await session.ExecuteWriteAsync(async tx =>
         {
+            // Canonicalize the incoming owner before the exact `= $ownerId` filter: stored
+            // identity is already canonical (see AddEdgesAsync), so both sides are normalized.
+            var canonicalOwner = ScopeIdentity.Canonicalize(ownerId);
             var cursor = await tx.RunAsync("""
                 MATCH ()-[r:RELATES]->() WHERE r.owner_id = $ownerId
                 WITH r, r.id AS rid
                 DELETE r
                 RETURN rid
-                """, new { ownerId });
+                """, new { ownerId = canonicalOwner });
 
             var deleted = await MaterializeIdsAsync(cursor, "rid");
 
@@ -376,9 +383,11 @@ public sealed class Neo4jGraphStore : IKnowledgeGraphStore, IAsyncDisposable
         await using var session = _driver.AsyncSession();
         return await session.ExecuteReadAsync(async tx =>
         {
+            // Canonicalize the incoming owner before the exact filter (see DeleteEdgesByOwnerAsync).
+            var canonicalOwner = ScopeIdentity.Canonicalize(ownerId);
             var cursor = await tx.RunAsync(
                 "MATCH (n:Entity) WHERE n.owner_id = $ownerId RETURN n",
-                new { ownerId });
+                new { ownerId = canonicalOwner });
 
             var results = new List<GraphNode>();
             while (await cursor.FetchAsync())

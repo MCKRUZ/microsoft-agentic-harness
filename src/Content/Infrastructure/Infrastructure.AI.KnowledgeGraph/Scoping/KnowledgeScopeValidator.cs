@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces.KnowledgeGraph;
+using Domain.AI.KnowledgeGraph.Scoping;
 using Domain.Common.Config;
 using Microsoft.Extensions.Options;
 
@@ -48,7 +49,11 @@ public sealed class KnowledgeScopeValidator : IKnowledgeScopeValidator
         if (scope.TenantId is null)
             return false;
 
-        return string.Equals(scope.TenantId, targetTenantId, StringComparison.OrdinalIgnoreCase);
+        // Compare via the shared canonical form (trimmed, invariant-lowercase) so this gate agrees
+        // exactly with how the storage backends persist and filter tenant identity. A raw
+        // OrdinalIgnoreCase compare here would authorize access the case-sensitive backend filters
+        // then fail to honor — the drift this canonicalization closes.
+        return ScopeIdentity.AreSame(scope.TenantId, targetTenantId);
     }
 
     /// <inheritdoc />
@@ -64,6 +69,11 @@ public sealed class KnowledgeScopeValidator : IKnowledgeScopeValidator
         // that conflates two distinct id namespaces (a tenant id is not a user id) and would grant
         // cross-user access on any string collision. Tenant-level sharing requires a real TenantId
         // on the node model and is deferred to the tenant-isolation follow-up.
-        return string.Equals(scope.UserId, datasetOwnerId, StringComparison.OrdinalIgnoreCase);
+        //
+        // Compare via the shared canonical form (trimmed, invariant-lowercase) so this gate agrees
+        // exactly with the case-sensitive owner filters in every storage backend. Otherwise the gate
+        // could authorize an erasure the store then fails to match, silently leaving the subject's
+        // data in place.
+        return ScopeIdentity.AreSame(scope.UserId, datasetOwnerId);
     }
 }

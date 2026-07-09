@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text.Json;
 using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Domain.AI.KnowledgeGraph.Models;
+using Domain.AI.KnowledgeGraph.Scoping;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Domain.Common.Config;
@@ -119,8 +120,10 @@ public sealed class PostgreSqlGraphStore : IKnowledgeGraphStore
                 node.Provenance is not null
                     ? JsonSerializer.Serialize(node.Provenance, JsonOptions)
                     : (object)DBNull.Value);
-            cmd.Parameters.AddWithValue("owner_id", (object?)node.OwnerId ?? DBNull.Value);
-            cmd.Parameters.AddWithValue("tenant_id", (object?)node.TenantId ?? DBNull.Value);
+            // Canonicalize owner/tenant on write so the case-insensitive gate and the
+            // case-sensitive `WHERE owner_id = @ownerId` filters below compare identically.
+            cmd.Parameters.AddWithValue("owner_id", (object?)ScopeIdentity.Canonicalize(node.OwnerId) ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("tenant_id", (object?)ScopeIdentity.Canonicalize(node.TenantId) ?? DBNull.Value);
             cmd.Parameters.AddWithValue("created_at", (object?)node.CreatedAt ?? DBNull.Value);
             cmd.Parameters.AddWithValue("expires_at", (object?)node.ExpiresAt ?? DBNull.Value);
             await cmd.ExecuteNonQueryAsync(cancellationToken);
@@ -158,8 +161,9 @@ public sealed class PostgreSqlGraphStore : IKnowledgeGraphStore
                 edge.Provenance is not null
                     ? JsonSerializer.Serialize(edge.Provenance, JsonOptions)
                     : (object)DBNull.Value);
-            cmd.Parameters.AddWithValue("owner_id", (object?)edge.OwnerId ?? DBNull.Value);
-            cmd.Parameters.AddWithValue("tenant_id", (object?)edge.TenantId ?? DBNull.Value);
+            // Canonicalize owner/tenant on write (see AddNodesAsync).
+            cmd.Parameters.AddWithValue("owner_id", (object?)ScopeIdentity.Canonicalize(edge.OwnerId) ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("tenant_id", (object?)ScopeIdentity.Canonicalize(edge.TenantId) ?? DBNull.Value);
             cmd.Parameters.AddWithValue("created_at", (object?)edge.CreatedAt ?? DBNull.Value);
             cmd.Parameters.AddWithValue("expires_at", (object?)edge.ExpiresAt ?? DBNull.Value);
             await cmd.ExecuteNonQueryAsync(cancellationToken);
@@ -358,7 +362,9 @@ public sealed class PostgreSqlGraphStore : IKnowledgeGraphStore
         await using var conn = await OpenConnectionAsync(cancellationToken);
         await using var cmd = new NpgsqlCommand(
             "DELETE FROM kg_edges WHERE owner_id = @ownerId RETURNING id", conn);
-        cmd.Parameters.AddWithValue("ownerId", ownerId);
+        // Canonicalize the incoming owner before the exact filter: stored identity is already
+        // canonical (see AddEdgesAsync), so both sides are normalized and the `=` match is correct.
+        cmd.Parameters.AddWithValue("ownerId", (object?)ScopeIdentity.Canonicalize(ownerId) ?? DBNull.Value);
 
         var deleted = new List<string>();
         await using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
@@ -396,7 +402,8 @@ public sealed class PostgreSqlGraphStore : IKnowledgeGraphStore
         await using var cmd = new NpgsqlCommand(
             "SELECT id, name, type, properties, chunk_ids, provenance, owner_id, tenant_id, created_at, expires_at " +
             "FROM kg_nodes WHERE owner_id = @ownerId", conn);
-        cmd.Parameters.AddWithValue("ownerId", ownerId);
+        // Canonicalize the incoming owner before the exact filter (see DeleteEdgesByOwnerAsync).
+        cmd.Parameters.AddWithValue("ownerId", (object?)ScopeIdentity.Canonicalize(ownerId) ?? DBNull.Value);
 
         var results = new List<GraphNode>();
         await using var reader = await cmd.ExecuteReaderAsync(cancellationToken);

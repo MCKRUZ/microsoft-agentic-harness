@@ -2,6 +2,7 @@ using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Domain.AI.KnowledgeGraph;
 using Domain.AI.KnowledgeGraph.Models;
+using Domain.AI.KnowledgeGraph.Scoping;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
@@ -109,8 +110,10 @@ public sealed class ComplianceAwareGraphStore : IKnowledgeGraphStore
         var stamped = edges.Select(e => e with
         {
             CreatedAt = e.CreatedAt ?? now,
-            TenantId = e.TenantId ?? tenantId,
-            OwnerId = e.OwnerId ?? edgeOwnerId
+            // Canonicalize owner/tenant so stored identity matches the case-insensitive gate and the
+            // case-sensitive backend owner filters (right-to-erasure sweep, tenant isolation) agree.
+            TenantId = ScopeIdentity.Canonicalize(e.TenantId ?? tenantId),
+            OwnerId = ScopeIdentity.Canonicalize(e.OwnerId ?? edgeOwnerId)
         }).ToList();
 
         await _inner.AddEdgesAsync(stamped, cancellationToken);
@@ -274,7 +277,12 @@ public sealed class ComplianceAwareGraphStore : IKnowledgeGraphStore
         {
             CreatedAt = node.CreatedAt ?? now,
             ExpiresAt = node.ExpiresAt ?? (policy.AllowIndefinite ? null : now + policy.RetentionPeriod),
-            TenantId = node.TenantId ?? tenantId
+            // Canonicalize owner/tenant to the shared form so the case-insensitive authorization gate
+            // and the case-sensitive backend owner/tenant filters compare identically. OwnerId stays
+            // writer-authoritative (null = shared) — canonicalization only normalizes casing/whitespace
+            // of an owner the writer set; it never assigns one.
+            OwnerId = ScopeIdentity.Canonicalize(node.OwnerId),
+            TenantId = ScopeIdentity.Canonicalize(node.TenantId ?? tenantId)
         };
     }
 
