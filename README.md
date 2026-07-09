@@ -453,7 +453,6 @@ The harness uses a strongly-typed `AppConfig` hierarchy bound through the Option
 {
   "AppConfig": {
     "Agent": {
-      "MaxTurnsPerConversation": 10,
       "DefaultTokenBudget": 128000
     },
     "AI": {
@@ -466,8 +465,6 @@ The harness uses a strongly-typed `AppConfig` hierarchy bound through the Option
       }
     },
     "Observability": {
-      "EnableTracing": true,
-      "EnableMetrics": true,
       "SamplingRatio": 1.0
     }
   }
@@ -564,14 +561,14 @@ The ConsoleUI launches an interactive [Spectre.Console](https://spectreconsole.n
 
 | Section | What it controls |
 |---------|-----------------|
-| `AppConfig.Agent` | Turn limits (`MaxTurnsPerConversation`), token budget (`DefaultTokenBudget`) |
+| `AppConfig.Agent` | Token budget (`DefaultTokenBudget`), request timeout (`DefaultRequestTimeoutSec`) |
 | `AppConfig.AI.AgentFramework` | Model deployment (`DefaultDeployment`), provider (`ClientType`: AzureOpenAI, OpenAI, AIFoundry) |
 | `AppConfig.AI.Skills` | Skill discovery paths (`BasePath`, `AdditionalPaths`) |
 | `AppConfig.AI.AIFoundry` | Persistent agent endpoint (`ProjectEndpoint`) |
 | `AppConfig.AI.A2A` | Agent-to-Agent settings (`Enabled`, `AgentName`, `BaseUrl`, `DiscoveryEndpoints`) |
 | `AppConfig.AI.MCP` | MCP server identity (`ServerName`) |
 | `AppConfig.AI.McpServers` | External MCP server connections (`Servers[]`) |
-| `AppConfig.Observability` | Tracing, metrics, and sampling (`EnableTracing`, `SamplingRatio`) |
+| `AppConfig.Observability` | PII filtering, exporters, budget tracking, sensitive-telemetry gate (`EnableSensitiveTelemetry`). Trace sampling is done collector-side, not in-app (`SamplingRatio` is a collector-tier hint) |
 | `AppConfig.Cache` | Cache backend (`CacheType`: Memory or Redis) |
 | `AppConfig.Logging` | Log output (`LogsBasePath`, `PipeName` for named pipe streaming) |
 | `AppConfig.AI.Rag` | RAG pipeline: `VectorStore` (provider, endpoint, embedding model), `Ingestion` (chunking strategy, overlap), `Reranker` (strategy), `Crag` (thresholds), `GraphRag` (enabled, provider, connection string) |
