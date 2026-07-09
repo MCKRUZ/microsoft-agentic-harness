@@ -877,14 +877,21 @@
                         </thead>
                         <tbody>
                             <tr>
-                                <td><code>EnableTracing</code> / <code>EnableMetrics</code></td>
-                                <td>Master toggles for the trace and metric pipelines respectively.</td>
+                                <td><code>EnableSensitiveTelemetry</code></td>
+                                <td>
+                                    When <code>true</code>, records sensitive GenAI content (prompt / completion text) in
+                                    traces. Defaults to <code>false</code> — only non-sensitive metadata (model, token
+                                    counts) is captured. Never enable in production without PII filtering and retention
+                                    policies in place. Tracing and metrics pipelines are always on; there are no
+                                    <code>EnableTracing</code> / <code>EnableMetrics</code> toggles.
+                                </td>
                             </tr>
                             <tr>
                                 <td><code>SamplingRatio</code></td>
                                 <td>
-                                    0.0–1.0. Fraction of traces sampled. <code>1.0</code> in dev, much lower
-                                    (0.01–0.1) in production with high traffic.
+                                    0.0–1.0. A collector-tier hint, not an in-app switch — the SDK exports all spans and
+                                    the OpenTelemetry Collector performs tail-based sampling (see
+                                    <a href="10-observability.html">Observability</a>). Left at <code>1.0</code> here.
                                 </td>
                             </tr>
                             <tr>
