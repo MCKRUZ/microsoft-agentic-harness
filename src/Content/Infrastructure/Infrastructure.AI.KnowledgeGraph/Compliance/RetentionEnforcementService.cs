@@ -82,16 +82,19 @@ public sealed class RetentionEnforcementService : BackgroundService
     {
         var allNodes = await _graphStore.GetAllNodesAsync(cancellationToken);
 
-        var expiredIds = allNodes
+        var expiredNodes = allNodes
             .Where(n => n.ExpiresAt.HasValue && n.ExpiresAt.Value < now)
-            .Select(n => n.Id)
             .ToList();
 
-        if (expiredIds.Count > 0)
+        if (expiredNodes.Count > 0)
         {
             await using var scope = _scopeFactory.CreateAsyncScope();
             var erasureOrchestrator = scope.ServiceProvider.GetRequiredService<IErasureOrchestrator>();
-            var receipt = await erasureOrchestrator.EraseByNodeIdsAsync(expiredIds, cancellationToken);
+            // Pass the node instances we already scanned — NOT their ids. The erasure orchestrator
+            // otherwise re-fetches each node through the compliance-aware store, which returns null
+            // for expired nodes, dropping their ChunkIds and silently skipping the derived-content
+            // (vector/BM25) purge.
+            var receipt = await erasureOrchestrator.EraseByNodesAsync(expiredNodes, cancellationToken);
             _logger.LogInformation(
                 "Retention enforcement: purged {Nodes} expired nodes",
                 receipt.NodesDeleted);

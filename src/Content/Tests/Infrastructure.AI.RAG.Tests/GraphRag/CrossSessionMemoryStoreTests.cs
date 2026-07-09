@@ -2,6 +2,7 @@ using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Domain.AI.KnowledgeGraph.Models;
 using Domain.Common.Config;
 using Domain.Common.Config.AI.RAG;
+using FluentAssertions;
 using Infrastructure.AI.RAG.GraphRag;
 using Infrastructure.AI.RAG.Tests.Helpers;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -25,6 +26,9 @@ public sealed class CrossSessionMemoryStoreTests : IDisposable
         _backendMock = new Mock<IGraphDatabaseBackend>();
         _backendMock
             .Setup(b => b.GetAllNodesAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync([]);
+        _backendMock
+            .Setup(b => b.GetNodesByOwnerAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync([]);
 
         var appConfig = new AppConfig();
@@ -243,5 +247,102 @@ public sealed class CrossSessionMemoryStoreTests : IDisposable
 
         // Assert — the lowest-weight entry (mem-prune-4 at weight 0.6) was pruned
         Assert.DoesNotContain(results, r => r.Id == "mem-prune-4");
+    }
+
+    // ── PurgeByOwnerAsync (right-to-erasure, gap 1) ───────────────────────────
+
+    private static MemoryRecord OwnedMemory(string id, string content, string? ownerId) => new()
+    {
+        Id = id,
+        Content = content,
+        Source = "session-test",
+        Weight = 0.9,
+        CreatedAt = DateTimeOffset.UtcNow,
+        LastAccessedAt = DateTimeOffset.UtcNow,
+        AccessCount = 0,
+        OwnerId = ownerId
+    };
+
+    [Fact]
+    public async Task PurgeByOwnerAsync_RemovesOwnerMemoriesFromCache_KeepsOthers()
+    {
+        await _sut.RememberAsync(OwnedMemory("mem-u1-a", "erase owner knowledge alpha", "user-1"));
+        await _sut.RememberAsync(OwnedMemory("mem-u1-b", "erase owner knowledge beta", "user-1"));
+        await _sut.RememberAsync(OwnedMemory("mem-u2", "keep owner knowledge", "user-2"));
+
+        var purged = await _sut.PurgeByOwnerAsync("user-1");
+
+        purged.Should().Be(2);
+        var remaining = await _sut.RecallAsync(
+            RagTestData.CreateMemoryQuery(query: "owner knowledge", topK: 10, minWeight: 0.0));
+        Assert.DoesNotContain(remaining, r => r.Id == "mem-u1-a");
+        Assert.DoesNotContain(remaining, r => r.Id == "mem-u1-b");
+        Assert.Contains(remaining, r => r.Id == "mem-u2");
+    }
+
+    [Fact]
+    public async Task PurgeByOwnerAsync_MatchesOwnerCaseInsensitively()
+    {
+        // Owner is canonicalized (invariant-lowercase) on write; a differently-cased purge must match.
+        await _sut.RememberAsync(OwnedMemory("mem-cased", "cased owner knowledge", "User-1"));
+
+        var purged = await _sut.PurgeByOwnerAsync("USER-1");
+
+        purged.Should().Be(1);
+        var remaining = await _sut.RecallAsync(
+            RagTestData.CreateMemoryQuery(query: "cased owner", topK: 10, minWeight: 0.0));
+        Assert.DoesNotContain(remaining, r => r.Id == "mem-cased");
+    }
+
+    [Fact]
+    public async Task PurgeByOwnerAsync_DeletesOnlyMemoryTypeNodesFromBackend()
+    {
+        // The durable backend is shared with other subsystems: only Memory-typed owned nodes may
+        // be deleted by a cross-session-memory purge.
+        _backendMock
+            .Setup(b => b.GetNodesByOwnerAsync("user-9", It.IsAny<CancellationToken>()))
+            .ReturnsAsync([
+                new GraphNode { Id = "mem-backend", Name = "m", Type = "Memory", OwnerId = "user-9" },
+                new GraphNode { Id = "corpus-backend", Name = "c", Type = "Entity", OwnerId = "user-9" }
+            ]);
+
+        await _sut.PurgeByOwnerAsync("user-9");
+
+        _backendMock.Verify(b => b.DeleteNodesAsync(
+            It.Is<IReadOnlyList<string>>(ids => ids.Count == 1 && ids.Contains("mem-backend")),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task PurgeByOwnerAsync_WhitespaceOwner_PurgesNothing()
+    {
+        await _sut.RememberAsync(OwnedMemory("mem-x", "whitespace owner knowledge", "user-1"));
+
+        var purged = await _sut.PurgeByOwnerAsync("   ");
+
+        purged.Should().Be(0);
+        _backendMock.Verify(b => b.GetNodesByOwnerAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+        _backendMock.Verify(b => b.DeleteNodesAsync(It.IsAny<IReadOnlyList<string>>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task SyncToBackendAsync_PersistsCanonicalOwnerIdOnMemoryNode()
+    {
+        // The owner must be written to the durable node so an owner-scoped purge can find it after
+        // the cache entry is evicted; it must be canonicalized to match at purge time.
+        IReadOnlyList<GraphNode>? synced = null;
+        _backendMock
+            .Setup(b => b.AddNodesAsync(It.IsAny<IReadOnlyList<GraphNode>>(), It.IsAny<CancellationToken>()))
+            .Callback<IReadOnlyList<GraphNode>, CancellationToken>((ns, _) => synced = ns)
+            .Returns(Task.CompletedTask);
+
+        await _sut.RememberAsync(OwnedMemory("mem-sync", "sync owner knowledge", "User-1"));
+        await _sut.SyncToBackendAsync();
+
+        synced.Should().NotBeNull();
+        var node = synced!.Single(n => n.Id == "mem-sync");
+        node.OwnerId.Should().Be("user-1", "the synced node carries the canonicalized owner");
     }
 }

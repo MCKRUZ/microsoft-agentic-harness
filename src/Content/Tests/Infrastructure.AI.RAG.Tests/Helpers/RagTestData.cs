@@ -297,14 +297,16 @@ internal static class RagTestData
         string content = "The user prefers concise answers over verbose explanations.",
         string source = "session-abc", double weight = 0.8,
         DateTimeOffset? createdAt = null, DateTimeOffset? lastAccessedAt = null,
-        int accessCount = 1, IReadOnlyDictionary<string, string>? metadata = null) =>
+        int accessCount = 1, IReadOnlyDictionary<string, string>? metadata = null,
+        string? ownerId = null) =>
         new()
         {
             Id = id, Content = content, Source = source, Weight = weight,
             CreatedAt = createdAt ?? DateTimeOffset.UtcNow,
             LastAccessedAt = lastAccessedAt ?? DateTimeOffset.UtcNow,
             AccessCount = accessCount,
-            Metadata = metadata ?? new Dictionary<string, string>()
+            Metadata = metadata ?? new Dictionary<string, string>(),
+            OwnerId = ownerId
         };
 
     public static MemoryQuery CreateMemoryQuery(

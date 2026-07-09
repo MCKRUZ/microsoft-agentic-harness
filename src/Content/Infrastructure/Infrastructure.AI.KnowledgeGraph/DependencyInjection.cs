@@ -222,7 +222,9 @@ public static class DependencyInjection
             new ConfigRetentionPolicyProvider(
                 sp.GetRequiredService<IOptionsMonitor<AppConfig>>()));
 
-        // Erasure orchestrator
+        // Erasure orchestrator. Vector, BM25, and cross-session memory stores are optional:
+        // when a subsystem is not deployed the corresponding store is absent and there is
+        // nothing to purge there. When present, the orchestrator cascades erasure into it.
         services.AddScoped<IErasureOrchestrator>(sp =>
             new DefaultErasureOrchestrator(
                 sp.GetRequiredService<IKnowledgeGraphStore>(),
@@ -230,7 +232,9 @@ public static class DependencyInjection
                 sp.GetService<IVectorStore>(),
                 sp.GetRequiredService<IMemoryAuditSink>(),
                 sp.GetService<TimeProvider>() ?? TimeProvider.System,
-                sp.GetRequiredService<ILogger<DefaultErasureOrchestrator>>()));
+                sp.GetRequiredService<ILogger<DefaultErasureOrchestrator>>(),
+                sp.GetService<IBm25Store>(),
+                sp.GetService<ICrossSessionMemoryStore>()));
 
         // Retention enforcement background service
         if (appConfig.AI.Rag.GraphRag.ComplianceEnabled &&
