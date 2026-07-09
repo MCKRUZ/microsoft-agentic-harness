@@ -2,6 +2,7 @@ using Domain.AI.KnowledgeGraph.Models;
 using FluentAssertions;
 using Infrastructure.AI.KnowledgeGraph.InMemory;
 using Infrastructure.AI.KnowledgeGraph.Memory;
+using Infrastructure.AI.KnowledgeGraph.Tests.TestSupport;
 using Microsoft.Extensions.Logging;
 using Moq;
 using Xunit;
@@ -20,7 +21,8 @@ public sealed class GraphEpisodicSegmentStoreTests
     public GraphEpisodicSegmentStoreTests()
     {
         _graphStore = new InMemoryGraphStore(Mock.Of<ILogger<InMemoryGraphStore>>());
-        _sut = new GraphEpisodicSegmentStore(_graphStore, Mock.Of<ILogger<GraphEpisodicSegmentStore>>());
+        _sut = new GraphEpisodicSegmentStore(
+            _graphStore, StubAmbientRequestScope.None(), Mock.Of<ILogger<GraphEpisodicSegmentStore>>());
     }
 
     private static EpisodicSegment BuildSegment(
@@ -144,5 +146,24 @@ public sealed class GraphEpisodicSegmentStoreTests
         var node = await _graphStore.GetNodeAsync($"episodicsegment:{id}".ToLowerInvariant(), CancellationToken.None);
         node.Should().NotBeNull();
         node!.Type.Should().Be("EpisodicSegment");
+    }
+
+    [Fact]
+    public async Task Save_StampsCallerCanonicalOwner_SoOwnerScopedErasureCanFindIt()
+    {
+        // D3 owner-stamp: an unstamped segment node persists owner-less and escapes owner-scoped
+        // right-to-erasure (GetNodesByOwnerAsync). Owner is canonicalized (trimmed/lowercased).
+        var sut = new GraphEpisodicSegmentStore(
+            _graphStore, StubAmbientRequestScope.ForOwner("  User-42  "), Mock.Of<ILogger<GraphEpisodicSegmentStore>>());
+        var segment = BuildSegment();
+
+        await sut.SaveAsync(segment, CancellationToken.None);
+
+        var node = await _graphStore.GetNodeAsync($"episodicsegment:{segment.SegmentId}".ToLowerInvariant(), CancellationToken.None);
+        node!.OwnerId.Should().Be("user-42", "the saved node must carry the caller's canonical owner");
+
+        var owned = await _graphStore.GetNodesByOwnerAsync("user-42", CancellationToken.None);
+        owned.Should().Contain(n => n.Id == node.Id,
+            "owner-scoped erasure resolves nodes via GetNodesByOwnerAsync and must reach the episodic-segment node");
     }
 }

@@ -5,6 +5,7 @@ using Domain.Common;
 using FluentAssertions;
 using Infrastructure.AI.KnowledgeGraph.InMemory;
 using Infrastructure.AI.KnowledgeGraph.Learnings;
+using Infrastructure.AI.KnowledgeGraph.Tests.TestSupport;
 using Microsoft.Extensions.Logging;
 using Moq;
 using Xunit;
@@ -21,6 +22,7 @@ public sealed class GraphLearningsStoreTests
         _graphStore = new InMemoryGraphStore(Mock.Of<ILogger<InMemoryGraphStore>>());
         _sut = new GraphLearningsStore(
             _graphStore,
+            StubAmbientRequestScope.None(),
             Mock.Of<ILogger<GraphLearningsStore>>());
     }
 
@@ -60,6 +62,25 @@ public sealed class GraphLearningsStoreTests
             Confidence = 0.95
         }
     };
+
+    [Fact]
+    public async Task Save_StampsCallerCanonicalOwner_SoOwnerScopedErasureCanFindIt()
+    {
+        // D3 owner-stamp: an unstamped learning node persists owner-less and escapes owner-scoped
+        // right-to-erasure (GetNodesByOwnerAsync). Owner is canonicalized (trimmed/lowercased).
+        var sut = new GraphLearningsStore(
+            _graphStore, StubAmbientRequestScope.ForOwner("  User-42  "), Mock.Of<ILogger<GraphLearningsStore>>());
+        var id = Guid.NewGuid();
+
+        await sut.SaveAsync(BuildEntry(id: id, isGlobal: true), CancellationToken.None);
+
+        var node = await _graphStore.GetNodeAsync($"learning:{id}".ToLowerInvariant(), CancellationToken.None);
+        node!.OwnerId.Should().Be("user-42", "the saved node must carry the caller's canonical owner");
+
+        var owned = await _graphStore.GetNodesByOwnerAsync("user-42", CancellationToken.None);
+        owned.Should().Contain(n => n.Id == node.Id,
+            "owner-scoped erasure resolves nodes via GetNodesByOwnerAsync and must reach the learning node");
+    }
 
     [Fact]
     public async Task Save_Graph_CreatesNodeWithDeterministicId()

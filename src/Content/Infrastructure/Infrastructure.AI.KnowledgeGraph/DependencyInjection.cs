@@ -262,6 +262,7 @@ public static class DependencyInjection
         services.AddKeyedSingleton<ILearningsStore>("graph", (sp, _) =>
             new Learnings.GraphLearningsStore(
                 sp.GetRequiredService<IKnowledgeGraphStore>(),
+                sp.GetRequiredService<Application.AI.Common.Interfaces.IAmbientRequestScope>(),
                 sp.GetRequiredService<ILogger<Learnings.GraphLearningsStore>>()));
 
         services.AddKeyedSingleton<ILearningsStore>("in_memory", (_, _) =>
@@ -276,6 +277,7 @@ public static class DependencyInjection
         services.AddKeyedSingleton<IWorkEpisodeStore>("graph", (sp, _) =>
             new WorkMemory.GraphWorkEpisodeStore(
                 sp.GetRequiredService<IKnowledgeGraphStore>(),
+                sp.GetRequiredService<Application.AI.Common.Interfaces.IAmbientRequestScope>(),
                 sp.GetRequiredService<ILogger<WorkMemory.GraphWorkEpisodeStore>>()));
 
         services.AddKeyedSingleton<IWorkEpisodeStore>("in_memory", (_, _) =>
@@ -309,6 +311,7 @@ public static class DependencyInjection
         services.AddSingleton<IEpisodicSegmentStore>(sp =>
             new Memory.GraphEpisodicSegmentStore(
                 sp.GetRequiredService<IKnowledgeGraphStore>(),
+                sp.GetRequiredService<Application.AI.Common.Interfaces.IAmbientRequestScope>(),
                 sp.GetRequiredService<ILogger<Memory.GraphEpisodicSegmentStore>>()));
 
         return services;

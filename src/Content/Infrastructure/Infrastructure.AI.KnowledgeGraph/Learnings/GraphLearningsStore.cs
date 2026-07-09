@@ -1,9 +1,12 @@
 using System.Globalization;
+using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Application.AI.Common.Interfaces.Learnings;
 using Domain.AI.KnowledgeGraph.Models;
+using Domain.AI.KnowledgeGraph.Scoping;
 using Domain.AI.Learnings;
 using Domain.Common;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
 namespace Infrastructure.AI.KnowledgeGraph.Learnings;
@@ -13,9 +16,18 @@ namespace Infrastructure.AI.KnowledgeGraph.Learnings;
 /// and synthetic index nodes for efficient scope-hierarchy search.
 /// Registered with keyed DI key <c>"graph"</c>.
 /// </summary>
+/// <remarks>
+/// Owner attribution is stamped on every persisted node: the compliance decorator leaves
+/// <see cref="GraphNode.OwnerId"/> writer-authoritative, so an unstamped learning node would persist
+/// owner-less and escape owner-scoped right-to-erasure (<c>IKnowledgeGraphStore.GetNodesByOwnerAsync</c>).
+/// The caller's canonical owner is resolved per-operation from the ambient request scope, keeping this
+/// singleton store from capturing the scoped <see cref="IKnowledgeScope"/>. Index nodes stay owner-less
+/// on purpose — they are shared routing structures, not the subject's data.
+/// </remarks>
 public sealed class GraphLearningsStore : ILearningsStore
 {
     private readonly IKnowledgeGraphStore _graphStore;
+    private readonly IAmbientRequestScope _ambientScope;
     private readonly ILogger<GraphLearningsStore> _logger;
 
     private const string NodePrefix = "learning:";
@@ -25,16 +37,31 @@ public sealed class GraphLearningsStore : ILearningsStore
     private const string EdgePredicate = "has_learning";
     private const string ChunkId = "learningindex";
 
+    /// <summary>Initializes a new instance of the <see cref="GraphLearningsStore"/> class.</summary>
+    /// <param name="graphStore">The knowledge graph store nodes are persisted to.</param>
+    /// <param name="ambientScope">The ambient request scope used to resolve the caller's owner
+    /// per-operation for owner stamping (see the class remarks).</param>
+    /// <param name="logger">Logger for recording learning persistence operations.</param>
     public GraphLearningsStore(
         IKnowledgeGraphStore graphStore,
+        IAmbientRequestScope ambientScope,
         ILogger<GraphLearningsStore> logger)
     {
         ArgumentNullException.ThrowIfNull(graphStore);
+        ArgumentNullException.ThrowIfNull(ambientScope);
         ArgumentNullException.ThrowIfNull(logger);
 
         _graphStore = graphStore;
+        _ambientScope = ambientScope;
         _logger = logger;
     }
+
+    /// <summary>
+    /// The canonical owner ID of the caller in flight, resolved per-operation from the ambient
+    /// request scope. <see langword="null"/> for background/system work outside any request scope.
+    /// </summary>
+    private string? CurrentOwnerId =>
+        ScopeIdentity.Canonicalize(_ambientScope.Current?.GetService<IKnowledgeScope>()?.UserId);
 
     public async Task<Result> SaveAsync(LearningEntry learning, CancellationToken ct)
     {
@@ -46,7 +73,8 @@ public sealed class GraphLearningsStore : ILearningsStore
                 Id = nodeId,
                 Name = $"Learning: {learning.Content[..Math.Min(50, learning.Content.Length)]}",
                 Type = NodeType,
-                Properties = SerializeProperties(learning)
+                Properties = SerializeProperties(learning),
+                OwnerId = CurrentOwnerId
             };
 
             await _graphStore.AddNodesAsync([node], ct);
@@ -154,7 +182,11 @@ public sealed class GraphLearningsStore : ILearningsStore
                 Id = nodeId,
                 Name = $"Learning: {learning.Content[..Math.Min(50, learning.Content.Length)]}",
                 Type = NodeType,
-                Properties = SerializeProperties(learning)
+                Properties = SerializeProperties(learning),
+                // Preserve the owner stamped at save time — the LearningEntry carries no owner field,
+                // so rebuilding without this would strip owner attribution and re-orphan the node from
+                // owner-scoped erasure.
+                OwnerId = existing.OwnerId
             };
 
             await _graphStore.AddNodesAsync([node], ct);
@@ -185,7 +217,9 @@ public sealed class GraphLearningsStore : ILearningsStore
                 Id = nodeId,
                 Name = existing.Name,
                 Type = existing.Type,
-                Properties = updatedProps
+                Properties = updatedProps,
+                // Preserve owner attribution so a soft-deleted node stays reachable by owner-scoped erasure.
+                OwnerId = existing.OwnerId
             };
 
             await _graphStore.AddNodesAsync([updatedNode], ct);
