@@ -313,13 +313,19 @@ public sealed class Neo4jGraphStore : IKnowledgeGraphStore, IAsyncDisposable
         CancellationToken cancellationToken = default)
     {
         using var activity = ActivitySource.StartActivity("kg.neo4j.delete_edges_by_owner");
+
+        // Canonicalize the incoming owner before the exact `= $ownerId` filter: stored identity is
+        // already canonical (see AddEdgesAsync), so both sides are normalized. A null canonical owner
+        // is absent/global, never an erasable subject — match nothing. (Cypher `= null` is never true
+        // so this is also defensive; the explicit guard documents the cross-backend invariant.)
+        var canonicalOwner = ScopeIdentity.Canonicalize(ownerId);
+        if (canonicalOwner is null)
+            return [];
+
         await using var session = _driver.AsyncSession();
 
         return await session.ExecuteWriteAsync(async tx =>
         {
-            // Canonicalize the incoming owner before the exact `= $ownerId` filter: stored
-            // identity is already canonical (see AddEdgesAsync), so both sides are normalized.
-            var canonicalOwner = ScopeIdentity.Canonicalize(ownerId);
             var cursor = await tx.RunAsync("""
                 MATCH ()-[r:RELATES]->() WHERE r.owner_id = $ownerId
                 WITH r, r.id AS rid
@@ -380,11 +386,15 @@ public sealed class Neo4jGraphStore : IKnowledgeGraphStore, IAsyncDisposable
         string ownerId,
         CancellationToken cancellationToken = default)
     {
+        // Canonicalize the incoming owner before the exact filter (see DeleteEdgesByOwnerAsync). A
+        // null canonical owner is absent/global, never a queryable subject — match nothing.
+        var canonicalOwner = ScopeIdentity.Canonicalize(ownerId);
+        if (canonicalOwner is null)
+            return [];
+
         await using var session = _driver.AsyncSession();
         return await session.ExecuteReadAsync(async tx =>
         {
-            // Canonicalize the incoming owner before the exact filter (see DeleteEdgesByOwnerAsync).
-            var canonicalOwner = ScopeIdentity.Canonicalize(ownerId);
             var cursor = await tx.RunAsync(
                 "MATCH (n:Entity) WHERE n.owner_id = $ownerId RETURN n",
                 new { ownerId = canonicalOwner });

@@ -64,6 +64,14 @@ public sealed class KnowledgeScopeValidator : IKnowledgeScopeValidator
         if (!_configMonitor.CurrentValue.AI.Rag.GraphRag.MultiTenantIsolation)
             return true;
 
+        // An absent (null/empty/whitespace) dataset owner is never an authorizable dataset: it denotes
+        // a shared/global (owner-null) record, whose access is decided upstream by the caller
+        // (TenantIsolatedGraphStore short-circuits `ownerId is null`), not by a per-owner authorization.
+        // Guard first so ScopeIdentity.AreSame — which treats two absent ids as equal — cannot authorize
+        // a null-UserId caller against an absent owner (the old OrdinalIgnoreCase gate denied that).
+        if (ScopeIdentity.Canonicalize(datasetOwnerId) is null)
+            return false;
+
         // Owner-level isolation: the owner id is a user id, so access is granted only when the
         // caller is that user. We deliberately do NOT compare scope.TenantId against the owner id —
         // that conflates two distinct id namespaces (a tenant id is not a user id) and would grant

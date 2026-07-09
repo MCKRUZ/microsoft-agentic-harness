@@ -235,6 +235,15 @@ public sealed class InMemoryGraphStore : IKnowledgeGraphStore
         // Canonicalize the incoming owner before the exact match: stored identity is already
         // canonical (see AddEdgesAsync), so both sides are normalized and Ordinal is correct.
         var canonicalOwner = ScopeIdentity.Canonicalize(ownerId);
+
+        // A null canonical owner denotes an ABSENT/global owner, never an erasable subject. Without
+        // this guard, string.Equals(record.OwnerId, null) would be true for every owner-null record
+        // (the entire shared corpus/learnings/skill-memory), so an empty/whitespace erase request
+        // would mass-delete the shared graph. Match nothing instead. (SQL backends already no-match
+        // on null via SQL null semantics; this keeps all three backends in agreement.)
+        if (canonicalOwner is null)
+            return Task.FromResult<IReadOnlyList<string>>([]);
+
         var ownedEdgeIds = _edges.Values
             .Where(e => string.Equals(e.OwnerId, canonicalOwner, StringComparison.Ordinal))
             .Select(e => e.Id)
@@ -270,6 +279,12 @@ public sealed class InMemoryGraphStore : IKnowledgeGraphStore
     {
         // Canonicalize the incoming owner before the exact match (see DeleteEdgesByOwnerAsync).
         var canonicalOwner = ScopeIdentity.Canonicalize(ownerId);
+
+        // A null canonical owner is absent/global, never a queryable subject — match nothing rather
+        // than equating null with every owner-null (shared) record. See DeleteEdgesByOwnerAsync.
+        if (canonicalOwner is null)
+            return Task.FromResult<IReadOnlyList<GraphNode>>([]);
+
         var owned = _nodes.Values
             .Where(n => string.Equals(n.OwnerId, canonicalOwner, StringComparison.Ordinal))
             .ToList();

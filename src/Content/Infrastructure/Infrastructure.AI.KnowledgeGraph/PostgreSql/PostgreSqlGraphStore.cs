@@ -359,12 +359,20 @@ public sealed class PostgreSqlGraphStore : IKnowledgeGraphStore
         CancellationToken cancellationToken = default)
     {
         using var activity = ActivitySource.StartActivity("kg.postgresql.delete_edges_by_owner");
+
+        // Canonicalize the incoming owner before the exact filter: stored identity is already
+        // canonical (see AddEdgesAsync), so both sides are normalized and the `=` match is correct.
+        // A null canonical owner is absent/global, never an erasable subject — match nothing. (SQL
+        // `owner_id = NULL` is UNKNOWN so already no-matches; the explicit guard documents the
+        // cross-backend invariant and avoids a pointless round-trip.)
+        var canonicalOwner = ScopeIdentity.Canonicalize(ownerId);
+        if (canonicalOwner is null)
+            return [];
+
         await using var conn = await OpenConnectionAsync(cancellationToken);
         await using var cmd = new NpgsqlCommand(
             "DELETE FROM kg_edges WHERE owner_id = @ownerId RETURNING id", conn);
-        // Canonicalize the incoming owner before the exact filter: stored identity is already
-        // canonical (see AddEdgesAsync), so both sides are normalized and the `=` match is correct.
-        cmd.Parameters.AddWithValue("ownerId", (object?)ScopeIdentity.Canonicalize(ownerId) ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("ownerId", canonicalOwner);
 
         var deleted = new List<string>();
         await using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
@@ -398,12 +406,17 @@ public sealed class PostgreSqlGraphStore : IKnowledgeGraphStore
         string ownerId,
         CancellationToken cancellationToken = default)
     {
+        // Canonicalize the incoming owner before the exact filter (see DeleteEdgesByOwnerAsync). A
+        // null canonical owner is absent/global, never a queryable subject — match nothing.
+        var canonicalOwner = ScopeIdentity.Canonicalize(ownerId);
+        if (canonicalOwner is null)
+            return [];
+
         await using var conn = await OpenConnectionAsync(cancellationToken);
         await using var cmd = new NpgsqlCommand(
             "SELECT id, name, type, properties, chunk_ids, provenance, owner_id, tenant_id, created_at, expires_at " +
             "FROM kg_nodes WHERE owner_id = @ownerId", conn);
-        // Canonicalize the incoming owner before the exact filter (see DeleteEdgesByOwnerAsync).
-        cmd.Parameters.AddWithValue("ownerId", (object?)ScopeIdentity.Canonicalize(ownerId) ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("ownerId", canonicalOwner);
 
         var results = new List<GraphNode>();
         await using var reader = await cmd.ExecuteReaderAsync(cancellationToken);

@@ -111,6 +111,80 @@ public sealed class OwnerIdCanonicalizationTests
         validator.CanAccessDataset(scope, "Alice@Example.COM").Should().BeTrue();
     }
 
+    // --- Absent-owner guard: a null/empty/whitespace owner canonicalizes to null, which denotes an
+    // absent/global owner and must never over-match the owner-null (shared) corpus or authorize
+    // access. Without these guards, string.Equals(record.OwnerId, null) is true for every shared
+    // record, so an empty/whitespace erase request would mass-delete the shared graph on the
+    // in-memory backend (the DEFAULT: managed_code aliases to in_memory). ---
+
+    /// <summary>
+    /// A by-owner NODE query with an absent (empty/whitespace/null) owner must return nothing — and
+    /// crucially must NOT return the owner-null (shared/global) records. Pins the fix and the
+    /// cross-backend agreement (Neo4j/Postgres already no-match on null via SQL null semantics).
+    /// </summary>
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData(null)]
+    public async Task GetNodesByOwner_AbsentOwner_ReturnsEmpty_AndDoesNotTouchGlobalRecords(string? absentOwner)
+    {
+        var store = new InMemoryGraphStore(Mock.Of<ILogger<InMemoryGraphStore>>());
+        await store.AddNodesAsync([
+            new GraphNode { Id = "shared1", Name = "Corpus", Type = "Fact" },   // owner-null = shared/global
+            new GraphNode { Id = "shared2", Name = "Learning", Type = "Fact" }, // owner-null = shared/global
+            new GraphNode { Id = "owned", Name = "Memory", Type = "Fact", OwnerId = "alice@example.com" }
+        ]);
+
+        var result = await store.GetNodesByOwnerAsync(absentOwner!);
+
+        result.Should().BeEmpty("an absent owner is never a queryable subject and must not match shared records");
+    }
+
+    /// <summary>
+    /// A by-owner EDGE erasure with an absent owner must be a no-op — and must NOT delete the
+    /// owner-null (shared) edges. This is the data-destruction guard: on the default in-memory
+    /// backend, an empty erase request must not wipe the shared graph.
+    /// </summary>
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData(null)]
+    public async Task DeleteEdgesByOwner_AbsentOwner_IsNoOp_AndPreservesGlobalEdges(string? absentOwner)
+    {
+        var store = new InMemoryGraphStore(Mock.Of<ILogger<InMemoryGraphStore>>());
+        await store.AddNodesAsync([
+            new GraphNode { Id = "n1", Name = "A", Type = "Fact" },
+            new GraphNode { Id = "n2", Name = "B", Type = "Fact" }
+        ]);
+        await store.AddEdgesAsync([
+            new GraphEdge { Id = "e-shared1", SourceNodeId = "n1", TargetNodeId = "n2", Predicate = "cites", ChunkId = "c1" },  // owner-null
+            new GraphEdge { Id = "e-shared2", SourceNodeId = "n2", TargetNodeId = "n1", Predicate = "cites", ChunkId = "c1" },  // owner-null
+            new GraphEdge { Id = "e-owned", SourceNodeId = "n1", TargetNodeId = "n2", Predicate = "uses", ChunkId = "c1", OwnerId = "alice@example.com" }
+        ]);
+
+        var deleted = await store.DeleteEdgesByOwnerAsync(absentOwner!);
+
+        deleted.Should().BeEmpty("an absent owner erases nothing");
+        (await store.GetEdgeCountAsync()).Should().Be(3, "the shared (owner-null) corpus must survive an absent-owner erase");
+    }
+
+    /// <summary>
+    /// Gate guard (LOW): an absent dataset owner is never an authorizable dataset, even for a caller
+    /// whose own UserId is also absent — <see cref="ScopeIdentity.AreSame"/> would otherwise treat two
+    /// absent ids as equal and authorize access the old OrdinalIgnoreCase gate denied.
+    /// </summary>
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData(null)]
+    public void CanAccessDataset_AbsentOwner_Denies(string? absentOwner)
+    {
+        var validator = CreateValidator(isolationEnabled: true);
+        var scope = CreateScope(userId: null);
+
+        validator.CanAccessDataset(scope, absentOwner!).Should().BeFalse();
+    }
+
     private static KnowledgeScopeValidator CreateValidator(bool isolationEnabled)
     {
         var monitor = new Mock<IOptionsMonitor<AppConfig>>();
