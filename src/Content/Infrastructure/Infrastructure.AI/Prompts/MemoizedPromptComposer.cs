@@ -48,12 +48,17 @@ public sealed class MemoizedPromptComposer : ISystemPromptComposer
     public async Task<string> ComposeAsync(
         string agentId,
         int tokenBudget,
+        IReadOnlySet<SystemPromptSectionType>? sectionTypes = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrEmpty(agentId);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(tokenBudget);
 
-        var (cachedSections, providersToCompute) = ResolveCachedSections(agentId);
+        var activeProviders = sectionTypes is null
+            ? _providers
+            : _providers.Where(p => sectionTypes.Contains(p.SectionType)).ToList();
+
+        var (cachedSections, providersToCompute) = ResolveCachedSections(agentId, activeProviders);
 
         var computedSections = await ComputeMissingSectionsAsync(
             agentId, providersToCompute, cancellationToken);
@@ -89,12 +94,13 @@ public sealed class MemoizedPromptComposer : ISystemPromptComposer
     }
 
     private (List<SystemPromptSection> Cached, List<IPromptSectionProvider> ToCompute) ResolveCachedSections(
-        string agentId)
+        string agentId,
+        IReadOnlyList<IPromptSectionProvider> providers)
     {
         var cached = new List<SystemPromptSection>();
         var toCompute = new List<IPromptSectionProvider>();
 
-        foreach (var provider in _providers)
+        foreach (var provider in providers)
         {
             if (_cache.TryGet(agentId, provider.SectionType, out var section) && section is not null)
             {
@@ -145,7 +151,11 @@ public sealed class MemoizedPromptComposer : ISystemPromptComposer
         foreach (var section in sortedSections)
         {
             var sectionTokens = section.EstimatedTokens;
-            if (runningTokens + sectionTokens > tokenBudget)
+
+            // Required sections (e.g. the agent's core skill instructions) are never dropped — the
+            // budget bounds only the optional sections. They still accrue toward runningTokens so
+            // subsequent optional sections see the real total.
+            if (!section.IsRequired && runningTokens + sectionTokens > tokenBudget)
             {
                 _logger.LogInformation(
                     "Dropping section {SectionName} ({SectionType}) for agent {AgentId}: " +

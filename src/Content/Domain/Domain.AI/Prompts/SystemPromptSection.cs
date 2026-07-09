@@ -16,4 +16,14 @@ public sealed record SystemPromptSection(
     int Priority,
     bool IsCacheable,
     int EstimatedTokens,
-    string Content);
+    string Content)
+{
+    /// <summary>
+    /// When <see langword="true"/>, this section is never dropped by the token-budget assembler —
+    /// the budget bounds only the optional sections. Used for the agent's core instructions (skill
+    /// instructions), which must always reach the model even when they alone exceed the soft budget:
+    /// a pathological budget then degrades to the required sections plus whatever optional tail fits,
+    /// never a prompt missing the agent's job description. Defaults to <see langword="false"/>.
+    /// </summary>
+    public bool IsRequired { get; init; }
+}

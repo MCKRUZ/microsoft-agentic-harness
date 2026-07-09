@@ -111,6 +111,15 @@ public class ConfigValidationStartupTests
                 ["AppConfig:AI:Telemetry:ContentCapture:RedactionCategories:0"] = "NotACategory",
             }
         },
+        {
+            // TokenBudget must be > 0 once the composer is enabled.
+            "PromptCompositionConfig",
+            new Dictionary<string, string?>
+            {
+                ["AppConfig:AI:ContextManagement:PromptComposition:Enabled"] = "true",
+                ["AppConfig:AI:ContextManagement:PromptComposition:TokenBudget"] = "0",
+            }
+        },
     };
 
     [Theory]

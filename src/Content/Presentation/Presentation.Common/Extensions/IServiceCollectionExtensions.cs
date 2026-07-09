@@ -208,6 +208,13 @@ public static class IServiceCollectionExtensions
             .ValidateFluentValidation<ContentCaptureConfig, ContentCaptureConfigValidator>()
             .ValidateOnStart();
 
+        services.AddOptions<Domain.Common.Config.AI.ContextManagement.PromptCompositionConfig>()
+            .Bind(configuration.GetSection("AppConfig:AI:ContextManagement:PromptComposition"))
+            .ValidateFluentValidation<
+                Domain.Common.Config.AI.ContextManagement.PromptCompositionConfig,
+                PromptCompositionConfigValidator>()
+            .ValidateOnStart();
+
         return services;
     }
 
