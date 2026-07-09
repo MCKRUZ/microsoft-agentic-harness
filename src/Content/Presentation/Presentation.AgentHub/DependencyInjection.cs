@@ -16,6 +16,7 @@ using OpenTelemetry;
 using OpenTelemetry.Trace;
 using Presentation.AgentHub.AgUi;
 using Presentation.AgentHub.Auth;
+using Presentation.AgentHub.Extensions;
 using Presentation.AgentHub.Hubs;
 using Presentation.AgentHub.Interfaces;
 using Presentation.AgentHub.Services;
@@ -155,6 +156,25 @@ public static class DependencyInjection
                     {
                         PermitLimit = 10,
                         Window = TimeSpan.FromMinutes(1),
+                        QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                        QueueLimit = 0,
+                    });
+                }
+
+                // Right-to-erasure is destructive, irreversible, and store-heavy; cap it hard per
+                // authenticated user so a compromised or misused token cannot spam deletions. Runs
+                // after auth + KnowledgeScopeMiddleware, so User is populated; partition on the caller's
+                // object id (falling back to IP for the unauthenticated case the [Authorize] gate rejects).
+                if (context.Request.Method == HttpMethods.Post &&
+                    context.Request.Path.StartsWithSegments("/api/compliance/erase-my-data"))
+                {
+                    var partitionKey = context.User.GetUserIdOrNull()
+                        ?? context.Connection.RemoteIpAddress?.ToString()
+                        ?? "unknown";
+                    return RateLimitPartition.GetFixedWindowLimiter($"erase:{partitionKey}", _ => new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = 5,
+                        Window = TimeSpan.FromHours(1),
                         QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
                         QueueLimit = 0,
                     });
