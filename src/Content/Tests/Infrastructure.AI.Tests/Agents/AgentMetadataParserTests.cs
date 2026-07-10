@@ -175,6 +175,63 @@ public sealed class AgentMetadataParserTests : IDisposable
     }
 
     [Fact]
+    public void ParseFromFile_WithBody_CapturesBodyAsInstructions()
+    {
+        var dir = WriteAgent("with-body", """
+            ---
+            name: bodied-agent
+            ---
+
+            You are a specialist research agent.
+            Follow these rules carefully.
+            """);
+
+        var definition = CreateParser().ParseFromFile(Path.Combine(dir, "AGENT.md"), dir);
+
+        definition.Instructions.Should().NotBeNull();
+        definition.Instructions.Should().Contain("You are a specialist research agent.");
+        definition.Instructions.Should().Contain("Follow these rules carefully.");
+    }
+
+    [Fact]
+    public void ParseFromFile_NoFrontmatter_LeavesInstructionsNull()
+    {
+        // No frontmatter: ExtractFrontmatter returns the whole file as the body. It must NOT become
+        // the agent's instructions, or a malformed AGENT.md would leak its raw content into the prompt.
+        var dir = WriteAgent("raw-body", "# Raw markdown\nNo frontmatter here.");
+
+        var definition = CreateParser().ParseFromFile(Path.Combine(dir, "AGENT.md"), dir);
+
+        definition.Instructions.Should().BeNull();
+    }
+
+    [Fact]
+    public void ParseFromFile_MalformedFrontmatter_DoesNotLeakYamlIntoInstructions()
+    {
+        // Opening delimiter but no closing one: frontmatter parsing fails (empty yaml). The raw
+        // `---`/`name:` lines must not surface as instructions.
+        var dir = WriteAgent("unclosed", "---\nname: unclosed-agent\nskills: [x]\n\nBody text.");
+
+        var definition = CreateParser().ParseFromFile(Path.Combine(dir, "AGENT.md"), dir);
+
+        definition.Instructions.Should().BeNull();
+    }
+
+    [Fact]
+    public void ParseFromFile_WithoutBody_LeavesInstructionsNull()
+    {
+        var dir = WriteAgent("no-body", """
+            ---
+            name: bare-agent
+            ---
+            """);
+
+        var definition = CreateParser().ParseFromFile(Path.Combine(dir, "AGENT.md"), dir);
+
+        definition.Instructions.Should().BeNull();
+    }
+
+    [Fact]
     public void ParseFromFile_LegacySkillSingular_ParsesAsSingleElementList()
     {
         var dir = WriteAgent("legacy-skill", """

@@ -33,7 +33,7 @@ public sealed class AgentMetadataParser
     public AgentDefinition ParseFromFile(string agentFilePath, string baseDirectory)
     {
         var raw = File.ReadAllText(agentFilePath);
-        var (yaml, _) = YamlFrontmatterHelper.ExtractFrontmatter(raw);
+        var (yaml, body) = YamlFrontmatterHelper.ExtractFrontmatter(raw);
 
         if (string.IsNullOrWhiteSpace(yaml))
             _logger.LogWarning("AGENT.md at {Path} has no YAML frontmatter; falling back to folder-name identity", agentFilePath);
@@ -52,6 +52,11 @@ public sealed class AgentMetadataParser
             Author = ParseString(yaml, "author"),
             Tags = ParseList(yaml, "tags"),
             Skills = ParseSkills(yaml),
+            // Only trust the body as instructions when frontmatter actually parsed. When `yaml` is
+            // empty the frontmatter was absent or malformed (already warned above), and ExtractFrontmatter
+            // returns the whole file as `body` — capturing that would leak the raw `---`/YAML lines into
+            // the agent's system prompt.
+            Instructions = string.IsNullOrWhiteSpace(yaml) || string.IsNullOrWhiteSpace(body) ? null : body.Trim(),
             FilePath = agentFilePath,
             BaseDirectory = baseDirectory,
             LoadedAt = DateTime.UtcNow,

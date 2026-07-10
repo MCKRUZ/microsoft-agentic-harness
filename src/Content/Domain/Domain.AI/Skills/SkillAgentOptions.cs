@@ -54,6 +54,13 @@ public sealed record SkillAgentOptions
 	public string? AdditionalContext { get; init; }
 
 	/// <summary>
+	/// The agent's own instructions (its system prompt), sourced from the <c>AGENT.md</c> body.
+	/// When present, they lead the merged instruction text ahead of every skill. Null when the
+	/// agent is invoked by a bare skill id with no owning <c>AGENT.md</c>.
+	/// </summary>
+	public string? AgentInstructions { get; init; }
+
+	/// <summary>
 	/// Override the sampling temperature for the underlying chat client.
 	/// When null, the provider default is used.
 	/// </summary>

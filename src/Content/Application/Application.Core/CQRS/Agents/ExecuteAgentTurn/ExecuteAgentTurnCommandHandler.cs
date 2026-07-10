@@ -98,6 +98,7 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 				new SkillAgentOptions
 				{
 					AdditionalContext = request.SystemPromptOverride,
+					AgentInstructions = agentDef?.Instructions,
 					DeploymentName = request.DeploymentOverride,
 					Temperature = request.Temperature,
 				},
