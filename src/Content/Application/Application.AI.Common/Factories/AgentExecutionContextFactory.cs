@@ -13,6 +13,7 @@ using Domain.AI.Skills;
 using Domain.AI.Telemetry.Conventions;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
+using Domain.Common.Helpers;
 using Domain.Common.MetaHarness;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
@@ -404,7 +405,7 @@ public class AgentExecutionContextFactory
     {
         var providers = new List<AIContextProvider>();
 
-        var skillPaths = ResolveSkillPaths(options);
+        var skillPaths = ResolveSkillPaths(options, skills);
 
         if (skillPaths.Count > 0)
         {
@@ -473,16 +474,47 @@ public class AgentExecutionContextFactory
         return providers.Count > 0 ? providers : null;
     }
 
-    private IReadOnlyList<string> ResolveSkillPaths(SkillAgentOptions options)
+    /// <summary>
+    /// Resolves the file-skill roots wired into the <c>AgentSkillsProvider</c> for progressive (Tier 2/3)
+    /// disclosure: the configured roots (or the per-call override), augmented with each resolved skill's
+    /// own directory when it is not already reachable under one of those roots. That augmentation is what
+    /// gives an agent-owned nested skill (whose directory lives under its <c>&lt;agentDir&gt;/skills/</c>,
+    /// outside the configured skill roots) the same on-demand access to its scripts and references as a
+    /// shared skill. Global skills, whose directories already sit under a configured root, are untouched.
+    /// </summary>
+    internal IReadOnlyList<string> ResolveSkillPaths(SkillAgentOptions options, IReadOnlyList<SkillDefinition> skills)
     {
-        if (options.SkillPaths?.Count > 0)
-            return [.. options.SkillPaths];
+        // Relative config paths are resolved against AppContext.BaseDirectory (the bin folder), matching
+        // SkillMetadataRegistry — the authority on where skills physically live. Resolving against the CWD
+        // instead would leave the base roots pointing nowhere under `dotnet run`, so the dedup below would
+        // fail to recognise that a global skill's directory is already covered and re-add every one.
+        var baseRoots = options.SkillPaths?.Count > 0
+            ? options.SkillPaths.Select(p => Path.IsPathRooted(p) ? p : Path.GetFullPath(p, AppContext.BaseDirectory)).ToList()
+            : _appConfig.CurrentValue.AI?.Skills?.AllPaths
+                .Select(p => Path.IsPathRooted(p) ? p : Path.GetFullPath(p, AppContext.BaseDirectory))
+                .Where(Directory.Exists)
+                .ToList() ?? [];
 
-        var configPaths = _appConfig.CurrentValue.AI?.Skills?.AllPaths.ToList() ?? [];
-        return configPaths
-            .Select(p => Path.IsPathRooted(p) ? p : Path.GetFullPath(p))
-            .Where(Directory.Exists)
-            .ToList();
+        var paths = new List<string>(baseRoots);
+        var normalizedRoots = baseRoots.Select(PathScope.Normalize).ToList();
+
+        // Ensure every resolved skill's own directory is reachable for Tier 2/3 disclosure, adding only
+        // those not already covered by a base root (agent-owned nested skills). Global skills, whose
+        // directories sit under a configured root, are skipped so the common case is unchanged.
+        foreach (var skill in skills)
+        {
+            var dir = skill.BaseDirectory;
+            if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir))
+                continue;
+
+            var normalizedDir = PathScope.Normalize(dir);
+            if (normalizedRoots.Any(root => PathScope.IsSameOrUnderNormalized(normalizedDir, root)))
+                continue;
+            if (!paths.Contains(dir))
+                paths.Add(dir);
+        }
+
+        return paths;
     }
 
     private List<Type>? ResolveMiddlewareTypes(SkillDefinition skill, SkillAgentOptions options)
