@@ -219,41 +219,11 @@ public sealed class AgentMetadataRegistry : IAgentMetadataRegistry
     private void DiscoverAgentOwnedSkills(string agentDirectory, string agentId)
     {
         var skillsRoot = Path.Combine(agentDirectory, "skills");
-        if (!Directory.Exists(skillsRoot))
-            return;
-
-        IEnumerable<string> skillDirs;
-        try
+        foreach (var skill in NestedSkillScanner.Scan(skillsRoot, _skillParser, _logger))
         {
-            skillDirs = Directory.EnumerateDirectories(skillsRoot);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Could not enumerate agent-owned skills directory: {Path}", skillsRoot);
-            return;
-        }
-
-        foreach (var skillDir in skillDirs)
-        {
-            var skillFile = Path.Combine(skillDir, "SKILL.md");
-            if (!File.Exists(skillFile))
-                continue;
-
-            try
-            {
-                var skill = _skillParser.ParseFromFile(skillFile, skillDir);
-                if (string.IsNullOrEmpty(skill.Id))
-                    continue;
-
-                _ownedSkills.Register(agentId, skill);
-                _logger.LogDebug(
-                    "Discovered agent-owned skill {SkillId} for agent {AgentId} from {Path}",
-                    skill.Id, agentId, skillDir);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Failed to parse agent-owned skill from {Path}", skillFile);
-            }
+            _ownedSkills.Register(agentId, skill);
+            _logger.LogDebug(
+                "Discovered agent-owned skill {SkillId} for agent {AgentId}", skill.Id, agentId);
         }
     }
 }

@@ -1,6 +1,7 @@
 using Domain.Common.Config.AI.A2A;
 using Domain.Common.Config.AI.AIFoundry;
 using Domain.Common.Config.AI.Audit;
+using Domain.Common.Config.AI.BundleExecution;
 using Domain.Common.Config.AI.ContextManagement;
 using Domain.Common.Config.AI.DriftDetection;
 using Domain.Common.Config.AI.GitOps;
@@ -192,6 +193,16 @@ public class AIConfig
     /// before the model runs.
     /// </summary>
     public LearningsRecallConfig LearningsRecall { get; set; } = new();
+
+    /// <summary>
+    /// Bundle-execution subsystem configuration. Off by default — when enabled, the host can accept a
+    /// self-contained, externally-authored agent bundle (a zip of <c>AGENT.md</c> + nested
+    /// <c>SKILL.md</c> + plugin manifests), stage it to an isolated temp directory under hostile-input
+    /// guards, and run it as an ephemeral agent resolved through a per-run overlay. Distinct from
+    /// <see cref="Plugins"/> (host-declared local plugin directories, trusted and startup-scanned):
+    /// a bundle arrives at runtime from an external caller and is confined as untrusted input.
+    /// </summary>
+    public BundleExecutionConfig BundleExecution { get; set; } = new();
 
     /// <summary>Agent Governance Toolkit configuration.</summary>
     public GovernanceConfig Governance { get; init; } = new();

@@ -3,6 +3,7 @@ using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Compression;
 using Application.AI.Common.Interfaces.Agents;
+using Application.AI.Common.Interfaces.Bundles;
 using Application.AI.Common.Interfaces.Compaction;
 using Application.AI.Common.Interfaces.Config;
 using Application.AI.Common.Interfaces.Context;
@@ -10,6 +11,7 @@ using Application.AI.Common.Interfaces.Hooks;
 using Application.AI.Common.Interfaces.MetaHarness;
 using Application.AI.Common.Interfaces.Plugins;
 using Application.AI.Common.Interfaces.Skills;
+using Application.AI.Common.Services.Bundles;
 using Application.AI.Common.Interfaces.Prompts;
 using Application.AI.Common.Interfaces.Routing;
 using Application.AI.Common.Interfaces.Tools;
@@ -19,6 +21,7 @@ using Domain.Common.Config;
 using Domain.Common.Workflow;
 using Infrastructure.AI.Agents;
 using Infrastructure.AI.Audit;
+using Infrastructure.AI.Bundles;
 using Infrastructure.AI.Compaction;
 using Infrastructure.AI.Compaction.Strategies;
 using Infrastructure.AI.Tools.GitOps;
@@ -165,9 +168,25 @@ public static partial class DependencyInjection
 
         services.AddSingleton<SkillMetadataParser>();
         services.AddSingleton<ISkillMetadataRegistry, SkillMetadataRegistry>();
-        services.AddSingleton<IAgentOwnedSkillStore, AgentOwnedSkillStore>();
+
+        // The owned-skill store and agent registry are decorated so a bundle run can resolve its
+        // ephemeral agent and owned skills from an ambient overlay ahead of the persistent registries,
+        // without those definitions ever being written into them. The decorators are behaviour-neutral
+        // pass-throughs whenever no overlay is active — i.e. on every non-bundle code path.
+        services.AddSingleton<AgentOwnedSkillStore>();
+        services.AddSingleton<IAgentOwnedSkillStore>(sp =>
+            new OverlayAwareAgentOwnedSkillStore(sp.GetRequiredService<AgentOwnedSkillStore>()));
+
         services.AddSingleton<AgentMetadataParser>();
-        services.AddSingleton<IAgentMetadataRegistry, AgentMetadataRegistry>();
+        services.AddSingleton<AgentMetadataRegistry>();
+        services.AddSingleton<IAgentMetadataRegistry>(sp =>
+            new OverlayAwareAgentMetadataRegistry(sp.GetRequiredService<AgentMetadataRegistry>()));
+
+        // --- Bundle execution (staging) ---
+        // Off by default (AI:BundleExecution:Enabled). The staging service is passive — it does nothing
+        // until an ingest call reaches it — so it is registered unconditionally; the run/API surface that
+        // invokes it is gated in a later layer.
+        services.AddSingleton<IBundleStagingService, BundleStagingService>();
 
         // --- Plugins ---
 
