@@ -75,4 +75,12 @@ public class BundleExecutionConfig
     /// </summary>
     /// <value>Default: 100</value>
     public double MaxCompressionRatio { get; set; } = 100;
+
+    /// <summary>
+    /// The per-caller capability-grant table. A bundle's self-declared tools, MCP references, and autonomy
+    /// are only <em>requests</em>; the envelope resolved from this table for the calling credential is the
+    /// authoritative <em>grant</em>, and anything beyond it is denied. Defaults to a fail-closed table that
+    /// grants nothing until an operator configures it.
+    /// </summary>
+    public CapabilityEnvelopesConfig Envelopes { get; set; } = new();
 }

@@ -7,6 +7,7 @@ using Application.AI.Common.Interfaces.Bundles;
 using Application.AI.Common.Interfaces.Compaction;
 using Application.AI.Common.Interfaces.Config;
 using Application.AI.Common.Interfaces.Context;
+using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Hooks;
 using Application.AI.Common.Interfaces.MetaHarness;
 using Application.AI.Common.Interfaces.Plugins;
@@ -33,6 +34,7 @@ using Infrastructure.AI.Config;
 using Infrastructure.AI.ContentSafety;
 using Infrastructure.AI.Factories;
 using Infrastructure.AI.Generators;
+using Infrastructure.AI.Governance;
 using Infrastructure.AI.Routing.Evaluation;
 using Infrastructure.AI.Hooks;
 using Infrastructure.AI.MetaHarness;
@@ -187,6 +189,11 @@ public static partial class DependencyInjection
         // until an ingest call reaches it — so it is registered unconditionally; the run/API surface that
         // invokes it is gated in a later layer.
         services.AddSingleton<IBundleStagingService, BundleStagingService>();
+
+        // Capability-envelope resolver — maps the calling credential to its configured per-caller grant.
+        // Passive like staging: it only reads config when asked, so it is registered unconditionally and
+        // the run/API surface that consults it is gated in a later layer.
+        services.AddSingleton<ICapabilityEnvelopeResolver, CapabilityEnvelopeResolver>();
 
         // --- Plugins ---
 
