@@ -22,6 +22,25 @@ public sealed class McpServerAuthFailClosedTests
     private const string TestApiKey = "test-api-key-not-a-real-secret";
     private const string TestBearerToken = "test-bearer-token-not-a-real-secret";
 
+    // -- Boot-time DI validation (audit item H2) --
+
+    [Fact]
+    public void Start_InProduction_BuildsUnderValidateOnBuild()
+    {
+        // The MCP server enables ValidateScopes + ValidateOnBuild in ALL environments
+        // (Program.cs). This guards that the full host graph — MCP SDK services, auth
+        // handlers, skill registry, rate limiter — is actually constructible under that
+        // policy in Production, where the framework would NOT enable ValidateOnBuild by
+        // default. A missing/captive registration would throw here at host build instead
+        // of surviving to a runtime request. AllowAnonymous keeps the config minimal-valid.
+        using var factory = CreateFactory(new Dictionary<string, string?>
+        {
+            ["AppConfig:AI:MCP:Auth:AllowAnonymous"] = "true"
+        }, environment: "Production");
+
+        factory.Server.Should().NotBeNull();
+    }
+
     // -- Startup fail-closed --
 
     [Theory]

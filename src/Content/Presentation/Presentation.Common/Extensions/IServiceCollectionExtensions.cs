@@ -313,8 +313,9 @@ public static class IServiceCollectionExtensions
     /// the console-style hosts (ConsoleUI, EvalRunner, FoundryHost) apply it through
     /// <see cref="BuildValidatedServiceProvider"/>; the AgentHub web host, which never calls
     /// <c>BuildServiceProvider</c> directly, passes this method to <c>UseDefaultServiceProvider</c>
-    /// on its host builder. (The MCP server host does not yet enforce this policy — see the H2
-    /// follow-up; it composes a separate graph with no assembly-scanned harness handlers.)
+    /// on its host builder. The MCP server host enforces the same two flags but inlines them
+    /// (it composes a separate graph and, as an Infrastructure-layer host, must not take a
+    /// dependency on this Presentation-layer helper).
     /// </remarks>
     public static void ApplyValidationPolicy(ServiceProviderOptions options)
     {

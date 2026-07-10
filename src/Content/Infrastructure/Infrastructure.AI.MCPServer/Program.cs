@@ -21,6 +21,18 @@ public class Program
     {
         var builder = WebApplication.CreateBuilder(args);
 
+        // Enforce the harness's boot-time DI validation policy (audit item H2) in ALL
+        // environments: ValidateScopes catches captive dependencies (a singleton capturing
+        // per-request scoped state) and ValidateOnBuild eagerly constructs every registered
+        // service, failing loudly at boot instead of silently at first use. The flags are
+        // inlined rather than sharing Presentation.Common's ApplyValidationPolicy because this
+        // Infrastructure-layer host must not take a Presentation dependency (Clean Architecture).
+        builder.Host.UseDefaultServiceProvider(options =>
+        {
+            options.ValidateScopes = true;
+            options.ValidateOnBuild = true;
+        });
+
         // Bind AppConfig
         builder.Services.Configure<AppConfig>(
             builder.Configuration.GetSection("AppConfig"));
