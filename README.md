@@ -317,7 +317,7 @@ src/
 │   │   ├── Constants/                  ClaimConstants, PolicyNameConstants
 │   │   └── Workflow/                   IStateManager, WorkflowState
 │   └── Domain.AI/
-│       ├── Agents/                     AgentManifest, AgentExecutionContext, SkillReference
+│       ├── Agents/                     AgentDefinition, AgentExecutionContext, SubagentDefinition
 │       ├── Skills/                     SkillDefinition, SkillMode (Managed/Injected)
 │       ├── Tools/                      ToolDeclaration
 │       ├── Compression/               ToolOutputCategory, CompressionResult

@@ -8,11 +8,10 @@ namespace Infrastructure.AI.Agents;
 /// Parses the YAML frontmatter of an <c>AGENT.md</c> file into an <see cref="AgentDefinition"/>.
 /// </summary>
 /// <remarks>
-/// Intentionally limited to the Level 1 metadata tier required by
-/// <see cref="Application.AI.Common.Interfaces.IAgentMetadataRegistry"/>: identity, categorisation,
-/// tags, and source paths. Tool declarations, state configuration, and decision frameworks live
-/// on the richer <see cref="AgentManifest"/> and are parsed separately by whichever component
-/// actually executes the agent.
+/// Parses the fields an <see cref="AgentDefinition"/> carries: identity, categorisation, tags, and
+/// source paths, plus the agent's own instructions (the <c>AGENT.md</c> body), its tool ceiling
+/// (<c>allowed-tools</c>), and the ids of the skills it composes. Per-turn work such as resolving those
+/// skills, merging instructions, and provisioning tools is done by the agent factory at build time, not here.
 /// </remarks>
 public sealed class AgentMetadataParser
 {

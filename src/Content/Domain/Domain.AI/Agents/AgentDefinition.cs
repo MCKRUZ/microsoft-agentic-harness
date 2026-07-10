@@ -1,15 +1,17 @@
 namespace Domain.AI.Agents;
 
 /// <summary>
-/// Metadata projection of an <see cref="AgentManifest"/> used for agent discovery and enumeration.
-/// Holds the identity, categorisation, and source-path fields needed to list agents in a UI or
-/// select one for invocation, without loading the full manifest body, tool declarations, or workflow state.
+/// The first-class definition of an agent, parsed from its <c>AGENT.md</c> file. Holds the agent's
+/// identity, categorisation, and source paths, plus its own instructions (the <c>AGENT.md</c> body),
+/// its tool ceiling (<see cref="AllowedTools"/>), and the ids of the skills it composes. This is the
+/// runtime representation of an agent — there is no separate, richer manifest type.
 /// </summary>
 /// <remarks>
-/// Populated by <c>AgentMetadataParser</c> from the YAML frontmatter of an <c>AGENT.md</c> file
-/// and cached by <c>IAgentMetadataRegistry</c>. This is the agent analogue of
-/// <see cref="Domain.AI.Skills.SkillDefinition"/> at the Level 1 (index-card) tier: cheap to load,
-/// safe to hold in memory for every configured agent.
+/// Populated by <c>AgentMetadataParser</c> from an <c>AGENT.md</c> file and cached by
+/// <c>IAgentMetadataRegistry</c>. It is the agent analogue of <see cref="Domain.AI.Skills.SkillDefinition"/>:
+/// cheap to load and safe to hold in memory for every configured agent. The heavier per-turn work —
+/// resolving skills, merging instructions, and provisioning tools — is done by the agent factory when
+/// the agent is actually built, not stored here.
 /// </remarks>
 public sealed record AgentDefinition
 {
