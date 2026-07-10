@@ -52,6 +52,7 @@ public sealed class AgentMetadataParser
             Author = ParseString(yaml, "author"),
             Tags = ParseList(yaml, "tags"),
             Skills = ParseSkills(yaml),
+            AllowedTools = ParseList(yaml, "allowed-tools"),
             // Only trust the body as instructions when frontmatter actually parsed. When `yaml` is
             // empty the frontmatter was absent or malformed (already warned above), and ExtractFrontmatter
             // returns the whole file as `body` — capturing that would leak the raw `---`/YAML lines into

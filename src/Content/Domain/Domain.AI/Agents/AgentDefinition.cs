@@ -52,6 +52,16 @@ public sealed record AgentDefinition
     /// </summary>
     public string? Instructions { get; init; }
 
+    /// <summary>
+    /// The agent's tool ceiling — the allowlist declared in the <c>allowed-tools</c> frontmatter of
+    /// <c>AGENT.md</c>. Acts as an upper bound: the agent may invoke a tool only when it appears here
+    /// <em>and</em> is granted by one of its skills. The ceiling can only ever <em>tighten</em> the
+    /// skills' combined allowlist, never widen it — a tool listed here but not granted by any skill
+    /// stays unavailable. Empty when the agent declares no ceiling, in which case the skills' own
+    /// allowlists govern unchanged. Populated from the <c>allowed-tools:</c> frontmatter list.
+    /// </summary>
+    public IReadOnlyList<string> AllowedTools { get; init; } = [];
+
     /// <summary>Absolute path to the source <c>AGENT.md</c> file.</summary>
     public string FilePath { get; init; } = string.Empty;
 

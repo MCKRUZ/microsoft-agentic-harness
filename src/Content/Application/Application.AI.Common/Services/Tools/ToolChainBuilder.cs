@@ -169,7 +169,10 @@ public class ToolChainBuilder : IToolChainBuilder
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var deduplicated = allTools.Where(t => seen.Add(t.Name)).ToList();
 
-        if (allowedTools is { Count: > 0 })
+        // A null allowlist means no restriction; a non-null one is an active restriction that keeps
+        // only the listed tools — an empty (but non-null) list therefore denies every tool, which is
+        // how an agent tool ceiling disjoint from the skills' tools collapses to no tools rather than all.
+        if (allowedTools is not null)
         {
             var allowed = new HashSet<string>(allowedTools, StringComparer.OrdinalIgnoreCase);
             deduplicated = deduplicated.Where(t => allowed.Contains(t.Name)).ToList();
