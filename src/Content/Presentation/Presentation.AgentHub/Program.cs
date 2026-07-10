@@ -17,19 +17,16 @@ builder.Services.GetServices(includeHealthChecksUI: true);
 // Register AgentHub-specific services (auth, SignalR, CORS, rate limiting, config).
 builder.Services.AddAgentHubServices(builder.Configuration, builder.Environment);
 
-builder.Host.UseDefaultServiceProvider(options =>
-{
-    // ValidateScopes guards against captive dependencies — a singleton capturing scoped
-    // per-request state (the bug class behind the formerly-singleton prompt composer, which is
-    // now SCOPED via AddSystemPromptComposition). Enabled in ALL environments: the resolution
-    // cost is negligible and cross-request state bleed is a production correctness hazard.
-    options.ValidateScopes = true;
-    // ValidateOnBuild stays off: MediatR assembly scanning registers handlers whose
-    // dependencies are conditionally registered (e.g. IPromptUsageStore only when prompt-usage
-    // persistence is enabled, IEvalRunner only in the eval host), so eager build-time
-    // validation false-positives on handlers this host never dispatches.
-    options.ValidateOnBuild = false;
-});
+// Enforce the harness's boot-time DI validation policy (ValidateScopes + ValidateOnBuild,
+// audit item H2) in ALL environments. Single-sourced in IServiceCollectionExtensions so the
+// web host and the console-style hosts can never drift: ValidateScopes catches captive
+// dependencies (a singleton capturing per-request scoped state), and ValidateOnBuild turns the
+// audit's "inert machinery" class — a globally-scanned MediatR handler whose dependency only
+// one host supplies — from a silent-until-dispatched runtime crash into a caught-at-startup
+// error. AgentHub's real AG-UI notifiers still win over the composition root's No-op defaults
+// via last-registration-wins.
+builder.Host.UseDefaultServiceProvider(
+    Presentation.Common.Extensions.IServiceCollectionExtensions.ApplyValidationPolicy);
 
 var app = builder.Build();
 

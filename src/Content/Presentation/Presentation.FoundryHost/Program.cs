@@ -60,9 +60,9 @@ public static class Program
         // AgentHost — an ordering the single-container alternative (resolving the agent from DI after
         // Build) cannot guarantee. The agent captures its pipeline from this provider, so the
         // provider is held for the process lifetime and disposed only after the host stops.
-#pragma warning disable ASP0000
-        var provider = services.BuildServiceProvider();
-#pragma warning restore ASP0000
+        // BuildValidatedServiceProvider enables ValidateScopes + ValidateOnBuild (audit H2)
+        // and centralizes the ASP0000 suppression for the console-style hosts.
+        var provider = services.BuildValidatedServiceProvider();
 
         // Start hosted services (skill seeding, planner DB migration, governance bootstrap, drift
         // baseline loader, OpenTelemetry). The harness expects these to run before any agent turn —

@@ -1,3 +1,4 @@
+using Application.AI.Common.Prompts;
 using Application.AI.Common.Prompts.Interfaces;
 using Domain.Common.Config.AI;
 using FluentAssertions;
@@ -13,7 +14,7 @@ namespace Infrastructure.AI.Tests.Prompts;
 public sealed class PromptRegistryPersistenceDiTests
 {
     [Fact]
-    public void Persistence_disabled_registers_OtelPromptUsageRecorder_only()
+    public void Persistence_disabled_registers_Otel_recorder_and_NoOp_store()
     {
         var services = new ServiceCollection();
         services.AddSingleton(NullLoggerFactory.Instance);
@@ -27,7 +28,10 @@ public sealed class PromptRegistryPersistenceDiTests
         var recorder = provider.GetRequiredService<IPromptUsageRecorder>();
 
         recorder.Should().BeOfType<OtelPromptUsageRecorder>();
-        provider.GetService<IPromptUsageStore>().Should().BeNull();
+        // A No-op store is registered even with persistence off, so the globally-scanned MediatR
+        // handlers that query prompt usage stay constructible under ValidateOnBuild (audit H2).
+        // It returns empty results (no rows persisted) and needs no DbContext.
+        provider.GetService<IPromptUsageStore>().Should().BeOfType<NullPromptUsageStore>();
         provider.GetService<IDbContextFactory<PromptUsageDbContext>>().Should().BeNull();
     }
 

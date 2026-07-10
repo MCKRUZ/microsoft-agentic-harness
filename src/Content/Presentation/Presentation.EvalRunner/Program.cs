@@ -107,7 +107,10 @@ public static class Program
         services.GetServices(includeHealthChecksUI: false);
         services.AddEvaluationDependencies();
 
-        await using var provider = services.BuildServiceProvider();
+        // BuildValidatedServiceProvider enables ValidateScopes + ValidateOnBuild (audit H2).
+        // The real IEvalRunner registered by AddEvaluationDependencies above wins over the
+        // composition root's not-configured default via last-registration-wins.
+        await using var provider = services.BuildValidatedServiceProvider();
 
         // Validate --out formats against actually-registered reporter format keys (not a
         // hardcoded list) so consumers who register custom IEvalReporter implementations
