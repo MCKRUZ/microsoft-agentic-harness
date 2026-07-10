@@ -36,14 +36,15 @@ public sealed class PermissionEnumTests
     [InlineData(PermissionRuleSource.CliArgument, 7)]
     [InlineData(PermissionRuleSource.AutonomyTier, 8)]
     [InlineData(PermissionRuleSource.PluginDeclaration, 9)]
+    [InlineData(PermissionRuleSource.CapabilityEnvelope, 10)]
     public void PermissionRuleSource_Values_HaveExpectedIntegers(PermissionRuleSource value, int expected)
     {
         ((int)value).Should().Be(expected);
     }
 
     [Fact]
-    public void PermissionRuleSource_HasExactlyTenValues()
+    public void PermissionRuleSource_HasExactlyElevenValues()
     {
-        Enum.GetValues<PermissionRuleSource>().Should().HaveCount(10);
+        Enum.GetValues<PermissionRuleSource>().Should().HaveCount(11);
     }
 }
