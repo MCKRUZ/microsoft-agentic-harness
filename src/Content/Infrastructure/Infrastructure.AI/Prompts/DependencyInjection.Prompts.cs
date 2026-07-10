@@ -75,6 +75,15 @@ public static class PromptRegistryDependencyInjection
         {
             // Default path: OTel-only recorder. Zero infrastructure dependencies.
             services.AddSingleton<IPromptUsageRecorder, OtelPromptUsageRecorder>();
+
+            // No durable store in this branch, but the globally-scanned MediatR handlers that
+            // query prompt usage (version comparison, trace replay) are always registered.
+            // Register a No-op store so they stay constructible (audit item H2 / ValidateOnBuild);
+            // empty query results are the correct semantic when nothing is persisted. The real
+            // EfCorePromptUsageStore is registered instead in the persistence-enabled branch below.
+            services.AddSingleton<
+                Application.AI.Common.Prompts.Interfaces.IPromptUsageStore,
+                Application.AI.Common.Prompts.NullPromptUsageStore>();
             return services;
         }
 

@@ -130,7 +130,10 @@ public static class HarmonicWriteEvalCli
             services.AddEvaluationDependencies();
             ConfigureJudgeFromAgentFramework(services);
         }
-        return services.BuildServiceProvider();
+        // Same validation policy as the main EvalRunner host (audit H2). The offline path
+        // composes nothing, so validation is a no-op there; the --llm path validates the
+        // full eval-host graph, matching Program.cs.
+        return services.BuildValidatedServiceProvider();
     }
 
     // The quality judge resolves its model from JudgeOptions — a DIFFERENT config section than the

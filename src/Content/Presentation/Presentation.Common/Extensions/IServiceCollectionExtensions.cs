@@ -301,6 +301,51 @@ public static class IServiceCollectionExtensions
     }
 
     /// <summary>
+    /// Applies the harness's boot-time DI validation policy (audit item H2) to the given
+    /// options: <c>ValidateScopes</c> (captive-dependency guard — a singleton must never
+    /// capture per-request scoped state) and <c>ValidateOnBuild</c> (every registered
+    /// service, including every assembly-scanned MediatR handler, must be constructible).
+    /// A mis-wired graph then fails loudly at boot instead of silently at first use.
+    /// </summary>
+    /// <param name="options">The provider options to configure.</param>
+    /// <remarks>
+    /// This is the single source of truth for the validation policy. It is consumed two ways:
+    /// the console-style hosts (ConsoleUI, EvalRunner, FoundryHost) apply it through
+    /// <see cref="BuildValidatedServiceProvider"/>; the AgentHub web host, which never calls
+    /// <c>BuildServiceProvider</c> directly, passes this method to <c>UseDefaultServiceProvider</c>
+    /// on its host builder. (The MCP server host does not yet enforce this policy — see the H2
+    /// follow-up; it composes a separate graph with no assembly-scanned harness handlers.)
+    /// </remarks>
+    public static void ApplyValidationPolicy(ServiceProviderOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        options.ValidateScopes = true;
+        options.ValidateOnBuild = true;
+    }
+
+    /// <summary>
+    /// Builds the service provider with the harness's boot-time validation policy
+    /// (<see cref="ApplyValidationPolicy"/>) enabled.
+    /// </summary>
+    /// <param name="services">The fully-composed service collection.</param>
+    /// <returns>A validating provider; dispose it to release the singletons it owns.</returns>
+    /// <remarks>
+    /// The single entry point for the console-style hosts (ConsoleUI, EvalRunner, FoundryHost)
+    /// that build their own provider from a bare <see cref="IServiceCollection"/>. ASP0000 warns
+    /// against calling <c>BuildServiceProvider</c> from application code; these hosts legitimately
+    /// own their root provider, so the suppression is centralized here rather than repeated at
+    /// each call site.
+    /// </remarks>
+    public static ServiceProvider BuildValidatedServiceProvider(this IServiceCollection services)
+    {
+        var options = new ServiceProviderOptions();
+        ApplyValidationPolicy(options);
+#pragma warning disable ASP0000
+        return services.BuildServiceProvider(options);
+#pragma warning restore ASP0000
+    }
+
+    /// <summary>
     /// Configures the caching strategy based on <see cref="CacheConfig.CacheType"/>.
     /// </summary>
     /// <param name="services">The service collection to configure.</param>
@@ -441,6 +486,24 @@ public static class IServiceCollectionExtensions
         services.AddSingleton<
             Application.AI.Common.Interfaces.Context.IContextSnapshotNotifier,
             Application.AI.Common.Notifications.NullContextSnapshotNotifier>();
+
+        // Host-overridable defaults for globally-scanned MediatR handlers whose live
+        // dependency is supplied by only one host (audit item H2). Without these, the
+        // handler is registered but uninstantiable in every other host — a latent crash
+        // that ValidateOnBuild (now on) would reject at boot. Same last-write-wins pattern
+        // as the notifiers above: the AgentHub host and the opt-in eval framework register
+        // their real implementations AFTER GetServices, so those win at resolution.
+        //   - IPlanProgressNotifier / ILearningNotificationChannel → AgentHub's AG-UI bridge
+        //   - IEvalRunner → EvalRunner host's AddEvaluationDependencies() (fail-fast default)
+        services.AddSingleton<
+            Application.AI.Common.Interfaces.Planner.IPlanProgressNotifier,
+            Application.AI.Common.Notifications.NullPlanProgressNotifier>();
+        services.AddSingleton<
+            Application.AI.Common.Interfaces.Learnings.ILearningNotificationChannel,
+            Application.AI.Common.Notifications.NullLearningNotificationChannel>();
+        services.AddSingleton<
+            Application.AI.Common.Evaluation.Interfaces.IEvalRunner,
+            Application.AI.Common.Evaluation.NotConfiguredEvalRunner>();
 
         return services;
     }

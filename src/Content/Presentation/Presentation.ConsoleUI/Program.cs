@@ -64,7 +64,8 @@ public class Program
 		// `await using` guarantees the container (and every IDisposable/IAsyncDisposable
 		// singleton it owns — named-pipe logger provider, JSONL audit writers, EF Core
 		// resources) is flushed and disposed on exit, mirroring Presentation.EvalRunner.
-		await using var serviceProvider = services.BuildServiceProvider();
+		// BuildValidatedServiceProvider enables ValidateScopes + ValidateOnBuild (audit H2).
+		await using var serviceProvider = services.BuildValidatedServiceProvider();
 
 		// Track only the services we actually started so a mid-startup failure on service N
 		// doesn't leave us calling StopAsync on services that never started.
