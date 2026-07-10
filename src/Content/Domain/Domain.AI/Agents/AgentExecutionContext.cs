@@ -12,7 +12,7 @@ namespace Domain.AI.Agents;
 /// <remarks>
 /// <para><b>Relationship chain:</b></para>
 /// <list type="bullet">
-///   <item><b>AgentManifest</b> — declarative definition from AGENT.md (static, source-controlled)</item>
+///   <item><b>AgentDefinition</b> — declarative definition from AGENT.md (static, source-controlled)</item>
 ///   <item><b>SkillDefinition</b> — skill loaded from SKILL.md (progressive disclosure)</item>
 ///   <item><b>AgentExecutionContext</b> — runtime config for Agent Framework (dynamic, per-execution)</item>
 ///   <item><b>AIAgent</b> — the running agent instance created by the framework</item>

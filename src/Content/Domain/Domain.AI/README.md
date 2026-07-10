@@ -38,11 +38,9 @@ As a Domain project, Domain.AI contains only entities, value objects, enums, and
 
 An agent in this system is more than a system prompt. It is a composite of identity, capabilities, and constraints described by an `AGENT.md` file on disk.
 
-**AgentDefinition** is the lightweight "index card" -- just enough metadata to list agents in a UI or select one for invocation, without loading the full manifest body.
+**AgentDefinition** is the first-class agent, parsed from `AGENT.md`: identity and categorisation, the agent's own instructions (the body), its tool ceiling (`allowed-tools`), and the ids of the skills it composes. It is cheap to load and safe to cache for every configured agent; the heavier per-turn work (resolving skills, merging instructions, provisioning tools) is done by the agent factory at build time, not stored on it.
 
-**AgentManifest** is the fully-parsed blueprint: instructions, tool access lists, workflow state configuration, decision frameworks, and skill references.
-
-**AgentExecutionContext** is the *runtime form* of a manifest -- the concrete instructions, resolved tool instances, middleware list, and deployment config needed to actually run an agent.
+**AgentExecutionContext** is the *runtime form* of an agent -- the concrete instructions, resolved tool instances, middleware list, and deployment config needed to actually run it.
 
 ```csharp
 // How the factory uses these types (in Application.AI.Common):
@@ -71,7 +69,7 @@ Without this tiering, an agent with 20 skills would burn 100K+ tokens on instruc
 
 **Prerequisites**: Skills can declare `Prerequisites` (a list of skill IDs that must complete first) and a `CompletionTool` (the tool name whose invocation marks the skill as complete). This enables ordered skill composition within a single agent run.
 
-**Multi-Skill Agents**: `AgentDefinition.Skills` is an `IReadOnlyList<SkillReference>` -- agents declare multiple skills, not just one. At context assembly time, instructions are merged and tools combined from all referenced skills.
+**Multi-Skill Agents**: `AgentDefinition.Skills` is an `IReadOnlyList<string>` of skill ids -- agents declare multiple skills, not just one. At context assembly time, instructions are merged and tools combined from all referenced skills. Skills may be shared (the global registry) or owned by the agent (its `<agentDir>/skills/`, resolved owned-first).
 
 ```csharp
 // Skills support two modes:
@@ -282,11 +280,9 @@ var request = new SandboxExecutionRequest
 Domain.AI/
 ├── A2A/                         # AgentCard — agent discovery protocol model
 ├── Agents/
-│   ├── AgentDefinition.cs       # Lightweight index card for agent discovery
+│   ├── AgentDefinition.cs       # First-class agent parsed from AGENT.md (instructions, tool ceiling, skill ids)
 │   ├── AgentExecutionContext.cs # Runtime agent configuration (tools, instructions, deployment)
-│   ├── AgentManifest.cs         # Full parsed AGENT.md blueprint
 │   ├── AgentMessage.cs          # Inter-agent mailbox message (Task/Result/Notification/Error)
-│   ├── SkillReference.cs        # Pointer from agent to skill
 │   └── SubagentDefinition.cs    # Child agent spec (type, tools, limits, model override)
 ├── Compaction/                  # CompactionStrategy, CompactionResult, BoundaryMessage, Trigger
 ├── Config/                      # ConfigScope (priority), DiscoveredConfigFile
@@ -341,8 +337,7 @@ Domain.AI/
 | Type | Purpose | Used By |
 |------|---------|---------|
 | **Agents** | | |
-| `AgentDefinition` | Discovery metadata for UI listing | IAgentMetadataRegistry, AgentHub |
-| `AgentManifest` | Full parsed AGENT.md | AgentFactory, skill loading |
+| `AgentDefinition` | First-class agent parsed from AGENT.md (instructions, tool ceiling, skill ids) | IAgentMetadataRegistry, AgentFactory, AgentHub |
 | `AgentExecutionContext` | Runtime config passed to agent factory | AgentFactory.CreateAgentAsync |
 | `SubagentDefinition` | Child agent spec | RunOrchestratedTask handler |
 | **Skills** | | |

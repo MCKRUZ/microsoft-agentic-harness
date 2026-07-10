@@ -14,10 +14,8 @@ Files mirror the domain model namespace structure: `Agents/`, `Skills/`, `Hooks/
 |------------|---------------|-------------------|------------------|
 | `AgentCardTests` | A2A agent card model | 4 | Unit |
 | `AgentDefinitionTests` | Agent definition record | 5 | Unit |
-| `AgentManifestTests` | Agent manifest parsing/validation | 5 | Unit |
 | `AgentMessageTests` | Agent message record properties | 4 | Unit |
 | `AgentMessageTypeTests` | Message type enum completeness | 3 | Unit |
-| `SkillReferenceTests` | Skill reference value object | 3 | Unit |
 | `SubagentDefinitionTests` | Subagent definition model | 4 | Unit |
 | `SubagentTypeTests` | Subagent type enum values | 2 | Unit |
 | `CompactionBoundaryMessageTests` | Compaction boundary markers | 3 | Unit |
