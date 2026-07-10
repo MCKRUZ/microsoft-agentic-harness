@@ -13,7 +13,7 @@ public sealed class ToolPermissionFilterTests
     /// Exposes the protected <c>ProvideAIContextAsync</c> for unit testing.
     /// <see cref="ToolPermissionFilter"/> is not sealed so this is safe.
     /// </summary>
-    private sealed class TestableFilter(IEnumerable<string> allowedTools) : ToolPermissionFilter(allowedTools)
+    private sealed class TestableFilter(IEnumerable<string>? allowedTools) : ToolPermissionFilter(allowedTools)
     {
         public ValueTask<AIContext> InvokeAsync(AIContextProvider.InvokingContext context, CancellationToken ct = default)
             => ProvideAIContextAsync(context, ct);
@@ -30,12 +30,12 @@ public sealed class ToolPermissionFilterTests
     private static AIContextProvider.InvokingContext MakeContext(AIContext aiContext) =>
         new(new Mock<AIAgent>().Object, new Mock<AgentSession>().Object, aiContext);
 
-    // ── empty allow-list ─────────────────────────────────────────────────────
+    // ── null allow-list = no restriction ─────────────────────────────────────
 
     [Fact]
-    public async Task EmptyAllowList_NoTools_ReturnsContextUnchanged()
+    public async Task NullAllowList_NoTools_ReturnsContextUnchanged()
     {
-        var filter = new TestableFilter([]);
+        var filter = new TestableFilter(null);
         var aiContext = new AIContext();
         var context = MakeContext(aiContext);
 
@@ -45,15 +45,31 @@ public sealed class ToolPermissionFilterTests
     }
 
     [Fact]
-    public async Task EmptyAllowList_WithTools_AllToolsPassThrough()
+    public async Task NullAllowList_WithTools_AllToolsPassThrough()
     {
-        var filter = new TestableFilter([]);
+        var filter = new TestableFilter(null);
         var aiContext = new AIContext { Tools = [MakeTool("Read"), MakeTool("Write")] };
         var context = MakeContext(aiContext);
 
         var result = await filter.InvokeAsync(context);
 
         result.Tools.Should().HaveCount(2);
+    }
+
+    // ── empty (non-null) allow-list = deny all ───────────────────────────────
+
+    [Fact]
+    public async Task EmptyAllowList_WithTools_StripsEveryTool()
+    {
+        // An empty but non-null allow-list is an active restriction that permits nothing — this is the
+        // deny-all state a tool ceiling collapses to when it is disjoint from the skills' tools.
+        var filter = new TestableFilter([]);
+        var aiContext = new AIContext { Tools = [MakeTool("Read"), MakeTool("Write")] };
+        var context = MakeContext(aiContext);
+
+        var result = await filter.InvokeAsync(context);
+
+        result.Tools.Should().BeEmpty();
     }
 
     // ── filtering behavior ───────────────────────────────────────────────────

@@ -31,7 +31,11 @@ public interface IToolChainBuilder
     /// </summary>
     /// <param name="skills">The skill definitions to merge tools from.</param>
     /// <param name="options">Options providing additional tools and overrides.</param>
-    /// <param name="allowedTools">Optional tool allowlist — only tools with matching names are kept.</param>
+    /// <param name="allowedTools">
+    /// Optional tool allowlist. <see langword="null"/> means no restriction (every resolved tool is
+    /// kept); a non-null list keeps only tools with matching names, so an empty (but non-null) list
+    /// keeps nothing (deny all).
+    /// </param>
     /// <param name="cancellationToken">
     /// Cancels tool resolution. Implementations perform network I/O against MCP servers, so a
     /// hung or slow server must not block agent construction past caller cancellation.
@@ -51,7 +55,11 @@ public interface IToolChainBuilder
     /// </summary>
     /// <param name="skills">The skill definitions to merge tools from.</param>
     /// <param name="options">Options providing additional tools and overrides.</param>
-    /// <param name="allowedTools">Optional tool allowlist — only tools with matching names are kept.</param>
+    /// <param name="allowedTools">
+    /// Optional tool allowlist. <see langword="null"/> means no restriction (every resolved tool is
+    /// kept); a non-null list keeps only tools with matching names, so an empty (but non-null) list
+    /// keeps nothing (deny all).
+    /// </param>
     /// <param name="cancellationToken">
     /// Cancels tool resolution. Implementations perform network I/O against MCP servers, so a
     /// hung or slow server must not block agent construction past caller cancellation.

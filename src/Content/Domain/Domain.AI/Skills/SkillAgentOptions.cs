@@ -61,6 +61,15 @@ public sealed record SkillAgentOptions
 	public string? AgentInstructions { get; init; }
 
 	/// <summary>
+	/// The agent's tool ceiling (its declared <c>allowed-tools</c>), sourced from
+	/// <c>AgentDefinition.AllowedTools</c>. When non-empty it caps the tools the agent may use to the
+	/// intersection with its skills' combined allowlist — it can only tighten, never widen. Null or
+	/// empty when the agent declares no ceiling, in which case the skills' own allowlists govern
+	/// unchanged.
+	/// </summary>
+	public IReadOnlyList<string>? AllowedTools { get; init; }
+
+	/// <summary>
 	/// Override the sampling temperature for the underlying chat client.
 	/// When null, the provider default is used.
 	/// </summary>

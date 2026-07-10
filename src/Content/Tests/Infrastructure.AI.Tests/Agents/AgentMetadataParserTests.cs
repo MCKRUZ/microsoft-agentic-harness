@@ -232,6 +232,37 @@ public sealed class AgentMetadataParserTests : IDisposable
     }
 
     [Fact]
+    public void ParseFromFile_AllowedToolsInFrontmatter_ParsesToolCeiling()
+    {
+        var dir = WriteAgent("ceilinged", """
+            ---
+            name: ceilinged-agent
+            allowed-tools: [file_system, calculation_engine]
+            ---
+            Agent body.
+            """);
+
+        var definition = CreateParser().ParseFromFile(Path.Combine(dir, "AGENT.md"), dir);
+
+        definition.AllowedTools.Should().BeEquivalentTo(["file_system", "calculation_engine"]);
+    }
+
+    [Fact]
+    public void ParseFromFile_NoAllowedTools_ReturnsEmptyCeiling()
+    {
+        var dir = WriteAgent("no-ceiling", """
+            ---
+            name: open-agent
+            ---
+            Agent body.
+            """);
+
+        var definition = CreateParser().ParseFromFile(Path.Combine(dir, "AGENT.md"), dir);
+
+        definition.AllowedTools.Should().BeEmpty();
+    }
+
+    [Fact]
     public void ParseFromFile_LegacySkillSingular_ParsesAsSingleElementList()
     {
         var dir = WriteAgent("legacy-skill", """

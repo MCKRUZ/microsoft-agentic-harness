@@ -84,7 +84,11 @@ public class AgentExecutionContextFactory
     /// </summary>
     /// <param name="skills">The skill definitions to merge.</param>
     /// <param name="options">Configuration for resource loading and agent overrides.</param>
-    /// <param name="allowedTools">Optional tool allowlist applied after merge — only tools with matching names are kept.</param>
+    /// <param name="allowedTools">
+    /// Optional explicit per-call tool ceiling, applied on top of the skills' allowlist and the agent's
+    /// declared ceiling. It can only tighten (never widen) the effective set. <see langword="null"/> or
+    /// empty means "no extra ceiling from this call"; a non-empty list caps the agent to the intersection.
+    /// </param>
     public virtual async Task<AgentExecutionContext> MapToAgentContextAsync(
         IReadOnlyList<SkillDefinition> skills,
         SkillAgentOptions options,
@@ -106,10 +110,15 @@ public class AgentExecutionContextFactory
         if (_appConfig.CurrentValue.AI?.ContextManagement?.PromptComposition?.Enabled == true)
             instruction = await ComposeStaticSystemPromptAsync(agentName, instruction);
 
-        var mergedToolChain = await _toolChainBuilder.BuildMergedToolsWithSourcesAsync(skills, options, allowedTools);
+        // Agent tool ceiling. Resolve the one effective allowlist that governs this agent (see
+        // ResolveEffectiveAllowlist) and drive BOTH enforcement points with it — the merge-time tool
+        // filter and the runtime ToolPermissionFilter — so they can never disagree. null means no
+        // restriction (every tool passes); a non-null list is an active restriction (empty = deny all).
+        var effectiveAllowedTools = ResolveEffectiveAllowlist(skills, options, allowedTools);
+        var mergedToolChain = await _toolChainBuilder.BuildMergedToolsWithSourcesAsync(skills, options, effectiveAllowedTools);
         var tools = mergedToolChain.Tools.ToList();
         var middlewareTypes = ResolveMiddlewareTypes(primarySkill, options);
-        var aiContextProviders = BuildMergedAIContextProviders(skills, options);
+        var aiContextProviders = BuildMergedAIContextProviders(skills, options, effectiveAllowedTools);
         var frameworkType = options.FrameworkType
             ?? ResolveFrameworkTypeFromMetadata(primarySkill)
             ?? _appConfig.CurrentValue.AI?.AgentFramework?.ClientType
@@ -349,12 +358,49 @@ public class AgentExecutionContextFactory
     }
 
     /// <summary>
+    /// Resolves the single effective tool allowlist that governs an agent: the union of its skills'
+    /// <c>AllowedTools</c> constraints, capped by the agent's declared ceiling (<paramref name="options"/>'s
+    /// <see cref="SkillAgentOptions.AllowedTools"/>) and then by any explicit per-call
+    /// <paramref name="explicitAllowlist"/>. Each cap can only tighten (see <see cref="ToolCeilingResolver"/>).
+    /// Returns <see langword="null"/> when nothing restricts the agent (every tool is permitted); a
+    /// non-null list is an active restriction, and an empty one denies every tool.
+    /// </summary>
+    private static IReadOnlyList<string>? ResolveEffectiveAllowlist(
+        IReadOnlyList<SkillDefinition> skills,
+        SkillAgentOptions options,
+        IReadOnlyList<string>? explicitAllowlist)
+    {
+        var effective = ToolCeilingResolver.ApplyCeiling(MergeSkillAllowedTools(skills), options.AllowedTools);
+        return ToolCeilingResolver.ApplyCeiling(effective, explicitAllowlist);
+    }
+
+    /// <summary>
+    /// Deduplicated union of every skill's <c>AllowedTools</c> constraint, case-insensitively, or
+    /// <see langword="null"/> when no skill declares a constraint — the "unbounded" input the ceiling
+    /// resolver expects for "no restriction" (distinct from an empty list, which means deny all).
+    /// </summary>
+    private static IReadOnlyList<string>? MergeSkillAllowedTools(IReadOnlyList<SkillDefinition> skills)
+    {
+        var union = skills
+            .Where(s => s.AllowedTools?.Count > 0)
+            .SelectMany(s => s.AllowedTools!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        return union.Count > 0 ? union : null;
+    }
+
+    /// <summary>
     /// Unions context providers from all skills. Skill paths are resolved once (from options or config).
-    /// AllowedTools constraints from all skills are merged into a single <see cref="Services.Agent.ToolPermissionFilter"/>.
+    /// The <paramref name="effectiveAllowlist"/> (the skills' combined constraint already capped by any
+    /// agent tool ceiling) drives a single <see cref="Services.Agent.ToolPermissionFilter"/>. It is
+    /// <see langword="null"/> when no restriction is active (no filter is wired), or a concrete set —
+    /// possibly empty, meaning deny-all — when a restriction applies.
     /// </summary>
     private IList<AIContextProvider>? BuildMergedAIContextProviders(
         IReadOnlyList<SkillDefinition> skills,
-        SkillAgentOptions options)
+        SkillAgentOptions options,
+        IReadOnlyList<string>? effectiveAllowlist)
     {
         var providers = new List<AIContextProvider>();
 
@@ -371,18 +417,12 @@ public class AgentExecutionContextFactory
             _logger.LogDebug("Wired AgentSkillsProvider with {PathCount} path(s)", skillPaths.Count);
         }
 
-        var allAllowedTools = skills
-            .Where(s => s.AllowedTools?.Count > 0)
-            .SelectMany(s => s.AllowedTools!)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-
-        if (allAllowedTools.Count > 0)
+        if (effectiveAllowlist is not null)
         {
-            providers.Add(new Services.Agent.ToolPermissionFilter(allAllowedTools));
+            providers.Add(new Services.Agent.ToolPermissionFilter(effectiveAllowlist));
 
-            _logger.LogDebug("Wired ToolPermissionFilter with {Count} allowed tool(s) from {SkillCount} skill(s)",
-                allAllowedTools.Count, skills.Count);
+            _logger.LogDebug("Wired ToolPermissionFilter with {Count} allowed tool(s) for {SkillCount} skill(s)",
+                effectiveAllowlist.Count, skills.Count);
         }
 
         // Cross-session memory recall. The provider resolves tenant-aware IKnowledgeMemory per
