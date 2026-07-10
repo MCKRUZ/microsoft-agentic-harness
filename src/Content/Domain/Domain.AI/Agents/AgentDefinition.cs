@@ -45,6 +45,13 @@ public sealed record AgentDefinition
     /// </summary>
     public IReadOnlyList<string> Skills { get; init; } = [];
 
+    /// <summary>
+    /// The agent's own instructions — the markdown body of the <c>AGENT.md</c> file, below the YAML
+    /// frontmatter. This is the agent's system prompt and leads the final instruction text, ahead of
+    /// the instructions contributed by its skills. Null when the <c>AGENT.md</c> has no body.
+    /// </summary>
+    public string? Instructions { get; init; }
+
     /// <summary>Absolute path to the source <c>AGENT.md</c> file.</summary>
     public string FilePath { get; init; } = string.Empty;
 

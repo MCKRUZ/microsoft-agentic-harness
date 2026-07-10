@@ -102,7 +102,7 @@ public class AgentExecutionContextFactory
         // PromptComposition is enabled, the authoritative section composer reframes that same skill
         // content with identity + permission-rules sections within a token budget; per-turn dynamic
         // context (session state, memory) stays on the AIContextProvider rail, never baked in here.
-        var instruction = SkillInstructionMerger.Merge(skills, options.AdditionalContext);
+        var instruction = SkillInstructionMerger.Merge(skills, options.AdditionalContext, options.AgentInstructions);
         if (_appConfig.CurrentValue.AI?.ContextManagement?.PromptComposition?.Enabled == true)
             instruction = await ComposeStaticSystemPromptAsync(agentName, instruction);
 

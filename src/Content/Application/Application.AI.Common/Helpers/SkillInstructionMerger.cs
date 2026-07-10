@@ -3,8 +3,8 @@ using Domain.AI.Skills;
 namespace Application.AI.Common.Helpers;
 
 /// <summary>
-/// Single source of truth for how a set of skill definitions and optional additional context are
-/// merged into the agent's static instruction text.
+/// Single source of truth for how optional agent-level instructions, a set of skill definitions, and
+/// optional additional context are merged into the agent's static instruction text.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -21,9 +21,10 @@ namespace Application.AI.Common.Helpers;
 ///   </description></item>
 /// </list>
 /// <para>
-/// A single skill's instructions are emitted verbatim. Multiple skills are each wrapped in a
-/// <c>## Skill: {name}</c> header so the model can tell them apart. Additional context, when present,
-/// is appended as a final block. All blocks are joined by a blank line.
+/// Block order: the agent's own instructions (when supplied) lead, ahead of every skill — they are the
+/// agent's system prompt. A single skill's instructions are then emitted verbatim; multiple skills are
+/// each wrapped in a <c>## Skill: {name}</c> header so the model can tell them apart. Additional context,
+/// when present, is appended as a final block. All blocks are joined by a blank line.
 /// </para>
 /// </remarks>
 public static class SkillInstructionMerger
@@ -36,15 +37,25 @@ public static class SkillInstructionMerger
     /// <param name="additionalContext">
     /// Optional extra context appended after all skill instructions; ignored when null or empty.
     /// </param>
+    /// <param name="agentInstructions">
+    /// Optional agent-level instructions (the agent's own system prompt). When present, they lead the
+    /// merged text ahead of every skill; ignored when null or whitespace.
+    /// </param>
     /// <returns>
-    /// The merged instruction text, or an empty string when no skill carries instructions and no
-    /// additional context is supplied.
+    /// The merged instruction text, or an empty string when no agent instructions, skill instructions,
+    /// or additional context are supplied.
     /// </returns>
-    public static string Merge(IReadOnlyList<SkillDefinition> skills, string? additionalContext)
+    public static string Merge(
+        IReadOnlyList<SkillDefinition> skills,
+        string? additionalContext,
+        string? agentInstructions = null)
     {
         ArgumentNullException.ThrowIfNull(skills);
 
         var parts = new List<string>();
+
+        if (!string.IsNullOrWhiteSpace(agentInstructions))
+            parts.Add(agentInstructions);
 
         foreach (var skill in skills)
         {
