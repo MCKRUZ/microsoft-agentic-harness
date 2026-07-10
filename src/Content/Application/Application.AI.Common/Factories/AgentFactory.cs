@@ -436,12 +436,18 @@ public class AgentFactory : IAgentFactory
         _logger.LogDebug("Creating agent from {Count} skill(s): {SkillIds}",
             skillIds.Count, string.Join(", ", skillIds));
 
+        // Resolve each skill id, preferring the owning agent's own nested skills (its
+        // <agentDir>/skills/) over the global registry so an agent-owned skill can shadow — but never
+        // pollute — the shared pool. The owned store is optional: hosts that do not discover agents
+        // (for example the standalone MCP server) simply resolve everything from the global registry.
+        var ownedSkills = _serviceProvider.GetService<IAgentOwnedSkillStore>();
         var skills = new List<SkillDefinition>();
         foreach (var id in skillIds)
         {
-            var skill = _skillRegistry.TryGet(id)
+            var skill = ResolveSkill(id, options.OwningAgentId, ownedSkills)
                 ?? throw new InvalidOperationException(
-                    $"Skill '{id}' not found. Ensure it exists in the configured skill paths.");
+                    $"Skill '{id}' not found. Ensure it exists in the configured skill paths " +
+                    "or the owning agent's skills/ directory.");
             skills.Add(skill);
         }
 
@@ -453,6 +459,26 @@ public class AgentFactory : IAgentFactory
         _logger.LogInformation("Created agent {AgentName} from {Count} skill(s): {SkillIds}",
             agentContext.Name, skillIds.Count, string.Join(", ", skillIds));
         return new AgentBuildResult(agent, agentContext);
+    }
+
+    /// <summary>
+    /// Resolves a skill id to its definition, checking the owning agent's own nested skills first (when
+    /// an <paramref name="owningAgentId"/> and an <paramref name="ownedSkills"/> store are available)
+    /// and falling back to the global registry. Returns null when neither source knows the id.
+    /// </summary>
+    private SkillDefinition? ResolveSkill(
+        string id,
+        string? owningAgentId,
+        IAgentOwnedSkillStore? ownedSkills)
+    {
+        if (owningAgentId is not null && ownedSkills is not null)
+        {
+            var owned = ownedSkills.TryGet(owningAgentId, id);
+            if (owned is not null)
+                return owned;
+        }
+
+        return _skillRegistry.TryGet(id);
     }
 
     /// <inheritdoc />

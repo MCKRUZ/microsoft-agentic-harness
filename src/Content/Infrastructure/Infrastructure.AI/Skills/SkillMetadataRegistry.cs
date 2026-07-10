@@ -2,6 +2,7 @@ using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Plugins;
 using Domain.AI.Skills;
 using Domain.Common.Config;
+using Domain.Common.Helpers;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -209,7 +210,7 @@ public sealed class SkillMetadataRegistry : ISkillMetadataRegistry
             {
                 if (string.IsNullOrWhiteSpace(skillPath))
                     continue;
-                pairs.Add((NormalizePath(skillPath), plugin.Name));
+                pairs.Add((PathScope.Normalize(skillPath), plugin.Name));
             }
         }
 
@@ -298,13 +299,13 @@ public sealed class SkillMetadataRegistry : ISkillMetadataRegistry
         if (pluginPaths.Count == 0)
             return null;
 
-        var normalizedDir = NormalizePath(skillDirectory);
+        var normalizedDir = PathScope.Normalize(skillDirectory);
         string? bestName = null;
         var bestLength = -1;
 
         foreach (var (path, pluginName) in pluginPaths)
         {
-            if (IsSameOrUnder(normalizedDir, path) && path.Length > bestLength)
+            if (PathScope.IsSameOrUnderNormalized(normalizedDir, path) && path.Length > bestLength)
             {
                 bestName = pluginName;
                 bestLength = path.Length;
@@ -313,17 +314,4 @@ public sealed class SkillMetadataRegistry : ISkillMetadataRegistry
 
         return bestName;
     }
-
-    private static bool IsSameOrUnder(string normalizedTarget, string normalizedBase)
-    {
-        var comparison = OperatingSystem.IsWindows()
-            ? StringComparison.OrdinalIgnoreCase
-            : StringComparison.Ordinal;
-
-        return string.Equals(normalizedTarget, normalizedBase, comparison)
-            || normalizedTarget.StartsWith(normalizedBase + Path.DirectorySeparatorChar, comparison);
-    }
-
-    private static string NormalizePath(string path) =>
-        Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
 }

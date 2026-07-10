@@ -155,7 +155,10 @@ public static class Program
 
         var factory = provider.GetRequiredService<IAgentFactory>();
         return await factory
-            .CreateAgentFromSkillsAsync(skillIds, new SkillAgentOptions(), cancellationToken)
+            .CreateAgentFromSkillsAsync(
+                skillIds,
+                new SkillAgentOptions { OwningAgentId = definition.Id },
+                cancellationToken)
             .ConfigureAwait(false);
     }
 

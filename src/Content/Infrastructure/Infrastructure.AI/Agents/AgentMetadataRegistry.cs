@@ -1,6 +1,8 @@
 using Application.AI.Common.Interfaces;
+using Application.AI.Common.Interfaces.Skills;
 using Domain.AI.Agents;
 using Domain.Common.Config;
+using Infrastructure.AI.Skills;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -24,20 +26,35 @@ public sealed class AgentMetadataRegistry : IAgentMetadataRegistry
     private readonly ILogger<AgentMetadataRegistry> _logger;
     private readonly IOptionsMonitor<AppConfig> _appConfig;
     private readonly AgentMetadataParser _parser;
+    private readonly SkillMetadataParser _skillParser;
+    private readonly IAgentOwnedSkillStore _ownedSkills;
 
     private Dictionary<string, AgentDefinition>? _cache;
     private IReadOnlyList<string> _searchedPaths = [];
     private readonly Lock _lock = new();
 
     /// <summary>Initialises the registry with its dependencies.</summary>
+    /// <param name="logger">Logger for discovery diagnostics.</param>
+    /// <param name="appConfig">Monitor over the live application configuration (agent search paths).</param>
+    /// <param name="parser">Parser that reads an <c>AGENT.md</c> file into an <see cref="AgentDefinition"/>.</param>
+    /// <param name="skillParser">Parser used to read each agent's own nested <c>SKILL.md</c> files.</param>
+    /// <param name="ownedSkills">
+    /// Store populated during discovery with the skills found under each agent's
+    /// <c>&lt;agentDir&gt;/skills/</c> directory, so <c>AgentFactory</c> can resolve them ahead of the
+    /// global registry without polluting it.
+    /// </param>
     public AgentMetadataRegistry(
         ILogger<AgentMetadataRegistry> logger,
         IOptionsMonitor<AppConfig> appConfig,
-        AgentMetadataParser parser)
+        AgentMetadataParser parser,
+        SkillMetadataParser skillParser,
+        IAgentOwnedSkillStore ownedSkills)
     {
         _logger = logger;
         _appConfig = appConfig;
         _parser = parser;
+        _skillParser = skillParser;
+        _ownedSkills = ownedSkills;
     }
 
     /// <inheritdoc />
@@ -154,8 +171,21 @@ public sealed class AgentMetadataRegistry : IAgentMetadataRegistry
                 var definition = _parser.ParseFromFile(agentFile, directory);
                 if (!string.IsNullOrEmpty(definition.Id))
                 {
-                    result[definition.Id] = definition;
-                    _logger.LogDebug("Discovered agent: {AgentId} from {Path}", definition.Id, directory);
+                    // Keep the first agent for a given id and warn on collision (mirrors
+                    // SkillMetadataRegistry). Critically, the owned-skill scan runs only for the winning
+                    // agent, so two agents that collide on id never merge their private skill namespaces.
+                    if (result.TryGetValue(definition.Id, out var existing))
+                    {
+                        _logger.LogWarning(
+                            "Agent ID collision on '{AgentId}': keeping first from {ExistingPath}; ignoring duplicate from {DuplicatePath}",
+                            definition.Id, existing.BaseDirectory, directory);
+                    }
+                    else
+                    {
+                        result[definition.Id] = definition;
+                        _logger.LogDebug("Discovered agent: {AgentId} from {Path}", definition.Id, directory);
+                        DiscoverAgentOwnedSkills(directory, definition.Id);
+                    }
                 }
             }
             catch (Exception ex)
@@ -175,6 +205,55 @@ public sealed class AgentMetadataRegistry : IAgentMetadataRegistry
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Could not enumerate directory: {Path}", directory);
+        }
+    }
+
+    /// <summary>
+    /// Scans an agent's own <c>skills/</c> subdirectory for nested <c>SKILL.md</c> files and registers
+    /// each into the <see cref="IAgentOwnedSkillStore"/> keyed by <paramref name="agentId"/>. These
+    /// skills are private to the agent: they are deliberately kept out of the global
+    /// <c>SkillMetadataRegistry</c> so they neither leak to other agents nor collide with shared skills.
+    /// A missing <c>skills/</c> directory is the common case and is silently skipped; a single malformed
+    /// nested skill logs a warning without failing the rest of discovery.
+    /// </summary>
+    private void DiscoverAgentOwnedSkills(string agentDirectory, string agentId)
+    {
+        var skillsRoot = Path.Combine(agentDirectory, "skills");
+        if (!Directory.Exists(skillsRoot))
+            return;
+
+        IEnumerable<string> skillDirs;
+        try
+        {
+            skillDirs = Directory.EnumerateDirectories(skillsRoot);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not enumerate agent-owned skills directory: {Path}", skillsRoot);
+            return;
+        }
+
+        foreach (var skillDir in skillDirs)
+        {
+            var skillFile = Path.Combine(skillDir, "SKILL.md");
+            if (!File.Exists(skillFile))
+                continue;
+
+            try
+            {
+                var skill = _skillParser.ParseFromFile(skillFile, skillDir);
+                if (string.IsNullOrEmpty(skill.Id))
+                    continue;
+
+                _ownedSkills.Register(agentId, skill);
+                _logger.LogDebug(
+                    "Discovered agent-owned skill {SkillId} for agent {AgentId} from {Path}",
+                    skill.Id, agentId, skillDir);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to parse agent-owned skill from {Path}", skillFile);
+            }
         }
     }
 }

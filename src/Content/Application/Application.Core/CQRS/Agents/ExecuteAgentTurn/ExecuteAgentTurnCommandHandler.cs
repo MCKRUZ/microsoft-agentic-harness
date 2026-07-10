@@ -100,6 +100,7 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 					AdditionalContext = request.SystemPromptOverride,
 					AgentInstructions = agentDef?.Instructions,
 					AllowedTools = agentDef?.AllowedTools,
+					OwningAgentId = agentDef?.Id,
 					DeploymentName = request.DeploymentOverride,
 					Temperature = request.Temperature,
 				},

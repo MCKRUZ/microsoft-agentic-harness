@@ -70,6 +70,13 @@ public sealed record SkillAgentOptions
 	public IReadOnlyList<string>? AllowedTools { get; init; }
 
 	/// <summary>
+	/// The id of the agent that owns this construction, used to resolve the agent's own nested skills
+	/// (its <c>&lt;agentDir&gt;/skills/</c>) ahead of the global skill registry. Null when the agent is
+	/// invoked by a bare skill id with no owning <c>AGENT.md</c>, in which case only global skills resolve.
+	/// </summary>
+	public string? OwningAgentId { get; init; }
+
+	/// <summary>
 	/// Override the sampling temperature for the underlying chat client.
 	/// When null, the provider default is used.
 	/// </summary>

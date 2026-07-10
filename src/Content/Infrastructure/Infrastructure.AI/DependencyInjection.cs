@@ -9,6 +9,7 @@ using Application.AI.Common.Interfaces.Context;
 using Application.AI.Common.Interfaces.Hooks;
 using Application.AI.Common.Interfaces.MetaHarness;
 using Application.AI.Common.Interfaces.Plugins;
+using Application.AI.Common.Interfaces.Skills;
 using Application.AI.Common.Interfaces.Prompts;
 using Application.AI.Common.Interfaces.Routing;
 using Application.AI.Common.Interfaces.Tools;
@@ -164,6 +165,7 @@ public static partial class DependencyInjection
 
         services.AddSingleton<SkillMetadataParser>();
         services.AddSingleton<ISkillMetadataRegistry, SkillMetadataRegistry>();
+        services.AddSingleton<IAgentOwnedSkillStore, AgentOwnedSkillStore>();
         services.AddSingleton<AgentMetadataParser>();
         services.AddSingleton<IAgentMetadataRegistry, AgentMetadataRegistry>();
 
