@@ -20,16 +20,30 @@ public sealed record RunBundleRequest
 
     /// <summary>The maximum number of turns the conversation may run. Defaults to 10.</summary>
     public int MaxTurns { get; init; } = 10;
+
+    /// <summary>
+    /// When true the run is reserved for a live stream instead of background dispatch: it is not executed until
+    /// the caller opens the returned <see cref="StartRunResponse.StreamUrl"/>, which then drives it and streams
+    /// the agent's output token-by-token. When false (the default) the run executes in the background and the
+    /// caller polls <see cref="StartRunResponse.StatusUrl"/> for the result.
+    /// </summary>
+    public bool Stream { get; init; }
 }
 
-/// <summary>Response to a successfully queued bundle run.</summary>
+/// <summary>Response to a successfully started bundle run.</summary>
 public sealed record StartRunResponse
 {
-    /// <summary>The opaque id of the queued run job.</summary>
+    /// <summary>The opaque id of the run job.</summary>
     public required string JobId { get; init; }
 
     /// <summary>Relative URL to poll for the run's status and result.</summary>
     public required string StatusUrl { get; init; }
+
+    /// <summary>
+    /// Relative URL of the live Server-Sent-Events feed for this run; null unless the run was started with
+    /// <see cref="RunBundleRequest.Stream"/> set. Opening it is what drives a streaming run.
+    /// </summary>
+    public string? StreamUrl { get; init; }
 }
 
 /// <summary>

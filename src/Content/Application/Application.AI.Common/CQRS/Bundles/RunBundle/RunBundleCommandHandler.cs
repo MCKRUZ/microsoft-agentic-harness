@@ -89,15 +89,22 @@ public sealed class RunBundleCommandHandler
             MaxTurns = request.MaxTurns,
             Envelope = request.Envelope,
             Status = BundleRunStatus.Queued,
+            Streaming = request.Stream,
             CreatedAt = _time.GetUtcNow()
         };
 
         _jobStore.Create(record);
-        await _dispatchQueue.EnqueueAsync(record.JobId, cancellationToken).ConfigureAwait(false);
+
+        // A streaming run is NOT enqueued: its sole driver is the caller opening the stream endpoint, which
+        // claims and drives it on the connection thread. Enqueuing it too would let the background dispatcher
+        // race the stream for the same job. A non-streaming run is handed to the dispatcher to run poll-only.
+        if (!request.Stream)
+            await _dispatchQueue.EnqueueAsync(record.JobId, cancellationToken).ConfigureAwait(false);
 
         _logger.LogInformation(
-            "Queued bundle run {JobId} for handle {Handle} (agent {AgentId}, {MessageCount} message(s), max {MaxTurns} turns).",
-            record.JobId, record.Handle, record.AgentName, record.UserMessages.Count, record.MaxTurns);
+            "Created bundle run {JobId} for handle {Handle} (agent {AgentId}, {MessageCount} message(s), max {MaxTurns} turns, {Mode}).",
+            record.JobId, record.Handle, record.AgentName, record.UserMessages.Count, record.MaxTurns,
+            request.Stream ? "awaiting stream" : "queued for background dispatch");
 
         return Result<RunBundleResult>.Success(new RunBundleResult { JobId = record.JobId });
     }
