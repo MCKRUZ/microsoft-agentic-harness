@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>Presentation.BundleApi</RootNamespace>
+    <AssemblyName>Presentation.BundleApi</AssemblyName>
+    <UserSecretsId>agentic-harness-bundle-api</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="appsettings.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Update="appsettings.Development.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>Presentation.BundleApi.Tests</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\Application\Application.AI.Common\Application.AI.Common.csproj" />
+    <ProjectReference Include="..\..\Domain\Domain.AI\Domain.AI.csproj" />
+    <ProjectReference Include="..\..\Domain\Domain.Common\Domain.Common.csproj" />
+    <ProjectReference Include="..\Presentation.Common\Presentation.Common.csproj" />
+  </ItemGroup>
+
+</Project>

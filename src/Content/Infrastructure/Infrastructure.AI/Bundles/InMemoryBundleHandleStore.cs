@@ -31,9 +31,10 @@ namespace Infrastructure.AI.Bundles;
 /// </remarks>
 public sealed class InMemoryBundleHandleStore : IBundleHandleStore, IDisposable
 {
-    private sealed class HandleEntry(StagedBundle bundle)
+    private sealed class HandleEntry(StagedBundle bundle, string ownerId)
     {
         public StagedBundle Bundle { get; } = bundle;
+        public string OwnerId { get; } = ownerId;
         public DateTimeOffset ExpiresAt { get; set; }
         public int LeaseCount { get; set; }
         public bool Removed { get; set; }
@@ -63,14 +64,28 @@ public sealed class InMemoryBundleHandleStore : IBundleHandleStore, IDisposable
     private TimeSpan Ttl => _config.CurrentValue.AI.BundleExecution.HandleTtl;
 
     /// <inheritdoc />
-    public string Register(StagedBundle bundle)
+    public string Register(StagedBundle bundle, string ownerId)
     {
         ArgumentNullException.ThrowIfNull(bundle);
+        ArgumentException.ThrowIfNullOrEmpty(ownerId);
 
         var handle = bundle.BundleId;
-        var entry = new HandleEntry(bundle) { ExpiresAt = _time.GetUtcNow() + Ttl };
+        var entry = new HandleEntry(bundle, ownerId) { ExpiresAt = _time.GetUtcNow() + Ttl };
         _entries[handle] = entry;
         return handle;
+    }
+
+    /// <inheritdoc />
+    public string? GetOwner(string handle)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(handle);
+        if (!_entries.TryGetValue(handle, out var entry))
+            return null;
+
+        lock (entry)
+        {
+            return IsLive(entry) ? entry.OwnerId : null;
+        }
     }
 
     /// <inheritdoc />

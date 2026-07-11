@@ -20,4 +20,11 @@ public sealed record GetBundleRunQuery : IRequest<Result<BundleRunRecord>>
 
     /// <summary>The job id of the run to read.</summary>
     public required string JobId { get; init; }
+
+    /// <summary>
+    /// Stable identifier of the caller reading the run. A run is only readable by the owner it was created
+    /// under; a mismatch is reported as not found, so a run cannot be read across callers. Resolved at the
+    /// transport boundary from the authenticated principal.
+    /// </summary>
+    public required string OwnerId { get; init; }
 }

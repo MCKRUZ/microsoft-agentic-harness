@@ -68,8 +68,12 @@ public sealed class RunBundleCommandHandler
                 "Bundle execution is disabled. Set AppConfig.AI.BundleExecution.Enabled = true to enable it.");
         }
 
-        var staged = _handleStore.TryGet(request.Handle);
-        if (staged is null)
+        // Owner check first: a caller can only run a handle they registered. A mismatch (or an absent handle)
+        // is reported identically as not found, so the endpoint never reveals that a handle exists for
+        // someone else.
+        var owner = _handleStore.GetOwner(request.Handle);
+        var staged = owner == request.OwnerId ? _handleStore.TryGet(request.Handle) : null;
+        if (owner != request.OwnerId || staged is null)
         {
             return Result<RunBundleResult>.NotFound(
                 "Bundle handle not found or expired. Register the bundle again to obtain a fresh handle.");
@@ -79,6 +83,7 @@ public sealed class RunBundleCommandHandler
         {
             JobId = Guid.NewGuid().ToString("N"),
             Handle = request.Handle,
+            OwnerId = request.OwnerId,
             AgentName = staged.Agent.Id,
             UserMessages = request.UserMessages,
             MaxTurns = request.MaxTurns,

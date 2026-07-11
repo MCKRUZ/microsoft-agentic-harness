@@ -48,7 +48,7 @@ public sealed class RegisterBundleCommandHandlerTests
         Agent = new AgentDefinition { Id = "agent-1", Name = "Agent 1" }
     };
 
-    private static RegisterBundleCommand Command() => new() { Archive = new MemoryStream([1, 2, 3]) };
+    private static RegisterBundleCommand Command() => new() { Archive = new MemoryStream([1, 2, 3]), OwnerId = "owner-1" };
 
     [Fact]
     public async Task Handle_WhenDisabled_ReturnsForbidden_AndDoesNotStage()
@@ -70,7 +70,7 @@ public sealed class RegisterBundleCommandHandlerTests
 
         result.IsSuccess.Should().BeFalse();
         result.Errors.Should().Contain("archive too large");
-        _handleStore.Verify(h => h.Register(It.IsAny<StagedBundle>()), Times.Never);
+        _handleStore.Verify(h => h.Register(It.IsAny<StagedBundle>(), It.IsAny<string>()), Times.Never);
     }
 
     [Fact]
@@ -78,13 +78,13 @@ public sealed class RegisterBundleCommandHandlerTests
     {
         _staging.Setup(s => s.StageAsync(It.IsAny<Stream>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result<StagedBundle>.Success(Staged()));
-        _handleStore.Setup(h => h.Register(It.IsAny<StagedBundle>())).Returns("handle-1");
+        _handleStore.Setup(h => h.Register(It.IsAny<StagedBundle>(), It.IsAny<string>())).Returns("handle-1");
 
         var result = await BuildSut(enabled: true).Handle(Command(), CancellationToken.None);
 
         result.IsSuccess.Should().BeTrue();
         result.Value!.Handle.Should().Be("handle-1");
         result.Value.ExpiresAt.Should().Be(_time.GetUtcNow() + TimeSpan.FromMinutes(30));
-        _handleStore.Verify(h => h.Register(It.Is<StagedBundle>(b => b.BundleId == "b1")), Times.Once);
+        _handleStore.Verify(h => h.Register(It.Is<StagedBundle>(b => b.BundleId == "b1"), "owner-1"), Times.Once);
     }
 }

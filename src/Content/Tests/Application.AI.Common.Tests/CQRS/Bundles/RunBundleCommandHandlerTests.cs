@@ -54,6 +54,7 @@ public sealed class RunBundleCommandHandlerTests
         Handle = "handle-1",
         UserMessages = ["hello"],
         Envelope = new CapabilityEnvelope(),
+        OwnerId = "owner-1",
         MaxTurns = 4
     };
 
@@ -79,8 +80,9 @@ public sealed class RunBundleCommandHandlerTests
     }
 
     [Fact]
-    public async Task Handle_HappyPath_CreatesQueuedRecord_CapturesAgentName_AndEnqueues()
+    public async Task Handle_HappyPath_CreatesQueuedRecord_CapturesAgentAndOwner_AndEnqueues()
     {
+        _handleStore.Setup(h => h.GetOwner("handle-1")).Returns("owner-1");
         _handleStore.Setup(h => h.TryGet("handle-1")).Returns(Staged());
         BundleRunRecord? created = null;
         _jobStore.Setup(j => j.Create(It.IsAny<BundleRunRecord>())).Callback<BundleRunRecord>(r => created = r);
@@ -92,8 +94,23 @@ public sealed class RunBundleCommandHandlerTests
         created!.Status.Should().Be(BundleRunStatus.Queued);
         created.AgentName.Should().Be("the-agent");
         created.Handle.Should().Be("handle-1");
+        created.OwnerId.Should().Be("owner-1");
         created.MaxTurns.Should().Be(4);
         result.Value!.JobId.Should().Be(created.JobId);
         _queue.Verify(q => q.EnqueueAsync(created.JobId, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task Handle_WhenHandleOwnedByAnotherCaller_ReturnsNotFound_AndDoesNotRun()
+    {
+        // The handle exists, but for a different owner: must be indistinguishable from "not found".
+        _handleStore.Setup(h => h.GetOwner("handle-1")).Returns("someone-else");
+        _handleStore.Setup(h => h.TryGet("handle-1")).Returns(Staged());
+
+        var result = await BuildSut(enabled: true).Handle(Command(), CancellationToken.None);
+
+        result.FailureType.Should().Be(ResultFailureType.NotFound);
+        _jobStore.Verify(j => j.Create(It.IsAny<BundleRunRecord>()), Times.Never);
+        _queue.Verify(q => q.EnqueueAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 }

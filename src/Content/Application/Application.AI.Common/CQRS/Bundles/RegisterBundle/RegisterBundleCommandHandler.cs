@@ -66,11 +66,14 @@ public sealed class RegisterBundleCommandHandler
         var staged = await _stagingService.StageAsync(request.Archive, cancellationToken).ConfigureAwait(false);
         if (!staged.IsSuccess || staged.Value is null)
         {
-            // The staging service's reasons are already caller-safe (no internal paths); pass them through.
-            return Result<RegisterBundleResult>.Fail([.. staged.Errors]);
+            // A staging-guard failure (oversized, decompression bomb, path traversal, missing AGENT.md, …) is
+            // a rejection of the caller's uploaded archive — client-input validation, not a server error — so
+            // it is surfaced as a validation failure (HTTP 400). The staging service's reasons are already
+            // caller-safe (no internal paths), so they pass through verbatim.
+            return Result<RegisterBundleResult>.ValidationFailure([.. staged.Errors]);
         }
 
-        var handle = _handleStore.Register(staged.Value);
+        var handle = _handleStore.Register(staged.Value, request.OwnerId);
         var expiresAt = _time.GetUtcNow() + bundleConfig.HandleTtl;
 
         _logger.LogInformation(

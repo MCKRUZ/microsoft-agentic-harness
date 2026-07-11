@@ -44,10 +44,12 @@ public sealed class GetBundleRunQueryHandler
         }
 
         var record = _jobStore.Get(request.JobId);
-        if (record is null || !string.Equals(record.Handle, request.Handle, StringComparison.Ordinal))
+        if (record is null
+            || !string.Equals(record.Handle, request.Handle, StringComparison.Ordinal)
+            || !string.Equals(record.OwnerId, request.OwnerId, StringComparison.Ordinal))
         {
             return Task.FromResult(Result<BundleRunRecord>.NotFound(
-                "Bundle run not found. It may never have existed, expired, or belongs to a different handle."));
+                "Bundle run not found. It may never have existed, expired, or belongs to a different caller."));
         }
 
         return Task.FromResult(Result<BundleRunRecord>.Success(record));

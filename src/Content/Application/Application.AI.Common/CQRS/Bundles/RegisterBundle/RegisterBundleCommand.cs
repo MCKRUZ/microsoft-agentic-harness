@@ -21,4 +21,11 @@ public sealed record RegisterBundleCommand : IRequest<Result<RegisterBundleResul
     /// disposal. Its compressed length is enforced against the configured maximum while reading.
     /// </summary>
     public required Stream Archive { get; init; }
+
+    /// <summary>
+    /// Stable identifier of the caller registering the bundle. The resulting handle is bound to this owner,
+    /// so only the same caller can later run, read, or delete it — a leaked handle cannot be used across
+    /// callers. Resolved at the transport boundary from the authenticated principal.
+    /// </summary>
+    public required string OwnerId { get; init; }
 }
