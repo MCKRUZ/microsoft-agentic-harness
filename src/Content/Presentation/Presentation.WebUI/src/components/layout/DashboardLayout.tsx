@@ -4,6 +4,7 @@ import { Header } from './Header';
 import { AiProviderBanner } from './AiProviderBanner';
 import { SidebarSwitcher } from './SidebarSwitcher';
 import { useAppStore } from '@/stores/appStore';
+import { useChatStore } from '@/features/chat/useChatStore';
 import { CommandPalette, type CommandItem } from '@/features/commands/CommandPalette';
 import { useAgentsQuery } from '@/features/agents/useAgentsQuery';
 import { useTheme } from '@/hooks/useTheme';
@@ -12,9 +13,9 @@ import { NAV_ITEMS } from '@/lib/navigation';
 export function DashboardLayout() {
   const toggleSidebar = useAppStore((s) => s.toggleSidebar);
   const showSidebar = useAppStore((s) => s.showSidebar);
-  const setActiveConversationId = useAppStore((s) => s.setActiveConversationId);
   const setSelectedAgent = useAppStore((s) => s.setSelectedAgent);
   const selectedAgent = useAppStore((s) => s.selectedAgent);
+  const clearMessages = useChatStore((s) => s.clearMessages);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const agentsQuery = useAgentsQuery();
   const { resolvedTheme, toggleTheme } = useTheme();
@@ -54,7 +55,8 @@ export function DashboardLayout() {
         group: 'Chat',
         keywords: ['reset', 'clear', 'start'],
         run: () => {
-          setActiveConversationId(crypto.randomUUID());
+          // Blank composer, no id minted — the conversation is created on the first message.
+          clearMessages();
           navigate('/chat');
         },
       },
@@ -96,7 +98,8 @@ export function DashboardLayout() {
         keywords: ['switch', 'agent', agent.name],
         run: () => {
           setSelectedAgent(agent.id);
-          setActiveConversationId(null);
+          // Fresh blank composer for the chosen agent; no phantom conversation.
+          clearMessages();
           navigate('/chat');
         },
       });
@@ -108,7 +111,7 @@ export function DashboardLayout() {
     pathname,
     agentsQuery.data,
     selectedAgent,
-    setActiveConversationId,
+    clearMessages,
     toggleSidebar,
     toggleTheme,
     setSelectedAgent,

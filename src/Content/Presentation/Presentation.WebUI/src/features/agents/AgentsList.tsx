@@ -1,18 +1,23 @@
 import { Bot, Check } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { useAgentsQuery } from './useAgentsQuery';
 import { useAppStore } from '@/stores/appStore';
+import { useChatStore } from '@/features/chat/useChatStore';
 import { cn } from '@/lib/utils';
 
 export function AgentsList() {
   const { data: agents, isLoading, error } = useAgentsQuery();
   const selectedAgent = useAppStore((s) => s.selectedAgent);
   const setSelectedAgent = useAppStore((s) => s.setSelectedAgent);
-  const setActiveConversationId = useAppStore((s) => s.setActiveConversationId);
+  const clearMessages = useChatStore((s) => s.clearMessages);
+  const navigate = useNavigate();
 
   const handleSelect = (id: string): void => {
-    if (id === selectedAgent) return;
-    setSelectedAgent(id);
-    setActiveConversationId(null);
+    if (id !== selectedAgent) setSelectedAgent(id);
+    // Land on a blank composer for the chosen agent. Navigating to `/chat` (no id) mints nothing
+    // server-side; the conversation is created only when the first message is sent.
+    clearMessages();
+    navigate('/chat');
   };
 
   if (isLoading) {

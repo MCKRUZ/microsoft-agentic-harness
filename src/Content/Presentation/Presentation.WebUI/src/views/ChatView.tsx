@@ -1,3 +1,5 @@
+import { useEffect } from 'react';
+import { useParams } from 'react-router-dom';
 import { ChevronsLeft, ChevronsRight } from 'lucide-react';
 import { ChatPanel } from '@/features/chat/ChatPanel';
 import { ConversationSidebar } from '@/features/conversations/ConversationSidebar';
@@ -7,6 +9,16 @@ import { cn } from '@/lib/utils';
 export function ChatView() {
   const showSidebar = useAppStore((s) => s.showSidebar);
   const toggleSidebar = useAppStore((s) => s.toggleSidebar);
+  const activeConversationId = useAppStore((s) => s.activeConversationId);
+  const setActiveConversationId = useAppStore((s) => s.setActiveConversationId);
+  const { conversationId } = useParams<{ conversationId: string }>();
+
+  // The URL is the source of truth for which conversation is active; mirror it into the store that the
+  // chat components read. `/chat` (no param) clears the active id → blank composer.
+  useEffect(() => {
+    const next = conversationId ?? null;
+    if (next !== activeConversationId) setActiveConversationId(next);
+  }, [conversationId, activeConversationId, setActiveConversationId]);
 
   return (
     <div className="relative flex flex-1 min-w-0 h-full">
