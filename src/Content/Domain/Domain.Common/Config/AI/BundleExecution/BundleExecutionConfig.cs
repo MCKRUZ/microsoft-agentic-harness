@@ -83,4 +83,28 @@ public class BundleExecutionConfig
     /// grants nothing until an operator configures it.
     /// </summary>
     public CapabilityEnvelopesConfig Envelopes { get; set; } = new();
+
+    /// <summary>
+    /// How long a staged-bundle handle stays valid. The lifetime is sliding: it is refreshed each time the
+    /// handle is looked up or a run against it starts, so an actively-used bundle stays alive while an
+    /// abandoned one expires and its staging directory is deleted by the cleanup sweeper. Must be positive.
+    /// </summary>
+    /// <value>Default: 30 minutes</value>
+    public TimeSpan HandleTtl { get; set; } = TimeSpan.FromMinutes(30);
+
+    /// <summary>
+    /// How long a run record stays pollable after it reaches a terminal state before the cleanup sweeper
+    /// evicts it. Bundle runs are not persisted (the host is not their system of record); this bounds how
+    /// long a caller has to read a completed run's result. Must be positive.
+    /// </summary>
+    /// <value>Default: 30 minutes</value>
+    public TimeSpan RunRecordTtl { get; set; } = TimeSpan.FromMinutes(30);
+
+    /// <summary>
+    /// How often the background cleanup sweeper runs its pass over expired handles (deleting their staging
+    /// directories) and expired run records. This is the belt-and-suspenders backstop that guarantees a
+    /// staging directory is removed even if no explicit delete arrives. Must be positive.
+    /// </summary>
+    /// <value>Default: 60 seconds</value>
+    public TimeSpan CleanupInterval { get; set; } = TimeSpan.FromSeconds(60);
 }
