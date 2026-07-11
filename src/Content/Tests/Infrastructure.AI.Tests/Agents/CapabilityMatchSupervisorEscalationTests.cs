@@ -14,6 +14,7 @@ using Domain.Common.Config.AI;
 using Domain.Common.Config.AI.Governance;
 using Domain.Common.Config.AI.Orchestration;
 using Infrastructure.AI.Agents;
+using Infrastructure.AI.Tests.Helpers;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -200,7 +201,7 @@ public sealed class CapabilityMatchSupervisorEscalationTests : IDisposable
 
         _agentFactoryMock
             .Setup(f => f.CreateAgentAsync(It.IsAny<AgentExecutionContext>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(Mock.Of<AIAgent>());
+            .ReturnsAsync(new TestableAIAgent("stub output"));
 
         var result = await _supervisor.DelegateAsync(
             "deploy to production",

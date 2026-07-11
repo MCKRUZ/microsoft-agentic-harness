@@ -12,6 +12,7 @@ using Domain.Common.Config.AI;
 using Domain.Common.Config.AI.Orchestration;
 using FluentAssertions;
 using Infrastructure.AI.Agents;
+using Infrastructure.AI.Tests.Helpers;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
@@ -134,7 +135,7 @@ public sealed class CapabilityMatchSupervisorTests : IDisposable
 
         _agentFactoryMock
             .Setup(f => f.CreateAgentAsync(It.IsAny<AgentExecutionContext>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(Mock.Of<AIAgent>());
+            .ReturnsAsync(new TestableAIAgent("stub output"));
     }
 
     [Fact]
@@ -245,6 +246,44 @@ public sealed class CapabilityMatchSupervisorTests : IDisposable
                 It.Is<DelegationRecord>(r => r.State == DelegationState.Completed),
                 It.IsAny<CancellationToken>()),
             Times.Once());
+    }
+
+    [Fact]
+    public async Task DelegateAsync_RunsSubagentAndReturnsItsRealOutput()
+    {
+        // Regression for the inert delegation executor (GitHub #96, Issue 2): the supervisor
+        // must actually RUN the selected subagent and surface its output — not return a
+        // "Agent … created for delegation …" placeholder that discards the model's work.
+        _agentFactoryMock
+            .Setup(f => f.CreateAgentAsync(It.IsAny<AgentExecutionContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new TestableAIAgent("SUBAGENT_REAL_OUTPUT"));
+
+        var result = await _supervisor.DelegateAsync(
+            "research the phases of a spec-driven project", ["tool_a"], AutonomyLevel.Supervised);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Output.Should().Be("SUBAGENT_REAL_OUTPUT");
+        result.Output.Should().NotContain("created for delegation");
+    }
+
+    [Fact]
+    public async Task DelegateAsync_PassesTaskDescriptionToSubagent()
+    {
+        // The delegated work only reaches the model if the task description is sent as the
+        // subagent's user message. Capture the messages the agent is run with and assert it.
+        IEnumerable<ChatMessage>? captured = null;
+        _agentFactoryMock
+            .Setup(f => f.CreateAgentAsync(It.IsAny<AgentExecutionContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new TestableAIAgent(msgs =>
+            {
+                captured = msgs.ToList();
+                return new AgentResponse(new ChatMessage(ChatRole.Assistant, "done"));
+            }));
+
+        await _supervisor.DelegateAsync("UNIQUE_TASK_MARKER", ["tool_a"], AutonomyLevel.Supervised);
+
+        captured.Should().NotBeNull();
+        captured!.Should().Contain(m => m.Text != null && m.Text.Contains("UNIQUE_TASK_MARKER"));
     }
 
     [Fact]

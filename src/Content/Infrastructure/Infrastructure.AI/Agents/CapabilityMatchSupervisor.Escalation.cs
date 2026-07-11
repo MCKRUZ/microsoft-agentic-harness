@@ -5,6 +5,8 @@ using Domain.AI.Escalation;
 using Domain.AI.Governance;
 using Domain.AI.Orchestration;
 using Domain.AI.Telemetry.Conventions;
+using Microsoft.Agents.AI;
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 
 namespace Infrastructure.AI.Agents;
@@ -138,6 +140,17 @@ public sealed partial class CapabilityMatchSupervisor
         var agentContext = _contextFactory.CreateFromDelegation(definition, toolOverrides, currentDepth + 1, pendingRecord.DelegationId);
         var agent = await _agentFactory.CreateAgentAsync(agentContext, ct);
 
+        // Actually run the delegated subagent on the task. Creating the agent alone does no work —
+        // the task description must be sent as the subagent's user message and its response captured,
+        // otherwise the delegation returns a placeholder and the orchestrator has nothing to
+        // synthesize (the defect behind GitHub #96, Issue 2). Token accounting for this run flows
+        // through the chat-client middleware into the parent turn's usage capture, so DelegationResult
+        // carries duration + real output here and leaves TokensUsed at 0 — the parent turn owns the
+        // aggregate token count.
+        var response = await agent.RunAsync(
+            [new ChatMessage(ChatRole.User, pendingRecord.TaskDescription)],
+            cancellationToken: ct);
+
         stopwatch.Stop();
 
         await RecordCompletion(pendingRecord, ct);
@@ -162,10 +175,8 @@ public sealed partial class CapabilityMatchSupervisor
             "Delegation {DelegationId} to {AgentId} completed in {DurationMs}ms",
             pendingRecord.DelegationId, selection.SelectedAgent.AgentId, durationMs);
 
-        return DelegationResult.Success(
-            $"Agent {selection.SelectedAgent.AgentId} created for delegation {pendingRecord.DelegationId}",
-            0,
-            durationMs);
+        var output = response.Text ?? string.Empty;
+        return DelegationResult.Success(output, 0, durationMs);
     }
 
     private async Task RecordCompletion(DelegationRecord pendingRecord, CancellationToken ct)
