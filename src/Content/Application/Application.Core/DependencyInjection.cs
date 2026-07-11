@@ -56,6 +56,11 @@ public static class DependencyInjection
 		// Plugin-boundary rule provider — generates permission rules from plugin governance config
 		services.AddSingleton<IPermissionRuleProvider, PluginPermissionRuleProvider>();
 
+		// Capability-envelope rule provider — confines a bundle run to its per-caller grant by emitting
+		// bypass-immune Deny for out-of-envelope tools plus an autonomy-ceiling baseline. Inert (returns no
+		// rules) unless a bundle run has published an ambient envelope, so non-bundle deployments are unaffected.
+		services.AddSingleton<IPermissionRuleProvider, EnvelopePermissionRuleProvider>();
+
 		// Graded autonomy decision evaluator (PR-4) — consulted by the ChangeProposal
 		// gate resolver to decide whether the approval gate is included in a proposal's
 		// frozen gate list. When AppConfig.AI.Permissions.GradedAutonomy.Enabled is false

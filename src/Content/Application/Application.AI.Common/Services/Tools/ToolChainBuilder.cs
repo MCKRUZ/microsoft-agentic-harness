@@ -1,6 +1,7 @@
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Plugins;
 using Application.AI.Common.Interfaces.Tools;
+using Application.AI.Common.Services.Governance;
 using Domain.AI.Skills;
 using Domain.Common.Config.AI.Plugins;
 using Microsoft.Extensions.AI;
@@ -51,8 +52,7 @@ public class ToolChainBuilder : IToolChainBuilder
 
         if (skill.Mode == SkillMode.Injected && _mcpToolProvider != null)
         {
-            var allMcpTools = await _mcpToolProvider.GetAllToolsAsync(cancellationToken);
-            foreach (var serverTools in allMcpTools.Values)
+            foreach (var serverTools in await ResolveInjectedMcpToolsAsync(cancellationToken))
             {
                 tools.AddRange(serverTools);
                 foreach (var t in serverTools) mcpCollector.Add(t.Name);
@@ -211,7 +211,10 @@ public class ToolChainBuilder : IToolChainBuilder
         ISet<string> mcpCollector,
         CancellationToken cancellationToken = default)
     {
-        if (_mcpToolProvider != null)
+        // Reference-only MCP: a bundle run resolves a tool from an MCP server only when the caller's
+        // envelope grants that server; otherwise the MCP attempt is skipped and resolution falls through
+        // to keyed DI (itself governed at invocation time). Off the bundle path every server is permitted.
+        if (_mcpToolProvider != null && IsMcpServerAllowed(declaration.Name))
         {
             try
             {
@@ -253,6 +256,65 @@ public class ToolChainBuilder : IToolChainBuilder
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Resolves the MCP tools to inject for an Injected-mode skill. Off the bundle path this is every
+    /// configured server's tools (the historical behaviour). On a bundle run it contacts <em>only</em> the
+    /// servers the caller's envelope grants — never enumerating every host server — so an ungranted server
+    /// is never reached at all (no side-effect connection, no tool-schema disclosure), closing
+    /// SSRF-by-construction. An empty grant yields no MCP tools.
+    /// </summary>
+    private async Task<IReadOnlyList<IList<AITool>>> ResolveInjectedMcpToolsAsync(CancellationToken cancellationToken)
+    {
+        var envelope = CapabilityEnvelopeAccessor.Current;
+        if (envelope is null)
+            return [.. (await _mcpToolProvider!.GetAllToolsAsync(cancellationToken)).Values];
+
+        // Reference-only MCP on a bundle run: contact ONLY the granted servers, concurrently. A server that
+        // fails is skipped (its tools are simply unavailable this turn) rather than failing the whole build.
+        var fetches = envelope.AllowedMcpServers.Select(async server =>
+        {
+            try
+            {
+                return await _mcpToolProvider!.GetToolsAsync(server, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Capability envelope: granted MCP server '{Server}' could not be reached — skipped", server);
+                return null;
+            }
+        });
+
+        var granted = (await Task.WhenAll(fetches))
+            .Where(t => t is { Count: > 0 })
+            .Cast<IList<AITool>>()
+            .ToList();
+
+        _logger.LogInformation(
+            "Capability envelope: injecting MCP tools from {Count} granted server(s); ungranted servers are not contacted",
+            granted.Count);
+
+        return granted;
+    }
+
+    /// <summary>
+    /// Whether the ambient capability envelope permits reaching the named MCP server on the managed
+    /// resolution path. Off the bundle path no envelope is published, so this returns
+    /// <see langword="true"/> and every server passes through unchanged. On a bundle run only servers named
+    /// in the caller's envelope are permitted; a denied server is logged and never contacted, so a bundle
+    /// can never reach a host MCP server it was not granted.
+    /// </summary>
+    private bool IsMcpServerAllowed(string serverName)
+    {
+        var envelope = CapabilityEnvelopeAccessor.Current;
+        if (envelope is null || envelope.GrantsMcpServer(serverName))
+            return true;
+
+        _logger.LogInformation(
+            "Capability envelope: MCP server '{Server}' is outside the bundle run's grant — not contacted and its tools excluded",
+            serverName);
+        return false;
     }
 
     private IEnumerable<AITool>? ResolveToolByName(string toolName)

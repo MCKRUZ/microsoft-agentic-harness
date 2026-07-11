@@ -25,5 +25,7 @@ public enum PermissionRuleSource
     /// <summary>Rule generated from the agent's autonomy tier assignment.</summary>
     AutonomyTier,
     /// <summary>Rule from a plugin declaration's governance configuration.</summary>
-    PluginDeclaration
+    PluginDeclaration,
+    /// <summary>Rule from the per-caller capability envelope granted to a bundle run.</summary>
+    CapabilityEnvelope
 }

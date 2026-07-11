@@ -3,6 +3,7 @@ using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Permissions;
 using Application.AI.Common.Interfaces.Sandbox;
 using Application.AI.Common.Interfaces.Tools;
+using Domain.AI.Bundles;
 using Domain.AI.Changes;
 using Domain.AI.Governance;
 using Domain.AI.Permissions;
@@ -52,6 +53,10 @@ public sealed class ToolInvocationGovernor : IToolInvocationGovernor
     private readonly object _lock = new();
     private readonly List<ToolDecisionRecord> _decisions = [];
 
+    // Set true the first time a tool is authorized under active enforcement this turn, so GetTrace reports
+    // the turn as enforced even if it is called after the bundle run's ambient scope has torn down.
+    private bool _enforcedObserved;
+
     public ToolInvocationGovernor(
         IAgentExecutionContext executionContext,
         IToolPermissionService toolPermissionService,
@@ -80,23 +85,57 @@ public sealed class ToolInvocationGovernor : IToolInvocationGovernor
         _logger = logger;
     }
 
+    /// <summary>
+    /// Whether the current flow is a bundle run — i.e. a per-caller <see cref="CapabilityEnvelope"/> has been
+    /// published for it. A bundle executes an externally-authored agent, so its whole flow must be governed
+    /// and fail closed; this is the single ambient fact the enforcement decision derives from, so there is no
+    /// way to publish an envelope without also arming the governor.
+    /// </summary>
+    private static bool BundleRunActive => CapabilityEnvelopeAccessor.Current is not null;
+
+    /// <summary>
+    /// Whether per-invocation enforcement is active for the current flow. True when the host has opted in
+    /// globally (<c>GovernanceConfig.EnforceToolInvocation</c>) <em>or</em> a bundle run is active
+    /// (<see cref="BundleRunActive"/>) — bundle runs must always be governed so the per-caller capability
+    /// envelope is never inert. Off both paths this is false and the governor is a pure pass-through,
+    /// unchanged for existing deployments.
+    /// </summary>
+    private bool EnforcementActive =>
+        _governanceConfig.CurrentValue.EnforceToolInvocation || BundleRunActive;
+
     /// <inheritdoc />
     public async ValueTask<ToolInvocationDecision> AuthorizeAsync(string toolName, CancellationToken cancellationToken)
     {
         // Opt-in: when enforcement is off the governor never engages — pure pass-through, no record,
         // no behaviour change for existing deployments.
-        if (!_governanceConfig.CurrentValue.EnforceToolInvocation)
+        if (!EnforcementActive)
             return ToolInvocationDecision.Allow();
+
+        // Enforcement ran this turn; remember it so the trace reports the turn as governed even if GetTrace
+        // is called after a bundle run's ambient envelope scope has already disposed.
+        _enforcedObserved = true;
 
         var profile = _toolRiskClassifier.Classify(toolName);
 
-        // No agent identity means this isn't a fully-scoped agent turn (e.g. an execution path that
-        // did not initialize the context). Pass through rather than guess an identity — but RECORD it
-        // as ungoverned (Enforced=false) so the trace surfaces the gap instead of it being invisible
-        // to an evaluator.
+        // No agent identity means this isn't a fully-scoped agent turn (e.g. an execution path that did not
+        // initialize the context). Off the bundle path we pass through but RECORD it ungoverned so the trace
+        // surfaces the gap. Inside a bundle run we must NEVER allow ungoverned — an ephemeral agent whose
+        // identity is missing is exactly the shape a bypass would take, so fail closed.
         var agentId = _executionContext.AgentId;
         if (string.IsNullOrEmpty(agentId))
         {
+            if (BundleRunActive)
+            {
+                _logger.LogWarning(
+                    "Tool governance: no AgentId in execution context for {ToolName} during a bundle run — denied (fail-closed)",
+                    toolName);
+                Record(new ToolDecisionRecord(toolName, ToolDecisionOutcome.Denied,
+                    "no agent identity in a bundle run", profile.Radius,
+                    RequiredApproval: false, ApprovalGranted: false, Enforced: true));
+                return ToolInvocationDecision.Deny(
+                    $"Error: tool '{toolName}' is not permitted in the current context.");
+            }
+
             _logger.LogWarning(
                 "Tool governance: no AgentId in execution context for {ToolName} — allowed ungoverned and recorded", toolName);
             Record(new ToolDecisionRecord(toolName, ToolDecisionOutcome.Allowed,
@@ -261,13 +300,19 @@ public sealed class ToolInvocationGovernor : IToolInvocationGovernor
     public void Reset()
     {
         lock (_lock)
+        {
             _decisions.Clear();
+            _enforcedObserved = false;
+        }
     }
 
     /// <inheritdoc />
     public GovernanceTrace GetTrace()
     {
-        var enforced = _governanceConfig.CurrentValue.EnforceToolInvocation;
+        // Prefer the snapshot taken while authorizing: a bundle run's ambient enforcement signal may have
+        // torn down by the time the trace is assembled, but a turn that authorized under enforcement is
+        // still an enforced turn.
+        var enforced = _enforcedObserved || EnforcementActive;
         lock (_lock)
         {
             if (!enforced && _decisions.Count == 0)

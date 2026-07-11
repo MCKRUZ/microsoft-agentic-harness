@@ -126,12 +126,9 @@ public sealed class PluginPermissionRuleProvider : IPermissionRuleProvider
             }
 
             // Both Restricted and Supervised map to Ask — differentiation is via per-tool
-            // overrides in AutonomyTierRuleProvider config, not at the plugin boundary.
-            var defaultBehavior = autonomyLevel switch
-            {
-                AutonomyLevel.Autonomous => PermissionBehaviorType.Allow,
-                _ => PermissionBehaviorType.Ask
-            };
+            // overrides in AutonomyTierRuleProvider config, not at the plugin boundary. Shared mapping so
+            // the plugin and capability-envelope providers cannot drift on the tier-to-behavior rule.
+            var defaultBehavior = autonomyLevel.ToDefaultPermissionBehavior();
 
             var pluginToolNames = EnumeratePluginToolNames(plugin.Name);
             if (pluginToolNames.Count == 0)
