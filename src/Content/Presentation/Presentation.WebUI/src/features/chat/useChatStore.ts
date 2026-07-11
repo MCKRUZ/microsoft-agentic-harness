@@ -42,6 +42,12 @@ interface ChatState {
   startStreaming: () => void;
   appendToken: (token: string) => void;
   finalizeStream: (fullResponse: string, assistantMessageId?: string) => void;
+  /**
+   * Clears the streaming indicator and any partial buffer WITHOUT touching the transcript. Used when a
+   * run is aborted (e.g. switching conversations mid-stream) so the newly opened conversation doesn't
+   * inherit a phantom typing indicator or the previous run's leftover tokens.
+   */
+  resetStreaming: () => void;
   clearMessages: () => void;
   setError: (message: string | null) => void;
 }
@@ -86,6 +92,7 @@ export const useChatStore = create<ChatState>()((set) => ({
       messages: messages.length > 200 ? messages.slice(-200) : messages,
     };
   }),
+  resetStreaming: () => set({ isStreaming: false, streamingContent: '' }),
   clearMessages: () => set({
     messages: [],
     isStreaming: false,

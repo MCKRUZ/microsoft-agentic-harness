@@ -1,4 +1,3 @@
-import { useRef } from 'react';
 import { useMsal } from '@azure/msal-react';
 import type { Subscription } from 'rxjs';
 import { EventType } from '@ag-ui/core';
@@ -73,10 +72,27 @@ async function finishToolCall(threadId: string, callId: string, pending: Pending
   }
 }
 
+// The app streams a single AG-UI run at a time (one conversation in view), so its subscription is an
+// app-wide resource rather than per-hook-instance state. Any consumer (e.g. ChatPanel aborting on a
+// conversation switch) must be able to cancel the run that another consumer (the send hook) started;
+// with per-instance refs those were separate objects, so a cross-consumer abort() was a silent no-op
+// and the previous conversation's tokens kept streaming into the newly selected transcript.
+let activeSubscription: Subscription | null = null;
+const activePendingCalls = new Map<string, PendingCall>();
+
+/**
+ * Cancels the single active AG-UI run (if any) and drops its pending client tool calls. Exposed at
+ * module scope so a non-streaming consumer — e.g. ChatPanel switching conversations — can abort the run
+ * the send hook started, without holding its own hook instance whose identity would churn effect deps.
+ */
+export function abortActiveStream(): void {
+  activeSubscription?.unsubscribe();
+  activeSubscription = null;
+  activePendingCalls.clear();
+}
+
 export function useAgentStream(): UseAgentStreamReturn {
   const { instance } = useMsal();
-  const subscriptionRef = useRef<Subscription | null>(null);
-  const pendingCallsRef = useRef<Map<string, PendingCall>>(new Map());
 
   const getAccessToken = async (): Promise<string> => {
     if (IS_AUTH_DISABLED) return '';
@@ -86,11 +102,7 @@ export function useAgentStream(): UseAgentStreamReturn {
     return result.accessToken;
   };
 
-  const abort = (): void => {
-    subscriptionRef.current?.unsubscribe();
-    subscriptionRef.current = null;
-    pendingCallsRef.current.clear();
-  };
+  const abort = (): void => { abortActiveStream(); };
 
   const sendMessage = (conversationId: string, userMessageId: string, message: string): void => {
     abort();
@@ -116,7 +128,7 @@ export function useAgentStream(): UseAgentStreamReturn {
         forwardedProps: {},
       });
 
-      subscriptionRef.current = obs$.subscribe({
+      activeSubscription = obs$.subscribe({
         next: (event: BaseEvent) => {
           switch (event.type) {
             case EventType.TEXT_MESSAGE_START: {
@@ -137,19 +149,19 @@ export function useAgentStream(): UseAgentStreamReturn {
             }
             case EventType.TOOL_CALL_START: {
               const e = event as BaseEvent & { toolCallId: string; toolCallName: string };
-              pendingCallsRef.current.set(e.toolCallId, { name: e.toolCallName, args: '' });
+              activePendingCalls.set(e.toolCallId, { name: e.toolCallName, args: '' });
               break;
             }
             case EventType.TOOL_CALL_ARGS: {
               const e = event as BaseEvent & { toolCallId: string; delta: string };
-              const pending = pendingCallsRef.current.get(e.toolCallId);
+              const pending = activePendingCalls.get(e.toolCallId);
               if (pending) pending.args += e.delta;
               break;
             }
             case EventType.TOOL_CALL_END: {
               const e = event as BaseEvent & { toolCallId: string };
-              const pending = pendingCallsRef.current.get(e.toolCallId);
-              pendingCallsRef.current.delete(e.toolCallId);
+              const pending = activePendingCalls.get(e.toolCallId);
+              activePendingCalls.delete(e.toolCallId);
               // The server tool is parked awaiting this result; fire-and-forget the round-trip so the
               // same open run resumes with the widget rendered and the agent's follow-up narration.
               void finishToolCall(conversationId, e.toolCallId, pending);
@@ -167,10 +179,10 @@ export function useAgentStream(): UseAgentStreamReturn {
         error: (err: unknown) => {
           const message = err instanceof Error ? err.message : 'Streaming error';
           useChatStore.getState().setError(message);
-          subscriptionRef.current = null;
+          activeSubscription = null;
         },
         complete: () => {
-          subscriptionRef.current = null;
+          activeSubscription = null;
         },
       });
     });

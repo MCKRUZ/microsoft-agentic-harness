@@ -266,8 +266,20 @@ public class AgentExecutionContextFactory
             AdditionalProperties = new Dictionary<string, object>()
         };
 
-        if (toolOverrides is { Count: > 0 })
-            context.AdditionalProperties["delegationToolOverrides"] = toolOverrides;
+        // Provision the subagent's tools so a delegated agent can actually use them, not just generate
+        // text. Names come from the caller's explicit override when supplied, otherwise the profile's
+        // own ToolAllowlist; the profile's ToolDenylist is then subtracted. They resolve from keyed DI
+        // through the same builder (convert + governance-wrap) the skill-based paths use. A null/empty
+        // allowlist — an "inherit everything" profile such as Execute/General — provisions nothing here:
+        // there is no parent tool pool to inherit from on the delegation path, so such subagents run
+        // generation-only unless the caller passes explicit tool overrides.
+        var requested = (toolOverrides is { Count: > 0 } ? toolOverrides : definition.ToolAllowlist) ?? [];
+        var toolNames = definition.ToolDenylist is { Count: > 0 } denylist
+            ? requested.Where(n => !denylist.Contains(n, StringComparer.OrdinalIgnoreCase)).ToList()
+            : requested;
+
+        if (toolNames.Count > 0)
+            context.Tools = _toolChainBuilder.BuildToolsByName(toolNames);
 
         return context;
     }
