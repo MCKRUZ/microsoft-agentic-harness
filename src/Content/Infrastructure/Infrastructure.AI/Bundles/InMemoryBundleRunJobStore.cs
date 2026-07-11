@@ -13,15 +13,15 @@ namespace Infrastructure.AI.Bundles;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <strong>Only terminal records expire.</strong> A <see cref="BundleRunStatus.Queued"/> or
-/// <see cref="BundleRunStatus.Running"/> record is in-flight and is never expired or swept — otherwise a run
-/// still queued behind a slow predecessor, or one executing longer than the TTL, could have its record
-/// deleted out from under it (the dispatcher would then find nothing to update and silently drop a completed
-/// outcome). The TTL therefore governs only how long a completed run stays pollable: it starts when the
-/// record reaches a terminal state, so a caller gets the full configured window to read the result regardless
-/// of how long the run queued or ran first. A run that never reaches a terminal state is retained until the
-/// process exits; in practice the dispatcher always drives a queued run to a terminal state, and this
-/// in-memory store does not survive a restart.
+/// <strong>What expires.</strong> A record is reclaimable only when it is terminal (its TTL then governs how
+/// long the completed result stays pollable, starting from completion — so a caller gets the full window
+/// regardless of how long the run queued or ran) <em>or</em> when it is an <em>unclaimed streaming
+/// reservation</em>: a <see cref="BundleRunStatus.Queued"/> record with <see cref="BundleRunRecord.Streaming"/>
+/// set, whose only driver is a caller opening the stream endpoint. Such a reservation may never be claimed
+/// (the caller might never connect), so it is reclaimed once its window elapses to bound memory. Every other
+/// non-terminal record — a background-queued run awaiting the dispatcher, or any run already
+/// <see cref="BundleRunStatus.Running"/> — is never swept, so an in-flight run is never dropped or its outcome
+/// lost to a mid-run sweep. This in-memory store does not survive a restart.
 /// </para>
 /// <para>
 /// Each record's snapshot and expiry are guarded by a lock on its holder; in practice only the single
@@ -52,13 +52,20 @@ public sealed class InMemoryBundleRunJobStore : IBundleRunJobStore
     }
 
     private TimeSpan Ttl => _config.CurrentValue.AI.BundleExecution.RunRecordTtl;
+    private TimeSpan StreamReservationTtl => _config.CurrentValue.AI.BundleExecution.StreamReservationTtl;
 
     /// <inheritdoc />
     public void Create(BundleRunRecord record)
     {
         ArgumentNullException.ThrowIfNull(record);
 
-        var entry = new JobEntry(record, _time.GetUtcNow() + Ttl);
+        // A streaming reservation's initial expiry is the (separate, short) connect window — its own knob, so
+        // tightening the completed-result retention window never shrinks how long a caller has to connect. It
+        // is only consulted while the reservation is unclaimed; once claimed the run is in-flight and the
+        // expiry is irrelevant. Every other record's initial expiry is the run-record window (which only
+        // starts governing anything once the record is terminal).
+        var initialExpiry = _time.GetUtcNow() + (record.Streaming ? StreamReservationTtl : Ttl);
+        var entry = new JobEntry(record, initialExpiry);
         if (!_entries.TryAdd(record.JobId, entry))
             throw new InvalidOperationException($"A bundle run record with job id '{record.JobId}' already exists.");
     }
@@ -72,9 +79,39 @@ public sealed class InMemoryBundleRunJobStore : IBundleRunJobStore
 
         lock (entry)
         {
-            // Non-terminal records never expire; a terminal record expires once its pollable window elapses.
-            return entry.Record.IsTerminal && _time.GetUtcNow() >= entry.ExpiresAt ? null : entry.Record;
+            return IsExpired(entry, _time.GetUtcNow()) ? null : entry.Record;
         }
+    }
+
+    /// <inheritdoc />
+    public BundleRunRecord? TryBeginRun(string jobId, DateTimeOffset startedAt)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(jobId);
+        if (!_entries.TryGetValue(jobId, out var entry))
+            return null;
+
+        lock (entry)
+        {
+            // Refuse to claim a run that is not (still) an unexpired Queued reservation: another driver may have
+            // already claimed it, it may have finished, or an unclaimed streaming reservation may have lapsed.
+            if (entry.Record.Status != BundleRunStatus.Queued || IsExpired(entry, _time.GetUtcNow()))
+                return null;
+
+            entry.Record = entry.Record with { Status = BundleRunStatus.Running, StartedAt = startedAt };
+            return entry.Record;
+        }
+    }
+
+    /// <summary>
+    /// A record is reclaimable when it is terminal (past its pollable window) or an unclaimed streaming
+    /// reservation (a <see cref="BundleRunStatus.Queued"/> streaming run that was never picked up) past its
+    /// window. Every other non-terminal record is retained. Callers must hold the entry lock.
+    /// </summary>
+    private static bool IsExpired(JobEntry entry, DateTimeOffset now)
+    {
+        var reclaimable = entry.Record.IsTerminal
+            || (entry.Record.Streaming && entry.Record.Status == BundleRunStatus.Queued);
+        return reclaimable && now >= entry.ExpiresAt;
     }
 
     /// <inheritdoc />
@@ -105,8 +142,7 @@ public sealed class InMemoryBundleRunJobStore : IBundleRunJobStore
             bool expired;
             lock (entry)
             {
-                // Only terminal records are reclaimable — an in-flight run is never swept.
-                expired = entry.Record.IsTerminal && now >= entry.ExpiresAt;
+                expired = IsExpired(entry, now);
             }
 
             if (expired && _entries.TryRemove(new KeyValuePair<string, JobEntry>(jobId, entry)))

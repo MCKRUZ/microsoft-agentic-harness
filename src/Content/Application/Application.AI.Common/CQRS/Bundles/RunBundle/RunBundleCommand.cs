@@ -42,4 +42,13 @@ public sealed record RunBundleCommand : IRequest<Result<RunBundleResult>>
 
     /// <summary>The maximum number of turns the conversation may run.</summary>
     public int MaxTurns { get; init; } = 10;
+
+    /// <summary>
+    /// Selects the run's dispatch mode. When true the run is reserved for external, streamed execution: the
+    /// record is created <see cref="BundleRunStatus.Queued"/> but is <em>not</em> enqueued to the dispatcher, so
+    /// its only driver is the transport that later claims and streams it. When false (the default) the run is
+    /// enqueued and executes in the background for the caller to poll. Either way the returned job id is what
+    /// the caller uses next — to poll the result, or to open the stream.
+    /// </summary>
+    public bool Stream { get; init; }
 }

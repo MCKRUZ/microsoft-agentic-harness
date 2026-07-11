@@ -3,15 +3,18 @@ using Application.AI.Common.CQRS.Bundles.GetBundleRun;
 using Application.AI.Common.CQRS.Bundles.RegisterBundle;
 using Application.AI.Common.CQRS.Bundles.RunBundle;
 using Application.AI.Common.Interfaces.Governance;
+using Domain.AI.Bundles;
 using Domain.Common;
 using MediatR;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using Presentation.BundleApi.DTOs;
 using Presentation.BundleApi.Extensions;
 using Presentation.BundleApi.Services;
+using Presentation.BundleApi.Streaming;
 
 namespace Presentation.BundleApi.Controllers;
 
@@ -96,14 +99,72 @@ public sealed class BundlesController : ControllerBase
             UserMessages = request.UserMessages,
             MaxTurns = request.MaxTurns,
             Envelope = envelope,
-            OwnerId = callerId
+            OwnerId = callerId,
+            Stream = request.Stream
         }, cancellationToken).ConfigureAwait(false);
 
         if (!result.IsSuccess || result.Value is null)
             return MapFailure(result.FailureType, result.Errors);
 
         var statusUrl = $"/api/bundles/{handle}/runs/{result.Value.JobId}";
-        return Accepted(statusUrl, new StartRunResponse { JobId = result.Value.JobId, StatusUrl = statusUrl });
+        var streamUrl = request.Stream ? $"{statusUrl}/stream" : null;
+        return Accepted(statusUrl, new StartRunResponse
+        {
+            JobId = result.Value.JobId, StatusUrl = statusUrl, StreamUrl = streamUrl
+        });
+    }
+
+    /// <summary>
+    /// Opens the live Server-Sent-Events feed for a run started with <c>stream: true</c>, driving it on this
+    /// connection and streaming the agent's output as it is generated. Owner-locked exactly like the poll and
+    /// delete endpoints: a caller can only stream a run they started.
+    /// </summary>
+    /// <remarks>
+    /// Only a run reserved for streaming and still awaiting its stream is driveable here; a background run, a
+    /// run already being streamed, or a finished run is a 409 — poll its status endpoint instead. The run
+    /// executes under the capability envelope captured when it was started, and closing the connection cancels
+    /// it (<see cref="HttpContext.RequestAborted"/> flows into the executor).
+    /// </remarks>
+    [HttpGet("{handle}/runs/{jobId}/stream")]
+    [EnableRateLimiting(BundleApiServiceCollectionExtensions.StreamRateLimitPolicy)]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    [ProducesResponseType(StatusCodes.Status429TooManyRequests)]
+    public async Task<IActionResult> Stream(
+        string handle, string jobId, [FromServices] BundleRunStreamer streamer, CancellationToken cancellationToken)
+    {
+        var callerId = ResolveCallerId();
+        if (callerId is null)
+            return NoUsableIdentity();
+
+        // Owner-scoped pre-flight: the poll query reports an unknown or foreign run as not found, so this both
+        // resolves the record and enforces ownership before we commit the response to an event stream.
+        var lookup = await _mediator
+            .Send(new GetBundleRunQuery { Handle = handle, JobId = jobId, OwnerId = callerId }, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (!lookup.IsSuccess || lookup.Value is null)
+            return MapFailure(lookup.FailureType, lookup.Errors);
+
+        var record = lookup.Value;
+        if (!record.Streaming || record.Status != BundleRunStatus.Queued)
+        {
+            return Problem(
+                title: "Run not streamable",
+                detail: "This run is not awaiting a stream. Poll its status endpoint for the result.",
+                statusCode: StatusCodes.Status409Conflict);
+        }
+
+        Response.ContentType = "text/event-stream";
+        Response.Headers.CacheControl = "no-cache";
+        Response.Headers["X-Accel-Buffering"] = "no"; // defeat proxy buffering so frames arrive promptly
+        HttpContext.Features.Get<IHttpResponseBodyFeature>()?.DisableBuffering();
+
+        using var writer = new BundleStreamEventWriter(Response.Body);
+        await streamer.StreamAsync(record, writer, cancellationToken).ConfigureAwait(false);
+        return new EmptyResult();
     }
 
     /// <summary>Reads the current status and (once complete) result of a run.</summary>

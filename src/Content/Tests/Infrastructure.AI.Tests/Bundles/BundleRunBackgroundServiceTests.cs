@@ -86,9 +86,10 @@ public sealed class BundleRunBackgroundServiceTests : IDisposable
         services.AddSingleton(mediator);
         var scopeFactory = services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
 
+        var executor = new BundleRunExecutor(
+            jobStore, handleStore, scopeFactory, _time, NullLogger<BundleRunExecutor>.Instance);
         var service = new BundleRunBackgroundService(
-            queue, jobStore, handleStore, scopeFactory, _time,
-            NullLogger<BundleRunBackgroundService>.Instance);
+            queue, executor, NullLogger<BundleRunBackgroundService>.Instance);
 
         return (service, queue, jobStore, handleStore);
     }

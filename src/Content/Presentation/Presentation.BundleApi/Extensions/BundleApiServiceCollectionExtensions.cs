@@ -10,6 +10,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.IdentityModel.Tokens;
 using Presentation.BundleApi.Services;
+using Presentation.BundleApi.Streaming;
 
 namespace Presentation.BundleApi.Extensions;
 
@@ -26,6 +27,15 @@ public static class BundleApiServiceCollectionExtensions
 
     /// <summary>Stricter rate-limit policy for registration — staging an archive is comparatively expensive.</summary>
     public const string RegisterRateLimitPolicy = "bundles-register";
+
+    /// <summary>
+    /// Per-caller <em>concurrency</em> policy for the live-stream endpoint. A streamed run executes inline on
+    /// its connection for the whole conversation and bypasses the single-threaded background dispatcher, so the
+    /// fixed-window request-rate limiter (which counts starts, not simultaneous connections) cannot bound it.
+    /// A concurrency limiter holds each permit for the connection's lifetime, capping how many agent
+    /// conversations one caller can drive at once.
+    /// </summary>
+    public const string StreamRateLimitPolicy = "bundles-stream";
 
     /// <summary>
     /// Registers the bundle API's controllers, authentication, authorization, and rate limiters.
@@ -49,6 +59,10 @@ public static class BundleApiServiceCollectionExtensions
             .GetSection("AppConfig:AI:BundleExecution")
             .Get<BundleExecutionConfig>() ?? new BundleExecutionConfig();
 
+        // Drives the opt-in live SSE feed: arms the assistant-text sink and calls the shared run executor.
+        // Stateless — per-request state is local to each call.
+        services.AddTransient<BundleRunStreamer>();
+
         services.AddBundleApiAuthentication(bundleConfig.Auth);
 
         // Bound the multipart upload at the transport boundary to the same limit the staging service enforces,
@@ -66,6 +80,14 @@ public static class BundleApiServiceCollectionExtensions
             options.AddPolicy(RegisterRateLimitPolicy, httpContext =>
                 RateLimitPartition.GetFixedWindowLimiter(ResolvePartitionKey(httpContext), _ =>
                     new FixedWindowRateLimiterOptions { PermitLimit = 10, Window = TimeSpan.FromMinutes(1) }));
+
+            // Concurrency (not rate): each open stream holds a permit for its whole lifetime, so a caller can
+            // drive at most MaxConcurrentStreamsPerCaller agent conversations at once. QueueLimit 0 rejects a
+            // caller's excess connections outright rather than parking them.
+            var maxStreams = Math.Max(1, bundleConfig.MaxConcurrentStreamsPerCaller);
+            options.AddPolicy(StreamRateLimitPolicy, httpContext =>
+                RateLimitPartition.GetConcurrencyLimiter(ResolvePartitionKey(httpContext), _ =>
+                    new ConcurrencyLimiterOptions { PermitLimit = maxStreams, QueueLimit = 0 }));
         });
 
         return services;

@@ -101,6 +101,29 @@ public class BundleExecutionConfig
     public TimeSpan RunRecordTtl { get; set; } = TimeSpan.FromMinutes(30);
 
     /// <summary>
+    /// How long a run created for a live stream (rather than background dispatch) waits, unstarted, for its
+    /// caller to open the stream before it is reclaimed. A streamed run is not enqueued — its only driver is
+    /// the caller connecting — so this bounds the memory a caller could pin by creating runs and never
+    /// streaming them. Deliberately separate from <see cref="RunRecordTtl"/> (which governs how long a
+    /// <em>completed</em> result stays pollable): the two are unrelated timeouts, and tightening result
+    /// retention must not silently shrink the window a client has to connect. Applies only while the run is
+    /// unclaimed; once the stream connects, the run is in-flight and never expires. Must be positive.
+    /// </summary>
+    /// <value>Default: 5 minutes</value>
+    public TimeSpan StreamReservationTtl { get; set; } = TimeSpan.FromMinutes(5);
+
+    /// <summary>
+    /// The maximum number of live streams a single caller may hold open at once. A streamed run executes
+    /// inline on its connection for the whole conversation (it bypasses the background dispatcher that
+    /// serialises poll-only runs), so without a ceiling one caller could open many connections and drive
+    /// unbounded concurrent agent conversations — pinning leases, scopes, and token spend. Enforced as a
+    /// per-caller concurrency limit on the stream endpoint; excess connection attempts are rejected, not
+    /// queued. Must be positive.
+    /// </summary>
+    /// <value>Default: 4</value>
+    public int MaxConcurrentStreamsPerCaller { get; set; } = 4;
+
+    /// <summary>
     /// How often the background cleanup sweeper runs its pass over expired handles (deleting their staging
     /// directories) and expired run records. This is the belt-and-suspenders backstop that guarantees a
     /// staging directory is removed even if no explicit delete arrives. Must be positive.

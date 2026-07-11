@@ -64,6 +64,18 @@ public sealed record BundleRunRecord
     /// <summary>The current lifecycle state. Starts <see cref="BundleRunStatus.Queued"/>.</summary>
     public required BundleRunStatus Status { get; init; }
 
+    /// <summary>
+    /// The run's dispatch mode. When false (the default) the run is background-dispatched: it is enqueued and a
+    /// worker drives it to completion for the caller to poll. When true the run is <em>externally driven</em>
+    /// instead — it is created <see cref="BundleRunStatus.Queued"/> but not enqueued, and whoever holds the run
+    /// (the live-stream transport) claims it (<see cref="BundleRunStatus.Queued"/> →
+    /// <see cref="BundleRunStatus.Running"/>) and drives it, binding the run's lifetime to that consumer.
+    /// Because such a reservation may never be claimed (the consumer might never attach), an unclaimed
+    /// externally-driven run is the one non-terminal record the job store may reclaim on TTL — every other
+    /// non-terminal record is retained until it completes.
+    /// </summary>
+    public bool Streaming { get; init; }
+
     /// <summary>The terminal outcome once the run has <see cref="BundleRunStatus.Succeeded"/>; null before then.</summary>
     public BundleRunOutcome? Outcome { get; init; }
 

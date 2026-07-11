@@ -205,6 +205,11 @@ public static partial class DependencyInjection
         services.AddSingleton<IBundleRunJobStore, InMemoryBundleRunJobStore>();
         services.AddSingleton<IBundleRunDispatchQueue, InMemoryBundleRunDispatchQueue>();
 
+        // The shared engine that drives a run to terminal under its envelope + overlay. Both the background
+        // dispatcher and the streaming endpoint resolve it, so the security-critical ambient arming lives in
+        // exactly one place. Stateless singleton — it opens a fresh DI scope per run.
+        services.AddSingleton<IBundleRunExecutor, BundleRunExecutor>();
+
         // Background workers. Both are passive when no bundle is registered/run: the dispatcher awaits an
         // empty channel and the sweeper sweeps empty stores, so — like the staging service — they are
         // registered unconditionally and cost nothing until the (config-gated) run surface feeds them.

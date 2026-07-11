@@ -101,6 +101,25 @@ public sealed class RunBundleCommandHandlerTests
     }
 
     [Fact]
+    public async Task Handle_StreamRequested_CreatesStreamingRecord_ButDoesNotEnqueue()
+    {
+        // A streaming run's sole driver is the caller opening the stream endpoint; enqueuing it too would let
+        // the background dispatcher race the stream for the same job.
+        _handleStore.Setup(h => h.GetOwner("handle-1")).Returns("owner-1");
+        _handleStore.Setup(h => h.TryGet("handle-1")).Returns(Staged());
+        BundleRunRecord? created = null;
+        _jobStore.Setup(j => j.Create(It.IsAny<BundleRunRecord>())).Callback<BundleRunRecord>(r => created = r);
+
+        var result = await BuildSut(enabled: true)
+            .Handle(Command() with { Stream = true }, CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        created!.Streaming.Should().BeTrue();
+        created.Status.Should().Be(BundleRunStatus.Queued);
+        _queue.Verify(q => q.EnqueueAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
     public async Task Handle_WhenHandleOwnedByAnotherCaller_ReturnsNotFound_AndDoesNotRun()
     {
         // The handle exists, but for a different owner: must be indistinguishable from "not found".
