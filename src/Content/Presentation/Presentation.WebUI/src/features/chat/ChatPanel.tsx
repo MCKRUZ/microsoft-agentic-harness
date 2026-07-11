@@ -1,14 +1,12 @@
 import { useEffect, useState } from 'react';
 import { Settings, Sparkles } from 'lucide-react';
-import { useQueryClient } from '@tanstack/react-query';
 import { cn } from '@/lib/utils';
 import { useChatStore } from './useChatStore';
 import { useAppStore } from '@/stores/appStore';
 import { useConversationSettingsStore } from '@/stores/conversationSettingsStore';
-import { useAgentHub, type ConnectionState, type ConversationSettingsInput, type ServerConversationMessage } from '@/hooks/useAgentHub';
+import { useAgentHub, type ConnectionState, type ConversationSettingsInput } from '@/hooks/useAgentHub';
 import { useSendUserMessage } from '@/hooks/useSendUserMessage';
-import type { ChatMessage } from './useChatStore';
-import { CONVERSATIONS_QUERY_KEY } from '@/features/conversations/useConversationsQuery';
+import { loadConversationHistory } from './loadConversationHistory';
 import { MessageList } from './MessageList';
 import { TypingIndicator } from './TypingIndicator';
 import { ChatInput } from './ChatInput';
@@ -109,13 +107,10 @@ function ErrorBanner() {
 }
 
 export function ChatPanel() {
-  const queryClient = useQueryClient();
   const setChatConversationId = useChatStore((s) => s.setConversationId);
   const selectedAgent = useAppStore((s) => s.selectedAgent);
   const activeConversationId = useAppStore((s) => s.activeConversationId);
-  const setActiveConversationId = useAppStore((s) => s.setActiveConversationId);
   const {
-    startConversation,
     retryFromMessage,
     editAndResubmit,
     setConversationSettings,
@@ -168,54 +163,53 @@ export function ChatPanel() {
     });
   };
 
+  // Adopt the URL-driven active conversation and load its transcript from the read-only history
+  // endpoint. This never creates the conversation server-side (a 404 for a not-yet-messaged id
+  // resolves to a blank transcript), so navigating to chat, switching agents, and refreshing mint no
+  // phantom conversations — the conversation is registered only when the first message is sent (see
+  // useSendUserMessage).
+  //
+  // The transcript reloads whenever the active id changes to one the store's transcript does NOT
+  // already belong to — including a switch via the browser back/forward buttons, which no click
+  // handler intercepts (so nothing clears the previous conversation's messages first). An
+  // optimistic/in-flight transcript that DOES belong to this id (a freshly minted id that was just
+  // sent, or a turn mid-stream) is preserved rather than clobbered by a reload.
   useEffect(() => {
-    if (selectedAgent && !activeConversationId) {
-      setActiveConversationId(crypto.randomUUID());
+    if (!activeConversationId) {
+      // Blank composer (`/chat` with no id) — ready immediately, nothing to load.
+      setConversationReady(true);
+      return;
     }
-  }, [selectedAgent, activeConversationId, setActiveConversationId]);
 
-  useEffect(() => {
-    if (activeConversationId) setChatConversationId(activeConversationId);
-  }, [activeConversationId, setChatConversationId]);
+    const store = useChatStore.getState();
+    const transcriptBelongsToActiveId =
+      store.conversationId === activeConversationId && store.messages.length > 0;
+    if (transcriptBelongsToActiveId) {
+      setConversationReady(true);
+      return;
+    }
 
-  useEffect(() => {
-    if (connectionState !== 'connected' || !selectedAgent || !activeConversationId) return;
+    // A switch (or a fresh page load): bind the transcript to the new id and load its history.
+    // setMessages always runs on completion — an empty history (a brand-new id) clears any stale
+    // previous-conversation messages rather than leaving them on screen under the new URL.
+    setChatConversationId(activeConversationId);
     setConversationReady(false);
     let cancelled = false;
-    void startConversation(selectedAgent, activeConversationId)
-      .then((history: ServerConversationMessage[]) => {
+    void loadConversationHistory(activeConversationId)
+      .then((messages) => {
         if (cancelled) return;
-        if (history?.length) {
-          const mapped: ChatMessage[] = history
-            .filter(m => {
-              const r = m.role.toLowerCase();
-              return r === 'user' || r === 'assistant';
-            })
-            .map(m => ({
-              id: m.id,
-              role: m.role.toLowerCase() as 'user' | 'assistant',
-              content: m.content,
-              timestamp: new Date(m.timestamp),
-              toolCalls: m.toolCalls ?? undefined,
-              widget: m.widget ?? undefined,
-            }));
-          if (mapped.length > 0) {
-            useChatStore.getState().setMessages(mapped);
-          }
-        }
-        void queryClient.invalidateQueries({ queryKey: CONVERSATIONS_QUERY_KEY });
+        useChatStore.getState().setMessages(messages);
         setConversationReady(true);
       })
       .catch((err: unknown) => {
         if (cancelled) return;
         useChatStore.getState().setError(
-          err instanceof Error ? err.message : 'Failed to start conversation',
+          err instanceof Error ? err.message : 'Failed to load conversation',
         );
         setConversationReady(true);
       });
     return () => { cancelled = true; };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [connectionState, selectedAgent, activeConversationId]);
+  }, [activeConversationId, setChatConversationId]);
 
   if (!selectedAgent) {
     return (
@@ -246,9 +240,9 @@ export function ChatPanel() {
         />
       </div>
       <TypingIndicator />
-      {activeConversationId && (
-        <ChatInput disabled={!conversationReady} />
-      )}
+      {/* Always available once an agent is selected: a blank /chat with no id mints its conversation on
+          the first send, so the composer must be reachable before an id exists. */}
+      <ChatInput disabled={!conversationReady} />
       <ConversationSettingsDrawer
         open={settingsOpen}
         onClose={() => { setSettingsOpen(false); }}

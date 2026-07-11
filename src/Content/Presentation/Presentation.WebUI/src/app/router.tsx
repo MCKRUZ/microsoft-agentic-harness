@@ -32,6 +32,9 @@ const AppRoutes = () => (
     <Route element={<DashboardLayout />}>
       <Route index element={<Navigate to="/chat" replace />} />
       <Route path="chat" element={<ChatView />} />
+      {/* The active conversation lives in the URL so refresh/back/bookmark restore it. Blank `/chat`
+          (above) shows an empty composer; `/chat/:conversationId` opens that conversation. */}
+      <Route path="chat/:conversationId" element={<ChatView />} />
       <Route path="agents" element={<AgentsView />} />
       <Route path="tools" element={<ToolsView />} />
       <Route path="resources" element={<ResourcesView />} />

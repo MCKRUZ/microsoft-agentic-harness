@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { MessageCircle, Plus, Trash2, Search } from 'lucide-react';
 import { useConversationsQuery } from './useConversationsQuery';
 import { useDeleteConversation } from './useDeleteConversation';
@@ -31,10 +32,10 @@ export function ConversationSidebar({ onSelect }: ConversationSidebarProps) {
   const { data: conversations, isLoading, error } = useConversationsQuery();
   const deleteMutation = useDeleteConversation();
   const activeId = useAppStore((s) => s.activeConversationId);
-  const setActive = useAppStore((s) => s.setActiveConversationId);
   const selectedAgent = useAppStore((s) => s.selectedAgent);
   const setSelectedAgent = useAppStore((s) => s.setSelectedAgent);
   const clearMessages = useChatStore((s) => s.clearMessages);
+  const navigate = useNavigate();
   const [search, setSearch] = useState('');
 
   const filtered = useMemo(() => {
@@ -49,8 +50,9 @@ export function ConversationSidebar({ onSelect }: ConversationSidebarProps) {
 
   const handleNewChat = (): void => {
     if (!selectedAgent) return;
+    // Blank composer, no id — nothing is created server-side until the first message is sent.
     clearMessages();
-    setActive(crypto.randomUUID());
+    navigate('/chat');
     onSelect?.();
   };
 
@@ -64,7 +66,8 @@ export function ConversationSidebar({ onSelect }: ConversationSidebarProps) {
     if (target && target.agentName !== selectedAgent) {
       setSelectedAgent(target.agentName);
     }
-    setActive(id);
+    // The URL drives the active conversation; ChatPanel loads this id's history once it syncs in.
+    navigate(`/chat/${id}`);
     onSelect?.();
   };
 
@@ -77,9 +80,10 @@ export function ConversationSidebar({ onSelect }: ConversationSidebarProps) {
       if (remaining.length > 0) {
         const next = remaining[0];
         if (next.agentName !== selectedAgent) setSelectedAgent(next.agentName);
-        setActive(next.id);
+        navigate(`/chat/${next.id}`);
       } else {
-        setActive(crypto.randomUUID());
+        // No conversations left — fall back to a blank composer rather than minting a phantom id.
+        navigate('/chat');
       }
     }
   };
