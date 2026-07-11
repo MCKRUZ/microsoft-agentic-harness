@@ -195,6 +195,22 @@ public static partial class DependencyInjection
         // the run/API surface that consults it is gated in a later layer.
         services.AddSingleton<ICapabilityEnvelopeResolver, CapabilityEnvelopeResolver>();
 
+        // --- Bundle execution (async job + handle lifecycle) ---
+        // In-memory, TTL'd stores + the FIFO dispatch queue. The handle store owns the on-disk lifetime of
+        // every staged bundle and is IDisposable, so it is registered by its concrete type and exposed
+        // through the interface via the same singleton — one instance both holds handles and is disposed
+        // (deleting remaining staging directories) on host shutdown.
+        services.AddSingleton<InMemoryBundleHandleStore>();
+        services.AddSingleton<IBundleHandleStore>(sp => sp.GetRequiredService<InMemoryBundleHandleStore>());
+        services.AddSingleton<IBundleRunJobStore, InMemoryBundleRunJobStore>();
+        services.AddSingleton<IBundleRunDispatchQueue, InMemoryBundleRunDispatchQueue>();
+
+        // Background workers. Both are passive when no bundle is registered/run: the dispatcher awaits an
+        // empty channel and the sweeper sweeps empty stores, so — like the staging service — they are
+        // registered unconditionally and cost nothing until the (config-gated) run surface feeds them.
+        services.AddHostedService<BundleRunBackgroundService>();
+        services.AddHostedService<BundleWorkspaceCleanupService>();
+
         // --- Plugins ---
 
         services.AddSingleton<IPluginManifestReader, PluginManifestReader>();
