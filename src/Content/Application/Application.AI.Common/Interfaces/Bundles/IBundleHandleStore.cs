@@ -29,12 +29,25 @@ namespace Application.AI.Common.Interfaces.Bundles;
 public interface IBundleHandleStore
 {
     /// <summary>
-    /// Registers a freshly staged bundle and returns the opaque handle a caller uses to run or delete it.
-    /// The handle's initial expiry is <c>now + HandleTtl</c>.
+    /// Registers a freshly staged bundle under an owning caller and returns the opaque handle used to run or
+    /// delete it. The handle is bound to <paramref name="ownerId"/>; callers verify ownership via
+    /// <see cref="GetOwner"/> before acting on a handle, so a leaked handle cannot be used across callers. The
+    /// handle's initial expiry is <c>now + HandleTtl</c>.
     /// </summary>
     /// <param name="bundle">The staged bundle to hold. Its <see cref="StagedBundle.StagedRootDirectory"/> becomes owned by this store.</param>
+    /// <param name="ownerId">The stable identifier of the caller that owns this handle.</param>
     /// <returns>The handle identifying the registered bundle.</returns>
-    string Register(StagedBundle bundle);
+    string Register(StagedBundle bundle, string ownerId);
+
+    /// <summary>
+    /// Returns the owner the handle was registered under, or null when the handle is unknown or expired.
+    /// Callers compare this against the requesting caller to enforce per-owner isolation before running,
+    /// reading, or deleting a bundle. Does not refresh the sliding expiry — it is an authorization check, not
+    /// a use of the handle.
+    /// </summary>
+    /// <param name="handle">The handle to look up.</param>
+    /// <returns>The owner id, or null if the handle is unknown or expired.</returns>
+    string? GetOwner(string handle);
 
     /// <summary>
     /// Reads the staged bundle for <paramref name="handle"/> without pinning it, refreshing its sliding

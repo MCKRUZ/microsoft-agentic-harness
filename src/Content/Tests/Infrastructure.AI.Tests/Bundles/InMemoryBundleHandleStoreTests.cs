@@ -58,7 +58,7 @@ public sealed class InMemoryBundleHandleStoreTests : IDisposable
     public void Register_ThenTryGet_ReturnsBundle()
     {
         var sut = BuildSut();
-        var handle = sut.Register(StageOnDisk("b1"));
+        var handle = sut.Register(StageOnDisk("b1"), "owner-1");
 
         var got = sut.TryGet(handle);
 
@@ -73,10 +73,23 @@ public sealed class InMemoryBundleHandleStoreTests : IDisposable
     }
 
     [Fact]
+    public void GetOwner_ReturnsRegisteredOwner_AndNullWhenUnknownOrExpired()
+    {
+        var sut = BuildSut();
+        var handle = sut.Register(StageOnDisk("b1"), "owner-42");
+
+        sut.GetOwner(handle).Should().Be("owner-42");
+        sut.GetOwner("unknown").Should().BeNull();
+
+        _time.Advance(Ttl + TimeSpan.FromSeconds(1));
+        sut.GetOwner(handle).Should().BeNull("an expired handle exposes no owner");
+    }
+
+    [Fact]
     public void TryGet_AfterTtlElapses_ReturnsNull()
     {
         var sut = BuildSut();
-        var handle = sut.Register(StageOnDisk("b1"));
+        var handle = sut.Register(StageOnDisk("b1"), "owner-1");
 
         _time.Advance(Ttl + TimeSpan.FromSeconds(1));
 
@@ -87,7 +100,7 @@ public sealed class InMemoryBundleHandleStoreTests : IDisposable
     public void TryGet_RefreshesSlidingExpiry()
     {
         var sut = BuildSut();
-        var handle = sut.Register(StageOnDisk("b1"));
+        var handle = sut.Register(StageOnDisk("b1"), "owner-1");
 
         // Advance almost to expiry, touch it, then advance another almost-full TTL: still alive.
         _time.Advance(Ttl - TimeSpan.FromMinutes(1));
@@ -102,7 +115,7 @@ public sealed class InMemoryBundleHandleStoreTests : IDisposable
     {
         var sut = BuildSut();
         var bundle = StageOnDisk("b1");
-        var handle = sut.Register(bundle);
+        var handle = sut.Register(bundle, "owner-1");
 
         using (var lease = sut.Acquire(handle))
         {
@@ -127,7 +140,7 @@ public sealed class InMemoryBundleHandleStoreTests : IDisposable
     {
         var sut = BuildSut();
         var bundle = StageOnDisk("b1");
-        var handle = sut.Register(bundle);
+        var handle = sut.Register(bundle, "owner-1");
 
         sut.Remove(handle).Should().BeTrue();
 
@@ -140,7 +153,7 @@ public sealed class InMemoryBundleHandleStoreTests : IDisposable
     {
         var sut = BuildSut();
         var bundle = StageOnDisk("b1");
-        var handle = sut.Register(bundle);
+        var handle = sut.Register(bundle, "owner-1");
 
         var lease = sut.Acquire(handle)!;
         sut.Remove(handle).Should().BeTrue();
@@ -165,8 +178,8 @@ public sealed class InMemoryBundleHandleStoreTests : IDisposable
         var sut = BuildSut();
         var b1 = StageOnDisk("b1");
         var b2 = StageOnDisk("b2");
-        sut.Register(b1);
-        sut.Register(b2);
+        sut.Register(b1, "owner-1");
+        sut.Register(b2, "owner-1");
 
         _time.Advance(Ttl + TimeSpan.FromSeconds(1));
 
@@ -181,8 +194,8 @@ public sealed class InMemoryBundleHandleStoreTests : IDisposable
         var sut = BuildSut();
         var b1 = StageOnDisk("b1");
         var b2 = StageOnDisk("b2");
-        sut.Register(b1);
-        sut.Register(b2);
+        sut.Register(b1, "owner-1");
+        sut.Register(b2, "owner-1");
 
         sut.Dispose();
 

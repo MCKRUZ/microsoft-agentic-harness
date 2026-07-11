@@ -36,6 +36,7 @@ public sealed class InMemoryBundleRunJobStoreTests
     {
         JobId = jobId,
         Handle = "h1",
+        OwnerId = "owner-1",
         AgentName = "agent-1",
         UserMessages = ["hello"],
         MaxTurns = 5,

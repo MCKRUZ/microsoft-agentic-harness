@@ -37,6 +37,13 @@ public sealed record BundleRunRecord
     public required string Handle { get; init; }
 
     /// <summary>
+    /// Stable identifier of the caller that created this run. Only this owner may poll the run; the poll
+    /// query rejects a mismatch as not found, so a run's result cannot be read across callers even if the
+    /// job id leaks.
+    /// </summary>
+    public required string OwnerId { get; init; }
+
+    /// <summary>
     /// The ephemeral agent's id (its <c>AGENT.md</c> id), captured from the staged bundle at enqueue time
     /// so the dispatcher can name it to <c>RunConversationCommand</c> without re-reading the bundle.
     /// </summary>

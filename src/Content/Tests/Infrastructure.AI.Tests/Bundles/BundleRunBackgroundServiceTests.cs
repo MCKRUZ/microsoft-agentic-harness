@@ -97,6 +97,7 @@ public sealed class BundleRunBackgroundServiceTests : IDisposable
     {
         JobId = jobId,
         Handle = handle,
+        OwnerId = "owner-1",
         AgentName = agentId,
         UserMessages = ["hello"],
         MaxTurns = 3,
@@ -134,7 +135,7 @@ public sealed class BundleRunBackgroundServiceTests : IDisposable
 
         var (service, queue, jobStore, handleStore) = BuildSut(mediator.Object);
         var staged = StageOnDisk("b1", out _);
-        var handle = handleStore.Register(staged);
+        var handle = handleStore.Register(staged, "owner-1");
         var envelope = new CapabilityEnvelope { AllowedTools = ["read_file"], AutonomyCeiling = AutonomyLevel.Autonomous };
         jobStore.Create(QueuedRecord("j1", handle, staged.Agent.Id, envelope));
         await queue.EnqueueAsync("j1", CancellationToken.None);
@@ -185,7 +186,7 @@ public sealed class BundleRunBackgroundServiceTests : IDisposable
         handleStoreRef = handleStore;
         var staged = StageOnDisk("b1", out var dir);
         dirRef = dir;
-        var handle = handleStore.Register(staged);
+        var handle = handleStore.Register(staged, "owner-1");
         jobStore.Create(QueuedRecord("j1", handle, staged.Agent.Id, new CapabilityEnvelope()));
         await queue.EnqueueAsync("j1", CancellationToken.None);
 
@@ -214,7 +215,7 @@ public sealed class BundleRunBackgroundServiceTests : IDisposable
 
         var (service, queue, jobStore, handleStore) = BuildSut(mediator.Object);
         var staged = StageOnDisk("b1", out _);
-        var handle = handleStore.Register(staged);
+        var handle = handleStore.Register(staged, "owner-1");
         jobStore.Create(QueuedRecord("j1", handle, staged.Agent.Id, new CapabilityEnvelope()));
         // Remove the handle before the run is dispatched.
         handleStore.Remove(handle);
@@ -240,7 +241,7 @@ public sealed class BundleRunBackgroundServiceTests : IDisposable
 
         var (service, queue, jobStore, handleStore) = BuildSut(mediator.Object);
         var staged = StageOnDisk("b1", out _);
-        var handle = handleStore.Register(staged);
+        var handle = handleStore.Register(staged, "owner-1");
         jobStore.Create(QueuedRecord("j1", handle, staged.Agent.Id, new CapabilityEnvelope()));
         await queue.EnqueueAsync("j1", CancellationToken.None);
 

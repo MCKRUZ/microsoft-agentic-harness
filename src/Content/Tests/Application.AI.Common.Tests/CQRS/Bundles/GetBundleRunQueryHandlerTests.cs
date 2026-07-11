@@ -34,10 +34,11 @@ public sealed class GetBundleRunQueryHandlerTests
         return new GetBundleRunQueryHandler(_jobStore.Object, new StaticOptionsMonitor<AppConfig>(cfg));
     }
 
-    private static BundleRunRecord Record(string handle) => new()
+    private static BundleRunRecord Record(string handle, string ownerId = "owner-1") => new()
     {
         JobId = "j1",
         Handle = handle,
+        OwnerId = ownerId,
         AgentName = "agent-1",
         UserMessages = ["hello"],
         MaxTurns = 3,
@@ -46,7 +47,7 @@ public sealed class GetBundleRunQueryHandlerTests
         CreatedAt = DateTimeOffset.UnixEpoch
     };
 
-    private static GetBundleRunQuery Query() => new() { Handle = "h1", JobId = "j1" };
+    private static GetBundleRunQuery Query() => new() { Handle = "h1", JobId = "j1", OwnerId = "owner-1" };
 
     [Fact]
     public async Task Handle_WhenDisabled_ReturnsForbidden()
@@ -77,7 +78,18 @@ public sealed class GetBundleRunQueryHandlerTests
     }
 
     [Fact]
-    public async Task Handle_WhenRunMatchesHandle_ReturnsRecord()
+    public async Task Handle_WhenRunBelongsToDifferentCaller_ReturnsNotFound()
+    {
+        // Right handle + right job id, but the run was created by another owner: not found, no leak.
+        _jobStore.Setup(j => j.Get("j1")).Returns(Record(handle: "h1", ownerId: "someone-else"));
+
+        var result = await BuildSut().Handle(Query(), CancellationToken.None);
+
+        result.FailureType.Should().Be(ResultFailureType.NotFound);
+    }
+
+    [Fact]
+    public async Task Handle_WhenRunMatchesHandleAndOwner_ReturnsRecord()
     {
         _jobStore.Setup(j => j.Get("j1")).Returns(Record(handle: "h1"));
 

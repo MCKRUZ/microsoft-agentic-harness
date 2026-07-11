@@ -33,6 +33,13 @@ public sealed record RunBundleCommand : IRequest<Result<RunBundleResult>>
     /// <summary>The resolved per-caller capability grant this run executes under.</summary>
     public required CapabilityEnvelope Envelope { get; init; }
 
+    /// <summary>
+    /// Stable identifier of the caller starting the run. The run proceeds only if this matches the owner the
+    /// handle was registered under, so a caller can only run bundles they registered. Resolved at the
+    /// transport boundary from the authenticated principal.
+    /// </summary>
+    public required string OwnerId { get; init; }
+
     /// <summary>The maximum number of turns the conversation may run.</summary>
     public int MaxTurns { get; init; } = 10;
 }

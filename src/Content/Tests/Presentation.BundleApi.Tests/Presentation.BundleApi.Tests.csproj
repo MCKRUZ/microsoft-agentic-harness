@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" />
+    <PackageReference Include="FluentAssertions" />
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+  </ItemGroup>
+
+  <!--
+    LoadAppConfig anchors on AppContext.BaseDirectory (this test project's output) and REQUIRES
+    appsettings.json there. WebApplicationFactory sets the host's content root to the BundleApi project
+    dir, but LoadAppConfig ignores that and reads the test bin dir — so copy the host's config here so the
+    full composition boots under test with BundleExecution enabled + anonymous auth (Development).
+  -->
+  <ItemGroup>
+    <Content Include="..\..\Presentation\Presentation.BundleApi\appsettings.json"
+             Link="appsettings.json" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\Presentation\Presentation.BundleApi\appsettings.Development.json"
+             Link="appsettings.Development.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\Presentation\Presentation.BundleApi\Presentation.BundleApi.csproj" />
+    <ProjectReference Include="..\..\Application\Application.AI.Common\Application.AI.Common.csproj" />
+    <ProjectReference Include="..\..\Domain\Domain.AI\Domain.AI.csproj" />
+  </ItemGroup>
+
+</Project>
