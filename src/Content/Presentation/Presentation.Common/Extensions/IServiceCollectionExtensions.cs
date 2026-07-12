@@ -6,6 +6,7 @@ using Application.Core;
 using Application.Core.Validation;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
+using Domain.Common.Config.AI.BundleExecution;
 using Domain.Common.Config.AI.GitOps;
 using Domain.Common.Config.AI.Governance;
 using Domain.Common.Config.AI.HarmonicMemory;
@@ -213,6 +214,17 @@ public static class IServiceCollectionExtensions
             .ValidateFluentValidation<
                 Domain.Common.Config.AI.ContextManagement.PromptCompositionConfig,
                 PromptCompositionConfigValidator>()
+            .ValidateOnStart();
+
+        // Bundle-execution knobs (archive limits, handle/run/stream TTLs, cleanup interval, per-caller
+        // stream cap). All rules are unconditional positivity checks and the class defaults are all
+        // positive, so hosts that omit the section (every host except the bundle API) keep booting on
+        // defaults; a host that sets an explicit non-positive value fails closed at startup instead of
+        // silently degrading at runtime (e.g. a zero StreamReservationTtl that sweeps every SSE
+        // reservation before the caller connects).
+        services.AddOptions<BundleExecutionConfig>()
+            .Bind(configuration.GetSection("AppConfig:AI:BundleExecution"))
+            .ValidateFluentValidation<BundleExecutionConfig, BundleExecutionConfigValidator>()
             .ValidateOnStart();
 
         return services;
