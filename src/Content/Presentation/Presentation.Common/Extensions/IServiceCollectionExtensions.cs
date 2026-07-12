@@ -227,6 +227,15 @@ public static class IServiceCollectionExtensions
             .ValidateFluentValidation<BundleExecutionConfig, BundleExecutionConfigValidator>()
             .ValidateOnStart();
 
+        // OTel logs-signal knobs (export toggle, min export level, PII redaction). Rules are
+        // conditional on OtelExportEnabled and the defaults are all valid, so hosts that omit
+        // the section keep booting; a host that enables export with a bad level or an unknown
+        // redaction category fails closed at startup instead of silently mis-exporting.
+        services.AddOptions<LogsConfig>()
+            .Bind(configuration.GetSection("AppConfig:Observability:Logs"))
+            .ValidateFluentValidation<LogsConfig, LogsConfigValidator>()
+            .ValidateOnStart();
+
         return services;
     }
 

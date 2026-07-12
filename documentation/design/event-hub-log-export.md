@@ -1,6 +1,6 @@
 # Story: OTel Log Export to Azure Event Hub (with in-app PII filtering)
 
-> **Status:** Decisions settled (§10) — ready to build; no code yet.
+> **Status:** PR1 shipped (OTel logs signal + PII processor + validation, off by default). PR2–PR4 pending.
 > **Issue:** [#153](https://github.com/MCKRUZ/microsoft-agentic-harness/issues/153) — "Event logging in Event Hub … make sure there is a filter in place for PII."
 > **Author:** design pass, 2026-07-12.
 
@@ -163,7 +163,9 @@ CI has no live Azure/Event Hub (consistent with the harness's no-live-Kestrel/Do
 
 ## 9. Rollout (one concern per PR)
 
-1. **PR1 — OTel logs signal + PII processor.** Bridge `ILogger` → OTel on both host shapes; add `ITelemetryConfigurator.ConfigureLogging`; add `LogRecordRedactionProcessor` (reusing `IContentRedactionFilter`); `Logs.OtelExportEnabled` + OTLP logs exporter. **Off by default.** *This PR alone closes the Grafana-logs gap.*
+1. **PR1 — OTel logs signal + PII processor. ✅ SHIPPED.** Bridges `ILogger` → OTel on both host shapes via `AddOpenTelemetry().WithLogging(...)` (uniform for web + console — the bridge is an `ILoggerProvider` the standard factory picks up); adds `LogRecordRedactionProcessor : BaseProcessor<LogRecord>` (reuses `IContentRedactionFilter`); adds `LogsConfig` (`OtelExportEnabled` + `MinExportLevel` + redaction) at `AppConfig:Observability:Logs` with `LogsConfigValidator` + `ValidateOnStart`; OTLP logs exporter (same endpoint as traces/metrics). **Off by default; byte-identical when off.** *This PR alone closes the Grafana-logs gap.*
+   - **Deviation 1 (better home):** redaction config lives under **`Logs`**, not `Exporters.EventHub.Redaction`. PII scrub is a *signal-wide* processor — it runs once before **every** log exporter (OTLP now, Event Hub later), so scoping it to one exporter would be wrong. §5.2's "before any exporter" is honored: the redactor is registered pre-build, ahead of the exporter, because the batch exporter snapshots the pooled record (an after-the-exporter processor would leak). PR2's `EventHub.Redaction` is therefore dropped as redundant.
+   - **Deviation 2 (YAGNI):** `ITelemetryConfigurator.ConfigureLogging` seam is **deferred to PR2**, when a second log exporter (Azure Monitor / Event Hub Direct) actually needs it. PR1 wires the redactor + OTLP exporter directly; adding an interface method with no implementer would be inert. The ordering constraint (redactor must precede the exporter, and OTLP must register pre-build) also means the deferred-configurator seam couldn't express PR1's pipeline anyway.
 2. **PR2 — Event Hub config + Collector mode.** `EventHubExporterConfig` + validator + `ValidateOnStart` wiring; Collector-mode docs (OTLP logs → collector Kafka/Azure exporter → Event Hub). Mostly config + docs; no SDK dependency.
 3. **PR3 — Direct mode.** Add `Azure.Messaging.EventHubs`; in-process `BaseExporter<LogRecord>` behind `IEventHubLogSink`; both auth modes; bounded queue + drop-on-overflow + dropped/failure counters + recursion guard.
 4. **PR4 (optional) — docs.** Security guide (PII flow, auth, recursion guard) + observability blueprint update (logs now a signal; Grafana Loki wiring notes).

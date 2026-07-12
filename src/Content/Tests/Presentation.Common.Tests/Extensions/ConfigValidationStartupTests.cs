@@ -126,6 +126,16 @@ public class ConfigValidationStartupTests
             "BundleExecutionConfig",
             new Dictionary<string, string?> { ["AppConfig:AI:BundleExecution:StreamReservationTtl"] = "00:00:00" }
         },
+        {
+            // Logs OTel export enabled with a MinExportLevel that is not a real LogLevel —
+            // the rule is armed by OtelExportEnabled, so the host must refuse to start.
+            "LogsConfig",
+            new Dictionary<string, string?>
+            {
+                ["AppConfig:Observability:Logs:OtelExportEnabled"] = "true",
+                ["AppConfig:Observability:Logs:MinExportLevel"] = "NotALevel",
+            }
+        },
     };
 
     [Theory]

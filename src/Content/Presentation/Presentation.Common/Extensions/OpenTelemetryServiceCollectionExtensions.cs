@@ -1,12 +1,16 @@
+using Application.AI.Common.Interfaces.Telemetry;
 using Application.Common.Interfaces.Telemetry;
 using Domain.Common.Config;
 using Domain.Common.Config.Observability;
 using Domain.Common.Telemetry;
+using Infrastructure.Observability.Processors;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using OpenTelemetry;
 using OpenTelemetry.Exporter;
 using OpenTelemetry.Instrumentation.AspNetCore;
 using OpenTelemetry.Instrumentation.Http;
+using OpenTelemetry.Logs;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
@@ -71,6 +75,12 @@ public static class OpenTelemetryServiceCollectionExtensions
             services.AddWebTelemetry(appConfig);
         else
             services.AddDesktopTelemetry();
+
+        // Logs signal — bridges ILogger records into OTel so they reach the same
+        // backend as traces/metrics (closing the gap where app logs never left the
+        // local console/file sinks). Wired identically for both host shapes via the
+        // hosting integration's ILogger bridge, and OFF by default.
+        services.AddLogsSignal(appConfig);
 
         return services;
     }
@@ -194,6 +204,87 @@ public static class OpenTelemetryServiceCollectionExtensions
         services.AddHostedService<Telemetry.DesktopTelemetryHostedService>();
 
         return services;
+    }
+
+    /// <summary>
+    /// Wires the OpenTelemetry logs signal — the <c>ILogger</c> → OTel bridge — when
+    /// <c>Observability:Logs:OtelExportEnabled</c> is set. No-op (and zero pipeline
+    /// registration) when the flag is off, so hosts boot byte-identically by default.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Uses <c>AddOpenTelemetry().WithLogging(...)</c> rather than a standalone
+    /// <see cref="LoggerProvider"/>: the logs signal must originate from the host's
+    /// <c>ILoggerFactory</c>, and <c>WithLogging</c> registers the bridging
+    /// <c>ILoggerProvider</c> (aliased "OpenTelemetry") into DI where the standard
+    /// factory picks it up — so it works uniformly for both the web host and the
+    /// bare-<c>ServiceCollection</c> console hosts. This differs from the standalone
+    /// tracer/meter providers, which are built manually because nothing resolves them
+    /// on the console path; the logs bridge self-materializes on first log.
+    /// </para>
+    /// <para>
+    /// <see cref="LogsConfig.MinExportLevel"/> is applied as a provider-scoped filter,
+    /// so it caps what OTel <em>exports</em> without touching the local sinks' levels.
+    /// </para>
+    /// </remarks>
+    private static IServiceCollection AddLogsSignal(this IServiceCollection services, AppConfig appConfig)
+    {
+        var logsConfig = appConfig.Observability.Logs;
+        if (!logsConfig.OtelExportEnabled)
+            return services;
+
+        services.AddOpenTelemetry().WithLogging(
+            configureBuilder: builder => ConfigureLoggerProviderBuilder(builder, appConfig),
+            // Populate FormattedMessage so the rendered text (and any PII in it) is
+            // present for the redactor to scrub and for exporters to ship.
+            configureOptions: options => options.IncludeFormattedMessage = true);
+
+        // Cap OTel export at MinExportLevel independent of the console/file/JSONL sinks,
+        // which keep their own levels. Targets the bridge provider by its concrete type.
+        if (Enum.TryParse<LogLevel>(logsConfig.MinExportLevel, ignoreCase: true, out var minLevel))
+        {
+            services.AddLogging(logging =>
+                logging.AddFilter<OpenTelemetryLoggerProvider>(category: null, minLevel));
+        }
+
+        return services;
+    }
+
+    /// <summary>
+    /// Configures the OTel logger pipeline: PII redaction first, then the OTLP logs
+    /// exporter, then the shared resource attributes (resolved at build time so logs
+    /// correlate with traces/metrics in the backend).
+    /// </summary>
+    private static void ConfigureLoggerProviderBuilder(LoggerProviderBuilder builder, AppConfig appConfig)
+    {
+        var logsConfig = appConfig.Observability.Logs;
+
+        // Redaction is registered FIRST — ahead of the exporter — so PII is scrubbed
+        // before the batch exporter snapshots the pooled record. The DI factory defers
+        // construction to build time, resolving the shared content redactor.
+        if (logsConfig.RedactionEnabled)
+        {
+            builder.AddProcessor(sp => new LogRecordRedactionProcessor(
+                sp.GetRequiredService<IContentRedactionFilter>(),
+                logsConfig,
+                sp.GetRequiredService<ILoggerFactory>()
+                    .CreateLogger<LogRecordRedactionProcessor>()));
+        }
+
+        // OTLP logs exporter — same endpoint/options as traces/metrics. Registered
+        // pre-build (AddOtlpExporter calls ConfigureServices), and after redaction so
+        // the scrub runs first in the OnEnd chain.
+        var otlpConfig = appConfig.Observability.Exporters.Otlp;
+        if (otlpConfig.Enabled)
+        {
+            builder.AddOtlpExporter("otlp-logs", options =>
+                ConfigureOtlpOptions(options, otlpConfig));
+        }
+
+        // Resolve the ResourceBuilder singleton at provider-build time so logs carry the
+        // same service.name/version resource attributes as the other signals.
+        ((IDeferredLoggerProviderBuilder)builder).Configure((sp, b) =>
+            b.SetResourceBuilder(sp.GetRequiredService<ResourceBuilder>()));
     }
 
     /// <summary>
