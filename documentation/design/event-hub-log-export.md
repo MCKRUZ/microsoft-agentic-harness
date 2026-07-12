@@ -1,6 +1,6 @@
 # Story: OTel Log Export to Azure Event Hub (with in-app PII filtering)
 
-> **Status:** Draft for review — no code yet.
+> **Status:** Decisions settled (§10) — ready to build; no code yet.
 > **Issue:** [#153](https://github.com/MCKRUZ/microsoft-agentic-harness/issues/153) — "Event logging in Event Hub … make sure there is a filter in place for PII."
 > **Author:** design pass, 2026-07-12.
 
@@ -98,6 +98,10 @@ Logging must never block or crash the app:
 - A `logs.export.dropped` counter (and export-failure counter) makes drops observable.
 - **Recursion guard:** the Event Hub exporter's own failure logs must not route back through the Event Hub sink (infinite loop). The exporter logs failures to console only, and/or its own log category is excluded from OTel export.
 
+### 5.6 Structured attribute promotion (decided — §10.2)
+
+Many log events already carry rich structured fields (token counts, tool names, session id, agent id). These are promoted to first-class OTel **log-record attributes** rather than flattened into the message string, so they survive as **queryable dimensions** in Grafana and any downstream SIEM / Event Hub consumer — e.g. "every log for session X", "every tool-failure log". The redaction processor (§5.2) scrubs string attribute values before export, so promotion does **not** widen the PII surface.
+
 ## 6. Configuration schema
 
 New `EventHubExporterConfig` under `ExportersConfig.EventHub`, plus a logs-signal toggle. Off by default.
@@ -107,7 +111,7 @@ New `EventHubExporterConfig` under `ExportersConfig.EventHub`, plus a logs-signa
   "Observability": {
     "Logs": {
       "OtelExportEnabled": false,          // master switch for the ILogger→OTel bridge
-      "MinExportLevel": "Information"       // floor for what is exported (cost control)
+      "MinExportLevel": "Information"       // export everything by default; set "Warning" to cap volume/cost
     },
     "Exporters": {
       "EventHub": {
@@ -164,10 +168,10 @@ CI has no live Azure/Event Hub (consistent with the harness's no-live-Kestrel/Do
 3. **PR3 — Direct mode.** Add `Azure.Messaging.EventHubs`; in-process `BaseExporter<LogRecord>` behind `IEventHubLogSink`; both auth modes; bounded queue + drop-on-overflow + dropped/failure counters + recursion guard.
 4. **PR4 (optional) — docs.** Security guide (PII flow, auth, recursion guard) + observability blueprint update (logs now a signal; Grafana Loki wiring notes).
 
-## 10. Open questions
+## 10. Decisions (settled 2026-07-12)
 
-1. **`MinExportLevel` default** — `Information`, or `Warning` to cap Event Hub cost/volume out of the box?
-2. **Collector exporter choice** — Kafka exporter against Event Hub's Kafka endpoint vs. a contrib Azure exporter. To confirm at the ops tier; app is unaffected either way (both consume OTLP).
-3. **Attribute promotion** — should the existing StructuredJson fields (token counts, tool names, session id) be promoted to OTel log attributes so they're queryable in Grafana/Event Hub, or is the formatted message enough for v1?
-4. **Redaction categories default** — ship the full set on (recommended, over-redactive) or a narrower default with docs to widen?
+1. **Log verbosity — export everything by default.** `MinExportLevel` defaults to `Information` (the full routine + problem trail), with a single config knob to dial back to `Warning` when a consumer wants to cap Event Hub volume/cost. See §6.
+2. **Promote structured fields to log attributes.** Token counts, tool names, session id, etc. become first-class OTel log attributes rather than being baked into the message text, so they are directly filterable in Grafana and downstream SIEM. See §5.6.
+3. **PII redaction — full set on by default.** All content categories (email, phone, SSN, credit-card, IP, AWS key, JWT, generic credentials) are enabled by default; over-redaction is the intended safe posture for a compliance-sensitive template. See §5.2 / §6.
+4. **Collector exporter choice — deferred to backlog.** Kafka-endpoint vs. contrib Azure exporter is an ops-tier decision that does not affect app code (both consume OTLP). Tracked as a backlog follow-up, **not** a blocker for PR1–PR3.
 ```
