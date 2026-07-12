@@ -6,6 +6,7 @@ using Application.AI.Common.Interfaces.Traces;
 using Application.AI.Common.Models;
 using Application.AI.Common.Services.Skills;
 using Application.AI.Common.Services.Tools;
+using Domain.AI.Agents;
 using Domain.AI.Skills;
 using Domain.AI.Tools;
 using Domain.Common.Config;
@@ -77,6 +78,60 @@ public class AgentExecutionContextFactoryTests
         Name = name ?? id,
         Instructions = "You are a test agent."
     };
+
+    // --- Delegation tool provisioning ---
+
+    [Fact]
+    public void CreateFromDelegation_ProvisionsProfileToolAllowlistFromKeyedDi()
+    {
+        // A delegated subagent must actually receive its declared tools so it can do tool-using work,
+        // not just generate text. The profile's ToolAllowlist names resolve from keyed DI.
+        var toolMock = new Mock<ITool>();
+        toolMock.Setup(t => t.Name).Returns("file_system");
+        var converted = AIFunctionFactory.Create(() => "ok", "file_system");
+        var converter = new Mock<IToolConverter>();
+        converter.Setup(c => c.Convert(toolMock.Object, null)).Returns(converted);
+
+        var services = new ServiceCollection();
+        services.AddKeyedSingleton<ITool>("file_system", toolMock.Object);
+        var factory = CreateFactory(toolConverter: converter.Object, serviceProvider: services.BuildServiceProvider());
+
+        var definition = new SubagentDefinition
+        {
+            AgentType = SubagentType.Explore,
+            ToolAllowlist = ["file_system"]
+        };
+
+        var context = factory.CreateFromDelegation(
+            definition, toolOverrides: null, delegationDepth: 1, delegationId: Guid.NewGuid());
+
+        context.Tools.Should().NotBeNull();
+        context.Tools!.Select(t => t.Name).Should().ContainSingle().Which.Should().Be("file_system");
+    }
+
+    [Fact]
+    public void CreateFromDelegation_DenylistExcludesTool_AndNullAllowlistProvisionsNothing()
+    {
+        var factory = CreateFactory(serviceProvider: new ServiceCollection().BuildServiceProvider());
+
+        // Null allowlist (an "inherit everything" profile) provisions nothing on the delegation path —
+        // there is no parent tool pool to inherit from.
+        var noneCtx = factory.CreateFromDelegation(
+            new SubagentDefinition { AgentType = SubagentType.General },
+            toolOverrides: null, delegationDepth: 1, delegationId: Guid.NewGuid());
+        (noneCtx.Tools is null || noneCtx.Tools.Count == 0).Should().BeTrue();
+
+        // A denylisted name is dropped before resolution (so it never even reaches keyed DI).
+        var deniedCtx = factory.CreateFromDelegation(
+            new SubagentDefinition
+            {
+                AgentType = SubagentType.Explore,
+                ToolAllowlist = ["file_system"],
+                ToolDenylist = ["file_system"]
+            },
+            toolOverrides: null, delegationDepth: 1, delegationId: Guid.NewGuid());
+        (deniedCtx.Tools is null || deniedCtx.Tools.Count == 0).Should().BeTrue();
+    }
 
     // --- Framework type resolution ---
 

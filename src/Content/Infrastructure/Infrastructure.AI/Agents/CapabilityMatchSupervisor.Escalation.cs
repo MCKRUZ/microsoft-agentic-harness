@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Application.AI.Common.OpenTelemetry.Metrics;
+using Application.AI.Common.Services;
 using Domain.AI.Agents;
 using Domain.AI.Escalation;
 using Domain.AI.Governance;
@@ -140,22 +141,38 @@ public sealed partial class CapabilityMatchSupervisor
         var agentContext = _contextFactory.CreateFromDelegation(definition, toolOverrides, currentDepth + 1, pendingRecord.DelegationId);
         var agent = await _agentFactory.CreateAgentAsync(agentContext, ct);
 
-        // Actually run the delegated subagent on the task. Creating the agent alone does no work —
-        // the task description must be sent as the subagent's user message and its response captured,
-        // otherwise the delegation returns a placeholder and the orchestrator has nothing to
-        // synthesize (the defect behind GitHub #96, Issue 2). Token accounting for this run flows
-        // through the chat-client middleware into the parent turn's usage capture, so DelegationResult
-        // carries duration + real output here and leaves TokensUsed at 0 — the parent turn owns the
-        // aggregate token count.
-        var response = await agent.RunAsync(
-            [new ChatMessage(ChatRole.User, pendingRecord.TaskDescription)],
-            cancellationToken: ct);
+        // Run the delegated subagent on the task, isolating its usage accounting from the parent turn.
+        // Creating the agent alone does no work — the task description must be sent as the subagent's
+        // user message and its response captured, otherwise the delegation returns a placeholder and the
+        // orchestrator has nothing to synthesize (the defect behind GitHub #96, Issue 2). The subagent
+        // now carries real tools, and the parent orchestrator turn has its own LlmUsageCapture set as the
+        // ambient AsyncLocal for the duration of its RunAsync; the subagent runs *inside* that turn (as a
+        // tool call), so without swapping the ambient here the subagent's tokens AND tool invocations
+        // would fold into the ORCHESTRATOR turn's telemetry — it would report tool calls it never made.
+        // A fresh capture scopes the subagent's work to this delegation and yields its real token cost.
+        // (Tool-invocation governance/progress ambients are intentionally left as-is; per-subagent
+        // governance re-scoping under enforcement is tracked as a follow-up — see the PR description.)
+        var delegationUsage = new LlmUsageCapture(_options);
+        var previousUsage = LlmUsageCapture.Current;
+        LlmUsageCapture.Current = delegationUsage;
+        AgentResponse response;
+        try
+        {
+            response = await agent.RunAsync(
+                [new ChatMessage(ChatRole.User, pendingRecord.TaskDescription)],
+                cancellationToken: ct);
+        }
+        finally
+        {
+            LlmUsageCapture.Current = previousUsage;
+        }
 
         stopwatch.Stop();
 
         await RecordCompletion(pendingRecord, ct);
 
         var durationMs = stopwatch.ElapsedMilliseconds;
+        var usage = delegationUsage.TakeSnapshot();
 
         SupervisorMetrics.DelegationsTotal.Add(1,
             new(SupervisorConventions.SupervisorId, SupervisorId),
@@ -176,7 +193,7 @@ public sealed partial class CapabilityMatchSupervisor
             pendingRecord.DelegationId, selection.SelectedAgent.AgentId, durationMs);
 
         var output = response.Text ?? string.Empty;
-        return DelegationResult.Success(output, 0, durationMs);
+        return DelegationResult.Success(output, usage.InputTokens + usage.OutputTokens, durationMs);
     }
 
     private async Task RecordCompletion(DelegationRecord pendingRecord, CancellationToken ct)

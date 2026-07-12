@@ -137,6 +137,21 @@ public class ToolChainBuilder : IToolChainBuilder
             .ToList();
 
     /// <inheritdoc />
+    public List<AITool> BuildToolsByName(IReadOnlyList<string> toolNames)
+    {
+        var tools = new List<AITool>();
+        foreach (var name in toolNames)
+        {
+            var resolved = ResolveToolByName(name);
+            if (resolved != null)
+                tools.AddRange(resolved);
+        }
+
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        return WrapGoverned(tools.Where(t => seen.Add(t.Name)));
+    }
+
+    /// <inheritdoc />
     public async Task<List<AITool>> BuildMergedToolsAsync(
         IReadOnlyList<SkillDefinition> skills,
         SkillAgentOptions options,

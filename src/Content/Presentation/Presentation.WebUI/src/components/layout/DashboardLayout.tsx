@@ -23,9 +23,13 @@ export function DashboardLayout() {
   const { pathname } = useLocation();
 
   useEffect(() => {
-    if (!selectedAgent && agentsQuery.data?.length) {
-      setSelectedAgent(agentsQuery.data[0].id);
-    }
+    const agents = agentsQuery.data;
+    if (!agents?.length) return;
+    // Auto-select the first agent when none is chosen, or when a persisted selection no longer exists
+    // (agent removed/renamed between sessions) — otherwise a stale stored id would strand the user on
+    // an invalid agent whose turns fail.
+    const isValid = selectedAgent !== null && agents.some((a) => a.id === selectedAgent);
+    if (!isValid) setSelectedAgent(agents[0].id);
   }, [selectedAgent, agentsQuery.data, setSelectedAgent]);
 
   useEffect(() => {

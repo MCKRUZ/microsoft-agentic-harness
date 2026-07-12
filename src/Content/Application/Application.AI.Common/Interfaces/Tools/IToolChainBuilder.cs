@@ -26,6 +26,16 @@ public interface IToolChainBuilder
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Resolves a specific set of tools by name from keyed DI — converting and governance-wrapping each
+    /// exactly as the skill-based paths do — and returns them deduplicated by name. Used to provision a
+    /// delegated subagent's declared tools (its profile <c>ToolAllowlist</c>), which are named directly
+    /// rather than sourced from a skill. Names that resolve to no registered tool are skipped.
+    /// </summary>
+    /// <param name="toolNames">The keyed-DI tool names to resolve.</param>
+    /// <returns>The resolved, converted, governance-wrapped tools (empty when none resolve).</returns>
+    List<AITool> BuildToolsByName(IReadOnlyList<string> toolNames);
+
+    /// <summary>
     /// Merges and deduplicates tools from multiple skills, applying an optional whitelist.
     /// First occurrence wins during deduplication.
     /// </summary>

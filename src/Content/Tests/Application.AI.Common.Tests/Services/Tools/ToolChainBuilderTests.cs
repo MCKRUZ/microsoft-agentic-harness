@@ -271,6 +271,31 @@ public class ToolChainBuilderTests
     }
 
     [Fact]
+    public void BuildToolsByName_ResolvesRegisteredKeyedToolsAndSkipsUnknown()
+    {
+        // Used to provision a delegated subagent's declared tools by name (no skill involved).
+        var toolMock = new Mock<ITool>();
+        toolMock.Setup(t => t.Name).Returns("file_system");
+
+        var convertedTool = AIFunctionFactory.Create(() => "converted", "file_system");
+        var converter = new Mock<IToolConverter>();
+        converter.Setup(c => c.Convert(toolMock.Object, null)).Returns(convertedTool);
+
+        var services = new ServiceCollection();
+        services.AddKeyedSingleton<ITool>("file_system", toolMock.Object);
+
+        var builder = CreateBuilder(
+            toolConverter: converter.Object,
+            serviceProvider: services.BuildServiceProvider());
+
+        // "unregistered" has no keyed tool and is skipped; "file_system" resolves and is returned.
+        var tools = builder.BuildToolsByName(["file_system", "unregistered"]);
+
+        tools.Should().ContainSingle();
+        tools[0].Name.Should().Be("file_system");
+    }
+
+    [Fact]
     public async Task BuildToolsAsync_RequiredToolUnresolvable_Throws()
     {
         var builder = CreateBuilder();

@@ -6,6 +6,7 @@ import { useAppStore } from '@/stores/appStore';
 import { useConversationSettingsStore } from '@/stores/conversationSettingsStore';
 import { useAgentHub, type ConnectionState, type ConversationSettingsInput } from '@/hooks/useAgentHub';
 import { useSendUserMessage } from '@/hooks/useSendUserMessage';
+import { abortActiveStream } from '@/hooks/useAgentStream';
 import { loadConversationHistory } from './loadConversationHistory';
 import { MessageList } from './MessageList';
 import { TypingIndicator } from './TypingIndicator';
@@ -190,8 +191,14 @@ export function ChatPanel() {
     }
 
     // A switch (or a fresh page load): bind the transcript to the new id and load its history.
-    // setMessages always runs on completion — an empty history (a brand-new id) clears any stale
-    // previous-conversation messages rather than leaving them on screen under the new URL.
+    // Abort any run still streaming for the previous conversation first — neither the sidebar nor the
+    // browser back/forward buttons stop the stream, so without this its late tokens would land in the
+    // transcript we're about to show. setMessages always runs on completion — an empty history (a
+    // brand-new id) clears any stale previous-conversation messages rather than leaving them on screen.
+    abortActiveStream();
+    // Aborting the run leaves the store's streaming flags set; clear them so the conversation we're
+    // switching to doesn't render a phantom typing indicator or the aborted run's leftover partial text.
+    useChatStore.getState().resetStreaming();
     setChatConversationId(activeConversationId);
     setConversationReady(false);
     let cancelled = false;

@@ -24,11 +24,15 @@ vi.mock('@/hooks/useAgentHub', () => ({
   AgentHubProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
 
+// ChatPanel aborts the app-wide active stream when the conversation switches (so the previous run's
+// late tokens don't land in the new transcript). Spy on the module-level abort to assert that.
+const mockAbortActiveStream = vi.fn();
 vi.mock('@/hooks/useAgentStream', () => ({
   useAgentStream: () => ({
     sendMessage: mockSendMessage,
     abort: vi.fn(),
   }),
+  abortActiveStream: () => mockAbortActiveStream(),
 }));
 
 // ChatPanel loads the active conversation's transcript from this read-only helper (never creating it
@@ -64,6 +68,7 @@ describe('ChatPanel', () => {
     mockSendMessage.mockReset();
     mockStartConversation.mockReset().mockResolvedValue([]);
     mockLoadHistory.mockReset().mockResolvedValue([]);
+    mockAbortActiveStream.mockReset();
   });
 
   // --- Phantom-conversation regression (GitHub #96) ---
@@ -110,6 +115,11 @@ describe('ChatPanel', () => {
       renderPanel();
       expect(await screen.findByText('A question')).toBeInTheDocument();
 
+      // Simulate leaving A mid-stream: the run is still marked streaming with a partial buffer.
+      act(() => {
+        useChatStore.setState({ isStreaming: true, streamingContent: 'partial A tokens' });
+      });
+
       mockLoadHistory.mockResolvedValueOnce([
         { id: 'b1', role: 'user', content: 'B question', timestamp: new Date() },
       ]);
@@ -120,6 +130,11 @@ describe('ChatPanel', () => {
       expect(await screen.findByText('B question')).toBeInTheDocument();
       expect(mockLoadHistory).toHaveBeenLastCalledWith(CONV_B);
       expect(screen.queryByText('A question')).not.toBeInTheDocument();
+      // The previous conversation's stream is aborted on the switch so its late tokens can't bleed into B.
+      expect(mockAbortActiveStream).toHaveBeenCalled();
+      // And the streaming flags are cleared, so B doesn't inherit A's phantom typing indicator / partial.
+      expect(useChatStore.getState().isStreaming).toBe(false);
+      expect(useChatStore.getState().streamingContent).toBe('');
     });
   });
 
