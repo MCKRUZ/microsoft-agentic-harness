@@ -38,27 +38,44 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Compute changed-line anchors
-        id: anchors
-        # The grader NEVER adds red to a PR (it advises). Anchors are a best-effort
-        # aid: if the fetch hiccups or the helper exits non-zero, swallow it and let
-        # the grade step fall back to inspecting the diff directly.
+      - name: Detect source changes and compute anchors
+        id: detect
+        # The grader NEVER adds red to a PR (it advises). This step decides whether
+        # grading is worth spending a model turn on: it grades only when compilable
+        # source under src/ changed, so docs-only, plan-only, and config-only PRs
+        # skip the Claude call entirely (the dominant source of wasted grader spend).
+        # Fail-open: if the scope can't be computed, grade anyway rather than silently
+        # skip a code PR. A best-effort helper hiccup never blocks (advisory rail).
         continue-on-error: true
         env:
           BASE_REF: ${{ github.base_ref }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
           # Full fetch of the base so the merge-base (and thus the diff) resolves.
-          git fetch --no-tags origin "$BASE_REF"
-          # Deterministic changed-line set, shared with the correctness rail, so
-          # the grader's evidence pins to exact lines instead of drifting prose.
+          git fetch --no-tags origin "$BASE_REF" || true
+          # Deterministic changed-line set scoped to src/, shared with the correctness
+          # rail, so the grader's evidence pins to exact lines instead of drifting prose
+          # AND so non-code PRs are recognised as not-worth-grading.
           ANCHORS_FILE="${RUNNER_TEMP}/grader-anchors.txt"
-          scripts/rails/diff-anchors.sh --base "$BASE_REF" > "$ANCHORS_FILE"
           echo "anchors_file=${ANCHORS_FILE}" >> "$GITHUB_OUTPUT"
-          echo "Changed-line anchors:"; cat "$ANCHORS_FILE" || true
+          if scripts/rails/diff-anchors.sh --base "$BASE_REF" -- 'src/' > "$ANCHORS_FILE" 2>/dev/null; then
+            echo "Changed-line anchors under src/:"; cat "$ANCHORS_FILE" || true
+            if [ -s "$ANCHORS_FILE" ]; then
+              echo "review_required=true" >> "$GITHUB_OUTPUT"
+              echo "Grading required — source under src/ changed."
+            else
+              echo "review_required=false" >> "$GITHUB_OUTPUT"
+              echo "No source under src/ changed — skipping the grader (advisory, saves a model turn)."
+            fi
+          else
+            # Couldn't determine scope — grade anyway (fail-open; the grader never blocks).
+            echo "review_required=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::Could not compute changed-line scope; grading anyway (fail-open, advisory)."
+          fi
 
       - name: Grade the change against its spec
         id: grade
+        if: steps.detect.outputs.review_required == 'true'
         continue-on-error: true
         uses: anthropics/claude-code-action@v1
         with:
@@ -68,7 +85,7 @@ jobs:
             You are running as the grader for PR #${{ github.event.pull_request.number }}.
             Read the grading rubric at .github/grader-rubric.md and follow it exactly.
             The "spec" is this PR's description and any linked issue.
-            The changed-line anchor set is at ${{ steps.anchors.outputs.anchors_file }} —
+            The changed-line anchor set is at ${{ steps.detect.outputs.anchors_file }} —
             cite a `path:line` from it as the evidence for each check, and treat it as
             the authoritative list of what this PR changed.
             Inspect the PR diff (the base is origin/${{ github.base_ref }}) and the
@@ -78,3 +95,7 @@ jobs:
             --model sonnet
             --max-turns 20
             --allowedTools Bash,Read,Grep,Glob
+
+      - name: No grading required
+        if: steps.detect.outputs.review_required != 'true'
+        run: echo "No source under src/ changed — grader skipped (advisory rail, no model turn spent)."

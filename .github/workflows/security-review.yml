@@ -41,6 +41,7 @@ jobs:
         env:
           BASE_REF: ${{ github.base_ref }}
           HAS_RISK_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'risk:high') }}
+          IS_DRAFT: ${{ github.event.pull_request.draft }}
         run: |
           set -euo pipefail
           # Full (non-shallow) fetch of the base so the merge-base exists; a
@@ -61,7 +62,15 @@ jobs:
             GATED=false
           fi
 
-          if [ "$GATED" = "true" ] || [ "$HAS_RISK_LABEL" = "true" ]; then
+          # Drafts are work-in-progress and cannot merge, so defer the expensive
+          # (Opus) reviewer until the PR is marked ready — the `ready_for_review`
+          # trigger re-runs this job. Unlike a job-level draft skip, short-circuiting
+          # here keeps this REQUIRED check always reporting a conclusion (a trivial
+          # pass on drafts), so the merge is never left stuck "pending".
+          if [ "$IS_DRAFT" = "true" ]; then
+            echo "review_required=false" >> "$GITHUB_OUTPUT"
+            echo "Draft PR — security reviewer deferred until ready_for_review (check passes trivially)."
+          elif [ "$GATED" = "true" ] || [ "$HAS_RISK_LABEL" = "true" ]; then
             echo "review_required=true" >> "$GITHUB_OUTPUT"
             echo "Security review REQUIRED (gated=$GATED, risk:high=$HAS_RISK_LABEL)."
           else
