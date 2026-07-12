@@ -129,8 +129,10 @@ public sealed class LogRecordRedactionProcessorTests
     }
 
     [Fact]
-    public void OnEnd_NoCategories_LeavesRecordUnchanged()
+    public void OnEnd_EnabledWithEmptyCategories_FallsBackToFullRedaction()
     {
+        // Fail-safe (not fail-open): redaction requested but no category resolved — the
+        // processor over-redacts with the full set rather than emitting unredacted content.
         var config = EnabledConfig();
         config.RedactionCategories = [];
 
@@ -138,7 +140,20 @@ public sealed class LogRecordRedactionProcessorTests
             CreateProcessor(config),
             logger => logger.LogInformation("token is {Value}", Marker));
 
-        capture.Records[0].Message.Should().Be($"token is {Marker}");
+        capture.Records[0].Message.Should().Be($"token is {Redacted}");
+    }
+
+    [Fact]
+    public void OnEnd_EnabledWithAllInvalidCategories_FallsBackToFullRedaction()
+    {
+        var config = EnabledConfig();
+        config.RedactionCategories = ["Bogus", "AlsoBogus"];
+
+        var capture = RunPipeline(
+            CreateProcessor(config),
+            logger => logger.LogInformation("token is {Value}", Marker));
+
+        capture.Records[0].Message.Should().Be($"token is {Redacted}");
     }
 
     [Fact]

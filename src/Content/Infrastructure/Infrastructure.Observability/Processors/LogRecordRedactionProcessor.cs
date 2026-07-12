@@ -59,6 +59,21 @@ public sealed class LogRecordRedactionProcessor : BaseProcessor<LogRecord>
         _enabled = config.RedactionEnabled;
         _categories = ParseCategories(config.RedactionCategories, logger);
 
+        // Fail safe, not open. Startup validation (LogsConfigValidator) already rejects an
+        // enabled-but-empty/unknown category set on every host that wires ValidateOnStart. This
+        // guards the residual case — a consumer's custom host that bypasses that pipeline: if
+        // redaction is requested but no category resolves, over-redact with the full set rather
+        // than silently emitting unredacted PII. Matches the redactor's conservative-by-default
+        // posture (a false positive that masks text is acceptable; a leaked PAN is not).
+        if (_enabled && _categories.Length == 0)
+        {
+            _categories = Enum.GetValues<RedactionCategory>();
+            logger.LogWarning(
+                "Log redaction is enabled but no valid categories were configured; falling back " +
+                "to the full redaction set ({CategoryCount} categories) to avoid emitting unredacted PII.",
+                _categories.Length);
+        }
+
         logger.LogInformation(
             "Log-record redaction initialized: enabled={Enabled}, {CategoryCount} categories active.",
             _enabled,
