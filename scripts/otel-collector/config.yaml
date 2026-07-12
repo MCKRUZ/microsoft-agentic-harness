@@ -76,6 +76,9 @@ processors:
     traces:
       span:
         - 'not IsMatch(resource.attributes["service.name"], "Presentation\\.AgentHub")'
+    logs:
+      log_record:
+        - 'not IsMatch(resource.attributes["service.name"], "Presentation\\.AgentHub")'
 
   # Filter out framework-emitted gen_ai.client.* metrics — our agent.tokens.*
   # metrics are a superset and these cause "collected before with the same name
@@ -165,6 +168,41 @@ exporters:
     sampling_initial: 5
     sampling_thereafter: 200
 
+  # Azure Event Hub exporter for LOGS (Collector-mode delivery — see EVENTHUB-LOGS.md).
+  # Event Hubs exposes a Kafka-compatible endpoint, so the contrib `kafka` exporter
+  # forwards OTLP logs there with no dedicated Event Hub component. PII is already
+  # scrubbed in-process by the app (Observability:Logs redaction), so nothing sensitive
+  # transits this hop. Enable by setting the EVENTHUB_* env vars and uncommenting
+  # `kafka/eventhub` in the logs pipeline below.
+  #
+  # NOTE: the kafka exporter's config surface is version-specific — verify field names
+  # against the exporter README for the collector version pinned in docker-compose.yml
+  # (0.123.0): https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/exporter/kafkaexporter/README.md
+  kafka/eventhub:
+    # <namespace>.servicebus.windows.net:9093
+    brokers:
+      - "${env:EVENTHUB_BOOTSTRAP}"
+    protocol_version: 2.0.0
+    # The Kafka "topic" is the Event Hub (entity) name.
+    logs:
+      topic: "${env:EVENTHUB_LOGS_TOPIC}"
+      encoding: otlp_proto
+    tls:
+      insecure: false
+    auth:
+      sasl:
+        mechanism: PLAIN
+        # Connection-string auth: username is the literal "$ConnectionString"; password is
+        # the Event Hub namespace connection string (from Key Vault / env, never inlined).
+        # For Microsoft Entra (OAuth) instead, see EVENTHUB-LOGS.md § Authentication.
+        username: "$$ConnectionString"
+        password: "${env:EVENTHUB_CONNECTION_STRING}"
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      max_elapsed_time: 300s
+
 # Extensions - optional services for observability and debugging
 extensions:
   health_check:
@@ -205,6 +243,22 @@ service:
         - prometheus
         - debug
         # - azuremonitor  # enable when APPLICATIONINSIGHTS_CONNECTION_STRING is set
+
+    # Logs pipeline (added with the OTel logs signal — see EVENTHUB-LOGS.md).
+    # The app already scrubs PII in-process before export, so this pipeline does not
+    # re-run a redaction processor. `debug` prints logs to the collector's stdout for
+    # local verification; uncomment `kafka/eventhub` to forward them to Azure Event Hub.
+    logs:
+      receivers: [otlp]
+      processors:
+        - memory_limiter
+        - filter/app_only
+        - resourcedetection
+        - attributes
+        - batch
+      exporters:
+        - debug
+        # - kafka/eventhub  # enable when the EVENTHUB_* env vars are set
 
   telemetry:
     logs:
