@@ -46,6 +46,14 @@ public class ObservabilityConfig
     public ExportersConfig Exporters { get; set; } = new();
 
     /// <summary>
+    /// Gets or sets the OpenTelemetry logs-signal configuration (the
+    /// <c>ILogger</c> → OTel bridge, PII scrub, and export level). OFF by default —
+    /// logs stay on the local sinks until <see cref="LogsConfig.OtelExportEnabled"/>
+    /// is set.
+    /// </summary>
+    public LogsConfig Logs { get; set; } = new();
+
+    /// <summary>
     /// Gets or sets the LLM token pricing configuration for cost estimation.
     /// </summary>
     public LlmPricingConfig LlmPricing { get; set; } = new();
