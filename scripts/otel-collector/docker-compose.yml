@@ -25,6 +25,11 @@ services:
       - APPLICATIONINSIGHTS_CONNECTION_STRING=${APPLICATIONINSIGHTS_CONNECTION_STRING:-}
       - TEMPO_ENDPOINT=tempo:4317
       - DEPLOYMENT_ENVIRONMENT=${DEPLOYMENT_ENVIRONMENT:-development}
+      # Azure Event Hub log delivery (Collector mode) — see EVENTHUB-LOGS.md.
+      # Empty by default; the kafka/eventhub exporter is opt-in and commented out.
+      - EVENTHUB_BOOTSTRAP=${EVENTHUB_BOOTSTRAP:-}
+      - EVENTHUB_LOGS_TOPIC=${EVENTHUB_LOGS_TOPIC:-}
+      - EVENTHUB_CONNECTION_STRING=${EVENTHUB_CONNECTION_STRING:-}
 
     restart: unless-stopped
 
