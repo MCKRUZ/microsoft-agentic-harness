@@ -120,6 +120,12 @@ public class ConfigValidationStartupTests
                 ["AppConfig:AI:ContextManagement:PromptComposition:TokenBudget"] = "0",
             }
         },
+        {
+            // A zero StreamReservationTtl sweeps every SSE reservation before the caller connects —
+            // unconditional, so it fails startup regardless of whether the subsystem is enabled.
+            "BundleExecutionConfig",
+            new Dictionary<string, string?> { ["AppConfig:AI:BundleExecution:StreamReservationTtl"] = "00:00:00" }
+        },
     };
 
     [Theory]
