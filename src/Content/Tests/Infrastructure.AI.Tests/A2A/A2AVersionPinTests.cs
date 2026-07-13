@@ -12,7 +12,7 @@ namespace Infrastructure.AI.Tests.A2A;
 /// <list type="number">
 /// <item><description>Pin the harness <see cref="A2AEnvelope"/> schema version
 /// so any breaking shape change forces an explicit bump.</description></item>
-/// <item><description>Assert <c>Microsoft.Agents.AI</c> (MAF) 1.10.0 still
+/// <item><description>Assert <c>Microsoft.Agents.AI</c> (MAF) 1.13.0 still
 /// lacks a public A2A surface. The moment MAF ships one, this test fails and
 /// the harness should switch to wrapping it instead of carrying its own
 /// transport implementation.</description></item>
@@ -59,18 +59,19 @@ public sealed class A2AVersionPinTests
             .ToList();
 
         probes.Should().BeEmpty(
-            "Microsoft Agent Framework 1.10.0 does not expose A2A primitives; if this test fails MAF has added them and the harness should wrap them — see documentation/architecture/a2a-message-contract.md 'Version pin' section");
+            "Microsoft Agent Framework 1.13.0 does not expose A2A primitives; if this test fails MAF has added them and the harness should wrap them — see documentation/architecture/a2a-message-contract.md 'Version pin' section");
     }
 
     [Fact]
-    public void Maf_assembly_is_pinned_to_1_10_x()
+    public void Maf_assembly_is_pinned_to_1_13_x()
     {
         var maf = typeof(Microsoft.Agents.AI.AIAgent).Assembly;
         var version = maf.GetName().Version;
         version.Should().NotBeNull();
         version!.Major.Should().Be(1, "harness pins to MAF 1.x");
-        version.Minor.Should().Be(10,
-            "harness pins to MAF 1.10.x (bumped from 1.9.x to adopt Azure AI Foundry Responses agents via " +
-            "Microsoft.Agents.AI.Foundry); bumping minor requires re-running canary");
+        version.Minor.Should().Be(13,
+            "harness pins to MAF 1.13.x (Track A catch-up from 1.10.x); the A2A-surface canary above " +
+            "was re-run at 1.13 and still finds no public A2A primitives. Bumping minor requires " +
+            "re-running these canaries");
     }
 }

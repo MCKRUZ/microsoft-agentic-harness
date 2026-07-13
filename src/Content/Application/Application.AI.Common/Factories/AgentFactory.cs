@@ -252,8 +252,10 @@ public class AgentFactory : IAgentFactory
 
     /// <summary>
     /// Wraps an inner <see cref="IChatClient"/> in the harness middleware pipeline:
-    /// OpenTelemetry → function invocation → observability → tool diagnostics →
-    /// (optional) skill-prerequisite gating → distributed cache. Shared by every provider path,
+    /// function invocation → OpenTelemetry → observability → tool diagnostics →
+    /// (optional) skill-prerequisite gating → distributed cache. OpenTelemetry sits below
+    /// function invocation so <c>FunctionInvokingChatClient</c> can resolve its ActivitySource and
+    /// emit execute_tool spans (see the ordering note on the builder below). Shared by every provider path,
     /// including the Foundry client-factory hook, so middleware behaviour is identical regardless of
     /// how the agent is constructed.
     /// </summary>
@@ -266,7 +268,12 @@ public class AgentFactory : IAgentFactory
             _serviceProvider.GetService<IContentCapturePolicy>());
 
         var chatClientBuilder = chatClient.AsBuilder()
-            .UseOpenTelemetry(configure: c => c.EnableSensitiveData = captureSensitive)
+            // OpenTelemetry MUST sit below UseFunctionInvocation: FunctionInvokingChatClient
+            // resolves its ActivitySource via innerClient.GetService<ActivitySource>() (exposed
+            // only by the OpenTelemetry chat client) and emits per-tool execute_tool spans solely
+            // when that lookup succeeds. Composed above, the lookup returns null and no execute_tool
+            // span is produced, starving the tool-effectiveness/usefulness/causal span processors
+            // and their dashboard tiles.
             .UseFunctionInvocation(configure: c =>
             {
                 c.AllowConcurrentInvocation = true;
@@ -275,6 +282,7 @@ public class AgentFactory : IAgentFactory
                 c.MaximumIterationsPerRequest = 5;
                 c.TerminateOnUnknownCalls = true;
             })
+            .UseOpenTelemetry(configure: c => c.EnableSensitiveData = captureSensitive)
             .Use(inner => new Middleware.ObservabilityMiddleware(
                 inner,
                 _loggerFactory.CreateLogger<Middleware.ObservabilityMiddleware>()))

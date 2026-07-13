@@ -76,7 +76,7 @@ public class FrameworkLoaderSpikeTests
         var provider = new AgentSkillsProviderBuilder()
             .UseFileSkill(_skillsRoot)
             .UseFileScriptRunner(NoOpRunner)
-            .UseFilter(s => s.Frontmatter.Name != "internal")
+            .UseFilter((s, _) => s.Frontmatter.Name != "internal")
             .Build();
 
         provider.Should().NotBeNull();

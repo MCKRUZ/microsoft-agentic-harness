@@ -98,12 +98,12 @@ public sealed partial class DashboardMetricEmissionTests : IClassFixture<Metrics
 
             // ── Tools (counts work once a tool runs; quality metrics are a gap) ──
             ["tools_calls_total"] = (TileStatus.Conditional, "needs a tool call (agent_tool_invocations works in prod)"),
-            ["tools_errors_total"] = (TileStatus.KnownGap, "tool_errors only records on an 'execute_tool' span the function-invocation middleware never emits"),
-            ["tools_avg_latency"] = (TileStatus.KnownGap, "tool_duration depends on the missing 'execute_tool' span"),
-            ["tools_result_size"] = (TileStatus.KnownGap, "tool_result_size depends on the missing 'execute_tool' span"),
+            ["tools_errors_total"] = (TileStatus.Conditional, "needs a tool call that errors; the execute_tool span now emits after OpenTelemetry was composed below UseFunctionInvocation (fixed 2026-07-12)"),
+            ["tools_avg_latency"] = (TileStatus.Conditional, "needs a tool call; the execute_tool span now emits (fixed 2026-07-12: OTel below function invocation)"),
+            ["tools_result_size"] = (TileStatus.Conditional, "needs a tool call; the execute_tool span now emits (fixed 2026-07-12: OTel below function invocation)"),
             ["tools_calls_by_tool"] = (TileStatus.Conditional, "needs a tool call"),
-            ["tools_latency_by_tool"] = (TileStatus.KnownGap, "tool_duration depends on the missing 'execute_tool' span"),
-            ["tools_error_rate"] = (TileStatus.KnownGap, "tool_errors depends on the missing 'execute_tool' span"),
+            ["tools_latency_by_tool"] = (TileStatus.Conditional, "needs a tool call; the execute_tool span now emits (fixed 2026-07-12: OTel below function invocation)"),
+            ["tools_error_rate"] = (TileStatus.Conditional, "needs a tool call that errors; the execute_tool span now emits (fixed 2026-07-12: OTel below function invocation)"),
 
             // ── Safety ──
             ["safety_total"] = (TileStatus.AlwaysOn, "evaluations emit every turn"),

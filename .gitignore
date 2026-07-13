@@ -89,3 +89,6 @@ documentation/design/top-10-risks-full-catalogue.html
 documentation/design/top-10-risks-mitigations.md
 .claude/reviews/
 .claude/.review-receipts/
+
+# update-and-refactor skill scratch output (findings.json, report.html, plans/)
+.update-and-refactor/
