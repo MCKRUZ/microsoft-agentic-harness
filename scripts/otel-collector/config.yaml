@@ -172,36 +172,50 @@ exporters:
   # Event Hubs exposes a Kafka-compatible endpoint, so the contrib `kafka` exporter
   # forwards OTLP logs there with no dedicated Event Hub component. PII is already
   # scrubbed in-process by the app (Observability:Logs redaction), so nothing sensitive
-  # transits this hop. Enable by setting the EVENTHUB_* env vars and uncommenting
-  # `kafka/eventhub` in the logs pipeline below.
+  # transits this hop.
   #
-  # NOTE: the kafka exporter's config surface is version-specific — verify field names
-  # against the exporter README for the collector version pinned in docker-compose.yml
-  # (0.123.0): https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/exporter/kafkaexporter/README.md
-  kafka/eventhub:
-    # <namespace>.servicebus.windows.net:9093
-    brokers:
-      - "${env:EVENTHUB_BOOTSTRAP}"
-    protocol_version: 2.0.0
-    # The Kafka "topic" is the Event Hub (entity) name.
-    logs:
-      topic: "${env:EVENTHUB_LOGS_TOPIC}"
-      encoding: otlp_proto
-    tls:
-      insecure: false
-    auth:
-      sasl:
-        mechanism: PLAIN
-        # Connection-string auth: username is the literal "$ConnectionString"; password is
-        # the Event Hub namespace connection string (from Key Vault / env, never inlined).
-        # For Microsoft Entra (OAuth) instead, see EVENTHUB-LOGS.md § Authentication.
-        username: "$$ConnectionString"
-        password: "${env:EVENTHUB_CONNECTION_STRING}"
-    retry_on_failure:
-      enabled: true
-      initial_interval: 5s
-      max_interval: 30s
-      max_elapsed_time: 300s
+  # DISABLED BY DEFAULT — the whole exporter is commented out, not just its pipeline entry.
+  # The collector runs every DEFINED component's Validate() at startup even when it is
+  # referenced by no pipeline, and the kafka exporter requires a non-empty SASL password.
+  # A defined-but-unused `kafka/eventhub` therefore forces valid Event Hub credentials on
+  # every collector start — breaking the collector for everyone who does not use Event Hub
+  # (this is what a bare block did: `sasl: password is required` → collector never starts).
+  # Keeping it fully commented is what makes "inert by default" actually true.
+  #
+  # To enable: uncomment this block AND the `kafka/eventhub` line in the logs pipeline,
+  # then set the EVENTHUB_* env vars (see EVENTHUB-LOGS.md for the full operator flow).
+  #
+  # NOTE: the kafka exporter's config surface is version-specific. The fields below are the
+  # schema for the collector version pinned in docker-compose.yml (0.123.0): `topic` and
+  # `encoding` are top-level (there is no per-signal `logs:` block in this version), and TLS
+  # is nested under `auth.tls` (not a top-level `tls:` key). Verify against the README for
+  # the pinned tag before enabling:
+  # https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/v0.123.0/exporter/kafkaexporter/README.md
+  #
+  # kafka/eventhub:
+  #   # <namespace>.servicebus.windows.net:9093
+  #   brokers:
+  #     - "${env:EVENTHUB_BOOTSTRAP}"
+  #   protocol_version: 2.0.0
+  #   # The Kafka "topic" is the Event Hub (entity) name. This exporter is referenced only by
+  #   # the logs pipeline, so the top-level topic/encoding apply to the logs signal.
+  #   topic: "${env:EVENTHUB_LOGS_TOPIC}"
+  #   encoding: otlp_proto
+  #   auth:
+  #     tls:
+  #       insecure: false
+  #     sasl:
+  #       mechanism: PLAIN
+  #       # Connection-string auth: username is the literal "$ConnectionString"; password is
+  #       # the Event Hub namespace connection string (from Key Vault / env, never inlined).
+  #       # For Microsoft Entra (OAuth) instead, see EVENTHUB-LOGS.md § Authentication.
+  #       username: "$$ConnectionString"
+  #       password: "${env:EVENTHUB_CONNECTION_STRING}"
+  #   retry_on_failure:
+  #     enabled: true
+  #     initial_interval: 5s
+  #     max_interval: 30s
+  #     max_elapsed_time: 300s
 
 # Extensions - optional services for observability and debugging
 extensions:

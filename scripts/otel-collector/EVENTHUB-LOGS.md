@@ -59,9 +59,14 @@ from the app side. Redaction is on by default with the full category set — lea
 
 ## 2. Enable the Collector exporter
 
-The `logs` pipeline and a `kafka/eventhub` exporter are already defined in
-[`config.yaml`](./config.yaml). They ship **inert**: the pipeline exports only to `debug`
-(stdout) until you opt in.
+The `logs` pipeline is live in [`config.yaml`](./config.yaml) and exports only to `debug`
+(stdout); a fully-commented `kafka/eventhub` exporter template sits alongside it. It ships
+**disabled**: the exporter block is commented out in its entirety, not merely omitted from
+the pipeline. That is deliberate — the Collector runs every *defined* component's validation
+at startup even when no pipeline references it, and the kafka exporter requires a non-empty
+SASL password, so a defined-but-unused block would force valid Event Hub credentials on
+every Collector start (and break the Collector for anyone who doesn't use Event Hub). Enabling
+is therefore a two-part opt-in: uncomment the exporter block **and** its pipeline entry.
 
 1. Set the environment variables the Collector reads (e.g. in `scripts/otel-collector/.env`,
    which `start-collector.ps1` loads, or your orchestrator's secret store — **never inline
@@ -73,7 +78,11 @@ The `logs` pipeline and a `kafka/eventhub` exporter are already defined in
    EVENTHUB_CONNECTION_STRING=Endpoint=sb://<your-namespace>.servicebus.windows.net/;SharedAccessKeyName=...;SharedAccessKey=...
    ```
 
-2. In `config.yaml`, uncomment `kafka/eventhub` in the **logs** pipeline's exporter list:
+2. In `config.yaml`, uncomment the entire `kafka/eventhub` **exporter** block (remove the
+   `# ` prefix from each of its lines under `exporters:`). Leaving any required field
+   commented — or the whole block defined with the env vars unset — fails Collector startup.
+
+3. Also in `config.yaml`, uncomment `kafka/eventhub` in the **logs** pipeline's exporter list:
 
    ```yaml
    logs:
@@ -84,7 +93,7 @@ The `logs` pipeline and a `kafka/eventhub` exporter are already defined in
        - kafka/eventhub   # ← uncomment
    ```
 
-3. Restart the Collector: `./start-collector.ps1` (or `docker-compose up -d`).
+4. Restart the Collector: `./start-collector.ps1` (or `docker-compose up -d`).
 
 ---
 
