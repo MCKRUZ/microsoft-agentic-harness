@@ -27,6 +27,14 @@ namespace Presentation.AgentHub.Tests.Telemetry.Fixtures;
 /// </remarks>
 public sealed class PrometheusFixture : IAsyncLifetime
 {
+    /// <summary>
+    /// Upper bound on how long to wait for a container to log its readiness message.
+    /// Both containers start in seconds with a valid config; without an explicit cap
+    /// Testcontainers waits its 1-hour default, so a config that fails to load hangs the
+    /// whole CI job for an hour before failing. Bounding it turns that into a fast timeout.
+    /// </summary>
+    private static readonly TimeSpan ContainerReadinessTimeout = TimeSpan.FromMinutes(2);
+
     private INetwork _network = null!;
     private IContainer _collector = null!;
     private IContainer _prometheus = null!;
@@ -65,8 +73,11 @@ public sealed class PrometheusFixture : IAsyncLifetime
             .WithEnvironment("DEPLOYMENT_ENVIRONMENT", "test")
             .WithEnvironment("TEMPO_ENDPOINT", "localhost:4317")
             .WithEnvironment("APPLICATIONINSIGHTS_CONNECTION_STRING", "InstrumentationKey=00000000-0000-0000-0000-000000000000")
+            // Bound the readiness wait so a config that fails to load surfaces as a fast
+            // timeout instead of Testcontainers' 1-hour default (see ContainerReadinessTimeout).
             .WithWaitStrategy(Wait.ForUnixContainer()
-                .UntilMessageIsLogged("Everything is ready"))
+                .UntilMessageIsLogged("Everything is ready",
+                    o => o.WithTimeout(ContainerReadinessTimeout)))
             .Build();
 
         await _collector.StartAsync();
@@ -93,7 +104,8 @@ public sealed class PrometheusFixture : IAsyncLifetime
             .WithPortBinding(9090, true)
             .WithResourceMapping(promConfigPath, "/etc/prometheus/")
             .WithWaitStrategy(Wait.ForUnixContainer()
-                .UntilMessageIsLogged("Server is ready to receive web requests"))
+                .UntilMessageIsLogged("Server is ready to receive web requests",
+                    o => o.WithTimeout(ContainerReadinessTimeout)))
             .Build();
 
         await _prometheus.StartAsync();
