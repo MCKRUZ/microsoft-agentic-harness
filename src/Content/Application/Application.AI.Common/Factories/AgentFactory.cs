@@ -266,7 +266,12 @@ public class AgentFactory : IAgentFactory
             _serviceProvider.GetService<IContentCapturePolicy>());
 
         var chatClientBuilder = chatClient.AsBuilder()
-            .UseOpenTelemetry(configure: c => c.EnableSensitiveData = captureSensitive)
+            // OpenTelemetry MUST sit below UseFunctionInvocation: FunctionInvokingChatClient
+            // resolves its ActivitySource via innerClient.GetService<ActivitySource>() (exposed
+            // only by the OpenTelemetry chat client) and emits per-tool execute_tool spans solely
+            // when that lookup succeeds. Composed above, the lookup returns null and no execute_tool
+            // span is produced, starving the tool-effectiveness/usefulness/causal span processors
+            // and their dashboard tiles.
             .UseFunctionInvocation(configure: c =>
             {
                 c.AllowConcurrentInvocation = true;
@@ -275,6 +280,7 @@ public class AgentFactory : IAgentFactory
                 c.MaximumIterationsPerRequest = 5;
                 c.TerminateOnUnknownCalls = true;
             })
+            .UseOpenTelemetry(configure: c => c.EnableSensitiveData = captureSensitive)
             .Use(inner => new Middleware.ObservabilityMiddleware(
                 inner,
                 _loggerFactory.CreateLogger<Middleware.ObservabilityMiddleware>()))
