@@ -252,8 +252,10 @@ public class AgentFactory : IAgentFactory
 
     /// <summary>
     /// Wraps an inner <see cref="IChatClient"/> in the harness middleware pipeline:
-    /// OpenTelemetry → function invocation → observability → tool diagnostics →
-    /// (optional) skill-prerequisite gating → distributed cache. Shared by every provider path,
+    /// function invocation → OpenTelemetry → observability → tool diagnostics →
+    /// (optional) skill-prerequisite gating → distributed cache. OpenTelemetry sits below
+    /// function invocation so <c>FunctionInvokingChatClient</c> can resolve its ActivitySource and
+    /// emit execute_tool spans (see the ordering note on the builder below). Shared by every provider path,
     /// including the Foundry client-factory hook, so middleware behaviour is identical regardless of
     /// how the agent is constructed.
     /// </summary>
