@@ -7,12 +7,12 @@
   <ItemGroup>
 
     <!-- Domain layer -->
-    <PackageVersion Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.8" />
-    <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.8" />
+    <PackageVersion Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.9" />
+    <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.9" />
 
     <!-- Domain.AI -->
-    <PackageVersion Include="Microsoft.Agents.AI.Abstractions" Version="1.10.0" />
-    <PackageVersion Include="Microsoft.Extensions.AI.Abstractions" Version="10.6.0" />
+    <PackageVersion Include="Microsoft.Agents.AI.Abstractions" Version="1.13.0" />
+    <PackageVersion Include="Microsoft.Extensions.AI.Abstractions" Version="10.7.0" />
 
     <!-- Application layer -->
     <PackageVersion Include="Azure.Identity" Version="1.21.0" />
@@ -20,22 +20,22 @@
     <PackageVersion Include="FluentValidation.DependencyInjectionExtensions" Version="12.1.1" />
     <PackageVersion Include="MediatR" Version="12.4.1" />
     <PackageVersion Include="Microsoft.Extensions.Caching.Hybrid" Version="10.1.0" />
-    <PackageVersion Include="Microsoft.Extensions.Caching.Memory" Version="10.0.8" />
-    <PackageVersion Include="Microsoft.Extensions.Logging" Version="10.0.8" />
-    <PackageVersion Include="Microsoft.Extensions.Logging.Console" Version="10.0.8" />
-    <PackageVersion Include="Microsoft.Extensions.Options" Version="10.0.8" />
+    <PackageVersion Include="Microsoft.Extensions.Caching.Memory" Version="10.0.9" />
+    <PackageVersion Include="Microsoft.Extensions.Logging" Version="10.0.9" />
+    <PackageVersion Include="Microsoft.Extensions.Logging.Console" Version="10.0.9" />
+    <PackageVersion Include="Microsoft.Extensions.Options" Version="10.0.9" />
     <PackageVersion Include="OpenTelemetry" Version="1.15.3" />
 
     <!-- Application.AI.Common -->
     <PackageVersion Include="Azure.AI.Agents.Persistent" Version="1.0.0" />
-    <PackageVersion Include="Microsoft.Agents.AI" Version="1.10.0" />
-    <PackageVersion Include="Microsoft.Agents.AI.Workflows" Version="1.10.0" />
-    <PackageVersion Include="Microsoft.Extensions.AI" Version="10.6.0" />
-    <PackageVersion Include="Microsoft.Extensions.Caching.Abstractions" Version="10.0.8" />
+    <PackageVersion Include="Microsoft.Agents.AI" Version="1.13.0" />
+    <PackageVersion Include="Microsoft.Agents.AI.Workflows" Version="1.13.0" />
+    <PackageVersion Include="Microsoft.Extensions.AI" Version="10.7.0" />
+    <PackageVersion Include="Microsoft.Extensions.Caching.Abstractions" Version="10.0.9" />
 
     <!-- Infrastructure layer -->
     <PackageVersion Include="Ardalis.GuardClauses" Version="5.0.0" />
-    <PackageVersion Include="Microsoft.Extensions.Http" Version="10.0.8" />
+    <PackageVersion Include="Microsoft.Extensions.Http" Version="10.0.9" />
 
     <!-- Infrastructure.AI.Governance -->
     <!-- Held at 3.0.2: AgentGovernance 4.0.0 makes PolicyEngine.Evaluate reject non-DID
@@ -66,7 +66,11 @@
     <PackageVersion Include="Anthropic.SDK" Version="5.10.0" />
     <PackageVersion Include="Azure.AI.Inference" Version="1.0.0-beta.5" />
     <PackageVersion Include="Azure.AI.OpenAI" Version="2.8.0-beta.1" />
-    <PackageVersion Include="Microsoft.Agents.AI.OpenAI" Version="1.10.0" />
+    <PackageVersion Include="Microsoft.Agents.AI.OpenAI" Version="1.13.0" />
+    <!-- Foundry stays on the 1.10 preview line while the rest of the Microsoft.Agents.AI
+         family moves to 1.13.0: there is no 1.13 Foundry preview, and the 1.13 core does
+         not force it — Foundry 1.10.0-preview consumes Microsoft.Extensions.AI 10.7.0
+         cleanly (verified at restore). Bump both together when a matching preview ships. -->
     <PackageVersion Include="Microsoft.Agents.AI.Foundry" Version="1.10.0-preview.260610.1" />
     <PackageVersion Include="Microsoft.Agents.AI.Foundry.Hosting" Version="1.10.0-preview.260610.1" />
     <PackageVersion Include="Azure.AI.Projects" Version="2.1.0-beta.3" />
@@ -81,11 +85,11 @@
     <PackageVersion Include="Scriban" Version="7.2.3" />
 
     <!-- Infrastructure.AI.MCP -->
-    <PackageVersion Include="ModelContextProtocol" Version="1.1.0" />
-    <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.8" />
+    <PackageVersion Include="ModelContextProtocol" Version="1.4.1" />
+    <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.9" />
 
     <!-- Infrastructure.AI.MCPServer -->
-    <PackageVersion Include="ModelContextProtocol.AspNetCore" Version="1.1.0" />
+    <PackageVersion Include="ModelContextProtocol.AspNetCore" Version="1.4.1" />
     <PackageVersion Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.5" />
 
     <!-- Infrastructure.APIAccess -->
@@ -124,7 +128,7 @@
     <PackageVersion Include="Azure.Extensions.AspNetCore.Configuration.Secrets" Version="1.4.0" />
     <PackageVersion Include="Microsoft.Extensions.Caching.StackExchangeRedis" Version="10.0.9" />
     <PackageVersion Include="Microsoft.Extensions.Configuration.AzureAppConfiguration" Version="8.1.0" />
-    <PackageVersion Include="Microsoft.Extensions.Configuration.UserSecrets" Version="10.0.8" />
+    <PackageVersion Include="Microsoft.Extensions.Configuration.UserSecrets" Version="10.0.9" />
     <PackageVersion Include="Microsoft.AspNetCore.SpaProxy" Version="10.0.0" />
     <PackageVersion Include="Microsoft.Identity.Web" Version="4.11.0" />
     <PackageVersion Include="OpenTelemetry.Extensions.Hosting" Version="1.15.3" />
