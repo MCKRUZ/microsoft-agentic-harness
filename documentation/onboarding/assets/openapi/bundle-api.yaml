@@ -1,0 +1,707 @@
+# Bundle API — OpenAPI description
+#
+# Hand-written from the shipped implementation in
+# src/Content/Presentation/Presentation.BundleApi/. This host does NOT serve a generated
+# OpenAPI document at runtime (no Swashbuckle / AddOpenApi registration in Program.cs), so
+# this file is the machine-readable contract. When BundlesController.cs or
+# BundleApiContracts.cs change, change this file in the same commit.
+#
+# Deployed alongside the developer guide at:
+#   <site>/assets/openapi/bundle-api.yaml
+openapi: 3.1.0
+
+info:
+  title: Microsoft Agentic Harness — Bundle API
+  version: "1.0.0"
+  summary: Register an externally-authored agent bundle and run it under a per-caller capability grant.
+  description: |
+    The Bundle API is the harness's HTTP front door for **running agents the host did not write**.
+
+    A caller uploads a *bundle* (a zip containing an `AGENT.md`, optional nested `skills/*/SKILL.md`,
+    and optional plugin manifests), receives a short-lived **handle**, and then starts **runs** against
+    that handle. A run is a bounded multi-turn conversation with the bundle's ephemeral agent.
+
+    Three properties define the security model, and clients should design against them:
+
+    1. **The bundle declares; the host grants.** A bundle's own `allowed-tools` and autonomy
+       declarations are *requests*. The authoritative grant is the **capability envelope** the host
+       resolves from the calling credential (`AppConfig:AI:BundleExecution:Envelopes`). Anything
+       outside the envelope is denied. An unconfigured envelope grants nothing.
+    2. **The envelope is resolved from the credential that starts the run**, not the one that
+       registered the bundle — so a leaked handle cannot escalate privilege.
+    3. **Handles and runs are owner-bound.** Only the caller that registered a handle may run,
+       poll, stream, or delete it. A foreign or unknown handle/run is reported identically as
+       `404` (or a silent no-op for `DELETE`), so the API never confirms that someone else's
+       resource exists.
+
+    The whole subsystem is **off by default**. When `AppConfig:AI:BundleExecution:Enabled` is
+    `false`, every operation below returns `403`.
+
+    Runs are **not durable**. Handles, run records, and results live in memory on a single host
+    and are evicted by TTL; a host restart loses in-flight and completed runs. Treat the API as a
+    request/response execution surface, not a system of record.
+  license:
+    name: See repository LICENSE
+  contact:
+    name: Microsoft Agentic Harness
+    url: https://github.com/MCKRUZ/microsoft-agentic-harness
+
+servers:
+  - url: "{scheme}://{host}"
+    description: >-
+      The Presentation.BundleApi host. It ships no launch profile, so the bind address comes from
+      ASPNETCORE_URLS (or the ASP.NET Core default). Set it explicitly when you deploy.
+    variables:
+      scheme:
+        default: https
+        enum: [https, http]
+      host:
+        default: localhost:5001
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: Bundles
+    description: Register, delete, and inspect staged agent bundles.
+  - name: Runs
+    description: Start, poll, and stream bundle runs.
+
+paths:
+  /api/bundles:
+    post:
+      tags: [Bundles]
+      operationId: registerBundle
+      summary: Register a bundle archive and receive a handle
+      description: |
+        Uploads a zip archive as `multipart/form-data`. The field name **must be `file`**.
+
+        The archive is validated against the hostile-input guards *before* anything in it is parsed
+        (size, entry count, total uncompressed size, compression ratio, zip-slip, escaping symlinks),
+        extracted to an isolated staging directory, and then parsed with the harness's ordinary
+        `AGENT.md` / `SKILL.md` / `plugin.json` parsers. Any guard failure deletes the partial
+        extraction and returns `400`.
+
+        The archive **must** contain `AGENT.md` at its root, and that manifest must resolve to a
+        non-empty id (via its `id:` or `name:` front-matter key).
+
+        The returned handle has a **sliding** TTL (default 30 minutes): it is refreshed each time the
+        handle is looked up or a run against it starts, so an actively-used bundle stays alive and an
+        abandoned one is swept along with its staging directory.
+
+        Rate limit: 10 requests per minute per caller.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: The bundle zip archive. Must be non-empty and within `MaxArchiveBytes`.
+      responses:
+        "201":
+          description: The bundle was staged and a handle issued.
+          headers:
+            Location:
+              description: >-
+                `/api/bundles/{handle}`. Note this URL answers only `DELETE`; there is no
+                GET-a-bundle endpoint. Use the handle to start runs.
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RegisterBundleResponse" }
+        "400":
+          $ref: "#/components/responses/ValidationProblem"
+        "401":
+          $ref: "#/components/responses/UnauthorizedProblem"
+        "403":
+          $ref: "#/components/responses/DisabledProblem"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/ServerProblem"
+
+  /api/bundles/{handle}:
+    parameters:
+      - $ref: "#/components/parameters/Handle"
+    delete:
+      tags: [Bundles]
+      operationId: deleteBundle
+      summary: Delete a staged bundle
+      description: |
+        Removes the handle and (once no in-flight run holds a lease on it) deletes its staging
+        directory. The TTL sweeper also reclaims handles, so this is an optimisation, not an
+        obligation.
+
+        **Idempotent and non-disclosing.** An unknown handle, an expired handle, and a handle owned
+        by a different caller all return `204` — the endpoint never reveals that a handle exists for
+        someone else.
+      responses:
+        "204":
+          description: The handle is gone (deleted now, already absent, or not yours to delete).
+        "400":
+          $ref: "#/components/responses/ValidationProblem"
+        "401":
+          $ref: "#/components/responses/UnauthorizedProblem"
+        "403":
+          $ref: "#/components/responses/DisabledProblem"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /api/bundles/{handle}/runs:
+    parameters:
+      - $ref: "#/components/parameters/Handle"
+    post:
+      tags: [Runs]
+      operationId: startBundleRun
+      summary: Start a run of a staged bundle
+      description: |
+        Creates a run job and returns immediately with a job id. The capability envelope for the
+        **calling** credential is resolved here, at the transport boundary, and captured on the run —
+        it is what confines the agent for the whole run.
+
+        Two dispatch modes, chosen by `stream`:
+
+        * `stream: false` (default) — the run is enqueued and executed by the host's background
+          dispatcher. Poll `statusUrl` for the result. The dispatcher drains its queue **one run at a
+          time**, so a queued run waits behind other queued runs on the same host.
+        * `stream: true` — the run is **reserved but not enqueued**. Nothing executes until you open
+          `streamUrl`; opening it is what drives the run. If you never open it, the reservation is
+          reclaimed after `StreamReservationTtl` (default 5 minutes).
+
+        A run against an unknown, expired, or foreign handle returns `404`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RunBundleRequest" }
+            examples:
+              poll:
+                summary: Background run, poll for the result
+                value:
+                  userMessages: ["Summarise the attached policy in three bullets."]
+                  maxTurns: 3
+              stream:
+                summary: Live run, streamed over SSE
+                value:
+                  userMessages: ["Walk me through what you found."]
+                  maxTurns: 5
+                  stream: true
+      responses:
+        "202":
+          description: The run was created. It is queued for background dispatch, or reserved awaiting its stream.
+          headers:
+            Location:
+              description: The run's status URL.
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StartRunResponse" }
+        "400":
+          $ref: "#/components/responses/ValidationProblem"
+        "401":
+          $ref: "#/components/responses/UnauthorizedProblem"
+        "403":
+          $ref: "#/components/responses/DisabledProblem"
+        "404":
+          $ref: "#/components/responses/NotFoundProblem"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/ServerProblem"
+
+  /api/bundles/{handle}/runs/{jobId}:
+    parameters:
+      - $ref: "#/components/parameters/Handle"
+      - $ref: "#/components/parameters/JobId"
+    get:
+      tags: [Runs]
+      operationId: getBundleRun
+      summary: Poll a run's status and result
+      description: |
+        Returns the run's lifecycle state and, once terminal, its outcome. The response is a
+        deliberate projection: it never echoes the capability envelope, the seed messages, or any
+        other execution input.
+
+        A run is readable only by the caller that started it, under the handle it was started
+        against. A mismatch on either is reported as `404`.
+
+        A completed run stays pollable for `RunRecordTtl` (default 30 minutes) and is then swept.
+
+        **`Succeeded` is about the run, not the answer.** A conversation that completed but whose
+        agent reported a failed turn is `Succeeded` with `result.conversationSucceeded: false` and
+        the reason in `result.conversationError`. Only an unhandled exception, an expired handle, or
+        cancellation makes the run itself `Failed`.
+      responses:
+        "200":
+          description: The current state of the run.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BundleRunResponse" }
+              examples:
+                running:
+                  summary: Still executing
+                  value:
+                    jobId: "0b8f1c2d3e4f5a6b7c8d9e0f1a2b3c4d"
+                    status: Running
+                    createdAt: "2026-07-24T14:03:11.412Z"
+                    startedAt: "2026-07-24T14:03:11.980Z"
+                succeeded:
+                  summary: Completed successfully
+                  value:
+                    jobId: "0b8f1c2d3e4f5a6b7c8d9e0f1a2b3c4d"
+                    status: Succeeded
+                    createdAt: "2026-07-24T14:03:11.412Z"
+                    startedAt: "2026-07-24T14:03:11.980Z"
+                    completedAt: "2026-07-24T14:03:19.117Z"
+                    result:
+                      conversationSucceeded: true
+                      finalResponse: "Three bullets: ..."
+                      turnCount: 1
+                      totalToolInvocations: 2
+                      budgetExhausted: false
+                completedButFailedTurn:
+                  summary: Run succeeded, conversation did not
+                  value:
+                    jobId: "0b8f1c2d3e4f5a6b7c8d9e0f1a2b3c4d"
+                    status: Succeeded
+                    createdAt: "2026-07-24T14:03:11.412Z"
+                    startedAt: "2026-07-24T14:03:11.980Z"
+                    completedAt: "2026-07-24T14:03:14.002Z"
+                    result:
+                      conversationSucceeded: false
+                      finalResponse: ""
+                      turnCount: 2
+                      totalToolInvocations: 0
+                      budgetExhausted: false
+                      conversationError: "Turn 2 failed: ..."
+        "401":
+          $ref: "#/components/responses/UnauthorizedProblem"
+        "403":
+          $ref: "#/components/responses/DisabledProblem"
+        "404":
+          $ref: "#/components/responses/NotFoundProblem"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /api/bundles/{handle}/runs/{jobId}/stream:
+    parameters:
+      - $ref: "#/components/parameters/Handle"
+      - $ref: "#/components/parameters/JobId"
+    get:
+      tags: [Runs]
+      operationId: streamBundleRun
+      summary: Drive and stream a reserved run over Server-Sent Events
+      description: |
+        Opens the live SSE feed for a run started with `stream: true`. **Opening this endpoint is
+        what executes the run** — it is driven inline on this connection for the whole conversation.
+
+        Only a run that is still `Queued` *and* was reserved for streaming is driveable. A background
+        run, a run already being streamed, and a finished run all return `409` — poll the status
+        endpoint instead.
+
+        Closing the connection cancels the run (the request-abort token flows into the executor) and
+        the run is recorded as `Failed` with reason `The run was cancelled.`
+
+        Frames are `data: {json}\n\n` with camelCase properties and a `type` discriminator matching
+        the AG-UI wire vocabulary, so an AG-UI client library consumes the feed unchanged. Exactly
+        one terminal frame is emitted: `RUN_FINISHED` or `RUN_ERROR`.
+
+        **Concurrency limit, not a rate limit.** Each open stream holds a permit for its lifetime;
+        a caller may hold `MaxConcurrentStreamsPerCaller` (default 4) at once. Excess connections
+        are rejected outright with `429`, never queued.
+      responses:
+        "200":
+          description: The SSE stream. Ends after exactly one `RUN_FINISHED` or `RUN_ERROR` frame.
+          headers:
+            Cache-Control:
+              schema: { type: string, examples: ["no-cache"] }
+            X-Accel-Buffering:
+              description: Set to `no` so intermediary proxies do not buffer frames.
+              schema: { type: string, examples: ["no"] }
+          content:
+            text/event-stream:
+              schema:
+                type: string
+              examples:
+                run:
+                  summary: A complete streamed run
+                  value: |
+                    data: {"type":"RUN_STARTED","threadId":"h-9f3c...","runId":"0b8f1c2d..."}
+
+                    data: {"type":"TEXT_MESSAGE_START","messageId":"7e2a...","role":"assistant"}
+
+                    data: {"type":"TEXT_MESSAGE_CONTENT","messageId":"7e2a...","delta":"Here"}
+
+                    data: {"type":"TEXT_MESSAGE_CONTENT","messageId":"7e2a...","delta":" is"}
+
+                    data: {"type":"TEXT_MESSAGE_END","messageId":"7e2a..."}
+
+                    data: {"type":"RUN_FINISHED","threadId":"h-9f3c...","runId":"0b8f1c2d..."}
+        "401":
+          $ref: "#/components/responses/UnauthorizedProblem"
+        "403":
+          $ref: "#/components/responses/DisabledProblem"
+        "404":
+          $ref: "#/components/responses/NotFoundProblem"
+        "409":
+          description: The run is not awaiting a stream (background run, already streaming, or finished).
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/ProblemDetails" }
+              example:
+                title: Run not streamable
+                status: 409
+                detail: This run is not awaiting a stream. Poll its status endpoint for the result.
+        "429":
+          description: >-
+            The caller already holds `MaxConcurrentStreamsPerCaller` open streams. Close one and retry.
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        A Microsoft Entra ID access token for **this API's own audience** — `api://{ClientId}`,
+        where `ClientId` is `AppConfig:AI:BundleExecution:Auth:ClientId`. The bundle API is
+        deliberately isolated behind its own audience and never shares a credential surface with the
+        MCP server or the agent hub.
+
+        Validation is strict: issuer, audience, lifetime, and signing key are all checked, and
+        `ClockSkew` is zero (no grace window) per the repository security baseline.
+
+        The host is **fail-closed**: it refuses to start unless a scheme is configured (both
+        `TenantId` and `ClientId`) or a developer explicitly sets `Auth:AllowAnonymous: true`.
+        Running under `Environment=Development` does not by itself disable authentication.
+
+        In the anonymous development mode every request authenticates as one synthetic principal, so
+        **all callers share a single owner identity and there is no cross-caller isolation** — and
+        because that principal carries no subject claim, every anonymous run resolves to the
+        fail-closed `Default` envelope.
+
+  parameters:
+    Handle:
+      name: handle
+      in: path
+      required: true
+      description: The opaque handle returned by `registerBundle`.
+      schema: { type: string }
+    JobId:
+      name: jobId
+      in: path
+      required: true
+      description: The opaque run job id returned by `startBundleRun`.
+      schema: { type: string }
+
+  responses:
+    ValidationProblem:
+      description: >-
+        The request was rejected. For `registerBundle` this includes every archive-guard rejection
+        (too large, too many entries, expands too far, compression ratio, zip-slip, escaping symlink,
+        not a zip, empty, no `AGENT.md`, unresolvable agent id) — the `detail` names the guard, never
+        archive content.
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/ProblemDetails" }
+          examples:
+            noAgentManifest:
+              value:
+                title: Validation failed
+                status: 400
+                detail: Bundle has no AGENT.md at its root.
+            tooLarge:
+              value:
+                title: Validation failed
+                status: 400
+                detail: Bundle archive exceeds the maximum accepted size of 10485760 bytes.
+            noMessages:
+              value:
+                title: Validation failed
+                status: 400
+                detail: UserMessages must contain at least one message.
+    UnauthorizedProblem:
+      description: >-
+        No valid bearer token, or an authenticated principal carrying no usable identity to own
+        resources under (no `oid`, `sub`, name-identifier, or name claim).
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/ProblemDetails" }
+          example:
+            title: Unauthorized
+            status: 401
+            detail: The authenticated principal carries no usable identity.
+    DisabledProblem:
+      description: Bundle execution is disabled on this host.
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/ProblemDetails" }
+          example:
+            title: Forbidden
+            status: 403
+            detail: Bundle execution is disabled. Set AppConfig.AI.BundleExecution.Enabled = true to enable it.
+    NotFoundProblem:
+      description: >-
+        The handle or run does not exist, has expired, or belongs to a different caller — the three
+        cases are deliberately indistinguishable.
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/ProblemDetails" }
+          examples:
+            handle:
+              value:
+                title: Not Found
+                status: 404
+                detail: Bundle handle not found or expired. Register the bundle again to obtain a fresh handle.
+            run:
+              value:
+                title: Not Found
+                status: 404
+                detail: Bundle run not found. It may never have existed, expired, or belongs to a different caller.
+    RateLimited:
+      description: >-
+        The caller's rate limit was exceeded. Limits are partitioned per caller (by stable id, or by
+        remote IP when the principal has none): 10/minute for register, 60/minute for the other
+        endpoints.
+    ServerProblem:
+      description: >-
+        An unexpected server error. The body is intentionally generic — the detail is in the host's
+        logs, never on the wire.
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/ProblemDetails" }
+          example:
+            title: Bundle operation failed
+            status: 500
+            detail: An error occurred processing the request. See server logs for details.
+
+  schemas:
+    RegisterBundleResponse:
+      type: object
+      required: [handle, expiresAt]
+      properties:
+        handle:
+          type: string
+          description: Opaque handle for the staged bundle. Use it to start runs and to delete it.
+        expiresAt:
+          type: string
+          format: date-time
+          description: >-
+            The **earliest** instant the handle expires. The TTL is sliding, so using the handle
+            pushes this out; treat it as a floor, not a deadline.
+      example:
+        handle: "h-9f3c7d1e84b24c0f9a6e2d5b8c1f4a37"
+        expiresAt: "2026-07-24T14:33:11.412Z"
+
+    RunBundleRequest:
+      type: object
+      required: [userMessages]
+      properties:
+        userMessages:
+          type: array
+          description: >-
+            The user messages seeding the conversation — one turn per message. At least one, at most
+            100, none empty.
+          minItems: 1
+          maxItems: 100
+          items:
+            type: string
+            minLength: 1
+        maxTurns:
+          type: integer
+          description: Maximum number of turns the conversation may run.
+          default: 10
+          minimum: 1
+          maximum: 100
+        stream:
+          type: boolean
+          description: >-
+            When true the run is reserved for a live stream instead of background dispatch, and does
+            not execute until the caller opens the returned `streamUrl`.
+          default: false
+
+    StartRunResponse:
+      type: object
+      required: [jobId, statusUrl]
+      properties:
+        jobId:
+          type: string
+          description: Opaque id of the run job.
+        statusUrl:
+          type: string
+          description: Relative URL to poll for status and result.
+        streamUrl:
+          type: [string, "null"]
+          description: >-
+            Relative URL of the live SSE feed. Present only when the run was started with
+            `stream: true`; opening it is what drives the run.
+      example:
+        jobId: "0b8f1c2d3e4f5a6b7c8d9e0f1a2b3c4d"
+        statusUrl: "/api/bundles/h-9f3c7d1e84b24c0f9a6e2d5b8c1f4a37/runs/0b8f1c2d3e4f5a6b7c8d9e0f1a2b3c4d"
+        streamUrl: null
+
+    BundleRunResponse:
+      type: object
+      required: [jobId, status, createdAt]
+      properties:
+        jobId: { type: string }
+        status:
+          $ref: "#/components/schemas/BundleRunStatus"
+        error:
+          type: [string, "null"]
+          description: >-
+            A stable, caller-safe reason when the run failed outright; null otherwise. Never a raw
+            exception message. Known values include
+            `The bundle handle expired before the run started.`, `The run was cancelled.`, and
+            `bundle_run.unhandled_exception`.
+        createdAt: { type: string, format: date-time }
+        startedAt:
+          type: [string, "null"]
+          format: date-time
+          description: When execution began; null while still `Queued`.
+        completedAt:
+          type: [string, "null"]
+          format: date-time
+          description: When the run reached a terminal state; null before then.
+        result:
+          oneOf:
+            - $ref: "#/components/schemas/BundleRunOutcomeResponse"
+            - type: "null"
+          description: The outcome once the run has `Succeeded`; null before then.
+
+    BundleRunStatus:
+      type: string
+      description: |
+        The run's lifecycle state. Serialized as a name, not an ordinal.
+
+        * `Queued` — created, not yet picked up (or, for a streaming run, awaiting its stream).
+        * `Running` — executing under its capability envelope.
+        * `Succeeded` — terminal; the conversation ran to completion. Inspect
+          `result.conversationSucceeded` to learn whether the conversation itself was successful.
+        * `Failed` — terminal; the run could not complete (unhandled exception, expired handle, or
+          cancellation). See `error`.
+      enum: [Queued, Running, Succeeded, Failed]
+
+    BundleRunOutcomeResponse:
+      type: object
+      required: [conversationSucceeded, finalResponse, turnCount, totalToolInvocations]
+      properties:
+        conversationSucceeded:
+          type: boolean
+          description: >-
+            Whether the conversation itself reported success. Distinct from the run completing —
+            see `BundleRunStatus`.
+        finalResponse:
+          type: string
+          description: The final agent response, or empty when no turn produced one.
+        turnCount:
+          type: integer
+          description: The number of turns that executed.
+        totalToolInvocations:
+          type: integer
+          description: Total tool invocations across all turns.
+        budgetExhausted:
+          type: boolean
+          description: >-
+            Whether the conversation stopped early on its lifetime token budget. A graceful stop,
+            not a failure — the turns that ran are still reflected in `turnCount`.
+          default: false
+        conversationError:
+          type: [string, "null"]
+          description: The conversation-level error when `conversationSucceeded` is false.
+
+    ProblemDetails:
+      type: object
+      description: RFC 7807 problem document, as produced by ASP.NET Core `ControllerBase.Problem(...)`.
+      properties:
+        type: { type: string }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        instance: { type: string }
+
+    # ---- Server-Sent Events payloads (documented for client authors; not returned as JSON bodies) ----
+    StreamEvent:
+      description: >-
+        The JSON payload carried by one `data:` frame on the stream endpoint. `type` is the
+        discriminator and matches the AG-UI wire vocabulary.
+      oneOf:
+        - $ref: "#/components/schemas/RunStartedEvent"
+        - $ref: "#/components/schemas/TextMessageStartEvent"
+        - $ref: "#/components/schemas/TextMessageContentEvent"
+        - $ref: "#/components/schemas/TextMessageEndEvent"
+        - $ref: "#/components/schemas/RunFinishedEvent"
+        - $ref: "#/components/schemas/RunErrorEvent"
+      discriminator:
+        propertyName: type
+
+    RunStartedEvent:
+      type: object
+      description: Emitted once at the start of a streamed run, before any text.
+      required: [type, threadId, runId]
+      properties:
+        type: { type: string, const: RUN_STARTED }
+        threadId:
+          type: string
+          description: The bundle handle, stable across the run.
+        runId:
+          type: string
+          description: The job id, echoed in the terminal frame.
+
+    TextMessageStartEvent:
+      type: object
+      description: >-
+        Opens the assistant message. Emitted lazily on the first real delta, so a run that produces
+        no text emits no message frames at all.
+      required: [type, messageId, role]
+      properties:
+        type: { type: string, const: TEXT_MESSAGE_START }
+        messageId: { type: string }
+        role: { type: string, const: assistant }
+
+    TextMessageContentEvent:
+      type: object
+      description: A text delta to append to the in-progress assistant message.
+      required: [type, messageId, delta]
+      properties:
+        type: { type: string, const: TEXT_MESSAGE_CONTENT }
+        messageId: { type: string }
+        delta: { type: string }
+
+    TextMessageEndEvent:
+      type: object
+      description: Closes the assistant message.
+      required: [type, messageId]
+      properties:
+        type: { type: string, const: TEXT_MESSAGE_END }
+        messageId: { type: string }
+
+    RunFinishedEvent:
+      type: object
+      description: Terminal frame on success. No further frames follow.
+      required: [type, threadId, runId]
+      properties:
+        type: { type: string, const: RUN_FINISHED }
+        threadId: { type: string }
+        runId: { type: string }
+
+    RunErrorEvent:
+      type: object
+      description: >-
+        Terminal frame on failure; no `RUN_FINISHED` follows. The message is always caller-safe —
+        never a raw exception.
+      required: [type, message]
+      properties:
+        type: { type: string, const: RUN_ERROR }
+        message:
+          type: string
+          examples:
+            - The run could not be found. Start it again to obtain a new job id.
+            - The run is already being streamed or has already completed.
+            - The bundle handle expired before the run could start.
+            - The agent run did not complete successfully.

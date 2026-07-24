@@ -1,0 +1,594 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>17 · Bundle API — Agentic Harness Developer Guide</title>
+        <meta name="description" content="Call the harness over HTTP: upload an agent bundle, run it under a per-caller capability grant, and poll or stream the result." />
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+        <link rel="stylesheet" href="assets/css/styles.css" />
+    </head>
+    <body>
+        <a href="#main" class="skip-link">Skip to content</a>
+        <div class="app">
+            <aside class="sidebar">
+                <div class="sidebar-header"><a class="sidebar-brand" href="index.html"><span class="sidebar-brand-mark">AH</span><span><span class="sidebar-brand-text">Agentic Harness</span><br /><span class="sidebar-brand-sub">Developer Guide</span></span></a></div>
+                <nav class="sidebar-nav" aria-label="Documentation navigation">
+                    <div class="sidebar-group"><div class="sidebar-group-title">Getting Started</div><a class="sidebar-link" href="index.html"><span class="sidebar-link-num">00</span> Welcome</a><a class="sidebar-link" href="01-get-running.html"><span class="sidebar-link-num">01</span> Get Running in 10 Minutes</a></div>
+                    <div class="sidebar-group"><div class="sidebar-group-title">Configuration</div><a class="sidebar-link" href="02-configuration.html"><span class="sidebar-link-num">02</span> Configuration Reference</a></div>
+                    <div class="sidebar-group"><div class="sidebar-group-title">Architecture</div><a class="sidebar-link" href="03-big-picture.html"><span class="sidebar-link-num">03</span> The Big Picture</a><a class="sidebar-link" href="04-message-journey.html"><span class="sidebar-link-num">04</span> A Message's Journey</a></div>
+                    <div class="sidebar-group"><div class="sidebar-group-title">Systems</div><a class="sidebar-link" href="05-skills.html"><span class="sidebar-link-num">05</span> Skills System</a><a class="sidebar-link" href="06-tools.html"><span class="sidebar-link-num">06</span> Tools &amp; Keyed DI</a><a class="sidebar-link" href="07-rag.html"><span class="sidebar-link-num">07</span> The RAG Pipeline</a><a class="sidebar-link" href="08-mcp.html"><span class="sidebar-link-num">08</span> MCP Server &amp; Client</a><a class="sidebar-link" href="16-generative-ui.html"><span class="sidebar-link-num">16</span> Generative UI &amp; Widgets</a><a class="sidebar-link" href="17-bundle-api.html"><span class="sidebar-link-num">17</span> Bundle API (HTTP)</a></div>
+                    <div class="sidebar-group"><div class="sidebar-group-title">Patterns</div><a class="sidebar-link" href="09-patterns.html"><span class="sidebar-link-num">09</span> Patterns You'll Use Daily</a><a class="sidebar-link" href="10-observability.html"><span class="sidebar-link-num">10</span> Observability &amp; Safety</a></div>
+                    <div class="sidebar-group"><div class="sidebar-group-title">Building</div><a class="sidebar-link" href="11-extending.html"><span class="sidebar-link-num">11</span> Extending the Harness</a></div>
+                    <div class="sidebar-group"><div class="sidebar-group-title">Quality</div><a class="sidebar-link" href="13-evaluation.html"><span class="sidebar-link-num">13</span> Evaluation Framework</a><a class="sidebar-link" href="14-skill-training.html"><span class="sidebar-link-num">14</span> Skill Training</a></div>
+                    <div class="sidebar-group"><div class="sidebar-group-title">Delivery</div><a class="sidebar-link" href="15-delivery-governance.html"><span class="sidebar-link-num">15</span> Delivery &amp; CI Governance</a></div>
+                    <div class="sidebar-group"><div class="sidebar-group-title">Reference</div><a class="sidebar-link" href="12-reference.html"><span class="sidebar-link-num">12</span> Cheatsheet &amp; Glossary</a></div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Other Guides</div>
+                        <a class="sidebar-link" href="../architecture/index.html">&#8592; Architecture Guide</a>
+                        <a class="sidebar-link" href="../agentic-harness-course/index.html">&#8592; Interactive Course</a>
+                        <a class="sidebar-link" href="../security/index.html">&#8592; Security Guide</a>
+                    </div>
+                </nav>
+            </aside>
+
+            <main id="main" class="content-wrap">
+                <div class="content">
+                    <span class="eyebrow">Chapter 17 · Systems</span>
+                    <h1 class="page-title">Bundle API — Calling the Harness over HTTP</h1>
+                    <p class="page-lead">
+                        Every other way into the harness assumes the agent already lives in the host: it was
+                        discovered at startup from a folder on disk. The Bundle API inverts that. A caller
+                        <em>uploads</em> an agent — an <code>AGENT.md</code> with its skills, zipped — and runs it,
+                        without deploying anything and without that agent ever entering the host's registries.
+                        This chapter is the integration guide for the system on the other end of that call.
+                    </p>
+
+                    <h2>Is this the surface you want?</h2>
+                    <p>
+                        The harness exposes three HTTP-shaped front doors and they are not interchangeable. Pick by
+                        <em>who authored the agent</em>:
+                    </p>
+                    <table>
+                        <thead><tr><th>Surface</th><th>Host</th><th>Use it when</th></tr></thead>
+                        <tbody>
+                            <tr>
+                                <td><strong>Bundle API</strong></td>
+                                <td><code>Presentation.BundleApi</code></td>
+                                <td>The agent is authored <em>outside</em> the host and shipped in with the request. One-off runs, tenant-supplied agents, CI jobs that carry their own agent definition.</td>
+                            </tr>
+                            <tr>
+                                <td>AgentHub</td>
+                                <td><code>Presentation.AgentHub</code></td>
+                                <td>The agent is already installed in the host and you want an interactive, stateful conversation (SignalR + AG-UI streaming, chat history). See its <code>README.md</code>.</td>
+                            </tr>
+                            <tr>
+                                <td>MCP server</td>
+                                <td><code>Infrastructure.AI.MCPServer</code></td>
+                                <td>You want to hand the harness's <em>tools</em> to someone else's agent, not run an agent here. See <a href="08-mcp.html">Chapter 08</a>.</td>
+                            </tr>
+                        </tbody>
+                    </table>
+
+                    <div class="callout callout-warn">
+                        <span class="callout-icon">!</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Off by default, and it will not start half-configured</div>
+                            <p style="margin: 0">
+                                The subsystem is gated on <code>AppConfig:AI:BundleExecution:Enabled</code> (default
+                                <code>false</code>) — while it is off, every endpoint answers <code>403</code>. Separately,
+                                the host is <strong>fail-closed on authentication</strong>: it refuses to boot unless you
+                                configure an Entra scheme (<em>both</em> <code>TenantId</code> and <code>ClientId</code>)
+                                or consciously set <code>Auth:AllowAnonymous: true</code>. Setting exactly one of
+                                tenant/client is treated as a mistake, not as an implicit request to serve openly, and
+                                also refuses to boot.
+                            </p>
+                        </div>
+                    </div>
+
+                    <h2>The shape of an integration</h2>
+                    <p>Four calls, in this order. Two of them are optional.</p>
+                    <table>
+                        <thead><tr><th>#</th><th>Call</th><th>You get back</th></tr></thead>
+                        <tbody>
+                            <tr><td>1</td><td><code>POST /api/bundles</code> (multipart zip)</td><td>A <strong>handle</strong> — the staged bundle, with a sliding 30-minute TTL</td></tr>
+                            <tr><td>2</td><td><code>POST /api/bundles/{handle}/runs</code></td><td>A <strong>job id</strong> — the run was accepted, not completed</td></tr>
+                            <tr><td>3a</td><td><code>GET  /api/bundles/{handle}/runs/{jobId}</code></td><td>Status, then the result. Poll it.</td></tr>
+                            <tr><td>3b</td><td><code>GET  /api/bundles/{handle}/runs/{jobId}/stream</code></td><td>The run's output live, as Server-Sent Events</td></tr>
+                            <tr><td>4</td><td><code>DELETE /api/bundles/{handle}</code></td><td>Nothing (<code>204</code>). Optional — the TTL sweeper also reclaims it.</td></tr>
+                        </tbody>
+                    </table>
+                    <p>
+                        One handle can back many runs. A handle is <em>staging</em>; a job is <em>execution</em>. They
+                        expire on separate clocks and, importantly, the security grant is attached to the
+                        <strong>run</strong>, not to the handle.
+                    </p>
+
+                    <h2>Quickstart</h2>
+                    <p>
+                        This uses the anonymous development mode. Read the security section before pointing it at
+                        anything shared.
+                    </p>
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-block-lang">bash · build a minimal bundle</span></div>
+                        <pre><code>mkdir -p my-bundle/skills/greeter
+
+cat &gt; my-bundle/AGENT.md &lt;&lt;'EOF'
+---
+id: quickstart-agent
+name: Quickstart Agent
+description: Minimal externally-authored agent used to prove the bundle API end to end.
+version: 1.0.0
+skills: ["greeter"]
+---
+
+You are a concise assistant. Answer in at most three sentences.
+EOF
+
+cat &gt; my-bundle/skills/greeter/SKILL.md &lt;&lt;'EOF'
+---
+name: "greeter"
+description: "Greets the user and answers short questions."
+version: "1.0.0"
+---
+
+Greet the user by name when they give one, then answer their question directly.
+EOF
+
+cd my-bundle &amp;&amp; zip -r ../bundle.zip . &amp;&amp; cd ..</code></pre>
+                    </div>
+
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-block-lang">bash · register, run, poll</span></div>
+                        <pre><code>API=http://localhost:5000
+
+# 1 — register. The multipart field name MUST be "file".
+HANDLE=$(curl -s -X POST "$API/api/bundles" -F "file=@bundle.zip" | jq -r .handle)
+
+# 2 — start a run. 202 Accepted; the conversation has not happened yet.
+JOB=$(curl -s -X POST "$API/api/bundles/$HANDLE/runs" \
+  -H 'content-type: application/json' \
+  -d '{"userMessages":["Hi, I am Sam. What can you do?"],"maxTurns":2}' | jq -r .jobId)
+
+# 3 — poll until terminal.
+curl -s "$API/api/bundles/$HANDLE/runs/$JOB" | jq '{status, result}'
+
+# 4 — clean up (optional; the TTL sweeper would do it anyway).
+curl -s -X DELETE "$API/api/bundles/$HANDLE" -o /dev/null -w '%{http_code}\n'</code></pre>
+                    </div>
+                    <p>
+                        With a real Entra scheme configured, every call above additionally carries
+                        <code>-H "Authorization: Bearer $TOKEN"</code>, where the token targets
+                        <strong>this API's own audience</strong> — <code>api://{ClientId}</code>. The bundle API never
+                        shares an audience with the agent hub or the MCP server, because it runs code the host did not
+                        write.
+                    </p>
+
+                    <h2>What goes in the zip</h2>
+                    <p>
+                        A bundle is the same on-disk shape the harness already understands for an installed agent, so
+                        anything you learned in <a href="05-skills.html">Chapter 05</a> applies unchanged:
+                    </p>
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-block-lang">bundle.zip</span></div>
+                        <pre><code>AGENT.md                  ← REQUIRED, at the archive root
+skills/
+  research/SKILL.md       ← optional; nested skills, owned by this agent alone
+  summarise/SKILL.md
+plugins/
+  my-plugin/plugin.json   ← optional; parsed and carried, not yet wired into the run
+plugin.json               ← optional; a root-level manifest is also read</code></pre>
+                    </div>
+                    <p>Two hard requirements, both enforced at registration:</p>
+                    <ul>
+                        <li><strong><code>AGENT.md</code> must sit at the archive root.</strong> Not in a subfolder. A zip
+                            built from a directory <em>containing</em> your bundle folder will be rejected — zip the
+                            folder's <em>contents</em>, as the quickstart does.</li>
+                        <li><strong>It must resolve to a non-empty id.</strong> The parser takes <code>id:</code> from the
+                            YAML front matter, falls back to <code>name:</code>, and falls back again to the folder name.
+                            A manifest with no front matter at all yields no id and is rejected.</li>
+                    </ul>
+                    <p>
+                        Everything else is optional. A malformed <code>SKILL.md</code> is skipped with a warning rather
+                        than failing the whole bundle, and duplicate skill ids keep the first occurrence. Skills declared
+                        in a bundle are <strong>owned</strong> by that bundle's agent: they are resolved only for its own
+                        runs and never enter the host's global skill pool.
+                    </p>
+
+                    <h2>The security model: the bundle asks, the host grants</h2>
+                    <p>
+                        This is the concept to internalise before writing a client. A bundle's <code>AGENT.md</code> can
+                        declare <code>allowed-tools</code> and its skills can name whatever they like. Those declarations
+                        are <strong>requests</strong>. The authoritative grant is the <strong>capability envelope</strong>
+                        the host resolves from the credential that <em>started the run</em>, out of configuration the
+                        bundle author cannot influence:
+                    </p>
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-block-lang">json · AppConfig:AI:BundleExecution:Envelopes</span></div>
+                        <pre><code>{
+  "Envelopes": {
+    "Default": {
+      "AllowedTools": [],
+      "AllowedMcpServers": [],
+      "AutonomyCeiling": "Restricted"
+    },
+    "BySubject": {
+      "11111111-2222-3333-4444-555555555555": {
+        "AllowedTools": [ "file_system", "calculation_engine" ],
+        "AllowedMcpServers": [ "internal-docs" ],
+        "AutonomyCeiling": "Autonomous"
+      }
+    },
+    "ByRole": {
+      "BundleRunner.ReadOnly": {
+        "AllowedTools": [ "file_system" ],
+        "AllowedMcpServers": [],
+        "AutonomyCeiling": "Autonomous"
+      }
+    }
+  }
+}</code></pre>
+                    </div>
+                    <p>Resolution precedence, in order:</p>
+                    <ol>
+                        <li><strong>Exact subject match</strong> (<code>BySubject</code>) wins outright.</li>
+                        <li>Otherwise the caller's <strong>matching roles</strong> are combined to the
+                            <em>least-privilege</em> result — the <strong>intersection</strong> of tool and MCP allowlists
+                            and the <strong>minimum</strong> autonomy ceiling. Holding more roles can only ever narrow a
+                            grant, never widen it.</li>
+                        <li>Otherwise the <strong><code>Default</code></strong> applies — which grants nothing unless an
+                            operator widened it.</li>
+                    </ol>
+                    <p>
+                        There is no code path on which "no envelope" means "no restriction". An unrecognised
+                        <code>AutonomyCeiling</code> string degrades to the most restrictive tier with a warning rather
+                        than opening up, and a numeric or comma-composite value is rejected outright for the same reason.
+                    </p>
+
+                    <div class="callout callout-warn">
+                        <span class="callout-icon">!</span>
+                        <div class="callout-body">
+                            <div class="callout-title">A non-<code>Autonomous</code> ceiling suspends tool use entirely — it does not queue approvals</div>
+                            <p style="margin: 0">
+                                Live mid-tool-call approval routing is deferred, so the governor currently treats "this
+                                action requires human sign-off" as a fail-closed <em>block</em>. In practice that means a
+                                <code>Restricted</code> or <code>Supervised</code> ceiling stops the bundle from using
+                                tools at all, rather than gating each call for approval. A bundle that must actually do
+                                work therefore runs with <code>AutonomyCeiling: "Autonomous"</code> and is confined by
+                                <code>AllowedTools</code> / <code>AllowedMcpServers</code> plus the host's own risk and
+                                capability gates. This matches how the harness's plugin and tier baselines behave today.
+                            </p>
+                        </div>
+                    </div>
+
+                    <div class="callout callout-jargon">
+                        <span class="callout-icon">¶</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Two claims identify you, for two different jobs</div>
+                            <p style="margin: 0">
+                                <strong>Ownership</strong> of handles and runs keys on the first available of
+                                <code>oid</code> → object-identifier → <code>nameidentifier</code> → <code>sub</code>
+                                → name. <strong>Envelope</strong> lookup (<code>BySubject</code>) keys on
+                                <code>nameidentifier</code> or <code>sub</code> only. For most Entra tokens these differ:
+                                <code>oid</code> is the directory object id, <code>sub</code> is a per-application
+                                pairwise identifier. If your <code>BySubject</code> grants appear to be ignored, you have
+                                almost certainly keyed them on the object id. Key them on the <code>sub</code> claim, or
+                                use <code>ByRole</code> with an app role — role values are read from the standard role
+                                claim and from the short <code>roles</code>/<code>role</code> claim names Entra emits.
+                            </p>
+                        </div>
+                    </div>
+
+                    <p>Three more properties worth designing around:</p>
+                    <ul>
+                        <li><strong>MCP is allowlist-only and by name.</strong> A bundle references host-registered MCP
+                            servers by name and can never define an endpoint, so its entire outbound MCP surface is the
+                            list you granted. That closes SSRF by construction.</li>
+                        <li><strong>Ownership is enforced on every operation.</strong> Run, poll, stream, and delete all
+                            check that the caller owns the handle. A foreign or unknown resource is reported identically
+                            — <code>404</code> for reads, a silent <code>204</code> for delete — so the API never confirms
+                            that someone else's handle exists.</li>
+                        <li><strong>The grant follows the invoker, not the handle.</strong> A stolen handle runs under the
+                            thief's envelope, which is the point: it cannot be used to borrow the registrant's privileges.</li>
+                    </ul>
+
+                    <h2>Anonymous mode is a development mode</h2>
+                    <p>
+                        With <code>Auth:AllowAnonymous: true</code> the host authenticates every request as one synthetic
+                        principal and logs a prominent warning at startup for as long as it runs. The consequences are
+                        specific, and both matter:
+                    </p>
+                    <ul>
+                        <li><strong>Every caller shares one owner.</strong> Ownership checks still run, but they all pass
+                            — so there is no isolation between clients. Anyone can run, poll, and delete anyone's handle.</li>
+                        <li><strong>Every run gets the <code>Default</code> envelope.</strong> The synthetic principal
+                            carries no subject or role claims, so neither <code>BySubject</code> nor <code>ByRole</code>
+                            can match. If <code>Default</code> is unconfigured, anonymous runs are granted nothing —
+                            the door is open but the room is empty.</li>
+                    </ul>
+
+                    <h2>Endpoint reference</h2>
+                    <p>
+                        The full machine-readable contract — schemas, examples, every status code — is checked in as
+                        <a href="assets/openapi/bundle-api.yaml"><code>assets/openapi/bundle-api.yaml</code></a>
+                        (OpenAPI 3.1). Generate a client from it. This host serves <strong>no</strong> runtime Swagger
+                        endpoint, unlike the agent hub.
+                    </p>
+                    <table>
+                        <thead><tr><th>Endpoint</th><th>Success</th><th>Notes</th></tr></thead>
+                        <tbody>
+                            <tr>
+                                <td><code>POST /api/bundles</code></td>
+                                <td><code>201</code></td>
+                                <td>Field name <code>file</code>. <code>Location</code> points at <code>/api/bundles/{handle}</code>, which answers only <code>DELETE</code> — there is no GET-a-bundle endpoint. 10 req/min.</td>
+                            </tr>
+                            <tr>
+                                <td><code>POST /api/bundles/{handle}/runs</code></td>
+                                <td><code>202</code></td>
+                                <td>Body: <code>userMessages</code> (1–100, none empty), <code>maxTurns</code> (1–100, default 10), <code>stream</code> (default false).</td>
+                            </tr>
+                            <tr>
+                                <td><code>GET /api/bundles/{handle}/runs/{jobId}</code></td>
+                                <td><code>200</code></td>
+                                <td>Projection only — never echoes the envelope or your seed messages.</td>
+                            </tr>
+                            <tr>
+                                <td><code>GET …/runs/{jobId}/stream</code></td>
+                                <td><code>200</code></td>
+                                <td><code>text/event-stream</code>. Only valid for a run started with <code>stream: true</code> that is still <code>Queued</code>; otherwise <code>409</code>.</td>
+                            </tr>
+                            <tr>
+                                <td><code>DELETE /api/bundles/{handle}</code></td>
+                                <td><code>204</code></td>
+                                <td>Idempotent and non-disclosing — always <code>204</code>.</td>
+                            </tr>
+                        </tbody>
+                    </table>
+
+                    <h2>Two ways to get the output</h2>
+                    <h3>Background + poll (the default)</h3>
+                    <p>
+                        The run is enqueued and executed by a background dispatcher. You poll. Note that the dispatcher
+                        drains its queue <strong>one run at a time</strong> — a queued run waits behind every other
+                        queued run on that host, so poll intervals should assume queueing delay, not just model latency.
+                    </p>
+                    <p>
+                        Poll until <code>status</code> is <code>Succeeded</code> or <code>Failed</code>, then read
+                        <code>result</code>. The distinction that catches people:
+                    </p>
+                    <div class="callout callout-info">
+                        <span class="callout-icon">i</span>
+                        <div class="callout-body">
+                            <div class="callout-title"><code>Succeeded</code> describes the run, not the answer</div>
+                            <p style="margin: 0">
+                                A conversation that completed but whose agent reported a failed turn is
+                                <code>status: "Succeeded"</code> with <code>result.conversationSucceeded: false</code> and
+                                the reason in <code>result.conversationError</code>. Only an unhandled exception, a handle
+                                that expired before the run started, or cancellation produces
+                                <code>status: "Failed"</code> — and then the reason is in the top-level
+                                <code>error</code>, always a stable scrubbed string, never a raw exception. A correct
+                                client checks <em>both</em> fields.
+                            </p>
+                        </div>
+                    </div>
+
+                    <h3>Live stream (opt in with <code>stream: true</code>)</h3>
+                    <p>
+                        A streaming run is <strong>reserved, not enqueued</strong>. Nothing happens until you open
+                        <code>streamUrl</code>; that connection is what drives the conversation, and closing it cancels
+                        the run. If you never connect, the reservation is reclaimed after
+                        <code>StreamReservationTtl</code> (default 5 minutes).
+                    </p>
+                    <p>
+                        Frames are <code>data: {json}\n\n</code>, camelCase, with a <code>type</code> discriminator taken
+                        from the AG-UI wire vocabulary — so an AG-UI client library consumes this feed unchanged:
+                    </p>
+                    <table>
+                        <thead><tr><th>Frame <code>type</code></th><th>Payload</th><th>When</th></tr></thead>
+                        <tbody>
+                            <tr><td><code>RUN_STARTED</code></td><td><code>threadId</code> (the handle), <code>runId</code> (the job id)</td><td>Once, first.</td></tr>
+                            <tr><td><code>TEXT_MESSAGE_START</code></td><td><code>messageId</code>, <code>role: "assistant"</code></td><td>Lazily, on the first real token. A run that emits no text emits no message frames at all.</td></tr>
+                            <tr><td><code>TEXT_MESSAGE_CONTENT</code></td><td><code>messageId</code>, <code>delta</code></td><td>Per token batch. Append to your buffer.</td></tr>
+                            <tr><td><code>TEXT_MESSAGE_END</code></td><td><code>messageId</code></td><td>Once, if the message was opened.</td></tr>
+                            <tr><td><code>RUN_FINISHED</code></td><td><code>threadId</code>, <code>runId</code></td><td>Terminal, on success.</td></tr>
+                            <tr><td><code>RUN_ERROR</code></td><td><code>message</code> (caller-safe)</td><td>Terminal, on failure. Never both this and <code>RUN_FINISHED</code>.</td></tr>
+                        </tbody>
+                    </table>
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-block-lang">ts · consuming the stream</span></div>
+                        <pre><code>const start = await fetch(`${API}/api/bundles/${handle}/runs`, {
+  method: 'POST',
+  headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+  body: JSON.stringify({ userMessages: ['Walk me through it.'], maxTurns: 5, stream: true }),
+});
+const { streamUrl } = await start.json();
+
+// Opening this is what runs the agent. EventSource cannot send an Authorization
+// header, so use fetch + a stream reader when the host requires a bearer token.
+const res = await fetch(`${API}${streamUrl}`, { headers: { authorization: `Bearer ${token}` } });
+const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+
+let buffer = '', answer = '';
+for (;;) {
+  const { value, done } = await reader.read();
+  if (done) break;
+  buffer += value;
+
+  // Frames are separated by a blank line.
+  let cut;
+  while ((cut = buffer.indexOf('\n\n')) !== -1) {
+    const frame = buffer.slice(0, cut).replace(/^data: /, '');
+    buffer = buffer.slice(cut + 2);
+    const evt = JSON.parse(frame);
+    if (evt.type === 'TEXT_MESSAGE_CONTENT') answer += evt.delta;
+    if (evt.type === 'RUN_ERROR') throw new Error(evt.message);
+    if (evt.type === 'RUN_FINISHED') return answer;
+  }
+}</code></pre>
+                    </div>
+                    <p>
+                        Streams are capped by <strong>concurrency, not rate</strong>: each open connection holds a permit
+                        for its whole lifetime, and a caller may hold <code>MaxConcurrentStreamsPerCaller</code>
+                        (default 4) at once. The excess is rejected with <code>429</code> immediately rather than queued,
+                        so a client that opens streams in a loop must bound itself.
+                    </p>
+
+                    <h2>What the host does with your archive</h2>
+                    <p>
+                        Nothing in the zip is parsed until every structural guard has passed, and any failure deletes the
+                        partial extraction before returning. Each rejection is a <code>400</code> whose
+                        <code>detail</code> names the guard — never the archive's contents.
+                    </p>
+                    <table>
+                        <thead><tr><th>Guard</th><th>Default limit</th><th>Setting</th></tr></thead>
+                        <tbody>
+                            <tr><td>Archive size on the wire</td><td>10 MiB</td><td><code>MaxArchiveBytes</code> (also caps the multipart body)</td></tr>
+                            <tr><td>Entry count</td><td>2 000</td><td><code>MaxEntryCount</code></td></tr>
+                            <tr><td>Total uncompressed size</td><td>50 MiB</td><td><code>MaxTotalUncompressedBytes</code></td></tr>
+                            <tr><td>Compression ratio</td><td>100×</td><td><code>MaxCompressionRatio</code> — only applied once a bundle expands past 1 MiB, so small, highly-compressible markdown bundles are never caught by it</td></tr>
+                            <tr><td>Zip-slip (<code>../</code> or absolute entry paths)</td><td>rejected</td><td>—</td></tr>
+                            <tr><td>Symlinks resolving outside the staging directory</td><td>rejected</td><td>—</td></tr>
+                            <tr><td>Not a zip / empty archive</td><td>rejected</td><td>—</td></tr>
+                        </tbody>
+                    </table>
+                    <p>
+                        The decompression-bomb check runs twice: once cheaply against the archive's declared header
+                        sizes, then again against <em>actual</em> bytes written during extraction — so an archive that
+                        lies about its entry lengths still trips it.
+                    </p>
+                    <p>
+                        Accepted bundles are extracted into a unique subdirectory of <code>TempRoot</code>. That root
+                        <strong>must not overlap</strong> any configured skill or agent discovery path; the staging
+                        service refuses to stage if it does, because the host's registries scan those roots recursively
+                        and would otherwise discover — and globally publish — a bundle's private skills.
+                    </p>
+
+                    <h2>Errors you should handle</h2>
+                    <table>
+                        <thead><tr><th>Status</th><th>Means</th><th>Do</th></tr></thead>
+                        <tbody>
+                            <tr><td><code>400</code></td><td>Archive guard rejection, or an invalid run request (no messages, empty message, <code>maxTurns</code> out of range).</td><td>Read <code>detail</code>; fix the payload. Not retryable as-is.</td></tr>
+                            <tr><td><code>401</code></td><td>No/invalid token, or a principal with no usable identity to own resources under.</td><td>Re-authenticate against <code>api://{ClientId}</code>.</td></tr>
+                            <tr><td><code>403</code></td><td>Bundle execution is disabled on this host.</td><td>Operator action — <code>Enabled: true</code>. Do not retry.</td></tr>
+                            <tr><td><code>404</code></td><td>Handle or run is unknown, expired, or not yours. The three are deliberately indistinguishable.</td><td>Re-register the bundle to get a fresh handle.</td></tr>
+                            <tr><td><code>409</code></td><td>The run is not awaiting a stream — it is a background run, already being streamed, or already finished.</td><td>Poll the status endpoint instead.</td></tr>
+                            <tr><td><code>429</code></td><td>10/min register, 60/min other endpoints, or the per-caller open-stream cap.</td><td>Back off; for streams, close one first.</td></tr>
+                            <tr><td><code>500</code></td><td>Unexpected server error. The body is deliberately generic.</td><td>The detail is in the host's logs. Retry idempotently.</td></tr>
+                        </tbody>
+                    </table>
+
+                    <h2>Lifetimes</h2>
+                    <table>
+                        <thead><tr><th>Clock</th><th>Default</th><th>Behaviour</th></tr></thead>
+                        <tbody>
+                            <tr><td><code>HandleTtl</code></td><td>30 min</td><td><strong>Sliding</strong> — refreshed on every lookup and every run start. <code>expiresAt</code> is a floor, not a deadline.</td></tr>
+                            <tr><td><code>RunRecordTtl</code></td><td>30 min</td><td>How long a <em>completed</em> run stays pollable before it is swept. Read your result inside this window.</td></tr>
+                            <tr><td><code>StreamReservationTtl</code></td><td>5 min</td><td>How long an unclaimed streaming reservation waits for you to connect. Independent of <code>RunRecordTtl</code> on purpose.</td></tr>
+                            <tr><td><code>CleanupInterval</code></td><td>60 s</td><td>How often the sweeper deletes expired staging directories and run records.</td></tr>
+                        </tbody>
+                    </table>
+                    <p>
+                        An in-flight run holds a lease on its staged bundle, so the sweeper can never delete the
+                        directory out from under a running agent.
+                    </p>
+
+                    <div class="callout callout-warn">
+                        <span class="callout-icon">!</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Nothing here is durable, and the host is not clustered</div>
+                            <p style="margin: 0">
+                                Handles, run records, and results live <strong>in memory on one host</strong>. A restart
+                                loses in-flight and completed runs; a load balancer in front of two instances will send
+                                your poll to a host that has never heard of your job. If you need durability or
+                                horizontal scale, the client must be the system of record — persist the final response
+                                yourself as soon as you read it, and pin a session to one instance (or run a single
+                                instance) until the stores are made durable.
+                            </p>
+                        </div>
+                    </div>
+
+                    <h2>Configuration reference</h2>
+                    <p>All of it lives under <code>AppConfig:AI:BundleExecution</code>.</p>
+                    <table>
+                        <thead><tr><th>Key</th><th>Default</th><th>Purpose</th></tr></thead>
+                        <tbody>
+                            <tr><td><code>Enabled</code></td><td><code>false</code></td><td>Master toggle. Off ⇒ every endpoint <code>403</code>s.</td></tr>
+                            <tr><td><code>TempRoot</code></td><td><code>""</code> (system temp)</td><td>Staging root. Must be disjoint from all skill/agent discovery paths.</td></tr>
+                            <tr><td><code>MaxArchiveBytes</code></td><td><code>10485760</code></td><td>Wire size cap; also bounds the multipart body.</td></tr>
+                            <tr><td><code>MaxEntryCount</code></td><td><code>2000</code></td><td>Entry-count cap.</td></tr>
+                            <tr><td><code>MaxTotalUncompressedBytes</code></td><td><code>52428800</code></td><td>Absolute expansion cap.</td></tr>
+                            <tr><td><code>MaxCompressionRatio</code></td><td><code>100</code></td><td>Expansion-factor cap (above a 1 MiB floor).</td></tr>
+                            <tr><td><code>HandleTtl</code></td><td><code>00:30:00</code></td><td>Sliding handle lifetime.</td></tr>
+                            <tr><td><code>RunRecordTtl</code></td><td><code>00:30:00</code></td><td>How long a terminal run stays pollable.</td></tr>
+                            <tr><td><code>StreamReservationTtl</code></td><td><code>00:05:00</code></td><td>How long an unclaimed stream reservation survives.</td></tr>
+                            <tr><td><code>MaxConcurrentStreamsPerCaller</code></td><td><code>4</code></td><td>Open streams one caller may hold.</td></tr>
+                            <tr><td><code>CleanupInterval</code></td><td><code>00:01:00</code></td><td>Sweeper period.</td></tr>
+                            <tr><td><code>Envelopes</code></td><td>fail-closed</td><td>The per-caller grant table (see above).</td></tr>
+                            <tr><td><code>Auth:TenantId</code> / <code>Auth:ClientId</code></td><td>unset</td><td>This API's own Entra audience. Supply both or neither.</td></tr>
+                            <tr><td><code>Auth:AllowAnonymous</code></td><td><code>false</code></td><td>Explicit local-development opt-in. Cannot be combined with a configured scheme.</td></tr>
+                        </tbody>
+                    </table>
+
+                    <h2>Running the host</h2>
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-block-lang">bash</span></div>
+                        <pre><code>dotnet run --project src/Content/Presentation/Presentation.BundleApi</code></pre>
+                    </div>
+                    <p>
+                        The project ships no launch profile, so the bind address comes from
+                        <code>ASPNETCORE_URLS</code> (or the ASP.NET Core default) — set it explicitly rather than
+                        assuming a port. Its shipped <code>appsettings.json</code> enables bundle execution but leaves
+                        <code>Auth</code> empty, so on a fresh clone the host will <strong>refuse to start</strong> until
+                        you either configure Entra or opt into anonymous mode; the development settings file supplies
+                        that opt-in for local work. Outside Development the host also enables HSTS and HTTPS redirection.
+                    </p>
+
+                    <h2>Troubleshooting</h2>
+                    <table>
+                        <thead><tr><th>Symptom</th><th>Cause</th></tr></thead>
+                        <tbody>
+                            <tr><td>Host throws at startup about authentication</td><td>Fail-closed guard. You configured neither a scheme nor <code>AllowAnonymous</code>, set exactly one of <code>TenantId</code>/<code>ClientId</code>, or set both a scheme <em>and</em> <code>AllowAnonymous</code> (contradictory).</td></tr>
+                            <tr><td>Every call returns <code>403</code></td><td><code>Enabled</code> is <code>false</code>.</td></tr>
+                            <tr><td>Register returns <code>400 "Bundle has no AGENT.md at its root."</code></td><td>You zipped the parent folder. Zip the bundle directory's contents.</td></tr>
+                            <tr><td>Register returns <code>400</code> about the staging root</td><td><code>TempRoot</code> overlaps a skill or agent discovery path.</td></tr>
+                            <tr><td>Runs succeed but the agent never uses a tool</td><td>The envelope. Either the tool is not in <code>AllowedTools</code>, or the ceiling is not <code>Autonomous</code> — see the autonomy callout.</td></tr>
+                            <tr><td><code>BySubject</code> grant appears ignored</td><td>Keyed on <code>oid</code> instead of <code>sub</code>/name-identifier.</td></tr>
+                            <tr><td>Stream returns <code>409</code></td><td>The run was not started with <code>stream: true</code>, or something already claimed it.</td></tr>
+                            <tr><td>Poll returns <code>404</code> for a job you just started</td><td>Different caller identity than the one that registered the handle, a restarted host, or the record was swept.</td></tr>
+                        </tbody>
+                    </table>
+
+                    <hr />
+
+                    <h2>Where to go from here</h2>
+                    <div class="card-grid">
+                        <a class="card" href="06-tools.html">
+                            <span class="card-num">06 · Related</span>
+                            <div class="card-title">Tools &amp; Keyed DI</div>
+                            <p class="card-desc">The tools an envelope can grant, and the governance chain every one of them passes through.</p>
+                        </a>
+                        <a class="card" href="05-skills.html">
+                            <span class="card-num">05 · Related</span>
+                            <div class="card-title">Skills System</div>
+                            <p class="card-desc">The <code>SKILL.md</code> format your bundle's nested skills use, unchanged.</p>
+                        </a>
+                        <a class="card" href="../security/index.html">
+                            <span class="card-num">↗ Security Guide</span>
+                            <div class="card-title">Threat model &amp; governance</div>
+                            <p class="card-desc">Where running externally-authored code sits in the harness's overall security posture.</p>
+                        </a>
+                    </div>
+
+                    <div class="page-nav">
+                        <a class="page-nav-link page-nav-prev" href="16-generative-ui.html"><div class="page-nav-label">← Previous</div><div class="page-nav-title">16 · Generative UI &amp; Widgets</div></a>
+                        <a class="page-nav-link page-nav-next" href="09-patterns.html"><div class="page-nav-label">Next →</div><div class="page-nav-title">09 · Patterns You'll Use Daily</div></a>
+                    </div>
+                </div>
+                <aside class="toc" aria-label="On this page"><div class="toc-title">On this page</div><ul class="toc-list"></ul></aside>
+            </main>
+        </div>
+        <script src="assets/js/main.js"></script>
+    </body>
+</html>
