@@ -137,14 +137,14 @@ Everything lives under `AppConfig:AI:BundleExecution` (`Domain.Common/Config/AI/
 | `Enabled` | `false` | Off ⇒ all four handlers return `Result.Forbidden` (`403`) |
 | `TempRoot` | `""` → `%TEMP%/agent-bundles` | Must be disjoint from all skill/agent discovery roots |
 | `MaxArchiveBytes` | 10 MiB | Also sets `FormOptions.MultipartBodyLengthLimit`, so oversize is rejected before MVC buffers the body |
-| `MaxEntryCount` | 2000 | |
+| `MaxEntryCount` | 2000 | Read from the central directory, before a single byte is extracted |
 | `MaxTotalUncompressedBytes` | 50 MiB | Checked against declared *and* actual bytes |
 | `MaxCompressionRatio` | 100 | Only above a 1 MiB uncompressed floor |
 | `HandleTtl` | 30 min | Sliding |
 | `RunRecordTtl` | 30 min | Terminal records only |
 | `StreamReservationTtl` | 5 min | Unclaimed streaming reservations; deliberately independent of `RunRecordTtl` |
-| `MaxConcurrentStreamsPerCaller` | 4 | |
-| `CleanupInterval` | 60 s | |
+| `MaxConcurrentStreamsPerCaller` | 4 | A concurrency limiter with `QueueLimit = 0` -- excess connections are rejected, not parked |
+| `CleanupInterval` | 60 s | `BundleWorkspaceCleanupService` period; a lease held by a running job blocks its directory's deletion |
 | `Envelopes` | fail-closed | `Default` / `BySubject` / `ByRole` |
 | `Auth:TenantId`, `Auth:ClientId` | unset | This host's **own** audience -- never shared with AgentHub or the MCP server |
 | `Auth:AllowAnonymous` | `false` | Explicit local-dev opt-in; `Environment=Development` alone does not disable auth |
@@ -181,7 +181,14 @@ Replace `InMemoryBundleHandleStore`, `InMemoryBundleRunJobStore`, and `InMemoryB
 
 ### Change the wire contract
 
-Update `documentation/onboarding/assets/openapi/bundle-api.yaml` **and** `documentation/onboarding/17-bundle-api.html` in the same commit. Neither is generated, so nothing else will catch the drift. `BundleRunStatus` numeric values are anchored by a `Domain.AI` enum test -- add new states at the end only.
+**This is the canonical list.** Nothing is generated from the controller, so nothing mechanically catches drift -- every one of these describes the contract by hand and must be updated in the same commit:
+
+1. `documentation/onboarding/assets/openapi/bundle-api.yaml` -- the OpenAPI spec (routes, schemas, status codes, examples).
+2. `documentation/onboarding/17-bundle-api.html` -- the consumer guide (endpoint table, error table, config table, SSE frame table, quickstart).
+3. This README -- the route block in *Architecture Context* and the *Configuration* table above.
+4. `CLAUDE.md` -- only if the spec's location or the doc-site page count changes.
+
+`BundleRunStatus` numeric values are anchored by a `Domain.AI` enum test -- add new states at the end only.
 
 ## Dependencies
 

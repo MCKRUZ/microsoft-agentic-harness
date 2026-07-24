@@ -3,8 +3,11 @@
 # Hand-written from the shipped implementation in
 # src/Content/Presentation/Presentation.BundleApi/. This host does NOT serve a generated
 # OpenAPI document at runtime (no Swashbuckle / AddOpenApi registration in Program.cs), so
-# this file is the machine-readable contract. When BundlesController.cs or
-# BundleApiContracts.cs change, change this file in the same commit.
+# this file is the machine-readable contract.
+#
+# This file is one of several hand-maintained descriptions of the same contract. The canonical
+# list of everything that must change together lives in the "Change the wire contract" section
+# of src/Content/Presentation/Presentation.BundleApi/README.md -- follow it, not just this note.
 #
 # Deployed alongside the developer guide at:
 #   <site>/assets/openapi/bundle-api.yaml
@@ -49,14 +52,16 @@ info:
 servers:
   - url: "{scheme}://{host}"
     description: >-
-      The Presentation.BundleApi host. It ships no launch profile, so the bind address comes from
-      ASPNETCORE_URLS (or the ASP.NET Core default). Set it explicitly when you deploy.
+      The Presentation.BundleApi host. It ships no launch profile, so the bind address is entirely
+      deployment-defined — set ASPNETCORE_URLS explicitly. The defaults below match the local
+      quickstart in chapter 17 of the developer guide (`ASPNETCORE_URLS=http://localhost:5000`);
+      use `https` for any deployment that is not a developer's own machine.
     variables:
       scheme:
-        default: https
+        default: http
         enum: [https, http]
       host:
-        default: localhost:5001
+        default: localhost:5000
 
 security:
   - bearerAuth: []
@@ -243,13 +248,6 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/BundleRunResponse" }
               examples:
-                running:
-                  summary: Still executing
-                  value:
-                    jobId: "0b8f1c2d3e4f5a6b7c8d9e0f1a2b3c4d"
-                    status: Running
-                    createdAt: "2026-07-24T14:03:11.412Z"
-                    startedAt: "2026-07-24T14:03:11.980Z"
                 succeeded:
                   summary: Completed successfully
                   value:
@@ -581,10 +579,9 @@ components:
 
         * `Queued` — created, not yet picked up (or, for a streaming run, awaiting its stream).
         * `Running` — executing under its capability envelope.
-        * `Succeeded` — terminal; the conversation ran to completion. Inspect
-          `result.conversationSucceeded` to learn whether the conversation itself was successful.
-        * `Failed` — terminal; the run could not complete (unhandled exception, expired handle, or
-          cancellation). See `error`.
+        * `Succeeded` — terminal; the run completed. See `result.conversationSucceeded` for the
+          conversation's own outcome.
+        * `Failed` — terminal; see `error`.
       enum: [Queued, Running, Succeeded, Failed]
 
     BundleRunOutcomeResponse:
@@ -601,10 +598,8 @@ components:
           description: The final agent response, or empty when no turn produced one.
         turnCount:
           type: integer
-          description: The number of turns that executed.
         totalToolInvocations:
           type: integer
-          description: Total tool invocations across all turns.
         budgetExhausted:
           type: boolean
           description: >-

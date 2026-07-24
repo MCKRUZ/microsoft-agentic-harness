@@ -89,7 +89,7 @@
                     </div>
 
                     <h2>The shape of an integration</h2>
-                    <p>Four calls, in this order. Two of them are optional.</p>
+                    <p>Two required calls, then a choice of how to read the result, then optional cleanup.</p>
                     <table>
                         <thead><tr><th>#</th><th>Call</th><th>You get back</th></tr></thead>
                         <tbody>
@@ -109,7 +109,8 @@
                     <h2>Quickstart</h2>
                     <p>
                         This uses the anonymous development mode. Read the security section before pointing it at
-                        anything shared.
+                        anything shared. The commands below need <code>curl</code>, <code>zip</code>,
+                        <code>jq</code>, and a bash-compatible shell — on Windows, Git Bash or WSL.
                     </p>
                     <div class="code-block">
                         <div class="code-block-header"><span class="code-block-lang">bash · build a minimal bundle</span></div>
@@ -142,7 +143,13 @@ cd my-bundle &amp;&amp; zip -r ../bundle.zip . &amp;&amp; cd ..</code></pre>
 
                     <div class="code-block">
                         <div class="code-block-header"><span class="code-block-lang">bash · register, run, poll</span></div>
-                        <pre><code>API=http://localhost:5000
+                        <pre><code># The host ships no launch profile, so pick the address explicitly:
+#   ASPNETCORE_URLS=http://localhost:5000 dotnet run --project src/Content/Presentation/Presentation.BundleApi
+API=http://localhost:5000
+
+# Anonymous dev mode needs no token. Against a real Entra host, add
+#   -H "authorization: Bearer $TOKEN"
+# to every call below, where $TOKEN targets api://{ClientId}.
 
 # 1 — register. The multipart field name MUST be "file".
 HANDLE=$(curl -s -X POST "$API/api/bundles" -F "file=@bundle.zip" | jq -r .handle)
@@ -258,11 +265,16 @@ plugin.json               ← optional; a root-level manifest is also read</code
                                 tools at all, rather than gating each call for approval. A bundle that must actually do
                                 work therefore runs with <code>AutonomyCeiling: "Autonomous"</code> and is confined by
                                 <code>AllowedTools</code> / <code>AllowedMcpServers</code> plus the host's own risk and
-                                capability gates. This matches how the harness's plugin and tier baselines behave today.
+                                capability gates. This matches how the harness's plugin and tier baselines behave today —
+                                see <a href="../security/03-autonomy-and-governance.html">Security · Autonomy &amp;
+                                Governance</a> for the tier model and
+                                <a href="../security/04-tools-and-permissions.html">Security · Tools &amp; Permissions</a>
+                                for the gates that still apply inside an <code>Autonomous</code> ceiling.
                             </p>
                         </div>
                     </div>
 
+                    <h3>Which claim identifies you: <code>oid</code> vs <code>sub</code></h3>
                     <div class="callout callout-jargon">
                         <span class="callout-icon">¶</span>
                         <div class="callout-body">
@@ -306,7 +318,7 @@ plugin.json               ← optional; a root-level manifest is also read</code
                         <li><strong>Every run gets the <code>Default</code> envelope.</strong> The synthetic principal
                             carries no subject or role claims, so neither <code>BySubject</code> nor <code>ByRole</code>
                             can match. If <code>Default</code> is unconfigured, anonymous runs are granted nothing —
-                            the door is open but the room is empty.</li>
+                            the door is open, the room is empty.</li>
                     </ul>
 
                     <h2>Endpoint reference</h2>
@@ -316,6 +328,19 @@ plugin.json               ← optional; a root-level manifest is also read</code
                         (OpenAPI 3.1). Generate a client from it. This host serves <strong>no</strong> runtime Swagger
                         endpoint, unlike the agent hub.
                     </p>
+                    <div class="callout callout-warn">
+                        <span class="callout-icon">!</span>
+                        <div class="callout-body">
+                            <div class="callout-title">This page and the spec are hand-maintained</div>
+                            <p style="margin: 0">
+                                This page and the spec are written by hand, not generated from the controller, so they
+                                can drift. If anything here disagrees with the running server, the server is right —
+                                please file an issue. (Changing the contract rather than consuming it? The canonical
+                                update list is <em>Change the wire contract</em> in the host's
+                                <code>README.md</code>.)
+                            </p>
+                        </div>
+                    </div>
                     <table>
                         <thead><tr><th>Endpoint</th><th>Success</th><th>Notes</th></tr></thead>
                         <tbody>
@@ -398,34 +423,40 @@ plugin.json               ← optional; a root-level manifest is also read</code
                     </table>
                     <div class="code-block">
                         <div class="code-block-header"><span class="code-block-lang">ts · consuming the stream</span></div>
-                        <pre><code>const start = await fetch(`${API}/api/bundles/${handle}/runs`, {
-  method: 'POST',
-  headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-  body: JSON.stringify({ userMessages: ['Walk me through it.'], maxTurns: 5, stream: true }),
-});
-const { streamUrl } = await start.json();
+                        <pre><code>async function runStreamed(API: string, handle: string, token: string): Promise&lt;string&gt; {
+  const start = await fetch(`${API}/api/bundles/${handle}/runs`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    body: JSON.stringify({ userMessages: ['Walk me through it.'], maxTurns: 5, stream: true }),
+  });
+  const { streamUrl } = await start.json();
 
-// Opening this is what runs the agent. EventSource cannot send an Authorization
-// header, so use fetch + a stream reader when the host requires a bearer token.
-const res = await fetch(`${API}${streamUrl}`, { headers: { authorization: `Bearer ${token}` } });
-const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+  // Opening this is what runs the agent. EventSource cannot send an Authorization
+  // header, so use fetch + a stream reader when the host requires a bearer token.
+  const res = await fetch(`${API}${streamUrl}`, { headers: { authorization: `Bearer ${token}` } });
+  if (!res.body) throw new Error(`Stream failed: ${res.status}`);
+  const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
 
-let buffer = '', answer = '';
-for (;;) {
-  const { value, done } = await reader.read();
-  if (done) break;
-  buffer += value;
+  let buffer = '', answer = '';
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += value;
 
-  // Frames are separated by a blank line.
-  let cut;
-  while ((cut = buffer.indexOf('\n\n')) !== -1) {
-    const frame = buffer.slice(0, cut).replace(/^data: /, '');
-    buffer = buffer.slice(cut + 2);
-    const evt = JSON.parse(frame);
-    if (evt.type === 'TEXT_MESSAGE_CONTENT') answer += evt.delta;
-    if (evt.type === 'RUN_ERROR') throw new Error(evt.message);
-    if (evt.type === 'RUN_FINISHED') return answer;
+    // Frames are separated by a blank line.
+    let cut;
+    while ((cut = buffer.indexOf('\n\n')) !== -1) {
+      const frame = buffer.slice(0, cut).replace(/^data: /, '');
+      buffer = buffer.slice(cut + 2);
+      const evt = JSON.parse(frame);
+      if (evt.type === 'TEXT_MESSAGE_CONTENT') answer += evt.delta;
+      if (evt.type === 'RUN_ERROR') throw new Error(evt.message);
+      if (evt.type === 'RUN_FINISHED') return answer;
+    }
   }
+
+  // The stream ended without a terminal frame — the connection dropped mid-run.
+  throw new Error('Stream ended before RUN_FINISHED or RUN_ERROR.');
 }</code></pre>
                     </div>
                     <p>
@@ -534,15 +565,14 @@ for (;;) {
                     <h2>Running the host</h2>
                     <div class="code-block">
                         <div class="code-block-header"><span class="code-block-lang">bash</span></div>
-                        <pre><code>dotnet run --project src/Content/Presentation/Presentation.BundleApi</code></pre>
+                        <pre><code>ASPNETCORE_URLS=http://localhost:5000 \
+  dotnet run --project src/Content/Presentation/Presentation.BundleApi</code></pre>
                     </div>
                     <p>
-                        The project ships no launch profile, so the bind address comes from
-                        <code>ASPNETCORE_URLS</code> (or the ASP.NET Core default) — set it explicitly rather than
-                        assuming a port. Its shipped <code>appsettings.json</code> enables bundle execution but leaves
-                        <code>Auth</code> empty, so on a fresh clone the host will <strong>refuse to start</strong> until
-                        you either configure Entra or opt into anonymous mode; the development settings file supplies
-                        that opt-in for local work. Outside Development the host also enables HSTS and HTTPS redirection.
+                        The shipped <code>appsettings.json</code> enables bundle execution but leaves <code>Auth</code>
+                        empty, so a fresh clone trips the fail-closed guard above until you configure Entra —
+                        <code>appsettings.Development.json</code> supplies the anonymous opt-in for local work. Outside
+                        Development the host also enables HSTS and HTTPS redirection.
                     </p>
 
                     <h2>Troubleshooting</h2>
