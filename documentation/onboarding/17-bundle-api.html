@@ -570,9 +570,10 @@ plugin.json               ← optional; a root-level manifest is also read</code
                     </div>
                     <p>
                         The shipped <code>appsettings.json</code> enables bundle execution but leaves <code>Auth</code>
-                        empty, so a fresh clone trips the fail-closed guard above until you configure Entra —
-                        <code>appsettings.Development.json</code> supplies the anonymous opt-in for local work. Outside
-                        Development the host also enables HSTS and HTTPS redirection.
+                        empty, so a fresh clone boots <em>only</em> in Development, where the shipped
+                        <code>appsettings.Development.json</code> opts into anonymous auth. Every other environment
+                        trips the fail-closed guard above at startup until you configure Entra. Outside Development the
+                        host also enables HSTS and HTTPS redirection.
                     </p>
 
                     <h2>Troubleshooting</h2>
