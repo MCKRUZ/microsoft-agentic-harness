@@ -464,8 +464,10 @@ components:
     RateLimited:
       description: >-
         The caller's rate limit was exceeded. Limits are partitioned per caller (by stable id, or by
-        remote IP when the principal has none): 10/minute for register, 60/minute for the other
-        endpoints.
+        remote IP when the principal has none): 10/minute for register, 60/minute for run, poll, and
+        delete. Each endpoint gets exactly one policy — a per-endpoint policy replaces the
+        controller-wide one rather than stacking with it — so the stream endpoint is bounded only by
+        its open-connection cap, not by a request rate.
     ServerProblem:
       description: >-
         An unexpected server error. The body is intentionally generic — the detail is in the host's

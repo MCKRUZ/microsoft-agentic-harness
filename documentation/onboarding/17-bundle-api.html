@@ -505,7 +505,7 @@ plugin.json               ← optional; a root-level manifest is also read</code
                             <tr><td><code>403</code></td><td>Bundle execution is disabled on this host.</td><td>Operator action — <code>Enabled: true</code>. Do not retry.</td></tr>
                             <tr><td><code>404</code></td><td>Handle or run is unknown, expired, or not yours. The three are deliberately indistinguishable.</td><td>Re-register the bundle to get a fresh handle.</td></tr>
                             <tr><td><code>409</code></td><td>The run is not awaiting a stream — it is a background run, already being streamed, or already finished.</td><td>Poll the status endpoint instead.</td></tr>
-                            <tr><td><code>429</code></td><td>10/min register, 60/min other endpoints, or the per-caller open-stream cap.</td><td>Back off; for streams, close one first.</td></tr>
+                            <tr><td><code>429</code></td><td>10/min register; 60/min run, poll, and delete; the stream endpoint is capped by open connections instead.</td><td>Back off; for streams, close one first.</td></tr>
                             <tr><td><code>500</code></td><td>Unexpected server error. The body is deliberately generic.</td><td>The detail is in the host's logs. Retry idempotently.</td></tr>
                         </tbody>
                     </table>

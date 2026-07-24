@@ -97,7 +97,7 @@ Partitioned per caller by stable id, falling back to remote IP (the only disting
 
 | Policy | Kind | Limit |
 |--------|------|-------|
-| `bundles` | fixed window | 60 / minute (whole controller) |
+| `bundles` | fixed window | 60 / minute — declared at controller scope, so it governs run, poll, and delete |
 | `bundles-register` | fixed window | 10 / minute (staging is expensive) |
 | `bundles-stream` | **concurrency** | `MaxConcurrentStreamsPerCaller` (default 4), `QueueLimit = 0` |
 
