@@ -25,7 +25,7 @@ This harness solves those problems with real engineering, not abstractions on to
 
 Six learning resources, depending on what you need:
 
-- **[Developer Onboarding Guide](https://mckruz.github.io/microsoft-agentic-harness/)** — Step-by-step walkthrough of the codebase aimed at engineers who are forking this template to build something. 14 pages covering getting running, every config knob, the Clean Architecture layout, a full message-journey trace, the skills/tools/RAG/MCP systems, observability, the evaluation framework, and the SkillOpt-port skill-training loop. Read this if you're going to write code.
+- **[Developer Onboarding Guide](https://mckruz.github.io/microsoft-agentic-harness/)** — Step-by-step walkthrough of the codebase aimed at engineers who are forking this template to build something. 17 pages covering getting running, every config knob, the Clean Architecture layout, a full message-journey trace, the skills/tools/RAG/MCP systems, observability, the evaluation framework, the SkillOpt-port skill-training loop, generative UI, and the Bundle API for calling the harness over HTTP. Read this if you're going to write code.
 
 - **[Architecture Guide](https://mckruz.github.io/microsoft-agentic-harness/architecture/)** — Infrastructure playbook for deploying the harness on Azure. 7 pages covering the full Azure topology, compute and AI services (Container Apps, Azure OpenAI), data and retrieval infrastructure (AI Search, knowledge graph backends), networking and security (VNets, Entra ID, Key Vault), observability (OTel to Azure Monitor or Grafana), and operations with cost tiers from $50/month dev to $800+ production. Read this if you're planning a deployment.
 
@@ -397,6 +397,9 @@ src/
     ├── Presentation.AgentHub/          SignalR hub — real-time streaming to the WebUI
     │   ├── Auth/                       DevAuthHandler (dev bypass), Azure AD integration
     │   └── AgUi/                       AG-UI event protocol (34 event types, SSE streaming)
+    ├── Presentation.BundleApi/         HTTP front door for running externally-authored agent bundles
+    │   ├── Controllers/                register → run → poll/stream → delete, owner-bound
+    │   └── Streaming/                  AG-UI-shaped SSE for live runs
     └── Presentation.WebUI/             React + TypeScript SPA
         ├── src/features/chat/          Streaming chat panel with message history
         ├── src/features/telemetry/     Live span tree for observability
