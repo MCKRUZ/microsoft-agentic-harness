@@ -69,6 +69,12 @@
                         >
                     </div>
                     <div class="sidebar-group">
+                        <div class="sidebar-group-title">Untrusted Code</div>
+                        <a class="sidebar-link" href="11-externally-authored-agents.html"
+                            ><span class="sidebar-link-num">11</span> Externally-Authored Agents</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
                         <div class="sidebar-group-title">Assurance</div>
                         <a class="sidebar-link" href="09-owasp-evals.html"
                             ><span class="sidebar-link-num">09</span> OWASP Agentic Evals</a
@@ -97,9 +103,10 @@
                     <p class="page-lead">
                         This is layer 1 — the front door. Before a single line of agent logic runs, before any tool is
                         chosen or any model token is generated, the harness has to answer one question: <em>who is
-                        actually calling?</em> That question has three very different answers — a human user, an
-                        external MCP client, or a peer agent — and each gets its own proof-of-identity mechanism. Get
-                        this layer wrong and every layer behind it is defending an attacker you already let in.
+                        actually calling?</em> That question has four very different answers — a human user, an
+                        external MCP client, a peer agent, or a bundle-API caller — and each gets its own
+                        proof-of-identity mechanism. Get this layer wrong and every layer behind it is defending an
+                        attacker you already let in.
                     </p>
 
                     <h2 id="four-callers">The four callers</h2>

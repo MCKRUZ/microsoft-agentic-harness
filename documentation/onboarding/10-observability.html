@@ -27,9 +27,9 @@
                     <div class="sidebar-group"><div class="sidebar-group-title">Reference</div><a class="sidebar-link" href="12-reference.html"><span class="sidebar-link-num">12</span> Cheatsheet &amp; Glossary</a></div>
                     <div class="sidebar-group">
                         <div class="sidebar-group-title">Other Guides</div>
-                        <a class="sidebar-link" href="../architecture/index.html">&#8592; Architecture Guide</a>
-                        <a class="sidebar-link" href="../agentic-harness-course/index.html">&#8592; Interactive Course</a>
-                        <a class="sidebar-link" href="../security/index.html">&#8592; Security Guide</a>
+                        <a class="sidebar-link" href="architecture/index.html">&#8592; Architecture Guide</a>
+                        <a class="sidebar-link" href="agentic-harness-course/index.html">&#8592; Interactive Course</a>
+                        <a class="sidebar-link" href="security/index.html">&#8592; Security Guide</a>
                     </div>
                 </nav>
             </aside>
@@ -343,13 +343,68 @@ docker run -d --name jaeger \
                     <p>This is the system that turns drift detection into improvement: signals from observability feed into proposals, which feed back into the skills the agent uses next time.</p>
 
                     <h2>Reading a Jaeger trace</h2>
-                    <p>When debugging a failed conversation:</p>
+                    <p>
+                        Describing a trace is much less useful than seeing one, so here is roughly what a two-turn
+                        conversation looks like in the Jaeger UI — one where the second turn went wrong:
+                    </p>
+
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-block-lang">a trace with a failing tool call</span></div>
+                        <pre><code>RunConversationCommand                                   2.41s  ← root: one whole conversation
+├─ ExecuteAgentTurnCommand                               0.83s  ← turn 1
+│  ├─ chat  gen_ai.usage.input_tokens=1204               0.79s  ← the LLM call itself
+│  │        gen_ai.usage.output_tokens=88
+│  └─ (no tool calls this turn)
+└─ ExecuteAgentTurnCommand                               1.57s  ← turn 2, the one that failed
+   ├─ chat  gen_ai.usage.input_tokens=1533               0.61s
+   │        gen_ai.usage.output_tokens=142
+   ├─ execute_tool  tool=file_system                     0.04s
+   │                otel.status_code=ERROR                      ← START HERE
+   │                error=Path escapes sandbox root
+   └─ chat  gen_ai.usage.input_tokens=1791               0.88s  ← the model retrying
+            gen_ai.usage.output_tokens=64                         after seeing the error</code></pre>
+                    </div>
+
+                    <p>Four things to read off that, in order:</p>
                     <ol>
-                        <li>Find the <code>RunConversation</code> span — that's the root.</li>
-                        <li>Look at its child <code>ExecuteAgentTurn</code> spans — each one is a turn.</li>
-                        <li>Inside the failing turn, find the LLM call (usually a span with vendor-specific naming like <code>chat.completions</code>) and look at its child tool calls.</li>
-                        <li>If a tool returned an error, check its <code>error</code> tag and stack. If the LLM produced bad output, check the token counts and the input messages tag.</li>
+                        <li>
+                            <strong>Find the root.</strong> <code>RunConversationCommand</code> is the whole
+                            conversation. Its duration is what the user actually waited. (MediatR spans are named
+                            after the C# request type, which is why they carry the <code>Command</code> suffix.)
+                        </li>
+                        <li>
+                            <strong>Find the failing turn.</strong> Each <code>ExecuteAgentTurnCommand</code> child is
+                            one turn. Scan for the red one, or the slow one.
+                        </li>
+                        <li>
+                            <strong>Look at the turn's children.</strong> A <code>chat</code> span is the
+                            model thinking; an <code>execute_tool</code> span is the harness doing. In the trace above,
+                            the tool span carries <code>otel.status_code=ERROR</code> and an <code>error</code> tag
+                            naming the sandbox rejection — that is the actual defect, and everything after it is
+                            consequence.
+                        </li>
+                        <li>
+                            <strong>Check the token tags when the model, not a tool, is the problem.</strong> The
+                            <code>gen_ai.usage.*</code> attributes tell you whether input grew unexpectedly (context
+                            bloat) or output was truncated.
+                        </li>
                     </ol>
+
+                    <div class="callout callout-tip">
+                        <span class="callout-icon">&#10003;</span>
+                        <div class="callout-body">
+                            <div class="callout-title">The shape tells you the failure mode before you read a single tag</div>
+                            <p style="margin: 0">
+                                Many identical <code>execute_tool</code> spans in a row means the agent is looping —
+                                that is what the spin guard in
+                                <a href="04-message-journey.html">Chapter&nbsp;04</a> exists to stop. One enormous
+                                <code>chat</code> span means a context or model problem, not a tool
+                                problem. A turn with no tool spans at all, when you expected some, usually means a
+                                permission denial upstream — check the governance path in the safety layers above,
+                                not the tool.
+                            </p>
+                        </div>
+                    </div>
 
                     <hr />
 
