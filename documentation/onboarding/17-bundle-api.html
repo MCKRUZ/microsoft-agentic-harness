@@ -39,12 +39,96 @@
                     <span class="eyebrow">Chapter 17 · Systems</span>
                     <h1 class="page-title">Bundle API — Calling the Harness over HTTP</h1>
                     <p class="page-lead">
-                        Every other way into the harness assumes the agent already lives in the host: it was
-                        discovered at startup from a folder on disk. The Bundle API inverts that. A caller
-                        <em>uploads</em> an agent — an <code>AGENT.md</code> with its skills, zipped — and runs it,
-                        without deploying anything and without that agent ever entering the host's registries.
-                        This chapter is the integration guide for the system on the other end of that call.
+                        The Bundle API lets one system hand the harness a complete agent — as a zip file — and ask it
+                        to run, over ordinary HTTP. Nothing gets deployed, nothing gets installed, and the uploaded
+                        agent never becomes part of the host. This chapter is written for whoever has to
+                        <em>call</em> that API, and it assumes you have never seen this codebase.
                     </p>
+
+                    <h2>Start here: what this actually does</h2>
+                    <p>
+                        Every other way of using the harness assumes the agent is already there. Someone put an
+                        <code>AGENT.md</code> file in a folder, the host found it when it started up, and from then on
+                        you can talk to it. That works when you own both sides.
+                    </p>
+                    <p>
+                        The Bundle API is for when you <em>don't</em>. Your customer wrote the agent. Your CI job
+                        generates one per build. A tenant uploads their own. In all of those cases you can't
+                        redeploy the host every time the agent changes — so instead, the agent travels with the
+                        request.
+                    </p>
+
+                    <div class="callout callout-info">
+                        <span class="callout-icon">i</span>
+                        <div class="callout-body">
+                            <div class="callout-title">The one-sentence version</div>
+                            <p style="margin: 0">
+                                You upload a zip containing an agent, the harness gives you a receipt, you use that
+                                receipt to start a run, and then you either poll for the answer or watch it stream in
+                                live.
+                            </p>
+                        </div>
+                    </div>
+
+                    <p>
+                        Here is the whole flow. Four HTTP calls, and only the first two are mandatory:
+                    </p>
+
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-block-lang">the shape of every integration</span></div>
+                        <pre><code>  YOUR SYSTEM                                  THE HARNESS
+      │
+      │  1. POST /api/bundles                    stage the zip on disk,
+      │     (your bundle.zip)          ────────▶  check it for nasties
+      │  ◀────────────  { handle: "abc123" }     ← your receipt
+      │
+      │  2. POST /api/bundles/abc123/runs         work out what this caller
+      │     { userMessages: [...] }     ────────▶  is allowed to do, then
+      │  ◀────────────  { jobId: "job789" }        queue the conversation
+      │                                          ← "accepted", NOT "done"
+      │
+      │  3. GET  .../runs/job789                  ...agent is thinking...
+      │     (poll until it's finished) ────────▶
+      │  ◀────────────  { status, result }       ← the answer
+      │
+      │  4. DELETE /api/bundles/abc123 ────────▶  throw the zip away
+      │     (optional — it expires anyway)</code></pre>
+                    </div>
+
+                    <p>Four words appear over and over in this chapter. Learn them now and the rest reads easily:</p>
+
+                    <div class="def">
+                        <div class="def-term">Bundle</div>
+                        <div class="def-desc">
+                            The zip file you upload. Inside it is an <code>AGENT.md</code> describing the agent, plus
+                            any skill files it needs. It is just a folder, zipped.
+                        </div>
+                    </div>
+                    <div class="def">
+                        <div class="def-term">Handle</div>
+                        <div class="def-desc">
+                            The receipt you get back after uploading. A short opaque string like
+                            <code>"a3f9c1…"</code>. It means "the copy of your zip that I unpacked and am holding for
+                            you." You pass it in the URL of every later call. One handle can start as many runs as you
+                            like.
+                        </div>
+                    </div>
+                    <div class="def">
+                        <div class="def-term">Run (and its job id)</div>
+                        <div class="def-desc">
+                            One conversation with the uploaded agent. Starting a run gives you a <strong>job id</strong>.
+                            The handle is <em>the agent sitting on the shelf</em>; the job is <em>one time you actually
+                            used it</em>.
+                        </div>
+                    </div>
+                    <div class="def">
+                        <div class="def-term">Capability envelope</div>
+                        <div class="def-desc">
+                            The list of things the harness will let this particular caller's agent do — which tools it
+                            may touch, how much freedom it has. <strong>You do not send this.</strong> The host works it
+                            out from who you are. There is a whole section on it below.
+                        </div>
+                    </div>
 
                     <h2>Is this the surface you want?</h2>
                     <p>
@@ -88,23 +172,140 @@
                         </div>
                     </div>
 
-                    <h2>The shape of an integration</h2>
-                    <p>Two required calls, then a choice of how to read the result, then optional cleanup.</p>
-                    <table>
-                        <thead><tr><th>#</th><th>Call</th><th>You get back</th></tr></thead>
-                        <tbody>
-                            <tr><td>1</td><td><code>POST /api/bundles</code> (multipart zip)</td><td>A <strong>handle</strong> — the staged bundle, with a sliding 30-minute TTL</td></tr>
-                            <tr><td>2</td><td><code>POST /api/bundles/{handle}/runs</code></td><td>A <strong>job id</strong> — the run was accepted, not completed</td></tr>
-                            <tr><td>3a</td><td><code>GET  /api/bundles/{handle}/runs/{jobId}</code></td><td>Status, then the result. Poll it.</td></tr>
-                            <tr><td>3b</td><td><code>GET  /api/bundles/{handle}/runs/{jobId}/stream</code></td><td>The run's output live, as Server-Sent Events</td></tr>
-                            <tr><td>4</td><td><code>DELETE /api/bundles/{handle}</code></td><td>Nothing (<code>204</code>). Optional — the TTL sweeper also reclaims it.</td></tr>
-                        </tbody>
-                    </table>
+                    <h2>What each call sends and gets back</h2>
                     <p>
-                        One handle can back many runs. A handle is <em>staging</em>; a job is <em>execution</em>. They
-                        expire on separate clocks and, importantly, the security grant is attached to the
-                        <strong>run</strong>, not to the handle.
+                        Here are the real payloads, so you know exactly what to expect before you write any code.
                     </p>
+
+                    <h3>1 — Upload the bundle</h3>
+                    <p>
+                        A <code>multipart/form-data</code> POST, the same thing an HTML file-upload form sends. The form
+                        field <strong>must</strong> be named <code>file</code> — any other name is rejected.
+                    </p>
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-block-lang">http · POST /api/bundles → 201 Created</span></div>
+                        <pre><code>{
+  "handle":    "9f2c1d4a8b6e47f0913c2d5e7a8b0c1d",
+  "expiresAt": "2026-07-24T15:42:11.000+00:00"
+}</code></pre>
+                    </div>
+                    <p>
+                        <code>expiresAt</code> is the <em>earliest</em> the handle can disappear, not a fixed deadline —
+                        see <a href="#lifetimes">Lifetimes</a> below for why the clock keeps getting pushed back.
+                    </p>
+
+                    <h3>2 — Start a run</h3>
+                    <p>
+                        You send the messages the agent should respond to. <code>userMessages</code> is a list because
+                        you can seed a multi-turn conversation in one go.
+                    </p>
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-block-lang">http · POST /api/bundles/{handle}/runs — request body</span></div>
+                        <pre><code>{
+  "userMessages": [ "Hi, I am Sam. What can you do?" ],
+  "maxTurns": 10,
+  "stream": false
+}</code></pre>
+                    </div>
+                    <p>
+                        Only <code>userMessages</code> is required (1–100 entries, none of them empty).
+                        <code>maxTurns</code> defaults to <code>10</code> and must be between 1 and 100;
+                        <code>stream</code> defaults to <code>false</code> and is explained under
+                        <a href="#two-ways">Two ways to get the output</a>.
+                    </p>
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-block-lang">http · → 202 Accepted</span></div>
+                        <pre><code>{
+  "jobId":     "1a2b3c4d5e6f7081",
+  "statusUrl": "/api/bundles/9f2c1d…/runs/1a2b3c4d5e6f7081",
+  "streamUrl": null
+}</code></pre>
+                    </div>
+                    <p>
+                        <code>statusUrl</code> and <code>streamUrl</code> are relative — prepend your API base URL
+                        before using them. <code>streamUrl</code> is <code>null</code> unless you asked for
+                        <code>stream: true</code>.
+                    </p>
+
+                    <div class="callout callout-warn">
+                        <span class="callout-icon">!</span>
+                        <div class="callout-body">
+                            <div class="callout-title"><code>202</code> means "accepted", not "finished"</div>
+                            <p style="margin: 0">
+                                This is the single most common misreading of this API. HTTP <code>200 OK</code> would
+                                mean "here is your answer." <code>202 Accepted</code> means "I have written your request
+                                down and I will get to it." <strong>The agent has not said anything yet.</strong> The
+                                response body contains no answer and never will — you have to go and fetch it in step 3.
+                            </p>
+                        </div>
+                    </div>
+
+                    <h3>3 — Get the result</h3>
+                    <p>
+                        Call <code>statusUrl</code> repeatedly (say, every second or two) until <code>status</code>
+                        stops being <code>"Queued"</code> or <code>"Running"</code>. While it is still working you get:
+                    </p>
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-block-lang">http · GET statusUrl → 200 (still working)</span></div>
+                        <pre><code>{
+  "jobId":       "1a2b3c4d5e6f7081",
+  "status":      "Running",
+  "error":       null,
+  "createdAt":   "2026-07-24T15:12:03.000+00:00",
+  "startedAt":   "2026-07-24T15:12:04.100+00:00",
+  "completedAt": null,
+  "result":      null
+}</code></pre>
+                    </div>
+                    <p>And when it is done, the same shape gains a <code>result</code>:</p>
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-block-lang">http · GET statusUrl → 200 (finished)</span></div>
+                        <pre><code>{
+  "jobId":       "1a2b3c4d5e6f7081",
+  "status":      "Succeeded",
+  "error":       null,
+  "createdAt":   "2026-07-24T15:12:03.000+00:00",
+  "startedAt":   "2026-07-24T15:12:04.100+00:00",
+  "completedAt": "2026-07-24T15:12:09.780+00:00",
+  "result": {
+    "conversationSucceeded": true,
+    "finalResponse":         "Hello Sam — I can answer short questions concisely.",
+    "turnCount":             1,
+    "totalToolInvocations":  0,
+    "budgetExhausted":       false,
+    "conversationError":     null
+  }
+}</code></pre>
+                    </div>
+                    <p>
+                        <code>finalResponse</code> is the agent's answer — that string is usually the only thing your
+                        application cares about. The rest is diagnostics. Note what is <em>not</em> here: the messages
+                        you sent, and the permissions the run executed under. The endpoint returns a fixed, deliberately
+                        narrow subset of the run's internal record, so polling can never be used to read back what went
+                        into the run — only what came out.
+                    </p>
+
+                    <h3>4 — Clean up (optional)</h3>
+                    <p>
+                        <code>DELETE /api/bundles/{handle}</code> returns <code>204 No Content</code> and no body. You
+                        can skip it entirely — unused handles are swept automatically — but deleting promptly frees
+                        disk on the host and is good manners.
+                    </p>
+
+                    <div class="callout callout-info">
+                        <span class="callout-icon">i</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Handles and runs are separate on purpose</div>
+                            <p style="margin: 0">
+                                One handle can start any number of runs — upload once, ask ten different questions. The
+                                two also expire on separate clocks. Most importantly, the permissions a run executes
+                                under are decided when the <strong>run</strong> starts, from the credential that starts
+                                it — <em>not</em> when the bundle was uploaded, and not from whoever uploaded it. That
+                                one design decision is what makes a leaked handle harmless, and it is explained in full
+                                below.
+                            </p>
+                        </div>
+                    </div>
 
                     <h2>Quickstart</h2>
                     <p>
@@ -206,11 +407,44 @@ plugin.json               ← optional; a root-level manifest is also read</code
 
                     <h2>The security model: the bundle asks, the host grants</h2>
                     <p>
-                        This is the concept to internalise before writing a client. A bundle's <code>AGENT.md</code> can
-                        declare <code>allowed-tools</code> and its skills can name whatever they like. Those declarations
-                        are <strong>requests</strong>. The authoritative grant is the <strong>capability envelope</strong>
-                        the host resolves from the credential that <em>started the run</em>, out of configuration the
-                        bundle author cannot influence:
+                        This is the most important section on the page. If you only properly read one, read this one.
+                    </p>
+                    <p>
+                        Start with the problem. You are about to run a file that somebody else wrote, on your server.
+                        Inside that file, the author gets to write whatever they want — including a line that says
+                        which tools the agent is allowed to use:
+                    </p>
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-block-lang">AGENT.md · written by someone who is not you</span></div>
+                        <pre><code>---
+id: totally-innocent-agent
+allowed-tools: ["file_system", "shell", "http_client"]
+---</code></pre>
+                    </div>
+                    <p>
+                        If the harness simply believed that line, the security model would be "attackers, please
+                        declare only the permissions you ought to have." Obviously that cannot work. So the harness
+                        does the only sane thing:
+                    </p>
+
+                    <div class="callout callout-warn">
+                        <span class="callout-icon">!</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Everything inside the bundle is a <em>request</em>, never a grant</div>
+                            <p style="margin: 0">
+                                <code>allowed-tools</code> in an uploaded <code>AGENT.md</code> is the bundle
+                                <em>asking</em>. What it actually gets is decided entirely on the host side, from
+                                configuration the bundle author cannot see or influence. The final permission set is
+                                the <strong>overlap</strong> of the two — asking for more than you were granted gets you
+                                nothing extra, and the request can only ever narrow the grant, never widen it.
+                            </p>
+                        </div>
+                    </div>
+
+                    <p>
+                        The host-side half of that overlap is called the <strong>capability envelope</strong>. It is a
+                        block of config on the server that maps <em>who is calling</em> to <em>what their agent may
+                        do</em>:
                     </p>
                     <div class="code-block">
                         <div class="code-block-header"><span class="code-block-lang">json · AppConfig:AI:BundleExecution:Envelopes</span></div>
@@ -253,6 +487,30 @@ plugin.json               ← optional; a root-level manifest is also read</code
                         <code>AutonomyCeiling</code> string degrades to the most restrictive tier with a warning rather
                         than opening up, and a numeric or comma-composite value is rejected outright for the same reason.
                     </p>
+                    <p>
+                        Worked through end to end, with the config shown above, a run looks like this:
+                    </p>
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-block-lang">how one run's permissions get decided</span></div>
+                        <pre><code>The uploaded AGENT.md asks for:   file_system, shell, http_client
+The caller's token says:          sub = 1111…5555
+
+  → host looks up BySubject["1111…5555"]
+  → that envelope grants:         file_system, calculation_engine
+
+  overlap (ask ∩ grant)  =  file_system
+  shell        → DENIED  (asked for, not granted)
+  http_client  → DENIED  (asked for, not granted)
+  calculation_engine     → granted, but the bundle never asked, so it is
+                           simply never wired into the agent
+
+The agent runs with exactly one tool: file_system.</code></pre>
+                    </div>
+                    <p>
+                        The denials there are <strong>bypass-immune</strong>: no auto-approve mode, no configuration
+                        flag, and nothing the bundle can say will turn them back on. That is what makes it safe to run
+                        an agent whose author you do not trust.
+                    </p>
 
                     <div class="callout callout-warn">
                         <span class="callout-icon">!</span>
@@ -275,6 +533,15 @@ plugin.json               ← optional; a root-level manifest is also read</code
                     </div>
 
                     <h3>Which claim identifies you: <code>oid</code> vs <code>sub</code></h3>
+                    <p>
+                        A JWT carries several different ids for the same person, and this API deliberately uses two
+                        <em>different</em> ones for two different jobs.
+                    </p>
+                    <p>
+                        The symptom, when you get it wrong, is very specific: <strong>your <code>BySubject</code> grant
+                        looks correct in config but behaves as if it isn't there</strong>, and every run falls through
+                        to <code>Default</code>. That is almost always because the config was keyed on the wrong claim.
+                    </p>
                     <div class="callout callout-jargon">
                         <span class="callout-icon">¶</span>
                         <div class="callout-body">
@@ -357,7 +624,7 @@ plugin.json               ← optional; a root-level manifest is also read</code
                             <tr>
                                 <td><code>GET /api/bundles/{handle}/runs/{jobId}</code></td>
                                 <td><code>200</code></td>
-                                <td>Projection only — never echoes the envelope or your seed messages.</td>
+                                <td>Returns a fixed subset of fields — never echoes the envelope or your seed messages.</td>
                             </tr>
                             <tr>
                                 <td><code>GET …/runs/{jobId}/stream</code></td>
@@ -372,12 +639,17 @@ plugin.json               ← optional; a root-level manifest is also read</code
                         </tbody>
                     </table>
 
-                    <h2>Two ways to get the output</h2>
+                    <h2 id="two-ways">Two ways to get the output</h2>
                     <h3>Background + poll (the default)</h3>
                     <p>
-                        The run is enqueued and executed by a background dispatcher. You poll. Note that the dispatcher
-                        drains its queue <strong>one run at a time</strong> — a queued run waits behind every other
-                        queued run on that host, so poll intervals should assume queueing delay, not just model latency.
+                        Your run joins a queue, and a background worker — the <strong>dispatcher</strong> — picks runs
+                        off that queue and executes them. You find out how it went by polling.
+                    </p>
+                    <p>
+                        One property of the dispatcher matters a great deal when you set your poll interval: it drains
+                        the queue <strong>one run at a time</strong>. Your run waits behind every other queued run on
+                        that host. So the time to a result is not just how long the model takes to think — it is that
+                        plus however long the queue ahead of you takes. Budget for both.
                     </p>
                     <p>
                         Poll until <code>status</code> is <code>Succeeded</code> or <code>Failed</code>, then read
@@ -401,10 +673,17 @@ plugin.json               ← optional; a root-level manifest is also read</code
 
                     <h3>Live stream (opt in with <code>stream: true</code>)</h3>
                     <p>
-                        A streaming run is <strong>reserved, not enqueued</strong>. Nothing happens until you open
-                        <code>streamUrl</code>; that connection is what drives the conversation, and closing it cancels
-                        the run. If you never connect, the reservation is reclaimed after
-                        <code>StreamReservationTtl</code> (default 5 minutes).
+                        Instead of polling, you hold one long-lived HTTP connection open and the server pushes output
+                        down it as the agent produces it. The format is <strong>Server-Sent Events</strong> (SSE) — a
+                        plain-text streaming format with the content type <code>text/event-stream</code>, supported by
+                        every browser and most HTTP clients.
+                    </p>
+                    <p>
+                        A streaming run behaves differently from a background one in a way that surprises people:
+                        it is <strong>reserved, not queued</strong>. Nothing runs when you POST it. The run sits
+                        waiting, and <em>opening <code>streamUrl</code> is what actually starts the agent</em>. Closing
+                        that connection cancels the run. If you never connect at all, the reservation is thrown away
+                        after <code>StreamReservationTtl</code> (default 5 minutes).
                     </p>
                     <p>
                         Frames are <code>data: {json}\n\n</code>, camelCase, with a <code>type</code> discriminator taken
@@ -490,11 +769,22 @@ plugin.json               ← optional; a root-level manifest is also read</code
                         lies about its entry lengths still trips it.
                     </p>
                     <p>
-                        Accepted bundles are extracted into a unique subdirectory of <code>TempRoot</code>. That root
-                        <strong>must not overlap</strong> any configured skill or agent discovery path; the staging
-                        service refuses to stage if it does, because the host's registries scan those roots recursively
-                        and would otherwise discover — and globally publish — a bundle's private skills.
+                        Accepted bundles are extracted into their own unique subdirectory of <code>TempRoot</code>.
+                        There is one rule about where that root may live, and it matters:
                     </p>
+                    <div class="callout callout-warn">
+                        <span class="callout-icon">!</span>
+                        <div class="callout-body">
+                            <div class="callout-title"><code>TempRoot</code> must not sit inside a skill or agent discovery path</div>
+                            <p style="margin: 0">
+                                The host scans its discovery folders <em>recursively</em> to find skills. So if you
+                                stage uploaded bundles inside one of those folders, the host will happily walk into the
+                                staging area, find a customer's private skills, and publish them globally to every
+                                agent on the box. That is a serious leak, so the staging service checks for the overlap
+                                up front and simply refuses to stage rather than letting it happen.
+                            </p>
+                        </div>
+                    </div>
 
                     <h2>Errors you should handle</h2>
                     <table>
@@ -510,7 +800,7 @@ plugin.json               ← optional; a root-level manifest is also read</code
                         </tbody>
                     </table>
 
-                    <h2>Lifetimes</h2>
+                    <h2 id="lifetimes">Lifetimes</h2>
                     <table>
                         <thead><tr><th>Clock</th><th>Default</th><th>Behaviour</th></tr></thead>
                         <tbody>
@@ -530,12 +820,17 @@ plugin.json               ← optional; a root-level manifest is also read</code
                         <div class="callout-body">
                             <div class="callout-title">Nothing here is durable, and the host is not clustered</div>
                             <p style="margin: 0">
-                                Handles, run records, and results live <strong>in memory on one host</strong>. A restart
-                                loses in-flight and completed runs; a load balancer in front of two instances will send
-                                your poll to a host that has never heard of your job. If you need durability or
-                                horizontal scale, the client must be the system of record — persist the final response
-                                yourself as soon as you read it, and pin a session to one instance (or run a single
-                                instance) until the stores are made durable.
+                                Handles, run records, and results live <strong>in memory on one host</strong>. Two
+                                consequences follow, and both will bite you in production if you don't plan for them.
+                                Restart the host and every in-flight and completed run is gone. Put a load balancer in
+                                front of two instances and your poll will eventually land on a machine that has never
+                                heard of your job.
+                            </p>
+                            <p style="margin: var(--space-2) 0 0">
+                                So until these stores are made durable, <strong>your client has to be the system of
+                                record</strong>. Concretely, that means two things: save the final response yourself the
+                                moment you read it, and keep one caller pinned to one instance — or just run a single
+                                instance.
                             </p>
                         </div>
                     </div>

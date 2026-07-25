@@ -134,8 +134,8 @@ docker run -d --name jaeger \
                         turn to PostgreSQL via <code>IObservabilityStore</code>. The connection string lives in
                         <code>AppConfig.Observability.PostgresConnectionString</code>. Schema includes turn-level
                         token usage, cost, tool invocations, message previews truncated to 500 chars, plus the
-                        original message body and the args + stdout for every captured tool call (PR 6 — see
-                        below).
+                        original message body and the args + stdout for every captured tool call. Those last two are
+                        what the deep-link endpoints below serve.
                     </p>
 
                     <h3>Tamper-evident audit hash-chain</h3>
@@ -149,10 +149,12 @@ docker run -d --name jaeger \
                         and compliance trails where "nobody quietly changed the record" needs to be demonstrable.
                     </p>
 
-                    <h3>Foresight deep-link endpoints (PR 6)</h3>
+                    <h3>Deep-link endpoints for the dashboard</h3>
                     <p>
-                        Two scoped endpoints on <code>SessionsController</code> let the Dashboard drill from a
-                        session row into the full payload behind any truncated preview:
+                        The harness ships a web dashboard (<strong>Foresight</strong>, in
+                        <code>Presentation.Dashboard</code>) that lists past sessions. Because the audit store truncates
+                        previews to 500 characters, the dashboard needs a way to fetch the untruncated payload when you
+                        click into a row. Two scoped endpoints on <code>SessionsController</code> do that:
                     </p>
                     <ul>
                         <li>

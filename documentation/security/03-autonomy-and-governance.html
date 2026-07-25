@@ -227,6 +227,25 @@
                         </div>
                     </div>
 
+                    <div class="callout callout-info">
+                        <span class="callout-icon">i</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Running an agent you did not write</div>
+                            <p style="margin: 0">
+                                Everything on this page assumes the agent's manifest is one you shipped. The harness
+                                also has a surface that accepts an agent <em>uploaded over HTTP</em> — the Bundle API.
+                                There, the uploaded manifest is treated as untrusted input: it may only
+                                <em>request</em> tools and an autonomy tier, and a host-side
+                                <strong>capability envelope</strong>, keyed to the caller's credential, intersects that
+                                request down to what the caller is actually allowed. The autonomy that ends up enforced
+                                is the most restrictive of three things: the envelope's ceiling, the host's own
+                                graded-autonomy gate, and the individual tool's blast radius. It can only tighten,
+                                never loosen. See
+                                <a href="../17-bundle-api.html">Onboarding&nbsp;&middot;&nbsp;Ch.&nbsp;17 Bundle API</a>.
+                            </p>
+                        </div>
+                    </div>
+
                     <h2 id="governance-behavior">The governance gates, and why they fail closed</h2>
                     <p>
                         A tier sets defaults, but the concrete gating happens on the <strong>live tool-execution
