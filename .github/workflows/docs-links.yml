@@ -1,0 +1,52 @@
+name: Documentation Structure Check
+
+# The five documentation sites have no build step — pages.yml copies the folders
+# verbatim to GitHub Pages — so nothing catches a dead link, a stale anchor, or a
+# sidebar that drifted out of sync with its siblings until a reader hits it.
+#
+# This gate is that missing check. It runs on every PR that touches the docs, and
+# on pushes to main so a direct commit cannot slip past.
+#
+# It found the bug that motivated it: every "Other Guides" link in the onboarding
+# sidebar was resolving above the project root and 404ing on the live site, on all
+# 18 pages, because onboarding is published AT the site root while its siblings are
+# published to subdirectories. The checker models that deployed layout rather than
+# the on-disk one, which is the only way to tell a real break from a false positive.
+
+on:
+  pull_request:
+    paths:
+      - 'documentation/**'
+      - '.github/scripts/check-docs-links.mjs'
+      - '.github/workflows/docs-links.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'documentation/**'
+      - '.github/scripts/check-docs-links.mjs'
+      - '.github/workflows/docs-links.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-links-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Links, anchors, and sidebar consistency
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+
+      # No dependencies — the script uses only the Node standard library.
+      - name: Check documentation structure
+        run: node .github/scripts/check-docs-links.mjs

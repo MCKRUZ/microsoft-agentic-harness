@@ -27,9 +27,9 @@
                     <div class="sidebar-group"><div class="sidebar-group-title">Reference</div><a class="sidebar-link" href="12-reference.html"><span class="sidebar-link-num">12</span> Cheatsheet &amp; Glossary</a></div>
                     <div class="sidebar-group">
                         <div class="sidebar-group-title">Other Guides</div>
-                        <a class="sidebar-link" href="../architecture/index.html">&#8592; Architecture Guide</a>
-                        <a class="sidebar-link" href="../agentic-harness-course/index.html">&#8592; Interactive Course</a>
-                        <a class="sidebar-link" href="../security/index.html">&#8592; Security Guide</a>
+                        <a class="sidebar-link" href="architecture/index.html">&#8592; Architecture Guide</a>
+                        <a class="sidebar-link" href="agentic-harness-course/index.html">&#8592; Interactive Course</a>
+                        <a class="sidebar-link" href="security/index.html">&#8592; Security Guide</a>
                     </div>
                 </nav>
             </aside>
@@ -93,13 +93,19 @@ dotnet run --project src/Content/Presentation/Presentation.EvalRunner -- \
                         </tbody>
                     </table>
                     <p>
-                        The last two rows back the <strong>routing-accuracy scorecard</strong>, which is
-                        <strong>shipped</strong>, not planned: the <code>RoutingAccuracyMetric</code>
-                        (<code>Infrastructure.AI.Evaluation/Metrics/RoutingAccuracyMetric.cs</code>, key
-                        <code>routing_accuracy</code>) scores router classifications against
-                        <code>eval-datasets/seed/routing-accuracy.yaml</code>, isolating routing quality from the
-                        end-to-end answer. The seed set is a deliberately unambiguous starter; curating toward a larger
-                        set with borderline inputs is follow-on work.
+                        The last two rows back the <strong>routing-accuracy scorecard</strong>. This one is
+                        <strong>shipped</strong>, not planned. It answers a narrower question than the other metrics:
+                        <em>did the router send this query to the right place?</em> — separately from whether the final
+                        answer was any good.
+                    </p>
+                    <p>
+                        That separation matters, because a bad answer can come from a good router feeding a weak
+                        retriever, or from a bad router feeding a perfectly good one, and the end-to-end score cannot
+                        tell you which. The metric lives in
+                        <code>Infrastructure.AI.Evaluation/Metrics/RoutingAccuracyMetric.cs</code> under the key
+                        <code>routing_accuracy</code>, and scores classifications against
+                        <code>eval-datasets/seed/routing-accuracy.yaml</code>. That seed set is deliberately made of
+                        clear-cut cases; building it out with genuinely borderline inputs is follow-on work.
                     </p>
 
                     <h2>The dataset YAML in one screen</h2>

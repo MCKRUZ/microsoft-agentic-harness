@@ -27,9 +27,9 @@
                     <div class="sidebar-group"><div class="sidebar-group-title">Reference</div><a class="sidebar-link" href="12-reference.html"><span class="sidebar-link-num">12</span> Cheatsheet &amp; Glossary</a></div>
                     <div class="sidebar-group">
                         <div class="sidebar-group-title">Other Guides</div>
-                        <a class="sidebar-link" href="../architecture/index.html">&#8592; Architecture Guide</a>
-                        <a class="sidebar-link" href="../agentic-harness-course/index.html">&#8592; Interactive Course</a>
-                        <a class="sidebar-link" href="../security/index.html">&#8592; Security Guide</a>
+                        <a class="sidebar-link" href="architecture/index.html">&#8592; Architecture Guide</a>
+                        <a class="sidebar-link" href="agentic-harness-course/index.html">&#8592; Interactive Course</a>
+                        <a class="sidebar-link" href="security/index.html">&#8592; Security Guide</a>
                     </div>
                 </nav>
             </aside>
@@ -64,13 +64,31 @@
 
                     <h2>The six gates</h2>
                     <p>
-                        Five gates run in GitHub Actions on every pull request; one runs locally before an agent can
-                        even finish its turn. Four of the CI gates <strong>block</strong> the merge; the grader only
-                        <strong>advises</strong>. Three of the blockers (<code>build-and-test</code>, the OWASP gate,
-                        and <code>security-review</code>) are wired into branch protection as required checks today;
-                        the <code>correctness-review</code> gate is blocking-capable and fails closed, but is
-                        deliberately held out of the required set until the agentic gates are taken live (see below).
+                        Six gates stand between a change and <code>main</code>. Five of them run in GitHub Actions when
+                        you open a pull request. The sixth runs on your own machine, and stops an agent from even
+                        finishing its turn on a broken build.
                     </p>
+                    <p>
+                        There are three distinct levels of "seriousness" here, and it is worth separating them before
+                        you read the table, because the words look similar and mean very different things:
+                    </p>
+                    <ul>
+                        <li>
+                            <strong>Required</strong> — GitHub itself refuses the merge button.
+                            <code>build-and-test</code>, the OWASP gate, and <code>security-review</code> are in this
+                            set today.
+                        </li>
+                        <li>
+                            <strong>Blocking, but not yet required</strong> — the check genuinely fails, and it fails
+                            closed if it cannot finish, but branch protection is not yet configured to insist on it. So
+                            in practice it can be merged past. <code>correctness-review</code> sits here deliberately,
+                            until the agentic gates are taken live (see below).
+                        </li>
+                        <li>
+                            <strong>Advisory</strong> — it leaves a comment and never fails. The
+                            <code>grader</code> is the only one of these.
+                        </li>
+                    </ul>
                     <table>
                         <thead><tr><th>Gate</th><th>Where</th><th>Fires on</th><th>Blocks or advises</th></tr></thead>
                         <tbody>
@@ -138,12 +156,25 @@ security-review</code></pre>
                         </tbody>
                     </table>
                     <p>
-                        The security-review gate is a <em>required</em> check that runs on every PR, but only
-                        <em>reviews</em> when a gated path changed (or the <code>risk:high</code> label is set). On a
-                        non-gated PR it short-circuits to success so the required check still reports a conclusion;
-                        on a gated PR that cannot complete its review — for example before the API key is configured —
-                        it <strong>fails closed</strong> rather than waving the change through.
+                        The <code>security-review</code> gate deserves a closer look, because it behaves in a way that
+                        looks contradictory until you see the reasoning. It is a <em>required</em> check, so it runs on
+                        every single PR — but it only actually <em>reviews</em> anything when a security-sensitive path
+                        changed, or when someone applied the <code>risk:high</code> label.
                     </p>
+                    <p>That gives it three possible outcomes:</p>
+                    <ul>
+                        <li>
+                            <strong>Nothing sensitive changed</strong> → it reports success immediately without
+                            reviewing. It has to report <em>something</em>, or a required check would hang forever on
+                            routine PRs.
+                        </li>
+                        <li><strong>Something sensitive changed, review runs</strong> → you get a real verdict.</li>
+                        <li>
+                            <strong>Something sensitive changed, but the review can't run</strong> — say the API key
+                            isn't configured yet → it <strong>fails closed</strong>. It blocks. An unreviewable
+                            security change is never waved through on the grounds that the reviewer was unavailable.
+                        </li>
+                    </ul>
 
                     <h2>The local gate: the Stop hook</h2>
                     <p>
@@ -237,14 +268,30 @@ scripts/rails/apply-branch-protection.sh             # apply (prompts to confirm
                     <h2>The docs have a rail too</h2>
                     <p>
                         Documentation drifts faster than anything else in a template repo, so it gets its own rail.
-                        <code>.github/workflows/docs-drift-check.yml</code> runs on every push to <code>main</code>
-                        (path-filtered to code, workflow, and governance changes). It hands the merge diff to a Claude
-                        agent that checks the change against the documentation map in
-                        <code>.github/docs-drift-rubric.md</code>; when a shipped change isn't reflected in the docs,
-                        it opens a pull request with the doc updates for a human to review and merge. Like the other
-                        agentic gates it is dormant until the Claude GitHub App and <code>ANTHROPIC_API_KEY</code> are
-                        configured. This is an <strong>advising</strong> rail — it proposes a doc PR; a human still
-                        disposes.
+                        Here is what it does, step by step:
+                    </p>
+                    <ol>
+                        <li>
+                            <code>.github/workflows/docs-drift-check.yml</code> fires on every push to
+                            <code>main</code>, filtered to code, workflow, and governance changes.
+                        </li>
+                        <li>
+                            It hands the merge diff to a Claude agent, along with the documentation map in
+                            <code>.github/docs-drift-rubric.md</code>.
+                        </li>
+                        <li>
+                            The agent asks one question: <em>did this change ship something the docs still describe the
+                            old way?</em>
+                        </li>
+                        <li>
+                            If so, it opens a pull request containing the doc updates — for a human to review and
+                            merge.
+                        </li>
+                    </ol>
+                    <p>
+                        This is an <strong>advising</strong> rail. It proposes a doc PR; a human still disposes. And
+                        like the other agentic gates, it stays dormant until the Claude GitHub App and
+                        <code>ANTHROPIC_API_KEY</code> are configured.
                     </p>
 
                     <h2>What's deferred (and where to read about it)</h2>
@@ -253,7 +300,7 @@ scripts/rails/apply-branch-protection.sh             # apply (prompts to confirm
                         <strong>not</strong> cover deploy/promotion, rollback rehearsal, IaC apply with what-if/policy
                         funnels, or production secret rotation — there is no cloud deployment yet. That target topology
                         (Container Apps, Bicep, canary promotion, cost tiers) is documented as the forward plan in the
-                        <a href="../architecture/06-operations.html">Architecture Guide → Operations &amp; Cost</a>
+                        <a href="architecture/06-operations.html">Architecture Guide → Operations &amp; Cost</a>
                         page; it describes what a consumer would build on Azure, not what this repo ships today.
                     </p>
 
@@ -262,7 +309,7 @@ scripts/rails/apply-branch-protection.sh             # apply (prompts to confirm
                         <li>Read <code>.github/RAILS.md</code> — the operator's runbook this page summarizes.</li>
                         <li>Cross-reference Chapter <a href="13-evaluation.html">13 — Evaluation Framework</a>: the OWASP Agentic gate runs an eval pack through that same harness.</li>
                         <li>See Chapter <a href="10-observability.html">10 — Observability &amp; Safety</a> for the <em>runtime</em> governance (content safety, autonomy tiers) the rails complement at delivery time.</li>
-                        <li>The Architecture Guide's <a href="../architecture/06-operations.html">Operations &amp; Cost</a> page covers the deferred cloud delivery topology.</li>
+                        <li>The Architecture Guide's <a href="architecture/06-operations.html">Operations &amp; Cost</a> page covers the deferred cloud delivery topology.</li>
                     </ul>
 
                     <div class="page-nav">

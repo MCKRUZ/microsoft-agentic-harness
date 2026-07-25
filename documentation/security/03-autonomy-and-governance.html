@@ -69,6 +69,12 @@
                         >
                     </div>
                     <div class="sidebar-group">
+                        <div class="sidebar-group-title">Untrusted Code</div>
+                        <a class="sidebar-link" href="11-externally-authored-agents.html"
+                            ><span class="sidebar-link-num">11</span> Externally-Authored Agents</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
                         <div class="sidebar-group-title">Assurance</div>
                         <a class="sidebar-link" href="09-owasp-evals.html"
                             ><span class="sidebar-link-num">09</span> OWASP Agentic Evals</a
@@ -223,6 +229,25 @@
                                 decides the default and the broad overrides; the resolver merges those with tool-level
                                 allow/deny lists to reach the concrete decision. See
                                 <a href="04-tools-and-permissions.html">Tools &amp; Permissions</a>.
+                            </p>
+                        </div>
+                    </div>
+
+                    <div class="callout callout-info">
+                        <span class="callout-icon">i</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Running an agent you did not write</div>
+                            <p style="margin: 0">
+                                Everything on this page assumes the agent's manifest is one you shipped. The harness
+                                also has a surface that accepts an agent <em>uploaded over HTTP</em> — the Bundle API.
+                                There, the uploaded manifest is treated as untrusted input: it may only
+                                <em>request</em> tools and an autonomy tier, and a host-side
+                                <strong>capability envelope</strong>, keyed to the caller's credential, intersects that
+                                request down to what the caller is actually allowed. The autonomy that ends up enforced
+                                is the most restrictive of three things: the envelope's ceiling, the host's own
+                                graded-autonomy gate, and the individual tool's blast radius. It can only tighten,
+                                never loosen. See
+                                <a href="../17-bundle-api.html">Onboarding&nbsp;&middot;&nbsp;Ch.&nbsp;17 Bundle API</a>.
                             </p>
                         </div>
                     </div>

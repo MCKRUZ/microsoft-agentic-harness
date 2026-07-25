@@ -27,9 +27,9 @@
                     <div class="sidebar-group"><div class="sidebar-group-title">Reference</div><a class="sidebar-link" href="12-reference.html"><span class="sidebar-link-num">12</span> Cheatsheet &amp; Glossary</a></div>
                     <div class="sidebar-group">
                         <div class="sidebar-group-title">Other Guides</div>
-                        <a class="sidebar-link" href="../architecture/index.html">&#8592; Architecture Guide</a>
-                        <a class="sidebar-link" href="../agentic-harness-course/index.html">&#8592; Interactive Course</a>
-                        <a class="sidebar-link" href="../security/index.html">&#8592; Security Guide</a>
+                        <a class="sidebar-link" href="architecture/index.html">&#8592; Architecture Guide</a>
+                        <a class="sidebar-link" href="agentic-harness-course/index.html">&#8592; Interactive Course</a>
+                        <a class="sidebar-link" href="security/index.html">&#8592; Security Guide</a>
                     </div>
                 </nav>
             </aside>
@@ -39,12 +39,29 @@
                     <span class="eyebrow">Chapter 14 · Quality</span>
                     <h1 class="page-title">Skill Training</h1>
                     <p class="page-lead">
-                        Where Chapter 13 measures skill quality, Chapter 14 improves it. The skill-training subsystem
-                        is a port of <a href="https://github.com/microsoft/SkillOpt">microsoft/SkillOpt</a> — it treats
-                        a single <code>SKILL.md</code> document as the trainable state of a frozen agent, and updates
-                        it with the discipline of weight-space optimization: bounded edits, validation gating, learning-rate
-                        schedules, and zero inference-time cost.
+                        Where Chapter 13 <em>measures</em> skill quality, Chapter 14 <em>improves</em> it. The
+                        skill-training subsystem is a port of
+                        <a href="https://github.com/microsoft/SkillOpt">microsoft/SkillOpt</a>, and it rests on one
+                        unusual idea: the thing being trained is not the model. The model never changes. What changes
+                        is a single <code>SKILL.md</code> file — a markdown document of instructions — which the
+                        subsystem edits, tests, and keeps or discards, over and over, until it gets better.
                     </p>
+
+                    <div class="callout callout-jargon">
+                        <span class="callout-icon">¶</span>
+                        <div class="callout-body">
+                            <div class="callout-title">"Training" a markdown file?</div>
+                            <p style="margin: 0">
+                                Yes — and the borrowed vocabulary is deliberate. Normal machine learning nudges
+                                millions of numeric weights toward a better score. Here the <em>document</em> plays the
+                                role of the weights, and the same disciplines apply: changes are small and bounded, each
+                                one has to prove it improved a measured score before it is kept, and the size of the
+                                changes shrinks over time. The big practical difference is that it costs nothing at
+                                runtime. You end up with a better text file, not a bigger model, so there is no extra
+                                inference cost afterwards.
+                            </p>
+                        </div>
+                    </div>
 
                     <h2>The 30-second tour</h2>
                     <pre><code># From the repo root — runnable demo with deterministic stubs (no LLM calls).
@@ -226,10 +243,25 @@ dotnet run --project src/Content/Presentation/Presentation.ConsoleUI -- --exampl
 
                     <h2>Plugging in real proposer + runner</h2>
                     <p>
-                        The two seams the subsystem leaves open are the agent-backed implementations of
-                        <code>IPatchProposer</code> (the "optimizer" role — reads trajectories, emits a JSON
-                        <code>Patch</code>) and <code>IRolloutRunner</code> (runs a candidate skill against an
-                        eval-style item batch). Skeleton outline:
+                        The subsystem ships complete except for two deliberately empty slots. Both need an actual LLM
+                        behind them, so the template cannot fill them in for you:
+                    </p>
+                    <ul>
+                        <li>
+                            <strong><code>IPatchProposer</code></strong> — the "optimizer". It reads what happened
+                            during the trial runs and proposes an edit to the skill document, as a JSON
+                            <code>Patch</code>. This is the part that decides <em>what to change</em>.
+                        </li>
+                        <li>
+                            <strong><code>IRolloutRunner</code></strong> — the "test bench". It takes a candidate
+                            version of the skill and runs it against a batch of eval items, so the edit can be scored.
+                            This is the part that decides <em>whether the change helped</em>.
+                        </li>
+                    </ul>
+                    <p>
+                        Until you supply both, the registered defaults
+                        (<code>NotConfiguredPatchProposer</code> / <code>NotConfiguredRolloutRunner</code>) throw on
+                        first use — loudly and immediately, rather than silently doing nothing. Skeleton outline:
                     </p>
                     <pre><code>// Infrastructure.AI/SkillTraining/AgentPatchProposer.cs
 public sealed class AgentPatchProposer : IPatchProposer

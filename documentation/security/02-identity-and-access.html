@@ -69,6 +69,12 @@
                         >
                     </div>
                     <div class="sidebar-group">
+                        <div class="sidebar-group-title">Untrusted Code</div>
+                        <a class="sidebar-link" href="11-externally-authored-agents.html"
+                            ><span class="sidebar-link-num">11</span> Externally-Authored Agents</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
                         <div class="sidebar-group-title">Assurance</div>
                         <a class="sidebar-link" href="09-owasp-evals.html"
                             ><span class="sidebar-link-num">09</span> OWASP Agentic Evals</a
@@ -97,14 +103,15 @@
                     <p class="page-lead">
                         This is layer 1 — the front door. Before a single line of agent logic runs, before any tool is
                         chosen or any model token is generated, the harness has to answer one question: <em>who is
-                        actually calling?</em> That question has three very different answers — a human user, an
-                        external MCP client, or a peer agent — and each gets its own proof-of-identity mechanism. Get
-                        this layer wrong and every layer behind it is defending an attacker you already let in.
+                        actually calling?</em> That question has four very different answers — a human user, an
+                        external MCP client, a peer agent, or a bundle-API caller — and each gets its own
+                        proof-of-identity mechanism. Get this layer wrong and every layer behind it is defending an
+                        attacker you already let in.
                     </p>
 
-                    <h2 id="three-callers">The three callers</h2>
+                    <h2 id="four-callers">The four callers</h2>
                     <p>
-                        Everything in this chapter exists to authenticate one of three kinds of caller. They arrive on
+                        Everything in this chapter exists to authenticate one of four kinds of caller. They arrive on
                         different protocols, carry different credentials, and lie in different ways, so the harness
                         treats them separately.
                     </p>
@@ -131,6 +138,20 @@
                             Other agents calling this agent — agent-to-agent, or <strong>A2A</strong>. In-process peers
                             are trusted by execution context; cross-process peers must present a client certificate
                             <em>and</em> a JWT. See <a href="#a2a">Agent-to-agent authentication</a>.
+                        </div>
+                    </div>
+                    <div class="def">
+                        <div class="def-term">Bundle API callers</div>
+                        <div class="def-desc">
+                            Systems that upload a zipped agent over REST and ask the harness to run it. They present an
+                            Entra JWT, and — uniquely among the four — the token does more than let them in: it selects
+                            the <strong>capability envelope</strong> that caps what the uploaded agent may do. (That is
+                            host-side configuration keyed by your identity — not to be confused with the A2A
+                            <em>message</em> envelope in <a href="#a2a">Agent-to-agent authentication</a> below, which
+                            is untrusted caller-supplied data.) This
+                            surface is off by default and fails closed when half-configured. See
+                            <a href="../17-bundle-api.html">Onboarding&nbsp;&middot;&nbsp;Ch.&nbsp;17 Bundle API</a> and
+                            <a href="03-autonomy-and-governance.html">Autonomy &amp; Governance</a>.
                         </div>
                     </div>
 

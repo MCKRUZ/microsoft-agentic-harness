@@ -1,0 +1,511 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>11 · Externally-Authored Agents — Agentic Harness Security Guide</title>
+        <meta
+            name="description"
+            content="The one path where an agent the host did not write executes inside the harness: capability-envelope confinement resolved from the caller's credential, hostile-archive guards, ownership binding, fail-closed authentication, and staging isolation."
+        />
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+        <link
+            href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap"
+            rel="stylesheet"
+        />
+        <link rel="stylesheet" href="../assets/css/styles.css" />
+    </head>
+    <body>
+        <a href="#main" class="skip-link">Skip to content</a>
+        <div class="app">
+            <!-- ============ SIDEBAR ============ -->
+            <aside class="sidebar">
+                <div class="sidebar-header">
+                    <a class="sidebar-brand" href="index.html">
+                        <span class="sidebar-brand-mark">AH</span>
+                        <span>
+                            <span class="sidebar-brand-text">Agentic Harness</span><br />
+                            <span class="sidebar-brand-sub">Security Guide</span>
+                        </span>
+                    </a>
+                </div>
+                <nav class="sidebar-nav" aria-label="Documentation navigation">
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Foundations</div>
+                        <a class="sidebar-link" href="index.html"><span class="sidebar-link-num">00</span> Welcome</a>
+                        <a class="sidebar-link" href="01-threat-model.html"
+                            ><span class="sidebar-link-num">01</span> Threat Model &amp; Defense in Depth</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Access Control</div>
+                        <a class="sidebar-link" href="02-identity-and-access.html"
+                            ><span class="sidebar-link-num">02</span> Identity &amp; Access</a
+                        >
+                        <a class="sidebar-link" href="03-autonomy-and-governance.html"
+                            ><span class="sidebar-link-num">03</span> Autonomy &amp; Governance</a
+                        >
+                        <a class="sidebar-link" href="04-tools-and-permissions.html"
+                            ><span class="sidebar-link-num">04</span> Tools &amp; Permissions</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Execution Safety</div>
+                        <a class="sidebar-link" href="05-sandbox-and-execution.html"
+                            ><span class="sidebar-link-num">05</span> Sandbox &amp; Execution</a
+                        >
+                        <a class="sidebar-link" href="06-egress-and-ssrf.html"
+                            ><span class="sidebar-link-num">06</span> Egress &amp; SSRF Defense</a
+                        >
+                        <a class="sidebar-link" href="07-content-safety.html"
+                            ><span class="sidebar-link-num">07</span> Content Safety &amp; Injection</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Data &amp; Privacy</div>
+                        <a class="sidebar-link" href="08-data-protection.html"
+                            ><span class="sidebar-link-num">08</span> Data Protection &amp; Privacy</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Untrusted Code</div>
+                        <a class="sidebar-link" href="11-externally-authored-agents.html"
+                            ><span class="sidebar-link-num">11</span> Externally-Authored Agents</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Assurance</div>
+                        <a class="sidebar-link" href="09-owasp-evals.html"
+                            ><span class="sidebar-link-num">09</span> OWASP Agentic Evals</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Reference</div>
+                        <a class="sidebar-link" href="10-reference.html"
+                            ><span class="sidebar-link-num">10</span> Security Cheatsheet</a
+                        >
+                    </div>
+                    <div class="sidebar-group">
+                        <div class="sidebar-group-title">Other Guides</div>
+                        <a class="sidebar-link" href="../index.html">&#8592; Developer Guide</a>
+                        <a class="sidebar-link" href="../architecture/index.html">&#8592; Architecture Guide</a>
+                        <a class="sidebar-link" href="../agentic-harness-course/index.html">&#8592; Interactive Course</a>
+                    </div>
+                </nav>
+            </aside>
+
+            <!-- ============ MAIN ============ -->
+            <main id="main" class="content-wrap">
+                <div class="content">
+                    <span class="eyebrow">Chapter 11 &middot; Untrusted Code</span>
+                    <h1 class="page-title">Externally-Authored Agents</h1>
+                    <p class="page-lead">
+                        Every other page in this guide assumes the agent is yours. You wrote its manifest, you chose
+                        its skills, you shipped it. The controls exist to stop that agent being <em>manipulated</em>.
+                        This page covers the one surface where that assumption does not hold — where the agent arrives
+                        over HTTP, from someone else, and runs anyway.
+                    </p>
+
+                    <h2 id="why-different">Why this needs its own chapter</h2>
+                    <p>
+                        The Bundle API (<code>Presentation.BundleApi</code>) accepts a zipped agent from a caller and
+                        executes it. That inverts the guide's usual threat model in a way worth stating plainly.
+                    </p>
+                    <p>
+                        Everywhere else, <strong>identity gates access</strong>: the harness checks who you are, then
+                        decides whether to let you through a door it already knows the shape of. Here,
+                        <strong>identity defines the sandbox</strong>. The credential that starts a run does not just
+                        authenticate the caller — it selects the set of permissions the uploaded agent will execute
+                        under. Authentication and authorization collapse into one decision.
+                    </p>
+
+                    <div class="callout callout-warn">
+                        <span class="callout-icon">!</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Everything in the archive is attacker-controlled input</div>
+                            <p style="margin: 0">
+                                The <code>AGENT.md</code>, every <code>SKILL.md</code>, every file path inside the zip,
+                                the entry sizes declared in the zip header, the manifest's <code>allowed-tools</code>
+                                list, and the autonomy tier it asks for. All of it is written by whoever uploaded the
+                                bundle. None of it is a grant. Treat this page as the list of places the harness assumes
+                                that data is hostile.
+                            </p>
+                        </div>
+                    </div>
+
+                    <p>
+                        The consumer-facing integration guide — how to actually call this API, with payloads and a
+                        quickstart — is
+                        <a href="../17-bundle-api.html">Developer Guide &middot; Chapter&nbsp;17</a>. This page is the
+                        security view of the same surface.
+                    </p>
+
+                    <div class="callout callout-info">
+                        <span class="callout-icon">i</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Off by default</div>
+                            <p style="margin: 0">
+                                The whole subsystem is gated on
+                                <code>AppConfig:AI:BundleExecution:Enabled</code>, which defaults to
+                                <code>false</code>. While it is off, every endpoint answers <code>403</code>. If you
+                                have not deliberately turned this on, none of the surface below exists in your
+                                deployment.
+                            </p>
+                        </div>
+                    </div>
+
+                    <h2 id="envelope">The capability envelope</h2>
+                    <p>
+                        This is the primary control, and the one to understand first. A bundle's manifest can declare
+                        whatever tools it likes. Those declarations are <strong>requests</strong>. The grant is a
+                        <strong>capability envelope</strong> — host-side configuration under
+                        <code>AppConfig:AI:BundleExecution:Envelopes</code> that the bundle author can neither see nor
+                        influence.
+                    </p>
+                    <p>
+                        The envelope is resolved from the credential that <em>starts the run</em>, and it is resolved
+                        in this order:
+                    </p>
+                    <ol>
+                        <li>
+                            <strong>Exact subject match</strong> (<code>BySubject</code>) wins outright.
+                        </li>
+                        <li>
+                            Otherwise the caller's <strong>matching roles</strong> are combined to the
+                            <em>least-privilege</em> result: the <strong>intersection</strong> of the tool and MCP
+                            allowlists, and the <strong>minimum</strong> autonomy ceiling. Holding more roles can only
+                            narrow a grant, never widen it.
+                        </li>
+                        <li>
+                            Otherwise the <code>Default</code> envelope applies — which grants nothing unless an
+                            operator deliberately widened it.
+                        </li>
+                    </ol>
+                    <p>
+                        There is no code path on which "no envelope" means "no restriction". An unrecognised
+                        <code>AutonomyCeiling</code> degrades to the most restrictive tier with a warning; a numeric or
+                        comma-composite value is rejected outright rather than being interpreted generously.
+                    </p>
+
+                    <h3 id="envelope-enforcement">Where the envelope is enforced</h3>
+                    <p>
+                        Enforcement is not advisory and does not live in the controller. Every declared tool the
+                        envelope does not grant produces a <strong>bypass-immune Deny</strong> rule at priority 1, in
+                        <code>src/Content/Application/Application.Core/Permissions/EnvelopePermissionRuleProvider.cs</code>.
+                        Bypass-immune means exactly what it says: no auto-approve mode, no configuration flag, and
+                        nothing the bundle can declare will re-enable it. This is the same mechanism that makes a
+                        plugin's <code>DeniedTools</code> unconditional — see
+                        <a href="04-tools-and-permissions.html">Tools &amp; Permissions</a>.
+                    </p>
+                    <p>
+                        Autonomy is enforced as a <em>ceiling</em>, not a setting. The tier that actually applies is
+                        the most restrictive of three things: the envelope's ceiling, the host's own graded-autonomy
+                        gate, and the individual tool's blast radius. It can only tighten, never loosen.
+                    </p>
+
+                    <div class="callout callout-warn">
+                        <span class="callout-icon">!</span>
+                        <div class="callout-body">
+                            <div class="callout-title">A non-<code>Autonomous</code> ceiling suspends tool use rather than queuing approvals</div>
+                            <p style="margin: 0">
+                                Live mid-tool-call approval routing is deferred, so the governor treats "this action
+                                requires human sign-off" as a fail-closed <em>block</em>. In practice a
+                                <code>Restricted</code> or <code>Supervised</code> ceiling stops the bundle using tools
+                                at all, rather than gating each call. A bundle that must do real work therefore runs
+                                with an <code>Autonomous</code> ceiling and is confined by <code>AllowedTools</code> /
+                                <code>AllowedMcpServers</code> plus the host's own risk and capability gates. This is
+                                consistent with how plugin and tier baselines behave today (see
+                                <a href="03-autonomy-and-governance.html">Autonomy &amp; Governance</a>), but it does
+                                mean the confinement you rely on is the <em>allowlist</em>, not the tier.
+                            </p>
+                        </div>
+                    </div>
+
+                    <h3 id="envelope-identity">Which claim selects the envelope</h3>
+                    <p>
+                        Two different identifiers are read from the same token, for two different jobs. Getting these
+                        confused is the most common way to misconfigure this surface — and it fails
+                        <em>open-looking</em>: the grant silently falls through to <code>Default</code> rather than
+                        erroring, so a misconfiguration reads as "my permissions were ignored" rather than as a fault.
+                    </p>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Job</th>
+                                <th>Claim used</th>
+                                <th>Why</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><strong>Ownership</strong> of handles and runs</td>
+                                <td>
+                                    First available of <code>oid</code> → object-identifier →
+                                    <code>nameidentifier</code> → <code>sub</code> → name
+                                </td>
+                                <td>Needs the most stable id available, to partition resources and rate limits.</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Envelope</strong> lookup (<code>BySubject</code>)</td>
+                                <td><code>nameidentifier</code> or <code>sub</code> only</td>
+                                <td>
+                                    The subject claim is the one an operator can reason about when writing a grant.
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <p>
+                        For most Entra tokens these differ — <code>oid</code> is the directory object id, while
+                        <code>sub</code> is a per-application pairwise identifier. Key <code>BySubject</code> grants on
+                        <code>sub</code>, or use <code>ByRole</code> with an app role.
+                    </p>
+
+                    <h2 id="ownership">Ownership binding, and why a stolen handle is not useful</h2>
+                    <p>
+                        <strong>The attack this stops:</strong> a caller obtaining another tenant's handle — from a log,
+                        a shared trace, a bug — and using it to run work under that tenant's privileges, or to read
+                        their results.
+                    </p>
+                    <p>Two properties close it:</p>
+                    <ul>
+                        <li>
+                            <strong>The grant follows the invoker, not the handle.</strong> Because the envelope is
+                            resolved from whoever <em>starts the run</em>, a stolen handle executes under the thief's
+                            own envelope. It confers no privilege. This is the reason the envelope is deliberately
+                            <em>not</em> captured at registration time.
+                        </li>
+                        <li>
+                            <strong>Every operation re-checks ownership.</strong> Run, poll, stream, and delete all
+                            verify the caller owns the handle. A resource that is foreign, unknown, or expired is
+                            reported <em>identically</em> — <code>404</code> for reads, a silent <code>204</code> for
+                            delete — so the API never confirms that someone else's handle exists.
+                        </li>
+                    </ul>
+                    <p>
+                        The uniform <code>404</code> is a deliberate anti-enumeration choice. It costs debuggability
+                        (a caller cannot tell "expired" from "not yours"), and that trade is made on purpose.
+                    </p>
+
+                    <h2 id="archive">Hostile archive handling</h2>
+                    <p>
+                        A zip file is a classic attack surface, and nothing inside one is parsed until every structural
+                        guard has passed. Any failure deletes the partial extraction before returning. Each rejection is
+                        a <code>400</code> whose <code>detail</code> names the guard that fired — never the archive's
+                        contents.
+                    </p>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Attack</th>
+                                <th>Guard</th>
+                                <th>Default</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>Oversized upload / resource exhaustion</td>
+                                <td><code>MaxArchiveBytes</code>, which also caps the multipart body</td>
+                                <td>10 MiB</td>
+                            </tr>
+                            <tr>
+                                <td>Entry-count flood</td>
+                                <td><code>MaxEntryCount</code></td>
+                                <td>2 000</td>
+                            </tr>
+                            <tr>
+                                <td>Decompression bomb (absolute)</td>
+                                <td><code>MaxTotalUncompressedBytes</code></td>
+                                <td>50 MiB</td>
+                            </tr>
+                            <tr>
+                                <td>Decompression bomb (ratio)</td>
+                                <td>
+                                    <code>MaxCompressionRatio</code>, applied only once a bundle expands past 1 MiB so
+                                    small, highly-compressible markdown never trips it
+                                </td>
+                                <td>100×</td>
+                            </tr>
+                            <tr>
+                                <td>Zip-slip — <code>../</code> or absolute entry paths</td>
+                                <td>Path containment check</td>
+                                <td>rejected</td>
+                            </tr>
+                            <tr>
+                                <td>Symlink escape</td>
+                                <td>Symlinks resolving outside the staging directory</td>
+                                <td>rejected</td>
+                            </tr>
+                            <tr>
+                                <td>Malformed / empty archive</td>
+                                <td>Structural validation</td>
+                                <td>rejected</td>
+                            </tr>
+                        </tbody>
+                    </table>
+
+                    <div class="callout callout-tip">
+                        <span class="callout-icon">&#10003;</span>
+                        <div class="callout-body">
+                            <div class="callout-title">The bomb check runs twice, and the second one is the real one</div>
+                            <p style="margin: 0">
+                                The first pass is cheap: it sums the entry sizes the archive <em>declares</em> in its
+                                own header. But an attacker writes that header. So a second check counts the
+                                <em>actual</em> bytes written during extraction, and trips on the same limits. An
+                                archive that lies about its entry lengths is caught by the second pass mid-write.
+                            </p>
+                        </div>
+                    </div>
+
+                    <h2 id="staging">Staging isolation</h2>
+                    <p>
+                        <strong>The attack this stops:</strong> a tenant's private skills leaking into the host's global
+                        skill pool, where every other agent on the box could load them.
+                    </p>
+                    <p>
+                        Accepted bundles extract into a unique subdirectory of <code>TempRoot</code>. That root
+                        <strong>must not overlap</strong> any configured skill or agent discovery path, because the
+                        host's registries scan those roots <em>recursively</em>. If staging lived inside a discovery
+                        path, the registry would walk into it, find an uploaded bundle's skills, and publish them
+                        globally.
+                    </p>
+                    <p>
+                        The staging service checks for that overlap and <strong>refuses to stage</strong> rather than
+                        letting it happen. Skills declared in a bundle are owned by that bundle's agent: they resolve
+                        only for its own runs and never enter the host's global pool.
+                    </p>
+
+                    <h2 id="authentication">Fail-closed authentication</h2>
+                    <p>
+                        Because this surface runs foreign code, it does not share an audience with the agent hub or the
+                        MCP server — it validates tokens against its own audience, <code>api://{ClientId}</code>.
+                    </p>
+                    <p>
+                        More importantly, it refuses to start in an ambiguous state. The host throws at startup in all
+                        three of these cases:
+                    </p>
+                    <ul>
+                        <li>
+                            <strong>Neither configured nor opted out</strong> — no Entra scheme and no explicit
+                            <code>Auth:AllowAnonymous</code>. Silence is not consent to serve openly.
+                        </li>
+                        <li>
+                            <strong>Half-configured</strong> — exactly one of <code>TenantId</code> /
+                            <code>ClientId</code>. Treated as a mistake, not as an implicit request to serve openly.
+                        </li>
+                        <li>
+                            <strong>Contradictory</strong> — a configured scheme <em>and</em>
+                            <code>AllowAnonymous: true</code>.
+                        </li>
+                    </ul>
+
+                    <div class="callout callout-warn">
+                        <span class="callout-icon">!</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Anonymous mode is a development mode, and it removes isolation</div>
+                            <p style="margin: 0">
+                                With <code>Auth:AllowAnonymous: true</code> every request authenticates as one
+                                synthetic principal, and the host logs a prominent warning for as long as it runs. Two
+                                consequences: <strong>every caller shares one owner</strong>, so ownership checks pass
+                                for everyone and anyone can run, poll, or delete anyone's handle; and
+                                <strong>every run gets the <code>Default</code> envelope</strong>, because the synthetic
+                                principal carries no subject or role claims. Never enable it on a shared host.
+                            </p>
+                        </div>
+                    </div>
+
+                    <h2 id="resource-limits">Resource limits</h2>
+                    <p>
+                        Rate limits partition by the caller's stable id, so one tenant cannot exhaust another's budget.
+                    </p>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Surface</th>
+                                <th>Limit</th>
+                                <th>Shape</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>Bundle registration</td>
+                                <td>10 / minute</td>
+                                <td>Fixed window. Tighter than the rest — registration writes to disk.</td>
+                            </tr>
+                            <tr>
+                                <td>Run, poll, delete</td>
+                                <td>60 / minute</td>
+                                <td>Fixed window, declared at controller scope.</td>
+                            </tr>
+                            <tr>
+                                <td>Live streams</td>
+                                <td><code>MaxConcurrentStreamsPerCaller</code>, default 4</td>
+                                <td>
+                                    Concurrency, not rate — each open connection holds a permit for its whole lifetime.
+                                    Excess is rejected <code>429</code> immediately rather than queued.
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <p>
+                        Staged bundles and run records are swept on a <code>CleanupInterval</code> (default 60 s)
+                        against a 30-minute handle TTL and a 30-minute run-record TTL, so an abandoned upload cannot
+                        occupy disk indefinitely. An in-flight run holds a lease on its staged bundle, so the sweeper
+                        can never delete a directory out from under a running agent.
+                    </p>
+
+                    <h2 id="residual-risk">What this layer does not cover</h2>
+                    <p>
+                        Being explicit about the edges matters more here than anywhere else in this guide, because the
+                        threat model is genuinely adversarial.
+                    </p>
+                    <ul>
+                        <li>
+                            <strong>The tools themselves are not made safe by the envelope.</strong> The envelope
+                            decides <em>which</em> tools; it does not change what an allowed tool can do. A granted
+                            <code>file_system</code> tool is still confined by the sandbox and its capability model —
+                            see <a href="05-sandbox-and-execution.html">Sandbox &amp; Execution</a>. Grant narrowly.
+                        </li>
+                        <li>
+                            <strong>Prompt injection inside a bundle's own skills is not solved here.</strong> A bundle
+                            author can write whatever instructions they like; content safety and injection defense apply
+                            as they do everywhere else (<a href="07-content-safety.html">Content Safety</a>). The
+                            envelope bounds the <em>blast radius</em> of a successful injection rather than preventing
+                            it.
+                        </li>
+                        <li>
+                            <strong>State is in memory on a single host.</strong> Handles, run records, and results do
+                            not survive a restart and are not shared across instances. This is an availability and
+                            correctness property, not a confidentiality one — but it means a load-balanced deployment
+                            needs session affinity.
+                        </li>
+                        <li>
+                            <strong>Non-<code>Autonomous</code> ceilings do not currently queue approvals</strong>, as
+                            described above. If your intended control was "a human reviews each tool call", this
+                            surface does not yet provide it.
+                        </li>
+                    </ul>
+
+                    <p>
+                        The assurance layer that tests these claims — including the OWASP Agentic Top-10 eval pack that
+                        gates every pull request — is the next page:
+                        <a href="09-owasp-evals.html">OWASP Agentic Evals</a>.
+                    </p>
+
+                    <!-- Footer nav -->
+                    <div class="page-nav">
+                        <a class="page-nav-link page-nav-prev" href="08-data-protection.html"><div class="page-nav-label">&larr; Previous</div><div class="page-nav-title">08 &middot; Data Protection &amp; Privacy</div></a>
+                        <a class="page-nav-link page-nav-next" href="09-owasp-evals.html"><div class="page-nav-label">Next &rarr;</div><div class="page-nav-title">09 &middot; OWASP Agentic Evals</div></a>
+                    </div>
+                </div>
+
+                <!-- TOC -->
+                <aside class="toc" aria-label="On this page">
+                    <div class="toc-title">On this page</div>
+                    <ul class="toc-list"></ul>
+                </aside>
+            </main>
+        </div>
+        <script src="../assets/js/main.js"></script>
+    </body>
+</html>

@@ -54,9 +54,9 @@
                     </div>
                     <div class="sidebar-group">
                         <div class="sidebar-group-title">Other Guides</div>
-                        <a class="sidebar-link" href="../architecture/index.html">&#8592; Architecture Guide</a>
-                        <a class="sidebar-link" href="../agentic-harness-course/index.html">&#8592; Interactive Course</a>
-                        <a class="sidebar-link" href="../security/index.html">&#8592; Security Guide</a>
+                        <a class="sidebar-link" href="architecture/index.html">&#8592; Architecture Guide</a>
+                        <a class="sidebar-link" href="agentic-harness-course/index.html">&#8592; Interactive Course</a>
+                        <a class="sidebar-link" href="security/index.html">&#8592; Security Guide</a>
                     </div>
                 </nav>
             </aside>
@@ -281,19 +281,33 @@ var usage = _usageCapture.TakeSnapshot(); // total tokens, cost, tools called</c
                                 <span class="callout-icon">i</span>
                                 <div class="callout-body">
                                     <div class="callout-title">Streaming and loop guards on this same call</div>
-                                    <p style="margin: 0">
-                                        Two things happen around this invocation worth knowing. First,
-                                        <strong>real token streaming</strong>: the turn-drivers can call
-                                        <code>RunStreamingAsync</code> and forward each delta through
-                                        <code>IAgentTurnStreamSink</code> as it arrives, rather than awaiting the whole
-                                        answer. (The AG-UI browser transport still re-chunks a fully-awaited response —
-                                        end-to-end streaming to the browser is the remaining step.) Second,
-                                        <strong>loop-engineering guards</strong>: every tool call inside the loop passes
-                                        through <code>GovernedAIFunction</code>, whose spin guard
-                                        (<code>IProgressEvaluator</code>) halts an agent repeating identical calls, while
-                                        a conversation-lifetime <code>IConversationBudgetTracker</code> can gracefully
-                                        break a run that has exhausted its cross-turn token ceiling.
+                                    <p style="margin: 0 0 var(--space-2)">
+                                        Two things happen around this one call that are worth knowing about.
                                     </p>
+                                    <p style="margin: 0 0 var(--space-2)">
+                                        <strong>1 · Real token streaming.</strong> Instead of waiting for the complete
+                                        answer, a turn-driver can call <code>RunStreamingAsync</code> and forward each
+                                        fragment through <code>IAgentTurnStreamSink</code> the moment it arrives. (One
+                                        caveat: the AG-UI browser transport still waits for the whole response and then
+                                        re-chunks it, so streaming is not yet end-to-end all the way to the browser.)
+                                    </p>
+                                    <p style="margin: 0">
+                                        <strong>2 · Loop guards.</strong> Every tool call inside the loop goes through
+                                        <code>GovernedAIFunction</code>, which watches for two failure modes an agent
+                                        can fall into on its own:
+                                    </p>
+                                    <ul style="margin: var(--space-2) 0 0">
+                                        <li>
+                                            <em>Going in circles</em> — the spin guard
+                                            (<code>IProgressEvaluator</code>) halts an agent that keeps making the same
+                                            call over and over without getting anywhere.
+                                        </li>
+                                        <li>
+                                            <em>Running up the bill</em> — <code>IConversationBudgetTracker</code>
+                                            tracks tokens across the whole conversation, not just this turn, and breaks
+                                            the run gracefully once it hits its ceiling.
+                                        </li>
+                                    </ul>
                                 </div>
                             </div>
                         </li>

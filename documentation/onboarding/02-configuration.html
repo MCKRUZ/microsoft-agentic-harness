@@ -105,9 +105,9 @@
                     </div>
                     <div class="sidebar-group">
                         <div class="sidebar-group-title">Other Guides</div>
-                        <a class="sidebar-link" href="../architecture/index.html">&#8592; Architecture Guide</a>
-                        <a class="sidebar-link" href="../agentic-harness-course/index.html">&#8592; Interactive Course</a>
-                        <a class="sidebar-link" href="../security/index.html">&#8592; Security Guide</a>
+                        <a class="sidebar-link" href="architecture/index.html">&#8592; Architecture Guide</a>
+                        <a class="sidebar-link" href="agentic-harness-course/index.html">&#8592; Interactive Course</a>
+                        <a class="sidebar-link" href="security/index.html">&#8592; Security Guide</a>
                     </div>
                 </nav>
             </aside>
@@ -119,28 +119,61 @@
                     <h1 class="page-title">Configuration Reference</h1>
                     <p class="page-lead">
                         Every knob the harness exposes — what it does, where it lives in code, and the scenarios in
-                        which you'd actually change it. Read top to bottom on your first pass; bookmark it and use as
-                        a lookup table after that.
+                        which you'd actually change it. This is a <strong>reference</strong> chapter: it is long by
+                        design, and it is not meant to be read cover to cover.
                     </p>
+
+                    <div class="callout callout-tip">
+                        <span class="callout-icon">&#10003;</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Start with what you're trying to do</div>
+                            <p style="margin: 0 0 var(--space-2)">
+                                Most people arrive here with a specific goal, not a desire to learn the config schema.
+                                If that's you, skip ahead:
+                            </p>
+                            <ul style="margin: 0">
+                                <li>
+                                    <strong>"I want to change something specific"</strong> — go straight to
+                                    <a href="#recipes">the "I want to…" recipes</a> near the bottom. Switching models,
+                                    turning on RAG, tightening permissions, quieting logs: each is a short worked
+                                    example with the exact JSON.
+                                </li>
+                                <li>
+                                    <strong>"My config isn't taking effect"</strong> — read
+                                    <a href="#config-sources">Where configuration comes from</a> first. It is almost
+                                    always precedence, and the answer is two minutes away.
+                                </li>
+                                <li>
+                                    <strong>"I need to know what's available"</strong> — skim
+                                    <a href="#config-tree">The AppConfig tree</a>, then jump to the one section you
+                                    need. Every section below is independent; nothing builds on what came before.
+                                </li>
+                                <li>
+                                    <strong>"I'm adding my own config"</strong> — the last two sections
+                                    (<a href="#validation">validation</a> and
+                                    <a href="#config-classes">where the classes live</a>) are the ones you want.
+                                </li>
+                            </ul>
+                        </div>
+                    </div>
 
                     <div class="callout callout-info">
                         <span class="callout-icon">i</span>
                         <div class="callout-body">
-                            <div class="callout-title">A note on Common vs Core</div>
+                            <div class="callout-title">Everything here is harness infrastructure, not your app's config</div>
                             <p style="margin: 0">
-                                The entire configuration system documented on this page lives in
-                                <code>Domain.Common</code> — meaning it's <strong>harness infrastructure</strong>,
-                                shared across every fork of the template. When you add config keys for
-                                <em>your</em> application's specific settings (e.g. "PupWalkApi.StripeKey"), you can
-                                either add them under <code>AppConfig</code> (treating your app's config as part of
-                                the same root) or create a parallel config root in your own project. The harness's
-                                pattern (root POCO bound at startup via <code>services.Configure&lt;T&gt;()</code>)
-                                will work either way.
+                                The whole configuration system on this page lives in <code>Domain.Common</code>, which
+                                means it is shared by every fork of this template. Your own application settings — a
+                                payment key, a partner endpoint — are a separate concern. You can either hang them off
+                                <code>AppConfig</code> or create a parallel config root in your own project; the
+                                pattern (a root POCO bound at startup via
+                                <code>services.Configure&lt;T&gt;()</code>) works either way. Chapter&nbsp;11 covers
+                                that choice when you come to make it.
                             </p>
                         </div>
                     </div>
 
-                    <h2>Where configuration comes from</h2>
+                    <h2 id="config-sources">Where configuration comes from</h2>
                     <p>
                         The harness uses standard .NET configuration. Values are pulled from <strong>three sources</strong>
                         in this priority order — later sources override earlier ones:
@@ -231,7 +264,7 @@
 
                     <hr />
 
-                    <h2>The AppConfig tree</h2>
+                    <h2 id="config-tree">The AppConfig tree</h2>
                     <p>
                         <code>AppConfig</code> is the single root. Everything else hangs off it. Here's the full
                         top-level shape — each child is a section you can configure independently:
@@ -1146,7 +1179,7 @@ dotnet user-secrets set "AppConfig:AI:AgentFramework:DefaultDeployment" "gpt-4o"
 
                     <hr />
 
-                    <h2>Validation and binding errors</h2>
+                    <h2 id="validation">Validation and binding errors</h2>
                     <p>
                         Misconfigured values fail fast at startup, not at the first call. The harness validates every
                         config section in its <code>Add*Dependencies()</code> extension. If you mistype a key, you'll
@@ -1168,7 +1201,7 @@ dotnet user-secrets set "AppConfig:AI:AgentFramework:DefaultDeployment" "gpt-4o"
                         </div>
                     </div>
 
-                    <h2>Where every config class lives</h2>
+                    <h2 id="config-classes">Where every config class lives</h2>
                     <p>One file per concept. The path is always <code>Domain.Common/Config/...</code>:</p>
 
                     <div class="file-tree">

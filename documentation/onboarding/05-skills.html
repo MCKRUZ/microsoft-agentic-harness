@@ -41,9 +41,9 @@
                         <a class="sidebar-link" href="12-reference.html"><span class="sidebar-link-num">12</span> Cheatsheet &amp; Glossary</a></div>
                     <div class="sidebar-group">
                         <div class="sidebar-group-title">Other Guides</div>
-                        <a class="sidebar-link" href="../architecture/index.html">&#8592; Architecture Guide</a>
-                        <a class="sidebar-link" href="../agentic-harness-course/index.html">&#8592; Interactive Course</a>
-                        <a class="sidebar-link" href="../security/index.html">&#8592; Security Guide</a>
+                        <a class="sidebar-link" href="architecture/index.html">&#8592; Architecture Guide</a>
+                        <a class="sidebar-link" href="agentic-harness-course/index.html">&#8592; Interactive Course</a>
+                        <a class="sidebar-link" href="security/index.html">&#8592; Security Guide</a>
                     </div>
                 </nav>
             </aside>
@@ -223,9 +223,13 @@ You are a thorough research assistant. When given a question, you:
                     </div>
 
                     <p>
-                        Notice it's a plain <strong>mutable class</strong> with <code>get; set;</code> properties and
-                        <code>IList&lt;&gt;</code> collections — the parser builds it up field by field as it reads the
-                        SKILL.md. The one thing you <em>can't</em> set is <code>Mode</code>: it's a computed property
+                        Notice this is a plain <strong>mutable class</strong> — <code>get; set;</code> properties and
+                        <code>IList&lt;&gt;</code> collections, rather than the immutable records used almost everywhere
+                        else in this codebase. That is deliberate: the parser fills it in field by field as it reads
+                        down the SKILL.md, so it needs somewhere to accumulate.
+                    </p>
+                    <p>
+                        The one thing you <em>can't</em> set is <code>Mode</code>: it's a computed property
                         derived from <code>IsPluginSkill</code> plus whether the skill declares any tools. The
                         <code>PluginSource</code> and <code>Prerequisites</code> properties are covered in the sections
                         below.
@@ -339,10 +343,19 @@ skills:
 
                     <h2>The context budget tracker</h2>
                     <p>
-                        While the above is happening, <code>IContextBudgetTracker</code> keeps a running count of how
-                        many tokens are committed to: the system prompt, loaded skill content, tool schemas, and
-                        conversation history for the <em>current turn</em>. When the budget nears its threshold, the
-                        assembler stops promoting Tier-2 content and falls back to Tier-1 descriptions only.
+                        While all of the above is happening, <code>IContextBudgetTracker</code> is keeping score. For
+                        the current turn, it tracks how many tokens have been committed to each of four things:
+                    </p>
+                    <ul>
+                        <li>the system prompt</li>
+                        <li>the skill content that has been loaded</li>
+                        <li>the tool schemas</li>
+                        <li>the conversation history</li>
+                    </ul>
+                    <p>
+                        Those four compete for the same finite budget. As it starts to run out, the assembler stops
+                        promoting full Tier-2 skill content and serves only the short Tier-1 descriptions instead — the
+                        agent still knows the skill <em>exists</em>, it just no longer carries the full text.
                     </p>
                     <div class="callout callout-warn">
                         <span class="callout-icon">!</span>

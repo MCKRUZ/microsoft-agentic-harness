@@ -60,9 +60,9 @@
                     </div>
                     <div class="sidebar-group">
                         <div class="sidebar-group-title">Other Guides</div>
-                        <a class="sidebar-link" href="../architecture/index.html">&#8592; Architecture Guide</a>
-                        <a class="sidebar-link" href="../agentic-harness-course/index.html">&#8592; Interactive Course</a>
-                        <a class="sidebar-link" href="../security/index.html">&#8592; Security Guide</a>
+                        <a class="sidebar-link" href="architecture/index.html">&#8592; Architecture Guide</a>
+                        <a class="sidebar-link" href="agentic-harness-course/index.html">&#8592; Interactive Course</a>
+                        <a class="sidebar-link" href="security/index.html">&#8592; Security Guide</a>
                     </div>
                 </nav>
             </aside>
@@ -85,8 +85,8 @@
                         with use-cases (commands, queries, interfaces) but still imports nothing concrete.
                         <strong>Infrastructure</strong> provides concrete implementations of Application interfaces —
                         Azure OpenAI clients, MCP servers, file system access.
-                        <strong>Presentation</strong> is the entry point — console UI, SignalR hub, MCP server, MCP
-                        client — that wires everything together. Dependencies point only inward.
+                        <strong>Presentation</strong> is the entry point — console UI, SignalR hub, REST API, MCP
+                        server — that wires everything together. Dependencies point only inward.
                     </p>
 
                     <div class="callout callout-jargon">
@@ -205,9 +205,9 @@
                             <div class="arch-layer-name"><span class="pill pill-present">Presentation</span></div>
                             <div class="arch-layer-projects">
                                 Presentation.ConsoleUI · Presentation.AgentHub (SignalR) ·
-                                Presentation.Dashboard · Presentation.WebUI · Presentation.EvalRunner ·
-                                Presentation.FoundryHost · Presentation.LoggerUI · Presentation.Common ·
-                                Infrastructure.AI.MCPServer (WebAPI host)
+                                Presentation.BundleApi (REST) · Presentation.Dashboard · Presentation.WebUI ·
+                                Presentation.EvalRunner · Presentation.FoundryHost · Presentation.LoggerUI ·
+                                Presentation.Common · Infrastructure.AI.MCPServer (WebAPI host)
                             </div>
                         </div>
                         <div class="arch-layer arch-layer-infra">
@@ -271,11 +271,36 @@
 
                     <h3>Presentation</h3>
                     <p>
-                        Where execution starts. <code>ConsoleUI/Program.cs</code> is one entry point;
-                        <code>AgentHub</code> is another (SignalR-based realtime); <code>MCPServer</code> exposes
-                        tools to other MCP clients via HTTP. Each Presentation host runs the same composition root —
+                        Where execution starts. A "Presentation host" is just a runnable program with a
+                        <code>Program.cs</code>. The harness ships several — the full set is in the layer diagram
+                        above — and each is a different way of getting a request into the same engine. The four you are
+                        most likely to run first:
+                    </p>
+                    <ul>
+                        <li>
+                            <strong><code>Presentation.ConsoleUI</code></strong> — you type at a terminal menu. The
+                            simplest entry point, and the one to reach for when debugging.
+                        </li>
+                        <li>
+                            <strong><code>Presentation.AgentHub</code></strong> — a SignalR (WebSocket) server, so a
+                            browser can stream a conversation token-by-token.
+                        </li>
+                        <li>
+                            <strong><code>Presentation.BundleApi</code></strong> — a plain REST API. Another system
+                            uploads a zipped agent and runs it over HTTP, with no UI involved. See
+                            <a href="17-bundle-api.html">Chapter&nbsp;17</a>.
+                        </li>
+                        <li>
+                            <strong><code>Infrastructure.AI.MCPServer</code></strong> — exposes the harness's own tools
+                            to <em>other</em> MCP clients over HTTP. (It lives in an Infrastructure folder for
+                            historical reasons, but it behaves as a Presentation host.)
+                        </li>
+                    </ul>
+                    <p>
+                        Every one of these runs the same composition root —
                         <code>services.GetServices(...)</code> in <code>Presentation.Common</code> — which calls every
-                        layer's <code>Add*Dependencies()</code> extension.
+                        layer's <code>Add*Dependencies()</code> extension. That is why a feature you add once shows up
+                        in all of them.
                     </p>
 
                     <hr />
@@ -344,6 +369,10 @@
                             <tr>
                                 <td>MCP server endpoint code</td>
                                 <td><code>Infrastructure.AI.MCPServer/</code></td>
+                            </tr>
+                            <tr>
+                                <td>The REST API for running an uploaded agent bundle</td>
+                                <td><code>Presentation.BundleApi/</code> (guide: <a href="17-bundle-api.html">Ch.&nbsp;17</a>)</td>
                             </tr>
                             <tr>
                                 <td>MCP client (consuming external MCP servers)</td>
