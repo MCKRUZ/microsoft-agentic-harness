@@ -93,7 +93,14 @@ jobs:
         if: steps.detect.outputs.review_required == 'true'
         run: rm -f "${{ runner.temp }}/correctness-verdict.txt" correctness-verdict.txt
 
+      # See the matching note in security-review.yml. A reviewer that exhausts
+      # --max-turns before writing its verdict produces NO verdict, which reads as an
+      # infrastructure fault rather than a review result — so the gate got least
+      # passable on the largest diffs. Fixed by writing a provisional block first and
+      # raising the ceiling. (The "no verdict file" flake seen on PR #110 and written
+      # off as CI infra noise was almost certainly this same turn exhaustion.)
       - name: Run correctness-reviewer
+        id: reviewer
         if: steps.detect.outputs.review_required == 'true'
         continue-on-error: true
         uses: anthropics/claude-code-action@v1
@@ -102,16 +109,38 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           prompt: |
             You are running as the correctness-reviewer for PR #${{ github.event.pull_request.number }}.
+
+            STEP 1 — DO THIS FIRST, BEFORE READING ANYTHING ELSE.
+            Write this exact two-line content to ${{ runner.temp }}/correctness-verdict.txt:
+
+            CORRECTNESS_VERDICT: BLOCK
+            reason: PROVISIONAL - the review did not run to completion
+
+            This is a fail-safe. If you run out of turns or error out later, that
+            provisional block is what the gate sees, and it is the correct answer.
+            Do not skip it and do not leave it until the end.
+
+            STEP 2 — Review.
             Read the rubric at .github/correctness-review-rubric.md and follow it exactly.
             The changed-line anchor set is at ${{ steps.detect.outputs.anchors_file }} —
             review ONLY those lines and the code they directly touch, and anchor every
             finding to a line from that file. The diff base is origin/${{ github.base_ref }}.
-            POST your findings as a PR comment AND write the machine verdict to the
-            absolute path ${{ runner.temp }}/correctness-verdict.txt (its first line must be
-            exactly "CORRECTNESS_VERDICT: PASS" or "CORRECTNESS_VERDICT: BLOCK").
+            Budget your turns: prefer a single `git diff` over many per-file reads, and
+            do not re-read a file you have already seen.
+
+            STEP 3 — Replace the verdict, and post findings.
+            Overwrite ${{ runner.temp }}/correctness-verdict.txt with your real verdict.
+            First line must be EXACTLY "CORRECTNESS_VERDICT: PASS" or "CORRECTNESS_VERDICT: BLOCK".
+            On BLOCK, add a second line "reason: <one-line summary>" — never containing
+            the word PROVISIONAL, which is reserved for the step-1 fail-safe.
+            Also POST your findings as a PR comment.
+
+            If you are running low on turns, STOP reviewing and do step 3 with the
+            verdict you have. A completed BLOCK with a real reason is far more useful
+            than an incomplete review that leaves the provisional block in place.
           claude_args: |
             --model opus
-            --max-turns 25
+            --max-turns 80
             --allowedTools Bash,Read,Grep,Glob,Write
 
       - name: Enforce verdict (block on high-confidence defect)
@@ -124,24 +153,40 @@ jobs:
           # signs off" guarantee is enforced by the branch ruleset's required
           # non-author approval, which still gates the merge after this passes.
           HAS_ACCEPTED_RISK: ${{ contains(github.event.pull_request.labels.*.name, 'accepted-risk:correctness') }}
+          REVIEWER_OUTCOME: ${{ steps.reviewer.outcome }}
         run: |
           set -euo pipefail
           if [ ! -f "$VERDICT_FILE" ]; then
-            echo "::error::Correctness review did not produce a verdict on a source change. Failing closed."
-            echo "If ANTHROPIC_API_KEY / the Claude GitHub App are not yet configured, see .github/RAILS.md."
+            echo "::error::Correctness review wrote no verdict at all — it failed before its first action. Failing closed."
+            echo "This is an infrastructure fault, NOT a finding about this PR."
+            echo "Reviewer step outcome: ${REVIEWER_OUTCOME}. Check the 'Run correctness-reviewer' step log."
+            echo "Common causes: ANTHROPIC_API_KEY missing or invalid, the Claude GitHub App not installed, or the action failing to start (see .github/RAILS.md)."
             exit 1
           fi
           echo "Verdict file:"; cat "$VERDICT_FILE"
           # Exact prefix match on the first line — a model that buries the token in
           # prose, or text like "PASS (1 BLOCK pending)", must not pass.
           FIRST="$(head -n1 "$VERDICT_FILE" || true)"
+          REASON="$(sed -n '2p' "$VERDICT_FILE" || true)"
           case "$FIRST" in
             "CORRECTNESS_VERDICT: BLOCK"*)
+              # An unreplaced provisional block means NO review happened. The
+              # accepted-risk label deliberately does NOT override this: that label
+              # records "we accept this known defect", which is a different decision
+              # from "we accept not having looked". Split the PR or raise the budget.
+              case "$REASON" in
+                *PROVISIONAL*)
+                  echo "::error::Correctness review did not run to completion — its provisional block was never replaced. Failing closed."
+                  echo "This is NOT a finding about this PR, and 'accepted-risk:correctness' does not override it — that label accepts a known defect, not an absent review."
+                  echo "Reviewer step outcome: ${REVIEWER_OUTCOME}. If the step log ends in 'error_max_turns', the diff outgrew the turn budget — split the PR or raise --max-turns."
+                  exit 1 ;;
+              esac
               if [ "$HAS_ACCEPTED_RISK" = "true" ]; then
                 echo "::warning::Correctness review found a high-confidence defect, but the 'accepted-risk:correctness' label records an accepted-risk override (audited in the PR timeline). The branch ruleset's required non-author approval still gates the merge."
                 exit 0
               fi
               echo "::error::Correctness review found a high-confidence defect. Fix it, or apply the 'accepted-risk:correctness' label to record an accepted-risk override (audited; the merge still needs the ruleset's non-author approval)."
+              echo "Reviewer reason: ${REASON}"
               exit 1 ;;
             "CORRECTNESS_VERDICT: PASS"*)
               echo "Correctness review passed (no blocking defects)."
