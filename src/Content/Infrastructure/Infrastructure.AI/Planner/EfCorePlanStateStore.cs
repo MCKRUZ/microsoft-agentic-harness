@@ -1,5 +1,7 @@
 using System.Text.Json;
+using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Application.AI.Common.Interfaces.Planner;
+using Domain.AI.KnowledgeGraph.Scoping;
 using Domain.AI.Planner;
 using Domain.Common;
 using Infrastructure.AI.Persistence;
@@ -14,6 +16,23 @@ namespace Infrastructure.AI.Planner;
 /// operations to the persistence layer. Uses <see cref="IDbContextFactory{TContext}"/>
 /// for short-lived contexts, making it safe for singleton and scoped callers.
 /// </summary>
+/// <remarks>
+/// <para>
+/// <b>Ownership:</b> every saved plan is stamped with the canonicalized owner/tenant from
+/// the ambient <see cref="IKnowledgeScope"/> (set per-request by the host's scope
+/// middleware/hub filter and flowing via <c>AsyncLocal</c>), mirroring how
+/// <c>KnowledgeMemoryService</c> self-stamps knowledge records. Identity is never accepted
+/// from a command or DTO — ambient scope only. Every read/list/execute path filters by the
+/// same scope; a plan another owner saved is indistinguishable from a missing plan
+/// (NotFound/null/empty, never Forbidden).
+/// </para>
+/// <para>
+/// <b>Schema:</b> the constructor demands <see cref="SchemaInitializer{TContext}"/> so
+/// resolving the store forces the SQLite schema into existence before the first operation —
+/// the same lifecycle the prompt-usage and eval-dashboard stores use, expressed as a plain
+/// constructor dependency so it stays visible to <c>ValidateOnBuild</c>.
+/// </para>
+/// </remarks>
 public sealed partial class EfCorePlanStateStore : IPlanStateStore
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -25,15 +44,20 @@ public sealed partial class EfCorePlanStateStore : IPlanStateStore
     private readonly IDbContextFactory<PlannerDbContext> _factory;
     private readonly ILogger<EfCorePlanStateStore> _logger;
     private readonly TimeProvider _timeProvider;
+    private readonly IKnowledgeScope _scope;
 
     public EfCorePlanStateStore(
         IDbContextFactory<PlannerDbContext> factory,
         ILogger<EfCorePlanStateStore> logger,
-        TimeProvider timeProvider)
+        TimeProvider timeProvider,
+        IKnowledgeScope scope,
+        SchemaInitializer<PlannerDbContext> schemaInitializer)
     {
+        ArgumentNullException.ThrowIfNull(schemaInitializer);
         _factory = factory;
         _logger = logger;
         _timeProvider = timeProvider;
+        _scope = scope;
     }
 
     /// <inheritdoc />
@@ -41,6 +65,22 @@ public sealed partial class EfCorePlanStateStore : IPlanStateStore
     {
         await using var ctx = _factory.CreateDbContext();
         var now = _timeProvider.GetUtcNow();
+
+        // Self-stamped from the ambient scope (never from caller-supplied data) in the
+        // shared canonical form, so scope filters compare identically on read/write.
+        var owner = ScopeIdentity.Canonicalize(_scope.UserId);
+        var tenant = ScopeIdentity.Canonicalize(_scope.TenantId);
+
+        // SQLite treats HasMaxLength as advisory; guard explicitly so an oversized identity
+        // fails cleanly here instead of silently truncating on providers that would.
+        if (owner?.Length > PlannerScopeFilter.MaxIdentityLength
+            || tenant?.Length > PlannerScopeFilter.MaxIdentityLength)
+            return Result.Fail("Ambient scope identity exceeds the maximum supported length.");
+
+        // Plan ids are caller-supplied; a colliding id must not surface as an unhandled
+        // constraint exception. Generic message — no internals echoed.
+        if (await ctx.PlanGraphs.AsNoTracking().AnyAsync(g => g.Id == plan.Id.Value, ct))
+            return Result.Fail("A plan with this id already exists.");
 
         var graphEntity = new PlanGraphEntity
         {
@@ -50,6 +90,8 @@ public sealed partial class EfCorePlanStateStore : IPlanStateStore
             ConfigurationJson = JsonSerializer.Serialize(plan.Configuration, JsonOptions),
             CreatedAt = now,
             UpdatedAt = now,
+            OwnerId = owner,
+            TenantId = tenant,
         };
 
         foreach (var step in plan.Steps)
@@ -96,7 +138,17 @@ public sealed partial class EfCorePlanStateStore : IPlanStateStore
         });
 
         ctx.PlanGraphs.Add(graphEntity);
-        await ctx.SaveChangesAsync(ct);
+        try
+        {
+            await ctx.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateException ex)
+        {
+            // Race with a concurrent insert of the same id: same generic answer as the
+            // pre-check, full detail to structured logging only.
+            _logger.LogWarning(ex, "Failed to persist plan {PlanId}: constraint violation", plan.Id.Value);
+            return Result.Fail("A plan with this id already exists.");
+        }
 
         _logger.LogInformation("Saved plan {PlanId} with {StepCount} steps", plan.Id.Value, plan.Steps.Count);
         return Result.Success();
@@ -106,6 +158,11 @@ public sealed partial class EfCorePlanStateStore : IPlanStateStore
     public async Task<Result> UpdateStepStateAsync(StepExecutionState state, CancellationToken ct)
     {
         await using var ctx = _factory.CreateDbContext();
+
+        // Write path: strict ownership — a step on a plan the caller doesn't own (including
+        // globally READABLE null-owner plans) is indistinguishable from missing (404-not-403).
+        if (!await IsStepWritableAsync(ctx, state.StepId.Value, ct))
+            return Result.NotFound($"Execution state not found for step {state.StepId.Value}");
 
         var entity = await ctx.StepExecutionStates
             .FirstOrDefaultAsync(s => s.StepId == state.StepId.Value, ct);
@@ -157,6 +214,11 @@ public sealed partial class EfCorePlanStateStore : IPlanStateStore
         PlanId planId, IReadOnlyList<StepExecutionState> states, CancellationToken ct)
     {
         await using var ctx = _factory.CreateDbContext();
+
+        // Write path: strict ownership — a plan the caller doesn't own (including globally
+        // READABLE null-owner plans) is indistinguishable from missing (404-not-403).
+        if (!await IsPlanWritableAsync(ctx, planId.Value, ct))
+            return Result.NotFound($"No step states found for plan {planId.Value}");
 
         var entities = await ctx.StepExecutionStates
             .Where(s => ctx.PlanSteps.Any(ps => ps.Id == s.StepId && ps.PlanGraphId == planId.Value))

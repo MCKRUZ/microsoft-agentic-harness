@@ -56,6 +56,15 @@ public sealed class PlannerDiRegistrationTests : IDisposable
     }
 
     [Fact]
+    public void DependencyInjection_PlannerSchemaInitializer_RegisteredAndCreatesSchema()
+    {
+        // PR W1 regression guard: without this registration the first SavePlanAsync in any
+        // host fails with "no such table" — the planner had no production schema init.
+        _provider.GetService<SchemaInitializer<PlannerDbContext>>().Should().NotBeNull(
+            "the planner must ensure its SQLite schema exists before the first store operation");
+    }
+
+    [Fact]
     public void DependencyInjection_AllSandboxServices_Resolvable()
     {
         using var scope = _provider.CreateScope();
@@ -150,6 +159,10 @@ public sealed class PlannerDiRegistrationTests : IDisposable
             }));
 
         // External dependencies not registered by Infrastructure.AI
+        // IAgentExecutionContext comes from Application.AI.Common's DI in production; the
+        // knowledge-scope accessor (now consumed by EfCorePlanStateStore for plan ownership)
+        // delegates agent identity to it.
+        services.AddScoped(_ => new Mock<Application.AI.Common.Interfaces.Agent.IAgentExecutionContext>().Object);
         services.AddSingleton<ISender>(new Mock<ISender>().Object);
         services.AddSingleton<IPlanProgressNotifier>(new Mock<IPlanProgressNotifier>().Object);
         services.AddSingleton<ICapabilityEnforcer>(new Mock<ICapabilityEnforcer>().Object);
