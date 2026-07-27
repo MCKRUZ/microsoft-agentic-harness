@@ -28,9 +28,10 @@ internal static class ChangeProposalCommandHelper
     /// <param name="proposalId">The id of the proposal to act on.</param>
     /// <param name="statusGuard">
     /// Returns a non-null <see cref="Result{T}"/> to short-circuit the pipeline
-    /// (typically <c>Fail</c> when the current status doesn't permit the
-    /// decision), or <c>null</c> to proceed. The proposal is passed in so the
-    /// guard can include its actual current status in the failure message.
+    /// (typically <c>Conflict</c> when the current status doesn't permit the
+    /// decision, so HTTP layers can map it to 409), or <c>null</c> to proceed.
+    /// The proposal is passed in so the guard can include its actual current
+    /// status in the failure message.
     /// </param>
     /// <param name="decisionFactory">Builds the <see cref="GateDecision"/> to record on the transition.</param>
     /// <param name="targetStatus">The status to transition the proposal into.</param>

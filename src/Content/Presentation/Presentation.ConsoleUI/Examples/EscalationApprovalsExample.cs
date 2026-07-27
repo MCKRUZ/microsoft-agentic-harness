@@ -77,8 +77,10 @@ public class EscalationApprovalsExample
             RespondedAt = DateTimeOffset.UtcNow
         };
 
-        var outcome = await _escalationService.SubmitDecisionAsync(escalationId, aliceDecision, cancellationToken);
-        if (outcome != null)
+        var result = await _escalationService.SubmitDecisionAsync(escalationId, aliceDecision, cancellationToken);
+        // Pattern-match binds the non-null outcome in one step — the status/outcome
+        // invariant (Outcome present iff Resolved) makes this safe without `!`.
+        if (result is { Status: EscalationDecisionStatus.Resolved, Outcome: { } outcome })
         {
             DisplayOutcome("AnyOf Result", outcome);
             AnsiConsole.MarkupLine($"[bold]Escalation Resolved After:[/] {outcome.Decisions.Count} approver decision(s)");
@@ -110,8 +112,8 @@ public class EscalationApprovalsExample
             RespondedAt = DateTimeOffset.UtcNow
         };
 
-        var outcome1 = await _escalationService.SubmitDecisionAsync(escalationId, aliceDecision, cancellationToken);
-        AnsiConsole.MarkupLine($"[yellow]After Alice approved: {(outcome1 == null ? "Still pending (Bob must approve)" : "Resolved")}[/]");
+        var result1 = await _escalationService.SubmitDecisionAsync(escalationId, aliceDecision, cancellationToken);
+        AnsiConsole.MarkupLine($"[yellow]After Alice approved: {(result1.Status == EscalationDecisionStatus.DecisionRecorded ? "Still pending (Bob must approve)" : "Resolved")}[/]");
 
         // Bob approves
         var bobDecision = new ApproverDecision
@@ -122,11 +124,11 @@ public class EscalationApprovalsExample
             RespondedAt = DateTimeOffset.UtcNow
         };
 
-        var outcome2 = await _escalationService.SubmitDecisionAsync(escalationId, bobDecision, cancellationToken);
-        if (outcome2 != null)
+        var result2 = await _escalationService.SubmitDecisionAsync(escalationId, bobDecision, cancellationToken);
+        if (result2 is { Status: EscalationDecisionStatus.Resolved, Outcome: { } outcome })
         {
-            DisplayOutcome("AllOf Result", outcome2);
-            AnsiConsole.MarkupLine($"[bold]Escalation Resolved After:[/] All {outcome2.Decisions.Count} approvers decided");
+            DisplayOutcome("AllOf Result", outcome);
+            AnsiConsole.MarkupLine($"[bold]Escalation Resolved After:[/] All {outcome.Decisions.Count} approvers decided");
         }
 
         AnsiConsole.WriteLine();
@@ -156,8 +158,8 @@ public class EscalationApprovalsExample
             RespondedAt = DateTimeOffset.UtcNow
         };
 
-        var outcome1 = await _escalationService.SubmitDecisionAsync(escalationId, aliceDecision, cancellationToken);
-        AnsiConsole.MarkupLine($"[yellow]After Alice: {(outcome1 == null ? "1/2 approvals received, pending" : "Quorum met")}[/]");
+        var result1 = await _escalationService.SubmitDecisionAsync(escalationId, aliceDecision, cancellationToken);
+        AnsiConsole.MarkupLine($"[yellow]After Alice: {(result1.Status == EscalationDecisionStatus.DecisionRecorded ? "1/2 approvals received, pending" : "Quorum met")}[/]");
 
         // Bob approves (quorum met)
         var bobDecision = new ApproverDecision
@@ -168,11 +170,11 @@ public class EscalationApprovalsExample
             RespondedAt = DateTimeOffset.UtcNow
         };
 
-        var outcome2 = await _escalationService.SubmitDecisionAsync(escalationId, bobDecision, cancellationToken);
-        if (outcome2 != null)
+        var result2 = await _escalationService.SubmitDecisionAsync(escalationId, bobDecision, cancellationToken);
+        if (result2 is { Status: EscalationDecisionStatus.Resolved, Outcome: { } outcome })
         {
-            DisplayOutcome("Quorum Result", outcome2);
-            AnsiConsole.MarkupLine($"[bold]Escalation Resolved After:[/] {outcome2.Decisions.Count} approvers (quorum met)");
+            DisplayOutcome("Quorum Result", outcome);
+            AnsiConsole.MarkupLine($"[bold]Escalation Resolved After:[/] {outcome.Decisions.Count} approvers (quorum met)");
         }
 
         AnsiConsole.WriteLine();

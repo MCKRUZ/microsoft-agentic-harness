@@ -94,6 +94,10 @@ public sealed class ComplianceController : ControllerBase
                 title: "Forbidden",
                 detail: string.Join(" / ", result.Errors),
                 statusCode: StatusCodes.Status403Forbidden),
+            ResultFailureType.Conflict => Problem(
+                title: "Conflict",
+                detail: string.Join(" / ", result.Errors),
+                statusCode: StatusCodes.Status409Conflict),
             _ => Problem(
                 title: "Erasure failed",
                 detail: "An error occurred processing the request. See server logs for details.",

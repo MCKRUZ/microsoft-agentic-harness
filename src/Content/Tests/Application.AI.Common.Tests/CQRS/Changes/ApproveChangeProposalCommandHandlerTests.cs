@@ -78,7 +78,7 @@ public sealed class ApproveChangeProposalCommandHandlerTests
     [InlineData(ChangeProposalStatus.Merged)]
     [InlineData(ChangeProposalStatus.Rejected)]
     [InlineData(ChangeProposalStatus.Cancelled)]
-    public async Task Handle_WrongStatus_ReturnsFailureAndDoesNotEnqueue(ChangeProposalStatus status)
+    public async Task Handle_WrongStatus_ReturnsConflictAndDoesNotEnqueue(ChangeProposalStatus status)
     {
         var store = new InMemoryChangeProposalStore();
         var proposal = TestHelpers.NewProposal(status);
@@ -91,6 +91,8 @@ public sealed class ApproveChangeProposalCommandHandlerTests
             CancellationToken.None);
 
         result.IsSuccess.Should().BeFalse();
+        result.FailureType.Should().Be(ResultFailureType.Conflict,
+            "a status-machine guard rejection is a state conflict (HTTP 409), not an opaque general failure (500)");
         dispatcher.Enqueued.Should().BeEmpty();
     }
 

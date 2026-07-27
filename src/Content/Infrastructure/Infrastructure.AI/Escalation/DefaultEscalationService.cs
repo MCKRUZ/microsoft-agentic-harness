@@ -108,25 +108,25 @@ public sealed class DefaultEscalationService : IEscalationService, IDisposable
 	}
 
 	/// <inheritdoc />
-	public async Task<EscalationOutcome?> SubmitDecisionAsync(
+	public async Task<EscalationDecisionResult> SubmitDecisionAsync(
 		Guid escalationId, ApproverDecision decision, CancellationToken ct)
 	{
 		if (!_activeEscalations.TryGetValue(escalationId, out var state))
 		{
 			_logger.LogWarning("Decision submitted for unknown escalation {EscalationId}", escalationId);
-			return null;
+			return EscalationDecisionResult.UnknownEscalation();
 		}
 
 		// Authorization chokepoint: reject decisions from identities outside the approver
 		// roster before they are recorded, evaluated, or allowed to resolve the escalation.
 		// The strategies also filter non-roster votes (defense in depth), but stopping here
 		// keeps unauthorized decisions out of the audit trail and strategy evaluation entirely.
-		if (!state.Request.Approvers.Contains(decision.ApproverName, StringComparer.OrdinalIgnoreCase))
+		if (!state.Request.Approvers.Contains(decision.ApproverName, ApproverNames.Comparer))
 		{
 			_logger.LogWarning(
 				"Rejected decision from non-roster identity {ApproverName} for escalation {EscalationId}",
 				decision.ApproverName, escalationId);
-			return null;
+			return EscalationDecisionResult.ApproverNotAuthorized();
 		}
 
 		await SafeExecuteAsync(
@@ -142,8 +142,11 @@ public sealed class DefaultEscalationService : IEscalationService, IDisposable
 
 		lock (state.Lock)
 		{
+			// Recorded for audit above, but another decision resolved the escalation
+			// concurrently — this one arrives too late to participate. The caller polls
+			// GetOutcomeAsync for the verdict (see EscalationDecisionStatus.DecisionRecorded).
 			if (state.IsResolved)
-				return null;
+				return EscalationDecisionResult.DecisionRecorded();
 
 			state.Decisions.Add(decision);
 			var evaluation = strategy.EvaluateDecision(state.Request, state.Decisions.AsReadOnly());
@@ -153,7 +156,7 @@ public sealed class DefaultEscalationService : IEscalationService, IDisposable
 				escalationId, evaluation.IsResolved, evaluation.IsApproved);
 
 			if (!evaluation.IsResolved)
-				return null;
+				return EscalationDecisionResult.DecisionRecorded();
 
 			state.IsResolved = true;
 			outcome = new EscalationOutcome
@@ -169,7 +172,7 @@ public sealed class DefaultEscalationService : IEscalationService, IDisposable
 		}
 
 		await ResolveEscalationAsync(state, outcome);
-		return outcome;
+		return EscalationDecisionResult.Resolved(outcome);
 	}
 
 	/// <inheritdoc />
@@ -190,8 +193,11 @@ public sealed class DefaultEscalationService : IEscalationService, IDisposable
 	public Task<IReadOnlyList<EscalationRequest>> GetPendingEscalationsAsync(
 		string approverName, CancellationToken ct)
 	{
+		// Match the roster the same way the decide path does: an approver whose identity
+		// differs from the roster entry only by casing must see the escalations they are
+		// allowed to decide. ApproverNames.Comparer is the single source of that rule.
 		var pending = _activeEscalations.Values
-			.Where(s => s.Request.Approvers.Contains(approverName))
+			.Where(s => s.Request.Approvers.Contains(approverName, ApproverNames.Comparer))
 			.Select(s => s.Request)
 			.ToList();
 		return Task.FromResult<IReadOnlyList<EscalationRequest>>(pending.AsReadOnly());

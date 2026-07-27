@@ -190,6 +190,17 @@ public class ResultExtensionsLogicTests
     }
 
     [Fact]
+    public void Map_ConflictFailure_PropagatesConflictType()
+    {
+        var result = Result<int>.Conflict("state moved on");
+
+        var mapped = result.Map(v => v.ToString());
+
+        mapped.IsSuccess.Should().BeFalse();
+        mapped.FailureType.Should().Be(ResultFailureType.Conflict);
+    }
+
+    [Fact]
     public void Map_GeneralFailure_PropagatesGeneralType()
     {
         var result = Result<int>.Fail("general error");

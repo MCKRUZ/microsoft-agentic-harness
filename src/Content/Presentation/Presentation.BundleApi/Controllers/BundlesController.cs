@@ -239,6 +239,8 @@ public sealed class BundlesController : ControllerBase
             title: "Unauthorized", detail: string.Join(" / ", errors), statusCode: StatusCodes.Status401Unauthorized),
         ResultFailureType.Forbidden => Problem(
             title: "Forbidden", detail: string.Join(" / ", errors), statusCode: StatusCodes.Status403Forbidden),
+        ResultFailureType.Conflict => Problem(
+            title: "Conflict", detail: string.Join(" / ", errors), statusCode: StatusCodes.Status409Conflict),
         _ => Problem(
             title: "Bundle operation failed",
             detail: "An error occurred processing the request. See server logs for details.",

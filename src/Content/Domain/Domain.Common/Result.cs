@@ -87,6 +87,9 @@ public class Result
 
     /// <summary>Creates a pending-approval result with the escalation ID for correlation.</summary>
     public static Result PendingApproval(string reason) => new(false, [reason], ResultFailureType.PendingApproval);
+
+    /// <summary>Creates a conflict failure result for requests that clash with the resource's current state.</summary>
+    public static Result Conflict(string reason) => new(false, [reason], ResultFailureType.Conflict);
 }
 
 /// <summary>
@@ -134,6 +137,9 @@ public sealed class Result<T> : Result
     /// <summary>Creates a pending-approval result with the escalation ID for correlation.</summary>
     public new static Result<T> PendingApproval(string reason) => new(false, errors: [reason], failureType: ResultFailureType.PendingApproval);
 
+    /// <summary>Creates a conflict failure result for requests that clash with the resource's current state.</summary>
+    public new static Result<T> Conflict(string reason) => new(false, errors: [reason], failureType: ResultFailureType.Conflict);
+
     /// <summary>
     /// Implicit conversion from a non-null value to a successful result.
     /// Throws <see cref="ArgumentNullException"/> if value is null to prevent
@@ -172,5 +178,12 @@ public enum ResultFailureType
     /// <summary>Action blocked by governance policy.</summary>
     GovernanceBlocked,
     /// <summary>Action requires human approval; escalation is pending.</summary>
-    PendingApproval
+    PendingApproval,
+    /// <summary>
+    /// Request conflicts with the current state of the target resource (409) — e.g. a
+    /// status-machine guard rejecting a decision because the entity already moved on.
+    /// Distinct from <see cref="Validation"/> (the request itself is well-formed) and from
+    /// <see cref="General"/> (which HTTP layers map to an opaque 500).
+    /// </summary>
+    Conflict
 }

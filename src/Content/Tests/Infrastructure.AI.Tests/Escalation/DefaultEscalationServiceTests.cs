@@ -235,11 +235,11 @@ public sealed class DefaultEscalationServiceTests : IDisposable
 		var task = Task.Run(() => _sut.RequestEscalationAsync(request, CancellationToken.None));
 		await WaitForRegistrationAsync(request.EscalationId);
 
-		var submitOutcome = await _sut.SubmitDecisionAsync(
+		var submitResult = await _sut.SubmitDecisionAsync(
 			request.EscalationId, CreateApproval(), CancellationToken.None);
 		var outcome = await task;
 
-		submitOutcome.Should().NotBeNull(
+		submitResult.Status.Should().Be(EscalationDecisionStatus.Resolved,
 			"the decision must hit a registered escalation, not be dropped as unknown");
 		outcome.ResolutionType.Should().Be(EscalationResolutionType.Approved,
 			"the escalation must resolve from the submitted approval, not from a timeout");
@@ -270,18 +270,20 @@ public sealed class DefaultEscalationServiceTests : IDisposable
 	// ===== SubmitDecisionAsync =====
 
 	[Fact]
-	public async Task SubmitDecisionAsync_TriggersStrategyEvaluation_ReturnsOutcomeIfResolved()
+	public async Task SubmitDecisionAsync_ResolvingDecision_ReturnsResolvedCarryingOutcome()
 	{
 		var request = CreateTestRequest();
 		SetupStrategyResolvesOnFirstApproval();
 		await _sut.QueueEscalationAsync(request, CancellationToken.None);
 
-		var outcome = await _sut.SubmitDecisionAsync(
+		var result = await _sut.SubmitDecisionAsync(
 			request.EscalationId, CreateApproval(), CancellationToken.None);
 
-		outcome.Should().NotBeNull();
-		outcome!.IsApproved.Should().BeTrue();
-		outcome.ResolutionType.Should().Be(EscalationResolutionType.Approved);
+		result.Status.Should().Be(EscalationDecisionStatus.Resolved);
+		result.Outcome.Should().NotBeNull(
+			"a Resolved result must carry the final verdict for the caller");
+		result.Outcome!.IsApproved.Should().BeTrue();
+		result.Outcome.ResolutionType.Should().Be(EscalationResolutionType.Approved);
 
 		_auditStore.Verify(
 			a => a.RecordDecisionAsync(request.EscalationId, It.IsAny<ApproverDecision>(), It.IsAny<CancellationToken>()),
@@ -295,16 +297,18 @@ public sealed class DefaultEscalationServiceTests : IDisposable
 	}
 
 	[Fact]
-	public async Task SubmitDecisionAsync_PartialDecision_ReturnsNull()
+	public async Task SubmitDecisionAsync_PartialDecisionUnderAllOf_ReturnsDecisionRecorded()
 	{
 		var request = CreateTestRequest(strategy: ApprovalStrategyType.AllOf);
 		SetupStrategyNeverResolves(ApprovalStrategyType.AllOf);
 		await _sut.QueueEscalationAsync(request, CancellationToken.None);
 
-		var outcome = await _sut.SubmitDecisionAsync(
+		var result = await _sut.SubmitDecisionAsync(
 			request.EscalationId, CreateApproval(), CancellationToken.None);
 
-		outcome.Should().BeNull();
+		result.Status.Should().Be(EscalationDecisionStatus.DecisionRecorded,
+			"a recorded decision that does not satisfy the strategy must be reported as recorded-but-pending, not conflated with unknown/unauthorized");
+		result.Outcome.Should().BeNull("only a Resolved result carries an outcome");
 		_auditStore.Verify(
 			a => a.RecordDecisionAsync(request.EscalationId, It.IsAny<ApproverDecision>(), It.IsAny<CancellationToken>()),
 			Times.Once);
@@ -314,12 +318,13 @@ public sealed class DefaultEscalationServiceTests : IDisposable
 	}
 
 	[Fact]
-	public async Task SubmitDecisionAsync_UnknownEscalationId_ReturnsNull()
+	public async Task SubmitDecisionAsync_UnknownEscalationId_ReturnsUnknownEscalation()
 	{
-		var outcome = await _sut.SubmitDecisionAsync(
+		var result = await _sut.SubmitDecisionAsync(
 			Guid.NewGuid(), CreateApproval(), CancellationToken.None);
 
-		outcome.Should().BeNull();
+		result.Status.Should().Be(EscalationDecisionStatus.UnknownEscalation,
+			"an HTTP layer must be able to map a missing escalation to 404, distinct from the other non-resolving cases");
 		_auditStore.Verify(
 			a => a.RecordDecisionAsync(It.IsAny<Guid>(), It.IsAny<ApproverDecision>(), It.IsAny<CancellationToken>()),
 			Times.Never);
@@ -332,10 +337,11 @@ public sealed class DefaultEscalationServiceTests : IDisposable
 		SetupStrategyResolvesOnFirstApproval();
 		await _sut.QueueEscalationAsync(request, CancellationToken.None);
 
-		var outcome = await _sut.SubmitDecisionAsync(
+		var result = await _sut.SubmitDecisionAsync(
 			request.EscalationId, CreateApproval("mallory"), CancellationToken.None);
 
-		outcome.Should().BeNull("a decision from an identity outside the approver roster must not resolve the escalation");
+		result.Status.Should().Be(EscalationDecisionStatus.ApproverNotAuthorized,
+			"a decision from an identity outside the approver roster must be rejected as unauthorized, mappable to 403");
 		_auditStore.Verify(
 			a => a.RecordDecisionAsync(It.IsAny<Guid>(), It.IsAny<ApproverDecision>(), It.IsAny<CancellationToken>()),
 			Times.Never);
@@ -447,8 +453,8 @@ public sealed class DefaultEscalationServiceTests : IDisposable
 				CancellationToken.None))
 			.ToArray();
 
-		var outcomes = await Task.WhenAll(tasks);
-		outcomes.Count(o => o is not null).Should().Be(1,
+		var results = await Task.WhenAll(tasks);
+		results.Count(r => r.Status == EscalationDecisionStatus.Resolved).Should().Be(1,
 			"exactly one concurrent decision should resolve the escalation");
 	}
 
@@ -506,6 +512,39 @@ public sealed class DefaultEscalationServiceTests : IDisposable
 	}
 
 	[Fact]
+	public async Task GetPendingEscalationsAsync_ApproverCasedDifferentlyFromRoster_SeesPendingEscalation()
+	{
+		// Regression (roster case-sensitivity mismatch): SubmitDecisionAsync matched the roster
+		// OrdinalIgnoreCase while GetPendingEscalationsAsync used case-sensitive Contains — an
+		// approver whose identity differed from the roster entry only by casing could decide
+		// an escalation they could never see in their pending list.
+		var request = CreateTestRequest(); // roster: approver-1, approver-2
+		SetupStrategyNeverResolves(ApprovalStrategyType.AnyOf);
+		await _sut.QueueEscalationAsync(request, CancellationToken.None);
+
+		var pending = await _sut.GetPendingEscalationsAsync("APPROVER-1", CancellationToken.None);
+
+		pending.Should().ContainSingle(r => r.EscalationId == request.EscalationId,
+			"the pending view must use the same case-insensitive roster match as the decide path");
+	}
+
+	[Fact]
+	public async Task SubmitDecisionAsync_ApproverCasedDifferentlyFromRoster_CanDecide()
+	{
+		// Companion to the pending-view casing test: the same differently-cased approver must
+		// also be able to decide, proving see-and-decide agree on roster membership semantics.
+		var request = CreateTestRequest(); // roster: approver-1, approver-2
+		SetupStrategyResolvesOnFirstApproval();
+		await _sut.QueueEscalationAsync(request, CancellationToken.None);
+
+		var result = await _sut.SubmitDecisionAsync(
+			request.EscalationId, CreateApproval("APPROVER-1"), CancellationToken.None);
+
+		result.Status.Should().Be(EscalationDecisionStatus.Resolved);
+		result.Outcome!.IsApproved.Should().BeTrue();
+	}
+
+	[Fact]
 	public async Task GetPendingEscalationAsync_ResolvedEscalation_ReturnsNull()
 	{
 		var request = CreateTestRequest();
@@ -553,7 +592,7 @@ public sealed class DefaultEscalationServiceTests : IDisposable
 
 		var submitted = await _sut.SubmitDecisionAsync(
 			request.EscalationId, CreateApproval(), CancellationToken.None);
-		submitted.Should().NotBeNull();
+		submitted.Status.Should().Be(EscalationDecisionStatus.Resolved);
 
 		var outcome = await _sut.GetOutcomeAsync(request.EscalationId, CancellationToken.None);
 
