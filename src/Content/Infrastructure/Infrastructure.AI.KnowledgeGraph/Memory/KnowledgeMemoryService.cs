@@ -82,7 +82,7 @@ public sealed partial class KnowledgeMemoryService : IKnowledgeMemory
     }
 
     /// <inheritdoc />
-    public async Task RememberAsync(
+    public async Task<MemoryWriteDecision> RememberAsync(
         string key,
         string content,
         string entityType = "Fact",
@@ -94,20 +94,18 @@ public sealed partial class KnowledgeMemoryService : IKnowledgeMemory
         // entries before it is gated and persisted (see RememberHarmonicAsync).
         var harmonic = _configMonitor.CurrentValue.AI.HarmonicMemory;
         if (ShouldUseHarmonic(harmonic, content))
-        {
-            await RememberHarmonicAsync(key, content, entityType, harmonic, cancellationToken);
-            return;
-        }
+            return await RememberHarmonicAsync(key, content, entityType, harmonic, cancellationToken);
 
-        await RememberLegacyAsync(key, content, entityType, cancellationToken);
+        return await RememberLegacyAsync(key, content, entityType, cancellationToken);
     }
 
     /// <summary>
     /// The legacy write path: gate, then persist the raw content under a scope-namespaced, caller-keyed
     /// node. Unchanged from before harmonic memory existed; this is exactly what runs when
-    /// <c>HarmonicMemoryMode.Off</c> (the default).
+    /// <c>HarmonicMemoryMode.Off</c> (the default). Returns the applied gate decision so the public
+    /// surface can report the honest write outcome.
     /// </summary>
-    private async Task RememberLegacyAsync(
+    private async Task<MemoryWriteDecision> RememberLegacyAsync(
         string key,
         string content,
         string entityType,
@@ -116,20 +114,23 @@ public sealed partial class KnowledgeMemoryService : IKnowledgeMemory
         // Gate the write before anything is persisted: scan for injection, classify trust, and
         // stamp provenance. This is the single chokepoint covering every write — including the
         // unattended post-turn auto-extraction path that bypasses the request pipeline.
+        // A missing gate means the write passes through unguarded; Allow() reports that honestly
+        // (trusted, no provenance) and preserves the exact pre-gate persistence behavior.
         var decision = _writeGate is null
-            ? null
+            ? MemoryWriteDecision.Allow()
             : await _writeGate.EvaluateAsync(key, content, entityType, cancellationToken);
 
-        if (decision is { Persist: false })
+        if (!decision.Persist)
         {
             _logger.LogWarning(
                 "Memory write blocked for Key={Key}, Type={Type}: {Reason}",
                 key, entityType, decision.Reason);
-            return;
+            return decision;
         }
 
         await PersistGatedNodeAsync(
             BuildMemoryNode(key, content, entityType, decision), decision, key, entityType, cancellationToken);
+        return decision;
     }
 
     /// <summary>

@@ -179,6 +179,25 @@ public static class DependencyInjection
                         QueueLimit = 0,
                     });
                 }
+
+                // Memory writes run the write gate's prompt-injection scan on every request and
+                // create durable graph nodes; cap them per authenticated user so a scripted caller
+                // cannot flood the graph store or burn gate-scan cycles. Reads (GET search) and
+                // deletes are cheap and idempotent and stay unthrottled, matching the documents API.
+                if (context.Request.Method == HttpMethods.Post &&
+                    context.Request.Path.StartsWithSegments("/api/memory"))
+                {
+                    var memoryCaller = context.User.GetUserIdOrNull()
+                        ?? context.Connection.RemoteIpAddress?.ToString()
+                        ?? "unknown";
+                    return RateLimitPartition.GetFixedWindowLimiter($"memory:{memoryCaller}", _ => new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = 30,
+                        Window = TimeSpan.FromMinutes(1),
+                        QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                        QueueLimit = 0,
+                    });
+                }
                 return RateLimitPartition.GetNoLimiter("none");
             });
 

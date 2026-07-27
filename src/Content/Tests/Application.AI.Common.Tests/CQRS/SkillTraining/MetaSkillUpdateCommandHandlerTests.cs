@@ -73,10 +73,10 @@ public class MetaSkillUpdateCommandHandlerTests
         public string? LastContent { get; private set; }
         public string? LastEntityType { get; private set; }
 
-        public Task RememberAsync(string key, string content, string entityType = "Fact", CancellationToken cancellationToken = default)
+        public Task<MemoryWriteDecision> RememberAsync(string key, string content, string entityType = "Fact", CancellationToken cancellationToken = default)
         {
             LastKey = key; LastContent = content; LastEntityType = entityType;
-            return Task.CompletedTask;
+            return Task.FromResult(MemoryWriteDecision.Allow());
         }
         public Task<IReadOnlyList<GraphNode>> RecallAsync(string query, int maxResults = 5, CancellationToken cancellationToken = default)
             => Task.FromResult<IReadOnlyList<GraphNode>>([]);
@@ -88,7 +88,7 @@ public class MetaSkillUpdateCommandHandlerTests
     {
         private readonly string _secret;
         public ThrowingKnowledgeMemory(string secret) => _secret = secret;
-        public Task RememberAsync(string key, string content, string entityType = "Fact", CancellationToken cancellationToken = default)
+        public Task<MemoryWriteDecision> RememberAsync(string key, string content, string entityType = "Fact", CancellationToken cancellationToken = default)
             => throw new InvalidOperationException($"upstream said: {_secret}");
         public Task<IReadOnlyList<GraphNode>> RecallAsync(string query, int maxResults = 5, CancellationToken cancellationToken = default)
             => Task.FromResult<IReadOnlyList<GraphNode>>([]);

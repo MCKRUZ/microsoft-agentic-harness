@@ -224,7 +224,7 @@ public sealed class AppAiCommonSolutionReviewFixTests
             get { lock (_gate) { return _persistedKeys.ToList(); } }
         }
 
-        public Task RememberAsync(
+        public Task<MemoryWriteDecision> RememberAsync(
             string key,
             string content,
             string entityType = "Fact",
@@ -232,7 +232,7 @@ public sealed class AppAiCommonSolutionReviewFixTests
         {
             lock (_gate) { _persistedKeys.Add(key); }
             _written.TrySetResult();
-            return Task.CompletedTask;
+            return Task.FromResult(MemoryWriteDecision.Allow());
         }
 
         public Task WaitForWriteAsync(TimeSpan timeout)
