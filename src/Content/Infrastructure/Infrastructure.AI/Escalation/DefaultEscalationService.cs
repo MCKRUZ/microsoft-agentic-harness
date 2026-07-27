@@ -129,6 +129,29 @@ public sealed class DefaultEscalationService : IEscalationService, IDisposable
 			return EscalationDecisionResult.ApproverNotAuthorized();
 		}
 
+		// Idempotency chokepoint: one recorded decision per approver per escalation. A repeated
+		// submission (double-click, HTTP retry, replay) must not append to the decision list or
+		// grow the audit trail — the first decision already speaks for this approver. Checked
+		// BEFORE the audit write so a repeat produces a log line, never an audit record. A
+		// repeat with the SAME verdict echoes DecisionRecorded (idempotent); a repeat with the
+		// OPPOSITE verdict is a conflict — silently dropping a changed vote while reporting it
+		// recorded would be dishonest, and recording it would let a replay flip a final vote.
+		if (TryGetExistingDecision(state, decision.ApproverName) is { } existing)
+		{
+			if (existing.Approved != decision.Approved)
+			{
+				_logger.LogWarning(
+					"Conflicting decision from {ApproverName} for escalation {EscalationId} rejected: {New} contradicts recorded {Recorded}",
+					decision.ApproverName, escalationId, decision.Approved, existing.Approved);
+				return EscalationDecisionResult.ConflictingDecision();
+			}
+
+			_logger.LogDebug(
+				"Duplicate decision from {ApproverName} for escalation {EscalationId} ignored (already recorded)",
+				decision.ApproverName, escalationId);
+			return EscalationDecisionResult.DecisionRecorded();
+		}
+
 		await SafeExecuteAsync(
 			() => _auditStore.RecordDecisionAsync(escalationId, decision, ct),
 			"record decision", escalationId);
@@ -147,6 +170,16 @@ public sealed class DefaultEscalationService : IEscalationService, IDisposable
 			// GetOutcomeAsync for the verdict (see EscalationDecisionStatus.DecisionRecorded).
 			if (state.IsResolved)
 				return EscalationDecisionResult.DecisionRecorded();
+
+			// Closes the race two concurrent submissions from the same approver can win against
+			// the pre-audit duplicate check: only the first may enter the decision list, and a
+			// contradicting verdict is a conflict here exactly as at the chokepoint above.
+			if (TryGetExistingDecision(state, decision.ApproverName) is { } raced)
+			{
+				return raced.Approved != decision.Approved
+					? EscalationDecisionResult.ConflictingDecision()
+					: EscalationDecisionResult.DecisionRecorded();
+			}
 
 			state.Decisions.Add(decision);
 			var evaluation = strategy.EvaluateDecision(state.Request, state.Decisions.AsReadOnly());
@@ -167,7 +200,8 @@ public sealed class DefaultEscalationService : IEscalationService, IDisposable
 				ResolutionType = evaluation.IsApproved
 					? EscalationResolutionType.Approved
 					: EscalationResolutionType.Denied,
-				ResolvedAt = DateTimeOffset.UtcNow
+				ResolvedAt = DateTimeOffset.UtcNow,
+				Approvers = state.Request.Approvers
 			};
 		}
 
@@ -205,7 +239,7 @@ public sealed class DefaultEscalationService : IEscalationService, IDisposable
 
 	/// <inheritdoc />
 	public async Task<EscalationOutcome> CancelEscalationAsync(
-		Guid escalationId, string reason, CancellationToken ct)
+		Guid escalationId, string reason, string cancelledBy, CancellationToken ct)
 	{
 		if (!_activeEscalations.TryGetValue(escalationId, out var state))
 			throw new InvalidOperationException($"No pending escalation found with ID {escalationId}");
@@ -223,11 +257,17 @@ public sealed class DefaultEscalationService : IEscalationService, IDisposable
 				IsApproved = false,
 				Decisions = state.Decisions.ToList().AsReadOnly(),
 				ResolutionType = EscalationResolutionType.Denied,
-				ResolvedAt = DateTimeOffset.UtcNow
+				ResolvedAt = DateTimeOffset.UtcNow,
+				Approvers = state.Request.Approvers,
+				// Stamped on the outcome — and thereby into the durable outcome audit record —
+				// so the force-denial is attributable to its actor, not just a log line.
+				CancelledBy = cancelledBy
 			};
 		}
 
-		_logger.LogInformation("Escalation {EscalationId} cancelled: {Reason}", escalationId, reason);
+		_logger.LogInformation(
+			"Escalation {EscalationId} cancelled by {CancelledBy}: {Reason}",
+			escalationId, cancelledBy, reason);
 		await ResolveEscalationAsync(state, outcome);
 		return outcome;
 	}
@@ -314,20 +354,15 @@ public sealed class DefaultEscalationService : IEscalationService, IDisposable
 			return;
 
 		state.TimeoutCts.Cancel();
-		_activeEscalations.TryRemove(state.Request.EscalationId, out _);
-
-		EscalationMetrics.Pending.Add(-1);
-		RecordResolutionMetrics(state, outcome);
-
-		_logger.LogInformation(
-			"Escalation {EscalationId} resolved: {ResolutionType}, approved={IsApproved}",
-			outcome.EscalationId, outcome.ResolutionType, outcome.IsApproved);
 
 		// Record the audit outcome BEFORE releasing the caller awaiting Completion.Task.
 		// The durable outcome write is fail-CLOSED: if it throws, the escalation must NOT
 		// be reported as resolved. Propagate the failure to the awaiting caller instead of
 		// delivering an approval that was never recorded for compliance. (SafeExecuteAsync
 		// is reserved for best-effort notification, never for the durable audit write.)
+		// The escalation deliberately stays in _activeEscalations on failure: it must remain
+		// observable (a resolved-but-unaudited escalation vanishing entirely would read as an
+		// unknown id to every poller) rather than dropping into a state no reader can see.
 		try
 		{
 			await _auditStore.RecordOutcomeAsync(outcome, CancellationToken.None);
@@ -343,8 +378,20 @@ public sealed class DefaultEscalationService : IEscalationService, IDisposable
 
 		// Retain the verdict ONLY after it has been durably audited, so GetOutcomeAsync — and thus
 		// the plan executor's resume reconciliation — can never act on a verdict that failed the
-		// fail-closed audit write above and was rolled back to the awaiting caller.
+		// fail-closed audit write above and was rolled back to the awaiting caller. Publish it
+		// BEFORE removing the escalation from the active set: a reader landing between the two
+		// steps sees at least one view (brief dual presence is fine — readers check the active
+		// set first and simply serve the pending view), never the spurious not-found a
+		// remove-then-publish order produced on exactly the poll the 202 contract prescribes.
 		_resolvedOutcomes[outcome.EscalationId] = outcome;
+		_activeEscalations.TryRemove(state.Request.EscalationId, out _);
+
+		EscalationMetrics.Pending.Add(-1);
+		RecordResolutionMetrics(state, outcome);
+
+		_logger.LogInformation(
+			"Escalation {EscalationId} resolved: {ResolutionType}, approved={IsApproved}",
+			outcome.EscalationId, outcome.ResolutionType, outcome.IsApproved);
 
 		await SafeExecuteAsync(
 			() => _notifier.NotifyEscalationResolvedAsync(outcome, CancellationToken.None),
@@ -391,7 +438,8 @@ public sealed class DefaultEscalationService : IEscalationService, IDisposable
 				IsApproved = state.Request.TimeoutAction == EscalationTimeoutAction.Approve,
 				Decisions = state.Decisions.ToList().AsReadOnly(),
 				ResolutionType = EscalationResolutionType.TimedOut,
-				ResolvedAt = DateTimeOffset.UtcNow
+				ResolvedAt = DateTimeOffset.UtcNow,
+				Approvers = state.Request.Approvers
 			};
 		}
 
@@ -436,6 +484,22 @@ public sealed class DefaultEscalationService : IEscalationService, IDisposable
 		EscalationMetrics.DurationMs.Record(durationMs,
 			new KeyValuePair<string, object?>(EscalationConventions.Priority,
 				ToPriorityTag(state.Request.Priority)));
+	}
+
+	/// <summary>
+	/// Returns this approver's already-recorded decision on the escalation, or null when none
+	/// exists, using <see cref="ApproverNames.Comparer"/> so a casing-variant retry is still a
+	/// duplicate. Takes the state lock itself, so callers may invoke it lock-free; the in-lock
+	/// re-check in <see cref="SubmitDecisionAsync"/> relies on the lock being reentrant for the
+	/// same thread.
+	/// </summary>
+	private static ApproverDecision? TryGetExistingDecision(EscalationState state, string approverName)
+	{
+		lock (state.Lock)
+		{
+			return state.Decisions.FirstOrDefault(d =>
+				ApproverNames.Comparer.Equals(d.ApproverName, approverName));
+		}
 	}
 
 	private async Task SafeExecuteAsync(Func<Task> action, string operationName, Guid escalationId)

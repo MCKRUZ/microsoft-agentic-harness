@@ -26,10 +26,21 @@ public enum EscalationDecisionStatus
     /// The decision was durably recorded but did not resolve the escalation:
     /// either the approval strategy requires further decisions (e.g. AllOf with
     /// approvers still pending), or another decision resolved the escalation
-    /// concurrently. Poll <c>IEscalationService.GetOutcomeAsync</c> for the final
-    /// verdict. Maps naturally to HTTP 202.
+    /// concurrently. Also returned as an idempotent echo when the same approver
+    /// repeats a decision with the same verdict — the first submission already
+    /// speaks for them. Poll <c>IEscalationService.GetOutcomeAsync</c> for the
+    /// final verdict. Maps naturally to HTTP 202.
     /// </summary>
     DecisionRecorded,
+
+    /// <summary>
+    /// The submitting approver already has a recorded decision on this escalation with the
+    /// <em>opposite</em> verdict; the new decision was rejected, not recorded. Changing a vote
+    /// is not supported over this surface — silently discarding the change while reporting it
+    /// recorded would be dishonest, and silently flipping it would let a replayed request alter
+    /// an audit-final decision. Maps naturally to HTTP 409.
+    /// </summary>
+    ConflictingDecision,
 
     /// <summary>
     /// This decision resolved the escalation. <see cref="EscalationDecisionResult.Outcome"/>

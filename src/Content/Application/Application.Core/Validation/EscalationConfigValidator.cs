@@ -37,6 +37,17 @@ public sealed class EscalationConfigValidator : AbstractValidator<EscalationConf
             .NotEmpty()
             .WithMessage("AuditStoragePath must be configured.");
 
+        // Gated on Enabled like the sibling rules: while the escalation subsystem is off there
+        // is nothing the claim type can authorize, and these validators impose no constraints on
+        // disabled features (hosts booting on class defaults must keep booting).
+        RuleFor(x => x.ApproverClaimType)
+            .Must(v => ApproverClaimTypes.Allowed.Contains(v, StringComparer.Ordinal))
+            .WithMessage(
+                "ApproverClaimType must be one of: " + string.Join(", ", ApproverClaimTypes.Allowed) +
+                ". Only issuer-asserted identity claims may drive roster authorization — " +
+                "user-editable claims like 'name' or unverified 'email' must never select the approver.")
+            .When(x => x.Enabled);
+
         RuleFor(x => x.PriorityLevels)
             .NotEmpty()
             .WithMessage("PriorityLevels must be configured when escalation is enabled.")

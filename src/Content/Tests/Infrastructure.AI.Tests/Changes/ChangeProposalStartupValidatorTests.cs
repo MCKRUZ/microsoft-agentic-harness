@@ -61,7 +61,7 @@ public sealed class ChangeProposalStartupValidatorTests
             Task.FromResult<EscalationOutcome?>(null);
         public Task<IReadOnlyList<EscalationRequest>> GetPendingEscalationsAsync(string approverName, CancellationToken ct) =>
             Task.FromResult<IReadOnlyList<EscalationRequest>>([]);
-        public Task<EscalationOutcome> CancelEscalationAsync(Guid escalationId, string reason, CancellationToken ct) =>
+        public Task<EscalationOutcome> CancelEscalationAsync(Guid escalationId, string reason, string cancelledBy, CancellationToken ct) =>
             throw new NotImplementedException();
     }
 

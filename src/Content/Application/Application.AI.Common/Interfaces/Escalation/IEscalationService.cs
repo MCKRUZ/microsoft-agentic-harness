@@ -66,5 +66,14 @@ public interface IEscalationService
     /// Explicitly cancels a pending escalation. Used for agent disconnects,
     /// admin force-resolve, or governance context changes.
     /// </summary>
-    Task<EscalationOutcome> CancelEscalationAsync(Guid escalationId, string reason, CancellationToken ct);
+    /// <param name="escalationId">The pending escalation to cancel.</param>
+    /// <param name="reason">Free-text reason for the cancellation.</param>
+    /// <param name="cancelledBy">
+    /// The identity performing the cancellation (a token-derived approver name over HTTP, or a
+    /// system actor such as <c>"system:agent-disconnect"</c> for internal callers). Stamped on
+    /// the resulting <see cref="EscalationOutcome.CancelledBy"/> and therefore recorded in the
+    /// durable outcome audit — a force-denial must always be attributable.
+    /// </param>
+    /// <param name="ct">Cancellation token.</param>
+    Task<EscalationOutcome> CancelEscalationAsync(Guid escalationId, string reason, string cancelledBy, CancellationToken ct);
 }

@@ -49,6 +49,9 @@ public class TestAuthHandler(
             new("oid", userId),
             new(ClaimTypes.NameIdentifier, userId),
             new(ClaimTypes.Name, userId),
+            // Approver identity claim read by the escalation API
+            // (EscalationConfig.ApproverClaimType default "preferred_username").
+            new("preferred_username", userId),
         };
 
         foreach (var role in roles)

@@ -24,6 +24,56 @@ public class EscalationConfigValidatorTests
         result.Errors.Should().BeEmpty();
     }
 
+    [Theory]
+    [InlineData("oid")]
+    [InlineData("sub")]
+    [InlineData("preferred_username")]
+    [InlineData("upn")]
+    public async Task Validate_AllowlistedApproverClaimType_NoErrors(string claimType)
+    {
+        var config = CreateValidConfig();
+        config.ApproverClaimType = claimType;
+
+        var result = await _validator.ValidateAsync(config);
+
+        result.IsValid.Should().BeTrue();
+    }
+
+    [Theory]
+    [InlineData("")]                       // empty is not an identity claim
+    [InlineData("   ")]                    // whitespace neither
+    [InlineData("name")]                   // user-editable display name
+    [InlineData("email")]                  // unverified, user-editable
+    [InlineData("Preferred_Username")]     // allowlist is exact-match: claim types are case-sensitive
+    public async Task Validate_NonAllowlistedApproverClaimType_HasError(string claimType)
+    {
+        // Roster authorization may only ever be driven by issuer-asserted identity claims; a
+        // claim a user can self-edit (display name, unverified email) must fail at startup, not
+        // silently become the approval identity.
+        var config = CreateValidConfig();
+        config.ApproverClaimType = claimType;
+
+        var result = await _validator.ValidateAsync(config);
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName == "ApproverClaimType");
+    }
+
+    [Fact]
+    public async Task Validate_NonAllowlistedClaimTypeWhileDisabled_NoErrors()
+    {
+        // These validators impose no constraints while the feature is off (documented posture):
+        // a host with escalation disabled must keep booting regardless of the claim type value.
+        var config = CreateValidConfig();
+        config.Enabled = false;
+        config.PriorityLevels.Clear();
+        config.ApproverClaimType = "email";
+
+        var result = await _validator.ValidateAsync(config);
+
+        result.IsValid.Should().BeTrue();
+    }
+
     [Fact]
     public async Task Validate_NegativeTimeout_HasError()
     {
