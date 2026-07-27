@@ -34,7 +34,14 @@ public interface IKnowledgeMemory
     /// <param name="content">The fact content to remember.</param>
     /// <param name="entityType">The entity type for graph node creation (e.g., "Fact", "Concept").</param>
     /// <param name="cancellationToken">Cancellation token.</param>
-    Task RememberAsync(
+    /// <returns>
+    /// The write gate's <see cref="MemoryWriteDecision"/> describing what actually happened to the
+    /// fact — persisted as trusted, persisted-but-quarantined, or rejected (see
+    /// <see cref="MemoryWriteDecision.Outcome"/>). When no gate is configured the write passes
+    /// through unguarded and <see cref="MemoryWriteDecision.Allow"/> is returned. Callers that do
+    /// not surface the outcome (e.g. fire-and-forget extraction) may ignore the return value.
+    /// </returns>
+    Task<MemoryWriteDecision> RememberAsync(
         string key,
         string content,
         string entityType = "Fact",

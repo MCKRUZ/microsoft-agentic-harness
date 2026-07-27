@@ -34,6 +34,18 @@ public sealed record MemoryWriteDecision
     public string Reason { get; init; } = string.Empty;
 
     /// <summary>
+    /// The tri-state outcome this decision resolves to once applied by the write path:
+    /// <see cref="MemoryWriteOutcome.Rejected"/> when <see cref="Persist"/> is
+    /// <see langword="false"/>, <see cref="MemoryWriteOutcome.Quarantined"/> when the fact is
+    /// persisted with <see cref="MemoryTrust.Untrusted"/>, otherwise
+    /// <see cref="MemoryWriteOutcome.Persisted"/>.
+    /// </summary>
+    public MemoryWriteOutcome Outcome =>
+        !Persist ? MemoryWriteOutcome.Rejected
+        : Trust == MemoryTrust.Untrusted ? MemoryWriteOutcome.Quarantined
+        : MemoryWriteOutcome.Persisted;
+
+    /// <summary>
     /// A decision to persist the fact as trusted with no provenance stamp. Used as the
     /// zero-overhead result when the memory guard is disabled.
     /// </summary>

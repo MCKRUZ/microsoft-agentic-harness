@@ -37,8 +37,9 @@ public sealed partial class KnowledgeMemoryService
     /// abstraction (consolidation). The fact is always persisted under its <em>own</em> scope-namespaced,
     /// caller-keyed node — consolidation chooses only which abstraction is stamped, never the content,
     /// identity, or trust — so the write-gate, isolation, and forget-by-key guarantees are all unchanged.
+    /// Returns the applied gate decision so the public surface can report the honest write outcome.
     /// </summary>
-    private async Task RememberHarmonicAsync(
+    private async Task<MemoryWriteDecision> RememberHarmonicAsync(
         string key,
         string content,
         string entityType,
@@ -59,16 +60,17 @@ public sealed partial class KnowledgeMemoryService
         // 1. Gate FIRST — the single chokepoint, before any abstractor or consolidator LLM sees the
         //    content. Rejected content is never fed to a model, and the trust decision is identical to the
         //    legacy path (consolidation, below, never touches the fact's content, so gate order is safe).
+        //    A missing gate means the write passes through unguarded; Allow() reports that honestly.
         var decision = _writeGate is null
-            ? null
+            ? MemoryWriteDecision.Allow()
             : await _writeGate.EvaluateAsync(key, content, entityType, cancellationToken);
 
-        if (decision is { Persist: false })
+        if (!decision.Persist)
         {
             _logger.LogWarning(
                 "Harmonic memory write blocked for Key={Key}, Type={Type}: {Reason}",
                 key, entityType, decision.Reason);
-            return;
+            return decision;
         }
 
         // 2. Quarantined facts are persisted for forensics but never recalled, so the harmonic scaffolding
@@ -78,7 +80,7 @@ public sealed partial class KnowledgeMemoryService
         {
             await PersistGatedNodeAsync(
                 BuildMemoryNode(key, content, entityType, decision), decision, key, entityType, cancellationToken);
-            return;
+            return decision;
         }
 
         // 3. Trusted fact: abstract it (one LLM call). Output is untrusted; the abstractor is responsible
@@ -103,6 +105,7 @@ public sealed partial class KnowledgeMemoryService
         var node = BuildMemoryNode(key, content, entityType, decision).WithAbstraction(abstractionToStore);
 
         await PersistGatedNodeAsync(node, decision, key, entityType, cancellationToken);
+        return decision;
     }
 
     /// <summary>
