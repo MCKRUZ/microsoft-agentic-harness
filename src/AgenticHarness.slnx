@@ -270,6 +270,11 @@
       <BuildType Solution="Debug-AgentHub-Dashboard|*" Project="Debug" />
       <BuildType Solution="Debug-AgentHub-WebUI|*" Project="Debug" />
     </Project>
+    <Project Path="Content/Tests/Presentation.BundleApi.Tests/Presentation.BundleApi.Tests.csproj">
+      <BuildType Solution="Debug-AgentHub-All|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-Dashboard|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-WebUI|*" Project="Debug" />
+    </Project>
     <Project Path="Content/Tests/Presentation.Common.Tests/Presentation.Common.Tests.csproj">
       <BuildType Solution="Debug-AgentHub-All|*" Project="Debug" />
       <BuildType Solution="Debug-AgentHub-Dashboard|*" Project="Debug" />

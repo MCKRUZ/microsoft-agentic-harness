@@ -5,6 +5,7 @@ using MediatR;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Presentation.Common.Extensions;
 
 namespace Presentation.AgentHub.Controllers;
 
@@ -73,35 +74,8 @@ public sealed class ComplianceController : ControllerBase
     /// codes. Failure bodies are generic — handlers have already logged the real detail; the client never
     /// receives store internals, paths, or stack traces (per the harness error-response security rule).
     /// </summary>
-    private IActionResult ToActionResult<T>(Result<T> result)
-    {
-        if (result.IsSuccess)
-        {
-            return Ok(result.Value);
-        }
-
-        return result.FailureType switch
-        {
-            ResultFailureType.Validation => Problem(
-                title: "Validation failed",
-                detail: string.Join(" / ", result.Errors),
-                statusCode: StatusCodes.Status400BadRequest),
-            ResultFailureType.Unauthorized => Problem(
-                title: "Unauthorized",
-                detail: string.Join(" / ", result.Errors),
-                statusCode: StatusCodes.Status401Unauthorized),
-            ResultFailureType.Forbidden => Problem(
-                title: "Forbidden",
-                detail: string.Join(" / ", result.Errors),
-                statusCode: StatusCodes.Status403Forbidden),
-            ResultFailureType.Conflict => Problem(
-                title: "Conflict",
-                detail: string.Join(" / ", result.Errors),
-                statusCode: StatusCodes.Status409Conflict),
-            _ => Problem(
-                title: "Erasure failed",
-                detail: "An error occurred processing the request. See server logs for details.",
-                statusCode: StatusCodes.Status500InternalServerError),
-        };
-    }
+    private IActionResult ToActionResult<T>(Result<T> result) =>
+        result.IsSuccess
+            ? Ok(result.Value)
+            : this.FailureResponse(result, "Erasure failed");
 }

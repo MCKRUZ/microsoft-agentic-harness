@@ -9,6 +9,7 @@ using MediatR;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Presentation.Common.Extensions;
 
 namespace Presentation.AgentHub.Controllers;
 
@@ -146,7 +147,8 @@ public sealed class EvalController : ControllerBase
 
     /// <summary>
     /// Maps a <see cref="Result{T}"/> outcome to an MVC <see cref="IActionResult"/>:
-    /// Success → 200; NotFound → 404; Validation → 400; everything else → 500.
+    /// Success → 200; failures use the canonical shared mapping
+    /// (400/401/403/404/409, everything else → 500).
     /// </summary>
     /// <remarks>
     /// <para>
@@ -162,46 +164,9 @@ public sealed class EvalController : ControllerBase
     /// sensitive data." Handlers have already logged the original failure with
     /// structured detail; the client gets only a generic correlation message.
     /// </para>
-    /// <para>
-    /// Kept inline rather than in a shared helper because no other controller
-    /// currently consumes <see cref="Result{T}"/> directly. Promote to a shared
-    /// extension when a second consumer appears (matches the Phase 5.4.1
-    /// "no extraction until N=3" precedent for the ValueConverter).
-    /// </para>
     /// </remarks>
-    private IActionResult ToActionResult<T>(Result<T> result)
-    {
-        if (result.IsSuccess)
-        {
-            return Ok(result.Value);
-        }
-
-        return result.FailureType switch
-        {
-            ResultFailureType.NotFound => Problem(
-                title: "Not Found",
-                detail: string.Join(" / ", result.Errors),
-                statusCode: StatusCodes.Status404NotFound),
-            ResultFailureType.Validation => Problem(
-                title: "Validation failed",
-                detail: string.Join(" / ", result.Errors),
-                statusCode: StatusCodes.Status400BadRequest),
-            ResultFailureType.Unauthorized => Problem(
-                title: "Unauthorized",
-                detail: string.Join(" / ", result.Errors),
-                statusCode: StatusCodes.Status401Unauthorized),
-            ResultFailureType.Forbidden => Problem(
-                title: "Forbidden",
-                detail: string.Join(" / ", result.Errors),
-                statusCode: StatusCodes.Status403Forbidden),
-            ResultFailureType.Conflict => Problem(
-                title: "Conflict",
-                detail: string.Join(" / ", result.Errors),
-                statusCode: StatusCodes.Status409Conflict),
-            _ => Problem(
-                title: "Eval operation failed",
-                detail: "An error occurred processing the request. See server logs for details.",
-                statusCode: StatusCodes.Status500InternalServerError),
-        };
-    }
+    private IActionResult ToActionResult<T>(Result<T> result) =>
+        result.IsSuccess
+            ? Ok(result.Value)
+            : this.FailureResponse(result, "Eval operation failed");
 }

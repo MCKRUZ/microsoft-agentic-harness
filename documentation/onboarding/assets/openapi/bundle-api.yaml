@@ -453,12 +453,12 @@ components:
           examples:
             handle:
               value:
-                title: Not Found
+                title: Not found
                 status: 404
                 detail: Bundle handle not found or expired. Register the bundle again to obtain a fresh handle.
             run:
               value:
-                title: Not Found
+                title: Not found
                 status: 404
                 detail: Bundle run not found. It may never have existed, expired, or belongs to a different caller.
     RateLimited:
