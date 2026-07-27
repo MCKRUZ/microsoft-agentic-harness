@@ -18,8 +18,16 @@ internal sealed class WebSearchRetrievalSource(IWebSearchProvider webSearchProvi
     public string SourceName => "web_search";
 
     /// <inheritdoc />
+    /// <remarks>
+    /// Web search is an external source with no collection concept, so
+    /// <paramref name="collectionName"/> is accepted and ignored.
+    /// </remarks>
     public async Task<SourceRetrievalResult> RetrieveAsync(
-        string query, int topK, TaskComplexity complexity, CancellationToken cancellationToken)
+        string query,
+        int topK,
+        TaskComplexity complexity,
+        string? collectionName = null,
+        CancellationToken cancellationToken = default)
     {
         var sw = Stopwatch.StartNew();
         var webResults = await webSearchProvider.SearchAsync(query, topK, cancellationToken);

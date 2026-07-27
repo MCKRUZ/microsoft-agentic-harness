@@ -46,7 +46,7 @@ public sealed class MultiSourceOrchestratorTests
     {
         _mockVectorSource.Setup(s => s.SourceName).Returns("vector");
         _mockVectorSource
-            .Setup(s => s.RetrieveAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<TaskComplexity>(), It.IsAny<CancellationToken>()))
+            .Setup(s => s.RetrieveAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<TaskComplexity>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new SourceRetrievalResult
             {
                 SourceName = "vector",
@@ -71,7 +71,7 @@ public sealed class MultiSourceOrchestratorTests
 
         _mockGraphSource.Setup(s => s.SourceName).Returns("graph");
         _mockGraphSource
-            .Setup(s => s.RetrieveAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<TaskComplexity>(), It.IsAny<CancellationToken>()))
+            .Setup(s => s.RetrieveAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<TaskComplexity>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new SourceRetrievalResult
             {
                 SourceName = "graph",
@@ -93,10 +93,10 @@ public sealed class MultiSourceOrchestratorTests
 
         results.Should().HaveCount(3);
         _mockVectorSource.Verify(
-            s => s.RetrieveAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<TaskComplexity>(), It.IsAny<CancellationToken>()),
+            s => s.RetrieveAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<TaskComplexity>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()),
             Times.Once);
         _mockGraphSource.Verify(
-            s => s.RetrieveAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<TaskComplexity>(), It.IsAny<CancellationToken>()),
+            s => s.RetrieveAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<TaskComplexity>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()),
             Times.Never);
     }
 
@@ -112,10 +112,10 @@ public sealed class MultiSourceOrchestratorTests
 
         results.Should().HaveCount(5);
         _mockVectorSource.Verify(
-            s => s.RetrieveAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<TaskComplexity>(), It.IsAny<CancellationToken>()),
+            s => s.RetrieveAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<TaskComplexity>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()),
             Times.Once);
         _mockGraphSource.Verify(
-            s => s.RetrieveAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<TaskComplexity>(), It.IsAny<CancellationToken>()),
+            s => s.RetrieveAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<TaskComplexity>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()),
             Times.Once);
     }
 
@@ -132,10 +132,10 @@ public sealed class MultiSourceOrchestratorTests
 
         results.Should().HaveCountGreaterThanOrEqualTo(3);
         _mockVectorSource.Verify(
-            s => s.RetrieveAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<TaskComplexity>(), It.IsAny<CancellationToken>()),
+            s => s.RetrieveAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<TaskComplexity>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()),
             Times.Once);
         _mockGraphSource.Verify(
-            s => s.RetrieveAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<TaskComplexity>(), It.IsAny<CancellationToken>()),
+            s => s.RetrieveAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<TaskComplexity>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()),
             Times.Once);
     }
 
@@ -145,8 +145,8 @@ public sealed class MultiSourceOrchestratorTests
         SetupVectorResults(3);
         _mockGraphSource.Setup(s => s.SourceName).Returns("graph");
         _mockGraphSource
-            .Setup(s => s.RetrieveAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<TaskComplexity>(), It.IsAny<CancellationToken>()))
-            .Returns(async (string _, int _, TaskComplexity _, CancellationToken ct) =>
+            .Setup(s => s.RetrieveAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<TaskComplexity>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .Returns(async (string _, int _, TaskComplexity _, string? _, CancellationToken ct) =>
             {
                 await Task.Delay(TimeSpan.FromSeconds(30), ct);
                 return new SourceRetrievalResult
@@ -179,7 +179,7 @@ public sealed class MultiSourceOrchestratorTests
 
         _mockVectorSource.Setup(s => s.SourceName).Returns("vector");
         _mockVectorSource
-            .Setup(s => s.RetrieveAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<TaskComplexity>(), It.IsAny<CancellationToken>()))
+            .Setup(s => s.RetrieveAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<TaskComplexity>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new SourceRetrievalResult
             {
                 SourceName = "vector",
@@ -190,7 +190,7 @@ public sealed class MultiSourceOrchestratorTests
 
         _mockGraphSource.Setup(s => s.SourceName).Returns("graph");
         _mockGraphSource
-            .Setup(s => s.RetrieveAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<TaskComplexity>(), It.IsAny<CancellationToken>()))
+            .Setup(s => s.RetrieveAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<TaskComplexity>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new SourceRetrievalResult
             {
                 SourceName = "graph",
@@ -213,12 +213,12 @@ public sealed class MultiSourceOrchestratorTests
     {
         _mockVectorSource.Setup(s => s.SourceName).Returns("vector");
         _mockVectorSource
-            .Setup(s => s.RetrieveAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<TaskComplexity>(), It.IsAny<CancellationToken>()))
+            .Setup(s => s.RetrieveAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<TaskComplexity>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new InvalidOperationException("Vector store unavailable"));
 
         _mockGraphSource.Setup(s => s.SourceName).Returns("graph");
         _mockGraphSource
-            .Setup(s => s.RetrieveAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<TaskComplexity>(), It.IsAny<CancellationToken>()))
+            .Setup(s => s.RetrieveAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<TaskComplexity>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new InvalidOperationException("Graph unavailable"));
 
         var orchestrator = CreateOrchestrator();
@@ -244,7 +244,7 @@ public sealed class MultiSourceOrchestratorTests
 
         results.Should().HaveCount(3);
         _mockGraphSource.Verify(
-            s => s.RetrieveAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<TaskComplexity>(), It.IsAny<CancellationToken>()),
+            s => s.RetrieveAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<TaskComplexity>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()),
             Times.Never);
     }
 }

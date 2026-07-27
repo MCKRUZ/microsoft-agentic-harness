@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using Application.AI.Common.Interfaces;
+using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Application.AI.Common.Interfaces.RAG;
 using Domain.AI.RAG.Models;
 using Domain.AI.Retrieval;
@@ -35,6 +37,7 @@ public sealed class HybridRetriever : IHybridRetriever
     private readonly IEmbeddingService _embeddingService;
     private readonly IOptionsMonitor<AppConfig> _appConfig;
     private readonly ILogger<HybridRetriever> _logger;
+    private readonly IAmbientRequestScope? _ambientScope;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="HybridRetriever"/> class.
@@ -44,18 +47,26 @@ public sealed class HybridRetriever : IHybridRetriever
     /// <param name="embeddingService">The embedding service for query vectorization.</param>
     /// <param name="appConfig">The application configuration monitor.</param>
     /// <param name="logger">The logger instance.</param>
+    /// <param name="ambientScope">
+    /// Bridge to the current request's scoped services, used to resolve the ambient
+    /// caller's tenant when <c>ScopedCollections</c> is enabled. Optional so direct
+    /// construction stays simple; when null, scoped requests resolve to the
+    /// global/default collection (closed).
+    /// </param>
     public HybridRetriever(
         IVectorStore vectorStore,
         IBm25Store bm25Store,
         IEmbeddingService embeddingService,
         IOptionsMonitor<AppConfig> appConfig,
-        ILogger<HybridRetriever> logger)
+        ILogger<HybridRetriever> logger,
+        IAmbientRequestScope? ambientScope = null)
     {
         _vectorStore = vectorStore;
         _bm25Store = bm25Store;
         _embeddingService = embeddingService;
         _appConfig = appConfig;
         _logger = logger;
+        _ambientScope = ambientScope;
     }
 
     /// <inheritdoc />
@@ -65,6 +76,12 @@ public sealed class HybridRetriever : IHybridRetriever
         string? collectionName = null,
         CancellationToken cancellationToken = default)
     {
+        // ScopedCollections choke point for callers that bypass IRagOrchestrator (e.g.
+        // the RAG workflow's VectorRetrievalExecutor): when scoping is on, the
+        // caller-supplied name is discarded and the collection is derived from the
+        // ambient tenant. Idempotent with the orchestrator's own resolution.
+        collectionName = ResolveScopedCollection(collectionName);
+
         using var activity = ActivitySource.StartActivity("HybridRetrieval");
         var config = _appConfig.CurrentValue.AI.Rag.Retrieval;
 
@@ -102,6 +119,24 @@ public sealed class HybridRetriever : IHybridRetriever
         activity?.SetTag("rag.retrieval.fused_count", fused.Count);
 
         return fused;
+    }
+
+    /// <summary>
+    /// Resolves the effective collection for this request. Pass-through when
+    /// <c>AppConfig:AI:Rag:ScopedCollections</c> is off; when on, derives the collection
+    /// from the ambient caller's tenant (no ambient identity resolves to the
+    /// global/default collection — closed, never an error).
+    /// </summary>
+    private string? ResolveScopedCollection(string? requestedCollectionName)
+    {
+        if (!_appConfig.CurrentValue.AI.Rag.ScopedCollections.Enabled)
+        {
+            return requestedCollectionName;
+        }
+
+        var scope = _ambientScope?.Current?.GetService(typeof(IKnowledgeScope)) as IKnowledgeScope;
+        return ScopedCollectionName.Resolve(
+            scopedCollectionsEnabled: true, requestedCollectionName, scope?.TenantId);
     }
 
     private async Task<IReadOnlyList<RetrievalResult>> RunDenseSearchAsync(

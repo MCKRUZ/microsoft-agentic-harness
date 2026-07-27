@@ -101,7 +101,7 @@ public sealed class RetrievalPlanStepExecutorTests
             });
 
         _mockMultiSource
-            .Setup(m => m.RetrieveFromAllSourcesAsync("Multi-hop query", 10, TaskComplexity.Complex, It.IsAny<CancellationToken>()))
+            .Setup(m => m.RetrieveFromAllSourcesAsync("Multi-hop query", 10, TaskComplexity.Complex, null, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<RetrievalResult>
             {
                 new()
@@ -131,7 +131,7 @@ public sealed class RetrievalPlanStepExecutorTests
         Assert.Equal(StepExecutionStatus.Completed, result.Status);
 
         _mockMultiSource.Verify(
-            m => m.RetrieveFromAllSourcesAsync("Multi-hop query", 10, TaskComplexity.Complex, It.IsAny<CancellationToken>()),
+            m => m.RetrieveFromAllSourcesAsync("Multi-hop query", 10, TaskComplexity.Complex, null, It.IsAny<CancellationToken>()),
             Times.Once);
         _mockRagOrchestrator.Verify(
             r => r.SearchAsync(It.IsAny<string>(), It.IsAny<int?>(), It.IsAny<string?>(), It.IsAny<RetrievalStrategy?>(), It.IsAny<CancellationToken>()),

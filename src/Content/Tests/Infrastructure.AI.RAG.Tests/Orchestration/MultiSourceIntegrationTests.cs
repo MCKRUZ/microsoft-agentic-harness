@@ -77,7 +77,7 @@ public sealed class MultiSourceIntegrationTests
         var mock = new Mock<IRetrievalSource>();
         mock.Setup(s => s.SourceName).Returns(name);
         mock.Setup(s => s.RetrieveAsync(
-                It.IsAny<string>(), It.IsAny<int>(), It.IsAny<TaskComplexity>(), It.IsAny<CancellationToken>()))
+                It.IsAny<string>(), It.IsAny<int>(), It.IsAny<TaskComplexity>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new SourceRetrievalResult
             {
                 SourceName = name, Results = results, Latency = TimeSpan.FromMilliseconds(50), TokensUsed = 0

@@ -23,7 +23,7 @@ public sealed class VectorRetrievalSourceTests
 
         var sut = new VectorRetrievalSource(_retriever.Object);
 
-        var result = await sut.RetrieveAsync("test query", 10, TaskComplexity.Moderate, CancellationToken.None);
+        var result = await sut.RetrieveAsync("test query", 10, TaskComplexity.Moderate, collectionName: null, cancellationToken: CancellationToken.None);
 
         result.SourceName.Should().Be("vector");
         result.Results.Should().HaveCount(1);

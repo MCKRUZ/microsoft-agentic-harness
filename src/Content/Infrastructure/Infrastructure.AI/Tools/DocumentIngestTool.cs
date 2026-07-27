@@ -58,7 +58,10 @@ public sealed class DocumentIngestTool : ITool
 
     /// <inheritdoc />
     public string Description =>
-        "Ingests documents into the RAG index for later retrieval. Supports markdown and text files.";
+        "Ingests documents into the RAG index for later retrieval. Supports markdown and text " +
+        "files. When per-tenant collection isolation (ScopedCollections) is enabled, the " +
+        "'collection' parameter is rejected with a validation failure: the target collection " +
+        "is always derived server-side from the caller's tenant.";
 
     /// <inheritdoc />
     public IReadOnlyList<string> SupportedOperations => Operations;

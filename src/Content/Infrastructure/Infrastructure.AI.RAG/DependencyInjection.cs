@@ -77,6 +77,9 @@ public static partial class DependencyInjection
                 sp.GetService<IRetrievalDecisionGate>(),
                 sp.GetService<IIterativeRetriever>(),
                 sp.GetService<IAnswerFaithfulnessEvaluator>(),
-                sp.GetKeyedService<IRetrievalSource>("web_search")));
+                sp.GetKeyedService<IRetrievalSource>("web_search"),
+                // ScopedCollections choke point: the orchestrator re-derives the effective
+                // collection from the ambient caller's tenant on every search.
+                sp.GetRequiredService<Application.AI.Common.Interfaces.IAmbientRequestScope>()));
     }
 }

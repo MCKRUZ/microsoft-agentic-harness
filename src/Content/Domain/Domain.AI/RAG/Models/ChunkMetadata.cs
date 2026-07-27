@@ -41,4 +41,30 @@ public record ChunkMetadata
     /// a single chunk provides insufficient context for generation.
     /// </summary>
     public IReadOnlyList<string> SiblingChunkIds { get; init; } = [];
+
+    /// <summary>
+    /// The user who ingested the source document, captured from the ambient
+    /// knowledge scope at ingestion time. Null when the ingest ran without an
+    /// authenticated identity (in-process or CLI callers).
+    /// </summary>
+    /// <remarks>
+    /// This is <strong>provenance, not access control</strong>: retrieval never filters
+    /// on it, and the shared-corpus search behavior is unchanged by its presence. It
+    /// exists so a future right-to-erasure sweep can find every chunk a given user
+    /// contributed — without the stamp there is nothing to sweep by.
+    /// </remarks>
+    public string? OwnerId { get; init; }
+
+    /// <summary>
+    /// The tenant of the caller who ingested the source document, captured from the
+    /// ambient knowledge scope at ingestion time. Null when the ingest ran without an
+    /// authenticated identity (in-process or CLI callers) or in single-tenant deployments.
+    /// </summary>
+    /// <remarks>
+    /// Like <see cref="OwnerId"/>, this is provenance only. Tenant-level <em>isolation</em>
+    /// of the RAG corpus is a separate, opt-in concern
+    /// (<c>AppConfig:AI:Rag:ScopedCollections</c>); the stamp is written regardless of
+    /// that flag so erasure and audit remain possible for the shared corpus too.
+    /// </remarks>
+    public string? TenantId { get; init; }
 }

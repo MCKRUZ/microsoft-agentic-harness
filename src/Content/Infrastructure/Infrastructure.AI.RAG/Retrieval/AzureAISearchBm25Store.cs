@@ -18,6 +18,20 @@ namespace Infrastructure.AI.RAG.Retrieval;
 /// scoring. The <c>embedding</c> field is not used by this store -- it only performs
 /// keyword-based full-text search.
 /// </para>
+/// <para>
+/// Owner/tenant provenance stamps (<c>ownerId</c>/<c>tenantId</c>) are written only when
+/// the ingesting caller carries an identity — see the schema notes on
+/// <see cref="AzureAISearchVectorStore"/>, which shares this index. Search results never
+/// include the stamps (the <c>Select</c> projection is kept to the pre-stamp fields):
+/// they are persisted for erasure, not for retrieval, and exposing them would tell every
+/// searcher who ingested each chunk.
+/// </para>
+/// <para>
+/// <strong>Collections are not honored.</strong> This store always queries the one index
+/// its <see cref="SearchClient"/> was built for; the <c>collectionName</c> parameter is
+/// ignored, and <c>RagConfigValidator</c> rejects
+/// <c>AppConfig:AI:Rag:ScopedCollections</c> with this provider.
+/// </para>
 /// </remarks>
 public sealed class AzureAISearchBm25Store : IBm25Store
 {
@@ -45,12 +59,29 @@ public sealed class AzureAISearchBm25Store : IBm25Store
     {
         if (chunks.Count == 0) return;
 
-        var documents = chunks.Select(chunk => new SearchDocument
+        var documents = chunks.Select(chunk =>
         {
-            ["id"] = chunk.Id,
-            ["documentId"] = chunk.DocumentId,
-            ["content"] = chunk.Content,
-            ["sectionPath"] = chunk.SectionPath,
+            var doc = new SearchDocument
+            {
+                ["id"] = chunk.Id,
+                ["documentId"] = chunk.DocumentId,
+                ["content"] = chunk.Content,
+                ["sectionPath"] = chunk.SectionPath,
+            };
+
+            // Written only when present so identity-less ingest keeps working against
+            // indexes provisioned before the provenance fields existed.
+            if (chunk.Metadata.OwnerId is not null)
+            {
+                doc["ownerId"] = chunk.Metadata.OwnerId;
+            }
+
+            if (chunk.Metadata.TenantId is not null)
+            {
+                doc["tenantId"] = chunk.Metadata.TenantId;
+            }
+
+            return doc;
         }).ToList();
 
         var response = await _searchClient.MergeOrUploadDocumentsAsync(

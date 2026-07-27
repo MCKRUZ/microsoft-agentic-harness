@@ -90,7 +90,7 @@ public sealed class FaissVectorStore : IVectorStore
             .Take(topK)
             .Select(s => new RetrievalResult
             {
-                Chunk = s.Chunk,
+                Chunk = StripProvenance(s.Chunk),
                 DenseScore = s.Score,
                 SparseScore = 0.0,
                 FusedScore = s.Score,
@@ -99,6 +99,18 @@ public sealed class FaissVectorStore : IVectorStore
 
         return Task.FromResult<IReadOnlyList<RetrievalResult>>(results);
     }
+
+    /// <summary>
+    /// Projects the owner/tenant provenance stamps out of a search result. The stamps
+    /// stay on the stored record (they are the future erasure key) but are never exposed
+    /// on the read path — surfacing them would tell every searcher who ingested each
+    /// chunk, and the persistent stores (SQLite FTS5, Azure AI Search) omit them from
+    /// reads for the same reason.
+    /// </summary>
+    private static DocumentChunk StripProvenance(DocumentChunk chunk) =>
+        chunk.Metadata is { OwnerId: null, TenantId: null }
+            ? chunk
+            : chunk with { Metadata = chunk.Metadata with { OwnerId = null, TenantId = null } };
 
     /// <inheritdoc />
     public Task DeleteAsync(

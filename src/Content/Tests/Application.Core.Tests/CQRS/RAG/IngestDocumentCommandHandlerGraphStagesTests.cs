@@ -1,3 +1,4 @@
+using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Application.AI.Common.Interfaces.RAG;
 using Application.Core.CQRS.RAG.IngestDocument;
 using Application.Core.Workflows.KnowledgeGraph;
@@ -105,6 +106,7 @@ public sealed class IngestDocumentCommandHandlerGraphStagesTests
             _embedding.Object,
             _vectorStore.Object,
             _bm25Store.Object,
+            new Mock<IKnowledgeScope>().Object,
             NullLogger<IngestDocumentCommandHandler>.Instance,
             monitor.Object,
             services.BuildServiceProvider());

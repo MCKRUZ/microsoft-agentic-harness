@@ -98,6 +98,7 @@ public class MultiSourceRetrievalExample
                         simpleQuery,
                         topK: 5,
                         TaskComplexity.Simple,
+                        collectionName: null,
                         cancellationToken);
 
                     DisplayRetrievalResults(results, "Vector Store");
@@ -129,6 +130,7 @@ public class MultiSourceRetrievalExample
                         complexQuery,
                         topK: 10,
                         TaskComplexity.Complex,
+                        collectionName: null,
                         cancellationToken);
 
                     DisplayRetrievalResults(results, "Vector + Graph + Web");
@@ -159,6 +161,7 @@ public class MultiSourceRetrievalExample
                         "What is Clean Architecture?",
                         topK: 5,
                         TaskComplexity.Simple,
+                        collectionName: null,
                         cancellationToken);
                 });
         }
@@ -182,6 +185,7 @@ public class MultiSourceRetrievalExample
                         "How does the MediatR pipeline integrate with governance?",
                         topK: 10,
                         TaskComplexity.Complex,
+                        collectionName: null,
                         cancellationToken);
                 });
         }

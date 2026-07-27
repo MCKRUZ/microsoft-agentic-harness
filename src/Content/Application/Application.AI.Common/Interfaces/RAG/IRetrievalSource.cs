@@ -18,9 +18,20 @@ public interface IRetrievalSource
     /// <summary>
     /// Executes retrieval against this source and returns results with per-source latency and token metrics.
     /// </summary>
+    /// <param name="query">The natural-language query to retrieve for.</param>
+    /// <param name="topK">Maximum number of results to return.</param>
+    /// <param name="complexity">The classified query complexity driving source selection.</param>
+    /// <param name="collectionName">
+    /// Optional collection/index name. Null uses the source's default. Sources without a
+    /// collection concept (graph, web search, SQL) accept and ignore it — such sources are
+    /// tenant-shared even when <c>ScopedCollections</c> is enabled, as documented on
+    /// <c>ScopedCollectionsConfig</c>.
+    /// </param>
+    /// <param name="cancellationToken">Cancellation token.</param>
     Task<SourceRetrievalResult> RetrieveAsync(
         string query,
         int topK,
         TaskComplexity complexity,
-        CancellationToken cancellationToken);
+        string? collectionName = null,
+        CancellationToken cancellationToken = default);
 }

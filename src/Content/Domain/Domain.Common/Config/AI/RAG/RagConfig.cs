@@ -25,7 +25,8 @@ namespace Domain.Common.Config.AI.RAG;
 /// ├── MultiSource        — Multi-source retrieval orchestration
 /// ├── QualityGate        — CI/CD retrieval quality gates
 /// ├── WebSearch          — Web search retrieval source
-/// └── SqlDatabase        — SQL database retrieval source (disabled by default)
+/// ├── SqlDatabase        — SQL database retrieval source (disabled by default)
+/// └── ScopedCollections  — Opt-in per-tenant collection isolation (off by default)
 /// </code>
 /// </para>
 /// <para>
@@ -113,4 +114,11 @@ public class RagConfig
 
     /// <summary>SQL database retrieval source configuration (disabled by default).</summary>
     public SqlDatabaseConfig SqlDatabase { get; set; } = new();
+
+    /// <summary>
+    /// Opt-in per-tenant collection isolation for the document corpus (off by default).
+    /// When enabled, ingest and search collections are derived server-side from the
+    /// caller's tenant and caller-supplied collection names are rejected.
+    /// </summary>
+    public ScopedCollectionsConfig ScopedCollections { get; set; } = new();
 }

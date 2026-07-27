@@ -22,7 +22,21 @@ namespace Infrastructure.AI.RAG.Retrieval;
 ///   <item><c>content</c> — searchable string for BM25 full-text search.</item>
 ///   <item><c>sectionPath</c> — searchable string for hierarchical navigation.</item>
 ///   <item><c>embedding</c> — vector field matching the configured dimensions.</item>
+///   <item><c>ownerId</c>, <c>tenantId</c> — filterable strings for the owner/tenant
+///     provenance stamps (the future erasure key). Written only when the ingesting caller
+///     carries an identity, so an index without these fields keeps working for
+///     identity-less ingest; a stamped ingest against such an index fails loudly rather
+///     than silently dropping the erasure key. The stamps are <strong>never returned on
+///     search results</strong>: they are erasure/audit data, and surfacing them would tell
+///     every searcher who ingested each chunk in the shared corpus.</item>
 /// </list>
+/// </para>
+/// <para>
+/// <strong>Collections are not honored.</strong> This store always queries the one index
+/// its <see cref="SearchClient"/> was built for; the <c>collectionName</c> parameter is
+/// ignored. <c>RagConfigValidator</c> therefore rejects
+/// <c>AppConfig:AI:Rag:ScopedCollections</c> with this provider — per-tenant isolation on
+/// Azure requires per-tenant index provisioning, which is an infrastructure concern.
 /// </para>
 /// </remarks>
 public sealed class AzureAISearchVectorStore : IVectorStore
@@ -68,6 +82,18 @@ public sealed class AzureAISearchVectorStore : IVectorStore
             if (chunk.Embedding is { Count: > 0 })
             {
                 doc["embedding"] = chunk.Embedding.ToArray();
+            }
+
+            // Written only when present so identity-less ingest keeps working against
+            // indexes provisioned before the provenance fields existed.
+            if (chunk.Metadata.OwnerId is not null)
+            {
+                doc["ownerId"] = chunk.Metadata.OwnerId;
+            }
+
+            if (chunk.Metadata.TenantId is not null)
+            {
+                doc["tenantId"] = chunk.Metadata.TenantId;
             }
 
             return doc;
@@ -159,6 +185,8 @@ public sealed class AzureAISearchVectorStore : IVectorStore
         }
     }
 
+    // ownerId/tenantId are deliberately NOT mapped: provenance stamps stay in the index
+    // for erasure and are never exposed on the read path.
     private static DocumentChunk MapToChunk(SearchDocument doc) => new()
     {
         Id = doc["id"]?.ToString() ?? string.Empty,
