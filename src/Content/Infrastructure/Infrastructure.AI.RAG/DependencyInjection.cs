@@ -74,12 +74,12 @@ public static partial class DependencyInjection
                 sp.GetService<IRetrievalCostTracker>(),
                 sp.GetRequiredService<IOptionsMonitor<AppConfig>>(),
                 sp.GetRequiredService<ILogger<RagOrchestrator>>(),
+                // ScopedCollections choke point: the orchestrator re-derives the effective
+                // collection from the ambient caller's tenant on every search.
+                sp.GetRequiredService<Application.AI.Common.Interfaces.IAmbientRequestScope>(),
                 sp.GetService<IRetrievalDecisionGate>(),
                 sp.GetService<IIterativeRetriever>(),
                 sp.GetService<IAnswerFaithfulnessEvaluator>(),
-                sp.GetKeyedService<IRetrievalSource>("web_search"),
-                // ScopedCollections choke point: the orchestrator re-derives the effective
-                // collection from the ambient caller's tenant on every search.
-                sp.GetRequiredService<Application.AI.Common.Interfaces.IAmbientRequestScope>()));
+                sp.GetKeyedService<IRetrievalSource>("web_search")));
     }
 }

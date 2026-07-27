@@ -59,7 +59,7 @@ public sealed partial class RagOrchestrator : IRagOrchestrator
     private readonly IFeedbackWeightedScorer? _feedbackScorer;
     private readonly QueryRouter _queryRouter;
     private readonly IMultiSourceOrchestrator? _multiSourceOrchestrator;
-    private readonly IAmbientRequestScope? _ambientScope;
+    private readonly IAmbientRequestScope _ambientScope;
     private readonly ITaskComplexityClassifier? _complexityClassifier;
     private readonly IRetrievalCostTracker? _costTracker;
     private readonly IOptionsMonitor<AppConfig> _configMonitor;
@@ -105,11 +105,11 @@ public sealed partial class RagOrchestrator : IRagOrchestrator
         IRetrievalCostTracker? costTracker,
         IOptionsMonitor<AppConfig> configMonitor,
         ILogger<RagOrchestrator> logger,
+        IAmbientRequestScope ambientScope,
         IRetrievalDecisionGate? decisionGate = null,
         IIterativeRetriever? iterativeRetriever = null,
         IAnswerFaithfulnessEvaluator? faithfulnessEvaluator = null,
-        IRetrievalSource? webSearchSource = null,
-        IAmbientRequestScope? ambientScope = null)
+        IRetrievalSource? webSearchSource = null)
     {
         ArgumentNullException.ThrowIfNull(hybridRetriever);
         ArgumentNullException.ThrowIfNull(reranker);
@@ -118,6 +118,9 @@ public sealed partial class RagOrchestrator : IRagOrchestrator
         ArgumentNullException.ThrowIfNull(queryRouter);
         ArgumentNullException.ThrowIfNull(configMonitor);
         ArgumentNullException.ThrowIfNull(logger);
+        // Required (not optional): a directly-constructed orchestrator without the ambient
+        // bridge would fail OPEN to the shared corpus under ScopedCollections.
+        ArgumentNullException.ThrowIfNull(ambientScope);
 
         _hybridRetriever = hybridRetriever;
         _reranker = reranker;
@@ -154,7 +157,7 @@ public sealed partial class RagOrchestrator : IRagOrchestrator
             return requestedCollectionName;
         }
 
-        var scope = _ambientScope?.Current?.GetService(typeof(IKnowledgeScope)) as IKnowledgeScope;
+        var scope = _ambientScope.Current?.GetService(typeof(IKnowledgeScope)) as IKnowledgeScope;
         return ScopedCollectionName.Resolve(
             scopedCollectionsEnabled: true, requestedCollectionName, scope?.TenantId);
     }

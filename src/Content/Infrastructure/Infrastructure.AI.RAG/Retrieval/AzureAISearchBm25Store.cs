@@ -87,6 +87,12 @@ public sealed class AzureAISearchBm25Store : IBm25Store
         var response = await _searchClient.MergeOrUploadDocumentsAsync(
             documents, cancellationToken: cancellationToken);
 
+        // MergeOrUploadDocumentsAsync reports PER-DOCUMENT failures without throwing:
+        // treating a partial batch as success would let the ingest command report Success
+        // while chunks (and their provenance stamps) silently never landed. Failing the
+        // operation triggers the ingest handler's compensation path instead.
+        ThrowIfAnyFailed(response.Value, chunks.Count, "BM25 indexing");
+
         _logger.LogDebug(
             "Indexed {Count} chunks for BM25 into Azure AI Search, {Succeeded} succeeded",
             chunks.Count, response.Value.Results.Count(r => r.Succeeded));
@@ -129,7 +135,7 @@ public sealed class AzureAISearchBm25Store : IBm25Store
     }
 
     /// <inheritdoc />
-    public async Task DeleteAsync(
+    public async Task<int> DeleteAsync(
         string documentId,
         string? collectionName = null,
         CancellationToken cancellationToken = default)
@@ -151,15 +157,54 @@ public sealed class AzureAISearchBm25Store : IBm25Store
             keysToDelete.Add(new SearchDocument { ["id"] = result.Document["id"] });
         }
 
-        if (keysToDelete.Count > 0)
-        {
-            await _searchClient.DeleteDocumentsAsync(
-                keysToDelete, cancellationToken: cancellationToken);
+        if (keysToDelete.Count == 0) return 0;
 
-            _logger.LogInformation(
-                "Deleted {Count} BM25-indexed chunks for document {DocumentId}",
-                keysToDelete.Count, documentId);
+        var deleteResponse = await _searchClient.DeleteDocumentsAsync(
+            keysToDelete, cancellationToken: cancellationToken);
+
+        // Only confirmed deletions count — erasure receipts must never over-report.
+        var deleted = deleteResponse.Value.Results.Count(r => r.Succeeded);
+        var failed = keysToDelete.Count - deleted;
+        if (failed > 0)
+        {
+            _logger.LogError(
+                "Azure AI Search BM25 delete for document {DocumentId} failed for {FailedCount} of {Total} chunks",
+                documentId, failed, keysToDelete.Count);
         }
+
+        _logger.LogInformation(
+            "Deleted {Count} BM25-indexed chunks for document {DocumentId}",
+            deleted, documentId);
+
+        return deleted;
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// The Azure store queries one pre-provisioned physical index and the collection
+    /// parameter has no meaning here (see the class remarks), so the all-collections
+    /// erasure delete is exactly the single-index delete.
+    /// </remarks>
+    public Task<int> DeleteFromAllCollectionsAsync(
+        string documentId,
+        CancellationToken cancellationToken = default) =>
+        DeleteAsync(documentId, collectionName: null, cancellationToken);
+
+    /// <summary>
+    /// Fails the operation when the Azure batch response reports any per-document
+    /// failure, with a structured log naming the failed count.
+    /// </summary>
+    private void ThrowIfAnyFailed(IndexDocumentsResult result, int total, string operation)
+    {
+        var failed = result.Results.Count(r => !r.Succeeded);
+        if (failed == 0) return;
+
+        _logger.LogError(
+            "Azure AI Search {Operation} failed for {FailedCount} of {Total} chunks",
+            operation, failed, total);
+        throw new InvalidOperationException(
+            $"Azure AI Search {operation} failed for {failed} of {total} chunks; " +
+            "the batch response reported per-document failures.");
     }
 
     private static DocumentChunk MapToChunk(SearchDocument doc) => new()

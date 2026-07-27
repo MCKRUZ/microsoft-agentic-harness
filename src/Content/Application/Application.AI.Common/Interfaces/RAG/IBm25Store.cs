@@ -52,13 +52,33 @@ public interface IBm25Store
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Deletes all chunks belonging to the specified document from the BM25 index.
+    /// Deletes all chunks belonging to the specified document from ONE collection of the
+    /// BM25 index.
     /// </summary>
     /// <param name="documentId">The document ID whose chunks should be removed.</param>
     /// <param name="collectionName">Optional collection/index name. Null uses the default.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
-    Task DeleteAsync(
+    /// <returns>
+    /// The number of rows actually removed. Callers that must not over-report (erasure
+    /// receipts, audits) rely on this being the true affected count, not the requested count.
+    /// </returns>
+    Task<int> DeleteAsync(
         string documentId,
         string? collectionName = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Deletes all chunks belonging to the specified document from EVERY collection the
+    /// backend holds. This is the right-to-erasure delete: with per-tenant scoped
+    /// collections a document's rows live in a tenant-derived collection, so a
+    /// default-collection <see cref="DeleteAsync"/> would silently miss them. Backends
+    /// with no physical collection concept (e.g. a single pre-provisioned Azure AI Search
+    /// index) delegate to <see cref="DeleteAsync"/>.
+    /// </summary>
+    /// <param name="documentId">The document ID whose chunks should be removed.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The number of rows actually removed across all collections.</returns>
+    Task<int> DeleteFromAllCollectionsAsync(
+        string documentId,
         CancellationToken cancellationToken = default);
 }

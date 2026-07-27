@@ -1,3 +1,4 @@
+using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.RAG;
 using Domain.AI.RAG.Models;
 using FluentAssertions;
@@ -36,7 +37,8 @@ public sealed class HybridRetrieverTests
             _mockBm25Store.Object,
             _mockEmbedding.Object,
             config,
-            Mock.Of<ILogger<HybridRetriever>>());
+            Mock.Of<ILogger<HybridRetriever>>(),
+            Mock.Of<IAmbientRequestScope>());
     }
 
     [Fact]

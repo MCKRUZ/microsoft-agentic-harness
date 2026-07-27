@@ -13,7 +13,12 @@ namespace Domain.Common.Config.AI.RAG;
 /// <para>
 /// <strong>Off by default.</strong> When disabled, the corpus keeps today's deliberate
 /// shared-corpus behavior: caller-supplied collection names are honored as before and
-/// nothing about collection naming changes.
+/// nothing about collection naming changes. One behavioral release-note applies
+/// regardless of this flag: the SQLite FTS5 BM25 store now partitions by collection
+/// <em>unconditionally</em> (it previously ignored collection names while the FAISS
+/// vector store partitioned — a dense/sparse asymmetry that leaked across collections),
+/// so flag-off callers who ingested under one collection name and searched under another
+/// relied on that bug and will see the corrected, partitioned behavior.
 /// </para>
 /// <para>
 /// <strong>Derivation.</strong> The effective collection is

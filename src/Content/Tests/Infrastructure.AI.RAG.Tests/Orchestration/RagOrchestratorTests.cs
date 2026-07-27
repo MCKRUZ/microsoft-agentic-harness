@@ -1,3 +1,4 @@
+using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.RAG;
 using Application.AI.Common.Interfaces.Routing;
 using Domain.AI.RAG.Enums;
@@ -62,6 +63,7 @@ public sealed class RagOrchestratorTests
             _mockCostTracker.Object,
             config,
             Mock.Of<ILogger<RagOrchestrator>>(),
+            Mock.Of<IAmbientRequestScope>(),
             _mockDecisionGate.Object,
             iterativeRetriever: null,
             faithfulnessEvaluator: null,

@@ -37,7 +37,7 @@ public sealed class HybridRetriever : IHybridRetriever
     private readonly IEmbeddingService _embeddingService;
     private readonly IOptionsMonitor<AppConfig> _appConfig;
     private readonly ILogger<HybridRetriever> _logger;
-    private readonly IAmbientRequestScope? _ambientScope;
+    private readonly IAmbientRequestScope _ambientScope;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="HybridRetriever"/> class.
@@ -49,9 +49,11 @@ public sealed class HybridRetriever : IHybridRetriever
     /// <param name="logger">The logger instance.</param>
     /// <param name="ambientScope">
     /// Bridge to the current request's scoped services, used to resolve the ambient
-    /// caller's tenant when <c>ScopedCollections</c> is enabled. Optional so direct
-    /// construction stays simple; when null, scoped requests resolve to the
-    /// global/default collection (closed).
+    /// caller's tenant when <c>ScopedCollections</c> is enabled. Required (not optional):
+    /// a directly-constructed retriever without the bridge would fail OPEN to the shared
+    /// corpus under the flag. When no request scope is in flight,
+    /// <see cref="IAmbientRequestScope.Current"/> is null and scoped requests resolve to
+    /// the global/default collection (closed).
     /// </param>
     public HybridRetriever(
         IVectorStore vectorStore,
@@ -59,8 +61,10 @@ public sealed class HybridRetriever : IHybridRetriever
         IEmbeddingService embeddingService,
         IOptionsMonitor<AppConfig> appConfig,
         ILogger<HybridRetriever> logger,
-        IAmbientRequestScope? ambientScope = null)
+        IAmbientRequestScope ambientScope)
     {
+        ArgumentNullException.ThrowIfNull(ambientScope);
+
         _vectorStore = vectorStore;
         _bm25Store = bm25Store;
         _embeddingService = embeddingService;
@@ -134,7 +138,7 @@ public sealed class HybridRetriever : IHybridRetriever
             return requestedCollectionName;
         }
 
-        var scope = _ambientScope?.Current?.GetService(typeof(IKnowledgeScope)) as IKnowledgeScope;
+        var scope = _ambientScope.Current?.GetService(typeof(IKnowledgeScope)) as IKnowledgeScope;
         return ScopedCollectionName.Resolve(
             scopedCollectionsEnabled: true, requestedCollectionName, scope?.TenantId);
     }

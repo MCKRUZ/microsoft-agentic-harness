@@ -173,12 +173,12 @@ public sealed class SqliteFts5Store : IBm25Store
     }
 
     /// <inheritdoc />
-    public async Task DeleteAsync(
+    public async Task<int> DeleteAsync(
         string documentId,
         string? collectionName = null,
         CancellationToken cancellationToken = default)
     {
-        if (!_initialized) return;
+        if (!_initialized) return 0;
 
         await using var connection = CreateConnection();
         await connection.OpenAsync(cancellationToken);
@@ -194,6 +194,34 @@ public sealed class SqliteFts5Store : IBm25Store
         _logger.LogDebug(
             "Deleted {Count} chunks for document {DocumentId} from SQLite FTS5 (collection: {Collection})",
             deleted, documentId, collectionName ?? DefaultCollection);
+
+        return deleted;
+    }
+
+    /// <inheritdoc />
+    public async Task<int> DeleteFromAllCollectionsAsync(
+        string documentId,
+        CancellationToken cancellationToken = default)
+    {
+        // Unlike the search/delete fast paths, the erasure delete must work in a process
+        // that has not ingested yet (persistent database, fresh host): initialize the
+        // schema (and run any pending migration) instead of returning a false 0.
+        await EnsureInitializedAsync(cancellationToken);
+
+        await using var connection = CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+
+        await using var cmd = connection.CreateCommand();
+        cmd.CommandText = "DELETE FROM chunks_fts WHERE document_id = @documentId";
+        cmd.Parameters.AddWithValue("@documentId", documentId);
+
+        var deleted = await cmd.ExecuteNonQueryAsync(cancellationToken);
+
+        _logger.LogDebug(
+            "Deleted {Count} chunks for document {DocumentId} from SQLite FTS5 across all collections",
+            deleted, documentId);
+
+        return deleted;
     }
 
     private async Task EnsureInitializedAsync(CancellationToken cancellationToken)

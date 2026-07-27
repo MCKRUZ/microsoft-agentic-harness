@@ -1,3 +1,4 @@
+using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.RAG;
 using Application.AI.Common.Interfaces.Routing;
 using Domain.AI.RAG.Models;
@@ -59,6 +60,7 @@ public sealed class RagOrchestratorMultiHopTests
             costTracker: null,
             config,
             Mock.Of<ILogger<RagOrchestrator>>(),
+            Mock.Of<IAmbientRequestScope>(),
             gate,
             _mockIterativeRetriever.Object,
             _mockFaithfulness.Object);

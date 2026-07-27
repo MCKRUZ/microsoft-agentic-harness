@@ -77,6 +77,12 @@ public sealed class RagConfigValidator : AbstractValidator<RagConfig>
 
         When(x => x.ScopedCollections.Enabled, () =>
         {
+            // COUPLING NOTE: this rule keys off VectorStore.Provider, which today also
+            // selects the BM25 store (VectorStoreFactory derives the BM25 key from the
+            // same value: "azure_ai_search" pairs both Azure stores, anything else pairs
+            // FAISS + SQLite FTS5). If a separate BM25 provider setting is ever
+            // introduced, it needs its own guard here or a collection-ignoring BM25
+            // backend would silently escape this check.
             RuleFor(x => x.VectorStore.Provider)
                 .Must(p => !string.Equals(p, "azure_ai_search", StringComparison.OrdinalIgnoreCase))
                 .WithMessage(

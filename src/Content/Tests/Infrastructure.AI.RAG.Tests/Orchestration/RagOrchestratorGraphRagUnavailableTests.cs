@@ -1,3 +1,4 @@
+using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.RAG;
 using Domain.AI.RAG.Enums;
 using FluentAssertions;
@@ -39,7 +40,8 @@ public sealed class RagOrchestratorGraphRagUnavailableTests
             complexityClassifier: null,
             costTracker: null,
             config,
-            Mock.Of<ILogger<RagOrchestrator>>());
+            Mock.Of<ILogger<RagOrchestrator>>(),
+            Mock.Of<IAmbientRequestScope>());
     }
 
     [Fact]

@@ -113,27 +113,54 @@ public sealed class FaissVectorStore : IVectorStore
             : chunk with { Metadata = chunk.Metadata with { OwnerId = null, TenantId = null } };
 
     /// <inheritdoc />
-    public Task DeleteAsync(
+    public Task<int> DeleteAsync(
         string documentId,
         string? collectionName = null,
         CancellationToken cancellationToken = default)
     {
-        var collection = GetOrCreateCollection(collectionName);
+        var deleted = DeleteFromCollection(GetOrCreateCollection(collectionName), documentId);
+
+        _logger.LogDebug(
+            "Deleted {Count} chunks for document {DocumentId} from in-memory store (collection: {Collection})",
+            deleted, documentId, collectionName ?? DefaultCollection);
+
+        return Task.FromResult(deleted);
+    }
+
+    /// <inheritdoc />
+    public Task<int> DeleteFromAllCollectionsAsync(
+        string documentId,
+        CancellationToken cancellationToken = default)
+    {
+        var deleted = 0;
+        foreach (var collection in _collections.Values)
+        {
+            deleted += DeleteFromCollection(collection, documentId);
+        }
+
+        _logger.LogDebug(
+            "Deleted {Count} chunks for document {DocumentId} from in-memory store across all collections",
+            deleted, documentId);
+
+        return Task.FromResult(deleted);
+    }
+
+    private static int DeleteFromCollection(
+        ConcurrentDictionary<string, (DocumentChunk Chunk, float[] Embedding)> collection,
+        string documentId)
+    {
         var keysToRemove = collection
             .Where(kvp => kvp.Value.Chunk.DocumentId == documentId)
             .Select(kvp => kvp.Key)
             .ToList();
 
+        var deleted = 0;
         foreach (var key in keysToRemove)
         {
-            collection.TryRemove(key, out _);
+            if (collection.TryRemove(key, out _)) deleted++;
         }
 
-        _logger.LogDebug(
-            "Deleted {Count} chunks for document {DocumentId} from in-memory store",
-            keysToRemove.Count, documentId);
-
-        return Task.CompletedTask;
+        return deleted;
     }
 
     /// <summary>
