@@ -96,6 +96,28 @@ public sealed class RecallQueryHandlerTests
     }
 
     [Fact]
+    public async Task Handle_RecordAccessDisabled_DoesNotDispatchRecordLearningAccessCommand()
+    {
+        // The HTTP recall surface opts out of access reinforcement (RecallQuery.RecordAccess =
+        // false) so a GET never performs caller-steered store writes. The recall result itself
+        // must be unaffected by the opt-out.
+        var learnings = new List<LearningEntry> { CreateLearning("l1"), CreateLearning("l2") };
+        SetupStore(learnings);
+        SetupUniformEmbedding(0.8);
+        _decayService.Setup(d => d.CalculateFreshnessAsync(It.IsAny<LearningEntry>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(1.0);
+
+        var handler = CreateHandler();
+        var result = await handler.Handle(CreateQuery() with { RecordAccess = false }, CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().HaveCount(2);
+        _mediator.Verify(
+            m => m.Send(It.IsAny<RecordLearningAccessCommand>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
     public async Task Handle_EmptyResults_ReturnsEmptyList()
     {
         _store.Setup(s => s.SearchAsync(It.IsAny<LearningSearchCriteria>(), It.IsAny<CancellationToken>()))
