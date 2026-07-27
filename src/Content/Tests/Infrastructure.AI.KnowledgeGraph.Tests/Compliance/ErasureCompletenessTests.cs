@@ -286,11 +286,11 @@ public sealed class ErasureCompletenessTests
         await service.EnforceRetentionAsync(DateTimeOffset.UtcNow, CancellationToken.None);
 
         vectorStore.Verify(
-            v => v.DeleteAsync("docExpired", It.IsAny<string?>(), It.IsAny<CancellationToken>()),
+            v => v.DeleteFromAllCollectionsAsync("docExpired", It.IsAny<CancellationToken>()),
             Times.Once,
             "the expired node's derived embeddings must be purged — its chunk IDs must survive to the derived-content sweep");
         bm25Store.Verify(
-            b => b.DeleteAsync("docExpired", It.IsAny<string?>(), It.IsAny<CancellationToken>()),
+            b => b.DeleteFromAllCollectionsAsync("docExpired", It.IsAny<CancellationToken>()),
             Times.Once);
     }
 

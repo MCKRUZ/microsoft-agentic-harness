@@ -143,7 +143,7 @@ public sealed class RetrievalPlanStepExecutor : IPlanStepExecutor
             classification.Complexity, classification.Confidence);
 
         var results = await _multiSourceOrchestrator.RetrieveFromAllSourcesAsync(
-            query, config.TopK ?? 10, classification.Complexity, ct);
+            query, config.TopK ?? 10, classification.Complexity, collectionName: null, ct);
 
         var output = new
         {

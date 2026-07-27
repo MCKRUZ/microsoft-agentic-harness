@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using Application.AI.Common.Interfaces;
+using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Application.AI.Common.Interfaces.RAG;
 using Application.AI.Common.Interfaces.Routing;
 using Application.AI.Common.OpenTelemetry.Metrics;
@@ -57,6 +59,7 @@ public sealed partial class RagOrchestrator : IRagOrchestrator
     private readonly IFeedbackWeightedScorer? _feedbackScorer;
     private readonly QueryRouter _queryRouter;
     private readonly IMultiSourceOrchestrator? _multiSourceOrchestrator;
+    private readonly IAmbientRequestScope _ambientScope;
     private readonly ITaskComplexityClassifier? _complexityClassifier;
     private readonly IRetrievalCostTracker? _costTracker;
     private readonly IOptionsMonitor<AppConfig> _configMonitor;
@@ -102,6 +105,7 @@ public sealed partial class RagOrchestrator : IRagOrchestrator
         IRetrievalCostTracker? costTracker,
         IOptionsMonitor<AppConfig> configMonitor,
         ILogger<RagOrchestrator> logger,
+        IAmbientRequestScope ambientScope,
         IRetrievalDecisionGate? decisionGate = null,
         IIterativeRetriever? iterativeRetriever = null,
         IAnswerFaithfulnessEvaluator? faithfulnessEvaluator = null,
@@ -114,6 +118,9 @@ public sealed partial class RagOrchestrator : IRagOrchestrator
         ArgumentNullException.ThrowIfNull(queryRouter);
         ArgumentNullException.ThrowIfNull(configMonitor);
         ArgumentNullException.ThrowIfNull(logger);
+        // Required (not optional): a directly-constructed orchestrator without the ambient
+        // bridge would fail OPEN to the shared corpus under ScopedCollections.
+        ArgumentNullException.ThrowIfNull(ambientScope);
 
         _hybridRetriever = hybridRetriever;
         _reranker = reranker;
@@ -131,6 +138,28 @@ public sealed partial class RagOrchestrator : IRagOrchestrator
         _iterativeRetriever = iterativeRetriever;
         _faithfulnessEvaluator = faithfulnessEvaluator;
         _webSearchSource = webSearchSource;
+        _ambientScope = ambientScope;
+    }
+
+    /// <summary>
+    /// Resolves the effective collection for this request. When
+    /// <c>AppConfig:AI:Rag:ScopedCollections</c> is off, the caller's value passes through
+    /// unchanged. When on, the caller-supplied name is discarded and the collection is
+    /// derived from the ambient caller's tenant (resolved per operation via
+    /// <see cref="IAmbientRequestScope"/>, the same singleton-safe bridge
+    /// <c>TenantIsolatedGraphStore</c> uses); no ambient identity resolves to the
+    /// global/default collection — closed, never an error.
+    /// </summary>
+    private string? ResolveScopedCollection(string? requestedCollectionName)
+    {
+        if (!_configMonitor.CurrentValue.AI.Rag.ScopedCollections.Enabled)
+        {
+            return requestedCollectionName;
+        }
+
+        var scope = _ambientScope.Current?.GetService(typeof(IKnowledgeScope)) as IKnowledgeScope;
+        return ScopedCollectionName.Resolve(
+            scopedCollectionsEnabled: true, requestedCollectionName, scope?.TenantId);
     }
 
     /// <inheritdoc />
@@ -141,6 +170,14 @@ public sealed partial class RagOrchestrator : IRagOrchestrator
         RetrievalStrategy? strategyOverride = null,
         CancellationToken cancellationToken = default)
     {
+        // ScopedCollections choke point: every retrieval path converges on this entry
+        // (HTTP handlers, agent tools, planner steps), so the effective collection is
+        // resolved HERE from the ambient caller identity — a caller-supplied name can
+        // never survive when scoping is on. Resolution is idempotent: MediatR handlers
+        // resolve the same way before calling in, and re-deriving from the same ambient
+        // tenant yields the same name.
+        collectionName = ResolveScopedCollection(collectionName);
+
         using var activity = ActivitySource.StartActivity("rag.orchestrator.search");
         var sw = Stopwatch.StartNew();
         var ragConfig = _configMonitor.CurrentValue.AI.Rag;
@@ -227,7 +264,7 @@ public sealed partial class RagOrchestrator : IRagOrchestrator
                      && _complexityClassifier is not null)
             {
                 result = await ExecuteMultiSourcePipelineAsync(
-                    query, effectiveTopK, cancellationToken);
+                    query, effectiveTopK, collectionName, cancellationToken);
             }
             else
             {
@@ -455,7 +492,7 @@ public sealed partial class RagOrchestrator : IRagOrchestrator
     }
 
     private async Task<RagAssembledContext> ExecuteMultiSourcePipelineAsync(
-        string query, int topK, CancellationToken cancellationToken)
+        string query, int topK, string? collectionName, CancellationToken cancellationToken)
     {
         using var activity = ActivitySource.StartActivity("rag.orchestrator.multi_source_pipeline");
         var classification = await _complexityClassifier!.ClassifyAsync(
@@ -467,7 +504,7 @@ public sealed partial class RagOrchestrator : IRagOrchestrator
             classification!.Complexity, classification.Confidence);
 
         var candidates = await _multiSourceOrchestrator!.RetrieveFromAllSourcesAsync(
-            query, topK, classification.Complexity, cancellationToken);
+            query, topK, classification.Complexity, collectionName, cancellationToken);
 
         if (candidates.Count == 0)
         {
@@ -591,7 +628,7 @@ public sealed partial class RagOrchestrator : IRagOrchestrator
         CancellationToken cancellationToken)
     {
         var webResult = await _webSearchSource!.RetrieveAsync(
-            query, topK, TaskComplexity.Moderate, cancellationToken);
+            query, topK, TaskComplexity.Moderate, collectionName: null, cancellationToken);
 
         if (webResult.Results.Count == 0)
             return existing;

@@ -63,7 +63,9 @@ public sealed class DocumentSearchTool : ITool
     /// <inheritdoc />
     public string Description =>
         "Searches indexed documents using hybrid retrieval with vector and keyword search, " +
-        "reranking, and optional GraphRAG for thematic queries.";
+        "reranking, and optional GraphRAG for thematic queries. When per-tenant collection " +
+        "isolation (ScopedCollections) is enabled, the 'collection' parameter is ignored: " +
+        "the collection searched is always derived server-side from the caller's tenant.";
 
     /// <inheritdoc />
     public IReadOnlyList<string> SupportedOperations => Operations;

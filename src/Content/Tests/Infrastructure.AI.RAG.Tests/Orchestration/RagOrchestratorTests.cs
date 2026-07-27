@@ -1,3 +1,4 @@
+using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.RAG;
 using Application.AI.Common.Interfaces.Routing;
 using Domain.AI.RAG.Enums;
@@ -62,6 +63,7 @@ public sealed class RagOrchestratorTests
             _mockCostTracker.Object,
             config,
             Mock.Of<ILogger<RagOrchestrator>>(),
+            Mock.Of<IAmbientRequestScope>(),
             _mockDecisionGate.Object,
             iterativeRetriever: null,
             faithfulnessEvaluator: null,
@@ -345,7 +347,7 @@ public sealed class RagOrchestratorTests
             .ReturnsAsync(RagTestData.CreateModerateClassification());
         _mockMultiSource
             .Setup(m => m.RetrieveFromAllSourcesAsync(
-                It.IsAny<string>(), It.IsAny<int>(), It.IsAny<TaskComplexity>(), It.IsAny<CancellationToken>()))
+                It.IsAny<string>(), It.IsAny<int>(), It.IsAny<TaskComplexity>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(retrievalResults);
         _mockReranker
             .Setup(r => r.RerankAsync(It.IsAny<string>(), It.IsAny<IReadOnlyList<RetrievalResult>>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
@@ -367,7 +369,7 @@ public sealed class RagOrchestratorTests
 
         result.AssembledText.Should().Be("assembled text");
         _mockMultiSource.Verify(
-            m => m.RetrieveFromAllSourcesAsync(It.IsAny<string>(), It.IsAny<int>(), TaskComplexity.Moderate, It.IsAny<CancellationToken>()),
+            m => m.RetrieveFromAllSourcesAsync(It.IsAny<string>(), It.IsAny<int>(), TaskComplexity.Moderate, It.IsAny<string?>(), It.IsAny<CancellationToken>()),
             Times.Once);
         _mockRetriever.Verify(
             r => r.RetrieveAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()),
@@ -382,7 +384,7 @@ public sealed class RagOrchestratorTests
             .ReturnsAsync(RagTestData.CreateSimpleClassification());
         _mockMultiSource
             .Setup(m => m.RetrieveFromAllSourcesAsync(
-                It.IsAny<string>(), It.IsAny<int>(), It.IsAny<TaskComplexity>(), It.IsAny<CancellationToken>()))
+                It.IsAny<string>(), It.IsAny<int>(), It.IsAny<TaskComplexity>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<RetrievalResult>());
 
         var orchestrator = CreateOrchestrator(cfg =>
@@ -486,7 +488,7 @@ public sealed class RagOrchestratorTests
         var webSource = new Mock<IRetrievalSource>();
         webSource.SetupGet(s => s.SourceName).Returns("web_search");
         webSource
-            .Setup(s => s.RetrieveAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<TaskComplexity>(), It.IsAny<CancellationToken>()))
+            .Setup(s => s.RetrieveAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<TaskComplexity>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(RagTestData.CreateSourceResult("web_search", resultCount: 2));
 
         _mockRetriever
@@ -515,7 +517,7 @@ public sealed class RagOrchestratorTests
 
         result.AssembledText.Should().Be("assembled text");
         webSource.Verify(
-            s => s.RetrieveAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<TaskComplexity>(), It.IsAny<CancellationToken>()),
+            s => s.RetrieveAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<TaskComplexity>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()),
             Times.Once);
         _mockAssembler.Verify(
             a => a.AssembleAsync(It.IsAny<IReadOnlyList<RerankedResult>>(), It.IsAny<int>(), It.IsAny<CancellationToken>()),
@@ -547,7 +549,7 @@ public sealed class RagOrchestratorTests
         var webSource = new Mock<IRetrievalSource>();
         webSource.SetupGet(s => s.SourceName).Returns("web_search");
         webSource
-            .Setup(s => s.RetrieveAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<TaskComplexity>(), It.IsAny<CancellationToken>()))
+            .Setup(s => s.RetrieveAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<TaskComplexity>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(webSourceResult);
 
         _mockRetriever
@@ -625,7 +627,7 @@ public sealed class RagOrchestratorTests
         var webSource = new Mock<IRetrievalSource>();
         webSource.SetupGet(s => s.SourceName).Returns("web_search");
         webSource
-            .Setup(s => s.RetrieveAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<TaskComplexity>(), It.IsAny<CancellationToken>()))
+            .Setup(s => s.RetrieveAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<TaskComplexity>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new SourceRetrievalResult
             {
                 SourceName = "web_search",
@@ -730,7 +732,7 @@ public sealed class RagOrchestratorTests
         await orchestrator.SearchAsync("query needing web fallback");
 
         webSource.Verify(
-            s => s.RetrieveAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<TaskComplexity>(), It.IsAny<CancellationToken>()),
+            s => s.RetrieveAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<TaskComplexity>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()),
             Times.Never);
     }
 

@@ -54,6 +54,7 @@ public sealed class MultiSourceOrchestrator : IMultiSourceOrchestrator
         string query,
         int topK,
         TaskComplexity complexity,
+        string? collectionName = null,
         CancellationToken cancellationToken = default)
     {
         using var activity = ActivitySource.StartActivity("rag.multi_source.retrieve");
@@ -68,7 +69,7 @@ public sealed class MultiSourceOrchestrator : IMultiSourceOrchestrator
             complexity, string.Join(", ", sourcesToQuery), topK);
 
         var sourceResults = await FanOutToSourcesAsync(
-            query, topK, complexity, sourcesToQuery, config.SourceTimeout, cancellationToken);
+            query, topK, complexity, collectionName, sourcesToQuery, config.SourceTimeout, cancellationToken);
 
         var allResults = new List<RetrievalResult>();
         foreach (var sourceResult in sourceResults)
@@ -107,12 +108,14 @@ public sealed class MultiSourceOrchestrator : IMultiSourceOrchestrator
         string query,
         int topK,
         TaskComplexity complexity,
+        string? collectionName,
         IReadOnlyList<string> sources,
         TimeSpan sourceTimeout,
         CancellationToken cancellationToken)
     {
         var tasks = sources.Select(source =>
-            ExecuteSourceWithTimeoutAsync(source, query, topK, complexity, sourceTimeout, cancellationToken));
+            ExecuteSourceWithTimeoutAsync(
+                source, query, topK, complexity, collectionName, sourceTimeout, cancellationToken));
 
         var results = await Task.WhenAll(tasks);
         return results.Where(r => r is not null).Cast<SourceRetrievalResult>().ToList();
@@ -123,6 +126,7 @@ public sealed class MultiSourceOrchestrator : IMultiSourceOrchestrator
         string query,
         int topK,
         TaskComplexity complexity,
+        string? collectionName,
         TimeSpan timeout,
         CancellationToken cancellationToken)
     {
@@ -138,7 +142,7 @@ public sealed class MultiSourceOrchestrator : IMultiSourceOrchestrator
 
         try
         {
-            return await source.RetrieveAsync(query, topK, complexity, timeoutCts.Token);
+            return await source.RetrieveAsync(query, topK, complexity, collectionName, timeoutCts.Token);
         }
         catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {

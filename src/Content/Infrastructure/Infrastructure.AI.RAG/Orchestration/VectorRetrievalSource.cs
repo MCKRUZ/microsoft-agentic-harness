@@ -16,10 +16,15 @@ internal sealed class VectorRetrievalSource(IHybridRetriever hybridRetriever) : 
 
     /// <inheritdoc />
     public async Task<SourceRetrievalResult> RetrieveAsync(
-        string query, int topK, TaskComplexity complexity, CancellationToken cancellationToken)
+        string query,
+        int topK,
+        TaskComplexity complexity,
+        string? collectionName = null,
+        CancellationToken cancellationToken = default)
     {
         var sw = Stopwatch.StartNew();
-        var results = await hybridRetriever.RetrieveAsync(query, topK, cancellationToken: cancellationToken);
+        var results = await hybridRetriever.RetrieveAsync(
+            query, topK, collectionName, cancellationToken);
         sw.Stop();
 
         return new SourceRetrievalResult

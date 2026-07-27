@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Application.AI.Common.Interfaces.RAG;
 using Application.AI.Common.OpenTelemetry.Metrics;
 using Application.Core.Workflows.KnowledgeGraph;
@@ -15,10 +16,21 @@ namespace Application.Core.CQRS.RAG.IngestDocument;
 
 /// <summary>
 /// Orchestrates the document ingestion pipeline: parse, extract structure,
-/// chunk, enrich, embed, and index — plus two opt-in graph-build stages
-/// (corpus-graph indexing and knowledge-graph enrichment) that run after the
-/// vector and BM25 indexes commit.
+/// chunk, enrich, embed, stamp provenance, and index — plus two opt-in
+/// graph-build stages (corpus-graph indexing and knowledge-graph enrichment)
+/// that run after the vector and BM25 indexes commit.
 /// </summary>
+/// <remarks>
+/// <para>
+/// Every indexed chunk is stamped with the ambient caller's owner/tenant identity
+/// (<see cref="ChunkMetadata.OwnerId"/>/<see cref="ChunkMetadata.TenantId"/>) — provenance
+/// for future erasure, never a retrieval filter. When
+/// <c>AppConfig:AI:Rag:ScopedCollections</c> is enabled, the target collection is derived
+/// server-side from the caller's tenant via <see cref="ScopedCollectionName"/>; the
+/// command validator has already rejected any caller-supplied collection name in that
+/// mode.
+/// </para>
+/// </remarks>
 public sealed class IngestDocumentCommandHandler
 	: IRequestHandler<IngestDocumentCommand, IngestDocumentResult>
 {
@@ -32,6 +44,7 @@ public sealed class IngestDocumentCommandHandler
 	private readonly IEmbeddingService _embeddingService;
 	private readonly IVectorStore _vectorStore;
 	private readonly IBm25Store _bm25Store;
+	private readonly IKnowledgeScope _knowledgeScope;
 	private readonly ILogger<IngestDocumentCommandHandler> _logger;
 	private readonly IOptionsMonitor<AppConfig> _appConfigMonitor;
 	private readonly IServiceProvider _serviceProvider;
@@ -45,6 +58,7 @@ public sealed class IngestDocumentCommandHandler
 		IEmbeddingService embeddingService,
 		IVectorStore vectorStore,
 		IBm25Store bm25Store,
+		IKnowledgeScope knowledgeScope,
 		ILogger<IngestDocumentCommandHandler> logger,
 		IOptionsMonitor<AppConfig> appConfigMonitor,
 		IServiceProvider serviceProvider)
@@ -57,6 +71,7 @@ public sealed class IngestDocumentCommandHandler
 		_embeddingService = embeddingService;
 		_vectorStore = vectorStore;
 		_bm25Store = bm25Store;
+		_knowledgeScope = knowledgeScope;
 		_logger = logger;
 		_appConfigMonitor = appConfigMonitor;
 		// The graph-build stages resolve their collaborators lazily from the provider:
@@ -78,6 +93,20 @@ public sealed class IngestDocumentCommandHandler
 
 		// Captured once chunks exist so the catch path can compensate partial store writes.
 		string? documentId = null;
+
+		// Ambient identity is captured ONCE, up front, so the collection resolution and the
+		// provenance stamps (applied after several awaits) are guaranteed to agree even if
+		// the ambient scope were mutated mid-pipeline.
+		var ownerId = _knowledgeScope.UserId;
+		var tenantId = _knowledgeScope.TenantId;
+
+		// Resolved before the try so the catch-path compensation deletes from the same
+		// collection the parallel index writes targeted. When ScopedCollections is on the
+		// collection is derived from the ambient tenant (the validator has already rejected
+		// caller-supplied names); when off, the caller's value passes through unchanged.
+		var ragConfig = _appConfigMonitor.CurrentValue.AI.Rag;
+		var effectiveCollection = ScopedCollectionName.Resolve(
+			ragConfig.ScopedCollections.Enabled, request.CollectionName, tenantId);
 
 		try
 		{
@@ -103,7 +132,6 @@ public sealed class IngestDocumentCommandHandler
 			documentId = chunks.Count > 0 ? chunks[0].DocumentId : null;
 
 			// 4. Contextual enrichment (if enabled)
-			var ragConfig = _appConfigMonitor.CurrentValue.AI.Rag;
 			if (ragConfig.Ingestion.EnableContextualEnrichment)
 			{
 				chunks = await _enricher.EnrichAsync(chunks, markdown, cancellationToken);
@@ -120,10 +148,15 @@ public sealed class IngestDocumentCommandHandler
 			chunks = await _embeddingService.EmbedAsync(chunks, cancellationToken);
 			var totalTokens = chunks.Sum(c => c.Tokens);
 
+			// 6.5. Stamp owner/tenant provenance captured at pipeline entry. Runs after
+			// every chunk-producing stage (chunking, enrichment, RAPTOR) so derived chunks are
+			// stamped too. Provenance only — retrieval never filters on these fields.
+			chunks = StampProvenance(chunks, ownerId, tenantId);
+
 			// 7. Index in vector store and BM25 store in parallel
 			await Task.WhenAll(
-				_vectorStore.IndexAsync(chunks, request.CollectionName, cancellationToken),
-				_bm25Store.IndexAsync(chunks, request.CollectionName, cancellationToken));
+				_vectorStore.IndexAsync(chunks, effectiveCollection, cancellationToken),
+				_bm25Store.IndexAsync(chunks, effectiveCollection, cancellationToken));
 
 			// 8. Opt-in graph-build stages. These run AFTER the vector/BM25 commit and are
 			// deliberately non-fatal: the searchable ingest already succeeded, so a graph
@@ -177,7 +210,7 @@ public sealed class IngestDocumentCommandHandler
 			// that wrote nothing.
 			if (documentId is not null)
 			{
-				await CompensatePartialIngestAsync(documentId, request.CollectionName, jobId);
+				await CompensatePartialIngestAsync(documentId, effectiveCollection, jobId);
 			}
 
 			return new IngestDocumentResult
@@ -190,6 +223,31 @@ public sealed class IngestDocumentCommandHandler
 				Error = "Document ingestion failed. Check server logs for details."
 			};
 		}
+	}
+
+	/// <summary>
+	/// Returns the chunk list with <see cref="ChunkMetadata.OwnerId"/> and
+	/// <see cref="ChunkMetadata.TenantId"/> stamped from the identity captured at
+	/// pipeline entry. Identity never comes from the request DTO: it is captured at the
+	/// entry point (middleware/hub filter), flows here ambiently, and is snapshotted once
+	/// in <see cref="Handle"/> so the stamps always agree with the resolved collection.
+	/// When no identity is present (in-process or CLI callers) the chunks are returned
+	/// unchanged — the stamps stay null and shared-corpus behavior is untouched.
+	/// </summary>
+	private static IReadOnlyList<DocumentChunk> StampProvenance(
+		IReadOnlyList<DocumentChunk> chunks, string? ownerId, string? tenantId)
+	{
+		if (ownerId is null && tenantId is null)
+		{
+			return chunks;
+		}
+
+		return chunks
+			.Select(c => c with
+			{
+				Metadata = c.Metadata with { OwnerId = ownerId, TenantId = tenantId },
+			})
+			.ToList();
 	}
 
 	/// <summary>

@@ -1,10 +1,13 @@
 using System.Diagnostics;
+using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Application.AI.Common.Interfaces.RAG;
 using Application.AI.Common.OpenTelemetry.Metrics;
 using Domain.AI.RAG.Models;
 using Domain.AI.Telemetry.Conventions;
+using Domain.Common.Config;
 using MediatR;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace Application.Core.CQRS.RAG.SearchDocuments;
 
@@ -12,20 +15,34 @@ namespace Application.Core.CQRS.RAG.SearchDocuments;
 /// Delegates to <see cref="IRagOrchestrator"/> for the full RAG pipeline
 /// (classify, transform, retrieve, rerank, evaluate, expand, assemble).
 /// </summary>
+/// <remarks>
+/// When <c>AppConfig:AI:Rag:ScopedCollections</c> is enabled, the collection searched is
+/// derived server-side from the caller's ambient tenant via
+/// <see cref="ScopedCollectionName"/> — the query validator has already rejected any
+/// caller-supplied collection name in that mode, so a caller can never name (and read)
+/// another tenant's collection. A caller with no ambient tenant searches the
+/// global/default collection.
+/// </remarks>
 public sealed class SearchDocumentsQueryHandler
     : IRequestHandler<SearchDocumentsQuery, SearchDocumentsResult>
 {
     private static readonly ActivitySource ActivitySource = new("AgenticHarness.RAG.Retrieval");
 
     private readonly IRagOrchestrator _orchestrator;
+    private readonly IKnowledgeScope _knowledgeScope;
+    private readonly IOptionsMonitor<AppConfig> _appConfigMonitor;
     private readonly ILogger<SearchDocumentsQueryHandler> _logger;
 
     /// <summary>Initializes a new instance of the <see cref="SearchDocumentsQueryHandler"/> class.</summary>
     public SearchDocumentsQueryHandler(
         IRagOrchestrator orchestrator,
+        IKnowledgeScope knowledgeScope,
+        IOptionsMonitor<AppConfig> appConfigMonitor,
         ILogger<SearchDocumentsQueryHandler> logger)
     {
         _orchestrator = orchestrator;
+        _knowledgeScope = knowledgeScope;
+        _appConfigMonitor = appConfigMonitor;
         _logger = logger;
     }
 
@@ -44,8 +61,13 @@ public sealed class SearchDocumentsQueryHandler
                 "RAG search started via orchestrator: TopK={TopK}",
                 request.TopK);
 
+            var effectiveCollection = ScopedCollectionName.Resolve(
+                _appConfigMonitor.CurrentValue.AI.Rag.ScopedCollections.Enabled,
+                request.CollectionName,
+                _knowledgeScope.TenantId);
+
             var context = await _orchestrator.SearchAsync(
-                request.Query, request.TopK, request.CollectionName,
+                request.Query, request.TopK, effectiveCollection,
                 request.StrategyOverride, cancellationToken);
 
             pipelineSw.Stop();

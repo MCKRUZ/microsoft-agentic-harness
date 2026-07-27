@@ -183,6 +183,12 @@ public sealed class DefaultErasureOrchestrator : IErasureOrchestrator
         //    rows) by DOCUMENT id. Vector/BM25 delete by documentId, NOT chunkId — chunk IDs are
         //    "{documentId}_chunk_{i}" / "{documentId}_raptor_L{l}_C{c}", so we derive the document
         //    prefix. RAPTOR rows share the parent document id and drop out via the same delete.
+        //    The sweep uses the ALL-collections delete: with ScopedCollections a document's
+        //    chunks live in a tenant-derived collection, and a default-collection delete would
+        //    remove nothing while the receipt still reported the purge — a compliance-grade
+        //    over-report of a no-op. Counts come from the stores (rows actually removed), and a
+        //    document that matched zero rows in every configured store is surfaced on the receipt
+        //    instead of silently counting as done.
         var documentIds = nodes
             .SelectMany(n => n.ChunkIds)
             .Select(DeriveDocumentId)
@@ -190,26 +196,25 @@ public sealed class DefaultErasureOrchestrator : IErasureOrchestrator
             .Distinct(StringComparer.Ordinal)
             .ToList();
 
-        var vectorDocsDeleted = 0;
-        var bm25DocsDeleted = 0;
-        if (documentIds.Count > 0)
+        var vectorChunksDeleted = 0;
+        var bm25RowsDeleted = 0;
+        var unmatchedDocumentIds = new List<string>();
+        foreach (var documentId in documentIds)
         {
-            if (_vectorStore is not null)
-            {
-                foreach (var documentId in documentIds)
-                {
-                    await _vectorStore.DeleteAsync(documentId, cancellationToken: cancellationToken);
-                    vectorDocsDeleted++;
-                }
-            }
+            var vectorDeleted = _vectorStore is not null
+                ? await _vectorStore.DeleteFromAllCollectionsAsync(documentId, cancellationToken)
+                : 0;
+            var bm25Deleted = _bm25Store is not null
+                ? await _bm25Store.DeleteFromAllCollectionsAsync(documentId, cancellationToken)
+                : 0;
 
-            if (_bm25Store is not null)
+            vectorChunksDeleted += vectorDeleted;
+            bm25RowsDeleted += bm25Deleted;
+
+            if ((_vectorStore is not null || _bm25Store is not null)
+                && vectorDeleted == 0 && bm25Deleted == 0)
             {
-                foreach (var documentId in documentIds)
-                {
-                    await _bm25Store.DeleteAsync(documentId, cancellationToken: cancellationToken);
-                    bm25DocsDeleted++;
-                }
+                unmatchedDocumentIds.Add(documentId);
             }
         }
 
@@ -248,9 +253,10 @@ public sealed class DefaultErasureOrchestrator : IErasureOrchestrator
             NodesDeleted = nodeDeletion.NodesDeleted,
             EdgesDeleted = deletedEdgeIds.Count,
             FeedbackWeightsDeleted = nodeWeightsDeleted + edgeWeightsDeleted,
-            VectorEmbeddingsDeleted = vectorDocsDeleted,
-            Bm25DocumentsDeleted = bm25DocsDeleted,
+            VectorEmbeddingsDeleted = vectorChunksDeleted,
+            Bm25DocumentsDeleted = bm25RowsDeleted,
             CrossSessionMemoriesDeleted = crossSessionDeleted,
+            UnmatchedDocumentIds = unmatchedDocumentIds,
             Completeness = completeness,
             CompletenessReason = completenessReason
         };
@@ -272,10 +278,12 @@ public sealed class DefaultErasureOrchestrator : IErasureOrchestrator
 
         _logger.LogInformation(
             "Erasure completed: RequestId={RequestId}, Completeness={Completeness}, Nodes={Nodes}, " +
-            "Edges={Edges}, FeedbackWeights={FeedbackWeights}, VectorDocs={VectorDocs}, " +
-            "Bm25Docs={Bm25Docs}, CrossSessionMemories={CrossSessionMemories}{Reason}",
+            "Edges={Edges}, FeedbackWeights={FeedbackWeights}, VectorChunks={VectorChunks}, " +
+            "Bm25Rows={Bm25Rows}, CrossSessionMemories={CrossSessionMemories}, " +
+            "UnmatchedDocuments={UnmatchedDocuments}{Reason}",
             requestId, completeness, receipt.NodesDeleted, receipt.EdgesDeleted,
-            receipt.FeedbackWeightsDeleted, vectorDocsDeleted, bm25DocsDeleted, crossSessionDeleted,
+            receipt.FeedbackWeightsDeleted, vectorChunksDeleted, bm25RowsDeleted, crossSessionDeleted,
+            unmatchedDocumentIds.Count,
             completenessReason is null ? string.Empty : $", Reason={completenessReason}");
 
         return receipt;

@@ -24,7 +24,7 @@ public sealed class WebSearchRetrievalSourceTests
 
         var sut = new WebSearchRetrievalSource(_provider.Object);
 
-        var result = await sut.RetrieveAsync("test", 5, TaskComplexity.Complex, CancellationToken.None);
+        var result = await sut.RetrieveAsync("test", 5, TaskComplexity.Complex, collectionName: null, cancellationToken: CancellationToken.None);
 
         result.SourceName.Should().Be("web_search");
         result.Results.Should().HaveCount(2);
@@ -43,7 +43,7 @@ public sealed class WebSearchRetrievalSourceTests
 
         var sut = new WebSearchRetrievalSource(_provider.Object);
 
-        var result = await sut.RetrieveAsync("test", 5, TaskComplexity.Complex, CancellationToken.None);
+        var result = await sut.RetrieveAsync("test", 5, TaskComplexity.Complex, collectionName: null, cancellationToken: CancellationToken.None);
 
         result.Results.Should().BeEmpty();
     }

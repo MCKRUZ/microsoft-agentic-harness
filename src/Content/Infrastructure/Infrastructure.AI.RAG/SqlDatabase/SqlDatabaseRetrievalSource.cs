@@ -28,8 +28,16 @@ internal sealed class SqlDatabaseRetrievalSource(
     public string SourceName => "sql_database";
 
     /// <inheritdoc />
+    /// <remarks>
+    /// The SQL database is an external source with no collection concept, so
+    /// <paramref name="collectionName"/> is accepted and ignored.
+    /// </remarks>
     public async Task<SourceRetrievalResult> RetrieveAsync(
-        string query, int topK, TaskComplexity complexity, CancellationToken cancellationToken)
+        string query,
+        int topK,
+        TaskComplexity complexity,
+        string? collectionName = null,
+        CancellationToken cancellationToken = default)
     {
         var sw = Stopwatch.StartNew();
         var config = configMonitor.CurrentValue.AI.Rag.SqlDatabase;

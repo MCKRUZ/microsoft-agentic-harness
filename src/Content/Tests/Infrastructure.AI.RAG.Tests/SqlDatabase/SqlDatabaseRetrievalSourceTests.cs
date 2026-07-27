@@ -50,7 +50,7 @@ public sealed class SqlDatabaseRetrievalSourceTests
 
         var sut = CreateSut(allowLlmFallback: true);
 
-        var result = await sut.RetrieveAsync("Find user Alice", 10, TaskComplexity.Moderate, CancellationToken.None);
+        var result = await sut.RetrieveAsync("Find user Alice", 10, TaskComplexity.Moderate, collectionName: null, cancellationToken: CancellationToken.None);
 
         result.SourceName.Should().Be("sql_database");
         result.Results.Should().HaveCount(1);
@@ -78,7 +78,7 @@ public sealed class SqlDatabaseRetrievalSourceTests
 
         var sut = CreateSut(allowLlmFallback: true);
 
-        var result = await sut.RetrieveAsync("Cheap products", 10, TaskComplexity.Moderate, CancellationToken.None);
+        var result = await sut.RetrieveAsync("Cheap products", 10, TaskComplexity.Moderate, collectionName: null, cancellationToken: CancellationToken.None);
 
         result.Results.Should().HaveCount(1);
     }
@@ -92,7 +92,7 @@ public sealed class SqlDatabaseRetrievalSourceTests
 
         var sut = CreateSut(allowLlmFallback: false);
 
-        var result = await sut.RetrieveAsync("Cheap products", 10, TaskComplexity.Moderate, CancellationToken.None);
+        var result = await sut.RetrieveAsync("Cheap products", 10, TaskComplexity.Moderate, collectionName: null, cancellationToken: CancellationToken.None);
 
         result.Results.Should().BeEmpty();
     }
@@ -114,7 +114,7 @@ public sealed class SqlDatabaseRetrievalSourceTests
 
         var sut = CreateSut(allowLlmFallback: true);
 
-        var result = await sut.RetrieveAsync("Unknown query", 10, TaskComplexity.Moderate, CancellationToken.None);
+        var result = await sut.RetrieveAsync("Unknown query", 10, TaskComplexity.Moderate, collectionName: null, cancellationToken: CancellationToken.None);
 
         result.Results.Should().BeEmpty();
     }

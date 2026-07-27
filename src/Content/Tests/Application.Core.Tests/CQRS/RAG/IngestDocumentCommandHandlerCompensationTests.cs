@@ -1,3 +1,4 @@
+using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Application.AI.Common.Interfaces.RAG;
 using Application.Core.CQRS.RAG.IngestDocument;
 using Domain.AI.RAG.Models;
@@ -83,6 +84,7 @@ public sealed class IngestDocumentCommandHandlerCompensationTests
             _embedding.Object,
             _vectorStore.Object,
             _bm25Store.Object,
+            new Mock<IKnowledgeScope>().Object,
             NullLogger<IngestDocumentCommandHandler>.Instance,
             monitor.Object,
             new ServiceCollection().BuildServiceProvider());

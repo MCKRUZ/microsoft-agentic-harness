@@ -200,8 +200,10 @@ public sealed class DefaultErasureOrchestratorTests
     [Fact]
     public async Task EraseByOwner_DeletesVectorsByDocumentId_NotChunkId()
     {
-        // Chunk IDs are "{documentId}_chunk_{i}" / "{documentId}_raptor_*"; IVectorStore.DeleteAsync
-        // deletes by documentId. Passing a chunkId matches nothing, so the embeddings survive.
+        // Chunk IDs are "{documentId}_chunk_{i}" / "{documentId}_raptor_*"; the store deletes by
+        // documentId. Passing a chunkId matches nothing, so the embeddings survive. The sweep must
+        // use the ALL-collections delete: under ScopedCollections the chunks live in a
+        // tenant-derived collection a default-collection delete would miss.
         _graphStore.Setup(g => g.GetNodesByOwnerAsync("user-1", It.IsAny<CancellationToken>()))
             .ReturnsAsync([
                 new GraphNode
@@ -210,16 +212,21 @@ public sealed class DefaultErasureOrchestratorTests
                     ChunkIds = ["docA_chunk_0", "docA_chunk_1", "docA_raptor_L0_C0"]
                 }
             ]);
+        _vectorStore
+            .Setup(v => v.DeleteFromAllCollectionsAsync("docA", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(3);
 
         var receipt = await _orchestrator.EraseByOwnerAsync("user-1");
 
         // All three chunk IDs derive to the single document "docA" — deleted once.
-        _vectorStore.Verify(v => v.DeleteAsync("docA", It.IsAny<string?>(), It.IsAny<CancellationToken>()),
+        _vectorStore.Verify(v => v.DeleteFromAllCollectionsAsync("docA", It.IsAny<CancellationToken>()),
             Times.Once);
-        _vectorStore.Verify(v => v.DeleteAsync(
+        _vectorStore.Verify(v => v.DeleteFromAllCollectionsAsync(
             It.Is<string>(id => id.Contains("_chunk_") || id.Contains("_raptor_")),
-            It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
-        receipt.VectorEmbeddingsDeleted.Should().Be(1, "one distinct document's embeddings were submitted");
+            It.IsAny<CancellationToken>()), Times.Never);
+        receipt.VectorEmbeddingsDeleted.Should().Be(3,
+            "the receipt reports the chunk rows the store actually removed, not the submitted document count");
+        receipt.UnmatchedDocumentIds.Should().BeEmpty();
     }
 
     // ------------------------------------------------------------------
@@ -241,11 +248,15 @@ public sealed class DefaultErasureOrchestratorTests
                 }
             ]);
 
+        bm25.Setup(b => b.DeleteFromAllCollectionsAsync("docA", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(2);
+
         var receipt = await orchestrator.EraseByOwnerAsync("user-1");
 
-        bm25.Verify(b => b.DeleteAsync("docA", It.IsAny<string?>(), It.IsAny<CancellationToken>()),
+        bm25.Verify(b => b.DeleteFromAllCollectionsAsync("docA", It.IsAny<CancellationToken>()),
             Times.Once);
-        receipt.Bm25DocumentsDeleted.Should().Be(1);
+        receipt.Bm25DocumentsDeleted.Should().Be(2,
+            "the receipt reports the rows the store actually removed, not the submitted document count");
     }
 
     // ------------------------------------------------------------------

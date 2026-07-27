@@ -115,7 +115,7 @@ public sealed class FullAutonomyIntegrationTests
         _mockMultiSource
             .Setup(m => m.RetrieveFromAllSourcesAsync(
                 It.IsAny<string>(), It.IsAny<int>(),
-                It.IsAny<TaskComplexity>(), It.IsAny<CancellationToken>()))
+                It.IsAny<TaskComplexity>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(retrievalResults);
         _mockComplexityClassifier
             .Setup(c => c.ClassifyAsync(It.IsAny<AgentTurnContext>(), It.IsAny<CancellationToken>()))

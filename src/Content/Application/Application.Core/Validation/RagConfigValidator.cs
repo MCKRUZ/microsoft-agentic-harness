@@ -18,6 +18,18 @@ namespace Application.Core.Validation;
 ///     backend must be enabled: corpus-graph indexing writes through
 ///     <c>IGraphRagService</c>, which exists only alongside the backend. Failing at boot is
 ///     kinder than silently skipping the stage on every ingest.</item>
+///   <item>When <see cref="ScopedCollectionsConfig.Enabled"/> is <c>true</c>, the retrieval
+///     stack must actually honor collection names: the <c>"azure_ai_search"</c> store pairing
+///     queries one pre-provisioned index and ignores the collection parameter, and the
+///     agentic-retrieval backend always queries its one configured knowledge base. Either
+///     combination would accept tenant-derived collection names and silently search the
+///     shared index anyway — a cross-tenant leak. Failing at boot is the closed, predictable
+///     alternative.</item>
+///   <item>When <see cref="ScopedCollectionsConfig.Enabled"/> is <c>true</c>,
+///     <see cref="GraphRagConfig.IndexOnIngest"/> must be off: the corpus graph is a single
+///     shared graph with no collection concept, so indexing scoped ingests into it would
+///     make every tenant's chunks readable through the GraphRag strategy and the Phase-D
+///     <c>"graph"</c> source. The validator makes the unsafe combination unrepresentable.</item>
 /// </list>
 /// All class defaults satisfy every rule, so hosts that omit the section keep booting
 /// unchanged.
@@ -61,6 +73,44 @@ public sealed class RagConfigValidator : AbstractValidator<RagConfig>
                     "indexing writes through IGraphRagService, which is registered only when " +
                     "AppConfig:AI:Rag:GraphDatabase:Enabled is true. Enable the backend or turn " +
                     "off AppConfig:AI:Rag:GraphRag:IndexOnIngest.");
+        });
+
+        When(x => x.ScopedCollections.Enabled, () =>
+        {
+            // COUPLING NOTE: this rule keys off VectorStore.Provider, which today also
+            // selects the BM25 store (VectorStoreFactory derives the BM25 key from the
+            // same value: "azure_ai_search" pairs both Azure stores, anything else pairs
+            // FAISS + SQLite FTS5). If a separate BM25 provider setting is ever
+            // introduced, it needs its own guard here or a collection-ignoring BM25
+            // backend would silently escape this check.
+            RuleFor(x => x.VectorStore.Provider)
+                .Must(p => !string.Equals(p, "azure_ai_search", StringComparison.OrdinalIgnoreCase))
+                .WithMessage(
+                    "ScopedCollections requires a collection-aware store pairing. The " +
+                    "'azure_ai_search' stores query one pre-provisioned index and ignore " +
+                    "collection names, so tenant-derived collections would silently search the " +
+                    "shared index — a cross-tenant leak. Set AppConfig:AI:Rag:VectorStore:Provider " +
+                    "to 'faiss' (FAISS + SQLite FTS5, both collection-aware), or provision " +
+                    "per-tenant Azure indexes and register a collection-aware store before " +
+                    "enabling AppConfig:AI:Rag:ScopedCollections.");
+
+            RuleFor(x => x.AgenticRetrieval.Enabled)
+                .Equal(false)
+                .WithMessage(
+                    "ScopedCollections cannot be combined with AgenticRetrieval: the Azure " +
+                    "knowledge-base retriever always queries the one configured knowledge base " +
+                    "and ignores collection names, so every tenant would search the same shared " +
+                    "knowledge base. Disable AppConfig:AI:Rag:AgenticRetrieval or " +
+                    "AppConfig:AI:Rag:ScopedCollections.");
+
+            RuleFor(x => x.GraphRag.IndexOnIngest)
+                .Equal(false)
+                .WithMessage(
+                    "ScopedCollections cannot be combined with GraphRag.IndexOnIngest: the corpus " +
+                    "graph is a single shared graph with no collection concept, so scoped ingests " +
+                    "would land every tenant's chunks in one graph readable via the GraphRag " +
+                    "strategy and the multi-source 'graph' source. Disable " +
+                    "AppConfig:AI:Rag:GraphRag:IndexOnIngest or AppConfig:AI:Rag:ScopedCollections.");
         });
     }
 }

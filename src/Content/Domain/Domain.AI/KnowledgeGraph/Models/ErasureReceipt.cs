@@ -28,21 +28,33 @@ public record ErasureReceipt
     /// </summary>
     public required int FeedbackWeightsDeleted { get; init; }
     /// <summary>
-    /// Number of documents whose vector embeddings were submitted for deletion.
-    /// <c>IVectorStore.DeleteAsync</c> deletes by <em>document ID</em> and returns no per-item
-    /// confirmation, so this counts the distinct document IDs (derived from the erased nodes'
-    /// chunk IDs) submitted to the vector store — each call either succeeded or the erasure
-    /// faulted before producing a receipt. Zero when no vector store is configured.
+    /// Number of chunk embeddings the vector store <em>actually removed</em>, summed across
+    /// every collection (the erasure sweep uses the all-collections delete so per-tenant
+    /// scoped collections are reached), as returned by
+    /// <c>IVectorStore.DeleteFromAllCollectionsAsync</c>. Zero when no vector store is
+    /// configured — and zero when nothing matched, never the submitted document count.
     /// </summary>
     public required int VectorEmbeddingsDeleted { get; init; }
 
     /// <summary>
-    /// Number of documents whose BM25/full-text rows were submitted for deletion, by document
-    /// ID (derived from the erased nodes' chunk IDs). RAPTOR summary rows share the same
-    /// document ID and drop out via the same document-scoped delete. Zero when no BM25 store
-    /// is configured. Defaults to zero so pre-existing construction sites remain valid.
+    /// Number of BM25/full-text rows <em>actually removed</em>, summed across every
+    /// collection, as returned by <c>IBm25Store.DeleteFromAllCollectionsAsync</c>. RAPTOR
+    /// summary rows share the parent document ID and drop out via the same delete. Zero when
+    /// no BM25 store is configured — and zero when nothing matched, never the submitted
+    /// document count. Defaults to zero so pre-existing construction sites remain valid.
     /// </summary>
     public int Bm25DocumentsDeleted { get; init; }
+
+    /// <summary>
+    /// Document IDs that were derived from the erased nodes' chunk IDs and submitted to the
+    /// derived-content sweep, but matched <em>zero</em> rows in every configured store. A
+    /// non-empty list is the receipt's honest detail that content the graph manifest points
+    /// at was not found where the stores looked — instead of silently counting those
+    /// documents as purged. Empty when every submitted document matched rows or no
+    /// vector/BM25 store is configured. Defaults to empty so pre-existing construction sites
+    /// remain valid.
+    /// </summary>
+    public IReadOnlyList<string> UnmatchedDocumentIds { get; init; } = [];
 
     /// <summary>
     /// Number of cross-session memory records purged for the erased owner, across the store's

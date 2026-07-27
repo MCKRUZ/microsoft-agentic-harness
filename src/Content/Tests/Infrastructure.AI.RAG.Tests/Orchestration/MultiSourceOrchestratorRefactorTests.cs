@@ -62,6 +62,7 @@ public sealed class MultiSourceOrchestratorRefactorTests
                 It.IsAny<string>(),
                 It.IsAny<int>(),
                 It.IsAny<TaskComplexity>(),
+                It.IsAny<string?>(),
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(new SourceRetrievalResult
             {
@@ -93,10 +94,10 @@ public sealed class MultiSourceOrchestratorRefactorTests
 
         // Assert — both sources were called via keyed DI resolution
         mockVector.Verify(s => s.RetrieveAsync(
-            It.IsAny<string>(), It.IsAny<int>(), It.IsAny<TaskComplexity>(), It.IsAny<CancellationToken>()),
+            It.IsAny<string>(), It.IsAny<int>(), It.IsAny<TaskComplexity>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()),
             Times.Once);
         mockGraph.Verify(s => s.RetrieveAsync(
-            It.IsAny<string>(), It.IsAny<int>(), It.IsAny<TaskComplexity>(), It.IsAny<CancellationToken>()),
+            It.IsAny<string>(), It.IsAny<int>(), It.IsAny<TaskComplexity>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()),
             Times.Once);
         results.Should().HaveCount(4);
     }
@@ -124,10 +125,10 @@ public sealed class MultiSourceOrchestratorRefactorTests
 
         // Assert — graph is in SourcesByComplexity["Moderate"] but not in EnabledSources
         mockVector.Verify(s => s.RetrieveAsync(
-            It.IsAny<string>(), It.IsAny<int>(), It.IsAny<TaskComplexity>(), It.IsAny<CancellationToken>()),
+            It.IsAny<string>(), It.IsAny<int>(), It.IsAny<TaskComplexity>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()),
             Times.Once);
         mockGraph.Verify(s => s.RetrieveAsync(
-            It.IsAny<string>(), It.IsAny<int>(), It.IsAny<TaskComplexity>(), It.IsAny<CancellationToken>()),
+            It.IsAny<string>(), It.IsAny<int>(), It.IsAny<TaskComplexity>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()),
             Times.Never);
         results.Should().HaveCount(3);
     }
@@ -151,7 +152,7 @@ public sealed class MultiSourceOrchestratorRefactorTests
 
         // Assert — vector results returned, graph silently skipped (logged warning, no exception)
         mockVector.Verify(s => s.RetrieveAsync(
-            It.IsAny<string>(), It.IsAny<int>(), It.IsAny<TaskComplexity>(), It.IsAny<CancellationToken>()),
+            It.IsAny<string>(), It.IsAny<int>(), It.IsAny<TaskComplexity>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()),
             Times.Once);
         results.Should().HaveCount(3);
     }
