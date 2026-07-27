@@ -198,6 +198,24 @@ public static class DependencyInjection
                         QueueLimit = 0,
                     });
                 }
+                // Learnings recall embeds the query AND every candidate learning on each request
+                // (1+N uncached embedding calls), so even a role-holding operator can loop the
+                // endpoint into real provider spend. Cap reads per authenticated user, matching
+                // the memory-write limiter's 30/min posture (both are per-request AI-cost paths).
+                if (context.Request.Method == HttpMethods.Get &&
+                    context.Request.Path.StartsWithSegments("/api/learnings"))
+                {
+                    var learningsCaller = context.User.GetUserIdOrNull()
+                        ?? context.Connection.RemoteIpAddress?.ToString()
+                        ?? "unknown";
+                    return RateLimitPartition.GetFixedWindowLimiter($"learnings:{learningsCaller}", _ => new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = 30,
+                        Window = TimeSpan.FromMinutes(1),
+                        QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                        QueueLimit = 0,
+                    });
+                }
                 return RateLimitPartition.GetNoLimiter("none");
             });
 
