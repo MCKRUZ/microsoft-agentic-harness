@@ -33,6 +33,7 @@ internal sealed class DevAuthHandler(
             new Claim(ClaimTypes.Role, "Harness.Learnings.Read"),
             new Claim(ClaimTypes.Role, Presentation.Common.Escalations.EscalationsController.DecideRole),
             new Claim(ClaimTypes.Role, Presentation.Common.Escalations.EscalationsController.AdminRole),
+            new Claim(ClaimTypes.Role, Presentation.Common.Governance.AutonomyController.ReadRole),
         };
         var identity = new ClaimsIdentity(claims, Scheme.Name);
         var ticket = new AuthenticationTicket(new ClaimsPrincipal(identity), Scheme.Name);

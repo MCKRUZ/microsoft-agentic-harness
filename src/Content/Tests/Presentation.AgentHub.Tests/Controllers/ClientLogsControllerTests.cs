@@ -16,22 +16,10 @@ public sealed class ClientLogsControllerTests : IClassFixture<TestWebApplication
 
     public ClientLogsControllerTests(TestWebApplicationFactory factory) => _factory = factory;
 
-    private HttpClient CreateAuthedClient(string userId = "client-log-user")
-    {
-        var client = _factory
-            .WithWebHostBuilder(b => b.ConfigureTestServices(services =>
-                services.AddAuthentication(TestAuthHandler.SchemeName)
-                    .AddScheme<AuthenticationSchemeOptions, TestAuthHandler>(
-                        TestAuthHandler.SchemeName, _ => { })))
-            .CreateClient();
-        client.DefaultRequestHeaders.Add(TestAuthHandler.UserIdHeader, userId);
-        return client;
-    }
-
     [Fact]
     public async Task Post_NullBody_Returns400()
     {
-        using var client = CreateAuthedClient();
+        using var client = _factory.CreateAuthedClient("client-log-user");
 
         var response = await client.PostAsJsonAsync<IReadOnlyList<ClientLogEntry>?>(
             "/api/client-logs", null);
@@ -42,7 +30,7 @@ public sealed class ClientLogsControllerTests : IClassFixture<TestWebApplication
     [Fact]
     public async Task Post_EmptyArray_Returns400()
     {
-        using var client = CreateAuthedClient();
+        using var client = _factory.CreateAuthedClient("client-log-user");
 
         var response = await client.PostAsJsonAsync("/api/client-logs",
             Array.Empty<ClientLogEntry>());
@@ -53,7 +41,7 @@ public sealed class ClientLogsControllerTests : IClassFixture<TestWebApplication
     [Fact]
     public async Task Post_ValidEntries_Returns202()
     {
-        using var client = CreateAuthedClient();
+        using var client = _factory.CreateAuthedClient("client-log-user");
         var entries = new[]
         {
             new ClientLogEntry("sess-1", "info", "Test message",
@@ -68,7 +56,7 @@ public sealed class ClientLogsControllerTests : IClassFixture<TestWebApplication
     [Fact]
     public async Task Post_OverMaxBatchSize_Returns413()
     {
-        using var client = CreateAuthedClient();
+        using var client = _factory.CreateAuthedClient("client-log-user");
 
         // MaxBatchSize is 100; send 101 entries
         var entries = Enumerable.Range(0, 101)
@@ -85,7 +73,7 @@ public sealed class ClientLogsControllerTests : IClassFixture<TestWebApplication
     [Fact]
     public async Task Post_MultipleValidEntries_Returns202()
     {
-        using var client = CreateAuthedClient();
+        using var client = _factory.CreateAuthedClient("client-log-user");
         var entries = new[]
         {
             new ClientLogEntry("sess-1", "debug", "Debug msg",
@@ -104,7 +92,7 @@ public sealed class ClientLogsControllerTests : IClassFixture<TestWebApplication
     [Fact]
     public async Task Post_ExactlyMaxBatchSize_Returns202()
     {
-        using var client = CreateAuthedClient();
+        using var client = _factory.CreateAuthedClient("client-log-user");
 
         var entries = Enumerable.Range(0, 100)
             .Select(i => new ClientLogEntry("sess-1", "info", $"msg-{i}",
@@ -119,7 +107,7 @@ public sealed class ClientLogsControllerTests : IClassFixture<TestWebApplication
     [Fact]
     public async Task Post_UnknownLogLevel_TreatedAsInformation()
     {
-        using var client = CreateAuthedClient();
+        using var client = _factory.CreateAuthedClient("client-log-user");
         var entries = new[]
         {
             new ClientLogEntry("sess-1", "unknown-level", "Unknown level msg",
