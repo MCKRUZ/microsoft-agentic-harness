@@ -199,6 +199,7 @@ public class EscalationApprovalsExample
         var cancelOutcome = await _escalationService.CancelEscalationAsync(
             escalationId,
             "Feature release postponed, cancelling approval request",
+            "console-example-operator",
             cancellationToken);
 
         DisplayOutcome("Cancellation Outcome", cancelOutcome);

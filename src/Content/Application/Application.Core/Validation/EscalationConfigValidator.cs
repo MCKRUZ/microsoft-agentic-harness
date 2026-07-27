@@ -19,6 +19,25 @@ public sealed class EscalationConfigValidator : AbstractValidator<EscalationConf
     private static readonly string[] ValidPriorityNames =
         Enum.GetNames<EscalationPriority>();
 
+    /// <summary>
+    /// The only claim types allowed to drive escalation approver identity. All four are
+    /// issuer-asserted: <c>oid</c>/<c>sub</c> are immutable object/subject ids; <c>upn</c> and
+    /// <c>preferred_username</c> are sign-in names (mutable — see
+    /// <see cref="MutableApproverClaimTypes"/>). Anything user-editable (display name,
+    /// unverified email) is rejected at startup so it can never select the approver.
+    /// </summary>
+    public static readonly IReadOnlyList<string> AllowedApproverClaimTypes =
+        ["oid", "sub", "preferred_username", "upn"];
+
+    /// <summary>
+    /// The allowed claim types that are nonetheless mutable and reassignable (a departed
+    /// approver's UPN can be reissued to a new hire, who then inherits roster entries naming
+    /// it). Hosts configured with one of these get a startup warning; <c>oid</c> is the
+    /// production recommendation.
+    /// </summary>
+    public static readonly IReadOnlyList<string> MutableApproverClaimTypes =
+        ["preferred_username", "upn"];
+
     public EscalationConfigValidator()
     {
         RuleFor(x => x.DefaultTimeoutSeconds)
@@ -36,6 +55,13 @@ public sealed class EscalationConfigValidator : AbstractValidator<EscalationConf
         RuleFor(x => x.AuditStoragePath)
             .NotEmpty()
             .WithMessage("AuditStoragePath must be configured.");
+
+        RuleFor(x => x.ApproverClaimType)
+            .Must(v => AllowedApproverClaimTypes.Contains(v, StringComparer.Ordinal))
+            .WithMessage(
+                "ApproverClaimType must be one of: " + string.Join(", ", AllowedApproverClaimTypes) +
+                ". Only issuer-asserted identity claims may drive roster authorization — " +
+                "user-editable claims like 'name' or unverified 'email' must never select the approver.");
 
         RuleFor(x => x.PriorityLevels)
             .NotEmpty()

@@ -129,6 +129,18 @@ public sealed class DefaultEscalationService : IEscalationService, IDisposable
 			return EscalationDecisionResult.ApproverNotAuthorized();
 		}
 
+		// Idempotency chokepoint: one recorded decision per approver per escalation. A repeated
+		// submission (double-click, HTTP retry, replay) must not append to the decision list or
+		// grow the audit trail — the first decision already speaks for this approver. Checked
+		// BEFORE the audit write so a repeat produces a debug line, never an audit record.
+		if (HasDecisionFrom(state, decision.ApproverName))
+		{
+			_logger.LogDebug(
+				"Duplicate decision from {ApproverName} for escalation {EscalationId} ignored (already recorded)",
+				decision.ApproverName, escalationId);
+			return EscalationDecisionResult.DecisionRecorded();
+		}
+
 		await SafeExecuteAsync(
 			() => _auditStore.RecordDecisionAsync(escalationId, decision, ct),
 			"record decision", escalationId);
@@ -146,6 +158,11 @@ public sealed class DefaultEscalationService : IEscalationService, IDisposable
 			// concurrently — this one arrives too late to participate. The caller polls
 			// GetOutcomeAsync for the verdict (see EscalationDecisionStatus.DecisionRecorded).
 			if (state.IsResolved)
+				return EscalationDecisionResult.DecisionRecorded();
+
+			// Closes the race two concurrent submissions from the same approver can win against
+			// the pre-audit duplicate check: only the first may enter the decision list.
+			if (HasDecisionFrom(state, decision.ApproverName))
 				return EscalationDecisionResult.DecisionRecorded();
 
 			state.Decisions.Add(decision);
@@ -167,7 +184,8 @@ public sealed class DefaultEscalationService : IEscalationService, IDisposable
 				ResolutionType = evaluation.IsApproved
 					? EscalationResolutionType.Approved
 					: EscalationResolutionType.Denied,
-				ResolvedAt = DateTimeOffset.UtcNow
+				ResolvedAt = DateTimeOffset.UtcNow,
+				Approvers = state.Request.Approvers
 			};
 		}
 
@@ -205,7 +223,7 @@ public sealed class DefaultEscalationService : IEscalationService, IDisposable
 
 	/// <inheritdoc />
 	public async Task<EscalationOutcome> CancelEscalationAsync(
-		Guid escalationId, string reason, CancellationToken ct)
+		Guid escalationId, string reason, string cancelledBy, CancellationToken ct)
 	{
 		if (!_activeEscalations.TryGetValue(escalationId, out var state))
 			throw new InvalidOperationException($"No pending escalation found with ID {escalationId}");
@@ -223,11 +241,17 @@ public sealed class DefaultEscalationService : IEscalationService, IDisposable
 				IsApproved = false,
 				Decisions = state.Decisions.ToList().AsReadOnly(),
 				ResolutionType = EscalationResolutionType.Denied,
-				ResolvedAt = DateTimeOffset.UtcNow
+				ResolvedAt = DateTimeOffset.UtcNow,
+				Approvers = state.Request.Approvers,
+				// Stamped on the outcome — and thereby into the durable outcome audit record —
+				// so the force-denial is attributable to its actor, not just a log line.
+				CancelledBy = cancelledBy
 			};
 		}
 
-		_logger.LogInformation("Escalation {EscalationId} cancelled: {Reason}", escalationId, reason);
+		_logger.LogInformation(
+			"Escalation {EscalationId} cancelled by {CancelledBy}: {Reason}",
+			escalationId, cancelledBy, reason);
 		await ResolveEscalationAsync(state, outcome);
 		return outcome;
 	}
@@ -391,7 +415,8 @@ public sealed class DefaultEscalationService : IEscalationService, IDisposable
 				IsApproved = state.Request.TimeoutAction == EscalationTimeoutAction.Approve,
 				Decisions = state.Decisions.ToList().AsReadOnly(),
 				ResolutionType = EscalationResolutionType.TimedOut,
-				ResolvedAt = DateTimeOffset.UtcNow
+				ResolvedAt = DateTimeOffset.UtcNow,
+				Approvers = state.Request.Approvers
 			};
 		}
 
@@ -436,6 +461,21 @@ public sealed class DefaultEscalationService : IEscalationService, IDisposable
 		EscalationMetrics.DurationMs.Record(durationMs,
 			new KeyValuePair<string, object?>(EscalationConventions.Priority,
 				ToPriorityTag(state.Request.Priority)));
+	}
+
+	/// <summary>
+	/// Whether this approver already has a recorded decision on the escalation, using
+	/// <see cref="ApproverNames.Comparer"/> so a casing-variant retry is still a duplicate.
+	/// Takes the state lock itself, so callers may invoke it lock-free; the in-lock re-check in
+	/// <see cref="SubmitDecisionAsync"/> relies on the lock being reentrant for the same thread.
+	/// </summary>
+	private static bool HasDecisionFrom(EscalationState state, string approverName)
+	{
+		lock (state.Lock)
+		{
+			return state.Decisions.Any(d =>
+				ApproverNames.Comparer.Equals(d.ApproverName, approverName));
+		}
 	}
 
 	private async Task SafeExecuteAsync(Func<Task> action, string operationName, Guid escalationId)

@@ -28,4 +28,20 @@ public sealed record EscalationOutcome
     /// which authority tier received the escalated request. Null otherwise.
     /// </summary>
     public AutonomyLevel? EscalatedToTier { get; init; }
+
+    /// <summary>
+    /// The approver roster carried over from the originating request. The escalation service
+    /// populates this on every resolution so roster-private reads keep working after the pending
+    /// request is discarded: a resolved verdict is only visible to the identities that were
+    /// entitled to produce it. An empty roster means no roster is known, and roster-gated reads
+    /// deny (fail-closed).
+    /// </summary>
+    public IReadOnlyList<string> Approvers { get; init; } = [];
+
+    /// <summary>
+    /// The identity that administratively cancelled the escalation, or null when it resolved by
+    /// decision or timeout. Carried on the outcome — and therefore into the durable outcome
+    /// audit record — so a force-denial is always attributable to its actor.
+    /// </summary>
+    public string? CancelledBy { get; init; }
 }

@@ -24,6 +24,7 @@ using Presentation.AgentHub.Notifications;
 using Presentation.AgentHub.Planner;
 using Presentation.AgentHub.Config;
 using Presentation.AgentHub.Telemetry;
+using Presentation.Common.Escalations;
 using Microsoft.Extensions.Options;
 
 namespace Presentation.AgentHub;
@@ -55,7 +56,10 @@ public static class DependencyInjection
                 // System.Text.Json emits numeric values and the dashboard cannot map them.
                 options.JsonSerializerOptions.Converters.Add(
                     new System.Text.Json.Serialization.JsonStringEnumConverter());
-            });
+            })
+            // Deliberate opt-in: AgentHub runs the agent workload, so the in-process escalation
+            // state lives here and the human approval API must be co-resident with it.
+            .AddEscalationApi();
 
         // Surfaces a missing/invalid AI provider configuration via /health/ai. Additive to the
         // health checks registered in Presentation.Common — Degraded (not Unhealthy) because the
@@ -191,6 +195,26 @@ public static class DependencyInjection
                         ?? context.Connection.RemoteIpAddress?.ToString()
                         ?? "unknown";
                     return RateLimitPartition.GetFixedWindowLimiter($"memory:{memoryCaller}", _ => new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = 30,
+                        Window = TimeSpan.FromMinutes(1),
+                        QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                        QueueLimit = 0,
+                    });
+                }
+
+                // Escalation writes (submit decision, admin cancel) mutate approval state, append
+                // durable JSONL audit records, and can release blocked agent turns; cap them per
+                // authenticated caller so a scripted or stuck client cannot hammer the approval
+                // loop or flood the audit store. Reads (pending list, detail polling after a 202)
+                // stay unthrottled, matching the memory API's write-only posture.
+                if (context.Request.Method == HttpMethods.Post &&
+                    context.Request.Path.StartsWithSegments("/api/escalations"))
+                {
+                    var escalationCaller = context.User.GetUserIdOrNull()
+                        ?? context.Connection.RemoteIpAddress?.ToString()
+                        ?? "unknown";
+                    return RateLimitPartition.GetFixedWindowLimiter($"escalation:{escalationCaller}", _ => new FixedWindowRateLimiterOptions
                     {
                         PermitLimit = 30,
                         Window = TimeSpan.FromMinutes(1),

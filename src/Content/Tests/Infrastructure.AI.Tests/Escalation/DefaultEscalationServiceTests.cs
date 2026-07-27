@@ -467,7 +467,7 @@ public sealed class DefaultEscalationServiceTests : IDisposable
 		await _sut.QueueEscalationAsync(request, CancellationToken.None);
 
 		var outcome = await _sut.CancelEscalationAsync(
-			request.EscalationId, "No longer needed", CancellationToken.None);
+			request.EscalationId, "No longer needed", "admin@contoso.com", CancellationToken.None);
 
 		outcome.IsApproved.Should().BeFalse();
 		outcome.ResolutionType.Should().Be(EscalationResolutionType.Denied);
@@ -485,9 +485,64 @@ public sealed class DefaultEscalationServiceTests : IDisposable
 		await _sut.SubmitDecisionAsync(request.EscalationId, CreateApproval(), CancellationToken.None);
 
 		var act = () => _sut.CancelEscalationAsync(
-			request.EscalationId, "Too late", CancellationToken.None);
+			request.EscalationId, "Too late", "admin@contoso.com", CancellationToken.None);
 
 		await act.Should().ThrowAsync<InvalidOperationException>();
+	}
+
+	[Fact]
+	public async Task CancelEscalationAsync_StampsActorAndRosterOnOutcome()
+	{
+		// The force-denial must be attributable in the durable outcome audit (CancelledBy) and
+		// must retain the roster so roster-private reads keep working after resolution.
+		var request = CreateTestRequest(approvers: ["approver-1", "approver-2"]);
+		await _sut.QueueEscalationAsync(request, CancellationToken.None);
+
+		var outcome = await _sut.CancelEscalationAsync(
+			request.EscalationId, "No longer needed", "admin@contoso.com", CancellationToken.None);
+
+		outcome.CancelledBy.Should().Be("admin@contoso.com");
+		outcome.Approvers.Should().BeEquivalentTo("approver-1", "approver-2");
+	}
+
+	[Fact]
+	public async Task SubmitDecisionAsync_ResolvedOutcome_CarriesRoster()
+	{
+		var request = CreateTestRequest(approvers: ["approver-1", "approver-2"]);
+		SetupStrategyResolvesOnFirstApproval();
+		await _sut.QueueEscalationAsync(request, CancellationToken.None);
+
+		var result = await _sut.SubmitDecisionAsync(
+			request.EscalationId, CreateApproval(), CancellationToken.None);
+
+		result.Status.Should().Be(EscalationDecisionStatus.Resolved);
+		result.Outcome!.Approvers.Should().BeEquivalentTo("approver-1", "approver-2");
+		result.Outcome.CancelledBy.Should().BeNull("decision resolutions have no cancelling actor");
+	}
+
+	[Fact]
+	public async Task SubmitDecisionAsync_DuplicateApprover_IgnoredWithoutSecondAuditRecord()
+	{
+		// One recorded decision per approver per escalation: a retried submission (even with
+		// different casing) must not append to the decision list, must not re-run the strategy,
+		// and must not grow the audit trail — it reports DecisionRecorded and stops.
+		var request = CreateTestRequest(strategy: ApprovalStrategyType.AllOf);
+		SetupStrategyNeverResolves(ApprovalStrategyType.AllOf);
+		await _sut.QueueEscalationAsync(request, CancellationToken.None);
+
+		var first = await _sut.SubmitDecisionAsync(
+			request.EscalationId, CreateApproval("approver-1"), CancellationToken.None);
+		var repeat = await _sut.SubmitDecisionAsync(
+			request.EscalationId, CreateApproval("APPROVER-1"), CancellationToken.None);
+
+		first.Status.Should().Be(EscalationDecisionStatus.DecisionRecorded);
+		repeat.Status.Should().Be(EscalationDecisionStatus.DecisionRecorded);
+		_auditStore.Verify(
+			a => a.RecordDecisionAsync(request.EscalationId, It.IsAny<ApproverDecision>(), It.IsAny<CancellationToken>()),
+			Times.Once);
+		_allOfStrategy.Verify(
+			s => s.EvaluateDecision(It.IsAny<EscalationRequest>(), It.IsAny<IReadOnlyList<ApproverDecision>>()),
+			Times.Once);
 	}
 
 	// ===== GetPending =====
