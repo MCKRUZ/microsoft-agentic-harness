@@ -28,10 +28,15 @@ public interface IEscalationService
     Task<Guid> QueueEscalationAsync(EscalationRequest request, CancellationToken ct);
 
     /// <summary>
-    /// Submits an approver's decision. Returns the final outcome if this decision resolves
-    /// the escalation (per the approval strategy), or null if the escalation is still pending.
+    /// Submits an approver's decision and reports what happened as a discriminated
+    /// <see cref="EscalationDecisionResult"/>:
+    /// <see cref="EscalationDecisionStatus.UnknownEscalation"/> (no such pending escalation),
+    /// <see cref="EscalationDecisionStatus.ApproverNotAuthorized"/> (identity not on the roster),
+    /// <see cref="EscalationDecisionStatus.DecisionRecorded"/> (recorded, escalation still unresolved), or
+    /// <see cref="EscalationDecisionStatus.Resolved"/> (this decision resolved it; the result
+    /// carries the final <see cref="EscalationOutcome"/>).
     /// </summary>
-    Task<EscalationOutcome?> SubmitDecisionAsync(Guid escalationId, ApproverDecision decision, CancellationToken ct);
+    Task<EscalationDecisionResult> SubmitDecisionAsync(Guid escalationId, ApproverDecision decision, CancellationToken ct);
 
     /// <summary>
     /// Returns the pending escalation request, or null if resolved or unknown.

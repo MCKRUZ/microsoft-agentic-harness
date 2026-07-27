@@ -44,12 +44,12 @@ public sealed class CancelChangeProposalCommandHandler
             {
                 if (p.IsTerminal)
                 {
-                    return Result<ChangeProposal>.Fail(
+                    return Result<ChangeProposal>.Conflict(
                         $"Cannot cancel proposal in terminal status {p.Status}.");
                 }
                 if (p.Status == ChangeProposalStatus.Merging)
                 {
-                    return Result<ChangeProposal>.Fail(
+                    return Result<ChangeProposal>.Conflict(
                         "Cannot cancel proposal while merge is in progress.");
                 }
                 return null;

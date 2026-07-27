@@ -40,7 +40,7 @@ public sealed class CancelChangeProposalCommandHandlerTests
     }
 
     [Fact]
-    public async Task Handle_Merging_ReturnsFailure()
+    public async Task Handle_Merging_ReturnsConflict()
     {
         var store = new InMemoryChangeProposalStore();
         var merging = TestHelpers.NewProposal(ChangeProposalStatus.Merging);
@@ -52,6 +52,8 @@ public sealed class CancelChangeProposalCommandHandlerTests
             CancellationToken.None);
 
         result.IsSuccess.Should().BeFalse();
+        result.FailureType.Should().Be(ResultFailureType.Conflict,
+            "cancel-during-merge is a state conflict (HTTP 409), not an opaque general failure (500)");
         result.Errors.Should().ContainSingle().Which.Should().Contain("merge is in progress");
     }
 
@@ -59,7 +61,7 @@ public sealed class CancelChangeProposalCommandHandlerTests
     [InlineData(ChangeProposalStatus.Merged)]
     [InlineData(ChangeProposalStatus.Rejected)]
     [InlineData(ChangeProposalStatus.Cancelled)]
-    public async Task Handle_TerminalStatus_ReturnsFailure(ChangeProposalStatus status)
+    public async Task Handle_TerminalStatus_ReturnsConflict(ChangeProposalStatus status)
     {
         var store = new InMemoryChangeProposalStore();
         var terminal = TestHelpers.NewProposal(status);
@@ -71,6 +73,8 @@ public sealed class CancelChangeProposalCommandHandlerTests
             CancellationToken.None);
 
         result.IsSuccess.Should().BeFalse();
+        result.FailureType.Should().Be(ResultFailureType.Conflict,
+            "cancelling a terminal proposal is a state conflict (HTTP 409), not an opaque general failure (500)");
     }
 
     [Fact]

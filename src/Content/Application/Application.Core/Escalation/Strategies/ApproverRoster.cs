@@ -30,19 +30,19 @@ internal static class ApproverRoster
         EscalationRequest request,
         IReadOnlyList<ApproverDecision> decisions)
     {
-        var approverSet = request.Approvers.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var approverSet = request.Approvers.ToHashSet(ApproverNames.Comparer);
 
         // Only count decisions from identities actually listed as approvers, collapsing
         // repeat votes to the earliest response so a later flip cannot rewrite the outcome.
         var rostered = decisions
             .Where(d => approverSet.Contains(d.ApproverName))
-            .GroupBy(d => d.ApproverName, StringComparer.OrdinalIgnoreCase)
+            .GroupBy(d => d.ApproverName, ApproverNames.Comparer)
             .Select(g => g.MinBy(d => d.RespondedAt)!)
             .ToArray();
 
         var respondedNames = rostered
             .Select(d => d.ApproverName)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            .ToHashSet(ApproverNames.Comparer);
         var pending = request.Approvers
             .Where(a => !respondedNames.Contains(a))
             .ToArray();

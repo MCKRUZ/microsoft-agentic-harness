@@ -53,8 +53,8 @@ public sealed class ChangeProposalStartupValidatorTests
             throw new NotImplementedException();
         public Task<Guid> QueueEscalationAsync(EscalationRequest request, CancellationToken ct) =>
             Task.FromResult(Guid.Empty);
-        public Task<EscalationOutcome?> SubmitDecisionAsync(Guid escalationId, ApproverDecision decision, CancellationToken ct) =>
-            Task.FromResult<EscalationOutcome?>(null);
+        public Task<EscalationDecisionResult> SubmitDecisionAsync(Guid escalationId, ApproverDecision decision, CancellationToken ct) =>
+            Task.FromResult(EscalationDecisionResult.UnknownEscalation());
         public Task<EscalationRequest?> GetPendingEscalationAsync(Guid escalationId, CancellationToken ct) =>
             Task.FromResult<EscalationRequest?>(null);
         public Task<EscalationOutcome?> GetOutcomeAsync(Guid escalationId, CancellationToken ct) =>

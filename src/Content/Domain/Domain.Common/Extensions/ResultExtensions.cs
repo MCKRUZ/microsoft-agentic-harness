@@ -131,6 +131,7 @@ public static class ResultExtensions
             ResultFailureType.PermissionRequired => Result<TOut>.PermissionRequired(JoinErrors(errors)),
             ResultFailureType.GovernanceBlocked => Result<TOut>.GovernanceBlocked(JoinErrors(errors)),
             ResultFailureType.PendingApproval => Result<TOut>.PendingApproval(JoinErrors(errors)),
+            ResultFailureType.Conflict => Result<TOut>.Conflict(JoinErrors(errors)),
             _ => Result<TOut>.Fail(errors.ToArray())
         };
     }

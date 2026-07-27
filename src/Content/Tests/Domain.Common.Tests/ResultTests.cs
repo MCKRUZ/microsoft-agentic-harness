@@ -107,6 +107,27 @@ public class ResultTests
     }
 
     [Fact]
+    public void Conflict_SetsCorrectType()
+    {
+        var result = Result.Conflict("proposal already merged");
+
+        result.IsSuccess.Should().BeFalse();
+        result.FailureType.Should().Be(ResultFailureType.Conflict);
+        result.Errors.Should().ContainSingle().Which.Should().Be("proposal already merged");
+    }
+
+    [Fact]
+    public void ConflictGeneric_SetsCorrectTypeWithoutValue()
+    {
+        var result = Result<int>.Conflict("state moved on");
+
+        result.IsSuccess.Should().BeFalse();
+        result.Value.Should().Be(default(int));
+        result.FailureType.Should().Be(ResultFailureType.Conflict);
+        result.Errors.Should().ContainSingle().Which.Should().Be("state moved on");
+    }
+
+    [Fact]
     public void Fail_WithMultipleErrors_StoresAll()
     {
         var result = Result.Fail("error one", "error two", "error three");

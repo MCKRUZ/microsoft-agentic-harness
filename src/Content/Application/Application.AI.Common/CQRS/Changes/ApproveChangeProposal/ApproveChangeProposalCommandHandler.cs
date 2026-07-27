@@ -71,7 +71,7 @@ public sealed class ApproveChangeProposalCommandHandler
             _store,
             request.ProposalId,
             statusGuard: p => p.Status != ChangeProposalStatus.AwaitingApproval
-                ? Result<ChangeProposal>.Fail(
+                ? Result<ChangeProposal>.Conflict(
                     $"Cannot approve proposal in status {p.Status} (must be AwaitingApproval).")
                 : null,
             decisionFactory: () => new GateDecision
