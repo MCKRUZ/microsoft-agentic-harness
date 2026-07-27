@@ -103,6 +103,62 @@ internal static class TestHelpers
         }
     }
 
+    /// <summary>
+    /// Captures every audit append so tests can assert that a human decision reached the durable
+    /// chain — and, critically, that it reached it with the reviewer identity the command carried.
+    /// </summary>
+    public sealed class RecordingAuditWriter : IChangeAuditWriter
+    {
+        public List<AuditEntry> Entries { get; } = new();
+
+        public Task AppendAsync(
+            ChangeProposal proposal,
+            GateDecision decision,
+            AgentIdentity identity,
+            OrchestratorMode mode,
+            string correlationId,
+            CancellationToken cancellationToken)
+        {
+            Entries.Add(new AuditEntry(proposal.Id, proposal.Status, decision, mode, correlationId));
+            return Task.CompletedTask;
+        }
+
+        /// <param name="StatusAtAppend">
+        /// The proposal status at append time. Proves audit-before-save ordering: the append must
+        /// observe the pre-transition status, never the post-transition one.
+        /// </param>
+        public sealed record AuditEntry(
+            string ProposalId,
+            ChangeProposalStatus StatusAtAppend,
+            GateDecision Decision,
+            OrchestratorMode Mode,
+            string CorrelationId);
+    }
+
+    /// <summary>
+    /// Simulates a durable audit sink that cannot accept the record (disk full, permissions,
+    /// chain corruption). The decision must abort rather than persist un-audited.
+    /// </summary>
+    public sealed class ThrowingAuditWriter : IChangeAuditWriter
+    {
+        public int Attempts { get; private set; }
+
+        public Task AppendAsync(
+            ChangeProposal proposal,
+            GateDecision decision,
+            AgentIdentity identity,
+            OrchestratorMode mode,
+            string correlationId,
+            CancellationToken cancellationToken)
+        {
+            Attempts++;
+            // Message deliberately resembles the real writer's, which embeds the audit path —
+            // the handler must never surface it to the caller.
+            throw new IOException(
+                @"Failed to append change audit record: C:\secret-audit-path\changes.jsonl is locked.");
+        }
+    }
+
     public static IOptionsMonitor<AppConfig> EnabledConfigMonitor(string mode = "Live")
     {
         var cfg = new AppConfig();

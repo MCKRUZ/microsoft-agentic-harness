@@ -33,6 +33,10 @@ internal sealed class DevAuthHandler(
             new Claim(ClaimTypes.Role, "Harness.Learnings.Read"),
             new Claim(ClaimTypes.Role, Presentation.Common.Escalations.EscalationsController.DecideRole),
             new Claim(ClaimTypes.Role, Presentation.Common.Escalations.EscalationsController.AdminRole),
+            // Change-proposal decision API roles (reviewer identity reuses the
+            // "preferred_username" claim above, shared with the escalation API).
+            new Claim(ClaimTypes.Role, Presentation.Common.ChangeProposals.ChangeProposalsController.DecideRole),
+            new Claim(ClaimTypes.Role, Presentation.Common.ChangeProposals.ChangeProposalsController.AdminRole),
         };
         var identity = new ClaimsIdentity(claims, Scheme.Name);
         var ticket = new AuthenticationTicket(new ClaimsPrincipal(identity), Scheme.Name);
