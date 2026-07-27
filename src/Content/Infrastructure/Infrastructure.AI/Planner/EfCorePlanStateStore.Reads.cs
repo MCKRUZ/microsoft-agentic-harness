@@ -152,10 +152,16 @@ public sealed partial class EfCorePlanStateStore
 
         // Write path: resume mutates step states, so it demands strict ownership — resuming
         // a plan the caller doesn't own (including globally READABLE null-owner plans)
-        // returns the same NotFound as a missing plan (404-not-403).
+        // returns the same NotFound as a missing plan (404-not-403). The warning keeps a
+        // mis-wired scope diagnosable without weakening the outward NotFound.
         if (!await IsPlanWritableAsync(ctx, planId.Value, ct))
+        {
+            _logger.LogWarning(
+                "Plan {PlanId} is missing or not writable in the current scope; resume rejected",
+                planId.Value);
             return Result<IReadOnlyDictionary<PlanStepId, StepExecutionState>>.NotFound(
                 $"No step states found for plan {planId.Value}");
+        }
 
         var entities = await ctx.StepExecutionStates
             .Where(s => ctx.PlanSteps.Any(ps => ps.Id == s.StepId && ps.PlanGraphId == planId.Value))

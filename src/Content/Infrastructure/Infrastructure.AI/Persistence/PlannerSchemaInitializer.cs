@@ -50,6 +50,12 @@ public sealed class PlannerSchemaInitializer : SchemaInitializer<PlannerDbContex
     {
         var columns = ReadColumnNames(context);
 
+        // EnsureCreated short-circuits when the database has ANY table, so a database file
+        // with other tables but no PlanGraphs would reach this point with zero columns —
+        // ALTER TABLE would then throw at startup. No table means nothing to evolve.
+        if (columns.Count == 0)
+            return;
+
         if (!columns.Contains("OwnerId"))
             context.Database.ExecuteSqlRaw("ALTER TABLE \"PlanGraphs\" ADD COLUMN \"OwnerId\" TEXT NULL;");
 

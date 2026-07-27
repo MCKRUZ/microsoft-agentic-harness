@@ -78,8 +78,10 @@ public sealed partial class EfCorePlanStateStore : IPlanStateStore
             return Result.Fail("Ambient scope identity exceeds the maximum supported length.");
 
         // Plan ids are caller-supplied; a colliding id must not surface as an unhandled
-        // constraint exception. Generic message — no internals echoed.
-        if (await ctx.PlanGraphs.AsNoTracking().AnyAsync(g => g.Id == plan.Id.Value, ct))
+        // constraint exception. The probe is scope-filtered so a collision with a plan the
+        // caller cannot see never confirms its existence — that case falls through to the
+        // insert and surfaces as the same generic constraint failure as any other race.
+        if (await VisiblePlans(ctx).AsNoTracking().AnyAsync(g => g.Id == plan.Id.Value, ct))
             return Result.Fail("A plan with this id already exists.");
 
         var graphEntity = new PlanGraphEntity
@@ -144,10 +146,11 @@ public sealed partial class EfCorePlanStateStore : IPlanStateStore
         }
         catch (DbUpdateException ex)
         {
-            // Race with a concurrent insert of the same id: same generic answer as the
-            // pre-check, full detail to structured logging only.
+            // A concurrent insert of the same id, or a collision with a plan outside the
+            // caller's scope (deliberately not confirmed by the pre-check above). One
+            // generic answer for both; full detail goes to structured logging only.
             _logger.LogWarning(ex, "Failed to persist plan {PlanId}: constraint violation", plan.Id.Value);
-            return Result.Fail("A plan with this id already exists.");
+            return Result.Fail("Failed to persist the plan.");
         }
 
         _logger.LogInformation("Saved plan {PlanId} with {StepCount} steps", plan.Id.Value, plan.Steps.Count);
@@ -161,8 +164,15 @@ public sealed partial class EfCorePlanStateStore : IPlanStateStore
 
         // Write path: strict ownership — a step on a plan the caller doesn't own (including
         // globally READABLE null-owner plans) is indistinguishable from missing (404-not-403).
+        // The warning keeps a mis-wired scope (e.g. tenant fallback changed between save and
+        // update) diagnosable without weakening the outward NotFound.
         if (!await IsStepWritableAsync(ctx, state.StepId.Value, ct))
+        {
+            _logger.LogWarning(
+                "Step {StepId} is missing or not writable in the current scope; update rejected",
+                state.StepId.Value);
             return Result.NotFound($"Execution state not found for step {state.StepId.Value}");
+        }
 
         var entity = await ctx.StepExecutionStates
             .FirstOrDefaultAsync(s => s.StepId == state.StepId.Value, ct);
@@ -217,8 +227,14 @@ public sealed partial class EfCorePlanStateStore : IPlanStateStore
 
         // Write path: strict ownership — a plan the caller doesn't own (including globally
         // READABLE null-owner plans) is indistinguishable from missing (404-not-403).
+        // The warning keeps a mis-wired scope diagnosable without weakening the NotFound.
         if (!await IsPlanWritableAsync(ctx, planId.Value, ct))
+        {
+            _logger.LogWarning(
+                "Plan {PlanId} is missing or not writable in the current scope; checkpoint rejected",
+                planId.Value);
             return Result.NotFound($"No step states found for plan {planId.Value}");
+        }
 
         var entities = await ctx.StepExecutionStates
             .Where(s => ctx.PlanSteps.Any(ps => ps.Id == s.StepId && ps.PlanGraphId == planId.Value))
