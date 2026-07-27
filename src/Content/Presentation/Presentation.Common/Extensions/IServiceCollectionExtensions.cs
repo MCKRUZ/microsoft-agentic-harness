@@ -236,6 +236,17 @@ public static class IServiceCollectionExtensions
             .ValidateFluentValidation<LogsConfig, LogsConfigValidator>()
             .ValidateOnStart();
 
+        // RAG graph coherence (GraphRag feature knobs vs the graph database backend they need).
+        // Rules are conditional on GraphDatabase.Enabled / GraphRag.IndexOnIngest and the class
+        // defaults satisfy them, so hosts that omit the section keep booting; a host that
+        // enables the backend with an unregistered provider — or turns on IndexOnIngest without
+        // the backend — fails closed at startup instead of throwing on first resolution
+        // (the former GraphRag DI landmine) or silently skipping the indexing stage.
+        services.AddOptions<Domain.Common.Config.AI.RAG.RagConfig>()
+            .Bind(configuration.GetSection("AppConfig:AI:Rag"))
+            .ValidateFluentValidation<Domain.Common.Config.AI.RAG.RagConfig, RagConfigValidator>()
+            .ValidateOnStart();
+
         return services;
     }
 

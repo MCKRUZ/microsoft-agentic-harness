@@ -16,6 +16,22 @@ public record RagAssembledContext
     public required string AssembledText { get; init; }
 
     /// <summary>
+    /// The explanatory context returned when a GraphRAG retrieval is requested but the graph
+    /// database backend is disabled. A single factory keeps the operator guidance identical
+    /// at every degradation site (orchestrator strategy override, workflow branch).
+    /// </summary>
+    public static RagAssembledContext GraphRagUnavailable() => new()
+    {
+        AssembledText =
+            "GraphRAG retrieval is unavailable: the graph database backend is disabled " +
+            "(AppConfig:AI:Rag:GraphDatabase:Enabled=false). Use the default hybrid " +
+            "strategy, or enable the graph database and re-ingest with " +
+            "AppConfig:AI:Rag:GraphRag:IndexOnIngest=true to populate the graph.",
+        TotalTokens = 0,
+        WasTruncated = false
+    };
+
+    /// <summary>
     /// Citation spans linking regions of the assembled text back to their source
     /// chunks and documents. Used by the generation phase to produce inline citations
     /// and by the UI to render source attribution.

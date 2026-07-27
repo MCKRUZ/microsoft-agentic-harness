@@ -136,6 +136,28 @@ public class ConfigValidationStartupTests
                 ["AppConfig:Observability:Logs:MinExportLevel"] = "NotALevel",
             }
         },
+        {
+            // An enabled graph database naming a provider with no registered
+            // IGraphDatabaseBackend used to compose cleanly and throw on first resolution
+            // (the GraphRag DI landmine) — it must now refuse to start.
+            "RagConfig",
+            new Dictionary<string, string?>
+            {
+                ["AppConfig:AI:Rag:GraphDatabase:Enabled"] = "true",
+                ["AppConfig:AI:Rag:GraphDatabase:Provider"] = "neo4j",
+            }
+        },
+        {
+            // Corpus-graph indexing on ingest writes through IGraphRagService, which exists
+            // only alongside the graph database backend — enabling one without the other
+            // would silently skip the stage on every ingest.
+            "RagConfig (IndexOnIngest)",
+            new Dictionary<string, string?>
+            {
+                ["AppConfig:AI:Rag:GraphDatabase:Enabled"] = "false",
+                ["AppConfig:AI:Rag:GraphRag:IndexOnIngest"] = "true",
+            }
+        },
     };
 
     [Theory]

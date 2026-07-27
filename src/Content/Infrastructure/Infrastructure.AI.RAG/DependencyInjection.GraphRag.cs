@@ -78,8 +78,23 @@ public static partial class DependencyInjection
     /// Registers the GraphRAG knowledge graph service for entity-relationship
     /// based retrieval and community-level summarization.
     /// </summary>
+    /// <remarks>
+    /// Registration is gated on <c>GraphDatabaseConfig.Enabled</c> — the same gate as
+    /// <see cref="AddRagGraphDatabase"/> — because <see cref="ManagedCodeGraphRagService"/>
+    /// requires the <see cref="IGraphDatabaseBackend"/> that method registers. Registering
+    /// the service unconditionally would compose a landmine: the singleton factory hides the
+    /// missing backend from ValidateOnBuild and throws on first resolution instead of at
+    /// startup. When the backend is off, <c>IGraphRagService</c> is simply absent; every
+    /// consumer (<c>RagOrchestrator</c>, <c>RagPipelineWorkflow</c>, the keyed
+    /// <c>"graph"</c> retrieval source) resolves it optionally and degrades with an explicit
+    /// message. A host that enables the backend with an unregistered provider fails loudly at
+    /// startup via <c>RagConfigValidator</c>.
+    /// </remarks>
     private static void AddRagGraphRag(IServiceCollection services, AppConfig appConfig)
     {
+        if (!appConfig.AI.Rag.GraphDatabase.Enabled)
+            return;
+
         services.AddSingleton<IGraphRagService>(sp =>
             new ManagedCodeGraphRagService(
                 sp.GetRequiredService<IGraphDatabaseBackend>(),

@@ -62,7 +62,11 @@ public static partial class DependencyInjection
                 sp.GetRequiredService<IReranker>(),
                 sp.GetRequiredService<ICragEvaluator>(),
                 sp.GetRequiredService<IRagContextAssembler>(),
-                sp.GetRequiredService<IGraphRagService>(),
+                // Optional: registered only when the graph database backend is enabled
+                // (AddRagGraphRag). Null makes the orchestrator degrade the GraphRag
+                // strategy with an explicit "backend disabled" context instead of
+                // throwing on first resolution.
+                sp.GetService<IGraphRagService>(),
                 sp.GetService<IFeedbackWeightedScorer>(),
                 sp.GetRequiredService<QueryRouter>(),
                 sp.GetService<IMultiSourceOrchestrator>(),

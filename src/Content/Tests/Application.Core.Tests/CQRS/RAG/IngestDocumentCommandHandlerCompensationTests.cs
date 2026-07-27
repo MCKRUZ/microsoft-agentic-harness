@@ -3,6 +3,7 @@ using Application.Core.CQRS.RAG.IngestDocument;
 using Domain.AI.RAG.Models;
 using Domain.Common.Config;
 using FluentAssertions;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Moq;
@@ -83,7 +84,8 @@ public sealed class IngestDocumentCommandHandlerCompensationTests
             _vectorStore.Object,
             _bm25Store.Object,
             NullLogger<IngestDocumentCommandHandler>.Instance,
-            monitor.Object);
+            monitor.Object,
+            new ServiceCollection().BuildServiceProvider());
     }
 
     private static IngestDocumentCommand Command() => new()
