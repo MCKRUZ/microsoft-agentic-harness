@@ -13,6 +13,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using Presentation.BundleApi.DTOs;
 using Presentation.BundleApi.Extensions;
+using Presentation.Common.Extensions;
 using Presentation.BundleApi.Services;
 using Presentation.BundleApi.Streaming;
 
@@ -69,7 +70,7 @@ public sealed class BundlesController : ControllerBase
             .ConfigureAwait(false);
 
         if (!result.IsSuccess || result.Value is null)
-            return MapFailure(result.FailureType, result.Errors);
+            return MapFailure(result);
 
         var response = new RegisterBundleResponse { Handle = result.Value.Handle, ExpiresAt = result.Value.ExpiresAt };
         return Created($"/api/bundles/{response.Handle}", response);
@@ -104,7 +105,7 @@ public sealed class BundlesController : ControllerBase
         }, cancellationToken).ConfigureAwait(false);
 
         if (!result.IsSuccess || result.Value is null)
-            return MapFailure(result.FailureType, result.Errors);
+            return MapFailure(result);
 
         var statusUrl = $"/api/bundles/{handle}/runs/{result.Value.JobId}";
         var streamUrl = request.Stream ? $"{statusUrl}/stream" : null;
@@ -146,7 +147,7 @@ public sealed class BundlesController : ControllerBase
             .ConfigureAwait(false);
 
         if (!lookup.IsSuccess || lookup.Value is null)
-            return MapFailure(lookup.FailureType, lookup.Errors);
+            return MapFailure(lookup);
 
         var record = lookup.Value;
         if (!record.Streaming || record.Status != BundleRunStatus.Queued)
@@ -183,7 +184,7 @@ public sealed class BundlesController : ControllerBase
             .ConfigureAwait(false);
 
         if (!result.IsSuccess || result.Value is null)
-            return MapFailure(result.FailureType, result.Errors);
+            return MapFailure(result);
 
         return Ok(BundleRunResponse.FromRecord(result.Value));
     }
@@ -202,7 +203,7 @@ public sealed class BundlesController : ControllerBase
             .Send(new DeleteBundleCommand { Handle = handle, OwnerId = callerId }, cancellationToken)
             .ConfigureAwait(false);
 
-        return result.IsSuccess ? NoContent() : MapFailure(result.FailureType, result.Errors);
+        return result.IsSuccess ? NoContent() : MapFailure(result);
     }
 
     /// <summary>
@@ -223,27 +224,6 @@ public sealed class BundlesController : ControllerBase
         detail: "The authenticated principal carries no usable identity.",
         statusCode: StatusCodes.Status401Unauthorized);
 
-    /// <summary>
-    /// Maps a failed <see cref="Result"/>/<see cref="Result{T}"/> to an HTTP problem response. Validation,
-    /// NotFound, and auth reasons are safe to surface verbatim (validator strings / lookups / declared
-    /// reasons); a general failure returns a generic message only — handlers have already logged the detail,
-    /// and raw error text can leak internal state. Mirrors the mapping used by the harness's other controllers.
-    /// </summary>
-    private IActionResult MapFailure(ResultFailureType failureType, IReadOnlyList<string> errors) => failureType switch
-    {
-        ResultFailureType.NotFound => Problem(
-            title: "Not Found", detail: string.Join(" / ", errors), statusCode: StatusCodes.Status404NotFound),
-        ResultFailureType.Validation => Problem(
-            title: "Validation failed", detail: string.Join(" / ", errors), statusCode: StatusCodes.Status400BadRequest),
-        ResultFailureType.Unauthorized => Problem(
-            title: "Unauthorized", detail: string.Join(" / ", errors), statusCode: StatusCodes.Status401Unauthorized),
-        ResultFailureType.Forbidden => Problem(
-            title: "Forbidden", detail: string.Join(" / ", errors), statusCode: StatusCodes.Status403Forbidden),
-        ResultFailureType.Conflict => Problem(
-            title: "Conflict", detail: string.Join(" / ", errors), statusCode: StatusCodes.Status409Conflict),
-        _ => Problem(
-            title: "Bundle operation failed",
-            detail: "An error occurred processing the request. See server logs for details.",
-            statusCode: StatusCodes.Status500InternalServerError),
-    };
+    private IActionResult MapFailure(Result result) =>
+        this.FailureResponse(result, "Bundle operation failed");
 }

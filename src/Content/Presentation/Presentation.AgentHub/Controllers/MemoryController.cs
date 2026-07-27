@@ -3,6 +3,7 @@ using Domain.Common;
 using MediatR;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Presentation.Common.Extensions;
 
 namespace Presentation.AgentHub.Controllers;
 
@@ -124,35 +125,8 @@ public sealed class MemoryController : ControllerBase
         return result.IsSuccess ? NoContent() : MapFailure(result);
     }
 
-    /// <summary>
-    /// Maps a failed <see cref="Result"/> onto an HTTP response, translating failure categories to
-    /// status codes. General (500) failures return a generic body — handlers have already logged
-    /// the real detail; the client never receives store internals, paths, or stack traces (per the
-    /// harness error-response security rule).
-    /// </summary>
-    private IActionResult MapFailure(Result result) => result.FailureType switch
-    {
-        ResultFailureType.Validation => Problem(
-            title: "Validation failed",
-            detail: string.Join(" / ", result.Errors),
-            statusCode: StatusCodes.Status400BadRequest),
-        ResultFailureType.Unauthorized => Problem(
-            title: "Unauthorized",
-            detail: string.Join(" / ", result.Errors),
-            statusCode: StatusCodes.Status401Unauthorized),
-        ResultFailureType.Forbidden => Problem(
-            title: "Forbidden",
-            detail: string.Join(" / ", result.Errors),
-            statusCode: StatusCodes.Status403Forbidden),
-        ResultFailureType.NotFound => Problem(
-            title: "Not found",
-            detail: string.Join(" / ", result.Errors),
-            statusCode: StatusCodes.Status404NotFound),
-        _ => Problem(
-            title: "Memory operation failed",
-            detail: "An error occurred processing the request. See server logs for details.",
-            statusCode: StatusCodes.Status500InternalServerError),
-    };
+    private IActionResult MapFailure(Result result) =>
+        this.FailureResponse(result, "Memory operation failed");
 }
 
 /// <summary>Request body for <c>POST /api/memory</c>.</summary>
