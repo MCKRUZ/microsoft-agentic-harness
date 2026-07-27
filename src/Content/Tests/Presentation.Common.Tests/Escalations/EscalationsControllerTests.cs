@@ -109,6 +109,85 @@ public sealed class EscalationsControllerTests
             Times.Never);
     }
 
+    [Theory]
+    [InlineData("oid", "http://schemas.microsoft.com/identity/claims/objectidentifier")]
+    [InlineData("sub", "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/nameidentifier")]
+    [InlineData("upn", "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/upn")]
+    public async Task GetPending_MappedClaimForm_ResolvesConfiguredShortName(
+        string configuredType, string mappedType)
+    {
+        // Production tokens pass through System.IdentityModel.Tokens.Jwt's inbound claim map,
+        // which REMAPS these short names to their long-form URIs. Resolution must find the
+        // mapped form, or configuring 'oid' (this surface's own production recommendation)
+        // would 403 every legitimate approver on the real auth path.
+        _config.ApproverClaimType = configuredType;
+        GetPendingEscalationsForApproverQuery? captured = null;
+        _mediator.Setup(m => m.Send(It.IsAny<GetPendingEscalationsForApproverQuery>(), It.IsAny<CancellationToken>()))
+            .Callback<IRequest<Result<IReadOnlyList<EscalationSummary>>>, CancellationToken>(
+                (q, _) => captured = (GetPendingEscalationsForApproverQuery)q)
+            .ReturnsAsync(Result<IReadOnlyList<EscalationSummary>>.Success([]));
+
+        var result = await CreateSut(new Claim(mappedType, "mapped-identity"))
+            .GetPending(CancellationToken.None);
+
+        result.Should().BeOfType<OkObjectResult>();
+        captured!.ApproverName.Should().Be("mapped-identity");
+    }
+
+    [Fact]
+    public async Task GetPending_SameValueUnderShortAndMappedForm_CountsAsOneAndResolves()
+    {
+        // The same identity arriving under both the short and the mapped form (mixed handler
+        // scenarios) is one identity, not an ambiguity.
+        _config.ApproverClaimType = "oid";
+        _mediator.Setup(m => m.Send(It.IsAny<GetPendingEscalationsForApproverQuery>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<IReadOnlyList<EscalationSummary>>.Success([]));
+
+        var sut = CreateSut(
+            new Claim("oid", "user-object-id"),
+            new Claim("http://schemas.microsoft.com/identity/claims/objectidentifier", "USER-OBJECT-ID"));
+
+        var result = await sut.GetPending(CancellationToken.None);
+
+        result.Should().BeOfType<OkObjectResult>(
+            "identical values under equivalent forms (case-insensitively) must count as one identity");
+    }
+
+    [Fact]
+    public async Task GetPending_DifferentValuesAcrossEquivalentForms_Returns403WithoutDispatch()
+    {
+        // Distinct values under the short and mapped forms are an ambiguous identity — reject,
+        // never pick one.
+        _config.ApproverClaimType = "oid";
+        var sut = CreateSut(
+            new Claim("oid", "real-object-id"),
+            new Claim("http://schemas.microsoft.com/identity/claims/objectidentifier", "smuggled-object-id"));
+
+        var result = await sut.GetPending(CancellationToken.None);
+
+        result.Should().BeOfType<ObjectResult>()
+            .Which.StatusCode.Should().Be(StatusCodes.Status403Forbidden);
+        _mediator.Verify(
+            m => m.Send(It.IsAny<GetPendingEscalationsForApproverQuery>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task SubmitDecision_ConflictFailure_Returns409()
+    {
+        // A changed vote comes back from the handler as a Conflict failure and must map to 409
+        // through the shared failure mapper.
+        _mediator.Setup(m => m.Send(It.IsAny<SubmitEscalationDecisionCommand>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<SubmitEscalationDecisionResult>.Conflict(
+                "A decision by this approver with the opposite verdict is already recorded; votes cannot be changed."));
+
+        var result = await CreateSut(ApproverClaim()).SubmitDecision(
+            Guid.NewGuid(), new SubmitEscalationDecisionRequest(true), CancellationToken.None);
+
+        result.Should().BeOfType<ObjectResult>()
+            .Which.StatusCode.Should().Be(StatusCodes.Status409Conflict);
+    }
+
     [Fact]
     public async Task GetPending_ConfiguredClaimAppearsTwice_Returns403WithoutDispatch()
     {

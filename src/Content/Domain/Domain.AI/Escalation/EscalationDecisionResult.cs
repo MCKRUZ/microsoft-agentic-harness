@@ -27,7 +27,7 @@ public sealed record EscalationDecisionResult
     /// </summary>
     public EscalationOutcome? Outcome { get; init; }
 
-    // The three outcome-less results are stateless and immutable, so a single shared
+    // The outcome-less results are stateless and immutable, so a single shared
     // instance per status serves every call — the factories below hand these out.
     private static readonly EscalationDecisionResult UnknownInstance =
         new() { Status = EscalationDecisionStatus.UnknownEscalation };
@@ -35,6 +35,8 @@ public sealed record EscalationDecisionResult
         new() { Status = EscalationDecisionStatus.ApproverNotAuthorized };
     private static readonly EscalationDecisionResult RecordedInstance =
         new() { Status = EscalationDecisionStatus.DecisionRecorded };
+    private static readonly EscalationDecisionResult ConflictingInstance =
+        new() { Status = EscalationDecisionStatus.ConflictingDecision };
 
     /// <summary>Creates a result for a decision targeting an escalation that is not pending.</summary>
     public static EscalationDecisionResult UnknownEscalation() => UnknownInstance;
@@ -44,6 +46,12 @@ public sealed record EscalationDecisionResult
 
     /// <summary>Creates a result for a decision that was recorded but left the escalation unresolved.</summary>
     public static EscalationDecisionResult DecisionRecorded() => RecordedInstance;
+
+    /// <summary>
+    /// Creates a result for a decision rejected because the same approver already recorded the
+    /// opposite verdict — votes cannot be changed over this surface.
+    /// </summary>
+    public static EscalationDecisionResult ConflictingDecision() => ConflictingInstance;
 
     /// <summary>Creates a result for a decision that resolved the escalation with the given verdict.</summary>
     /// <param name="outcome">The final resolved outcome. Must not be null.</param>

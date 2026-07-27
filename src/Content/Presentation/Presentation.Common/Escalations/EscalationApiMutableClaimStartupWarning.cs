@@ -42,7 +42,7 @@ public sealed class EscalationApiMutableClaimStartupWarning : IHostedService
     public Task StartAsync(CancellationToken cancellationToken)
     {
         var claimType = _config.CurrentValue.ApproverClaimType;
-        if (EscalationConfigValidator.MutableApproverClaimTypes.Contains(claimType, StringComparer.Ordinal))
+        if (ApproverClaimTypes.Mutable.Contains(claimType, StringComparer.Ordinal))
         {
             _logger.LogWarning(
                 "Escalation API approver identity is bound to the mutable claim '{ApproverClaimType}'. " +

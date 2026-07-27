@@ -66,7 +66,8 @@ public class EscalationConfig
     /// establish the caller's approver identity — the name compared (case-insensitively, via
     /// <c>ApproverNames.Comparer</c>) against escalation rosters. Only identity-bearing claim
     /// types are accepted: <c>oid</c>, <c>sub</c>, <c>preferred_username</c>, or <c>upn</c>
-    /// (enforced at startup by the config validator). Defaults to <c>preferred_username</c>, the
+    /// (enforced at startup by the config validator while escalation is enabled; resolution also
+    /// searches each type's JWT inbound-mapped form on the principal). Defaults to <c>preferred_username</c>, the
     /// Entra ID v2.0 sign-in name, because the harness's roster surfaces (human-gate step
     /// config, governance rules) are authored with human-readable names.
     /// </summary>

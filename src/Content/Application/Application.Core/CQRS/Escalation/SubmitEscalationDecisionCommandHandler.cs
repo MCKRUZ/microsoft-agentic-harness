@@ -9,9 +9,12 @@ namespace Application.Core.CQRS.Escalation;
 /// <summary>
 /// Builds the domain <see cref="ApproverDecision"/> (stamping <c>RespondedAt</c> server-side)
 /// and submits it via <see cref="IEscalationService.SubmitDecisionAsync"/>. The service's
-/// discriminated result is returned as data, not failure: every one of the four statuses —
-/// unknown, not-authorized, recorded, resolved — is an expected, reportable outcome that the
-/// controller maps to its documented HTTP status.
+/// discriminated statuses — unknown, not-authorized, recorded, resolved — are returned as data,
+/// not failure: each is an expected, reportable outcome that the controller maps to its
+/// documented HTTP status. The one exception is
+/// <see cref="EscalationDecisionStatus.ConflictingDecision"/> (same approver, opposite verdict),
+/// which is a genuine request conflict and is translated to a
+/// <see cref="Result{T}.Conflict"/> failure so the shared failure mapper produces the 409.
 /// </summary>
 public sealed class SubmitEscalationDecisionCommandHandler
     : IRequestHandler<SubmitEscalationDecisionCommand, Result<SubmitEscalationDecisionResult>>
@@ -48,6 +51,12 @@ public sealed class SubmitEscalationDecisionCommandHandler
         _logger.LogInformation(
             "Escalation decision: EscalationId={EscalationId}, Approver={ApproverName}, Approve={Approve}, Status={Status}",
             request.EscalationId, request.ApproverName, request.Approve, result.Status);
+
+        if (result.Status == EscalationDecisionStatus.ConflictingDecision)
+        {
+            return Result<SubmitEscalationDecisionResult>.Conflict(
+                "A decision by this approver with the opposite verdict is already recorded; votes cannot be changed.");
+        }
 
         return Result<SubmitEscalationDecisionResult>.Success(
             SubmitEscalationDecisionResult.FromDecisionResult(result));

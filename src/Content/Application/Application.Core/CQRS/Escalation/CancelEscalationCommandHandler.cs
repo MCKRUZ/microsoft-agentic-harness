@@ -72,17 +72,29 @@ public sealed class CancelEscalationCommandHandler
     }
 
     /// <summary>
-    /// Disambiguates the cancel race honestly: if the recorded outcome is this very caller's own
-    /// cancellation (a retried or duplicated request whose first attempt won), report success —
-    /// the desired end state holds. Anything else (a decision or timeout won, or the state
-    /// vanished) is a genuine conflict.
+    /// Disambiguates the cancel race honestly, keyed on what the outcome store actually
+    /// retained. A retained outcome proves a durably audited resolution exists: if it is this
+    /// very caller's own cancellation (a retried request whose first attempt won), report
+    /// success — the desired end state holds; otherwise a decision or timeout genuinely won the
+    /// race — 409. NO retained outcome means the resolution's fail-closed audit write did not
+    /// complete (the exception may even be the audit store's own) — the escalation was force-
+    /// resolved with no durable record, which is a real failure, never a benign 409.
     /// </summary>
     private async Task<Result<EscalationOutcomeSummary>> ReconcileCancelRaceAsync(
         CancelEscalationCommand request, InvalidOperationException ex, CancellationToken cancellationToken)
     {
         var outcome = await _escalations.GetOutcomeAsync(request.EscalationId, cancellationToken);
 
-        if (outcome?.CancelledBy is not null
+        if (outcome is null)
+        {
+            _logger.LogError(ex,
+                "Cancel of escalation {EscalationId} by {CancelledBy} failed with no durably audited outcome retained; reporting failure, not conflict",
+                request.EscalationId, request.CancelledBy);
+            return Result<EscalationOutcomeSummary>.Fail(
+                "The cancellation could not be completed. See server logs for details.");
+        }
+
+        if (outcome.CancelledBy is not null
             && ApproverNames.Comparer.Equals(outcome.CancelledBy, request.CancelledBy))
         {
             _logger.LogInformation(

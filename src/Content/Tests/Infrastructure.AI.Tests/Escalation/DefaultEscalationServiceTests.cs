@@ -521,6 +521,73 @@ public sealed class DefaultEscalationServiceTests : IDisposable
 	}
 
 	[Fact]
+	public async Task SubmitDecisionAsync_DuplicateApproverWithOppositeVerdict_ReturnsConflictWithoutRecording()
+	{
+		// A changed vote must be rejected honestly (ConflictingDecision → 409), not silently
+		// dropped while echoing "recorded": no audit append, no strategy re-evaluation.
+		var request = CreateTestRequest(strategy: ApprovalStrategyType.AllOf);
+		SetupStrategyNeverResolves(ApprovalStrategyType.AllOf);
+		await _sut.QueueEscalationAsync(request, CancellationToken.None);
+
+		var first = await _sut.SubmitDecisionAsync(
+			request.EscalationId, CreateApproval("approver-1"), CancellationToken.None);
+		var changed = await _sut.SubmitDecisionAsync(
+			request.EscalationId, CreateDenial("APPROVER-1"), CancellationToken.None);
+
+		first.Status.Should().Be(EscalationDecisionStatus.DecisionRecorded);
+		changed.Status.Should().Be(EscalationDecisionStatus.ConflictingDecision);
+		_auditStore.Verify(
+			a => a.RecordDecisionAsync(request.EscalationId, It.IsAny<ApproverDecision>(), It.IsAny<CancellationToken>()),
+			Times.Once);
+		_allOfStrategy.Verify(
+			s => s.EvaluateDecision(It.IsAny<EscalationRequest>(), It.IsAny<IReadOnlyList<ApproverDecision>>()),
+			Times.Once);
+	}
+
+	[Fact]
+	public async Task SubmitDecisionAsync_OutcomeAuditFails_EscalationStaysObservableAndVerdictUnpublished()
+	{
+		// Resolution ordering contract: the outcome is durably audited FIRST; on failure the
+		// escalation must remain in the active set (still observable as pending) and the verdict
+		// must never be published to GetOutcomeAsync. The old remove-then-audit order made a
+		// failed-audit escalation vanish from every reader.
+		var request = CreateTestRequest();
+		SetupStrategyResolvesOnFirstApproval();
+		_auditStore
+			.Setup(a => a.RecordOutcomeAsync(It.IsAny<EscalationOutcome>(), It.IsAny<CancellationToken>()))
+			.ThrowsAsync(new InvalidOperationException("audit store unavailable"));
+		await _sut.QueueEscalationAsync(request, CancellationToken.None);
+
+		var act = () => _sut.SubmitDecisionAsync(
+			request.EscalationId, CreateApproval(), CancellationToken.None);
+
+		await act.Should().ThrowAsync<InvalidOperationException>();
+		(await _sut.GetOutcomeAsync(request.EscalationId, CancellationToken.None))
+			.Should().BeNull("an unaudited verdict must never be served");
+		(await _sut.GetPendingEscalationAsync(request.EscalationId, CancellationToken.None))
+			.Should().NotBeNull("a resolved-but-unaudited escalation must stay observable, not vanish");
+	}
+
+	[Fact]
+	public async Task SubmitDecisionAsync_ResolvedEscalation_OutcomeRetrievableImmediately()
+	{
+		// The 202→poll contract: once a decision resolves, GetOutcomeAsync must serve the
+		// verdict (published before the active-set removal, after the audit write).
+		var request = CreateTestRequest();
+		SetupStrategyResolvesOnFirstApproval();
+		await _sut.QueueEscalationAsync(request, CancellationToken.None);
+
+		var result = await _sut.SubmitDecisionAsync(
+			request.EscalationId, CreateApproval(), CancellationToken.None);
+
+		result.Status.Should().Be(EscalationDecisionStatus.Resolved);
+		(await _sut.GetOutcomeAsync(request.EscalationId, CancellationToken.None))
+			.Should().NotBeNull();
+		(await _sut.GetPendingEscalationAsync(request.EscalationId, CancellationToken.None))
+			.Should().BeNull("resolution removes the escalation from the active set");
+	}
+
+	[Fact]
 	public async Task SubmitDecisionAsync_DuplicateApprover_IgnoredWithoutSecondAuditRecord()
 	{
 		// One recorded decision per approver per escalation: a retried submission (even with

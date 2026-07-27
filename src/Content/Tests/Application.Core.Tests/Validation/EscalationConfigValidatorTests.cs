@@ -60,6 +60,21 @@ public class EscalationConfigValidatorTests
     }
 
     [Fact]
+    public async Task Validate_NonAllowlistedClaimTypeWhileDisabled_NoErrors()
+    {
+        // These validators impose no constraints while the feature is off (documented posture):
+        // a host with escalation disabled must keep booting regardless of the claim type value.
+        var config = CreateValidConfig();
+        config.Enabled = false;
+        config.PriorityLevels.Clear();
+        config.ApproverClaimType = "email";
+
+        var result = await _validator.ValidateAsync(config);
+
+        result.IsValid.Should().BeTrue();
+    }
+
+    [Fact]
     public async Task Validate_NegativeTimeout_HasError()
     {
         var config = CreateValidConfig();

@@ -92,6 +92,21 @@ public sealed class SubmitEscalationDecisionCommandHandlerTests
     }
 
     [Fact]
+    public async Task Handle_ConflictingDecision_ReturnsConflictFailure()
+    {
+        // A changed vote (same approver, opposite verdict) is the one status that IS a request
+        // failure: it must surface as ResultFailureType.Conflict so the shared mapper emits 409,
+        // never as a 202 that pretends the change was recorded.
+        _service.Setup(s => s.SubmitDecisionAsync(It.IsAny<Guid>(), It.IsAny<ApproverDecision>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(EscalationDecisionResult.ConflictingDecision());
+
+        var result = await _handler.Handle(NewCommand(), CancellationToken.None);
+
+        result.IsSuccess.Should().BeFalse();
+        result.FailureType.Should().Be(Domain.Common.ResultFailureType.Conflict);
+    }
+
+    [Fact]
     public async Task Handle_Resolved_ReturnsSuccessCarryingProjectedOutcome()
     {
         var id = Guid.NewGuid();

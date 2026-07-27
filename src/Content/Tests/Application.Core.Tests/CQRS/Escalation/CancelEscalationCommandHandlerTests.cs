@@ -107,6 +107,30 @@ public sealed class CancelEscalationCommandHandlerTests
     }
 
     [Fact]
+    public async Task Handle_RaceWithNoRetainedOutcome_ReturnsFailureNotConflict()
+    {
+        // If the cancel path throws but NO outcome was retained, the resolution's fail-closed
+        // audit write did not complete — the escalation was force-resolved with no durable
+        // record. That is a genuine failure (500-shaped), never a benign 409 "lost race".
+        var request = EscalationTestData.NewRequest();
+        var id = request.EscalationId;
+        _service.Setup(s => s.GetPendingEscalationAsync(id, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(request);
+        _service.Setup(s => s.CancelEscalationAsync(id, It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("audit store rejected the outcome write"));
+        _service.Setup(s => s.GetOutcomeAsync(id, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Domain.AI.Escalation.EscalationOutcome?)null);
+
+        var result = await _handler.Handle(NewCommand(id), CancellationToken.None);
+
+        result.IsSuccess.Should().BeFalse();
+        result.FailureType.Should().Be(ResultFailureType.General,
+            "an unaudited force-resolution must map to 500, not 409");
+        result.Errors.Should().NotContain(e => e.Contains("audit store"),
+            "internal exception text must not surface in the result");
+    }
+
+    [Fact]
     public async Task Handle_OwnCancellationWinsRace_ReturnsSuccessNotConflict()
     {
         // A duplicated/retried cancel whose first attempt already won must not misreport 409:

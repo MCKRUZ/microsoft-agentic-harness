@@ -132,9 +132,20 @@ public sealed class DefaultEscalationService : IEscalationService, IDisposable
 		// Idempotency chokepoint: one recorded decision per approver per escalation. A repeated
 		// submission (double-click, HTTP retry, replay) must not append to the decision list or
 		// grow the audit trail — the first decision already speaks for this approver. Checked
-		// BEFORE the audit write so a repeat produces a debug line, never an audit record.
-		if (HasDecisionFrom(state, decision.ApproverName))
+		// BEFORE the audit write so a repeat produces a log line, never an audit record. A
+		// repeat with the SAME verdict echoes DecisionRecorded (idempotent); a repeat with the
+		// OPPOSITE verdict is a conflict — silently dropping a changed vote while reporting it
+		// recorded would be dishonest, and recording it would let a replay flip a final vote.
+		if (TryGetExistingDecision(state, decision.ApproverName) is { } existing)
 		{
+			if (existing.Approved != decision.Approved)
+			{
+				_logger.LogWarning(
+					"Conflicting decision from {ApproverName} for escalation {EscalationId} rejected: {New} contradicts recorded {Recorded}",
+					decision.ApproverName, escalationId, decision.Approved, existing.Approved);
+				return EscalationDecisionResult.ConflictingDecision();
+			}
+
 			_logger.LogDebug(
 				"Duplicate decision from {ApproverName} for escalation {EscalationId} ignored (already recorded)",
 				decision.ApproverName, escalationId);
@@ -161,9 +172,14 @@ public sealed class DefaultEscalationService : IEscalationService, IDisposable
 				return EscalationDecisionResult.DecisionRecorded();
 
 			// Closes the race two concurrent submissions from the same approver can win against
-			// the pre-audit duplicate check: only the first may enter the decision list.
-			if (HasDecisionFrom(state, decision.ApproverName))
-				return EscalationDecisionResult.DecisionRecorded();
+			// the pre-audit duplicate check: only the first may enter the decision list, and a
+			// contradicting verdict is a conflict here exactly as at the chokepoint above.
+			if (TryGetExistingDecision(state, decision.ApproverName) is { } raced)
+			{
+				return raced.Approved != decision.Approved
+					? EscalationDecisionResult.ConflictingDecision()
+					: EscalationDecisionResult.DecisionRecorded();
+			}
 
 			state.Decisions.Add(decision);
 			var evaluation = strategy.EvaluateDecision(state.Request, state.Decisions.AsReadOnly());
@@ -338,20 +354,15 @@ public sealed class DefaultEscalationService : IEscalationService, IDisposable
 			return;
 
 		state.TimeoutCts.Cancel();
-		_activeEscalations.TryRemove(state.Request.EscalationId, out _);
-
-		EscalationMetrics.Pending.Add(-1);
-		RecordResolutionMetrics(state, outcome);
-
-		_logger.LogInformation(
-			"Escalation {EscalationId} resolved: {ResolutionType}, approved={IsApproved}",
-			outcome.EscalationId, outcome.ResolutionType, outcome.IsApproved);
 
 		// Record the audit outcome BEFORE releasing the caller awaiting Completion.Task.
 		// The durable outcome write is fail-CLOSED: if it throws, the escalation must NOT
 		// be reported as resolved. Propagate the failure to the awaiting caller instead of
 		// delivering an approval that was never recorded for compliance. (SafeExecuteAsync
 		// is reserved for best-effort notification, never for the durable audit write.)
+		// The escalation deliberately stays in _activeEscalations on failure: it must remain
+		// observable (a resolved-but-unaudited escalation vanishing entirely would read as an
+		// unknown id to every poller) rather than dropping into a state no reader can see.
 		try
 		{
 			await _auditStore.RecordOutcomeAsync(outcome, CancellationToken.None);
@@ -367,8 +378,20 @@ public sealed class DefaultEscalationService : IEscalationService, IDisposable
 
 		// Retain the verdict ONLY after it has been durably audited, so GetOutcomeAsync — and thus
 		// the plan executor's resume reconciliation — can never act on a verdict that failed the
-		// fail-closed audit write above and was rolled back to the awaiting caller.
+		// fail-closed audit write above and was rolled back to the awaiting caller. Publish it
+		// BEFORE removing the escalation from the active set: a reader landing between the two
+		// steps sees at least one view (brief dual presence is fine — readers check the active
+		// set first and simply serve the pending view), never the spurious not-found a
+		// remove-then-publish order produced on exactly the poll the 202 contract prescribes.
 		_resolvedOutcomes[outcome.EscalationId] = outcome;
+		_activeEscalations.TryRemove(state.Request.EscalationId, out _);
+
+		EscalationMetrics.Pending.Add(-1);
+		RecordResolutionMetrics(state, outcome);
+
+		_logger.LogInformation(
+			"Escalation {EscalationId} resolved: {ResolutionType}, approved={IsApproved}",
+			outcome.EscalationId, outcome.ResolutionType, outcome.IsApproved);
 
 		await SafeExecuteAsync(
 			() => _notifier.NotifyEscalationResolvedAsync(outcome, CancellationToken.None),
@@ -464,16 +487,17 @@ public sealed class DefaultEscalationService : IEscalationService, IDisposable
 	}
 
 	/// <summary>
-	/// Whether this approver already has a recorded decision on the escalation, using
-	/// <see cref="ApproverNames.Comparer"/> so a casing-variant retry is still a duplicate.
-	/// Takes the state lock itself, so callers may invoke it lock-free; the in-lock re-check in
-	/// <see cref="SubmitDecisionAsync"/> relies on the lock being reentrant for the same thread.
+	/// Returns this approver's already-recorded decision on the escalation, or null when none
+	/// exists, using <see cref="ApproverNames.Comparer"/> so a casing-variant retry is still a
+	/// duplicate. Takes the state lock itself, so callers may invoke it lock-free; the in-lock
+	/// re-check in <see cref="SubmitDecisionAsync"/> relies on the lock being reentrant for the
+	/// same thread.
 	/// </summary>
-	private static bool HasDecisionFrom(EscalationState state, string approverName)
+	private static ApproverDecision? TryGetExistingDecision(EscalationState state, string approverName)
 	{
 		lock (state.Lock)
 		{
-			return state.Decisions.Any(d =>
+			return state.Decisions.FirstOrDefault(d =>
 				ApproverNames.Comparer.Equals(d.ApproverName, approverName));
 		}
 	}

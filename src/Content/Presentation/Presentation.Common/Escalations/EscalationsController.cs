@@ -1,4 +1,5 @@
 using Application.Core.CQRS.Escalation;
+using Application.Core.Validation;
 using Domain.AI.Escalation;
 using Domain.Common;
 using Domain.Common.Config.AI.Governance;
@@ -155,6 +156,7 @@ public sealed class EscalationsController : ControllerBase
     /// <response code="401">Caller is not authenticated.</response>
     /// <response code="403">Caller lacks <see cref="DecideRole"/>, has no approver identity claim, or is not on this escalation's roster.</response>
     /// <response code="404">No pending escalation with the given id.</response>
+    /// <response code="409">This approver already recorded the opposite verdict; votes cannot be changed. (A repeat with the same verdict echoes 202.)</response>
     [HttpPost("{id:guid}/decision")]
     [Authorize(Roles = DecideRole)]
     [ProducesResponseType(typeof(EscalationDecisionResponse), StatusCodes.Status200OK)]
@@ -163,6 +165,7 @@ public sealed class EscalationsController : ControllerBase
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(StatusCodes.Status403Forbidden)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
     public async Task<IActionResult> SubmitDecision(
         Guid id,
         [FromBody] SubmitEscalationDecisionRequest request,
@@ -249,16 +252,24 @@ public sealed class EscalationsController : ControllerBase
 
     /// <summary>
     /// Resolves the caller's approver identity from the configured claim type, or null when the
-    /// principal does not carry exactly one usable value. A claim that appears more than once is
-    /// an ambiguous identity and is rejected rather than silently first-picked — an attacker who
-    /// can smuggle a second instance of the claim must not get to choose which one wins.
+    /// principal does not carry exactly one usable value. Resolution searches the union of the
+    /// configured type's equivalent forms (<see cref="ApproverClaimTypes.EquivalentFormsOf"/>):
+    /// production tokens carry the JWT inbound-MAPPED form (e.g. <c>oid</c> arrives as the
+    /// objectidentifier URI), dev/test principals the short form — searching only one of them
+    /// would 403 every legitimate approver on the other auth path. Across that union, more than
+    /// one distinct value (per <c>ApproverNames.Comparer</c>) is an ambiguous identity and is
+    /// rejected rather than silently first-picked — an attacker who can smuggle a second
+    /// instance of the claim must not get to choose which one wins; the same value appearing
+    /// under both forms counts as one.
     /// </summary>
     private string? ResolveApproverName()
     {
         var claimType = _config.CurrentValue.ApproverClaimType;
-        var values = User.FindAll(claimType)
+        var values = ApproverClaimTypes.EquivalentFormsOf(claimType)
+            .SelectMany(form => User.FindAll(form))
             .Select(c => c.Value)
             .Where(v => !string.IsNullOrWhiteSpace(v))
+            .Distinct(ApproverNames.Comparer)
             .ToList();
 
         if (values.Count == 1)
@@ -267,7 +278,7 @@ public sealed class EscalationsController : ControllerBase
         // Diagnostic detail (which claim type, how many values) goes to the log only; the HTTP
         // body stays generic so the response never teaches a caller which claim to forge.
         _logger.LogWarning(
-            "Approver identity resolution failed: configured claim '{ApproverClaimType}' present {Count} time(s) on the principal",
+            "Approver identity resolution failed: configured claim '{ApproverClaimType}' (incl. mapped forms) yielded {Count} distinct value(s) on the principal",
             claimType, values.Count);
         return null;
     }
