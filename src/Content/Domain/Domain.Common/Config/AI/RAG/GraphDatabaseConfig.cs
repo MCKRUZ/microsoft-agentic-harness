@@ -7,7 +7,10 @@ public sealed class GraphDatabaseConfig
 {
     /// <summary>
     /// Graph database provider. Selects keyed DI implementation.
-    /// Options: "kuzu" (default), "neo4j", "in_memory".
+    /// The template ships a backend registration for "kuzu" (default) only; other values
+    /// (e.g. "neo4j") are consumer extension points that require registering a matching
+    /// keyed <c>IGraphDatabaseBackend</c>. When <see cref="Enabled"/> is true, an
+    /// unregistered provider fails the host at startup via <c>RagConfigValidator</c>.
     /// </summary>
     public string Provider { get; set; } = "kuzu";
 

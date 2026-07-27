@@ -53,7 +53,7 @@ public sealed partial class RagOrchestrator : IRagOrchestrator
     private readonly IReranker _reranker;
     private readonly ICragEvaluator _cragEvaluator;
     private readonly IRagContextAssembler _contextAssembler;
-    private readonly IGraphRagService _graphRagService;
+    private readonly IGraphRagService? _graphRagService;
     private readonly IFeedbackWeightedScorer? _feedbackScorer;
     private readonly QueryRouter _queryRouter;
     private readonly IMultiSourceOrchestrator? _multiSourceOrchestrator;
@@ -73,7 +73,9 @@ public sealed partial class RagOrchestrator : IRagOrchestrator
     /// <param name="reranker">Cross-encoder or semantic reranker.</param>
     /// <param name="cragEvaluator">CRAG relevance evaluator.</param>
     /// <param name="contextAssembler">Final context assembly stage.</param>
-    /// <param name="graphRagService">Knowledge graph-based retrieval service.</param>
+    /// <param name="graphRagService">Knowledge graph-based retrieval service. Null when the
+    /// graph database backend is disabled (<c>AppConfig:AI:Rag:GraphDatabase:Enabled=false</c>);
+    /// the GraphRag strategy then degrades with an explicit "backend disabled" context.</param>
     /// <param name="feedbackScorer">Optional feedback-weighted scorer. Null when feedback is disabled.</param>
     /// <param name="queryRouter">Query classification and transformation router.</param>
     /// <param name="multiSourceOrchestrator">Optional multi-source retrieval orchestrator. Null disables multi-source routing.</param>
@@ -92,7 +94,7 @@ public sealed partial class RagOrchestrator : IRagOrchestrator
         IReranker reranker,
         ICragEvaluator cragEvaluator,
         IRagContextAssembler contextAssembler,
-        IGraphRagService graphRagService,
+        IGraphRagService? graphRagService,
         IFeedbackWeightedScorer? feedbackScorer,
         QueryRouter queryRouter,
         IMultiSourceOrchestrator? multiSourceOrchestrator,
@@ -109,7 +111,6 @@ public sealed partial class RagOrchestrator : IRagOrchestrator
         ArgumentNullException.ThrowIfNull(reranker);
         ArgumentNullException.ThrowIfNull(cragEvaluator);
         ArgumentNullException.ThrowIfNull(contextAssembler);
-        ArgumentNullException.ThrowIfNull(graphRagService);
         ArgumentNullException.ThrowIfNull(queryRouter);
         ArgumentNullException.ThrowIfNull(configMonitor);
         ArgumentNullException.ThrowIfNull(logger);
@@ -263,6 +264,17 @@ public sealed partial class RagOrchestrator : IRagOrchestrator
         string query, CancellationToken cancellationToken)
     {
         using var activity = ActivitySource.StartActivity("rag.orchestrator.graph_pipeline");
+
+        // The service is registered only when the graph database backend is enabled. Mirror the
+        // established empty-graph behavior (an explanatory context, not an exception) so a
+        // GraphRag strategy override degrades honestly instead of failing the whole search.
+        if (_graphRagService is null)
+        {
+            _logger.LogWarning(
+                "GraphRag strategy requested but the graph database backend is disabled " +
+                "(AppConfig:AI:Rag:GraphDatabase:Enabled=false); returning explanatory context");
+            return RagAssembledContext.GraphRagUnavailable();
+        }
 
         _logger.LogInformation("Routing to GraphRAG global search");
         return await _graphRagService.GlobalSearchAsync(query, communityLevel: 0, cancellationToken);

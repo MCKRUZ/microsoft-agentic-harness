@@ -16,9 +16,21 @@ namespace Application.Core.Workflows.KnowledgeGraph;
 /// </summary>
 /// <remarks>
 /// <para>
-/// This workflow decomposes <see cref="IGraphRagService.IndexCorpusAsync"/> into discrete,
-/// observable executor stages. Each stage is independently testable and emits its own
-/// workflow events for observability.
+/// This is the build path for the <em>knowledge graph</em> — the tenant-aware
+/// <see cref="IKnowledgeGraphStore"/> shared with memory and learnings — as opposed to the
+/// corpus graph that <see cref="IGraphRagService.IndexCorpusAsync"/> builds for the GraphRag
+/// retrieval strategy. The two graphs are physically separate stores; this workflow mirrors
+/// the extract → stamp → store shape as discrete, observable executor stages, each
+/// independently testable and emitting its own workflow events.
+/// </para>
+/// <para>
+/// <b>Consumer:</b> the knowledge-graph enrichment stage of
+/// <c>IngestDocumentCommandHandler</c>, which resolves this workflow by its DI key
+/// (<c>"kg-ingestion"</c>) and runs it over the ingested chunks when
+/// <c>AppConfig:AI:Rag:GraphRag:EnrichKnowledgeGraphOnIngest</c> is <c>true</c>. Because
+/// <see cref="StoreGraphExecutor"/> writes through the root
+/// <see cref="IKnowledgeGraphStore"/> registration, extracted entities pass through the
+/// tenant-isolation and compliance decorator chain and are stamped accordingly.
 /// </para>
 /// <para>
 /// The workflow uses <see cref="IModelRouter"/> (via <see cref="ExtractEntitiesExecutor"/>)

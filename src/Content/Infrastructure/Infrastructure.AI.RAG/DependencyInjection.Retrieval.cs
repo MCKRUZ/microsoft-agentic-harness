@@ -165,9 +165,15 @@ public static partial class DependencyInjection
         services.AddKeyedSingleton<IRetrievalSource>("vector", (sp, _) =>
             new VectorRetrievalSource(sp.GetRequiredService<IHybridRetriever>()));
 
-        // Adapter: existing IGraphRagService → IRetrievalSource
-        services.AddKeyedSingleton<IRetrievalSource>("graph", (sp, _) =>
-            new GraphRetrievalSource(sp.GetRequiredService<IGraphRagService>()));
+        // Adapter: existing IGraphRagService → IRetrievalSource. Registered only when the
+        // graph database backend (and therefore IGraphRagService) exists — see AddRagGraphRag.
+        // MultiSourceOrchestrator already logs-and-skips enabled sources with no registration,
+        // so a config that lists "graph" without the backend degrades gracefully per fan-out.
+        if (appConfig.AI.Rag.GraphDatabase.Enabled)
+        {
+            services.AddKeyedSingleton<IRetrievalSource>("graph", (sp, _) =>
+                new GraphRetrievalSource(sp.GetRequiredService<IGraphRagService>()));
+        }
 
         // Orchestrator resolves IRetrievalSource by key from the container
         services.AddSingleton<IMultiSourceOrchestrator>(sp =>

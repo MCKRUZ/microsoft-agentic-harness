@@ -40,6 +40,30 @@ public class GraphRagConfig
     public int MaxEntityExtractionTokens { get; set; } = 4096;
 
     /// <summary>
+    /// Gets or sets whether the corpus graph (the <c>IGraphDatabaseBackend</c>-backed
+    /// graph queried by the GraphRag retrieval strategy) is built during document
+    /// ingestion. When <c>true</c>, <c>IngestDocumentCommandHandler</c> calls
+    /// <c>IGraphRagService.IndexCorpusAsync</c> with the ingested chunks after the
+    /// vector and BM25 indexes commit. Requires <c>GraphDatabaseConfig.Enabled</c>
+    /// (enforced at startup by <c>RagConfigValidator</c>): without the backend there
+    /// is no graph to index into. A graph-indexing failure never fails the ingestion —
+    /// it is logged and surfaced via <c>IngestDocumentResult.GraphIndexed</c>.
+    /// </summary>
+    public bool IndexOnIngest { get; set; } = false;
+
+    /// <summary>
+    /// Gets or sets whether the knowledge graph (the tenant-aware
+    /// <c>IKnowledgeGraphStore</c> shared with memory and learnings) is enriched during
+    /// document ingestion. When <c>true</c>, <c>IngestDocumentCommandHandler</c> runs
+    /// the <c>"kg-ingestion"</c> workflow (entity extraction, provenance stamping,
+    /// graph storage) over the ingested chunks; extracted entities land through the
+    /// decorated store chain, inheriting tenant isolation and compliance stamping.
+    /// An enrichment failure never fails the ingestion — it is logged and surfaced
+    /// via <c>IngestDocumentResult.KnowledgeGraphEnriched</c>.
+    /// </summary>
+    public bool EnrichKnowledgeGraphOnIngest { get; set; } = false;
+
+    /// <summary>
     /// Gets or sets whether feedback-weighted search is enabled. When <c>true</c>,
     /// retrieval results are re-ranked by blending semantic relevance with accumulated
     /// feedback weights on graph nodes and edges.

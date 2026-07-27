@@ -15,10 +15,15 @@ namespace Application.Core.Workflows.Rag;
 /// GraphRAG excels at broad thematic queries (e.g., "What are the main themes in this corpus?")
 /// where vector search performs poorly. The trade-off is higher indexing cost and the need
 /// for a populated knowledge graph. When the graph is empty, returns a context indicating
-/// that documents must be ingested first.
+/// that documents must be ingested first. When <paramref name="graphRagService"/> is null —
+/// the service is registered only while the graph database backend is enabled — the executor
+/// degrades the same way: an explanatory context naming the disabled backend, not an exception.
 /// </remarks>
+/// <param name="graphRagService">The graph retrieval service, or null when the graph database
+/// backend is disabled (<c>AppConfig:AI:Rag:GraphDatabase:Enabled=false</c>).</param>
+/// <param name="logger">Logger for recording search progress and degradations.</param>
 public sealed class GraphRagSearchExecutor(
-    IGraphRagService graphRagService,
+    IGraphRagService? graphRagService,
     ILogger<GraphRagSearchExecutor> logger)
     : Executor<ClassifiedQuery, RagAssembledContext>("graph_rag_search")
 {
@@ -37,6 +42,14 @@ public sealed class GraphRagSearchExecutor(
         IWorkflowContext context,
         CancellationToken cancellationToken = default)
     {
+        if (graphRagService is null)
+        {
+            logger.LogWarning(
+                "GraphRag branch reached but the graph database backend is disabled " +
+                "(AppConfig:AI:Rag:GraphDatabase:Enabled=false); returning explanatory context");
+            return RagAssembledContext.GraphRagUnavailable();
+        }
+
         logger.LogInformation("GraphRAG search started for query of {Length} chars", message.Query.Length);
 
         var result = await graphRagService.GlobalSearchAsync(

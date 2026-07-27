@@ -43,8 +43,10 @@ public static class RagPipelineWorkflow
     /// The service provider used to resolve pipeline dependencies:
     /// <see cref="IQueryClassifier"/>, <see cref="IHybridRetriever"/>,
     /// <see cref="IReranker"/>, <see cref="ICragEvaluator"/>,
-    /// <see cref="IRagContextAssembler"/>, <see cref="IGraphRagService"/>,
-    /// and optionally <see cref="IFeedbackWeightedScorer"/>.
+    /// <see cref="IRagContextAssembler"/>, optionally <see cref="IGraphRagService"/>
+    /// (absent when the graph database backend is disabled — the GraphRag branch then
+    /// degrades with an explanatory context), and optionally
+    /// <see cref="IFeedbackWeightedScorer"/>.
     /// </param>
     /// <returns>A configured <see cref="Workflow"/> ready for execution via <see cref="InProcessExecution"/>.</returns>
     public static Workflow Build(IServiceProvider services)
@@ -66,8 +68,11 @@ public static class RagPipelineWorkflow
             services.GetRequiredService<IRagContextAssembler>(),
             services.GetRequiredService<ILogger<AssembleContextExecutor>>());
 
+        // Optional: IGraphRagService is registered only when the graph database backend is
+        // enabled. The executor tolerates null and degrades the GraphRag branch with an
+        // explanatory context, so the workflow keeps its shape under every configuration.
         var graphSearch = new GraphRagSearchExecutor(
-            services.GetRequiredService<IGraphRagService>(),
+            services.GetService<IGraphRagService>(),
             services.GetRequiredService<ILogger<GraphRagSearchExecutor>>());
 
         var builder = new WorkflowBuilder(classify);

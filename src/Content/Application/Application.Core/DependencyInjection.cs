@@ -86,7 +86,9 @@ public static class DependencyInjection
 	/// <para>Workflow keys (singleton unless noted):</para>
 	/// <list type="bullet">
 	///   <item><c>"rag-pipeline"</c> — RAG retrieval pipeline with CRAG evaluation</item>
-	///   <item><c>"kg-ingestion"</c> — Knowledge graph entity extraction and storage</item>
+	///   <item><c>"kg-ingestion"</c> — Knowledge graph entity extraction and storage. Consumed by
+	///     <c>IngestDocumentCommandHandler</c>'s enrichment stage when
+	///     <c>AppConfig:AI:Rag:GraphRag:EnrichKnowledgeGraphOnIngest</c> is <c>true</c></item>
 	///   <item><c>"governance-approval"</c> — Human-in-the-loop approval with <see cref="RequestPort"/></item>
 	///   <item>
 	///     <c>"optimization-iteration"</c> — Single meta-harness propose-evaluate-score iteration.
