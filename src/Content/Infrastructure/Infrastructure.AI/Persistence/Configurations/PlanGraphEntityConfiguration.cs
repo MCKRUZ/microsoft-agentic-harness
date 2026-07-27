@@ -31,7 +31,17 @@ public sealed class PlanGraphEntityConfiguration : IEntityTypeConfiguration<Plan
             .HasForeignKey(e => e.ParentPlanId)
             .OnDelete(DeleteBehavior.SetNull);
 
+        builder.Property(e => e.OwnerId).HasMaxLength(PlannerScopeFilter.MaxIdentityLength);
+        builder.Property(e => e.TenantId).HasMaxLength(PlannerScopeFilter.MaxIdentityLength);
+
         builder.HasIndex(e => e.ParentPlanId);
         builder.HasIndex(e => e.CreatedAt);
+
+        // Serves exact-match owner/tenant lookups — the write-path predicate
+        // (PlannerScopeFilter.WritableBy: TenantId = ? AND OwnerId = ?) can seek it directly.
+        // The read-path visibility predicate's OR-under-AND shape (null-or-match per column)
+        // is not sargable against this index on SQLite; reads scan, which is acceptable at
+        // planner-table cardinality.
+        builder.HasIndex(e => new { e.TenantId, e.OwnerId });
     }
 }
