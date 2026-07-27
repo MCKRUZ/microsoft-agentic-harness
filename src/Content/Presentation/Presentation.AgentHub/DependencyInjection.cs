@@ -24,6 +24,8 @@ using Presentation.AgentHub.Notifications;
 using Presentation.AgentHub.Planner;
 using Presentation.AgentHub.Config;
 using Presentation.AgentHub.Telemetry;
+using Domain.Common.Config;
+using Presentation.Common.Drift;
 using Presentation.Common.Escalations;
 using Microsoft.Extensions.Options;
 
@@ -59,7 +61,10 @@ public static class DependencyInjection
             })
             // Deliberate opt-in: AgentHub runs the agent workload, so the in-process escalation
             // state lives here and the human approval API must be co-resident with it.
-            .AddEscalationApi();
+            .AddEscalationApi()
+            // Deliberate opt-in: AgentHub runs the drift subsystem (stores, EWMA state,
+            // escalation bridge), so pushed evaluations must land in this process.
+            .AddDriftApi();
 
         // Surfaces a missing/invalid AI provider configuration via /health/ai. Additive to the
         // health checks registered in Presentation.Common — Degraded (not Unhealthy) because the
@@ -215,6 +220,35 @@ public static class DependencyInjection
                         ?? context.Connection.RemoteIpAddress?.ToString()
                         ?? "unknown";
                     return RateLimitPartition.GetFixedWindowLimiter($"escalation:{escalationCaller}", _ => new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = 30,
+                        Window = TimeSpan.FromMinutes(1),
+                        QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                        QueueLimit = 0,
+                    });
+                }
+
+                // Drift writes (push evaluation, recalculate baseline) move EWMA state and the
+                // history future baselines are computed from — the subsystem's poisoning
+                // surface — and append durable hash-chained audit records; cap them per
+                // authenticated caller so even a role-holding operator cannot bulk-shift a
+                // baseline or flood the audit store in one burst. Reads stay unthrottled,
+                // matching the escalation API's write-only posture.
+                if (context.Request.Method == HttpMethods.Post &&
+                    context.Request.Path.StartsWithSegments("/api/drift"))
+                {
+                    // Partition on the SAME claim the controller stamps into the audit trail,
+                    // not on GetUserIdOrNull()'s oid. A host configured with
+                    // CallerIdentityClaimType "sub" or "preferred_username", issuing tokens
+                    // without an oid, would otherwise collapse every operator into the shared
+                    // IP partition — one operator could then starve all the others.
+                    var driftClaimType = context.RequestServices
+                        .GetRequiredService<IOptionsMonitor<AppConfig>>()
+                        .CurrentValue.AI.DriftDetection.CallerIdentityClaimType;
+                    var driftCaller = DriftCallerIdentity.Resolve(context.User, driftClaimType)
+                        ?? context.Connection.RemoteIpAddress?.ToString()
+                        ?? "unknown";
+                    return RateLimitPartition.GetFixedWindowLimiter($"drift:{driftCaller}", _ => new FixedWindowRateLimiterOptions
                     {
                         PermitLimit = 30,
                         Window = TimeSpan.FromMinutes(1),

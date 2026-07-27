@@ -131,6 +131,31 @@ public sealed class GraphDriftBaselineStore : IDriftBaselineStore
         }
     }
 
+    /// <inheritdoc />
+    public async Task<Result<DriftBaseline?>> GetBaselineByIdAsync(Guid baselineId, CancellationToken ct)
+    {
+        try
+        {
+            // Baseline nodes are addressed by scope + identifier, so BaselineId is a secondary
+            // key: filter on the indexed node property before deserializing, so at most one
+            // node's JSON payload is parsed instead of the whole DriftBaseline set.
+            var allNodes = await _graphStore.GetAllNodesAsync(ct);
+            var wanted = baselineId.ToString();
+
+            var node = allNodes.FirstOrDefault(n =>
+                n.Type == "DriftBaseline" &&
+                n.Properties.TryGetValue("BaselineId", out var id) &&
+                string.Equals(id, wanted, StringComparison.OrdinalIgnoreCase));
+
+            return Result<DriftBaseline?>.Success(node is null ? null : DeserializeBaseline(node));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to get drift baseline by id {BaselineId}", baselineId);
+            return Result<DriftBaseline?>.Fail($"Failed to retrieve drift baseline: {ex.Message}");
+        }
+    }
+
     private static string BuildId(DriftScope scope, string scopeIdentifier)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(scopeIdentifier);

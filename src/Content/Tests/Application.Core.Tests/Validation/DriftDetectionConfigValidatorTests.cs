@@ -29,6 +29,8 @@ public class DriftDetectionConfigValidatorTests
         config.EscalateThresholdSigma.Should().Be(3.0);
         config.EscalationEnabled.Should().BeTrue();
         config.AuditPath.Should().Be("data/audit");
+        config.CallerIdentityClaimType.Should().Be("oid",
+            "audit attribution should default to the immutable object id, not a reassignable sign-in name");
     }
 
     [Fact]
@@ -197,6 +199,38 @@ public class DriftDetectionConfigValidatorTests
 
         result.IsValid.Should().BeFalse();
         result.Errors.Should().Contain(e => e.PropertyName == "EscalateThresholdSigma");
+    }
+
+    [Theory]
+    [InlineData("oid")]
+    [InlineData("sub")]
+    [InlineData("preferred_username")]
+    [InlineData("upn")]
+    public async Task Validate_AllowlistedCallerIdentityClaimType_NoError(string claimType)
+    {
+        var config = CreateValidConfig();
+        config.CallerIdentityClaimType = claimType;
+
+        var result = await _validator.ValidateAsync(config);
+
+        result.IsValid.Should().BeTrue();
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("email")]
+    [InlineData("name")]
+    [InlineData("OID")]
+    public async Task Validate_NonAllowlistedCallerIdentityClaimType_HasError(string claimType)
+    {
+        var config = CreateValidConfig();
+        config.CallerIdentityClaimType = claimType;
+
+        var result = await _validator.ValidateAsync(config);
+
+        result.IsValid.Should().BeFalse(
+            "only issuer-asserted identity claims may drive drift audit attribution");
+        result.Errors.Should().Contain(e => e.PropertyName == "CallerIdentityClaimType");
     }
 
     [Fact]

@@ -89,4 +89,22 @@ public class DriftDetectionConfig
     /// </summary>
     /// <value>Default: "data/audit"</value>
     public string AuditPath { get; set; } = "data/audit";
+
+    /// <summary>
+    /// The claim type the drift HTTP surface reads from the authenticated principal to stamp
+    /// the caller identity onto evaluation-push and baseline-recalculation audit records.
+    /// Only identity-bearing claim types are accepted: <c>oid</c>, <c>sub</c>,
+    /// <c>preferred_username</c>, or <c>upn</c> (enforced at startup by
+    /// <c>DriftDetectionConfigValidator</c>; resolution also searches each type's JWT
+    /// inbound-mapped form on the principal).
+    /// </summary>
+    /// <remarks>
+    /// This is deliberately a server-side setting, never a request parameter: evaluation pushes
+    /// move EWMA state and feed future baselines, so the identity in the audit trail must come
+    /// from the validated token — a caller can never assert an identity the token does not
+    /// carry. The default is the immutable object id (<c>oid</c>) rather than a sign-in name so
+    /// audit attribution survives UPN reassignment.
+    /// </remarks>
+    /// <value>Default: "oid"</value>
+    public string CallerIdentityClaimType { get; set; } = "oid";
 }

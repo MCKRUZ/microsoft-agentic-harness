@@ -389,7 +389,10 @@ public sealed class DefaultDriftDetectionServiceTests
         var result = await service.EvaluateDriftAsync(CreateTestRequest(), CancellationToken.None);
 
         result.IsSuccess.Should().BeFalse();
-        result.Errors.Should().Contain(e => e.Contains("All dimensions failed"));
+        result.Errors.Should().Contain(e => e.Contains("No pushed dimension could be scored"));
+        result.FailureType.Should().Be(ResultFailureType.Conflict,
+            "this arm is reachable from valid input (a dimension the baseline does not carry), " +
+            "so HTTP surfaces must map it to 409 rather than an opaque 500");
     }
 
     [Fact]
@@ -453,6 +456,73 @@ public sealed class DefaultDriftDetectionServiceTests
 
         result.IsSuccess.Should().BeFalse();
         result.Errors.Should().Contain(e => e.Contains("Insufficient samples"));
+    }
+
+    [Fact]
+    public async Task UpdateBaseline_Success_AuditPayloadCarriesTheRecomputedBaseline()
+    {
+        SetupGraphSuccess();
+        SetupAuditSuccess();
+        _baselineStoreMock
+            .Setup(b => b.SaveBaselineAsync(It.IsAny<DriftBaseline>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success());
+
+        // Two persisted evaluations are enough history with minSamples: 2.
+        var scoredAt = _timeProvider.GetUtcNow();
+        var historyNodes = Enumerable.Range(0, 2).Select(i => new GraphNode
+        {
+            Id = $"driftevent:{Guid.NewGuid()}",
+            Name = "DriftEvent",
+            Type = "DriftEvent",
+            OwnerId = "Skill:code_review",
+            Properties = new Dictionary<string, string>
+            {
+                ["ScoreId"] = Guid.NewGuid().ToString(),
+                ["BaselineId"] = Guid.NewGuid().ToString(),
+                ["Scope"] = "Skill",
+                ["ScopeIdentifier"] = "code_review",
+                ["Severity"] = "None",
+                ["OverallDrift"] = "0.1",
+                ["ScoredAt"] = scoredAt.AddMinutes(-i).ToString("o"),
+                ["DimensionsJson"] = System.Text.Json.JsonSerializer.Serialize(
+                    new Dictionary<DriftDimension, DriftDimensionScore>
+                    {
+                        [DriftDimension.Faithfulness] = new()
+                        {
+                            CurrentValue = 0.8, BaselineValue = 0.8, EwmaValue = 0.8, Deviation = 0.1
+                        }
+                    })
+            }.AsReadOnly()
+        }).ToList();
+
+        _graphStoreMock
+            .Setup(g => g.GetNodesByOwnerAsync("Skill:code_review", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(historyNodes.AsReadOnly());
+
+        DriftAuditRecord? audited = null;
+        _auditStoreMock
+            .Setup(a => a.RecordAsync(
+                It.Is<DriftAuditRecord>(r => r.RecordType == DriftAuditRecordType.BaselineUpdated),
+                It.IsAny<CancellationToken>()))
+            .Callback<DriftAuditRecord, CancellationToken>((r, _) => audited = r)
+            .ReturnsAsync(Result.Success());
+
+        var service = CreateService(minSamples: 2);
+        var result = await service.UpdateBaselineAsync(new DriftBaselineUpdateRequest
+        {
+            Scope = DriftScope.Skill,
+            ScopeIdentifier = "code_review"
+        }, CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        audited.Should().NotBeNull();
+        audited!.Payload.Should().NotBe("{}",
+            "a content-free marker left the trail unable to answer what a recalculation changed, " +
+            "and SaveBaselineAsync had already overwritten the prior snapshot");
+        audited.Payload.Should().Contain(result.Value!.BaselineId.ToString());
+        audited.Payload.Should().Contain("SampleCount");
+        audited.EventId.Should().Be(result.Value.BaselineId,
+            "an empty-guid EventId made the documented eventId audit query return nothing");
     }
 
     // ===== GetBaselineAsync =====
