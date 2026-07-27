@@ -20,6 +20,74 @@ public sealed partial class PlanExecutor
     /// and by the escalate failure-recovery branch below.
     /// </summary>
     private const string EscalationIdProperty = "escalationId";
+
+    /// <summary>
+    /// Exponent cap for exponential backoff. Prevents a pathological
+    /// <see cref="RetryPolicy.MaxRetries"/> configuration from overflowing
+    /// <see cref="TimeSpan"/> arithmetic (2^20 × InitialDelay is already far beyond any
+    /// realistic plan timeout).
+    /// </summary>
+    private const int MaxBackoffExponent = 20;
+
+    /// <summary>
+    /// Marks a step Failed after its retry budget is exhausted and fires the
+    /// <see cref="RetryPolicy.OnExhausted"/> recovery action. This — and only this — is where
+    /// exhausted failures (Failed results, per-attempt timeouts, and unhandled executor
+    /// exceptions alike) route into <see cref="HandleStepFailureAsync"/>, so all three failure
+    /// modes honour the same FailStep/SkipStep/FailPlan/Escalate policy.
+    /// </summary>
+    private async Task FailExhaustedStepAsync(PlanStep step, StepAttemptOutcome outcome, PlanExecutionRuntime ctx, CancellationToken ct)
+    {
+        await TransitionStepAsync(ctx.PlanId, step.Id, StepExecutionStatus.Failed, ctx.StepStates, ct, errorMessage: outcome.ErrorMessage);
+        await HandleStepFailureAsync(step, outcome.ErrorMessage, ctx, ct);
+
+        // Completed-notification carries the executor's own result when one exists (a Failed
+        // result); timeout/exception attempts produce no result and — as before this retry loop
+        // existed — no step-completed notification, only the state-update transitions.
+        if (outcome.Result is not null)
+            await _notifier.NotifyStepCompletedAsync(ctx.PlanId, step.Id, StepExecutionStatus.Failed, outcome.Result.Duration, outcome.Result.Output, ct);
+    }
+
+    /// <summary>
+    /// Whether the step still has automatic retry budget after <paramref name="attemptsMade"/>
+    /// attempts. <see cref="RetryPolicy.MaxRetries"/> counts retries, not attempts: a step is
+    /// allowed 1 + MaxRetries total attempts, so the default (3) runs a step at most 4 times and
+    /// MaxRetries = 0 means a single attempt with no automatic retry.
+    /// </summary>
+    private static bool ShouldRetry(RetryPolicy policy, int attemptsMade)
+        => attemptsMade <= policy.MaxRetries;
+
+    /// <summary>
+    /// Computes the backoff delay before the retry that follows failed attempt number
+    /// <paramref name="attemptsMade"/> (1-based). The first retry always waits
+    /// <see cref="RetryPolicy.InitialDelay"/>; later delays scale by
+    /// <see cref="RetryPolicy.Strategy"/>: Fixed stays constant, Linear multiplies by the attempt
+    /// number, Exponential doubles each attempt (exponent capped at
+    /// <see cref="MaxBackoffExponent"/> to avoid <see cref="TimeSpan"/> overflow).
+    /// Internal for direct unit testing of the delay ladder.
+    /// </summary>
+    internal static TimeSpan ComputeBackoffDelay(RetryPolicy policy, int attemptsMade)
+        => policy.Strategy switch
+        {
+            BackoffStrategy.Fixed => policy.InitialDelay,
+            BackoffStrategy.Linear => policy.InitialDelay * attemptsMade,
+            BackoffStrategy.Exponential => policy.InitialDelay * Math.Pow(2, Math.Min(attemptsMade - 1, MaxBackoffExponent)),
+            _ => policy.InitialDelay
+        };
+
+    /// <summary>
+    /// Waits the computed backoff delay on the injected <see cref="TimeProvider"/> (so tests can
+    /// drive it with a fake clock instead of sleeping real seconds). Honours
+    /// <paramref name="ct"/>: plan-level cancellation or plan timeout aborts the wait
+    /// immediately, and a cancelled backoff never starts another attempt.
+    /// </summary>
+    private Task DelayBeforeRetryAsync(RetryPolicy policy, int attemptsMade, CancellationToken ct)
+        => Task.Delay(ComputeBackoffDelay(policy, attemptsMade), _timeProvider, ct);
+
+    /// <summary>
+    /// Applies the step's <see cref="RetryPolicy.OnExhausted"/> recovery action. Invoked only
+    /// after the automatic retry budget is exhausted (see <see cref="FailExhaustedStepAsync"/>).
+    /// </summary>
     private async Task HandleStepFailureAsync(PlanStep step, string? errorMessage, PlanExecutionRuntime ctx, CancellationToken ct)
     {
         switch (step.RetryPolicy.OnExhausted)

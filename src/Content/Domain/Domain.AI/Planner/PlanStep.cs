@@ -24,7 +24,12 @@ public sealed record PlanStep
     /// <summary>Retry behavior when the step fails.</summary>
     public required RetryPolicy RetryPolicy { get; init; }
 
-    /// <summary>Maximum wall-clock time for this individual step.</summary>
+    /// <summary>
+    /// Maximum wall-clock time for a single execution attempt of this step. Applies PER ATTEMPT:
+    /// every retry granted by <see cref="RetryPolicy"/> receives the full timeout again, so the
+    /// step's worst-case wall clock is (MaxRetries + 1) × Timeout plus backoff delays — all still
+    /// bounded by the plan-level timeout. A timed-out attempt counts against the retry budget.
+    /// </summary>
     public TimeSpan Timeout { get; init; } = TimeSpan.FromSeconds(60);
 
     /// <summary>

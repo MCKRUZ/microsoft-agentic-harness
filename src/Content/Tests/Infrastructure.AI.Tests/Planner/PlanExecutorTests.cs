@@ -58,6 +58,7 @@ public sealed class PlanExecutorTests : IDisposable
             _notifier.Object,
             _escalation.Object,
             _serviceProvider,
+            TimeProvider.System,
             NullLogger<PlanExecutor>.Instance);
     }
 

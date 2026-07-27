@@ -193,6 +193,7 @@ public sealed class PlanExecutorResumeRecoveryTests : IDisposable
             _notifier.Object,
             _escalation.Object,
             provider,
+            TimeProvider.System,
             NullLogger<PlanExecutor>.Instance);
     }
 
