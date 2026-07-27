@@ -1,7 +1,9 @@
 using Application.AI.Common.Interfaces.Attestation;
 using Application.AI.Common.Interfaces.Escalation;
+using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Application.AI.Common.Interfaces.Planner;
 using Application.AI.Common.Interfaces.Sandbox;
+using Application.AI.Common.Services.KnowledgeGraph;
 using Domain.AI.Planner;
 using Domain.AI.Sandbox;
 using Domain.Common.Config;
@@ -34,6 +36,16 @@ public static partial class DependencyInjection
             .UseSqlite(connectionString)
             .AddInterceptors(new SqliteVersionInterceptor()));
         services.AddScoped(sp => sp.GetRequiredService<IDbContextFactory<PlannerDbContext>>().CreateDbContext());
+
+        // Ensure the schema is created before the first store operation. Idempotent.
+        // Same lifecycle as the PromptUsage and EvalDashboard persistence registrations,
+        // but through the planner-specific subclass: base EnsureCreated (no-op on existing
+        // databases) plus PRAGMA-guarded DDL that adds the OwnerId/TenantId columns to a
+        // pre-existing PlanGraphs table. EfCorePlanStateStore demands the initializer as a
+        // plain constructor dependency (visible to ValidateOnBuild), so resolving
+        // IPlanStateStore forces schema-create exactly once — closing the "no such table"
+        // hole the first SavePlanAsync would otherwise hit.
+        services.AddSingleton<SchemaInitializer<PlannerDbContext>, PlannerSchemaInitializer>();
     }
 
     /// <summary>
@@ -48,6 +60,15 @@ public static partial class DependencyInjection
         // rather than a factory with a GetService fallback — keeps PlanExecutor's dependencies
         // visible to ValidateOnBuild.
         services.TryAddSingleton(TimeProvider.System);
+
+        // TryAddScoped keeps Infrastructure.AI standalone-safe: EfCorePlanStateStore stamps
+        // and filters plan ownership from the ambient IKnowledgeScope, which composed hosts
+        // register first (KnowledgeScopeAccessor via AddKnowledgeGraphDependencies) so that
+        // registration wins resolution. Hosts without the knowledge graph layer fall back to
+        // the anonymous NullKnowledgeScope — plans save unstamped (global) and reads see only
+        // global plans, preserving today's single-user behavior while staying ValidateOnBuild-safe.
+        services.TryAddScoped<IKnowledgeScope, NullKnowledgeScope>();
+
         services.AddScoped<IPlanExecutor, PlanExecutor>();
         services.AddScoped<IPlanValidator, PlanValidator>();
         services.AddScoped<IPlanGenerator, LlmPlanGeneratorService>();

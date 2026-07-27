@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Application.AI.Common.Services.KnowledgeGraph;
 using Domain.AI.Planner;
 using FluentAssertions;
 using Infrastructure.AI.Persistence;
@@ -34,7 +35,12 @@ public sealed class EfCorePlanStateStoreTests : IDisposable
         _timeProvider = new FakeTimeProvider(new DateTimeOffset(2026, 5, 15, 12, 0, 0, TimeSpan.Zero));
 
         var factory = new TestDbContextFactory(_options);
-        _store = new EfCorePlanStateStore(factory, NullLogger<EfCorePlanStateStore>.Instance, _timeProvider);
+        _store = new EfCorePlanStateStore(
+            factory,
+            NullLogger<EfCorePlanStateStore>.Instance,
+            _timeProvider,
+            new NullKnowledgeScope(),
+            new SchemaInitializer<PlannerDbContext>(factory));
     }
 
     public void Dispose() => _connection.Dispose();
@@ -157,7 +163,11 @@ public sealed class EfCorePlanStateStoreTests : IDisposable
 
             var fileFactory = new TestDbContextFactory(fileOptions);
             var fileStore = new EfCorePlanStateStore(
-                fileFactory, NullLogger<EfCorePlanStateStore>.Instance, _timeProvider);
+                fileFactory,
+                NullLogger<EfCorePlanStateStore>.Instance,
+                _timeProvider,
+                new NullKnowledgeScope(),
+                new SchemaInitializer<PlannerDbContext>(fileFactory));
 
             var graph = CreateTestGraph(stepCount: 1, edgeCount: 0);
             await fileStore.SavePlanAsync(graph, CancellationToken.None);

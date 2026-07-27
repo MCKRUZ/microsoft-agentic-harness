@@ -15,7 +15,8 @@ public sealed partial class EfCorePlanStateStore
     {
         await using var ctx = _factory.CreateDbContext();
 
-        var entity = await ctx.PlanGraphs
+        // Scope-filtered: another owner's plan resolves to null, exactly like a missing plan.
+        var entity = await VisiblePlans(ctx)
             .AsNoTracking()
             .Include(g => g.Steps).ThenInclude(s => s.ExecutionState)
             .Include(g => g.Edges)
@@ -32,6 +33,11 @@ public sealed partial class EfCorePlanStateStore
         PlanId planId, CancellationToken ct)
     {
         await using var ctx = _factory.CreateDbContext();
+
+        // Scope-filtered: another owner's plan yields the same empty map as a missing plan.
+        if (!await IsPlanVisibleAsync(ctx, planId.Value, ct))
+            return Result<IReadOnlyDictionary<PlanStepId, StepExecutionState>>.Success(
+                new Dictionary<PlanStepId, StepExecutionState>());
 
         var entities = await ctx.StepExecutionStates
             .AsNoTracking()
@@ -55,7 +61,9 @@ public sealed partial class EfCorePlanStateStore
     {
         await using var ctx = _factory.CreateDbContext();
 
-        IQueryable<PlanGraphEntity> query = ctx.PlanGraphs
+        // Scope-filtered: the listing only ever contains the caller's own plans plus
+        // global (unstamped) ones — other owners' plans are simply absent.
+        IQueryable<PlanGraphEntity> query = VisiblePlans(ctx)
             .AsNoTracking()
             .Include(g => g.Steps).ThenInclude(s => s.ExecutionState)
             .Include(g => g.Edges);
@@ -85,6 +93,10 @@ public sealed partial class EfCorePlanStateStore
         PlanId planId, CancellationToken ct)
     {
         await using var ctx = _factory.CreateDbContext();
+
+        // Scope-filtered: another owner's plan yields the same empty history as a missing plan.
+        if (!await IsPlanVisibleAsync(ctx, planId.Value, ct))
+            return Result<IReadOnlyList<PlanExecutionLogEntry>>.Success([]);
 
         var logs = await ctx.PlanExecutionLogs
             .AsNoTracking()
@@ -137,6 +149,19 @@ public sealed partial class EfCorePlanStateStore
         PlanId planId, CancellationToken ct)
     {
         await using var ctx = _factory.CreateDbContext();
+
+        // Write path: resume mutates step states, so it demands strict ownership — resuming
+        // a plan the caller doesn't own (including globally READABLE null-owner plans)
+        // returns the same NotFound as a missing plan (404-not-403). The warning keeps a
+        // mis-wired scope diagnosable without weakening the outward NotFound.
+        if (!await IsPlanWritableAsync(ctx, planId.Value, ct))
+        {
+            _logger.LogWarning(
+                "Plan {PlanId} is missing or not writable in the current scope; resume rejected",
+                planId.Value);
+            return Result<IReadOnlyDictionary<PlanStepId, StepExecutionState>>.NotFound(
+                $"No step states found for plan {planId.Value}");
+        }
 
         var entities = await ctx.StepExecutionStates
             .Where(s => ctx.PlanSteps.Any(ps => ps.Id == s.StepId && ps.PlanGraphId == planId.Value))

@@ -108,7 +108,10 @@ public sealed class RecallQueryHandler : IRequestHandler<RecallQuery, Result<IRe
         List<WeightedLearning> results = ApplyDiversityInjection(scored, request.MaxResults, config.DiversityInjectionRatio);
         results = results.Take(request.MaxResults).ToList();
 
-        _ = RecordAccessSafeAsync(results);
+        // Access reinforcement is opt-out: the HTTP recall surface passes RecordAccess = false
+        // so a GET never performs caller-steered store writes (see RecallQuery.RecordAccess).
+        if (request.RecordAccess)
+            _ = RecordAccessSafeAsync(results);
 
         sw.Stop();
         LearningsMetrics.Recalled.Add(results.Count);

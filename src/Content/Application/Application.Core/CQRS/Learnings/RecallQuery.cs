@@ -20,4 +20,18 @@ public sealed record RecallQuery : IRequest<Result<IReadOnlyList<WeightedLearnin
 
     /// <summary>Minimum relevance score threshold (0.0-1.0). Default 0.0 (no filter).</summary>
     public double MinRelevance { get; init; } = 0.0;
+
+    /// <summary>
+    /// Whether this recall reinforces the recalled learnings' access metadata
+    /// (<c>LastAccessedAt</c>, via a fire-and-forget <see cref="RecordLearningAccessCommand"/>).
+    /// Default true — the in-process agent-turn recall path keeps its behavior unchanged.
+    /// </summary>
+    /// <remarks>
+    /// The HTTP recall surface (<see cref="RecallLearningsQuery"/>) sets this to false: an HTTP
+    /// GET must not perform caller-steered store writes — a role-holder looping the endpoint
+    /// would rewrite <c>LastAccessedAt</c> on whichever learnings its context matches, and the
+    /// read-modify-write access update can race (and clobber) a concurrent feedback-weight
+    /// improvement.
+    /// </remarks>
+    public bool RecordAccess { get; init; } = true;
 }

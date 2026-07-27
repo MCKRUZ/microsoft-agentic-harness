@@ -30,6 +30,7 @@ internal sealed class DevAuthHandler(
             new Claim(ClaimTypes.Role, "AgentHub.Traces.ReadAll"),
             new Claim(ClaimTypes.Role, "AgentHub.EvalDashboard.Read"),
             new Claim(ClaimTypes.Role, "AgentHub.Foresight.Observe"),
+            new Claim(ClaimTypes.Role, "Harness.Learnings.Read"),
             new Claim(ClaimTypes.Role, Presentation.Common.Escalations.EscalationsController.DecideRole),
             new Claim(ClaimTypes.Role, Presentation.Common.Escalations.EscalationsController.AdminRole),
         };

@@ -45,8 +45,13 @@ public sealed class PlanExecutorResumeRecoveryTests : IDisposable
         }
 
         _timeProvider = new FakeTimeProvider(new DateTimeOffset(2026, 5, 15, 12, 0, 0, TimeSpan.Zero));
+        var factory = new TestDbContextFactory(_options);
         _store = new EfCorePlanStateStore(
-            new TestDbContextFactory(_options), NullLogger<EfCorePlanStateStore>.Instance, _timeProvider);
+            factory,
+            NullLogger<EfCorePlanStateStore>.Instance,
+            _timeProvider,
+            new Application.AI.Common.Services.KnowledgeGraph.NullKnowledgeScope(),
+            new SchemaInitializer<PlannerDbContext>(factory));
 
         _validator.Setup(v => v.ValidateAsync(It.IsAny<PlanGraph>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result<PlanValidationResult>.Success(new PlanValidationResult { IsValid = true }));
