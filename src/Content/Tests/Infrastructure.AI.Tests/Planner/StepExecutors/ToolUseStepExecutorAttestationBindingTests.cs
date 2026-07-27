@@ -67,8 +67,14 @@ public sealed class ToolUseStepExecutorAttestationBindingTests
         services.AddKeyedSingleton<ISandboxExecutor>(SandboxIsolationLevel.Process, _sandboxExecutor.Object);
         services.AddKeyedSingleton<ISandboxExecutor>(SandboxIsolationLevel.Container, _sandboxExecutor.Object);
 
+        // Ungoverned default: no envelope armed and enforcement off means the governor allows.
+        var toolGovernor = new Mock<IToolInvocationGovernor>();
+        toolGovernor.Setup(g => g.AuthorizeAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns(ValueTask.FromResult(ToolInvocationDecision.Allow()));
+
         _sut = new ToolUseStepExecutor(
             _capabilityEnforcer.Object,
+            toolGovernor.Object,
             services.BuildServiceProvider(),
             _attestationService,
             _responseSanitizer.Object,

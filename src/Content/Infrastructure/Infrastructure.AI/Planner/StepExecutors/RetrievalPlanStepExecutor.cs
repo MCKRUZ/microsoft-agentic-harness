@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Planner;
 using Application.AI.Common.Interfaces.RAG;
 using Application.AI.Common.Interfaces.Routing;
@@ -17,6 +18,16 @@ namespace Infrastructure.AI.Planner.StepExecutors;
 /// <see cref="IRetrievalCostTracker"/> and serializes the assembled context as JSON output
 /// for downstream plan steps.
 /// </summary>
+/// <remarks>
+/// Retrieval is authorized as the well-known capability <see cref="PlanCapabilities.Retrieval"/>
+/// through <see cref="IToolInvocationGovernor"/> — the identical choke point
+/// <c>ToolUseStepExecutor</c> uses. Routing through the governor rather than testing the envelope's
+/// allowlist directly is what subjects retrieval to the <em>whole</em> chain: the envelope's
+/// autonomy-ceiling baseline (a granted name under a Restricted or Supervised ceiling still resolves
+/// to Ask, which the governor blocks), declarative policy, audit, the governance trace, and
+/// denial-rate accounting. With no ambient envelope and per-invocation enforcement off the governor
+/// is a pure pass-through, so direct in-process <c>IPlanExecutor</c> callers are unchanged.
+/// </remarks>
 public sealed class RetrievalPlanStepExecutor : IPlanStepExecutor
 {
     private static readonly JsonSerializerOptions SerializerOptions = new()
@@ -31,6 +42,7 @@ public sealed class RetrievalPlanStepExecutor : IPlanStepExecutor
     private readonly ITaskComplexityClassifier _complexityClassifier;
     private readonly IRetrievalCostTracker _costTracker;
     private readonly IPlanProgressNotifier _notifier;
+    private readonly IToolInvocationGovernor _toolInvocationGovernor;
     private readonly PlanExecutionContext _executionContext;
     private readonly ILogger<RetrievalPlanStepExecutor> _logger;
 
@@ -42,6 +54,7 @@ public sealed class RetrievalPlanStepExecutor : IPlanStepExecutor
     /// <param name="complexityClassifier">Task complexity classifier for multi-source routing.</param>
     /// <param name="costTracker">Tracks token usage and latency per retrieval call.</param>
     /// <param name="notifier">Plan progress notifier for real-time status updates.</param>
+    /// <param name="toolInvocationGovernor">Authorizes retrieval against the ambient capability envelope.</param>
     /// <param name="executionContext">Current plan execution context with depth tracking.</param>
     /// <param name="logger">Logger instance.</param>
     public RetrievalPlanStepExecutor(
@@ -50,6 +63,7 @@ public sealed class RetrievalPlanStepExecutor : IPlanStepExecutor
         ITaskComplexityClassifier complexityClassifier,
         IRetrievalCostTracker costTracker,
         IPlanProgressNotifier notifier,
+        IToolInvocationGovernor toolInvocationGovernor,
         PlanExecutionContext executionContext,
         ILogger<RetrievalPlanStepExecutor> logger)
     {
@@ -58,6 +72,7 @@ public sealed class RetrievalPlanStepExecutor : IPlanStepExecutor
         _complexityClassifier = complexityClassifier;
         _costTracker = costTracker;
         _notifier = notifier;
+        _toolInvocationGovernor = toolInvocationGovernor;
         _executionContext = executionContext;
         _logger = logger;
     }
@@ -75,6 +90,21 @@ public sealed class RetrievalPlanStepExecutor : IPlanStepExecutor
                 Status = StepExecutionStatus.Failed,
                 Duration = TimeSpan.Zero,
                 ErrorMessage = $"Step '{step.Name}' has invalid configuration type for Retrieval executor."
+            };
+        }
+
+        var decision = await _toolInvocationGovernor.AuthorizeAsync(PlanCapabilities.Retrieval, ct);
+        if (!decision.IsAllowed)
+        {
+            _logger.LogWarning(
+                "Retrieval step {Step} denied by invocation governor", step.Name);
+            return new StepExecutionResult
+            {
+                Status = StepExecutionStatus.Failed,
+                Duration = TimeSpan.Zero,
+                ErrorMessage = decision.DeniedMessage
+                    ?? Domain.AI.Governance.GovernanceDenials.NotPermitted(PlanCapabilities.Retrieval),
+                IsPolicyDenial = true
             };
         }
 
@@ -106,12 +136,15 @@ public sealed class RetrievalPlanStepExecutor : IPlanStepExecutor
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             sw.Stop();
+            // Full detail stays in the structured log; only a stable code is persisted onto the step,
+            // because step error state is returned to callers and retrieval-stack exceptions carry
+            // store endpoints and credentials.
             _logger.LogError(ex, "Retrieval step '{StepName}' failed", step.Name);
 
             return new StepExecutionResult
             {
                 Status = StepExecutionStatus.Failed,
-                ErrorMessage = $"Retrieval failed: {ex.Message}",
+                ErrorMessage = PlanStepErrors.RetrievalFailed,
                 Duration = sw.Elapsed
             };
         }

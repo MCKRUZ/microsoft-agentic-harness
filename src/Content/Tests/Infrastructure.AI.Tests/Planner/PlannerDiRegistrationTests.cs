@@ -65,6 +65,18 @@ public sealed class PlannerDiRegistrationTests : IDisposable
     }
 
     [Fact]
+    public void DependencyInjection_PlanRunExecutor_RegisteredAsSingleton()
+    {
+        // W2 regression guard: the single arming site for enveloped plan runs must be resolvable
+        // from the root provider (it creates its own per-run scope), mirroring IBundleRunExecutor.
+        var first = _provider.GetService<IPlanRunExecutor>();
+        var second = _provider.GetService<IPlanRunExecutor>();
+
+        first.Should().NotBeNull().And.BeOfType<PlanRunExecutor>();
+        second.Should().BeSameAs(first);
+    }
+
+    [Fact]
     public void DependencyInjection_AllSandboxServices_Resolvable()
     {
         using var scope = _provider.CreateScope();
@@ -163,6 +175,8 @@ public sealed class PlannerDiRegistrationTests : IDisposable
         // knowledge-scope accessor (now consumed by EfCorePlanStateStore for plan ownership)
         // delegates agent identity to it.
         services.AddScoped(_ => new Mock<Application.AI.Common.Interfaces.Agent.IAgentExecutionContext>().Object);
+        services.AddScoped(_ => new Mock<IToolInvocationGovernor>().Object);
+        services.AddSingleton(new Mock<Application.AI.Common.Interfaces.AI.IConversationBudgetTracker>().Object);
         services.AddSingleton<ISender>(new Mock<ISender>().Object);
         services.AddSingleton<IPlanProgressNotifier>(new Mock<IPlanProgressNotifier>().Object);
         services.AddSingleton<ICapabilityEnforcer>(new Mock<ICapabilityEnforcer>().Object);

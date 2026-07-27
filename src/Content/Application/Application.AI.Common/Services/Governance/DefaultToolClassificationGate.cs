@@ -168,10 +168,10 @@ public sealed class DefaultToolClassificationGate : IToolClassificationGate
         GovernanceMetrics.ClassificationDecisions.Add(1, tags);
     }
 
-    // Deliberately generic, matching the tool governor's denial wording: the detailed reason (label name,
-    // policy rule, asset path — even that a classification regime exists) stays in the structured log,
-    // audit, and metric tags, never relayed to the model, so model-visible content leaks no operator
-    // policy detail an adversary could probe.
+    // Deliberately generic, and shared verbatim with every other gate via GovernanceDenials: the
+    // detailed reason (label name, policy rule, asset path — even that a classification regime exists)
+    // stays in the structured log, audit, and metric tags, never relayed to the model, so model-visible
+    // content leaks no operator policy detail an adversary could probe — including which gate fired.
     private static string DeniedMessage(string toolName) =>
-        $"Error: tool '{toolName}' is not permitted in the current context.";
+        GovernanceDenials.NotPermitted(toolName);
 }

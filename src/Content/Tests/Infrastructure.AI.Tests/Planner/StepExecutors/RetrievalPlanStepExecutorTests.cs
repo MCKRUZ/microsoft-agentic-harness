@@ -1,7 +1,9 @@
 using System.Text.Json;
+using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Planner;
 using Application.AI.Common.Interfaces.RAG;
 using Application.AI.Common.Interfaces.Routing;
+using Domain.AI.Governance;
 using Domain.AI.Planner;
 using Domain.AI.RAG.Enums;
 using Domain.AI.RAG.Models;
@@ -41,6 +43,14 @@ public sealed class RetrievalPlanStepExecutorTests
         ]
     };
 
+    private readonly Mock<IToolInvocationGovernor> _governor = new();
+
+    public RetrievalPlanStepExecutorTests()
+    {
+        // Ungoverned default: no envelope armed and enforcement off, so the governor allows.
+        GovernorReturns(allowed: true);
+    }
+
     private RetrievalPlanStepExecutor CreateExecutor()
     {
         return new RetrievalPlanStepExecutor(
@@ -49,9 +59,17 @@ public sealed class RetrievalPlanStepExecutorTests
             _mockComplexityClassifier.Object,
             _mockCostTracker.Object,
             _mockNotifier.Object,
+            _governor.Object,
             _context,
             NullLogger<RetrievalPlanStepExecutor>.Instance);
     }
+
+    /// <summary>Arms the governor to allow (the ungoverned default) or deny retrieval.</summary>
+    private void GovernorReturns(bool allowed) =>
+        _governor.Setup(g => g.AuthorizeAsync(PlanCapabilities.Retrieval, It.IsAny<CancellationToken>()))
+            .Returns(ValueTask.FromResult(allowed
+                ? ToolInvocationDecision.Allow()
+                : ToolInvocationDecision.Deny(GovernanceDenials.NotPermitted(PlanCapabilities.Retrieval))));
 
     private static PlanStep CreateRetrievalStep(RetrievalStepConfiguration config) => new()
     {
@@ -61,6 +79,42 @@ public sealed class RetrievalPlanStepExecutorTests
         Configuration = config,
         RetryPolicy = new RetryPolicy()
     };
+
+    [Fact]
+    public async Task ExecuteAsync_GovernorDenies_FailsWithoutQuerying()
+    {
+        // A denial must fail the step closed before any orchestrator is touched, and must be marked
+        // as a policy denial so the scheduler routes it to a terminal failure the plan's own
+        // OnExhausted policy cannot soften.
+        GovernorReturns(allowed: false);
+        var step = CreateRetrievalStep(new RetrievalStepConfiguration { Query = "confidential lookup" });
+
+        var result = await CreateExecutor().ExecuteAsync(
+            step, new Dictionary<PlanStepId, string>(), CancellationToken.None);
+
+        Assert.Equal(StepExecutionStatus.Failed, result.Status);
+        Assert.True(result.IsPolicyDenial);
+        Assert.Contains("not permitted", result.ErrorMessage);
+        _mockRagOrchestrator.Verify(r => r.SearchAsync(
+            It.IsAny<string>(), It.IsAny<int?>(), It.IsAny<string?>(),
+            It.IsAny<Domain.AI.RAG.Enums.RetrievalStrategy?>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_AuthorizesUnderTheWellKnownRetrievalCapability()
+    {
+        // The name matters: it is what the envelope's allowlist and autonomy-ceiling baseline key on.
+        _mockRagOrchestrator
+            .Setup(r => r.SearchAsync("What is clean architecture?", null, null, null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(_expectedContext);
+        var step = CreateRetrievalStep(new RetrievalStepConfiguration { Query = "What is clean architecture?" });
+
+        var result = await CreateExecutor().ExecuteAsync(
+            step, new Dictionary<PlanStepId, string>(), CancellationToken.None);
+
+        Assert.Equal(StepExecutionStatus.Completed, result.Status);
+        _governor.Verify(g => g.AuthorizeAsync("rag_retrieval", It.IsAny<CancellationToken>()), Times.Once);
+    }
 
     [Fact]
     public async Task ExecuteAsync_BasicRetrieval_CallsOrchestrator()
@@ -172,13 +226,16 @@ public sealed class RetrievalPlanStepExecutorTests
 
         _mockRagOrchestrator
             .Setup(r => r.SearchAsync(It.IsAny<string>(), It.IsAny<int?>(), It.IsAny<string?>(), It.IsAny<RetrievalStrategy?>(), It.IsAny<CancellationToken>()))
-            .ThrowsAsync(new InvalidOperationException("Vector store unavailable"));
+            .ThrowsAsync(new InvalidOperationException("Vector store https://acct.search.windows.net?sig=SECRET unavailable"));
 
         var sut = CreateExecutor();
         var result = await sut.ExecuteAsync(step, new Dictionary<PlanStepId, string>(), CancellationToken.None);
 
         Assert.Equal(StepExecutionStatus.Failed, result.Status);
-        Assert.Contains("Vector store unavailable", result.ErrorMessage);
+        // MED-2: step error state is persisted and returned to callers, so retrieval-stack exception
+        // text — which carries store endpoints and SAS tokens — must never reach it.
+        Assert.Equal(PlanStepErrors.RetrievalFailed, result.ErrorMessage);
+        Assert.DoesNotContain("SECRET", result.ErrorMessage);
         Assert.Null(result.Output);
     }
 

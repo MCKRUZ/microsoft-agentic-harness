@@ -30,4 +30,25 @@ public sealed record StepExecutionResult
     /// Null for non-branching steps.
     /// </summary>
     public PlanStepId? ActiveEdgeTarget { get; init; }
+
+    /// <summary>
+    /// True when this failure is a governance denial — the capability envelope, permission chain, or
+    /// autonomy ceiling refused the operation — rather than a transient execution failure.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The distinction is load-bearing, not cosmetic. <see cref="RetryPolicy"/> is plan-authored
+    /// data, so a plan can declare <see cref="ErrorRecovery.SkipStep"/> on the very step a policy
+    /// blocks; applying that recovery would let the plan author choose the disposition of the check
+    /// that constrains the plan author, and the run would report Completed with the denial silently
+    /// dropped. An <see cref="ErrorRecovery.Escalate"/> policy is worse: it loops approve → re-run →
+    /// deny → escalate again, asking a human to approve something the envelope will never permit.
+    /// </para>
+    /// <para>
+    /// The executor therefore routes a result carrying this flag to a terminal failure that neither
+    /// the retry budget nor <see cref="RetryPolicy.OnExhausted"/> can soften — the same reasoning
+    /// that keeps a rejected escalation out of the retry policy.
+    /// </para>
+    /// </remarks>
+    public bool IsPolicyDenial { get; init; }
 }

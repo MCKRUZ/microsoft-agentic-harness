@@ -70,6 +70,13 @@ public static partial class DependencyInjection
         services.TryAddScoped<IKnowledgeScope, NullKnowledgeScope>();
 
         services.AddScoped<IPlanExecutor, PlanExecutor>();
+
+        // Singleton like IBundleRunExecutor: the executor owns no per-run state itself — it creates a
+        // fresh DI scope per run and arms the caller's capability envelope + governance identity
+        // around IPlanExecutor inside that scope. Registration is unconditional and passive; nothing
+        // resolves it until a host surface (W4) calls it.
+        services.AddSingleton<IPlanRunExecutor, PlanRunExecutor>();
+
         services.AddScoped<IPlanValidator, PlanValidator>();
         services.AddScoped<IPlanGenerator, LlmPlanGeneratorService>();
         services.AddScoped<IPlanStateStore, EfCorePlanStateStore>();

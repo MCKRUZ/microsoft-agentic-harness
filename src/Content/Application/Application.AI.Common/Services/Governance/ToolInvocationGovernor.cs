@@ -132,8 +132,7 @@ public sealed class ToolInvocationGovernor : IToolInvocationGovernor
                 Record(new ToolDecisionRecord(toolName, ToolDecisionOutcome.Denied,
                     "no agent identity in a bundle run", profile.Radius,
                     RequiredApproval: false, ApprovalGranted: false, Enforced: true));
-                return ToolInvocationDecision.Deny(
-                    $"Error: tool '{toolName}' is not permitted in the current context.");
+                return ToolInvocationDecision.Deny(GovernanceDenials.NotPermitted(toolName));
             }
 
             _logger.LogWarning(
@@ -250,7 +249,7 @@ public sealed class ToolInvocationGovernor : IToolInvocationGovernor
         // Model-facing message is deliberately generic: the detailed reason (rule ids, paths,
         // capability internals) stays in the structured log and the GovernanceTrace, never relayed
         // to the LLM — avoids leaking operator-authored policy detail into model-visible content.
-        return ToolInvocationDecision.Deny($"Error: tool '{toolName}' is not permitted in the current context.");
+        return ToolInvocationDecision.Deny(GovernanceDenials.NotPermitted(toolName));
     }
 
     /// <summary>

@@ -16,9 +16,18 @@ namespace Infrastructure.AI.Planner.StepExecutors;
 /// Executes tool steps by routing through the appropriate sandbox, verifying attestation,
 /// and enforcing capability-based permissions with never-downgrade isolation.
 /// </summary>
+/// <remarks>
+/// Before any sandbox resource is resolved, the tool call is authorized through
+/// <see cref="IToolInvocationGovernor"/> — the same choke point the live agent tool path uses. With no
+/// ambient capability envelope and per-invocation enforcement off, that authorization is a pure
+/// pass-through, so direct in-process <c>IPlanExecutor</c> callers behave exactly as before. Under an
+/// enveloped run (armed by <c>PlanRunExecutor</c>) the governor enforces the per-caller grant fail-closed:
+/// out-of-envelope tools, autonomy-ceiling violations, and identity-less calls all deny before execution.
+/// </remarks>
 public sealed class ToolUseStepExecutor : IPlanStepExecutor
 {
     private readonly ICapabilityEnforcer _capabilityEnforcer;
+    private readonly IToolInvocationGovernor _toolInvocationGovernor;
     private readonly IServiceProvider _serviceProvider;
     private readonly IAttestationService _attestationService;
     private readonly ICompositeResponseSanitizer _responseSanitizer;
@@ -28,6 +37,7 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
 
     public ToolUseStepExecutor(
         ICapabilityEnforcer capabilityEnforcer,
+        IToolInvocationGovernor toolInvocationGovernor,
         IServiceProvider serviceProvider,
         IAttestationService attestationService,
         ICompositeResponseSanitizer responseSanitizer,
@@ -36,6 +46,7 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
         ILogger<ToolUseStepExecutor> logger)
     {
         _capabilityEnforcer = capabilityEnforcer;
+        _toolInvocationGovernor = toolInvocationGovernor;
         _serviceProvider = serviceProvider;
         _attestationService = attestationService;
         _responseSanitizer = responseSanitizer;
@@ -61,6 +72,10 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
             };
         }
 
+        var denial = await AuthorizeToolAsync(config.ToolName, step.Name, sw, ct);
+        if (denial is not null)
+            return denial;
+
         var profile = await _capabilityEnforcer.ResolveProfileAsync(config.ToolName, ct);
         var isolationLevel = DetermineIsolation(config, profile, step);
 
@@ -83,11 +98,14 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             sw.Stop();
+            // Full detail stays in the structured log; only a stable code is persisted onto the step,
+            // because step error state is returned to callers and sandbox exceptions carry host paths,
+            // container ids, and mount configuration.
             _logger.LogError(ex, "Sandbox execution threw for tool {Tool} in step {Step}", config.ToolName, step.Name);
             return new StepExecutionResult
             {
                 Status = StepExecutionStatus.Failed,
-                ErrorMessage = $"Sandbox execution exception: {ex.Message}",
+                ErrorMessage = PlanStepErrors.SandboxFailed,
                 Duration = sw.Elapsed
             };
         }
@@ -148,6 +166,31 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
             ErrorMessage = sandboxResult.ErrorMessage ?? "Tool execution failed.",
             Duration = sw.Elapsed,
             Attestation = sandboxResult.Attestation
+        };
+    }
+
+    /// <summary>
+    /// Authorizes the tool call through the invocation governor and, when denied, produces the failed
+    /// step result. Returns null when the call is allowed. The governor's denial message is already
+    /// scrubbed for model/caller consumption (rule ids and policy internals stay in the governance
+    /// trace and structured log), so it is safe to surface as the step error.
+    /// </summary>
+    private async Task<StepExecutionResult?> AuthorizeToolAsync(
+        string toolName, string stepName, Stopwatch sw, CancellationToken ct)
+    {
+        var decision = await _toolInvocationGovernor.AuthorizeAsync(toolName, ct);
+        if (decision.IsAllowed)
+            return null;
+
+        sw.Stop();
+        _logger.LogWarning(
+            "Tool {Tool} denied by invocation governor in step {Step}", toolName, stepName);
+        return new StepExecutionResult
+        {
+            Status = StepExecutionStatus.Failed,
+            ErrorMessage = decision.DeniedMessage ?? GovernanceDenials.NotPermitted(toolName),
+            Duration = sw.Elapsed,
+            IsPolicyDenial = true
         };
     }
 
