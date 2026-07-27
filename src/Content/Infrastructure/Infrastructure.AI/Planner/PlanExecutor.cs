@@ -39,14 +39,26 @@ public sealed partial class PlanExecutor : IPlanExecutor
     private readonly IPlanProgressNotifier _notifier;
     private readonly IEscalationService _escalationService;
     private readonly IServiceProvider _serviceProvider;
+    private readonly TimeProvider _timeProvider;
     private readonly ILogger<PlanExecutor> _logger;
 
+    /// <summary>
+    /// Initializes a new instance of the <see cref="PlanExecutor"/> class.
+    /// </summary>
+    /// <param name="validator">Validates plan structure before execution.</param>
+    /// <param name="stateStore">Persists plan and step execution state for checkpoint/resume.</param>
+    /// <param name="notifier">Receives plan and step lifecycle notifications.</param>
+    /// <param name="escalationService">Resolves human-gate and escalate-on-failure outcomes.</param>
+    /// <param name="serviceProvider">Resolves keyed step executors by <see cref="StepType"/>.</param>
+    /// <param name="timeProvider">Clock used for retry backoff delays; injectable for tests.</param>
+    /// <param name="logger">Structured logger for execution auditing.</param>
     public PlanExecutor(
         IPlanValidator validator,
         IPlanStateStore stateStore,
         IPlanProgressNotifier notifier,
         IEscalationService escalationService,
         IServiceProvider serviceProvider,
+        TimeProvider timeProvider,
         ILogger<PlanExecutor> logger)
     {
         _validator = validator;
@@ -54,6 +66,7 @@ public sealed partial class PlanExecutor : IPlanExecutor
         _notifier = notifier;
         _escalationService = escalationService;
         _serviceProvider = serviceProvider;
+        _timeProvider = timeProvider;
         _logger = logger;
     }
 
@@ -148,6 +161,25 @@ public sealed partial class PlanExecutor : IPlanExecutor
         }
     }
 
+    /// <summary>
+    /// Operator-initiated retry of a failed step: resets it to <see cref="StepExecutionStatus.Pending"/>
+    /// so the next <see cref="ExecuteAsync(PlanId, CancellationToken)"/> re-runs it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Deliberately unbounded.</b> This method does NOT consult
+    /// <see cref="RetryPolicy.MaxRetries"/> — that budget governs only the executor's automatic
+    /// in-run retries. A human operator explicitly re-arming a failed step is an intentional
+    /// override, so the number of manual retries is not capped.
+    /// </para>
+    /// <para>
+    /// The step's <see cref="StepExecutionState.AttemptCount"/> is preserved across the reset, so
+    /// the automatic retry budget stays spent: the re-run executes once and, if it fails again,
+    /// goes straight back through <see cref="RetryPolicy.OnExhausted"/> rather than restarting
+    /// the backoff ladder. Each execution remains subject to at-least-once semantics — see
+    /// <see cref="IPlanStepExecutor.ExecuteAsync"/>.
+    /// </para>
+    /// </remarks>
     public async Task<Result> RetryStepAsync(PlanId planId, PlanStepId stepId, CancellationToken ct)
     {
         _logger.LogInformation("Retry requested for step {StepId} in plan {PlanId}", stepId, planId);

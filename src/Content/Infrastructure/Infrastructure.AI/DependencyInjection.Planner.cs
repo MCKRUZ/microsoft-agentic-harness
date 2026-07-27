@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces.Attestation;
+using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.Interfaces.Planner;
 using Application.AI.Common.Interfaces.Sandbox;
 using Domain.AI.Planner;
@@ -11,6 +12,8 @@ using Infrastructure.AI.Planner.StepExecutors;
 using Infrastructure.AI.Sandbox;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
 
 namespace Infrastructure.AI;
 
@@ -39,6 +42,12 @@ public static partial class DependencyInjection
     /// </summary>
     private static void RegisterPlannerServices(IServiceCollection services)
     {
+        // TryAddSingleton keeps Infrastructure.AI standalone-safe (the composed hosts already
+        // register TimeProvider.System via Application.Common) while letting tests or hosts that
+        // registered their own clock first win resolution. A plain constructor registration —
+        // rather than a factory with a GetService fallback — keeps PlanExecutor's dependencies
+        // visible to ValidateOnBuild.
+        services.TryAddSingleton(TimeProvider.System);
         services.AddScoped<IPlanExecutor, PlanExecutor>();
         services.AddScoped<IPlanValidator, PlanValidator>();
         services.AddScoped<IPlanGenerator, LlmPlanGeneratorService>();
