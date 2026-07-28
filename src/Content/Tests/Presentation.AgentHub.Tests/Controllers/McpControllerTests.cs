@@ -31,22 +31,6 @@ public sealed class McpControllerTests : IClassFixture<TestWebApplicationFactory
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 
-    /// <summary>Creates an authenticated HTTP client using <see cref="TestAuthHandler"/>.</summary>
-    private HttpClient CreateAuthedClient(
-        string userId = "mcp-test-user",
-        WebApplicationFactory<Program>? factory = null)
-    {
-        var f = factory ?? _factory;
-        var client = f
-            .WithWebHostBuilder(b => b.ConfigureTestServices(services =>
-                services.AddAuthentication(TestAuthHandler.SchemeName)
-                    .AddScheme<AuthenticationSchemeOptions, TestAuthHandler>(
-                        TestAuthHandler.SchemeName, _ => { })))
-            .CreateClient();
-        client.DefaultRequestHeaders.Add(TestAuthHandler.UserIdHeader, userId);
-        return client;
-    }
-
     /// <summary>
     /// Creates a factory variant that registers a fake <see cref="IMcpToolProvider"/>
     /// and a log-capturing provider, then returns both along with a configured client.
@@ -135,7 +119,7 @@ public sealed class McpControllerTests : IClassFixture<TestWebApplicationFactory
     [Fact]
     public async Task GetPrompts_ReturnsEmptyArrayWhenNoProviderRegistered()
     {
-        using var client = CreateAuthedClient();
+        using var client = _factory.CreateAuthedClient("mcp-test-user");
         using var response = await client.GetAsync("/api/mcp/prompts");
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
@@ -218,7 +202,7 @@ public sealed class McpControllerTests : IClassFixture<TestWebApplicationFactory
     [Fact]
     public async Task InvokeTool_OversizedBody_Returns413()
     {
-        using var client = CreateAuthedClient();
+        using var client = _factory.CreateAuthedClient("mcp-test-user");
 
         // 33 KB of JSON — safely over the 32 KB limit.
         var oversized = new string('x', 33 * 1024);
