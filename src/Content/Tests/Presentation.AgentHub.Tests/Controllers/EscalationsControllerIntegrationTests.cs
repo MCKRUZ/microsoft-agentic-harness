@@ -28,20 +28,6 @@ public sealed class EscalationsControllerIntegrationTests : IClassFixture<TestWe
 
     public EscalationsControllerIntegrationTests(TestWebApplicationFactory factory) => _factory = factory;
 
-    private HttpClient CreateAuthedClient(string userId = "alice@contoso.com", string? roles = null)
-    {
-        var client = _factory
-            .WithWebHostBuilder(b => b.ConfigureTestServices(services =>
-                services.AddAuthentication(TestAuthHandler.SchemeName)
-                    .AddScheme<AuthenticationSchemeOptions, TestAuthHandler>(
-                        TestAuthHandler.SchemeName, _ => { })))
-            .CreateClient();
-        client.DefaultRequestHeaders.Add(TestAuthHandler.UserIdHeader, userId);
-        if (roles is not null)
-            client.DefaultRequestHeaders.Add(TestAuthHandler.RolesHeader, roles);
-        return client;
-    }
-
     [Fact]
     public async Task GetPending_Unauthenticated_Returns401()
     {
@@ -56,7 +42,7 @@ public sealed class EscalationsControllerIntegrationTests : IClassFixture<TestWe
     [Fact]
     public async Task GetPending_AuthenticatedWithoutDecideRole_Returns403()
     {
-        using var client = CreateAuthedClient();
+        using var client = _factory.CreateAuthedClient();
 
         var response = await client.GetAsync("/api/escalations");
 
@@ -74,7 +60,7 @@ public sealed class EscalationsControllerIntegrationTests : IClassFixture<TestWe
                 (q, _) => captured = (GetPendingEscalationsForApproverQuery)q)
             .ReturnsAsync(Result<IReadOnlyList<EscalationSummary>>.Success([]));
 
-        using var client = CreateAuthedClient("bob@contoso.com", EscalationsController.DecideRole);
+        using var client = _factory.CreateAuthedClient("bob@contoso.com", EscalationsController.DecideRole);
 
         var response = await client.GetAsync("/api/escalations");
 
@@ -95,7 +81,7 @@ public sealed class EscalationsControllerIntegrationTests : IClassFixture<TestWe
             .ReturnsAsync(Result<SubmitEscalationDecisionResult>.Success(
                 new SubmitEscalationDecisionResult { Status = EscalationDecisionStatus.DecisionRecorded }));
 
-        using var client = CreateAuthedClient("alice@contoso.com", EscalationsController.DecideRole);
+        using var client = _factory.CreateAuthedClient("alice@contoso.com", EscalationsController.DecideRole);
 
         // The spoofed approverName member has no binding target on the DTO and must be ignored.
         var response = await client.PostAsJsonAsync(
@@ -114,7 +100,7 @@ public sealed class EscalationsControllerIntegrationTests : IClassFixture<TestWe
     [Fact]
     public async Task Cancel_WithDecideRoleOnly_Returns403()
     {
-        using var client = CreateAuthedClient("alice@contoso.com", EscalationsController.DecideRole);
+        using var client = _factory.CreateAuthedClient("alice@contoso.com", EscalationsController.DecideRole);
 
         var response = await client.PostAsJsonAsync(
             $"/api/escalations/{Guid.NewGuid()}/cancel", new { reason = "stale" });
@@ -137,7 +123,7 @@ public sealed class EscalationsControllerIntegrationTests : IClassFixture<TestWe
                 Decisions = []
             }));
 
-        using var client = CreateAuthedClient("ops@contoso.com", EscalationsController.AdminRole);
+        using var client = _factory.CreateAuthedClient("ops@contoso.com", EscalationsController.AdminRole);
 
         var response = await client.PostAsJsonAsync(
             $"/api/escalations/{Guid.NewGuid()}/cancel", new { reason = "superseded" });

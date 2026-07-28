@@ -27,6 +27,7 @@ using Presentation.AgentHub.Telemetry;
 using Domain.Common.Config;
 using Presentation.Common.Drift;
 using Presentation.Common.Escalations;
+using Presentation.Common.Governance;
 using Microsoft.Extensions.Options;
 
 namespace Presentation.AgentHub;
@@ -62,6 +63,10 @@ public static class DependencyInjection
             // Deliberate opt-in: AgentHub runs the agent workload, so the in-process escalation
             // state lives here and the human approval API must be co-resident with it.
             .AddEscalationApi()
+            // Deliberate opt-in: the autonomy governance read API answers from this host's own
+            // configuration and profile registry, so it belongs in the workload host whose
+            // governance posture it describes.
+            .AddAutonomyApi()
             // Deliberate opt-in: AgentHub runs the drift subsystem (stores, EWMA state,
             // escalation bridge), so pushed evaluations must land in this process.
             .AddDriftApi();
