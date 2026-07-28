@@ -79,9 +79,10 @@ usage() {
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --all)          SELECTED=(build test owasp docs-links grader correctness security) ;;
+    --all)          SELECTED=(build test owasp docs-links grader correctness security docs-drift) ;;
     --fast)         SELECTED=(build test owasp docs-links) ;;
-    --ai-only)      SELECTED=(grader correctness security) ;;
+    --ai-only)      SELECTED=(grader correctness security docs-drift) ;;
+    --docs-drift)   SELECTED+=(docs-drift) ;;
     --build)        SELECTED+=(build) ;;
     --test)         SELECTED+=(test) ;;
     --owasp)        SELECTED+=(owasp) ;;
@@ -99,7 +100,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-[ ${#SELECTED[@]} -eq 0 ] && SELECTED=(build test owasp docs-links grader correctness security)
+[ ${#SELECTED[@]} -eq 0 ] && SELECTED=(build test owasp docs-links grader correctness security docs-drift)
 
 # ---------------------------------------------------------------------------
 # Preconditions
@@ -111,7 +112,7 @@ fi
 
 NEEDS_CLAUDE=false
 for g in "${SELECTED[@]}"; do
-  case "$g" in grader|correctness|security) NEEDS_CLAUDE=true ;; esac
+  case "$g" in grader|correctness|security|docs-drift) NEEDS_CLAUDE=true ;; esac
 done
 if $NEEDS_CLAUDE && ! command -v claude >/dev/null 2>&1; then
   echo "run-gates: the 'claude' CLI is not on PATH — the AI gates cannot run." >&2
@@ -161,6 +162,7 @@ applies() {
     security)    $SECURITY_GATED ;;
     grader)      $SRC_CHANGED ;;
     docs-links)  $DOCS_CHANGED ;;
+    docs-drift)  $SRC_CHANGED || $DOCS_CHANGED ;;
     *)           true ;;
   esac
 }
@@ -171,6 +173,7 @@ reason_for() {
     security)    $SECURITY_GATED && echo "gated paths changed" || echo "no gated paths changed (auth/identity/security/migrations/.github/infra)" ;;
     grader)      $SRC_CHANGED && echo "source under src/ changed" || echo "no source under src/ changed" ;;
     docs-links)  $DOCS_CHANGED && echo "documentation/ changed" || echo "documentation/ unchanged" ;;
+    docs-drift)  ($SRC_CHANGED || $DOCS_CHANGED) && echo "code or docs changed — docs may be stale" || echo "nothing that could stale the docs changed" ;;
     *)           echo "always runs" ;;
   esac
 }
@@ -327,6 +330,28 @@ for gate in "${SELECTED[@]}"; do
     correctness)
       run_ai_gate "correctness" "CORRECTNESS_VERDICT" "opus" ".github/correctness-review-rubric.md" \
         "The changed-line anchor set is at ${ANCHORS_FILE_NATIVE} — review ONLY those lines and the code they directly touch, and anchor every finding to a line from that file."
+      ;;
+    docs-drift)
+      # Advisory, exactly like the workflow (which is continue-on-error and never
+      # blocks a merge). The CI version opens a doc-sync PR; locally there is
+      # nothing to open a PR against, so it reports the drift and you fix it in
+      # place — which is the better outcome anyway, since the docs then ship in
+      # the same PR as the change that staled them.
+      banner "docs-drift (model: sonnet — advisory, billed to your Claude subscription)"
+      claude -p "You are the documentation-drift checker for a local pre-push check.
+Read the rubric at .github/docs-drift-rubric.md and follow it EXACTLY.
+The change to assess is \`git diff ${BASE_REF}...HEAD\`.
+Decide whether any documentation in documentation/** (the GitHub Pages sites) is
+now stale or missing coverage because of this change, per the rubric's doc map.
+Do NOT create a branch, do NOT commit, and do NOT open a pull request — this is a
+local pre-push check with nothing to push to. Instead print, per file, exactly
+what drifted and the minimal edit that would fix it, so the author can make the
+change in this same branch. If you find no drift, say 'no drift' and stop." \
+        --model sonnet \
+        --allowedTools "Bash,Read,Grep,Glob" \
+        2>/dev/null
+      echo "run-gates: docs-drift is advisory — it never fails the run. Act on anything above."
+      PASSED+=("docs-drift (advisory)")
       ;;
     security)
       run_ai_gate "security" "SECURITY_VERDICT" "opus" ".github/security-review-rubric.md" \
