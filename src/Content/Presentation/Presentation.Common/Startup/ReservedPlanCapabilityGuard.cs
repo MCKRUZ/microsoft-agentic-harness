@@ -20,6 +20,17 @@ namespace Presentation.Common.Startup;
 /// so it is refused at composition rather than detected in review.
 /// </para>
 /// <para>
+/// <strong>Scope — keyed <see cref="ITool"/> descriptors present in the container, and nothing
+/// else.</strong> This guard sees only registrations that exist when it runs, which means only
+/// first-party wiring. Tools discovered at runtime from an external MCP server or a plugin manifest
+/// never appear as DI descriptors at all, so a collision arriving from a third party is invisible
+/// here no matter when the guard is called. Those are excluded separately, at the point
+/// <c>ToolChainBuilder</c> assembles a chain — see the remarks on
+/// <see cref="PlanCapabilities"/>. The two checks are complementary, not redundant: this one fails
+/// the boot because a first-party collision is our bug; the runtime one logs and drops because a
+/// third party must not be able to fail every agent turn in the host.
+/// </para>
+/// <para>
 /// <strong>Why here and not only in a test.</strong> This is a template that consumers clone; a
 /// consumer's host registers its own tools and may not carry the harness's test projects forward.
 /// The check therefore ships as production wiring, on the same boot-time fail-fast footing as

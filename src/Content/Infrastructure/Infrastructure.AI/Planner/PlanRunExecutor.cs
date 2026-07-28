@@ -28,8 +28,10 @@ namespace Infrastructure.AI.Planner;
 /// <para>
 /// <strong>Fail-closed posture.</strong> This path cannot run un-enveloped: a missing envelope or blank
 /// agent identity is rejected with a stable error code before any plan state is touched. Unexpected
-/// executor exceptions are logged in full but surfaced only as <c>plan_run.execution_failed</c> — raw
-/// exception text never reaches the caller.
+/// exceptions are logged in full but surfaced only as <c>plan_run.execution_failed</c> — raw exception
+/// text never reaches the caller. That guard spans identity initialization and executor resolution as
+/// well as the run itself, so <see cref="IPlanRunExecutor"/>'s unqualified "never raw exception text"
+/// holds literally rather than by happening to have no throwing setup.
 /// </para>
 /// </remarks>
 public sealed class PlanRunExecutor : IPlanRunExecutor
@@ -97,38 +99,44 @@ public sealed class PlanRunExecutor : IPlanRunExecutor
 
         await using var scope = _scopeFactory.CreateAsyncScope();
 
-        // Identity first, envelope second — the governor fails closed on identity-less enveloped
-        // tool calls, so the scoped execution context must carry the caller's identity before any
-        // step can observe the envelope.
         var runScope = request.ConversationId ?? request.PlanId.Value.ToString();
-        var executionContext = scope.ServiceProvider.GetRequiredService<IAgentExecutionContext>();
-        executionContext.Initialize(request.AgentId, runScope, turnNumber: 1);
 
-        var planExecutor = scope.ServiceProvider.GetRequiredService<IPlanExecutor>();
-
-        using (CapabilityEnvelopeAccessor.Begin(request.Envelope))
+        // Scope resolution and context initialization sit INSIDE the try alongside execution. Neither
+        // is expected to throw — the scope is fresh and IPlanExecutor is ValidateOnBuild-checked — but
+        // IPlanRunExecutor promises the caller a stable error code and "never raw exception text"
+        // without qualification. A guarantee that silently depends on unstated preconditions is worth
+        // less than one the code enforces literally, so the try covers every statement that could
+        // break it.
+        try
         {
-            try
-            {
+            // Identity first, envelope second — the governor fails closed on identity-less enveloped
+            // tool calls, so the scoped execution context must carry the caller's identity before any
+            // step can observe the envelope.
+            var executionContext = scope.ServiceProvider.GetRequiredService<IAgentExecutionContext>();
+            executionContext.Initialize(request.AgentId, runScope, turnNumber: 1);
+
+            var planExecutor = scope.ServiceProvider.GetRequiredService<IPlanExecutor>();
+
+            using (CapabilityEnvelopeAccessor.Begin(request.Envelope))
                 return await planExecutor.ExecuteAsync(request.PlanId, cancellationToken).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-                throw;
-            }
-            catch (Exception ex)
-            {
-                // Full detail stays in the structured log; the caller sees only a stable code so
-                // infrastructure exception text (paths, connection strings) can never leak out.
-                _logger.LogError(ex, "Plan run {PlanId} threw during enveloped execution", request.PlanId);
-                return Result<PlanExecutionSummary>.Fail("plan_run.execution_failed");
-            }
-            finally
-            {
-                // This run owns its budget entry — no conversation handler releases it, which is the
-                // whole reason it exists as a separate key. Freed on every exit path.
-                _conversationBudget.Release(PlanRunKeys.RunBudgetKey(runScope));
-            }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            // Full detail stays in the structured log; the caller sees only a stable code so
+            // infrastructure exception text (paths, connection strings) can never leak out.
+            _logger.LogError(ex, "Plan run {PlanId} threw during enveloped setup or execution", request.PlanId);
+            return Result<PlanExecutionSummary>.Fail("plan_run.execution_failed");
+        }
+        finally
+        {
+            // This run owns its budget entry — no conversation handler releases it, which is the
+            // whole reason it exists as a separate key. Freed on every exit path; releasing a key that
+            // a failed setup never created is a no-op remove.
+            _conversationBudget.Release(PlanRunKeys.RunBudgetKey(runScope));
         }
     }
 }

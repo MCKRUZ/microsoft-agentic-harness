@@ -1,8 +1,11 @@
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Plugins;
 using Application.AI.Common.Interfaces.Tools;
+using Application.AI.Common.OpenTelemetry.Metrics;
 using Application.AI.Common.Services.Governance;
+using Domain.AI.Planner;
 using Domain.AI.Skills;
+using Domain.AI.Telemetry.Conventions;
 using Domain.Common.Config.AI.Plugins;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
@@ -18,6 +21,12 @@ namespace Application.AI.Common.Services.Tools;
 /// </summary>
 public class ToolChainBuilder : IToolChainBuilder
 {
+    /// <summary>
+    /// Telemetry policy tag identifying a drop made by the reserved plan-capability filter, so a
+    /// governance dashboard can separate this fail-open closure from ordinary policy violations.
+    /// </summary>
+    private const string ReservedPlanCapabilityPolicy = "reserved_plan_capability";
+
     private readonly ILogger<ToolChainBuilder> _logger;
     private readonly IServiceProvider _serviceProvider;
     private readonly IToolConverter? _toolConverter;
@@ -68,7 +77,7 @@ public class ToolChainBuilder : IToolChainBuilder
                 skill.Id, skill.PluginSource, tools.Count);
 
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            return WrapGoverned(tools.Where(t => seen.Add(t.Name)));
+            return FinalizeChain(tools.Where(t => seen.Add(t.Name)), DescribeSource(skill, "injected MCP tool resolution"));
         }
 
         if (skill.Tools?.Count > 0)
@@ -101,7 +110,7 @@ public class ToolChainBuilder : IToolChainBuilder
         tools = ApplyPluginBoundaryIfPluginSkill(skill, tools);
 
         var seen2 = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        return WrapGoverned(tools.Where(t => seen2.Add(t.Name)));
+        return FinalizeChain(tools.Where(t => seen2.Add(t.Name)), DescribeSource(skill, "managed tool resolution"));
     }
 
     /// <summary>
@@ -122,6 +131,81 @@ public class ToolChainBuilder : IToolChainBuilder
             ? tools
             : ApplyPluginToolBoundary(tools, loadedPlugin.Declaration);
     }
+
+    /// <summary>
+    /// The single exit every resolution path returns through: drops tools whose names collide with a
+    /// reserved <see cref="PlanCapabilities"/> name, then governance-wraps what survives. Every public
+    /// build method funnels here, so a tool that reaches an agent's callable surface has passed both
+    /// checks exactly once.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>Why the reserved filter lives here and not at boot.</strong>
+    /// <c>ReservedPlanCapabilityGuard</c> catches first-party keyed <c>ITool</c> registrations by
+    /// scanning DI descriptors at composition, but MCP-client and plugin-manifest tools are discovered
+    /// at <em>runtime</em> from third-party sources — no boot-time scan can see them. Their names land
+    /// in the same flat, case-insensitively matched string space that <c>CapabilityEnvelope.AllowedTools</c>
+    /// authorizes plan capabilities out of, so an external server publishing a tool called
+    /// <c>rag_retrieval</c> would be handed to the model by any plan envelope that grants retrieval —
+    /// and an envelope granting such a tool would grant plan inference. Excluding the name here, before
+    /// it is ever wrapped or published, closes that in both directions.
+    /// </para>
+    /// <para>
+    /// <strong>Drop, never throw.</strong> A third party editing its tool list must not be able to take
+    /// down every agent turn in the host, so the collision degrades to one loud <c>Error</c> log plus a
+    /// governance-violation counter and the run continues without that tool. The boot guard stays the
+    /// louder, fail-fast check for code we control; this is the safe-degradation check for code we do not.
+    /// </para>
+    /// </remarks>
+    /// <param name="tools">The deduplicated tools resolved by one build path.</param>
+    /// <param name="source">Human-readable description of where the tools were resolved from, for the drop log.</param>
+    private List<AITool> FinalizeChain(IEnumerable<AITool> tools, string source)
+    {
+        var permitted = new List<AITool>();
+        foreach (var tool in tools)
+        {
+            if (PlanCapabilities.IsReserved(tool.Name))
+                ReportReservedPlanCapabilityCollision(tool.Name, source);
+            else
+                permitted.Add(tool);
+        }
+
+        return WrapGoverned(permitted);
+    }
+
+    /// <summary>
+    /// Records a runtime-sourced tool that was dropped for colliding with a reserved plan-capability
+    /// name — loudly, because it means a third-party source is publishing a name the plan engine owns
+    /// and that source needs re-keying.
+    /// </summary>
+    private void ReportReservedPlanCapabilityCollision(string toolName, string source)
+    {
+        var reserved = PlanCapabilities.ReservedNames
+            .First(name => string.Equals(name, toolName, StringComparison.OrdinalIgnoreCase));
+
+        _logger.LogError(
+            "Reserved plan-capability collision: tool '{ToolName}' from {ToolSource} matches reserved " +
+            "plan capability '{ReservedName}' and was excluded from the callable tool chain. Plan " +
+            "capabilities are authorized out of the same CapabilityEnvelope.AllowedTools string space as " +
+            "tool names, so granting that capability would otherwise also grant this tool. Re-key the tool " +
+            "at its source.",
+            toolName, source, reserved);
+
+        // Tagged with the normalised reserved name rather than the verbatim tool name: a case variant is
+        // attacker-influenced text and would put unbounded cardinality on the metric.
+        GovernanceMetrics.Violations.Add(1,
+            new KeyValuePair<string, object?>(GovernanceConventions.PolicyName, ReservedPlanCapabilityPolicy),
+            new KeyValuePair<string, object?>(GovernanceConventions.ToolName, reserved));
+    }
+
+    /// <summary>
+    /// Describes the resolution path a tool arrived on, naming the owning plugin when the skill is
+    /// plugin-sourced so a dropped collision points at the source that needs re-keying.
+    /// </summary>
+    private static string DescribeSource(SkillDefinition skill, string mode) =>
+        string.IsNullOrEmpty(skill.PluginSource)
+            ? $"{mode} for skill '{skill.Id}'"
+            : $"{mode} for skill '{skill.Id}' (plugin '{skill.PluginSource}')";
 
     /// <summary>
     /// Wraps each callable tool function in a <see cref="GovernedAIFunction"/> so a per-invocation
@@ -148,7 +232,7 @@ public class ToolChainBuilder : IToolChainBuilder
         }
 
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        return WrapGoverned(tools.Where(t => seen.Add(t.Name)));
+        return FinalizeChain(tools.Where(t => seen.Add(t.Name)), "keyed-DI resolution by name");
     }
 
     /// <inheritdoc />

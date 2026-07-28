@@ -32,13 +32,27 @@ namespace Domain.AI.Planner;
 /// </para>
 /// <para>
 /// <strong>These names share a namespace with real tool keys — treat them as reserved.</strong> They
-/// are matched out of the same <c>AllowedTools</c> string space as keyed <c>ITool</c> registrations,
-/// so a host that registers a tool under one of these keys silently merges the two grants: granting
-/// the plan capability would also grant that tool, and vice versa. The DI container itself does not
-/// prevent it, so the harness's composition root refuses the collision at boot: Presentation.Common's
-/// <c>ValidateNoReservedPlanCapabilityToolKeys</c> scans every keyed <c>ITool</c> descriptor against
-/// <see cref="IsReserved"/> and throws, naming the offending key. A consumer host that registers
-/// tools outside that composition root should call the same guard after doing so.
+/// are matched out of the same <c>AllowedTools</c> string space as every other tool name, so a tool
+/// published under one of these names silently merges two grants a caller believes are separate:
+/// granting the plan capability would also grant that tool, and vice versa. Nothing in the tool
+/// plumbing prevents the collision on its own, so two complementary mechanisms cover the two ways a
+/// name can arrive — and neither subsumes the other.
+/// </para>
+/// <para>
+/// <strong>First-party names, refused at boot.</strong> Presentation.Common's
+/// <c>ValidateNoReservedPlanCapabilityToolKeys</c> scans every keyed <c>ITool</c> descriptor in the
+/// container against <see cref="IsReserved"/> and throws, naming the offending key. This covers code
+/// the host owns, where a collision is a wiring bug and failing fast is correct. A consumer host that
+/// registers tools outside the harness composition root should call the same guard after doing so.
+/// </para>
+/// <para>
+/// <strong>Third-party names, dropped at resolution.</strong> MCP-client and plugin-manifest tools are
+/// discovered at <em>runtime</em>, so no boot-time DI scan can see them — an external server can start
+/// publishing <c>rag_retrieval</c> long after the host booted cleanly. <c>ToolChainBuilder</c>
+/// therefore re-checks <see cref="IsReserved"/> at the single point every resolved chain exits, and
+/// excludes a colliding tool from the callable surface before it is governance-wrapped. That path
+/// deliberately logs and drops rather than throwing: a third party editing its tool list must not be
+/// able to take down every agent turn in the host.
 /// </para>
 /// <para>
 /// Withholding a name here is fail-closed for enveloped plan runs. With no ambient envelope (direct

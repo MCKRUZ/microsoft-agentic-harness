@@ -225,6 +225,21 @@ public sealed class LlmCallStepExecutor : IPlanStepExecutor
     /// component that establishes a run scope is the one that releases its key.
     /// </para>
     /// <para>
+    /// <strong>Invariant this executor depends on: it may only run under a conversation id armed by
+    /// <c>PlanRunExecutor</c>.</strong> The <c>planrun:</c> budget key is derived from <em>any</em>
+    /// ambient <see cref="IAgentExecutionContext.ConversationId"/>, but only <c>PlanRunExecutor</c>
+    /// releases it. Nothing in this method distinguishes a conversation id that a run armed from one an
+    /// agent turn happened to be carrying, so the two are only kept apart by where plan execution is
+    /// driven from. That holds today because <c>ExecutePlanCommandHandler</c> is the sole in-process
+    /// <c>IPlanExecutor</c> caller and has no production dispatcher, which is why the orphan is
+    /// currently unreachable rather than merely unlikely. A future host that wires plan execution
+    /// <em>inside</em> an agent turn would break it: the step would create a run budget entry keyed on
+    /// the turn's conversation id that no one releases, and because budget exhaustion is a
+    /// <c>IsPolicyDenial</c> — terminal and non-retryable — every subsequent LlmCall step under that
+    /// conversation id would be denied permanently. Any such host must arm the run through
+    /// <c>PlanRunExecutor</c> so creation and release stay paired.
+    /// </para>
+    /// <para>
     /// Sub-plans inherit correctly: <c>SubPlanStepExecutor</c> re-stamps the parent's conversation onto
     /// the child scope, so an enveloped run shares one budget across its whole sub-plan tree, released
     /// once when the run ends.
