@@ -17,25 +17,6 @@ public sealed class MetricsControllerTests : IClassFixture<TestWebApplicationFac
 
     public MetricsControllerTests(TestWebApplicationFactory factory) => _factory = factory;
 
-    private HttpClient CreateAuthedClient(
-        Action<IServiceCollection>? configureServices = null)
-    {
-        var client = _factory
-            .WithWebHostBuilder(b =>
-            {
-                b.ConfigureTestServices(services =>
-                {
-                    services.AddAuthentication(TestAuthHandler.SchemeName)
-                        .AddScheme<AuthenticationSchemeOptions, TestAuthHandler>(
-                            TestAuthHandler.SchemeName, _ => { });
-                    configureServices?.Invoke(services);
-                });
-            })
-            .CreateClient();
-        client.DefaultRequestHeaders.Add(TestAuthHandler.UserIdHeader, "metrics-user");
-        return client;
-    }
-
     private static Mock<IPrometheusQueryService> CreateMockPrometheus(
         MetricsQueryResponse? instantResponse = null,
         MetricsQueryResponse? rangeResponse = null,
@@ -61,7 +42,7 @@ public sealed class MetricsControllerTests : IClassFixture<TestWebApplicationFac
     public async Task QueryInstant_ValidQuery_Returns200()
     {
         var mock = CreateMockPrometheus();
-        using var client = CreateAuthedClient(s =>
+        using var client = _factory.CreateAuthedClient("metrics-user", configureServices: s =>
             s.AddSingleton<IPrometheusQueryService>(mock.Object));
 
         var response = await client.GetAsync("/api/metrics/instant?query=up");
@@ -86,7 +67,7 @@ public sealed class MetricsControllerTests : IClassFixture<TestWebApplicationFac
             ],
         };
         var mock = CreateMockPrometheus(instantResponse: expected);
-        using var client = CreateAuthedClient(s =>
+        using var client = _factory.CreateAuthedClient("metrics-user", configureServices: s =>
             s.AddSingleton<IPrometheusQueryService>(mock.Object));
 
         var response = await client.GetAsync("/api/metrics/instant?query=up");
@@ -102,7 +83,7 @@ public sealed class MetricsControllerTests : IClassFixture<TestWebApplicationFac
     public async Task QueryInstant_MissingQuery_Returns400()
     {
         var mock = CreateMockPrometheus();
-        using var client = CreateAuthedClient(s =>
+        using var client = _factory.CreateAuthedClient("metrics-user", configureServices: s =>
             s.AddSingleton<IPrometheusQueryService>(mock.Object));
 
         var response = await client.GetAsync("/api/metrics/instant?query=");
@@ -114,7 +95,7 @@ public sealed class MetricsControllerTests : IClassFixture<TestWebApplicationFac
     public async Task QueryInstant_EmptyQueryParam_Returns400()
     {
         var mock = CreateMockPrometheus();
-        using var client = CreateAuthedClient(s =>
+        using var client = _factory.CreateAuthedClient("metrics-user", configureServices: s =>
             s.AddSingleton<IPrometheusQueryService>(mock.Object));
 
         var response = await client.GetAsync("/api/metrics/instant");
@@ -131,7 +112,7 @@ public sealed class MetricsControllerTests : IClassFixture<TestWebApplicationFac
     public async Task QueryInstant_InjectionAttempt_Returns400(string maliciousQuery)
     {
         var mock = CreateMockPrometheus();
-        using var client = CreateAuthedClient(s =>
+        using var client = _factory.CreateAuthedClient("metrics-user", configureServices: s =>
             s.AddSingleton<IPrometheusQueryService>(mock.Object));
 
         var response = await client.GetAsync($"/api/metrics/instant?query={Uri.EscapeDataString(maliciousQuery)}");
@@ -144,7 +125,7 @@ public sealed class MetricsControllerTests : IClassFixture<TestWebApplicationFac
     {
         var errorResponse = new MetricsQueryResponse { Success = false, Error = "bad_data: invalid expression" };
         var mock = CreateMockPrometheus(instantResponse: errorResponse);
-        using var client = CreateAuthedClient(s =>
+        using var client = _factory.CreateAuthedClient("metrics-user", configureServices: s =>
             s.AddSingleton<IPrometheusQueryService>(mock.Object));
 
         var response = await client.GetAsync("/api/metrics/instant?query=invalid{");
@@ -158,7 +139,7 @@ public sealed class MetricsControllerTests : IClassFixture<TestWebApplicationFac
     public async Task QueryRange_ValidParams_Returns200()
     {
         var mock = CreateMockPrometheus();
-        using var client = CreateAuthedClient(s =>
+        using var client = _factory.CreateAuthedClient("metrics-user", configureServices: s =>
             s.AddSingleton<IPrometheusQueryService>(mock.Object));
 
         var response = await client.GetAsync(
@@ -171,7 +152,7 @@ public sealed class MetricsControllerTests : IClassFixture<TestWebApplicationFac
     public async Task QueryRange_MissingStart_Returns400()
     {
         var mock = CreateMockPrometheus();
-        using var client = CreateAuthedClient(s =>
+        using var client = _factory.CreateAuthedClient("metrics-user", configureServices: s =>
             s.AddSingleton<IPrometheusQueryService>(mock.Object));
 
         var response = await client.GetAsync(
@@ -184,7 +165,7 @@ public sealed class MetricsControllerTests : IClassFixture<TestWebApplicationFac
     public async Task QueryRange_MissingStep_Returns400()
     {
         var mock = CreateMockPrometheus();
-        using var client = CreateAuthedClient(s =>
+        using var client = _factory.CreateAuthedClient("metrics-user", configureServices: s =>
             s.AddSingleton<IPrometheusQueryService>(mock.Object));
 
         var response = await client.GetAsync(
@@ -197,7 +178,7 @@ public sealed class MetricsControllerTests : IClassFixture<TestWebApplicationFac
     public async Task QueryRange_MissingQuery_Returns400()
     {
         var mock = CreateMockPrometheus();
-        using var client = CreateAuthedClient(s =>
+        using var client = _factory.CreateAuthedClient("metrics-user", configureServices: s =>
             s.AddSingleton<IPrometheusQueryService>(mock.Object));
 
         var response = await client.GetAsync(
@@ -212,7 +193,7 @@ public sealed class MetricsControllerTests : IClassFixture<TestWebApplicationFac
     public async Task GetCatalog_Returns200WithEntries()
     {
         var mock = CreateMockPrometheus();
-        using var client = CreateAuthedClient(s =>
+        using var client = _factory.CreateAuthedClient("metrics-user", configureServices: s =>
             s.AddSingleton<IPrometheusQueryService>(mock.Object));
 
         var response = await client.GetAsync("/api/metrics/catalog");
@@ -227,7 +208,7 @@ public sealed class MetricsControllerTests : IClassFixture<TestWebApplicationFac
     public async Task GetCatalog_AllEntriesHaveRequiredFields()
     {
         var mock = CreateMockPrometheus();
-        using var client = CreateAuthedClient(s =>
+        using var client = _factory.CreateAuthedClient("metrics-user", configureServices: s =>
             s.AddSingleton<IPrometheusQueryService>(mock.Object));
 
         var response = await client.GetAsync("/api/metrics/catalog");
@@ -246,7 +227,7 @@ public sealed class MetricsControllerTests : IClassFixture<TestWebApplicationFac
     public async Task GetCatalog_ContainsExpectedCategories()
     {
         var mock = CreateMockPrometheus();
-        using var client = CreateAuthedClient(s =>
+        using var client = _factory.CreateAuthedClient("metrics-user", configureServices: s =>
             s.AddSingleton<IPrometheusQueryService>(mock.Object));
 
         var response = await client.GetAsync("/api/metrics/catalog");
@@ -267,7 +248,7 @@ public sealed class MetricsControllerTests : IClassFixture<TestWebApplicationFac
     {
         var mock = CreateMockPrometheus(
             healthResponse: new PrometheusHealthResponse { Healthy = true, Version = "2.53.0" });
-        using var client = CreateAuthedClient(s =>
+        using var client = _factory.CreateAuthedClient("metrics-user", configureServices: s =>
             s.AddSingleton<IPrometheusQueryService>(mock.Object));
 
         var response = await client.GetAsync("/api/metrics/health");
@@ -283,7 +264,7 @@ public sealed class MetricsControllerTests : IClassFixture<TestWebApplicationFac
     {
         var mock = CreateMockPrometheus(
             healthResponse: new PrometheusHealthResponse { Healthy = false, Error = "Connection refused" });
-        using var client = CreateAuthedClient(s =>
+        using var client = _factory.CreateAuthedClient("metrics-user", configureServices: s =>
             s.AddSingleton<IPrometheusQueryService>(mock.Object));
 
         var response = await client.GetAsync("/api/metrics/health");
