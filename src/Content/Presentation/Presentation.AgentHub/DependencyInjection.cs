@@ -26,6 +26,7 @@ using Presentation.AgentHub.Config;
 using Presentation.AgentHub.Telemetry;
 using Presentation.Common.ChangeProposals;
 using Presentation.Common.Escalations;
+using Presentation.Common.Governance;
 using Microsoft.Extensions.Options;
 
 namespace Presentation.AgentHub;
@@ -61,6 +62,10 @@ public static class DependencyInjection
             // Deliberate opt-in: AgentHub runs the agent workload, so the in-process escalation
             // state lives here and the human approval API must be co-resident with it.
             .AddEscalationApi()
+            // Deliberate opt-in: the autonomy governance read API answers from this host's own
+            // configuration and profile registry, so it belongs in the workload host whose
+            // governance posture it describes.
+            .AddAutonomyApi()
             // Deliberate opt-in: AgentHub also owns the in-process change-proposal store, so the
             // human decision API for proposals must be co-resident with it too.
             .AddChangeProposalApi();

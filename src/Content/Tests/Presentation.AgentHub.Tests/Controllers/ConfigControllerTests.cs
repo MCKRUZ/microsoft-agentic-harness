@@ -21,29 +21,10 @@ public sealed class ConfigControllerTests : IClassFixture<TestWebApplicationFact
 
     public ConfigControllerTests(TestWebApplicationFactory factory) => _factory = factory;
 
-    private HttpClient CreateAuthedClient(
-        Action<IServiceCollection>? configureServices = null)
-    {
-        var client = _factory
-            .WithWebHostBuilder(b =>
-            {
-                b.ConfigureTestServices(services =>
-                {
-                    services.AddAuthentication(TestAuthHandler.SchemeName)
-                        .AddScheme<AuthenticationSchemeOptions, TestAuthHandler>(
-                            TestAuthHandler.SchemeName, _ => { });
-                    configureServices?.Invoke(services);
-                });
-            })
-            .CreateClient();
-        client.DefaultRequestHeaders.Add(TestAuthHandler.UserIdHeader, "config-user");
-        return client;
-    }
-
     [Fact]
     public async Task GetDeployments_Returns200()
     {
-        using var client = CreateAuthedClient();
+        using var client = _factory.CreateAuthedClient("config-user");
 
         var response = await client.GetAsync("/api/config/deployments");
 
@@ -53,7 +34,7 @@ public sealed class ConfigControllerTests : IClassFixture<TestWebApplicationFact
     [Fact]
     public async Task GetDeployments_ReturnsDeploymentAndDefault()
     {
-        using var client = CreateAuthedClient();
+        using var client = _factory.CreateAuthedClient("config-user");
 
         var response = await client.GetAsync("/api/config/deployments");
         var result = await response.Content.ReadFromJsonAsync<DeploymentsResponse>();
@@ -66,7 +47,7 @@ public sealed class ConfigControllerTests : IClassFixture<TestWebApplicationFact
     [Fact]
     public async Task GetDeployments_WhenNoDeploymentsConfigured_FallsBackToDefault()
     {
-        using var client = CreateAuthedClient();
+        using var client = _factory.CreateAuthedClient("config-user");
 
         var response = await client.GetAsync("/api/config/deployments");
         var result = await response.Content.ReadFromJsonAsync<DeploymentsResponse>();
@@ -80,7 +61,7 @@ public sealed class ConfigControllerTests : IClassFixture<TestWebApplicationFact
     public async Task GetStatus_WhenProviderUnconfigured_ReportsMissingSettings()
     {
         var missing = new[] { "AppConfig:AI:AgentFramework:Endpoint", "AppConfig:AI:AgentFramework:ApiKey" };
-        using var client = CreateAuthedClient(services =>
+        using var client = _factory.CreateAuthedClient("config-user", configureServices: services =>
         {
             services.AddSingleton<IChatClientFactory>(new FakeChatClientFactory
             {
@@ -103,7 +84,7 @@ public sealed class ConfigControllerTests : IClassFixture<TestWebApplicationFact
     [Fact]
     public async Task GetStatus_WhenProviderConfigured_ReportsConfigured()
     {
-        using var client = CreateAuthedClient(services =>
+        using var client = _factory.CreateAuthedClient("config-user", configureServices: services =>
         {
             services.AddSingleton<IChatClientFactory>(new FakeChatClientFactory
             {
