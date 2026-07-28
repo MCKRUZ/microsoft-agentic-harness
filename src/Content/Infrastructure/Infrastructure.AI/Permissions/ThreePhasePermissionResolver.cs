@@ -186,10 +186,60 @@ public sealed class ThreePhasePermissionResolver : IToolPermissionService
         foreach (var provider in _ruleProviders)
         {
             var rules = await provider.GetRulesAsync(agentId, cancellationToken);
-            allRules.AddRange(rules);
+
+            foreach (var rule in rules)
+                allRules.Add(EnforceGrantBoundaryOwnership(rule));
         }
 
         return allRules;
+    }
+
+    /// <summary>
+    /// Demotes a <see cref="PermissionBaselineTier.GrantBoundary"/> claim from any source other than
+    /// the capability envelope, so a provider cannot award itself boundary authority.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The grant boundary is the edge of a <em>per-caller authorization</em>, not a posture a provider
+    /// may assert about itself. Boundary rules are arbitrated among themselves by specificity, so a
+    /// provider that both claimed the tier and named a tool exactly would outrank the envelope's
+    /// closing <c>"*"</c> deny and widen the caller's grant to a tool the host never issued — the same
+    /// defect that reached this codebase twice already, one tier up.
+    /// </para>
+    /// <para>
+    /// This is a guard, not arbitration: the ranking logic in <c>Outranks</c> stays free of provider
+    /// identity, and the single place that knows who may declare a boundary is here, at the point the
+    /// claim enters the system. Demote and log rather than throw — a misconfigured extension provider
+    /// should lose its unearned authority, not take down every tool call in the host. This matches how
+    /// <c>ReservedPlanCapabilityFilter</c> treats an illegitimate claim from a runtime source.
+    /// </para>
+    /// <para>
+    /// Not reachable from any provider in this repository — all four registered providers are correct.
+    /// It exists because adding a rule provider is a documented extension point, and a consumer's fifth
+    /// provider is exactly where this stops being true.
+    /// </para>
+    /// </remarks>
+    /// <param name="rule">The rule as emitted by its provider.</param>
+    /// <returns>
+    /// The rule unchanged, or a copy demoted to <see cref="PermissionBaselineTier.Default"/> when it
+    /// claimed a grant boundary it is not entitled to.
+    /// </returns>
+    private ToolPermissionRule EnforceGrantBoundaryOwnership(ToolPermissionRule rule)
+    {
+        if (rule.BaselineTier != PermissionBaselineTier.GrantBoundary
+            || rule.Source == PermissionRuleSource.CapabilityEnvelope)
+        {
+            return rule;
+        }
+
+        _logger.LogError(
+            "Provider source {Source} declared PermissionBaselineTier.GrantBoundary on pattern " +
+            "'{ToolPattern}'. Only the capability envelope may declare a grant boundary; demoting to " +
+            "Default so it cannot widen a caller's envelope.",
+            rule.Source,
+            rule.ToolPattern);
+
+        return rule with { BaselineTier = PermissionBaselineTier.Default };
     }
 
     /// <summary>

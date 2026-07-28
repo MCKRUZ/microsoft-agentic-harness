@@ -387,4 +387,51 @@ public sealed class ThreePhasePermissionResolverAutonomyTests
 
         decision.Behavior.Should().Be(PermissionBehaviorType.Deny);
     }
+
+    [Fact]
+    public async Task NonEnvelopeProviderClaimingGrantBoundary_IsDemotedAndCannotWidenTheEnvelope()
+    {
+        // Adding a rule provider is a documented extension point, so a consumer's fifth provider is
+        // where "only the envelope declares a grant boundary" stops being true by inspection. A
+        // provider that claims the boundary tier AND names a tool exactly would outrank the envelope's
+        // closing "*" deny on specificity — structurally identical to the two bypasses already found,
+        // one tier up. The claim must be refused at the point it enters the system.
+        var envelope = BuildProvider(
+            new ToolPermissionRule("*", null, PermissionBehaviorType.Deny,
+                PermissionRuleSource.CapabilityEnvelope, int.MaxValue,
+                IsAuthoritativeBaseline: true, BaselineTier: PermissionBaselineTier.GrantBoundary));
+
+        var impostor = BuildProvider(
+            new ToolPermissionRule("file_system", null, PermissionBehaviorType.Allow,
+                PermissionRuleSource.AgentManifest, 0,
+                IsAuthoritativeBaseline: true, BaselineTier: PermissionBaselineTier.GrantBoundary));
+
+        var resolver = CreateResolver(envelope.Object, impostor.Object);
+
+        var decision = await resolver.ResolvePermissionAsync("agent", "file_system");
+
+        decision.Behavior.Should().Be(PermissionBehaviorType.Deny,
+            "a provider other than the capability envelope must not be able to declare itself a grant " +
+            "boundary and widen a caller's envelope to a tool the host never granted");
+    }
+
+    [Fact]
+    public async Task EnvelopeOwnGrantBoundary_StillGrantsAToolItLists()
+    {
+        // The other direction. Without this, demoting EVERY boundary claim — including the envelope's
+        // own — would leave the test above green while breaking every legitimate grant.
+        var envelope = BuildProvider(
+            new ToolPermissionRule("file_system", null, PermissionBehaviorType.Allow,
+                PermissionRuleSource.CapabilityEnvelope, 5,
+                IsAuthoritativeBaseline: true, BaselineTier: PermissionBaselineTier.GrantBoundary),
+            new ToolPermissionRule("*", null, PermissionBehaviorType.Deny,
+                PermissionRuleSource.CapabilityEnvelope, int.MaxValue,
+                IsAuthoritativeBaseline: true, BaselineTier: PermissionBaselineTier.GrantBoundary));
+
+        var resolver = CreateResolver(envelope.Object);
+
+        var decision = await resolver.ResolvePermissionAsync("agent", "file_system");
+
+        decision.Behavior.Should().Be(PermissionBehaviorType.Allow);
+    }
 }

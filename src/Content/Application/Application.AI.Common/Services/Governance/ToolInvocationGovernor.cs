@@ -94,6 +94,36 @@ public sealed class ToolInvocationGovernor : IToolInvocationGovernor
     private static bool BundleRunActive => CapabilityEnvelopeAccessor.Current is not null;
 
     /// <summary>
+    /// Independently confirms that an ambient capability envelope grants <paramref name="toolName"/>,
+    /// after the permission resolver has already said Allow. Returns true when no envelope is armed.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>This is defence in depth, and until now there was none.</strong> The permission resolver
+    /// was the sole enforcement point for tool names at invocation: when its arbitration was wrong, the
+    /// caller got the tool. That arbitration has been wrong twice — a tier default that allowed anything
+    /// unmatched, then a plugin baseline that outranked the envelope's closing deny — and both were
+    /// found by review rather than by the system refusing.
+    /// </para>
+    /// <para>
+    /// <c>CapabilityEnvelope.GrantsTool</c> existed for exactly this check and had zero callers, which is
+    /// why neither defect was caught at the point of use. This wires it in: a resolver Allow for a tool
+    /// the armed envelope does not list is refused and recorded as a denial, so a future arbitration bug
+    /// costs a blocked call rather than an unauthorized one.
+    /// </para>
+    /// <para>
+    /// The two must agree by construction — the envelope's own rules are built from the same
+    /// <c>AllowedTools</c> list this reads, matched with the same case-insensitive comparer. A
+    /// disagreement therefore means the resolver reached Allow by a path that did not consult the
+    /// envelope, which is precisely the condition worth failing closed on.
+    /// </para>
+    /// </remarks>
+    /// <param name="toolName">The tool the resolver has authorized.</param>
+    /// <returns>True when no envelope is armed, or when the armed envelope grants the tool.</returns>
+    private static bool EnvelopeGrantsToolWhenArmed(string toolName)
+        => CapabilityEnvelopeAccessor.Current is not { } envelope || envelope.GrantsTool(toolName);
+
+    /// <summary>
     /// Whether per-invocation enforcement is active for the current flow. True when the host has opted in
     /// globally (<c>GovernanceConfig.EnforceToolInvocation</c>) <em>or</em> a bundle run is active
     /// (<see cref="BundleRunActive"/>) — bundle runs must always be governed so the per-caller capability
@@ -164,6 +194,14 @@ public sealed class ToolInvocationGovernor : IToolInvocationGovernor
                     requiredApproval: true, agentId);
 
             case PermissionBehaviorType.Allow:
+                if (!EnvelopeGrantsToolWhenArmed(toolName))
+                {
+                    _denialTracker.RecordDenial(agentId, toolName);
+                    return Blocked(toolName, ToolDecisionOutcome.Denied,
+                        GovernanceDenials.NotPermitted(toolName), profile.Radius,
+                        requiredApproval: false, agentId);
+                }
+
                 return await AuthorizeAllowedAsync(agentId, toolName, profile, cancellationToken)
                     .ConfigureAwait(false);
 
