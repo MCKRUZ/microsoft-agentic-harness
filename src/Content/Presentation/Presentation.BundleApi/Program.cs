@@ -1,5 +1,6 @@
 using Presentation.BundleApi.Extensions;
 using Presentation.Common.Extensions;
+using Presentation.Common.Scoping;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -33,6 +34,11 @@ if (!app.Environment.IsDevelopment())
 }
 app.UseRouting();
 app.UseAuthentication();
+// Establish the per-request knowledge scope (user/tenant) from the authenticated principal, immediately
+// after authentication so HttpContext.User is populated. Without it the ambient scope stays null, and a
+// null owner is GLOBAL — not private — to PlannerScopeFilter.VisibleTo: every plan this host persists
+// would be readable by every caller in every tenant.
+app.UseMiddleware<KnowledgeScopeMiddleware>();
 app.UseAuthorization();
 app.UseRateLimiter();
 app.MapControllers();

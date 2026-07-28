@@ -1,9 +1,9 @@
 using System.Security.Claims;
 using FluentAssertions;
-using Presentation.AgentHub.Extensions;
+using Presentation.Common.Extensions;
 using Xunit;
 
-namespace Presentation.AgentHub.Tests.Extensions;
+namespace Presentation.Common.Tests.Extensions;
 
 /// <summary>
 /// Tests for <see cref="ClaimsPrincipalExtensions"/> — Azure AD claim extraction used to populate

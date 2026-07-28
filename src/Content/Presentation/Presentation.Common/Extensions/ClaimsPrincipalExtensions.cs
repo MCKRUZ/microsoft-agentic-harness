@@ -1,6 +1,6 @@
 using System.Security.Claims;
 
-namespace Presentation.AgentHub.Extensions;
+namespace Presentation.Common.Extensions;
 
 /// <summary>Extension methods for <see cref="ClaimsPrincipal"/> to simplify Azure AD claim access.</summary>
 public static class ClaimsPrincipalExtensions

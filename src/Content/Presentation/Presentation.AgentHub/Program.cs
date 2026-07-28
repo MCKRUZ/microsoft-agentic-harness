@@ -50,7 +50,7 @@ app.UseAuthentication();
 app.UseAuthorization();
 // Establish the per-request knowledge scope (user/tenant) from the authenticated principal,
 // after auth so HttpContext.User is populated. Covers controllers + the AG-UI endpoint.
-app.UseMiddleware<Presentation.AgentHub.Middleware.KnowledgeScopeMiddleware>();
+app.UseMiddleware<Presentation.Common.Scoping.KnowledgeScopeMiddleware>();
 app.UseRateLimiter();
 app.MapControllers();
 app.MapHub<AgentTelemetryHub>("/hubs/agent");

@@ -3,7 +3,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
 using Presentation.AgentHub.Config;
-using Presentation.AgentHub.Extensions;
+using Presentation.Common.Extensions;
 using Presentation.AgentHub.Interfaces;
 using Presentation.AgentHub.DTOs;
 

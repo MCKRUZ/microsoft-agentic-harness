@@ -70,4 +70,65 @@ public sealed class KnowledgeScopeAccessorTests
         accessor.UserId.Should().BeNull();
         accessor.TenantId.Should().Be("cfg-tenant");
     }
+
+    // --- Restore token (identity must not leak between units of work) ---
+
+    [Fact]
+    public void SetScope_DisposingToken_RestoresNullIdentity_WhenNothingWasSetBefore()
+    {
+        var accessor = Create();
+
+        var token = accessor.SetScope(userId: "user-a", tenantId: "tenant-1");
+        accessor.UserId.Should().Be("user-a");
+        token.Dispose();
+
+        accessor.UserId.Should().BeNull("the scope before the call was unset, so it must be unset again");
+        accessor.TenantId.Should().Be("cfg-tenant", "tenant falls back to the config default once unscoped");
+    }
+
+    [Fact]
+    public void SetScope_DisposingNestedToken_RestoresOuterIdentity_NotNull()
+    {
+        // The case a naive "clear on dispose" implementation gets wrong: an inner scope must hand the
+        // OUTER caller's identity back, not blank the ambient scope.
+        var accessor = Create();
+        using var outer = accessor.SetScope(userId: "user-a", tenantId: "tenant-a");
+
+        var inner = accessor.SetScope(userId: "user-b", tenantId: "tenant-b");
+        accessor.UserId.Should().Be("user-b");
+        inner.Dispose();
+
+        accessor.UserId.Should().Be("user-a", "disposing the inner scope restores the outer caller");
+        accessor.TenantId.Should().Be("tenant-a");
+    }
+
+    [Fact]
+    public void SetScope_SequentialUnitsOfWork_DoNotLeakIdentityIntoTheNext()
+    {
+        // Reproduces the background-drain-loop hazard: a BackgroundService pulls job A, sets scope,
+        // finishes, then pulls job B which carries no identity. Without the restore, job B runs as A.
+        var accessor = Create();
+
+        using (accessor.SetScope(userId: "user-a", tenantId: "tenant-a"))
+        {
+            accessor.UserId.Should().Be("user-a");
+        }
+
+        accessor.UserId.Should().BeNull("job A's identity must not still be ambient when job B starts");
+    }
+
+    [Fact]
+    public void SetScope_TokenDisposedTwice_DoesNotClobberALaterScope()
+    {
+        // A double dispose must be inert. If it re-applied the captured "previous", it would silently
+        // undo whatever scope has since been established.
+        var accessor = Create();
+        var token = accessor.SetScope(userId: "user-a", tenantId: "tenant-a");
+        token.Dispose();
+
+        using var later = accessor.SetScope(userId: "user-b", tenantId: "tenant-b");
+        token.Dispose();
+
+        accessor.UserId.Should().Be("user-b", "the stale token must not reinstate its captured previous value");
+    }
 }

@@ -3,10 +3,10 @@ using Application.AI.Common.Interfaces.KnowledgeGraph;
 using FluentAssertions;
 using Microsoft.AspNetCore.Http;
 using Moq;
-using Presentation.AgentHub.Middleware;
+using Presentation.Common.Scoping;
 using Xunit;
 
-namespace Presentation.AgentHub.Tests.Middleware;
+namespace Presentation.Common.Tests.Scoping;
 
 /// <summary>
 /// Tests for <see cref="KnowledgeScopeMiddleware"/> — establishes per-request scope from the

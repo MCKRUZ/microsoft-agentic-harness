@@ -16,7 +16,7 @@ using OpenTelemetry;
 using OpenTelemetry.Trace;
 using Presentation.AgentHub.AgUi;
 using Presentation.AgentHub.Auth;
-using Presentation.AgentHub.Extensions;
+using Presentation.Common.Extensions;
 using Presentation.AgentHub.Hubs;
 using Presentation.AgentHub.Interfaces;
 using Presentation.AgentHub.Services;

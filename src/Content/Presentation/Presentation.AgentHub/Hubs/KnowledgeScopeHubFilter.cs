@@ -1,6 +1,6 @@
 using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Microsoft.AspNetCore.SignalR;
-using Presentation.AgentHub.Middleware;
+using Presentation.Common.Scoping;
 
 namespace Presentation.AgentHub.Hubs;
 
@@ -19,13 +19,19 @@ namespace Presentation.AgentHub.Hubs;
 public sealed class KnowledgeScopeHubFilter : IHubFilter
 {
     /// <inheritdoc />
-    public ValueTask<object?> InvokeMethodAsync(
+    public async ValueTask<object?> InvokeMethodAsync(
         HubInvocationContext invocationContext,
         Func<HubInvocationContext, ValueTask<object?>> next)
     {
-        if (invocationContext.ServiceProvider.GetService(typeof(IKnowledgeScopeWriter)) is IKnowledgeScopeWriter scopeWriter)
-            KnowledgeScopeInitializer.Apply(invocationContext.Context.User, scopeWriter);
+        ArgumentNullException.ThrowIfNull(invocationContext);
+        ArgumentNullException.ThrowIfNull(next);
 
-        return next(invocationContext);
+        if (invocationContext.ServiceProvider.GetService(typeof(IKnowledgeScopeWriter)) is not IKnowledgeScopeWriter scopeWriter)
+            return await next(invocationContext);
+
+        // Disposing after the hub method restores the previously ambient identity, so scope set for one
+        // invocation can never survive into the connection's next invocation.
+        using var scopeToken = KnowledgeScopeInitializer.Apply(invocationContext.Context.User, scopeWriter);
+        return await next(invocationContext);
     }
 }

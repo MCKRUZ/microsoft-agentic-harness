@@ -1,10 +1,10 @@
 using System.Security.Claims;
 using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Moq;
-using Presentation.AgentHub.Middleware;
+using Presentation.Common.Scoping;
 using Xunit;
 
-namespace Presentation.AgentHub.Tests.Middleware;
+namespace Presentation.Common.Tests.Scoping;
 
 /// <summary>
 /// Tests for <see cref="KnowledgeScopeInitializer"/> — the shared user/tenant → scope mapping used
