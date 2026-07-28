@@ -40,7 +40,20 @@ public static partial class DependencyInjection
     private static void RegisterChangesServices(IServiceCollection services)
     {
         // --- Store + audit + evidence ---
-        services.AddSingleton<IChangeProposalStore, InMemoryChangeProposalStore>();
+        // The public IChangeProposalStore is selected ONCE, at first resolution, from
+        // AppConfig:AI:Governance:DurableState:ChangeProposalsEnabled (see
+        // RegisterGovernanceStateServices for the restart-required semantics). Off (default):
+        // the resolved instance IS InMemoryChangeProposalStore — byte-for-byte today's
+        // behavior, and ChangeProposalStartupValidator's `is InMemoryChangeProposalStore`
+        // production guard keeps firing. On: the SQLite-backed EfCoreChangeProposalStore
+        // (registered in RegisterGovernanceStateServices) makes proposals survive restarts,
+        // and the validator correctly treats the host as durably backed.
+        services.AddSingleton<InMemoryChangeProposalStore>();
+        services.AddSingleton<IChangeProposalStore>(sp =>
+            sp.GetRequiredService<Microsoft.Extensions.Options.IOptionsMonitor<Domain.Common.Config.AppConfig>>()
+                .CurrentValue.AI.Governance.DurableState.ChangeProposalsEnabled
+                ? sp.GetRequiredService<EfCoreChangeProposalStore>()
+                : sp.GetRequiredService<InMemoryChangeProposalStore>());
         services.AddSingleton<IChangeAuditWriter, JsonlChangeAuditWriter>();
         services.AddSingleton<IEvidenceStore, FileSystemEvidenceStore>();
 

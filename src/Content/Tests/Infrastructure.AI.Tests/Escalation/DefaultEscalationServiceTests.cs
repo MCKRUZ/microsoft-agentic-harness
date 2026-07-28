@@ -50,6 +50,7 @@ public sealed class DefaultEscalationServiceTests : IDisposable
 			serviceProvider,
 			_notifier.Object,
 			_auditStore.Object,
+			new NullEscalationStateStore(),
 			configMonitor.Object,
 			NullLogger<DefaultEscalationService>.Instance);
 	}

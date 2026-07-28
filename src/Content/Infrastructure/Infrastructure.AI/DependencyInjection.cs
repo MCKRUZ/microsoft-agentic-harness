@@ -346,6 +346,13 @@ public static partial class DependencyInjection
         // --- Governance (permissions, escalation, resilience) ---
 
         RegisterGovernanceServices(services);
+
+        // --- Durable governance state (SQLite store for pending escalations and
+        //     change proposals). Passive until AppConfig.AI.Governance.DurableState
+        //     opts in; the escalation service and IChangeProposalStore selection
+        //     resolve its stores at first use. ---
+
+        RegisterGovernanceStateServices(services, appConfig);
         RegisterEscalationServices(services);
         RegisterResilienceServices(services, appConfig);
 

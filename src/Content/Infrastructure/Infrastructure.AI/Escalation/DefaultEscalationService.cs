@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using Application.AI.Common.Exceptions;
 using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.OpenTelemetry.Metrics;
 using Domain.AI.Escalation;
@@ -17,27 +18,46 @@ namespace Infrastructure.AI.Escalation;
 /// <remarks>
 /// <para>
 /// Active escalations are held in memory via <see cref="ConcurrentDictionary{TKey,TValue}"/>.
-/// Process restart loses pending state. The <see cref="IEscalationAuditStore"/> provides
-/// durable compliance records, but automatic recovery from audit logs is not
-/// implemented (Phase 3+).
+/// The <see cref="IEscalationAuditStore"/> provides durable compliance records; the
+/// <see cref="IEscalationStateStore"/> provides durable <i>working</i> state. With the default
+/// <c>NullEscalationStateStore</c> (durability off), process restart loses pending state — the
+/// original in-memory contract, byte-for-byte. With the EF-backed store
+/// (<c>AppConfig:AI:Governance:DurableState:EscalationsEnabled</c>), every lifecycle transition
+/// is durably recorded fail-closed, and <see cref="RehydratePendingEscalationsAsync"/> restores
+/// pending escalations on startup as decidable, listable, and cancellable.
+/// </para>
+/// <para>
+/// What durability cannot restore: the <see cref="TaskCompletionSource{TResult}"/> waiter a
+/// blocking <see cref="RequestEscalationAsync"/> caller holds is inherently per-process. After
+/// a restart no code is released by the eventual decision — resumed workflows poll
+/// <see cref="GetOutcomeAsync"/> (which falls back to the durable store) for the verdict, as the
+/// plan executor's resume path already does.
 /// </para>
 /// <para>
 /// Resolved outcomes are also retained in memory (see <see cref="_resolvedOutcomes"/>) so callers
 /// such as the plan executor can query a verdict via <see cref="GetOutcomeAsync"/> after the
-/// escalation has left the active set. Retention is process-lifetime and consistent with the
-/// active-state model above: a restart that loses a pending escalation would equally lose its
-/// resolved outcome, and such an escalation could never have been approved post-restart anyway.
+/// escalation has left the active set. Retention is process-lifetime; with durability enabled the
+/// durable store additionally serves outcomes resolved in previous process lifetimes.
 /// Escalations are human-scale, low-frequency events, so this retention does not grow unbounded in
 /// practice.
 /// </para>
+/// <para>
+/// The file is split by responsibility: this partial owns the public lifecycle surface,
+/// <c>DefaultEscalationService.Resolution.cs</c> owns resolution/timeout/teardown, and
+/// <c>DefaultEscalationService.Durability.cs</c> owns rehydration and the
+/// <see cref="IEscalationReconciler"/> recovery path for the audit-outage stuck state.
+/// </para>
 /// </remarks>
-public sealed class DefaultEscalationService : IEscalationService, IDisposable
+public sealed partial class DefaultEscalationService : IEscalationService, IEscalationReconciler, IDisposable
 {
 	private readonly ConcurrentDictionary<Guid, EscalationState> _activeEscalations = new();
 	private readonly ConcurrentDictionary<Guid, EscalationOutcome> _resolvedOutcomes = new();
+	private readonly SemaphoreSlim _reconcileGate = new(1, 1);
+	private int _disposed;
 	private readonly IServiceProvider _serviceProvider;
 	private readonly IEscalationNotifier _notifier;
 	private readonly IEscalationAuditStore _auditStore;
+	private readonly IEscalationStateStore _stateStore;
 	private readonly IOptionsMonitor<EscalationConfig> _config;
 	private readonly ILogger<DefaultEscalationService> _logger;
 
@@ -47,18 +67,25 @@ public sealed class DefaultEscalationService : IEscalationService, IDisposable
 	/// <param name="serviceProvider">Service provider for resolving keyed <see cref="IApprovalStrategy"/> instances.</param>
 	/// <param name="notifier">Fan-out notification dispatcher for escalation events.</param>
 	/// <param name="auditStore">Durable audit trail for compliance recording.</param>
+	/// <param name="stateStore">
+	/// Durable working-state store. The composition root supplies the no-op
+	/// <c>NullEscalationStateStore</c> when durable escalation state is disabled (the default),
+	/// which preserves in-memory-only behavior exactly.
+	/// </param>
 	/// <param name="config">Escalation configuration (defaults, priority overrides).</param>
 	/// <param name="logger">Structured logger.</param>
 	public DefaultEscalationService(
 		IServiceProvider serviceProvider,
 		IEscalationNotifier notifier,
 		IEscalationAuditStore auditStore,
+		IEscalationStateStore stateStore,
 		IOptionsMonitor<EscalationConfig> config,
 		ILogger<DefaultEscalationService> logger)
 	{
 		_serviceProvider = serviceProvider;
 		_notifier = notifier;
 		_auditStore = auditStore;
+		_stateStore = stateStore;
 		_config = config;
 		_logger = logger;
 	}
@@ -160,53 +187,143 @@ public sealed class DefaultEscalationService : IEscalationService, IDisposable
 		EscalationMetrics.ApproverResponseMs.Record(elapsed.TotalMilliseconds,
 			new KeyValuePair<string, object?>(EscalationConventions.ApproverName, decision.ApproverName));
 
+		return await ApplyDecisionAsync(state, decision, ct);
+	}
+
+	/// <summary>
+	/// Applies a vetted decision: mutates the in-memory decision list, evaluates the strategy,
+	/// and durably persists the new list — all inside the per-escalation write gate.
+	/// </summary>
+	/// <remarks>
+	/// The gate is what makes "compute the snapshot" and "persist the snapshot" atomic with
+	/// respect to other submissions on the same escalation. Without it, two concurrent
+	/// non-resolving approvals under AllOf can each build a snapshot inside the lock, release,
+	/// and then write out of order: last-write-wins persists the shorter list, so a restart
+	/// silently loses an approval that in-memory state still shows. Serializing per escalation
+	/// (not globally) keeps unrelated escalations independent.
+	/// </remarks>
+	/// <param name="state">The active escalation.</param>
+	/// <param name="decision">The decision to apply.</param>
+	/// <param name="ct">Cancellation token.</param>
+	private async Task<EscalationDecisionResult> ApplyDecisionAsync(
+		EscalationState state, ApproverDecision decision, CancellationToken ct)
+	{
 		var strategy = _serviceProvider.GetRequiredKeyedService<IApprovalStrategy>(state.Request.ApprovalStrategy);
-		EscalationOutcome? outcome;
 
-		lock (state.Lock)
+		await state.WriteGate.WaitAsync(ct);
+		try
 		{
-			// Recorded for audit above, but another decision resolved the escalation
-			// concurrently — this one arrives too late to participate. The caller polls
-			// GetOutcomeAsync for the verdict (see EscalationDecisionStatus.DecisionRecorded).
-			if (state.IsResolved)
-				return EscalationDecisionResult.DecisionRecorded();
+			EscalationOutcome? outcome;
+			IReadOnlyList<ApproverDecision> decisionsSnapshot;
 
-			// Closes the race two concurrent submissions from the same approver can win against
-			// the pre-audit duplicate check: only the first may enter the decision list, and a
-			// contradicting verdict is a conflict here exactly as at the chokepoint above.
-			if (TryGetExistingDecision(state, decision.ApproverName) is { } raced)
+			lock (state.Lock)
 			{
-				return raced.Approved != decision.Approved
-					? EscalationDecisionResult.ConflictingDecision()
-					: EscalationDecisionResult.DecisionRecorded();
+				// A verdict was already reached without this decision. If the resolution is
+				// parked on a failed durable/audit write, say so plainly rather than reporting
+				// a vote recorded that was in fact discarded.
+				if (state.IsResolved)
+				{
+					return state.ResolutionFailed
+						? EscalationDecisionResult.AwaitingReconciliation()
+						: EscalationDecisionResult.DecisionRecorded();
+				}
+
+				// Closes the race two concurrent submissions from the same approver can win against
+				// the pre-audit duplicate check: only the first may enter the decision list, and a
+				// contradicting verdict is a conflict here exactly as at the chokepoint above.
+				if (TryGetExistingDecision(state, decision.ApproverName) is { } raced)
+				{
+					return raced.Approved != decision.Approved
+						? EscalationDecisionResult.ConflictingDecision()
+						: EscalationDecisionResult.DecisionRecorded();
+				}
+
+				state.Decisions.Add(decision);
+				decisionsSnapshot = state.Decisions.ToList().AsReadOnly();
+				outcome = EvaluateResolution(state, strategy);
 			}
 
-			state.Decisions.Add(decision);
-			var evaluation = strategy.EvaluateDecision(state.Request, state.Decisions.AsReadOnly());
+			// Fail-closed durable decision write (no-op with the Null store): the decision must
+			// be durably recorded before it is reported recorded.
+			try
+			{
+				await _stateStore.SaveDecisionsAsync(state.Request.EscalationId, decisionsSnapshot, ct);
+			}
+			catch (Exception ex)
+			{
+				RollBackDecision(state, decision);
+				_logger.LogError(ex,
+					"Durable decision write failed for escalation {EscalationId}; failing closed (decision not recorded)",
+					state.Request.EscalationId);
+				throw new EscalationDurableStateException(
+					EscalationDurableStateException.DurableWriteFailedCode, ex);
+			}
 
-			_logger.LogDebug(
-				"Strategy evaluation for {EscalationId}: IsResolved={IsResolved}, IsApproved={IsApproved}",
-				escalationId, evaluation.IsResolved, evaluation.IsApproved);
-
-			if (!evaluation.IsResolved)
+			if (outcome is null)
 				return EscalationDecisionResult.DecisionRecorded();
 
-			state.IsResolved = true;
-			outcome = new EscalationOutcome
-			{
-				EscalationId = escalationId,
-				IsApproved = evaluation.IsApproved,
-				Decisions = state.Decisions.ToList().AsReadOnly(),
-				ResolutionType = evaluation.IsApproved
-					? EscalationResolutionType.Approved
-					: EscalationResolutionType.Denied,
-				ResolvedAt = DateTimeOffset.UtcNow,
-				Approvers = state.Request.Approvers
-			};
+			await ResolveEscalationAsync(state, outcome);
+			return EscalationDecisionResult.Resolved(outcome);
 		}
+		finally
+		{
+			state.WriteGate.Release();
+		}
+	}
 
-		await ResolveEscalationAsync(state, outcome);
-		return EscalationDecisionResult.Resolved(outcome);
+	/// <summary>
+	/// Evaluates the approval strategy against the current decision list and, when it resolves,
+	/// marks the state resolved and stashes the outcome. Must be called under
+	/// <see cref="EscalationState.Lock"/>.
+	/// </summary>
+	/// <param name="state">The active escalation.</param>
+	/// <param name="strategy">The approval strategy for this escalation.</param>
+	/// <returns>The resolved outcome, or null when the escalation remains pending.</returns>
+	private EscalationOutcome? EvaluateResolution(EscalationState state, IApprovalStrategy strategy)
+	{
+		var evaluation = strategy.EvaluateDecision(state.Request, state.Decisions.AsReadOnly());
+
+		_logger.LogDebug(
+			"Strategy evaluation for {EscalationId}: IsResolved={IsResolved}, IsApproved={IsApproved}",
+			state.Request.EscalationId, evaluation.IsResolved, evaluation.IsApproved);
+
+		if (!evaluation.IsResolved)
+			return null;
+
+		var outcome = new EscalationOutcome
+		{
+			EscalationId = state.Request.EscalationId,
+			IsApproved = evaluation.IsApproved,
+			Decisions = state.Decisions.ToList().AsReadOnly(),
+			ResolutionType = evaluation.IsApproved
+				? EscalationResolutionType.Approved
+				: EscalationResolutionType.Denied,
+			ResolvedAt = DateTimeOffset.UtcNow,
+			Approvers = state.Request.Approvers
+		};
+
+		MarkResolving(state, outcome);
+		return outcome;
+	}
+
+	/// <summary>
+	/// Backs the in-memory mutation out after a failed durable decision write, so a retry once
+	/// the store recovers replays cleanly instead of being rejected as a duplicate by a ghost
+	/// decision the durable store never accepted. Also releases the finalize claim so a
+	/// genuinely stuck state stays claimable by the reconciler.
+	/// </summary>
+	/// <param name="state">The active escalation.</param>
+	/// <param name="decision">The decision to remove.</param>
+	private static void RollBackDecision(EscalationState state, ApproverDecision decision)
+	{
+		lock (state.Lock)
+		{
+			state.Decisions.Remove(decision);
+			state.IsResolved = false;
+			state.PendingOutcome = null;
+			state.FinalizeClaimed = false;
+			state.ResolutionFailed = false;
+		}
 	}
 
 	/// <inheritdoc />
@@ -217,10 +334,16 @@ public sealed class DefaultEscalationService : IEscalationService, IDisposable
 	}
 
 	/// <inheritdoc />
-	public Task<EscalationOutcome?> GetOutcomeAsync(Guid escalationId, CancellationToken ct)
+	public async Task<EscalationOutcome?> GetOutcomeAsync(Guid escalationId, CancellationToken ct)
 	{
-		_resolvedOutcomes.TryGetValue(escalationId, out var outcome);
-		return Task.FromResult(outcome);
+		if (_resolvedOutcomes.TryGetValue(escalationId, out var outcome))
+			return outcome;
+
+		// Post-restart fallback: verdicts resolved and audited in a previous process lifetime
+		// are served from the durable store. The store only surfaces terminally-Resolved
+		// records (never ResolvedPendingAudit) and only when their seal verifies, so neither an
+		// un-audited nor a tampered outcome is observable. Null store returns null (parity).
+		return await _stateStore.GetResolvedOutcomeAsync(escalationId, ct);
 	}
 
 	/// <inheritdoc />
@@ -250,7 +373,6 @@ public sealed class DefaultEscalationService : IEscalationService, IDisposable
 			if (state.IsResolved)
 				throw new InvalidOperationException($"Escalation {escalationId} is already resolved");
 
-			state.IsResolved = true;
 			outcome = new EscalationOutcome
 			{
 				EscalationId = escalationId,
@@ -263,6 +385,7 @@ public sealed class DefaultEscalationService : IEscalationService, IDisposable
 				// so the force-denial is attributable to its actor, not just a log line.
 				CancelledBy = cancelledBy
 			};
+			MarkResolving(state, outcome);
 		}
 
 		_logger.LogInformation(
@@ -273,29 +396,53 @@ public sealed class DefaultEscalationService : IEscalationService, IDisposable
 	}
 
 	/// <inheritdoc />
+	/// <remarks>
+	/// Waits briefly for an in-flight reconcile pass to finish before disposing its gate: a
+	/// pass mid-<c>RecordOutcomeAsync</c> holds the gate, and disposing underneath it would
+	/// surface as an <see cref="ObjectDisposedException"/> from the release in its finally
+	/// block, masking the real shutdown. If the wait times out the gate is left undisposed —
+	/// a bounded leak on a shutting-down process is strictly better than tearing down a
+	/// compliance write mid-flight.
+	/// </remarks>
 	public void Dispose()
 	{
+		// Idempotent: a singleton can be disposed by both the container and a test fixture,
+		// and the reconcile-gate wait below would throw on a second pass.
+		if (Interlocked.Exchange(ref _disposed, 1) != 0)
+			return;
+
 		foreach (var state in _activeEscalations.Values)
 		{
 			state.Completion.TrySetCanceled();
 			state.TimeoutCts.Cancel();
-			state.TimeoutCts.Dispose();
+			state.DisposeSynchronizationPrimitives();
 		}
 		_activeEscalations.Clear();
+
+		if (_reconcileGate.Wait(TimeSpan.FromSeconds(5)))
+		{
+			_reconcileGate.Release();
+			_reconcileGate.Dispose();
+		}
+		else
+		{
+			_logger.LogWarning(
+				"A reconcile pass was still running at shutdown; leaving its gate undisposed rather than " +
+				"faulting the in-flight pass");
+		}
 	}
 
 	private EscalationState InitializeEscalation(EscalationRequest request)
 	{
-		if (request.Approvers.Count == 0)
+		// Fail closed at creation. The same invariants gate the durable rehydration path, so a
+		// hand-edited row can never produce a live escalation the creation path would refuse.
+		if (!EscalationRequestInvariants.TryValidate(request, out var violation))
 		{
-			// Fail closed at creation: an escalation with no approver roster can never be
-			// legitimately approved. Admitting it would let the AllOf strategy treat "nobody
-			// pending" as vacuously unanimous, or the timeout Approve action grant it silently.
 			_logger.LogWarning(
-				"Rejected escalation {EscalationId} for agent {AgentId}: empty approver roster",
-				request.EscalationId, request.AgentId);
+				"Rejected escalation {EscalationId} for agent {AgentId}: {Violation}",
+				request.EscalationId, request.AgentId, violation);
 			throw new InvalidOperationException(
-				$"Escalation {request.EscalationId} has no approvers; refusing to create an escalation that cannot be approved.");
+				$"Escalation {request.EscalationId} is invalid: {violation}.");
 		}
 
 		var state = new EscalationState
@@ -329,168 +476,32 @@ public sealed class DefaultEscalationService : IEscalationService, IDisposable
 		// half-created escalation and surfaces the failure. Notification stays best-effort.
 		await _auditStore.RecordRequestAsync(state.Request, ct);
 
-		await SafeExecuteAsync(
-			() => _notifier.NotifyEscalationRequestedAsync(state.Request, ct),
-			"notify request", state.Request.EscalationId);
-	}
-
-	private void RemoveFailedEscalation(EscalationState state)
-	{
-		if (_activeEscalations.TryRemove(state.Request.EscalationId, out _))
-		{
-			state.TimeoutCts.Cancel();
-			state.TimeoutCts.Dispose();
-			EscalationMetrics.Pending.Add(-1);
-		}
-	}
-
-	private async Task ResolveEscalationAsync(EscalationState state, EscalationOutcome outcome)
-	{
-		// Idempotency / teardown guard: if the completion was already settled
-		// (e.g. the service was disposed and cancelled it), don't re-run cleanup.
-		// Each caller (SubmitDecision/Cancel/Timeout) sets IsResolved under the
-		// state lock before calling here, so this runs at most once per escalation.
-		if (state.Completion.Task.IsCompleted)
-			return;
-
-		state.TimeoutCts.Cancel();
-
-		// Record the audit outcome BEFORE releasing the caller awaiting Completion.Task.
-		// The durable outcome write is fail-CLOSED: if it throws, the escalation must NOT
-		// be reported as resolved. Propagate the failure to the awaiting caller instead of
-		// delivering an approval that was never recorded for compliance. (SafeExecuteAsync
-		// is reserved for best-effort notification, never for the durable audit write.)
-		// The escalation deliberately stays in _activeEscalations on failure: it must remain
-		// observable (a resolved-but-unaudited escalation vanishing entirely would read as an
-		// unknown id to every poller) rather than dropping into a state no reader can see.
+		// Durable working-state write, equally fail-closed: an escalation that cannot be
+		// durably created must not open, or a restart would silently strand an approvable
+		// escalation. No-op with the Null store (durability disabled).
 		try
 		{
-			await _auditStore.RecordOutcomeAsync(outcome, CancellationToken.None);
+			await _stateStore.SavePendingAsync(state.Request, state.CreatedAt, ct);
 		}
 		catch (Exception ex)
 		{
 			_logger.LogError(ex,
-				"Failed to record outcome for escalation {EscalationId}; failing closed (escalation not reported resolved)",
-				outcome.EscalationId);
-			state.Completion.TrySetException(ex);
-			throw;
+				"Durable create failed for escalation {EscalationId}; failing closed (escalation not opened)",
+				state.Request.EscalationId);
+			throw new EscalationDurableStateException(
+				EscalationDurableStateException.DurableCreateFailedCode, ex);
 		}
-
-		// Retain the verdict ONLY after it has been durably audited, so GetOutcomeAsync — and thus
-		// the plan executor's resume reconciliation — can never act on a verdict that failed the
-		// fail-closed audit write above and was rolled back to the awaiting caller. Publish it
-		// BEFORE removing the escalation from the active set: a reader landing between the two
-		// steps sees at least one view (brief dual presence is fine — readers check the active
-		// set first and simply serve the pending view), never the spurious not-found a
-		// remove-then-publish order produced on exactly the poll the 202 contract prescribes.
-		_resolvedOutcomes[outcome.EscalationId] = outcome;
-		_activeEscalations.TryRemove(state.Request.EscalationId, out _);
-
-		EscalationMetrics.Pending.Add(-1);
-		RecordResolutionMetrics(state, outcome);
-
-		_logger.LogInformation(
-			"Escalation {EscalationId} resolved: {ResolutionType}, approved={IsApproved}",
-			outcome.EscalationId, outcome.ResolutionType, outcome.IsApproved);
 
 		await SafeExecuteAsync(
-			() => _notifier.NotifyEscalationResolvedAsync(outcome, CancellationToken.None),
-			"notify resolution", outcome.EscalationId);
-
-		state.Completion.TrySetResult(outcome);
-	}
-
-	private async Task RunTimeoutAsync(EscalationState state)
-	{
-		try
-		{
-			await Task.Delay(
-				TimeSpan.FromSeconds(state.Request.TimeoutSeconds),
-				state.TimeoutCts.Token);
-
-			await HandleTimeoutAsync(state);
-		}
-		catch (OperationCanceledException)
-		{
-			// Escalation resolved or caller cancelled before timeout -- normal path
-		}
-		catch (Exception ex)
-		{
-			_logger.LogError(ex, "Unexpected error in timeout handler for escalation {EscalationId}",
-				state.Request.EscalationId);
-		}
-	}
-
-	private async Task HandleTimeoutAsync(EscalationState state)
-	{
-		EscalationOutcome? outcome;
-
-		lock (state.Lock)
-		{
-			if (state.IsResolved)
-				return;
-
-			state.IsResolved = true;
-
-			outcome = new EscalationOutcome
-			{
-				EscalationId = state.Request.EscalationId,
-				IsApproved = state.Request.TimeoutAction == EscalationTimeoutAction.Approve,
-				Decisions = state.Decisions.ToList().AsReadOnly(),
-				ResolutionType = EscalationResolutionType.TimedOut,
-				ResolvedAt = DateTimeOffset.UtcNow,
-				Approvers = state.Request.Approvers
-			};
-		}
-
-		EscalationMetrics.Timeouts.Add(1,
-			new KeyValuePair<string, object?>(EscalationConventions.Priority,
-				ToPriorityTag(state.Request.Priority)));
-
-		_logger.LogWarning(
-			"Escalation {EscalationId} timed out with action {TimeoutAction}",
-			state.Request.EscalationId, state.Request.TimeoutAction);
-
-		await ResolveEscalationAsync(state, outcome);
-	}
-
-	private void CleanupCancelledEscalation(EscalationState state)
-	{
-		lock (state.Lock)
-		{
-			if (state.IsResolved)
-				return;
-			state.IsResolved = true;
-		}
-
-		_activeEscalations.TryRemove(state.Request.EscalationId, out _);
-		state.TimeoutCts.Cancel();
-		state.Completion.TrySetCanceled();
-		EscalationMetrics.Pending.Add(-1);
-		_logger.LogWarning("Escalation {EscalationId} cancelled by caller",
-			state.Request.EscalationId);
-	}
-
-	private static void RecordResolutionMetrics(EscalationState state, EscalationOutcome outcome)
-	{
-		var durationMs = (outcome.ResolvedAt - state.CreatedAt).TotalMilliseconds;
-
-		EscalationMetrics.Resolutions.Add(1,
-			new KeyValuePair<string, object?>(EscalationConventions.ResolutionType,
-				ToResolutionTag(outcome.ResolutionType)),
-			new KeyValuePair<string, object?>(EscalationConventions.Priority,
-				ToPriorityTag(state.Request.Priority)));
-
-		EscalationMetrics.DurationMs.Record(durationMs,
-			new KeyValuePair<string, object?>(EscalationConventions.Priority,
-				ToPriorityTag(state.Request.Priority)));
+			() => _notifier.NotifyEscalationRequestedAsync(state.Request, ct),
+			"notify request", state.Request.EscalationId);
 	}
 
 	/// <summary>
 	/// Returns this approver's already-recorded decision on the escalation, or null when none
 	/// exists, using <see cref="ApproverNames.Comparer"/> so a casing-variant retry is still a
 	/// duplicate. Takes the state lock itself, so callers may invoke it lock-free; the in-lock
-	/// re-check in <see cref="SubmitDecisionAsync"/> relies on the lock being reentrant for the
+	/// re-check in <see cref="ApplyDecisionAsync"/> relies on the lock being reentrant for the
 	/// same thread.
 	/// </summary>
 	private static ApproverDecision? TryGetExistingDecision(EscalationState state, string approverName)
@@ -549,6 +560,64 @@ public sealed class DefaultEscalationService : IEscalationService, IDisposable
 		public required CancellationTokenSource TimeoutCts { get; init; }
 		public required DateTimeOffset CreatedAt { get; init; }
 		public bool IsResolved { get; set; }
+
+		/// <summary>
+		/// True when this state was restored from the durable store rather than created in
+		/// this process.
+		/// </summary>
+		public bool WasRehydrated { get; init; }
+
+		/// <summary>
+		/// True when this state was rehydrated with its deadline ALREADY elapsed. Evaluated
+		/// once, at restore, and never re-derived: re-testing the deadline after the timeout
+		/// delay returns would let timer granularity or a backwards clock step report the
+		/// deadline as still in the future, skipping the fail-closed downgrade of
+		/// <c>TimeoutAction.Approve</c> and auto-approving an escalation no approver was
+		/// re-notified about. See <c>ResolveTimeoutApproval</c>.
+		/// </summary>
+		public bool ExpiredDuringDowntime { get; init; }
+
+		/// <summary>
+		/// The resolved outcome, stashed when <see cref="IsResolved"/> flips true so the
+		/// reconciler can re-drive a resolution whose fail-closed durable/audit writes faulted.
+		/// Null while the escalation is genuinely pending.
+		/// </summary>
+		public EscalationOutcome? PendingOutcome { get; set; }
+
+		/// <summary>
+		/// True while some path owns finalization of this resolution. Set in the SAME lock
+		/// block that sets <see cref="IsResolved"/>, so a reconcile pass can never claim a
+		/// resolution the live path is still driving — the window that otherwise lets a pass
+		/// finalize and notify while the live path then rolls back and tells the approver their
+		/// vote was NOT recorded. Cleared on rollback and on each resolution failure branch, so
+		/// a genuinely stuck state becomes claimable.
+		/// </summary>
+		public bool FinalizeClaimed { get; set; }
+
+		/// <summary>
+		/// True once a fail-closed durable or audit write failed during resolution, leaving the
+		/// escalation resolved-but-unrecorded. Distinguishes "parked awaiting reconciliation"
+		/// from a transient mid-resolution race, so a late decision gets an honest answer.
+		/// </summary>
+		public bool ResolutionFailed { get; set; }
+
+		/// <summary>
+		/// Serializes decision mutation plus its durable write for this escalation, making the
+		/// snapshot-to-persist step atomic against concurrent submissions.
+		/// </summary>
+		public SemaphoreSlim WriteGate { get; } = new(1, 1);
+
 		public readonly object Lock = new();
+
+		/// <summary>
+		/// Releases both disposable primitives this state owns. Every teardown path must call
+		/// this — disposing only <see cref="TimeoutCts"/> leaks the <see cref="WriteGate"/>'s
+		/// wait handle for the life of the process.
+		/// </summary>
+		public void DisposeSynchronizationPrimitives()
+		{
+			TimeoutCts.Dispose();
+			WriteGate.Dispose();
+		}
 	}
 }

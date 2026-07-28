@@ -46,5 +46,16 @@ public enum EscalationDecisionStatus
     /// This decision resolved the escalation. <see cref="EscalationDecisionResult.Outcome"/>
     /// carries the final <see cref="EscalationOutcome"/>. Maps naturally to HTTP 200.
     /// </summary>
-    Resolved
+    Resolved,
+
+    /// <summary>
+    /// The escalation already reached a resolution that could not be durably recorded (the
+    /// compliance audit or durable-state write failed), so it is parked awaiting an operator
+    /// reconcile pass. This decision was <em>not</em> recorded and did not participate — the
+    /// verdict was already decided before it arrived. Reporting
+    /// <see cref="DecisionRecorded"/> here would tell an approver their vote counted when it
+    /// was discarded. Poll <c>IEscalationService.GetOutcomeAsync</c>; the verdict becomes
+    /// observable once reconciliation completes. Maps naturally to HTTP 409 or 503.
+    /// </summary>
+    AwaitingReconciliation
 }

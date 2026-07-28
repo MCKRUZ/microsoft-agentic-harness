@@ -23,6 +23,18 @@ public sealed class FileSystemService : IFileSystemService
 
     private static readonly HashSet<string> SystemDirectoryBlocklist = BuildSystemBlocklist();
 
+    // Harness-owned state directories the tool may never read or write, regardless of the
+    // configured allowlist. Holds the governance-state database — pending escalations, their
+    // resolved verdicts, and change proposals. An agent that could read that file could mine
+    // approval payloads; one that could edit it could forge a human approval, which the
+    // reconciler would then re-drive into the hash-chained compliance audit log.
+    //
+    // Compared as CANONICAL ABSOLUTE PATHS, never as directory names: name matching is
+    // defeated by a Windows 8.3 short alias (AGENT-~1) or any other alias that resolves to the
+    // same directory but spells it differently. The canonical form comes from the same
+    // resolver the database registration uses, so the two cannot drift.
+    private readonly HashSet<string> _protectedPaths;
+
     // Directories skipped during recursive search — build artifacts and VCS internals
     // would exhaust the scan limit before reaching actual source files.
     private static readonly HashSet<string> SearchSkipDirectories = new(StringComparer.OrdinalIgnoreCase)
@@ -48,15 +60,29 @@ public sealed class FileSystemService : IFileSystemService
     /// Paths are normalized and compared case-insensitively. The caller must
     /// explicitly include the working directory if development access is desired.
     /// </param>
+    /// <param name="protectedPaths">
+    /// Absolute directory paths that are denied even when they fall inside
+    /// <paramref name="allowedBasePaths"/> — the harness's own governance-state directory.
+    /// The deny check wins over the allowlist and applies to reads, writes, and the recursive
+    /// search walk alike. Optional; omit for callers with no protected state.
+    /// </param>
     public FileSystemService(
         ILogger<FileSystemService> logger,
-        IEnumerable<string> allowedBasePaths)
+        IEnumerable<string> allowedBasePaths,
+        IEnumerable<string>? protectedPaths = null)
     {
         ArgumentNullException.ThrowIfNull(logger);
         ArgumentNullException.ThrowIfNull(allowedBasePaths);
 
         _logger = logger;
         _allowedBasePaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        _protectedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var path in protectedPaths ?? [])
+        {
+            if (!string.IsNullOrWhiteSpace(path))
+                _protectedPaths.Add(CanonicalizePath(path));
+        }
 
         foreach (var path in allowedBasePaths)
         {
@@ -188,7 +214,7 @@ public sealed class FileSystemService : IFileSystemService
         }
     }
 
-    private static IEnumerable<string> EnumerateFilesSkippingIgnored(
+    private IEnumerable<string> EnumerateFilesSkippingIgnored(
         string root, string pattern, CancellationToken cancellationToken)
     {
         var queue = new Queue<string>();
@@ -214,7 +240,12 @@ public sealed class FileSystemService : IFileSystemService
 
             foreach (var sub in subdirs)
             {
-                if (!SearchSkipDirectories.Contains(Path.GetFileName(sub)))
+                // The protected-path check must be repeated here, not just at the search root:
+                // the walk descends from an allowed root into whatever it finds, and the skip
+                // list is a performance filter (build artifacts, VCS internals), not a security
+                // boundary. Without this a search rooted at the workspace would descend into the
+                // governance-state directory and read the database's pages as text.
+                if (!SearchSkipDirectories.Contains(Path.GetFileName(sub)) && !IsProtectedPath(sub))
                     queue.Enqueue(sub);
             }
         }
@@ -224,6 +255,16 @@ public sealed class FileSystemService : IFileSystemService
         string filePath, string basePath, string searchTerm,
         List<FileSearchResult> results, CancellationToken cancellationToken)
     {
+        // Last line of defence before any file content is read. The directory filter above
+        // already prunes protected subtrees; this catches a protected file reached any other
+        // way (a file directly under an allowed root, a future enumeration change) so no
+        // content leaves this method without having passed the same gate a direct read does.
+        if (!IsPathAllowed(filePath))
+        {
+            _logger.LogWarning("Skipped search of disallowed path: {Path}", filePath);
+            return;
+        }
+
         try
         {
             var lineNumber = 0;
@@ -322,6 +363,18 @@ public sealed class FileSystemService : IFileSystemService
     private bool IsPathAllowed(string fullPath)
     {
         var normalized = Path.GetFullPath(fullPath);
+
+        // Deny list wins over the allowlist. Protected directories hold the harness's own
+        // governance state — the SQLite database of approval verdicts — and typically sit
+        // under a configured base path, so allowlisting alone would leave them reachable.
+        // An agent able to edit that file could forge an approval verdict, so the tool must
+        // not be able to read or write it under any configuration.
+        if (IsProtectedPath(normalized))
+        {
+            _logger.LogWarning("Blocked access to protected harness state directory: {Path}", normalized);
+            return false;
+        }
+
         foreach (var basePath in _allowedBasePaths)
         {
             // Match on directory boundary, not just string prefix
@@ -334,6 +387,59 @@ public sealed class FileSystemService : IFileSystemService
                 return true;
         }
         return false;
+    }
+
+    /// <summary>
+    /// True when <paramref name="fullPath"/> is, or lives under, a protected harness-state
+    /// directory.
+    /// </summary>
+    /// <remarks>
+    /// Compares canonicalized absolute paths on a directory boundary, so a legitimate sibling
+    /// such as <c>.agent-state-docs</c> is unaffected while an alias that merely spells the
+    /// protected directory differently (a Windows 8.3 short name, a symlinked parent already
+    /// resolved upstream) still matches.
+    /// </remarks>
+    /// <param name="fullPath">An absolute path.</param>
+    private bool IsProtectedPath(string fullPath)
+    {
+        if (_protectedPaths.Count == 0)
+            return false;
+
+        var normalized = CanonicalizePath(fullPath);
+        foreach (var protectedPath in _protectedPaths)
+        {
+            var withSeparator = protectedPath.EndsWith(Path.DirectorySeparatorChar)
+                ? protectedPath
+                : protectedPath + Path.DirectorySeparatorChar;
+
+            if (normalized.Equals(protectedPath, StringComparison.OrdinalIgnoreCase)
+                || normalized.StartsWith(withSeparator, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Resolves a path to its canonical absolute form, expanding OS-level aliases that
+    /// <see cref="Path.GetFullPath(string)"/> leaves intact — notably Windows 8.3 short names,
+    /// which would otherwise let <c>AGENT-~1</c> sidestep a comparison against the long name.
+    /// </summary>
+    /// <param name="path">The path to canonicalize.</param>
+    private static string CanonicalizePath(string path)
+    {
+        var full = Path.GetFullPath(path);
+        try
+        {
+            // ResolveLinkTarget(returnFinalTarget) canonicalizes an existing entry; for a path
+            // that does not exist yet the normalized form is the best available answer.
+            var info = Directory.Exists(full) ? new DirectoryInfo(full) : (FileSystemInfo)new FileInfo(full);
+            return info.Exists ? Path.GetFullPath(info.ResolveLinkTarget(true)?.FullName ?? info.FullName) : full;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            return full;
+        }
     }
 
     private void ValidateWriteTarget(string fullPath)

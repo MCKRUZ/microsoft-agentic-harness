@@ -33,11 +33,20 @@ public static partial class DependencyInjection
         AppConfig appConfig,
         IEnumerable<string> allowedBasePaths)
     {
-        // File system service — sandboxed file operations for direct consumption
+        // File system service — sandboxed file operations for direct consumption.
+        // The governance-state directory is denied unconditionally, even when it falls inside
+        // an allowed base path: it holds approval verdicts, so an agent that could read it
+        // could mine approval payloads and one that could write it could forge a verdict the
+        // reconciler would launder into the compliance audit log. Resolved through the same
+        // helper the database registration uses, so the two paths cannot drift apart.
+        var governanceStateDirectory = Path.GetDirectoryName(
+            Persistence.GovernanceStatePaths.Resolve(appConfig.AI.Governance.DurableState.DatabasePath));
+
         services.AddSingleton<IFileSystemService>(sp =>
             new FileSystemService(
                 sp.GetRequiredService<ILogger<FileSystemService>>(),
-                allowedBasePaths));
+                allowedBasePaths,
+                governanceStateDirectory is null ? [] : [governanceStateDirectory]));
 
         // File system tool — ITool adapter for LLM consumption, registered with keyed DI
         services.AddKeyedSingleton<ITool>(FileSystemTool.ToolName, (sp, _) =>
