@@ -2,6 +2,7 @@ using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Plugins;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Services.Governance;
+using Domain.AI.Planner;
 using Domain.AI.Skills;
 using Domain.Common.Config.AI.Plugins;
 using Microsoft.Extensions.AI;
@@ -68,7 +69,7 @@ public class ToolChainBuilder : IToolChainBuilder
                 skill.Id, skill.PluginSource, tools.Count);
 
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            return WrapGoverned(tools.Where(t => seen.Add(t.Name)));
+            return FinalizeChain(tools.Where(t => seen.Add(t.Name)), DescribeSource(skill, "injected MCP tool resolution"));
         }
 
         if (skill.Tools?.Count > 0)
@@ -101,7 +102,7 @@ public class ToolChainBuilder : IToolChainBuilder
         tools = ApplyPluginBoundaryIfPluginSkill(skill, tools);
 
         var seen2 = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        return WrapGoverned(tools.Where(t => seen2.Add(t.Name)));
+        return FinalizeChain(tools.Where(t => seen2.Add(t.Name)), DescribeSource(skill, "managed tool resolution"));
     }
 
     /// <summary>
@@ -122,6 +123,41 @@ public class ToolChainBuilder : IToolChainBuilder
             ? tools
             : ApplyPluginToolBoundary(tools, loadedPlugin.Declaration);
     }
+
+    /// <summary>
+    /// The single exit every resolution path in <em>this builder</em> returns through: drops tools whose
+    /// names collide with a reserved <see cref="PlanCapabilities"/> name (via the shared
+    /// <see cref="ReservedPlanCapabilityFilter"/>), then governance-wraps what survives. Every public
+    /// build method funnels here, so a tool the builder publishes has passed both checks exactly once.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The reserved-name check runs here rather than at boot because <c>ReservedPlanCapabilityGuard</c>
+    /// can only see first-party keyed <c>ITool</c> registrations at composition time, while MCP-client and
+    /// plugin-manifest tools are discovered at <em>runtime</em>. See
+    /// <see cref="ReservedPlanCapabilityFilter"/> for why the collision matters and why it degrades rather
+    /// than throwing.
+    /// </para>
+    /// <para>
+    /// <strong>This is not the only channel.</strong> The framework also merges tools contributed through
+    /// <c>AIContext.Tools</c> by <c>AIContextProvider</c>s, which never pass through this builder;
+    /// <c>GoverningToolContextProvider</c> applies the same shared filter on that channel. Both call the
+    /// one helper so the two enforcement points cannot drift.
+    /// </para>
+    /// </remarks>
+    /// <param name="tools">The deduplicated tools resolved by one build path.</param>
+    /// <param name="source">Human-readable description of where the tools were resolved from, for the drop log.</param>
+    private List<AITool> FinalizeChain(IEnumerable<AITool> tools, string source)
+        => WrapGoverned(ReservedPlanCapabilityFilter.Exclude(tools, source, _logger));
+
+    /// <summary>
+    /// Describes the resolution path a tool arrived on, naming the owning plugin when the skill is
+    /// plugin-sourced so a dropped collision points at the source that needs re-keying.
+    /// </summary>
+    private static string DescribeSource(SkillDefinition skill, string mode) =>
+        string.IsNullOrEmpty(skill.PluginSource)
+            ? $"{mode} for skill '{skill.Id}'"
+            : $"{mode} for skill '{skill.Id}' (plugin '{skill.PluginSource}')";
 
     /// <summary>
     /// Wraps each callable tool function in a <see cref="GovernedAIFunction"/> so a per-invocation
@@ -148,7 +184,7 @@ public class ToolChainBuilder : IToolChainBuilder
         }
 
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        return WrapGoverned(tools.Where(t => seen.Add(t.Name)));
+        return FinalizeChain(tools.Where(t => seen.Add(t.Name)), "keyed-DI resolution by name");
     }
 
     /// <inheritdoc />

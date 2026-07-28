@@ -67,4 +67,40 @@ public sealed class GlobPatternMatcherTests
     {
         _matcher.IsMatch("file_system", "").Should().BeFalse();
     }
+
+    [Fact]
+    public void Specificity_CatchAll_RanksLowest()
+    {
+        _matcher.Specificity("*").Should().Be(0);
+        _matcher.Specificity("").Should().Be(0, "an empty pattern matches nothing and can never be selected");
+    }
+
+    [Theory]
+    [InlineData("file_system", "file_*")]
+    [InlineData("file_system", "*")]
+    [InlineData("git:push", "git:*")]
+    [InlineData("git:*", "*")]
+    public void Specificity_NarrowerPattern_OutranksBroaderOne(string narrow, string broad)
+    {
+        _matcher.Specificity(narrow).Should().BeGreaterThan(_matcher.Specificity(broad));
+    }
+
+    [Theory]
+    [InlineData("file_system")]
+    [InlineData("a")]
+    [InlineData("query_knowledge_graph")]
+    public void Specificity_ExactPattern_OutranksEveryWildcardThatAlsoMatchesTheValue(string value)
+    {
+        // The interface contract the permission resolver depends on: whatever wildcard also matches this
+        // value, the pattern that names it exactly must rank above it — otherwise a catch-all rule could
+        // override a rule written for one specific tool.
+        var exact = _matcher.Specificity(value);
+
+        for (var length = 0; length < value.Length; length++)
+        {
+            var wildcard = value[..length] + "*";
+            _matcher.IsMatch(wildcard, value).Should().BeTrue("the generated pattern must actually match");
+            exact.Should().BeGreaterThan(_matcher.Specificity(wildcard));
+        }
+    }
 }

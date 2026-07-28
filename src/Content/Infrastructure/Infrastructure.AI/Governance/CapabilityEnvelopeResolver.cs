@@ -59,7 +59,7 @@ public sealed class CapabilityEnvelopeResolver : ICapabilityEnvelopeResolver
                           ?? principal.FindFirst("sub")?.Value;
 
             if (!string.IsNullOrEmpty(subject) && envelopes.BySubject.TryGetValue(subject, out var bySubject))
-                return Map(bySubject);
+                return WarnIfMcpGrantIsUnusable(Map(bySubject));
 
             var matchingRoles = RoleValues(principal)
                 .Where(role => envelopes.ByRole.ContainsKey(role))
@@ -67,10 +67,45 @@ public sealed class CapabilityEnvelopeResolver : ICapabilityEnvelopeResolver
                 .ToList();
 
             if (matchingRoles.Count > 0)
-                return CombineLeastPrivilege(matchingRoles);
+                return WarnIfMcpGrantIsUnusable(CombineLeastPrivilege(matchingRoles));
         }
 
-        return Map(envelopes.Default);
+        return WarnIfMcpGrantIsUnusable(Map(envelopes.Default));
+    }
+
+    /// <summary>
+    /// Warns when an envelope grants MCP servers but names no tools, and returns it unchanged.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// That shape is almost certainly an operator error rather than a deliberate grant.
+    /// <see cref="CapabilityEnvelope.AllowedMcpServers"/> gates which servers may be <em>contacted</em>;
+    /// invoking any tool one of them publishes still requires that tool's name in
+    /// <see cref="CapabilityEnvelope.AllowedTools"/>. So the run pays to reach every granted server, the
+    /// fetched schemas are published to the model, the model calls one — and the permission resolver
+    /// denies it, because the name is outside the allowlist. The operator sees a bundle that fails every
+    /// call for no visible reason.
+    /// </para>
+    /// <para>
+    /// This warns rather than throwing: the configuration is safe (it fails closed, which is the correct
+    /// direction) and an empty tool list is legitimate for a caller who is meant to have no tool access
+    /// at all. Refusing to start would turn a misconfiguration into an outage.
+    /// </para>
+    /// </remarks>
+    private CapabilityEnvelope WarnIfMcpGrantIsUnusable(CapabilityEnvelope envelope)
+    {
+        if (envelope.AllowedMcpServers.Count > 0 && envelope.AllowedTools.Count == 0)
+        {
+            _logger.LogWarning(
+                "Capability envelope grants {ServerCount} MCP server(s) ({Servers}) but names no tools in " +
+                "AllowedTools, so every tool those servers publish will be denied at invocation. " +
+                "AllowedMcpServers gates which servers may be CONTACTED; AllowedTools gates which tools may " +
+                "be INVOKED — list each MCP tool name in AllowedTools as well.",
+                envelope.AllowedMcpServers.Count,
+                string.Join(", ", envelope.AllowedMcpServers));
+        }
+
+        return envelope;
     }
 
     /// <summary>

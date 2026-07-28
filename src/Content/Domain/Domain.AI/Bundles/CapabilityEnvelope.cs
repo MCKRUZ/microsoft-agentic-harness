@@ -33,6 +33,19 @@ public sealed record CapabilityEnvelope
     /// The tool names this caller's bundle run may invoke. A tool the bundle requests that is not in this
     /// list is denied. Empty (the default) grants no tools — every tool call is denied.
     /// </summary>
+    /// <remarks>
+    /// <strong>Exact names only.</strong> Entries are literal tool names, matched case-insensitively;
+    /// they are not glob patterns. The rule provider that enforces this allowlist rejects any entry
+    /// containing a wildcard and logs an error, so <c>"*"</c> grants nothing rather than everything. That
+    /// is deliberate for an authorization list: a wildcard would also confer the reserved plan
+    /// capabilities (<see cref="Planner.PlanCapabilities"/>) without them ever appearing in the grant,
+    /// and <see cref="GrantsTool"/> would go on reporting them as ungranted. List each tool explicitly.
+    /// <para>
+    /// Tools reached through a granted MCP server are no exception — <see cref="AllowedMcpServers"/>
+    /// controls which servers may be <em>contacted</em>, while invoking any tool it publishes still
+    /// requires that tool's name here.
+    /// </para>
+    /// </remarks>
     public IReadOnlyList<string> AllowedTools { get; init; } = [];
 
     /// <summary>

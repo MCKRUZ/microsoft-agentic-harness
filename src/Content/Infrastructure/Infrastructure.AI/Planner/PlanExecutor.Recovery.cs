@@ -36,16 +36,27 @@ public sealed partial class PlanExecutor
     /// exceptions alike) route into <see cref="HandleStepFailureAsync"/>, so all three failure
     /// modes honour the same FailStep/SkipStep/FailPlan/Escalate policy.
     /// </summary>
+    /// <remarks>
+    /// <strong>Step-completed is a lifecycle signal, not the authoritative status.</strong> Recovery
+    /// runs before the notification, so an Escalate or SkipStep policy re-transitions the step to
+    /// Blocked or Skipped and the completed event that follows still reports Failed. Consumers must
+    /// read status from the state-update stream: the AG-UI bridge emits each transition as a JSON
+    /// Patch replacing <c>/steps/{stepId}/status</c>, and because recovery's transition is emitted
+    /// after the Failed one, the last patch carries the true terminal state. The same ordering
+    /// already applied to the Failed-result path before the notification was made unconditional, so
+    /// this widens an existing contract rather than introducing one.
+    /// </remarks>
     private async Task FailExhaustedStepAsync(PlanStep step, StepAttemptOutcome outcome, PlanExecutionRuntime ctx, CancellationToken ct)
     {
         await TransitionStepAsync(ctx.PlanId, step.Id, StepExecutionStatus.Failed, ctx.StepStates, ct, errorMessage: outcome.ErrorMessage);
         await HandleStepFailureAsync(step, outcome.ErrorMessage, ctx, ct);
 
-        // Completed-notification carries the executor's own result when one exists (a Failed
-        // result); timeout/exception attempts produce no result and — as before this retry loop
-        // existed — no step-completed notification, only the state-update transitions.
-        if (outcome.Result is not null)
-            await _notifier.NotifyStepCompletedAsync(ctx.PlanId, step.Id, StepExecutionStatus.Failed, outcome.Result.Duration, outcome.Result.Output, ct);
+        // Always pair the step-started notification with a completed one, so a subscribed UI never
+        // shows an exhausted step as permanently running. Timeout/exception attempts produce no
+        // result and therefore report zero duration and no output.
+        await _notifier.NotifyStepCompletedAsync(
+            ctx.PlanId, step.Id, StepExecutionStatus.Failed,
+            outcome.Result?.Duration ?? TimeSpan.Zero, outcome.Result?.Output, ct);
     }
 
     /// <summary>

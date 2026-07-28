@@ -65,6 +65,56 @@ public sealed class PlannerDiRegistrationTests : IDisposable
     }
 
     [Fact]
+    public void DependencyInjection_PlanRunExecutor_RegisteredAsSingleton()
+    {
+        // W2 regression guard: the single arming site for enveloped plan runs must be resolvable
+        // from the root provider (it creates its own per-run scope), mirroring IBundleRunExecutor.
+        var first = _provider.GetService<IPlanRunExecutor>();
+        var second = _provider.GetService<IPlanRunExecutor>();
+
+        first.Should().NotBeNull().And.BeOfType<PlanRunExecutor>();
+        second.Should().BeSameAs(first);
+    }
+
+    [Fact]
+    public void DependencyInjection_NoToolIsRegisteredUnderAReservedPlanCapabilityName()
+    {
+        // PlanCapabilities names are matched out of the same AllowedTools string space as keyed ITool
+        // registrations, so a tool registered under one of these keys would silently merge the two
+        // grants. Production refuses the collision at boot (ReservedPlanCapabilityGuard); this pins
+        // Infrastructure.AI's own registrations without booting a host.
+        //
+        // The keys must come off the ServiceDescriptors, NOT from GetServices<ITool>(): every tool
+        // here is registered with AddKeyedSingleton, and the non-keyed GetServices overload does not
+        // return keyed registrations — asserting over it can never fail.
+        var offenders = CreateServices()
+            .Where(d => d.ServiceType == typeof(Application.AI.Common.Interfaces.Tools.ITool)
+                        && d.ServiceKey is string key
+                        && PlanCapabilities.IsReserved(key))
+            .Select(d => (string)d.ServiceKey!)
+            .ToList();
+
+        offenders.Should().BeEmpty(
+            "a tool registered under a reserved plan-capability name would silently widen that grant");
+    }
+
+    [Fact]
+    public void DependencyInjection_KeyedToolDescriptorsAreVisibleToTheReservedNameScan()
+    {
+        // Guards the guard: the reserved-name assertion above is only meaningful if this scan
+        // actually sees the container's keyed ITool registrations. Its predecessor used
+        // GetServices<ITool>(), which returns nothing for keyed registrations, so it passed
+        // vacuously. If tool registration ever moves off keyed DI this fails and the reserved-name
+        // test must be re-pointed rather than left silently inert.
+        var keyedToolCount = CreateServices()
+            .Count(d => d.ServiceType == typeof(Application.AI.Common.Interfaces.Tools.ITool)
+                        && d.ServiceKey is string);
+
+        keyedToolCount.Should().BeGreaterThan(0,
+            "the reserved-name scan reads keyed ITool descriptors, so there must be some to read");
+    }
+
+    [Fact]
     public void DependencyInjection_AllSandboxServices_Resolvable()
     {
         using var scope = _provider.CreateScope();
@@ -135,7 +185,13 @@ public sealed class PlannerDiRegistrationTests : IDisposable
         ctx.Should().NotBeNull();
     }
 
-    private static ServiceProvider CreateServiceProvider()
+    private static ServiceProvider CreateServiceProvider() => CreateServices().BuildServiceProvider();
+
+    /// <summary>
+    /// Composes the same graph the provider is built from, returned un-built so descriptor-level
+    /// assertions (registration keys, lifetimes) can inspect it without resolving anything.
+    /// </summary>
+    private static IServiceCollection CreateServices()
     {
         var appConfig = new AppConfig
         {
@@ -163,6 +219,8 @@ public sealed class PlannerDiRegistrationTests : IDisposable
         // knowledge-scope accessor (now consumed by EfCorePlanStateStore for plan ownership)
         // delegates agent identity to it.
         services.AddScoped(_ => new Mock<Application.AI.Common.Interfaces.Agent.IAgentExecutionContext>().Object);
+        services.AddScoped(_ => new Mock<IToolInvocationGovernor>().Object);
+        services.AddSingleton(new Mock<Application.AI.Common.Interfaces.AI.IConversationBudgetTracker>().Object);
         services.AddSingleton<ISender>(new Mock<ISender>().Object);
         services.AddSingleton<IPlanProgressNotifier>(new Mock<IPlanProgressNotifier>().Object);
         services.AddSingleton<ICapabilityEnforcer>(new Mock<ICapabilityEnforcer>().Object);
@@ -181,7 +239,7 @@ public sealed class PlannerDiRegistrationTests : IDisposable
         // Register all Infrastructure.AI services (now includes planner/sandbox)
         services.AddInfrastructureAIDependencies(appConfig);
 
-        return services.BuildServiceProvider();
+        return services;
     }
 
     private sealed class AppConfigMonitorStub(AppConfig config) : IOptionsMonitor<AppConfig>

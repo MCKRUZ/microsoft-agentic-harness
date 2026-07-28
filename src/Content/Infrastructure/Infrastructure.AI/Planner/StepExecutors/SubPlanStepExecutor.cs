@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json;
+using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Planner;
 using Domain.AI.Planner;
 using Microsoft.Extensions.DependencyInjection;
@@ -11,12 +12,23 @@ namespace Infrastructure.AI.Planner.StepExecutors;
 /// Invokes a child plan in an isolated DI scope with depth limiting.
 /// The parent step blocks while the child plan executes.
 /// </summary>
+/// <remarks>
+/// The ambient capability envelope flows into the child execution on its own — it is carried by an
+/// <c>AsyncLocal</c>, which crosses DI scope boundaries — so an enveloped parent's grant confines the
+/// child identically (a tool denied in the parent stays denied in every sub-plan). The governance
+/// <em>identity</em> does not flow by itself: <see cref="IAgentExecutionContext"/> is DI-scoped and the
+/// child runs in a fresh scope, whose context would otherwise be empty — and the tool-invocation
+/// governor fails closed on identity-less tool calls whenever an envelope is ambient. This executor
+/// therefore re-stamps the parent's identity onto the child scope, so the child is governed as the same
+/// principal: granted tools keep working, denied tools stay denied.
+/// </remarks>
 public sealed class SubPlanStepExecutor : IPlanStepExecutor
 {
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly IPlanStateStore _planStateStore;
     private readonly IPlanProgressNotifier _notifier;
     private readonly PlanExecutionContext _executionContext;
+    private readonly IAgentExecutionContext _agentContext;
     private readonly ILogger<SubPlanStepExecutor> _logger;
 
     public SubPlanStepExecutor(
@@ -24,12 +36,14 @@ public sealed class SubPlanStepExecutor : IPlanStepExecutor
         IPlanStateStore planStateStore,
         IPlanProgressNotifier notifier,
         PlanExecutionContext executionContext,
+        IAgentExecutionContext agentContext,
         ILogger<SubPlanStepExecutor> logger)
     {
         _scopeFactory = scopeFactory;
         _planStateStore = planStateStore;
         _notifier = notifier;
         _executionContext = executionContext;
+        _agentContext = agentContext;
         _logger = logger;
     }
 
@@ -81,6 +95,8 @@ public sealed class SubPlanStepExecutor : IPlanStepExecutor
             CurrentPlanId = childPlanId
         };
 
+        PropagateGovernanceIdentity(scope.ServiceProvider, childPlanId.Value);
+
         var childExecutor = scope.ServiceProvider.GetRequiredService<IPlanExecutor>();
 
         try
@@ -118,14 +134,35 @@ public sealed class SubPlanStepExecutor : IPlanStepExecutor
         catch (Exception ex)
         {
             sw.Stop();
+            // Full detail stays in the structured log; only a stable code is persisted onto the step,
+            // because step error state is returned to callers and a child plan's failure can surface
+            // EF Core connection strings from the state store.
             _logger.LogError(ex, "Child plan execution threw for step {Step}", step.Name);
             return new StepExecutionResult
             {
                 Status = StepExecutionStatus.Failed,
-                ErrorMessage = $"Child plan exception: {ex.Message}",
+                ErrorMessage = PlanStepErrors.SubPlanFailed,
                 Duration = sw.Elapsed
             };
         }
+    }
+
+    /// <summary>
+    /// Stamps the parent's governance identity onto the child scope's execution context, so tool
+    /// governance inside the sub-plan resolves against the same principal as the parent. No-op when
+    /// the parent carries no identity (an ungoverned direct <c>IPlanExecutor</c> run) — the child then
+    /// behaves exactly as it did before envelope confinement existed.
+    /// </summary>
+    private void PropagateGovernanceIdentity(IServiceProvider childServices, PlanId childPlanId)
+    {
+        if (string.IsNullOrEmpty(_agentContext.AgentId))
+            return;
+
+        var childAgentContext = childServices.GetRequiredService<IAgentExecutionContext>();
+        childAgentContext.Initialize(
+            _agentContext.AgentId,
+            _agentContext.ConversationId ?? childPlanId.Value.ToString(),
+            _agentContext.TurnNumber ?? 1);
     }
 
     private async Task<PlanId?> ResolveChildPlanId(SubPlanConfig config, CancellationToken ct)

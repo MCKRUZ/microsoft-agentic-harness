@@ -133,6 +133,7 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 						Turns = turns,
 						FinalResponse = string.Empty,
 						TotalToolInvocations = totalToolInvocations,
+						TotalTokens = totalInputTokens + totalOutputTokens,
 						Error = $"Turn {index + 1} failed: {lastResult.Error}"
 					};
 				}
@@ -205,6 +206,7 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 				Turns = turns,
 				FinalResponse = lastResult?.Response ?? string.Empty,
 				TotalToolInvocations = totalToolInvocations,
+				TotalTokens = totalInputTokens + totalOutputTokens,
 				BudgetExhausted = stoppedForBudget,
 				Governance = governanceTraces.Count > 0 ? GovernanceTrace.Merge(governanceTraces) : null
 			};

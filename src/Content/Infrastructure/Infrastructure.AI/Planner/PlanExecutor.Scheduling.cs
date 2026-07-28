@@ -76,8 +76,9 @@ public sealed partial class PlanExecutor
             // Non-attempt infrastructure failure (executor resolution, state persistence,
             // notification). Attempt-level executor exceptions are consumed by the retry loop, so
             // anything reaching here is outside the retry budget: fail the step and skip downstream.
+            // Persist a stable code, never the raw message — see PlanStepErrors.
             _logger.LogError(ex, "Unhandled exception executing step {StepId} in plan {PlanId}", step.Id, ctx.PlanId);
-            await TransitionStepAsync(ctx.PlanId, step.Id, StepExecutionStatus.Failed, ctx.StepStates, ct, errorMessage: ex.Message);
+            await TransitionStepAsync(ctx.PlanId, step.Id, StepExecutionStatus.Failed, ctx.StepStates, ct, errorMessage: PlanStepErrors.ExecutionFailed);
             await SkipDownstreamSubgraphAsync(step.Id, ctx);
         }
         finally
@@ -105,6 +106,12 @@ public sealed partial class PlanExecutor
     /// </remarks>
     private async Task RunStepWithRetriesAsync(PlanStep step, PlanExecutionRuntime ctx, CancellationToken ct)
     {
+        // Envelope autonomy ceiling: a step declaring a RequiredAutonomyLevel above what the ambient
+        // capability envelope permits must not run at all — for ANY step type, before its executor is
+        // even resolved. See PlanExecutor.EnvelopeCeiling.cs for why this is terminal.
+        if (await TryDenyForAutonomyCeilingAsync(step, ctx, ct))
+            return;
+
         var executor = _serviceProvider.GetRequiredKeyedService<IPlanStepExecutor>(step.Type);
         var upstreamOutputs = GetUpstreamOutputs(step.Id, ctx.DependencyMap, ctx.StepOutputs);
         var firstIteration = true;
@@ -123,25 +130,49 @@ public sealed partial class PlanExecutor
             var attemptsMade = ctx.StepStates[step.Id].AttemptCount;
             var outcome = await ExecuteSingleAttemptAsync(step, executor, upstreamOutputs, ctx, ct);
 
-            if (outcome.Result is not null && outcome.Result.Status != StepExecutionStatus.Failed)
-            {
-                await HandleStepResultAsync(step, outcome.Result, ctx, ct);
-                await _notifier.NotifyStepCompletedAsync(ctx.PlanId, step.Id, outcome.Result.Status, outcome.Result.Duration, outcome.Result.Output, ct);
+            if (await TryFinishAttemptAsync(step, outcome, attemptsMade, ctx, ct))
                 return;
-            }
 
-            if (ShouldRetry(step.RetryPolicy, attemptsMade))
-            {
-                _logger.LogWarning(
-                    "Step {StepId} in plan {PlanId} failed attempt {Attempt} of {MaxAttempts} ({Error}); retrying after backoff",
-                    step.Id, ctx.PlanId, attemptsMade, step.RetryPolicy.MaxRetries + 1, outcome.ErrorMessage);
-                await DelayBeforeRetryAsync(step.RetryPolicy, attemptsMade, ct);
-                continue;
-            }
-
-            await FailExhaustedStepAsync(step, outcome, ctx, ct);
-            return;
+            _logger.LogWarning(
+                "Step {StepId} in plan {PlanId} failed attempt {Attempt} of {MaxAttempts} ({Error}); retrying after backoff",
+                step.Id, ctx.PlanId, attemptsMade, step.RetryPolicy.MaxRetries + 1, outcome.ErrorMessage);
+            await DelayBeforeRetryAsync(step.RetryPolicy, attemptsMade, ct);
         }
+    }
+
+    /// <summary>
+    /// Applies one attempt's outcome and reports whether the step reached a terminal disposition.
+    /// </summary>
+    /// <returns>
+    /// <c>true</c> when the step is finished (completed, parked, denied, or out of retry budget) and
+    /// the retry loop must stop; <c>false</c> when the caller should back off and attempt again.
+    /// </returns>
+    private async Task<bool> TryFinishAttemptAsync(
+        PlanStep step, StepAttemptOutcome outcome, int attemptsMade, PlanExecutionRuntime ctx, CancellationToken ct)
+    {
+        // Completed, or parked in Blocked by a human gate.
+        if (outcome.Result is not null && outcome.Result.Status != StepExecutionStatus.Failed)
+        {
+            await HandleStepResultAsync(step, outcome.Result, ctx, ct);
+            await _notifier.NotifyStepCompletedAsync(
+                ctx.PlanId, step.Id, outcome.Result.Status, outcome.Result.Duration, outcome.Result.Output, ct);
+            return true;
+        }
+
+        // A governance denial is not a transient fault: retrying cannot change the envelope's answer,
+        // and the plan's own OnExhausted policy must not get to decide the disposition of the check
+        // that constrains the plan. Terminal, immediately — see PlanExecutor.EnvelopeCeiling.cs.
+        if (outcome.Result is { IsPolicyDenial: true })
+        {
+            await FailPolicyDeniedStepAsync(step, outcome.Result.ErrorMessage, ctx, ct, outcome.Result);
+            return true;
+        }
+
+        if (ShouldRetry(step.RetryPolicy, attemptsMade))
+            return false;
+
+        await FailExhaustedStepAsync(step, outcome, ctx, ct);
+        return true;
     }
 
     /// <summary>
@@ -182,7 +213,7 @@ public sealed partial class PlanExecutor
             StepExecutionsCounter.Add(1,
                 new KeyValuePair<string, object?>("type", step.Type.ToString()),
                 new KeyValuePair<string, object?>("status", "timeout"));
-            return new StepAttemptOutcome(null, "Step timeout exceeded");
+            return new StepAttemptOutcome(null, PlanStepErrors.Timeout);
         }
         catch (OperationCanceledException)
         {
@@ -191,17 +222,15 @@ public sealed partial class PlanExecutor
         }
         catch (Exception ex)
         {
-            // Unhandled executor exception — counts as a failed, retryable attempt.
+            // Unhandled executor exception — counts as a failed, retryable attempt. The message is
+            // logged in full but reduced to a stable code before it can be persisted onto the step:
+            // step error state is returned to callers, and executor exceptions carry paths and
+            // connection strings.
             _logger.LogError(ex, "Unhandled exception executing step {StepId} in plan {PlanId} (attempt will consume retry budget)", step.Id, ctx.PlanId);
-            return new StepAttemptOutcome(null, ex.Message);
+            return new StepAttemptOutcome(null, PlanStepErrors.ExecutionFailed);
         }
     }
 
-    /// <summary>
-    /// Outcome of a single execution attempt: either the executor's result, or — when
-    /// <see cref="Result"/> is null — a synthesized error for a per-attempt timeout or an
-    /// unhandled executor exception. Both null-result shapes and a Failed result are retryable.
-    /// </summary>
     /// <summary>
     /// The outcome of one step attempt: the executor's result when it produced one, or a
     /// synthesized error for attempts that never returned (timeout, unhandled exception).
@@ -313,83 +342,4 @@ public sealed partial class PlanExecutor
         }
     }
 
-    private static (Dictionary<PlanStepId, HashSet<PlanStepId>> DependencyMap,
-        Dictionary<PlanStepId, List<(PlanStepId Target, EdgeType Type)>> DependentMap) BuildGraphMaps(PlanGraph plan)
-    {
-        var dependencyMap = new Dictionary<PlanStepId, HashSet<PlanStepId>>();
-        var dependentMap = new Dictionary<PlanStepId, List<(PlanStepId, EdgeType)>>();
-
-        foreach (var step in plan.Steps)
-        {
-            dependencyMap[step.Id] = [];
-            dependentMap[step.Id] = [];
-        }
-
-        foreach (var edge in plan.Edges)
-        {
-            dependencyMap[edge.To].Add(edge.From);
-            dependentMap[edge.From].Add((edge.To, edge.Type));
-        }
-
-        return (dependencyMap, dependentMap);
-    }
-
-    private static bool TryMarkReady(PlanStepId stepId, ConcurrentDictionary<PlanStepId, StepExecutionState> stepStates)
-    {
-        while (true)
-        {
-            var current = stepStates.GetValueOrDefault(stepId);
-            if (current is null || current.Status != StepExecutionStatus.Pending)
-                return false;
-
-            var newState = current with { Status = StepExecutionStatus.Ready };
-            if (stepStates.TryUpdate(stepId, newState, current))
-                return true;
-        }
-    }
-
-    private static IReadOnlyDictionary<PlanStepId, string> GetUpstreamOutputs(
-        PlanStepId stepId,
-        Dictionary<PlanStepId, HashSet<PlanStepId>> dependencyMap,
-        ConcurrentDictionary<PlanStepId, string> stepOutputs)
-    {
-        var outputs = new Dictionary<PlanStepId, string>();
-        if (!dependencyMap.TryGetValue(stepId, out var dependencies))
-            return outputs;
-
-        foreach (var depId in dependencies)
-        {
-            if (stepOutputs.TryGetValue(depId, out var output))
-                outputs[depId] = output;
-        }
-        return outputs;
-    }
-
-    private static bool IsStepReady(
-        PlanStepId stepId,
-        ConcurrentDictionary<PlanStepId, StepExecutionState> stepStates,
-        Dictionary<PlanStepId, HashSet<PlanStepId>> dependencyMap)
-    {
-        if (!dependencyMap.TryGetValue(stepId, out var dependencies) || dependencies.Count == 0)
-            return true;
-
-        return dependencies.All(depId =>
-        {
-            var depState = stepStates.GetValueOrDefault(depId);
-            return depState?.Status is StepExecutionStatus.Completed or StepExecutionStatus.Skipped;
-        });
-    }
-
-    private static bool AllStepsTerminal(ConcurrentDictionary<PlanStepId, StepExecutionState> stepStates)
-        => stepStates.Values.All(s => s.Status is StepExecutionStatus.Completed
-            or StepExecutionStatus.Failed
-            or StepExecutionStatus.Skipped
-            or StepExecutionStatus.Blocked
-            or StepExecutionStatus.Cancelled);
-
-    private static bool HasBlockedSteps(ConcurrentDictionary<PlanStepId, StepExecutionState> stepStates)
-        => stepStates.Values.Any(s => s.Status == StepExecutionStatus.Blocked);
-
-    private static bool HasPendingOrReadySteps(ConcurrentDictionary<PlanStepId, StepExecutionState> stepStates)
-        => stepStates.Values.Any(s => s.Status is StepExecutionStatus.Pending or StepExecutionStatus.Ready);
 }

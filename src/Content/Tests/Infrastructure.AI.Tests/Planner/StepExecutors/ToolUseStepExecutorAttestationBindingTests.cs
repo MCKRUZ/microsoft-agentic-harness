@@ -67,8 +67,14 @@ public sealed class ToolUseStepExecutorAttestationBindingTests
         services.AddKeyedSingleton<ISandboxExecutor>(SandboxIsolationLevel.Process, _sandboxExecutor.Object);
         services.AddKeyedSingleton<ISandboxExecutor>(SandboxIsolationLevel.Container, _sandboxExecutor.Object);
 
+        // Ungoverned default: no envelope armed and enforcement off means the governor allows.
+        var toolGovernor = new Mock<IToolInvocationGovernor>();
+        toolGovernor.Setup(g => g.AuthorizeAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns(ValueTask.FromResult(ToolInvocationDecision.Allow()));
+
         _sut = new ToolUseStepExecutor(
             _capabilityEnforcer.Object,
+            toolGovernor.Object,
             services.BuildServiceProvider(),
             _attestationService,
             _responseSanitizer.Object,
@@ -150,6 +156,9 @@ public sealed class ToolUseStepExecutorAttestationBindingTests
         var result = await _sut.ExecuteAsync(CreateStep(), new Dictionary<PlanStepId, string>(), CancellationToken.None);
 
         Assert.Equal(StepExecutionStatus.Failed, result.Status);
-        Assert.Equal("Process timed out", result.ErrorMessage);
+        // The tool-failure code, not the attestation-failure message: the distinction this test exists
+        // for. The sandbox's own text ("Process timed out") stays in the structured log — it can carry
+        // host paths and container ids, and step error state is relayed to callers.
+        Assert.Equal(PlanStepErrors.ToolFailed, result.ErrorMessage);
     }
 }

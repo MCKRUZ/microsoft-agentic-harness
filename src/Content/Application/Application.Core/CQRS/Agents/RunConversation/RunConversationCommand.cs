@@ -63,6 +63,30 @@ public record ConversationResult
 	public string? Error { get; init; }
 
 	/// <summary>
+	/// Input+output tokens consumed across every turn of this conversation.
+	/// </summary>
+	/// <remarks>
+	/// <para>
+	/// The handler folds the same figure into the conversation-lifetime budget under this
+	/// conversation's own id, then releases that entry when it returns. Surfacing the total lets a
+	/// caller that owns a <em>larger</em> unit of work than one conversation — a plan run spanning
+	/// many single-conversation steps — accumulate spend against its own budget key without trying
+	/// to reach into the entry this handler owns and disposes.
+	/// </para>
+	/// <para>
+	/// <strong>Not an exact meter on the failure path.</strong> A turn that fails returns before its
+	/// usage is folded into the running totals, so a conversation that burned tokens and then errored
+	/// reports a <em>partial</em> total: every turn that already succeeded is counted, only the
+	/// failing turn's usage is missing. The figure is zero only in the special case where the first
+	/// turn is the one that fails. A caller metering spend across many conversations therefore
+	/// under-counts each failed one by its final turn. That is a deliberate consequence of the
+	/// existing early-return, not a guarantee: treat this as the accounted total, not the billed
+	/// total.
+	/// </para>
+	/// </remarks>
+	public int TotalTokens { get; init; }
+
+	/// <summary>
 	/// True when the conversation stopped early because it exhausted its lifetime token budget
 	/// (<c>AppConfig.AI.AgentFramework.ConversationTokenBudget</c>). This is a graceful stop, not a
 	/// failure: <see cref="Success"/> stays true and <see cref="Turns"/> holds the turns that ran.

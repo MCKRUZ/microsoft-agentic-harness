@@ -8,6 +8,7 @@ using Domain.AI.Permissions;
 using Domain.AI.Skills;
 using Domain.AI.Tools;
 using FluentAssertions;
+using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
 namespace Application.Core.Tests.Permissions;
@@ -15,12 +16,21 @@ namespace Application.Core.Tests.Permissions;
 /// <summary>
 /// Tests the capability-envelope rule provider — the enforcement half of the per-caller grant. It is inert
 /// off the bundle path (no ambient envelope) and, when an envelope is active, emits bypass-immune Deny for
-/// the tools a bundle declares but is not granted plus an autonomy-ceiling baseline for the granted tools.
-/// The tests set the ambient envelope and overlay directly, exactly how a bundle run will at runtime.
+/// the tools a bundle declares but is not granted, an autonomy-ceiling baseline for the granted tools, and
+/// one closing catch-all Deny that makes the allowlist a closed set. The tests set the ambient envelope and
+/// overlay directly, exactly how a bundle run will at runtime.
 /// </summary>
 public sealed class EnvelopePermissionRuleProviderTests
 {
-    private readonly EnvelopePermissionRuleProvider _provider = new();
+    private readonly EnvelopePermissionRuleProvider _provider =
+        new(NullLogger<EnvelopePermissionRuleProvider>.Instance);
+
+    /// <summary>
+    /// The rules written for a specific tool name, i.e. everything except the closing catch-all. Most
+    /// assertions here are about the per-tool rules; the catch-all has its own dedicated tests.
+    /// </summary>
+    private static IEnumerable<ToolPermissionRule> PerTool(IEnumerable<ToolPermissionRule> rules)
+        => rules.Where(r => r.ToolPattern != "*");
 
     [Fact]
     public void Source_IsCapabilityEnvelope()
@@ -44,7 +54,8 @@ public sealed class EnvelopePermissionRuleProviderTests
         {
             var rules = await _provider.GetRulesAsync("bundle");
 
-            var deny = rules.Should().ContainSingle(r => r.Behavior == PermissionBehaviorType.Deny).Subject;
+            var deny = PerTool(rules).Should()
+                .ContainSingle(r => r.Behavior == PermissionBehaviorType.Deny).Subject;
             deny.ToolPattern.Should().Be("bash", "the declared tool the envelope does not grant is denied by name");
             deny.IsBypassImmune.Should().BeTrue("an out-of-envelope deny cannot be lifted by any auto-approve mode");
             deny.Source.Should().Be(PermissionRuleSource.CapabilityEnvelope);
@@ -60,8 +71,8 @@ public sealed class EnvelopePermissionRuleProviderTests
         {
             var rules = await _provider.GetRulesAsync("bundle");
 
-            rules.Should().NotContain(r => r.Behavior == PermissionBehaviorType.Deny);
-            var baseline = rules.Should().ContainSingle(r => r.IsAuthoritativeBaseline).Subject;
+            PerTool(rules).Should().NotContain(r => r.Behavior == PermissionBehaviorType.Deny);
+            var baseline = PerTool(rules).Should().ContainSingle(r => r.IsAuthoritativeBaseline).Subject;
             baseline.ToolPattern.Should().Be("file_system");
             baseline.Behavior.Should().Be(PermissionBehaviorType.Ask, "Supervised caps autonomy at approval-required");
         }
@@ -77,7 +88,7 @@ public sealed class EnvelopePermissionRuleProviderTests
         {
             var rules = await _provider.GetRulesAsync("bundle");
 
-            rules.Should().ContainSingle(r => r.IsAuthoritativeBaseline)
+            PerTool(rules).Should().ContainSingle(r => r.IsAuthoritativeBaseline)
                 .Which.Behavior.Should().Be(expected);
         }
     }
@@ -93,8 +104,8 @@ public sealed class EnvelopePermissionRuleProviderTests
         {
             var rules = await _provider.GetRulesAsync("bundle");
 
-            rules.Should().OnlyContain(r => r.Behavior == PermissionBehaviorType.Deny && r.IsBypassImmune);
-            rules.Select(r => r.ToolPattern).Should().BeEquivalentTo(["file_system", "bash"]);
+            PerTool(rules).Should().OnlyContain(r => r.Behavior == PermissionBehaviorType.Deny && r.IsBypassImmune);
+            PerTool(rules).Select(r => r.ToolPattern).Should().BeEquivalentTo(["file_system", "bash"]);
         }
     }
 
@@ -109,7 +120,7 @@ public sealed class EnvelopePermissionRuleProviderTests
         {
             var rules = await _provider.GetRulesAsync("bundle");
 
-            rules.Should().NotContain(r => r.Behavior == PermissionBehaviorType.Deny);
+            PerTool(rules).Should().NotContain(r => r.Behavior == PermissionBehaviorType.Deny);
         }
     }
 
@@ -137,7 +148,7 @@ public sealed class EnvelopePermissionRuleProviderTests
         {
             var rules = await _provider.GetRulesAsync("bundle");
 
-            rules.Where(r => r.Behavior == PermissionBehaviorType.Deny).Select(r => r.ToolPattern)
+            PerTool(rules).Where(r => r.Behavior == PermissionBehaviorType.Deny).Select(r => r.ToolPattern)
                 .Should().BeEquivalentTo(["declared_tool"], "only the skill tool outside the envelope is denied");
         }
     }
@@ -154,9 +165,45 @@ public sealed class EnvelopePermissionRuleProviderTests
         {
             var rules = await _provider.GetRulesAsync("some-other-agent");
 
-            rules.Should().NotContain(r => r.Behavior == PermissionBehaviorType.Deny);
-            rules.Should().ContainSingle(r => r.IsAuthoritativeBaseline)
+            PerTool(rules).Should().NotContain(r => r.Behavior == PermissionBehaviorType.Deny);
+            PerTool(rules).Should().ContainSingle(r => r.IsAuthoritativeBaseline)
                 .Which.ToolPattern.Should().Be("file_system");
+        }
+    }
+
+    [Fact]
+    public async Task ActiveEnvelope_EmitsClosingCatchAllDeny()
+    {
+        // The rule that makes the allowlist a CLOSED set. It must be a baseline (so it is arbitrated in
+        // phase 1.5 by specificity rather than swallowing the grants in the phase-1b Deny scan) and sit at
+        // the lowest possible precedence. Without it an ungranted name matches nothing here and falls
+        // through to the host's generic autonomy tier, which ships as "* Allow" on both bundle hosts.
+        using (CapabilityEnvelopeAccessor.Begin(Envelope(tools: ["file_system"])))
+        {
+            var rules = await _provider.GetRulesAsync("bundle");
+
+            var closing = rules.Should().ContainSingle(r => r.ToolPattern == "*").Subject;
+            closing.Behavior.Should().Be(PermissionBehaviorType.Deny);
+            closing.IsAuthoritativeBaseline.Should().BeTrue(
+                "a plain Deny would match in phase 1b and deny the granted tools too");
+            closing.Priority.Should().Be(int.MaxValue, "every other baseline must outrank it on a tie");
+            closing.Source.Should().Be(PermissionRuleSource.CapabilityEnvelope);
+        }
+    }
+
+    [Fact]
+    public async Task WildcardGrant_IsRejected_AndGrantsNothing()
+    {
+        // An operator writing "*" to mean "all tools" must not silently obtain the reserved plan
+        // capabilities. The entry is dropped, so no baseline is emitted for it and only the closing Deny
+        // remains — the run is confined to the grants that were actually spelled out (here, none).
+        using (CapabilityEnvelopeAccessor.Begin(Envelope(tools: ["*", "file_*", "file_system"])))
+        {
+            var rules = await _provider.GetRulesAsync("bundle");
+
+            PerTool(rules).Select(r => r.ToolPattern).Should().BeEquivalentTo(
+                ["file_system"],
+                "only the exact-name grant survives; wildcard entries are rejected");
         }
     }
 

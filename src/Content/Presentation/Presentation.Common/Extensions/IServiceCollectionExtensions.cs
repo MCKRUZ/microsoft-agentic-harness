@@ -42,6 +42,7 @@ using Microsoft.Identity.Web;
 using Presentation.Common.Helpers;
 using Presentation.Common.Hosting;
 using Presentation.Common.Security;
+using Presentation.Common.Startup;
 
 namespace Presentation.Common.Extensions;
 
@@ -320,6 +321,12 @@ public static class IServiceCollectionExtensions
 
         // Project dependencies BEFORE telemetry so ITelemetryConfigurator implementations are registered
         services.AddGlobalProjectDependencies(appConfig);
+
+        // Every keyed ITool registration has now run, so this is the first point at which the
+        // reserved-name collision can be decided. A tool keyed as a PlanCapabilities name silently
+        // merges the plan-capability grant with that tool's grant inside the capability envelope —
+        // fail-open, so it is refused here rather than left to review.
+        services.ValidateNoReservedPlanCapabilityToolKeys();
 
         // OTel pipeline (must be after project deps to pick up configurators)
         services.AddOpenTelemetry(appConfig);

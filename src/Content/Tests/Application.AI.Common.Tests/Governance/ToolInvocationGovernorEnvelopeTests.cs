@@ -143,4 +143,65 @@ public sealed class ToolInvocationGovernorEnvelopeTests
         _permissions.Verify(x => x.ResolvePermissionAsync(It.IsAny<string>(), It.IsAny<string>(),
             It.IsAny<string?>(), It.IsAny<IReadOnlyDictionary<string, object?>?>(), It.IsAny<CancellationToken>()), Times.Never);
     }
+
+    [Fact]
+    public async Task ResolverAllowsToolTheEnvelopeDoesNotGrant_IsStillDenied()
+    {
+        // The defence-in-depth check, and the reason it exists: the permission resolver was the SOLE
+        // enforcement point for tool names at invocation, and its arbitration has been wrong twice — a
+        // tier default that allowed anything unmatched, then a plugin baseline that outranked the
+        // envelope's closing deny. Both were caught by human review, not by the system refusing.
+        //
+        // This test forces the exact condition those bugs produced: the resolver says Allow for a tool
+        // the armed envelope never granted. The governor must refuse anyway.
+        _permissions
+            .Setup(x => x.ResolvePermissionAsync(It.IsAny<string>(), It.IsAny<string>(),
+                It.IsAny<string?>(), It.IsAny<IReadOnlyDictionary<string, object?>?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(PermissionDecision.Allow("resolver arbitration bug"));
+        var governor = Build();
+
+        ToolInvocationDecision decision;
+        using (CapabilityEnvelopeAccessor.Begin(Envelope()))
+            decision = await governor.AuthorizeAsync("ungranted_tool", CancellationToken.None);
+
+        Assert.False(decision.IsAllowed);
+        _denialTracker.Verify(x => x.RecordDenial(Agent, "ungranted_tool"), Times.Once);
+    }
+
+    [Fact]
+    public async Task ResolverAllowsToolTheEnvelopeGrants_IsAllowed()
+    {
+        // The other direction, and the one that proves the guard is not simply denying everything.
+        // Without this a "deny unconditionally" regression would leave the test above green.
+        _permissions
+            .Setup(x => x.ResolvePermissionAsync(It.IsAny<string>(), It.IsAny<string>(),
+                It.IsAny<string?>(), It.IsAny<IReadOnlyDictionary<string, object?>?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(PermissionDecision.Allow("granted"));
+        var governor = Build();
+
+        ToolInvocationDecision decision;
+        using (CapabilityEnvelopeAccessor.Begin(Envelope()))
+            decision = await governor.AuthorizeAsync(Tool, CancellationToken.None);
+
+        Assert.True(decision.IsAllowed);
+    }
+
+    [Fact]
+    public async Task ResolverAllowsToolGrantedInDifferentCase_IsAllowed()
+    {
+        // The envelope matches case-insensitively and keyed DI resolves ordinally, so a case variant is
+        // a real collision rather than a typo. The guard must use the envelope's own comparer, or it
+        // would deny a legitimately granted tool whose casing differs from the registration.
+        _permissions
+            .Setup(x => x.ResolvePermissionAsync(It.IsAny<string>(), It.IsAny<string>(),
+                It.IsAny<string?>(), It.IsAny<IReadOnlyDictionary<string, object?>?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(PermissionDecision.Allow("granted"));
+        var governor = Build();
+
+        ToolInvocationDecision decision;
+        using (CapabilityEnvelopeAccessor.Begin(Envelope()))
+            decision = await governor.AuthorizeAsync(Tool.ToUpperInvariant(), CancellationToken.None);
+
+        Assert.True(decision.IsAllowed);
+    }
 }

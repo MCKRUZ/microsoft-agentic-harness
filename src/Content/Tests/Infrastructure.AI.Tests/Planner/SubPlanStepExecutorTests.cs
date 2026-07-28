@@ -84,6 +84,7 @@ public sealed class SubPlanStepExecutorTests
             Mock.Of<IPlanStateStore>(),
             _notifier.Object,
             new PlanExecutionContext { Depth = 0, MaxDepth = 5 },
+            Mock.Of<Application.AI.Common.Interfaces.Agent.IAgentExecutionContext>(),
             NullLogger<SubPlanStepExecutor>.Instance);
     }
 

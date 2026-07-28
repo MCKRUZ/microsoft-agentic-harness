@@ -36,6 +36,11 @@ public sealed class FullAutonomyIntegrationTests
             _mockComplexityClassifier.Object,
             costTracker ?? new RetrievalCostTracker(RagTestData.CreateConfigMonitor()),
             _mockNotifier.Object,
+            // Ungoverned: no envelope armed and enforcement off, so the governor allows.
+            Mock.Of<Application.AI.Common.Interfaces.Governance.IToolInvocationGovernor>(g =>
+                g.AuthorizeAsync(It.IsAny<string>(), It.IsAny<CancellationToken>())
+                    == ValueTask.FromResult(
+                        Application.AI.Common.Interfaces.Governance.ToolInvocationDecision.Allow())),
             new PlanExecutionContext(),
             Mock.Of<ILogger<RetrievalPlanStepExecutor>>());
     }

@@ -5,6 +5,7 @@ using Domain.Common.Config.AI;
 using Domain.Common.Config.AI.BundleExecution;
 using FluentAssertions;
 using Infrastructure.AI.Governance;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Moq;
@@ -20,7 +21,9 @@ namespace Infrastructure.AI.Tests.Governance;
 /// </summary>
 public sealed class CapabilityEnvelopeResolverTests
 {
-    private static CapabilityEnvelopeResolver Resolver(CapabilityEnvelopesConfig envelopes)
+    private static CapabilityEnvelopeResolver Resolver(
+        CapabilityEnvelopesConfig envelopes,
+        ILogger<CapabilityEnvelopeResolver>? logger = null)
     {
         var appConfig = new AppConfig
         {
@@ -32,8 +35,18 @@ public sealed class CapabilityEnvelopeResolverTests
 
         return new CapabilityEnvelopeResolver(
             Mock.Of<IOptionsMonitor<AppConfig>>(o => o.CurrentValue == appConfig),
-            NullLogger<CapabilityEnvelopeResolver>.Instance);
+            logger ?? NullLogger<CapabilityEnvelopeResolver>.Instance);
     }
+
+    /// <summary>
+    /// Counts warnings whose message contains <paramref name="fragment"/>, so an assertion pins the
+    /// specific diagnostic rather than "some warning happened".
+    /// </summary>
+    private static int WarningsContaining(Mock<ILogger<CapabilityEnvelopeResolver>> logger, string fragment) =>
+        logger.Invocations
+            .Count(i => i.Method.Name == nameof(ILogger.Log)
+                        && (LogLevel)i.Arguments[0] == LogLevel.Warning
+                        && i.Arguments[2]?.ToString()?.Contains(fragment, StringComparison.Ordinal) == true);
 
     private static ClaimsPrincipal Principal(string? subject = null, params string[] roles)
     {
@@ -166,6 +179,56 @@ public sealed class CapabilityEnvelopeResolverTests
 
         resolver.Resolve(null).AutonomyCeiling.Should().Be(AutonomyLevel.Restricted,
             "only an exact tier name is accepted; anything else degrades closed rather than silently granting autonomy");
+    }
+
+    [Fact]
+    public void McpServersGrantedButNoTools_Warns_AndStillResolves()
+    {
+        // AllowedMcpServers gates which servers may be CONTACTED; AllowedTools gates which tools may be
+        // INVOKED. Granting servers while naming no tools makes the run fetch and publish every one of
+        // their schemas and then deny every call — a shape that is almost certainly operator error, and
+        // one the shipped onboarding example used to encourage. Warn, never throw: it fails closed, and
+        // an empty tool list is legitimate for a caller meant to have no tool access.
+        var logger = new Mock<ILogger<CapabilityEnvelopeResolver>>();
+        var resolver = Resolver(new CapabilityEnvelopesConfig
+        {
+            Default = new CapabilityEnvelopeConfig
+            {
+                AllowedTools = [],
+                AllowedMcpServers = ["internal-docs"],
+                AutonomyCeiling = "Autonomous"
+            }
+        }, logger.Object);
+
+        var envelope = resolver.Resolve(null);
+
+        envelope.AllowedMcpServers.Should().BeEquivalentTo(["internal-docs"],
+            "the misconfiguration is reported, not silently corrected");
+        WarningsContaining(logger, "internal-docs").Should().Be(1,
+            "the operator must be told which servers were granted with no invocable tools");
+    }
+
+    [Theory]
+    [InlineData(new string[0], new string[0])]                    // grants nothing at all — the fail-closed default
+    [InlineData(new[] { "doc_search" }, new[] { "internal-docs" })] // servers AND their tools named — correct
+    [InlineData(new[] { "file_system" }, new string[0])]           // tools only, no MCP — nothing to warn about
+    public void UsableOrEmptyEnvelope_DoesNotWarn(string[] tools, string[] servers)
+    {
+        var logger = new Mock<ILogger<CapabilityEnvelopeResolver>>();
+        var resolver = Resolver(new CapabilityEnvelopesConfig
+        {
+            Default = new CapabilityEnvelopeConfig
+            {
+                AllowedTools = [.. tools],
+                AllowedMcpServers = [.. servers],
+                AutonomyCeiling = "Autonomous"
+            }
+        }, logger.Object);
+
+        resolver.Resolve(null);
+
+        WarningsContaining(logger, "AllowedMcpServers gates").Should().Be(0,
+            "the warning is scoped to the unusable shape and must not become background noise");
     }
 
     [Fact]

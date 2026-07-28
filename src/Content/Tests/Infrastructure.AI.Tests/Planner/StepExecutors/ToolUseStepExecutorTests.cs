@@ -18,6 +18,7 @@ namespace Infrastructure.AI.Tests.Planner.StepExecutors;
 public sealed class ToolUseStepExecutorTests
 {
     private readonly Mock<ICapabilityEnforcer> _capabilityEnforcer = new();
+    private readonly Mock<IToolInvocationGovernor> _toolGovernor = new();
     private readonly Mock<IAttestationService> _attestationService = new();
     private readonly Mock<ICompositeResponseSanitizer> _responseSanitizer = new();
     private readonly Mock<IPlanProgressNotifier> _notifier = new();
@@ -27,6 +28,10 @@ public sealed class ToolUseStepExecutorTests
 
     public ToolUseStepExecutorTests()
     {
+        // Ungoverned default: no envelope armed and enforcement off means the governor allows.
+        _toolGovernor.Setup(g => g.AuthorizeAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns(ValueTask.FromResult(ToolInvocationDecision.Allow()));
+
         _notifier.Setup(n => n.NotifyStepStartedAsync(
             It.IsAny<PlanId>(), It.IsAny<PlanStepId>(), It.IsAny<string>(), It.IsAny<StepType>(), It.IsAny<CancellationToken>()))
             .Returns(Task.CompletedTask);
@@ -48,6 +53,7 @@ public sealed class ToolUseStepExecutorTests
 
         _sut = new ToolUseStepExecutor(
             _capabilityEnforcer.Object,
+            _toolGovernor.Object,
             sp,
             _attestationService.Object,
             _responseSanitizer.Object,
@@ -120,7 +126,36 @@ public sealed class ToolUseStepExecutorTests
         var result = await _sut.ExecuteAsync(step, new Dictionary<PlanStepId, string>(), CancellationToken.None);
 
         Assert.Equal(StepExecutionStatus.Failed, result.Status);
-        Assert.Equal("Permission denied", result.ErrorMessage);
+        // The sandbox's own text is never relayed — only the stable, scrubbed code. See
+        // ExecuteAsync_FailedExecution_DoesNotLeakSandboxErrorText for why.
+        Assert.Equal(PlanStepErrors.ToolFailed, result.ErrorMessage);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_FailedExecution_DoesNotLeakSandboxErrorText()
+    {
+        // A sandbox failure message is raw process stderr, a raw exception message, or raw container
+        // logs. StepExecutionState.ErrorMessage is persisted and handed back to callers through
+        // PlanExecutionSummary.StepStates, which a host surface relays over HTTP — so anything a tool
+        // printed on the way down (paths, environment variables, credentials) would leave the host.
+        var config = new ToolUseConfig { ToolName = "file_system" };
+        var step = CreateStep(config);
+        const string PlantedSecret = "AZURE_CLIENT_SECRET=hunter2-do-not-leak";
+
+        _sandboxExecutor.Setup(s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new SandboxExecutionResult
+            {
+                Success = false,
+                ErrorMessage = $"sh: line 1: /home/runner/.config/app: {PlantedSecret}",
+                ResourceUsage = new ResourceUsage()
+            });
+
+        var result = await _sut.ExecuteAsync(step, new Dictionary<PlanStepId, string>(), CancellationToken.None);
+
+        Assert.Equal(StepExecutionStatus.Failed, result.Status);
+        Assert.Equal(PlanStepErrors.ToolFailed, result.ErrorMessage);
+        Assert.DoesNotContain("hunter2", result.ErrorMessage);
+        Assert.DoesNotContain("/home/runner", result.ErrorMessage);
     }
 
     [Fact]
@@ -183,6 +218,41 @@ public sealed class ToolUseStepExecutorTests
         await _sut.ExecuteAsync(step, new Dictionary<PlanStepId, string>(), CancellationToken.None);
 
         _sandboxExecutor.Verify(s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_GovernorDenies_FailsStepWithoutTouchingSandbox()
+    {
+        // The governance gate must precede every execution resource: no permission profile is
+        // resolved and no sandbox executor is invoked for a denied tool.
+        const string deniedMessage = "Error: tool 'file_system' is not permitted in the current context.";
+        _toolGovernor.Setup(g => g.AuthorizeAsync("file_system", It.IsAny<CancellationToken>()))
+            .Returns(ValueTask.FromResult(ToolInvocationDecision.Deny(deniedMessage)));
+
+        var step = CreateStep(new ToolUseConfig { ToolName = "file_system" });
+
+        var result = await _sut.ExecuteAsync(step, new Dictionary<PlanStepId, string>(), CancellationToken.None);
+
+        Assert.Equal(StepExecutionStatus.Failed, result.Status);
+        Assert.Equal(deniedMessage, result.ErrorMessage);
+        _sandboxExecutor.Verify(
+            s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()), Times.Never);
+        _capabilityEnforcer.Verify(
+            c => c.ResolveProfileAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_GovernorAllows_AuthorizesExactToolName()
+    {
+        _sandboxExecutor.Setup(s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new SandboxExecutionResult { Success = true, Output = "ok", ResourceUsage = new ResourceUsage() });
+
+        var step = CreateStep(new ToolUseConfig { ToolName = "file_system" });
+
+        var result = await _sut.ExecuteAsync(step, new Dictionary<PlanStepId, string>(), CancellationToken.None);
+
+        Assert.Equal(StepExecutionStatus.Completed, result.Status);
+        _toolGovernor.Verify(g => g.AuthorizeAsync("file_system", It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
