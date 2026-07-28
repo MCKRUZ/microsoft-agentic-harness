@@ -27,6 +27,16 @@ public static class PlanStepErrors
     /// <summary>The sandbox threw while executing a tool step.</summary>
     public const string SandboxFailed = "step.sandbox_failed";
 
+    /// <summary>
+    /// The sandbox ran the tool and it reported failure. Distinct from
+    /// <see cref="SandboxFailed"/>, which means the sandbox itself could not complete the execution:
+    /// this one says the tool ran and did not succeed, so a consumer can tell "your tool errored" from
+    /// "we could not run your tool". The sandbox's own failure text is not relayed — it carries raw
+    /// process stderr or container logs, where file-system paths, environment variables, and credentials
+    /// surface — and stays in the structured log instead.
+    /// </summary>
+    public const string ToolFailed = "step.tool_failed";
+
     /// <summary>The step exceeded its per-attempt timeout.</summary>
     public const string Timeout = "step.timeout";
 

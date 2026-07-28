@@ -14,10 +14,18 @@ namespace Domain.AI.Permissions;
 /// When true, this rule is an operator-set authoritative baseline for the tools it matches: it takes
 /// precedence over generic tier/default rules in <em>both</em> directions (a specific Allow beats a
 /// generic Ask, and a specific Ask beats a generic Allow), independent of the resolver's normal
-/// Deny&gt;Ask&gt;Allow phase ordering. It is evaluated after safety gates and Deny rules, so a Deny
-/// (including a bypass-immune <c>DeniedTools</c> rule) or a safety gate still wins over it. This is
+/// Deny&gt;Ask&gt;Allow phase ordering. It is evaluated after safety gates and ordinary Deny rules, so a
+/// Deny (including a bypass-immune <c>DeniedTools</c> rule) or a safety gate still wins over it. This is
 /// how a plugin's <c>AutonomyLevel</c> scopes the autonomy of its own tools without editing the
 /// global default tier. Ordinary rules leave this false and are unaffected.
+/// <para>
+/// Baselines are resolved <em>only</em> in the baseline phase — never by the phase-ordered Deny/Ask/Allow
+/// scans — and are arbitrated there by pattern specificity first, then restrictiveness. A provider can
+/// therefore close its own allowlist by pairing per-name baselines with a catch-all
+/// <c>"*"</c> baseline Deny: the named rules are more specific and win, and anything they do not cover
+/// falls through to the Deny. Use a plain (non-baseline) Deny when the intent is an unconditional
+/// prohibition rather than a fallback.
+/// </para>
 /// </param>
 public sealed record ToolPermissionRule(
     string ToolPattern,

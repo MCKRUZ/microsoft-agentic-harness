@@ -479,7 +479,8 @@ public class AgentExecutionContextFactory
         // Inert (and skipped entirely) when enforcement is off, so default behaviour is unchanged.
         if (_appConfig.CurrentValue.AI?.Governance?.EnforceToolInvocation == true)
         {
-            providers.Add(new Services.Agent.GoverningToolContextProvider());
+            providers.Add(new Services.Agent.GoverningToolContextProvider(
+                _loggerFactory.CreateLogger<Services.Agent.GoverningToolContextProvider>()));
             _logger.LogDebug("Wired GoverningToolContextProvider (tool-invocation enforcement enabled)");
         }
 

@@ -156,6 +156,9 @@ public sealed class ToolUseStepExecutorAttestationBindingTests
         var result = await _sut.ExecuteAsync(CreateStep(), new Dictionary<PlanStepId, string>(), CancellationToken.None);
 
         Assert.Equal(StepExecutionStatus.Failed, result.Status);
-        Assert.Equal("Process timed out", result.ErrorMessage);
+        // The tool-failure code, not the attestation-failure message: the distinction this test exists
+        // for. The sandbox's own text ("Process timed out") stays in the structured log — it can carry
+        // host paths and container ids, and step error state is relayed to callers.
+        Assert.Equal(PlanStepErrors.ToolFailed, result.ErrorMessage);
     }
 }

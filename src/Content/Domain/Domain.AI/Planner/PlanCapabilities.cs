@@ -55,8 +55,14 @@ namespace Domain.AI.Planner;
 /// able to take down every agent turn in the host.
 /// </para>
 /// <para>
-/// Withholding a name here is fail-closed for enveloped plan runs. With no ambient envelope (direct
-/// in-process <c>IPlanExecutor</c> callers) the governor is a pass-through and behavior is unchanged.
+/// <strong>Withholding a name here is fail-closed for enveloped plan runs — by mechanism, not by
+/// convention.</strong> The envelope's rule provider emits a catch-all authoritative-baseline Deny
+/// alongside its per-name grants. An ungranted capability matches only that closing rule and is denied
+/// inside the resolver's baseline phase, so resolution never reaches the host's generic autonomy tier —
+/// which, in the shipped bundle-host configuration, would otherwise answer Allow for any name nobody had
+/// ruled on. Granting is therefore the only way a plan run performs retrieval or inference. With no
+/// ambient envelope (direct in-process <c>IPlanExecutor</c> callers) the provider emits nothing at all,
+/// the governor is a pass-through, and behavior is unchanged.
 /// </para>
 /// </remarks>
 public static class PlanCapabilities

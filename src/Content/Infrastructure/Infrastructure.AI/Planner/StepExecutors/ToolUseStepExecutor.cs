@@ -160,10 +160,17 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
             };
         }
 
+        // Same treatment as the throw path above: the sandbox's failure text is raw process stderr, a
+        // raw exception message, or raw container logs, and step error state is persisted and returned to
+        // callers. Log it in full, persist only the stable code.
+        _logger.LogWarning(
+            "Tool {Tool} in step {Step} failed in the sandbox: {SandboxError}",
+            config.ToolName, step.Name, sandboxResult.ErrorMessage ?? "(no detail reported)");
+
         return new StepExecutionResult
         {
             Status = StepExecutionStatus.Failed,
-            ErrorMessage = sandboxResult.ErrorMessage ?? "Tool execution failed.",
+            ErrorMessage = PlanStepErrors.ToolFailed,
             Duration = sw.Elapsed,
             Attestation = sandboxResult.Attestation
         };

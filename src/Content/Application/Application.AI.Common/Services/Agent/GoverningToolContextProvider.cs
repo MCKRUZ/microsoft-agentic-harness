@@ -1,37 +1,54 @@
 using Application.AI.Common.Services.Tools;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging;
 
 namespace Application.AI.Common.Services.Agent;
 
 /// <summary>
-/// An <see cref="AIContextProvider"/> that wraps every callable tool in the accumulated
-/// <see cref="AIContext"/> in a <see cref="GovernedAIFunction"/> at invocation time, so the
-/// per-invocation governance check runs even for tools that never pass through
-/// <see cref="ToolChainBuilder"/> — notably framework tools surfaced by progressive skill disclosure.
+/// An <see cref="AIContextProvider"/> that closes the <see cref="AIContext"/> tool channel: it drops
+/// tools colliding with a reserved plan-capability name and wraps the rest in a
+/// <see cref="GovernedAIFunction"/> at invocation time, so both checks run even for tools that never
+/// pass through <see cref="ToolChainBuilder"/> — notably framework tools surfaced by progressive skill
+/// disclosure, and any tool a consumer's own <see cref="AIContextProvider"/> contributes.
 /// </summary>
 /// <remarks>
 /// <para>
 /// Register this provider <em>last</em> in the <c>AIContextProviders</c> list (after the skills
-/// provider and <see cref="ToolPermissionFilter"/>) so it wraps the final, filtered tool set.
+/// provider and <see cref="ToolPermissionFilter"/>) so it sees the final, filtered tool set.
 /// Already-wrapped functions and non-function tools pass through unchanged, so it composes safely
 /// with the build-time wrapping in <see cref="ToolChainBuilder"/> (no double-wrapping).
 /// </para>
 /// <para>
-/// The wrapper is inert unless a governor is ambient for the turn (see
-/// <see cref="Governance.ToolGovernanceAccessor"/>), so this only adds enforcement, never changes
-/// which tools exist or their schemas.
+/// <strong>Two channels, one filter.</strong> The framework merges <c>ChatOptions.Tools</c> (built by
+/// <see cref="ToolChainBuilder"/>) with <c>AIContext.Tools</c> contributed by providers. Only the first
+/// passes through the builder, so the reserved plan-capability check is applied here through the shared
+/// <see cref="ReservedPlanCapabilityFilter"/> rather than being duplicated — a name the plan engine owns
+/// cannot reach the model down either route, and the two enforcement points cannot drift.
+/// </para>
+/// <para>
+/// The governance wrapper is inert unless a governor is ambient for the turn (see
+/// <see cref="Governance.ToolGovernanceAccessor"/>), so wrapping only adds enforcement. The reserved-name
+/// drop is the one case where this provider changes which tools exist, and only for names that must never
+/// have been publishable in the first place.
 /// </para>
 /// </remarks>
 public sealed class GoverningToolContextProvider : AIContextProvider
 {
+    /// <summary>Describes this channel on the reserved plan-capability drop log.</summary>
+    private const string ChannelDescription = "AIContext.Tools contributed by an AIContextProvider";
+
+    private readonly ILogger<GoverningToolContextProvider> _logger;
+
     /// <summary>Initializes a new <see cref="GoverningToolContextProvider"/>.</summary>
-    public GoverningToolContextProvider()
+    /// <param name="logger">Logger that receives reserved plan-capability collision reports.</param>
+    public GoverningToolContextProvider(ILogger<GoverningToolContextProvider> logger)
         : base(
             provideInputMessageFilter: messages => messages,
             storeInputRequestMessageFilter: messages => messages,
             storeInputResponseMessageFilter: messages => messages)
     {
+        _logger = logger;
     }
 
     /// <inheritdoc />
@@ -39,23 +56,10 @@ public sealed class GoverningToolContextProvider : AIContextProvider
         InvokingContext context,
         CancellationToken cancellationToken = default)
     {
-        var tools = context.AIContext.Tools?.ToList();
-        if (tools is null or { Count: 0 })
-            return ValueTask.FromResult(context.AIContext);
+        var tools = FilterAndGovern(context.AIContext.Tools, _logger);
 
-        var changed = false;
-        for (var i = 0; i < tools.Count; i++)
-        {
-            var governed = Govern(tools[i]);
-            if (!ReferenceEquals(governed, tools[i]))
-            {
-                tools[i] = governed;
-                changed = true;
-            }
-        }
-
-        // Nothing needed wrapping — avoid allocating a new AIContext.
-        if (!changed)
+        // Nothing was dropped or needed wrapping — avoid allocating a new AIContext.
+        if (tools is null)
             return ValueTask.FromResult(context.AIContext);
 
         return ValueTask.FromResult(new AIContext
@@ -64,6 +68,37 @@ public sealed class GoverningToolContextProvider : AIContextProvider
             Messages = context.AIContext.Messages,
             Tools = tools
         });
+    }
+
+    /// <summary>
+    /// Applies both checks to one context's tool list: drops reserved plan-capability names, then wraps
+    /// the survivors for governance. Returns <see langword="null"/> when the list needs no change, so the
+    /// caller can keep the existing <see cref="AIContext"/> instead of allocating an identical one.
+    /// Extracted for unit testing of the combined filter.
+    /// </summary>
+    /// <param name="tools">The tools accumulated on the context, possibly null or empty.</param>
+    /// <param name="logger">Logger that receives reserved plan-capability collision reports.</param>
+    internal static List<AITool>? FilterAndGovern(IEnumerable<AITool>? tools, ILogger logger)
+    {
+        var original = tools?.ToList();
+        if (original is null or { Count: 0 })
+            return null;
+
+        // Reserved-name drop first: a colliding tool must never be published, wrapped or not.
+        var permitted = ReservedPlanCapabilityFilter.Exclude(original, ChannelDescription, logger);
+        var changed = permitted.Count != original.Count;
+
+        for (var i = 0; i < permitted.Count; i++)
+        {
+            var governed = Govern(permitted[i]);
+            if (!ReferenceEquals(governed, permitted[i]))
+            {
+                permitted[i] = governed;
+                changed = true;
+            }
+        }
+
+        return changed ? permitted : null;
     }
 
     /// <summary>

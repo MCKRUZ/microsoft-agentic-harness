@@ -162,7 +162,7 @@ public sealed class SubPlanEnvelopeConfinementTests
         services.AddSingleton(decisions);
         services.AddScoped<IAgentExecutionContext, AgentExecutionContext>();
         services.AddSingleton<IToolPermissionService>(new ThreePhasePermissionResolver(
-            [new EnvelopePermissionRuleProvider()],
+            [new EnvelopePermissionRuleProvider(NullLogger<EnvelopePermissionRuleProvider>.Instance)],
             safetyGates.Object,
             new GlobPatternMatcher(),
             new Mock<IDenialTracker>().Object,

@@ -126,7 +126,36 @@ public sealed class ToolUseStepExecutorTests
         var result = await _sut.ExecuteAsync(step, new Dictionary<PlanStepId, string>(), CancellationToken.None);
 
         Assert.Equal(StepExecutionStatus.Failed, result.Status);
-        Assert.Equal("Permission denied", result.ErrorMessage);
+        // The sandbox's own text is never relayed — only the stable, scrubbed code. See
+        // ExecuteAsync_FailedExecution_DoesNotLeakSandboxErrorText for why.
+        Assert.Equal(PlanStepErrors.ToolFailed, result.ErrorMessage);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_FailedExecution_DoesNotLeakSandboxErrorText()
+    {
+        // A sandbox failure message is raw process stderr, a raw exception message, or raw container
+        // logs. StepExecutionState.ErrorMessage is persisted and handed back to callers through
+        // PlanExecutionSummary.StepStates, which a host surface relays over HTTP — so anything a tool
+        // printed on the way down (paths, environment variables, credentials) would leave the host.
+        var config = new ToolUseConfig { ToolName = "file_system" };
+        var step = CreateStep(config);
+        const string PlantedSecret = "AZURE_CLIENT_SECRET=hunter2-do-not-leak";
+
+        _sandboxExecutor.Setup(s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new SandboxExecutionResult
+            {
+                Success = false,
+                ErrorMessage = $"sh: line 1: /home/runner/.config/app: {PlantedSecret}",
+                ResourceUsage = new ResourceUsage()
+            });
+
+        var result = await _sut.ExecuteAsync(step, new Dictionary<PlanStepId, string>(), CancellationToken.None);
+
+        Assert.Equal(StepExecutionStatus.Failed, result.Status);
+        Assert.Equal(PlanStepErrors.ToolFailed, result.ErrorMessage);
+        Assert.DoesNotContain("hunter2", result.ErrorMessage);
+        Assert.DoesNotContain("/home/runner", result.ErrorMessage);
     }
 
     [Fact]

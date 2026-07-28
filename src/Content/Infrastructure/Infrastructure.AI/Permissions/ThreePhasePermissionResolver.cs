@@ -17,10 +17,18 @@ namespace Infrastructure.AI.Permissions;
 /// <list type="number">
 ///   <item><description><strong>Phase 0 (Rate Limit)</strong>: Check denial tracker for auto-deny before any rule evaluation.</description></item>
 ///   <item><description><strong>Phase 1 (Deny/Safety)</strong>: Check safety gates first, then find the first matching Deny rule.</description></item>
+///   <item><description><strong>Phase 1.5 (Authoritative baseline)</strong>: Arbitrate the rules flagged <see cref="ToolPermissionRule.IsAuthoritativeBaseline"/> by specificity, then restrictiveness.</description></item>
 ///   <item><description><strong>Phase 2 (Ask)</strong>: Find the first matching Ask rule. If bypass-immune, return Ask regardless.</description></item>
 ///   <item><description><strong>Phase 3 (Allow)</strong>: Find the first matching Allow rule. If no match, default to Ask.</description></item>
 /// </list>
 /// <para>Rules are sorted by <see cref="ToolPermissionRule.Priority"/> ascending before evaluation.</para>
+/// <para>
+/// Authoritative baselines are resolved <em>only</em> in phase 1.5 — the phase-ordered scans skip them.
+/// That separation is what lets a rule provider close its own allowlist: it can emit per-name baseline
+/// grants alongside a catch-all baseline Deny, and the specificity arbitration in phase 1.5 gives the
+/// grants precedence while any name they do not cover falls to the Deny. Were baselines also visible to
+/// the phase-ordered scans, the catch-all Deny would match in phase 1b and deny the granted names too.
+/// </para>
 /// </remarks>
 public sealed class ThreePhasePermissionResolver : IToolPermissionService
 {
@@ -177,6 +185,18 @@ public sealed class ThreePhasePermissionResolver : IToolPermissionService
         return allRules;
     }
 
+    /// <summary>
+    /// Finds the first rule matching the tool, operation, and <paramref name="behavior"/> in priority
+    /// order, for the phase-ordered scans (Deny, then Ask, then Allow).
+    /// </summary>
+    /// <remarks>
+    /// Authoritative-baseline rules are deliberately excluded: they are arbitrated as a set in phase 1.5
+    /// by <see cref="FindFirstAuthoritativeBaseline"/>, which weighs specificity against restrictiveness.
+    /// Letting them also participate here would let phase ordering pre-empt that arbitration — a
+    /// catch-all baseline Deny would match in phase 1b and kill the specific baseline Allows that are
+    /// supposed to outrank it. Excluding them costs nothing in the other two phases: any baseline that
+    /// matches has already caused phase 1.5 to return, so phases 2 and 3 never see a matching one.
+    /// </remarks>
     private ToolPermissionRule? FindFirstMatchingRule(
         IReadOnlyList<ToolPermissionRule> rules,
         string toolName,
@@ -185,21 +205,13 @@ public sealed class ThreePhasePermissionResolver : IToolPermissionService
     {
         foreach (var rule in rules)
         {
+            if (rule.IsAuthoritativeBaseline)
+                continue;
+
             if (rule.Behavior != behavior)
                 continue;
 
-            if (!_patternMatcher.IsMatch(rule.ToolPattern, toolName))
-                continue;
-
-            if (rule.OperationPattern is not null
-                && operation is not null
-                && !_patternMatcher.IsMatch(rule.OperationPattern, operation))
-            {
-                continue;
-            }
-
-            // If rule has an operation pattern but no operation was provided, skip
-            if (rule.OperationPattern is not null && operation is null)
+            if (!Matches(rule, toolName, operation))
                 continue;
 
             return rule;
@@ -209,14 +221,55 @@ public sealed class ThreePhasePermissionResolver : IToolPermissionService
     }
 
     /// <summary>
-    /// Selects the governing rule flagged <see cref="ToolPermissionRule.IsAuthoritativeBaseline"/>
-    /// among all that match the tool name and operation. When more than one matches (for example two
-    /// plugins declaring the same tool name with opposite autonomy levels), the <b>most restrictive</b>
-    /// behavior wins — Deny &gt; Ask &gt; Allow — so a permissive baseline can never silently override a
-    /// restrictive one on iteration/load order. Ties within the same behavior fall back to the lowest
-    /// <see cref="ToolPermissionRule.Priority"/>. Returns null when no authoritative-baseline rule
-    /// matches (the overwhelmingly common case).
+    /// Whether <paramref name="rule"/> applies to this tool name and operation. A rule that names an
+    /// operation pattern applies only when an operation was supplied and matches it.
     /// </summary>
+    private bool Matches(ToolPermissionRule rule, string toolName, string? operation)
+    {
+        if (!_patternMatcher.IsMatch(rule.ToolPattern, toolName))
+            return false;
+
+        if (rule.OperationPattern is null)
+            return true;
+
+        return operation is not null && _patternMatcher.IsMatch(rule.OperationPattern, operation);
+    }
+
+    /// <summary>
+    /// Selects the governing rule flagged <see cref="ToolPermissionRule.IsAuthoritativeBaseline"/>
+    /// among all that match the tool name and operation. Returns null when none matches (the
+    /// overwhelmingly common case).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Arbitration is <b>specificity first, restrictiveness second</b>:
+    /// </para>
+    /// <list type="number">
+    ///   <item><description>
+    ///   The baseline whose pattern selects most narrowly wins outright (see
+    ///   <see cref="IPatternMatcher.Specificity"/>). This is what lets a provider express "deny anything
+    ///   I did not name" as a catch-all baseline alongside per-name grants: the grants are written for
+    ///   one exact name and therefore outrank the catch-all, while a name no grant covers falls through
+    ///   to it. Without specificity ordering the catch-all Deny — being the most restrictive rule in the
+    ///   set — would swallow every grant.
+    ///   </description></item>
+    ///   <item><description>
+    ///   Among equally specific baselines the <b>most restrictive</b> behavior wins — Deny &gt; Ask &gt;
+    ///   Allow — so two plugins declaring the same tool name with opposite autonomy levels resolve to the
+    ///   stricter one and never to whichever happened to load first.
+    ///   </description></item>
+    ///   <item><description>
+    ///   Ties fall back to the lowest <see cref="ToolPermissionRule.Priority"/>.
+    ///   </description></item>
+    /// </list>
+    /// <para>
+    /// Specificity ranks above restrictiveness rather than below it because a broad pattern is a
+    /// <em>default</em> and a narrow one is a <em>decision</em> about a specific name: an operator who
+    /// names a tool explicitly has said something more deliberate than whoever wrote the fallback, in
+    /// either direction. Restrictiveness still governs the case the operator cannot disambiguate —
+    /// two equally specific claims on the same name.
+    /// </para>
+    /// </remarks>
     private ToolPermissionRule? FindFirstAuthoritativeBaseline(
         IReadOnlyList<ToolPermissionRule> rules,
         string toolName,
@@ -229,20 +282,10 @@ public sealed class ThreePhasePermissionResolver : IToolPermissionService
             if (!rule.IsAuthoritativeBaseline)
                 continue;
 
-            if (!_patternMatcher.IsMatch(rule.ToolPattern, toolName))
+            if (!Matches(rule, toolName, operation))
                 continue;
 
-            if (rule.OperationPattern is not null
-                && operation is not null
-                && !_patternMatcher.IsMatch(rule.OperationPattern, operation))
-            {
-                continue;
-            }
-
-            if (rule.OperationPattern is not null && operation is null)
-                continue;
-
-            if (best is null || IsMoreRestrictive(rule, best))
+            if (best is null || Outranks(rule, best))
                 best = rule;
         }
 
@@ -250,13 +293,18 @@ public sealed class ThreePhasePermissionResolver : IToolPermissionService
     }
 
     /// <summary>
-    /// Orders permission behaviors by restrictiveness for authoritative-baseline arbitration:
-    /// Deny (0) is most restrictive, then Ask (1), then Allow (2). A <paramref name="candidate"/> wins
-    /// over the <paramref name="incumbent"/> when it is strictly more restrictive, or equally
-    /// restrictive but with a lower (earlier) priority.
+    /// Whether <paramref name="candidate"/> should govern instead of <paramref name="incumbent"/>:
+    /// a strictly more specific pattern wins; failing that a strictly more restrictive behavior wins
+    /// (Deny &gt; Ask &gt; Allow); failing that the lower (earlier) priority wins.
     /// </summary>
-    private static bool IsMoreRestrictive(ToolPermissionRule candidate, ToolPermissionRule incumbent)
+    private bool Outranks(ToolPermissionRule candidate, ToolPermissionRule incumbent)
     {
+        var candidateSpecificity = _patternMatcher.Specificity(candidate.ToolPattern);
+        var incumbentSpecificity = _patternMatcher.Specificity(incumbent.ToolPattern);
+
+        if (candidateSpecificity != incumbentSpecificity)
+            return candidateSpecificity > incumbentSpecificity;
+
         var candidateRank = RestrictivenessRank(candidate.Behavior);
         var incumbentRank = RestrictivenessRank(incumbent.Behavior);
 

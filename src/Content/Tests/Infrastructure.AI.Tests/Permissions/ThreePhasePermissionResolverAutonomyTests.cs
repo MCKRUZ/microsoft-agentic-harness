@@ -201,6 +201,75 @@ public sealed class ThreePhasePermissionResolverAutonomyTests
     }
 
     [Fact]
+    public async Task CatchAllBaselineDeny_LosesToSpecificBaselineGrant_ButCatchesEverythingElse()
+    {
+        // The arbitration that lets a provider close its own allowlist: per-name baseline grants paired
+        // with one catch-all baseline Deny. Specificity decides — the exact name is a decision about that
+        // tool, the "*" is only the fallback — so the grant survives and every other name is denied.
+        // Were restrictiveness weighed first, the Deny would swallow the grant and deny everything.
+        var provider = BuildProvider(
+            new ToolPermissionRule("file_system", null, PermissionBehaviorType.Allow,
+                PermissionRuleSource.CapabilityEnvelope, 5, IsAuthoritativeBaseline: true),
+            new ToolPermissionRule("*", null, PermissionBehaviorType.Deny,
+                PermissionRuleSource.CapabilityEnvelope, int.MaxValue, IsAuthoritativeBaseline: true));
+
+        var resolver = CreateResolver(provider.Object);
+
+        var granted = await resolver.ResolvePermissionAsync("agent", "file_system");
+        granted.Behavior.Should().Be(PermissionBehaviorType.Allow,
+            "the exact-name baseline is more specific than the catch-all");
+
+        var ungranted = await resolver.ResolvePermissionAsync("agent", "anything_else");
+        ungranted.Behavior.Should().Be(PermissionBehaviorType.Deny,
+            "a name no baseline covers falls through to the catch-all");
+    }
+
+    [Fact]
+    public async Task CatchAllBaselineDeny_IsNotEvaluatedInThePhase1DenyScan()
+    {
+        // A catch-all baseline Deny must not pre-empt the baseline phase by matching in phase 1b — that
+        // scan is order-driven, so it would deny the granted tool before specificity arbitration ran.
+        // Ordinary (non-baseline) Deny rules are unaffected and still win there.
+        var provider = BuildProvider(
+            new ToolPermissionRule("*", null, PermissionBehaviorType.Deny,
+                PermissionRuleSource.CapabilityEnvelope, int.MaxValue, IsAuthoritativeBaseline: true),
+            new ToolPermissionRule("file_system", null, PermissionBehaviorType.Allow,
+                PermissionRuleSource.CapabilityEnvelope, 5, IsAuthoritativeBaseline: true),
+            new ToolPermissionRule("bash", null, PermissionBehaviorType.Deny,
+                PermissionRuleSource.AgentManifest, 1, IsBypassImmune: true));
+
+        var resolver = CreateResolver(provider.Object);
+
+        (await resolver.ResolvePermissionAsync("agent", "file_system")).Behavior
+            .Should().Be(PermissionBehaviorType.Allow);
+
+        var bash = await resolver.ResolvePermissionAsync("agent", "bash");
+        bash.Behavior.Should().Be(PermissionBehaviorType.Deny);
+        bash.MatchedRule!.Source.Should().Be(PermissionRuleSource.AgentManifest,
+            "an ordinary Deny still resolves in phase 1b, attributed to its own rule");
+    }
+
+    [Fact]
+    public async Task CatchAllBaselineDeny_DoesNotOverrideAMoreSpecificWildcardBaseline()
+    {
+        // Specificity is graded, not binary: a prefix wildcard is narrower than the match-everything
+        // pattern, so a provider can grant a family of tools and still have the closing rule catch the
+        // rest.
+        var provider = BuildProvider(
+            new ToolPermissionRule("file_*", null, PermissionBehaviorType.Allow,
+                PermissionRuleSource.CapabilityEnvelope, 5, IsAuthoritativeBaseline: true),
+            new ToolPermissionRule("*", null, PermissionBehaviorType.Deny,
+                PermissionRuleSource.CapabilityEnvelope, int.MaxValue, IsAuthoritativeBaseline: true));
+
+        var resolver = CreateResolver(provider.Object);
+
+        (await resolver.ResolvePermissionAsync("agent", "file_system")).Behavior
+            .Should().Be(PermissionBehaviorType.Allow);
+        (await resolver.ResolvePermissionAsync("agent", "bash")).Behavior
+            .Should().Be(PermissionBehaviorType.Deny);
+    }
+
+    [Fact]
     public async Task BypassImmuneDeny_BeatsAuthoritativeBaselineAllow()
     {
         // DeniedTools (bypass-immune Deny) must still win over a plugin's Autonomous Allow baseline:
