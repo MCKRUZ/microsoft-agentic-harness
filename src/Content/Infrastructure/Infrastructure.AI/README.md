@@ -397,7 +397,11 @@ The project reads configuration from `AppConfig` bound via the Options pattern. 
     },
     "Infrastructure": {
       "FileSystem": {
-        "AllowedBasePaths": ["../../../.."] // Sandboxed directories for file tools
+        // Sandboxed directories for file tools, resolved against AppContext.BaseDirectory.
+        // Keep this NARROW. "../../../.." resolves to the project directory, which contains
+        // bin/<config>/<tfm>/.agent-state — the governance-state database — and
+        // FileSystemSandboxStartupValidator refuses to boot on that overlap.
+        "AllowedBasePaths": ["workspace"]
       }
     }
   }

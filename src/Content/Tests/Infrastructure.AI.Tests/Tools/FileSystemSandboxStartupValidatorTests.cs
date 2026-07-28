@@ -1,9 +1,6 @@
-using Domain.Common.Config;
 using FluentAssertions;
-using Infrastructure.AI.Tests.Changes.Support;
 using Infrastructure.AI.Tools;
 using Microsoft.Extensions.Logging.Abstractions;
-using Microsoft.Extensions.Options;
 using Xunit;
 
 namespace Infrastructure.AI.Tests.Tools;
@@ -13,14 +10,20 @@ namespace Infrastructure.AI.Tests.Tools;
 /// protected harness-state directory lies inside a directory the file-system tool may reach.
 /// </summary>
 /// <remarks>
-/// This assertion, not the deny list, is what closes the hard-link bypass. A hard link is a second
-/// directory entry for the same file rather than a reparse point, so it resolves to itself and
-/// presents to every per-path check as an ordinary unprotected file; read through one, the
-/// approval-verdict database is readable, and written through one it is forgeable. A hard link
-/// cannot span volumes, so keeping the protected directory outside every allowed base path makes
-/// the bypass unconstructible. These tests pin that the assertion fires when it must and stays
-/// silent on the shipped default, because a guard that fires on the default configuration would be
-/// turned off rather than heeded.
+/// <para>
+/// This assertion is defence in depth, and these tests deliberately do NOT claim it closes the
+/// hard-link bypass. It cannot: a hard link needs the same volume as its target, not the same
+/// subtree, so a layout with no containment at all is still linkable. That hole is closed by
+/// <see cref="FileSystemService"/>'s per-operation link-count check and is exercised in
+/// <see cref="FileSystemServiceHardLinkTests"/>. What this validator earns its place for is
+/// refusing a configuration that hands the file-system tool the governance-state directory
+/// outright, leaving a path-comparing deny list as the only barrier.
+/// </para>
+/// <para>
+/// The pairing that matters here is that it fires whenever the geometry is wrong and stays silent
+/// on the shipped default, because a guard that fires on the default configuration gets turned off
+/// rather than heeded.
+/// </para>
 /// </remarks>
 public sealed class FileSystemSandboxStartupValidatorTests : IDisposable
 {
@@ -38,21 +41,11 @@ public sealed class FileSystemSandboxStartupValidatorTests : IDisposable
             Directory.Delete(_root, recursive: true);
     }
 
-    private static AppConfig ConfigWithDurableState(bool escalations, bool proposals)
-    {
-        var config = new AppConfig();
-        config.AI.Governance.DurableState.EscalationsEnabled = escalations;
-        config.AI.Governance.DurableState.ChangeProposalsEnabled = proposals;
-        return config;
-    }
-
     private static FileSystemSandboxStartupValidator NewSut(
         IReadOnlyList<string> allowedBasePaths,
-        IReadOnlyList<string> protectedPaths,
-        AppConfig config) =>
+        IReadOnlyList<string> protectedPaths) =>
         new(allowedBasePaths,
             protectedPaths,
-            new TestConfig.StaticOptionsMonitor<AppConfig>(config),
             NullLogger<FileSystemSandboxStartupValidator>.Instance);
 
     private string CreateDirectory(params string[] parts)
@@ -63,16 +56,16 @@ public sealed class FileSystemSandboxStartupValidatorTests : IDisposable
     }
 
     [Fact]
-    public async Task StartAsync_ProtectedDirectoryInsideAllowedBasePath_DurableStateEnabled_Throws()
+    public async Task StartAsync_ProtectedDirectoryInsideAllowedBasePath_Throws()
     {
         var protectedDir = CreateDirectory(".agent-state");
 
-        var sut = NewSut([_root], [protectedDir], ConfigWithDurableState(escalations: true, proposals: false));
+        var sut = NewSut([_root], [protectedDir]);
 
         var ex = await sut.Invoking(s => s.StartAsync(CancellationToken.None))
             .Should().ThrowAsync<InvalidOperationException>(
-                "a hard link inside the allowed tree would alias the approval-verdict database, " +
-                "and no per-path check can see through a hard link");
+                "granting the file-system tool the governance-state directory leaves a " +
+                "path-comparing deny list as the only barrier to the approval-verdict database");
 
         // The operator has to be able to act on this without reading the source.
         ex.Which.Message.Should().Contain(protectedDir, "the message must name the offending protected path");
@@ -86,7 +79,7 @@ public sealed class FileSystemSandboxStartupValidatorTests : IDisposable
     {
         // Equality is containment's boundary case: granting the tool the protected directory
         // itself is the most direct form of the same misconfiguration.
-        var sut = NewSut([_root], [_root], ConfigWithDurableState(escalations: false, proposals: true));
+        var sut = NewSut([_root], [_root]);
 
         await sut.Invoking(s => s.StartAsync(CancellationToken.None))
             .Should().ThrowAsync<InvalidOperationException>();
@@ -99,10 +92,14 @@ public sealed class FileSystemSandboxStartupValidatorTests : IDisposable
         // against the application base directory, and the governance database under
         // ".agent-state/" — a SIBLING of workspace, not a child. If this ever starts throwing, the
         // safe default has drifted and every host stops booting.
+        //
+        // Read this alongside FileSystemServiceHardLinkTests: the very layout green-lit here is
+        // same-volume, so it IS hard-linkable. This test asserts the validator tolerates the
+        // shipped default, not that the shipped default is safe on its own.
         var workspace = CreateDirectory("workspace");
         var agentState = CreateDirectory(".agent-state");
 
-        var sut = NewSut([workspace], [agentState], ConfigWithDurableState(escalations: true, proposals: true));
+        var sut = NewSut([workspace], [agentState]);
 
         await sut.Invoking(s => s.StartAsync(CancellationToken.None)).Should().NotThrowAsync();
     }
@@ -115,28 +112,35 @@ public sealed class FileSystemSandboxStartupValidatorTests : IDisposable
         var workspace = CreateDirectory("workspace");
         var lookalike = CreateDirectory("workspace-archive");
 
-        var sut = NewSut([workspace], [lookalike], ConfigWithDurableState(escalations: true, proposals: false));
+        var sut = NewSut([workspace], [lookalike]);
 
         await sut.Invoking(s => s.StartAsync(CancellationToken.None)).Should().NotThrowAsync();
     }
 
     [Fact]
-    public async Task StartAsync_OverlapButDurableStateDisabled_DoesNotThrow()
+    public async Task StartAsync_OverlapWithDurableStateDisabled_StillThrows()
     {
-        // Both toggles off means no database is ever created, so the protected directory holds
-        // nothing and refusing to boot would cost a consumer their widened Development allowlist
-        // for no security gain. The toggles are restart-required, so enabling one re-runs this.
+        // The validator takes no configuration and makes no exception for the durable-state
+        // toggles being off. It used to: the reasoning was that the toggles are restart-required,
+        // so enabling one would re-run this validator before any database could be written. That
+        // reasoning is false. EscalationReconciliationService.RunPruneAsync re-reads
+        // AI:Governance:DurableState from IOptionsMonitor on every reconcile tick and AppConfig is
+        // loaded with reloadOnChange: true, so an operator who edits ChangeProposalsEnabled to true
+        // on a RUNNING host creates the database on a host this validator already waved through.
+        // A boot assertion a live config edit can invalidate has to hold on every boot.
         var protectedDir = CreateDirectory(".agent-state");
 
-        var sut = NewSut([_root], [protectedDir], ConfigWithDurableState(escalations: false, proposals: false));
+        var sut = NewSut([_root], [protectedDir]);
 
-        await sut.Invoking(s => s.StartAsync(CancellationToken.None)).Should().NotThrowAsync();
+        await sut.Invoking(s => s.StartAsync(CancellationToken.None))
+            .Should().ThrowAsync<InvalidOperationException>(
+                "the overlap is refused regardless of whether durable state is currently enabled");
     }
 
     [Fact]
     public async Task StartAsync_NoProtectedPathsConfigured_DoesNotThrow()
     {
-        var sut = NewSut([_root], [], ConfigWithDurableState(escalations: true, proposals: true));
+        var sut = NewSut([_root], []);
 
         await sut.Invoking(s => s.StartAsync(CancellationToken.None)).Should().NotThrowAsync();
     }
@@ -154,7 +158,7 @@ public sealed class FileSystemSandboxStartupValidatorTests : IDisposable
         var linkedBase = Path.Combine(_root, "base-link");
         SandboxLinkFactory.CreateDirectoryLink(linkedBase, appDirectory);
 
-        var sut = NewSut([linkedBase], [protectedDir], ConfigWithDurableState(escalations: true, proposals: false));
+        var sut = NewSut([linkedBase], [protectedDir]);
 
         await sut.Invoking(s => s.StartAsync(CancellationToken.None))
             .Should().ThrowAsync<InvalidOperationException>(

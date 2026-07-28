@@ -1,8 +1,6 @@
 using Domain.Common.Helpers;
-using Domain.Common.Config;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 
 namespace Infrastructure.AI.Tools;
 
@@ -13,38 +11,43 @@ namespace Infrastructure.AI.Tools;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Why containment, and not just the deny list.</b> <see cref="FileSystemService"/> denies the
-/// governance-state directory outright, and resolves symlinks, junctions and 8.3 short names before
-/// comparing, so no alias of that kind reaches it. Hard links are the gap. A hard link is a second
-/// directory entry for the same file rather than a reparse point: it carries no link target,
-/// <see cref="FileSystemInfo.ResolveLinkTarget(bool)"/> returns nothing for it, and its canonical
-/// form is itself. A hard link created inside the workspace therefore presents as an ordinary,
-/// unprotected file that happens to read and write the approval-verdict database. Creating one
-/// needs no privilege on Windows (<c>mklink /H</c>) or Linux (<c>ln</c>).
+/// <b>What this is, and what it is not.</b> Granting the file-system tool a directory that
+/// contains the harness's own governance-state database is a misconfiguration on its face: it
+/// leaves the deny list as the only thing standing between an agent and the approval-verdict
+/// store, with every alias trick (8.3 short names, symlinks, junctioned parents) aimed straight at
+/// it. Refusing to boot on that geometry is worth doing and this validator does it.
 /// </para>
 /// <para>
-/// <b>What containment buys.</b> A hard link cannot span volumes — it is an entry in the same
-/// filesystem as its target. So if no protected directory lies inside any allowed base path, no
-/// hard link inside an allowed base path can name a protected file, whatever the agent does. That
-/// makes the allowlist the load-bearing control and demotes the deny list to genuine defence in
-/// depth, which is the correct ordering: the allowlist is checked on the target's real identity,
-/// the deny list on its spelling.
+/// <b>It is not the hard-link control, and an earlier version of this file wrongly claimed to be.</b>
+/// The claim was that a hard link cannot span volumes, so a protected directory outside every
+/// allowed base path cannot be hard-linked into one. The premise is true and the conclusion does
+/// not follow: a hard link requires the same VOLUME as its target, not the same SUBTREE.
+/// Non-containment is strictly narrower than volume separation, so eliminating containment
+/// eliminates nothing — and the shipped default, <c>workspace</c> and <c>.agent-state</c> as
+/// siblings under the application base directory, is same-volume by construction. Volume
+/// separation is not reachable by configuration either, because <c>GovernanceStatePaths.Resolve</c>
+/// pins the database under the application base directory. The control that actually closes the
+/// hard-link hole is <see cref="FileSystemService"/>'s per-operation identity check, which asks the
+/// operating system how many directory entries name the file rather than what the path spells.
+/// This validator is defence in depth alongside it.
 /// </para>
 /// <para>
-/// <b>Why this is gated on durable state being enabled.</b> With both durable-state toggles off no
-/// database is ever created and the protected directory holds nothing, so refusing to boot would
-/// cost a consumer their widened Development allowlist for no security gain. The toggles are
-/// documented as restart-required (see <c>GovernanceDurableStateConfig</c>), so enabling one
-/// re-runs this validator before the database can be written. An overlap found while the toggles
-/// are off is logged as a warning rather than swallowed, because a database left behind by an
-/// earlier enabled run is still sitting there.
+/// <b>Why it refuses unconditionally.</b> An earlier version downgraded the refusal to a warning
+/// while both durable-state toggles were off, on the reasoning that the toggles are documented as
+/// restart-required so enabling one would re-run this validator before any database could be
+/// written. That does not hold. <c>EscalationReconciliationService.RunPruneAsync</c> re-reads
+/// <c>AI:Governance:DurableState</c> from <see cref="Microsoft.Extensions.Options.IOptionsMonitor{T}"/>
+/// on every reconcile tick, and <c>AppConfigHelper</c> loads appsettings with
+/// <c>reloadOnChange: true</c>, so an operator who edits <c>ChangeProposalsEnabled</c> to true on a
+/// running host resolves the pruner factory — and with it the schema initializer that creates the
+/// database file — on a host where this validator already warned and moved on. A boot-time
+/// assertion that a live configuration change can invalidate has to hold on every boot.
 /// </para>
 /// </remarks>
 public sealed class FileSystemSandboxStartupValidator : IHostedService
 {
     private readonly IReadOnlyList<string> _allowedBasePaths;
     private readonly IReadOnlyList<string> _protectedPaths;
-    private readonly IOptionsMonitor<AppConfig> _config;
     private readonly ILogger<FileSystemSandboxStartupValidator> _logger;
 
     /// <summary>
@@ -58,29 +61,24 @@ public sealed class FileSystemSandboxStartupValidator : IHostedService
     /// </remarks>
     /// <param name="allowedBasePaths">The base paths the file-system tool may reach, as registered.</param>
     /// <param name="protectedPaths">The harness-state directories denied to the tool, as registered.</param>
-    /// <param name="config">Configuration monitor, read for the durable-state toggles.</param>
     /// <param name="logger">Logger for the validation outcome.</param>
     public FileSystemSandboxStartupValidator(
         IReadOnlyList<string> allowedBasePaths,
         IReadOnlyList<string> protectedPaths,
-        IOptionsMonitor<AppConfig> config,
         ILogger<FileSystemSandboxStartupValidator> logger)
     {
         ArgumentNullException.ThrowIfNull(allowedBasePaths);
         ArgumentNullException.ThrowIfNull(protectedPaths);
-        ArgumentNullException.ThrowIfNull(config);
         ArgumentNullException.ThrowIfNull(logger);
 
         _allowedBasePaths = allowedBasePaths;
         _protectedPaths = protectedPaths;
         _logger = logger;
-        _config = config;
     }
 
     /// <inheritdoc />
     /// <exception cref="InvalidOperationException">
-    /// A protected harness-state directory lies inside an allowed base path while durable
-    /// governance state is enabled.
+    /// A protected harness-state directory lies inside an allowed base path.
     /// </exception>
     public Task StartAsync(CancellationToken cancellationToken)
     {
@@ -88,19 +86,14 @@ public sealed class FileSystemSandboxStartupValidator : IHostedService
         if (overlaps.Count == 0)
             return Task.CompletedTask;
 
-        var durableState = _config.CurrentValue.AI.Governance.DurableState;
-        if (!durableState.EscalationsEnabled && !durableState.ChangeProposalsEnabled)
-        {
-            _logger.LogWarning(
-                "Protected harness-state directory {ProtectedPath} lies inside the file-system tool's " +
-                "allowed base path {AllowedBasePath}. Durable governance state is currently disabled, so " +
-                "the host is allowed to start, but enabling AppConfig:AI:Governance:DurableState will " +
-                "refuse to boot until the allowlist is narrowed.",
-                overlaps[0].ProtectedPath,
-                overlaps[0].AllowedBasePath);
-
-            return Task.CompletedTask;
-        }
+        // Logged structurally as well as thrown: the exception message is one string for a human,
+        // while these fields are what a log query can actually group and alert on.
+        _logger.LogError(
+            "Refusing to start: protected harness-state directory {ProtectedPath} lies inside the " +
+            "file-system tool's allowed base path {AllowedBasePath} ({OverlapCount} overlap(s) total).",
+            overlaps[0].ProtectedPath,
+            overlaps[0].AllowedBasePath,
+            overlaps.Count);
 
         throw new InvalidOperationException(BuildFailureMessage(overlaps));
     }
@@ -154,13 +147,13 @@ public sealed class FileSystemSandboxStartupValidator : IHostedService
             overlaps.Select(o => $"'{o.ProtectedPath}' inside allowed base path '{o.AllowedBasePath}'"));
 
         return
-            $"Durable governance state is enabled, but {overlaps.Count} protected harness-state " +
+            $"{overlaps.Count} protected harness-state " +
             $"director{(overlaps.Count == 1 ? "y lies" : "ies lie")} inside a directory the file-system " +
             $"tool is allowed to reach: {detail}. That directory holds the SQLite database of approval " +
-            "verdicts. The deny list alone cannot protect it there: an agent can create a hard link to " +
-            "the database inside the allowed tree, and a hard link is not a reparse point, so it " +
-            "resolves to itself and reads as an ordinary unprotected file — through which the database " +
-            "can be read and rewritten to forge an approval verdict. " +
+            "verdicts and change proposals. Reaching it lets an agent mine the approval payloads it " +
+            "carries, and truncate or corrupt the harness's own governance state; forging a verdict is " +
+            "separately blocked by the HMAC seal on every row. Granting the tool that directory leaves " +
+            "the deny list as the only barrier, and a deny list compares paths. " +
             "Fix: narrow AppConfig:Infrastructure:FileSystem:AllowedBasePaths so it no longer contains " +
             "the protected directory (the shipped default, 'workspace', already satisfies this). " +
             "Moving AppConfig:AI:Governance:DurableState:DatabasePath is not an alternative on its own: " +

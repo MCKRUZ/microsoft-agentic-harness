@@ -12,10 +12,11 @@ namespace Infrastructure.AI.Tests.Tools;
 /// </summary>
 /// <remarks>
 /// The stakes are why these are worth their runtime: the protected directory holds the SQLite
-/// database of approval verdicts. An agent that could read it could mine approval payloads; one
-/// that could write it could forge a human approval, which the reconciler would then re-drive into
-/// the hash-chained compliance audit log. Every test here is a bypass that would achieve one of
-/// those, so each must stay closed independently of the others.
+/// database of approval verdicts. An agent that could read it could mine the approval payloads it
+/// carries; one that could write it could truncate or corrupt the harness's own governance state.
+/// It could not forge a verdict — every row is HMAC-sealed and verified fail-closed on read — so
+/// what these defend is disclosure and tamper. Every test here is a bypass that would achieve one
+/// of those, so each must stay closed independently of the others.
 /// </remarks>
 public sealed class FileSystemServiceProtectedPathTests : IDisposable
 {

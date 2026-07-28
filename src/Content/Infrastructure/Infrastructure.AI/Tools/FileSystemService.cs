@@ -25,21 +25,24 @@ public sealed class FileSystemService : IFileSystemService
 
     // Harness-owned state directories the tool may never read or write, regardless of the
     // configured allowlist. Holds the governance-state database — pending escalations, their
-    // resolved verdicts, and change proposals. An agent that could read that file could mine
-    // approval payloads; one that could edit it could forge a human approval, which the
-    // reconciler would then re-drive into the hash-chained compliance audit log.
+    // resolved verdicts, and change proposals. An agent that could read that file could mine the
+    // approval payloads it carries; one that could write it could truncate or corrupt the
+    // harness's own governance state. It could NOT forge an approval verdict: every outcome is
+    // HMAC-sealed by AttestationGovernanceRecordSealer with a key the agent has no access to, the
+    // seal is bound to the row id, and both read paths in EfCoreEscalationStateStore verify it and
+    // quarantine on failure. So the exposure this list closes is disclosure and tamper/denial of
+    // service, not forgery.
     //
     // Compared as CANONICAL ABSOLUTE PATHS, never as directory names: name matching is
     // defeated by a Windows 8.3 short alias (AGENT-~1) or any other alias that resolves to the
     // same directory but spells it differently. The canonical form comes from the same
     // resolver the database registration uses, so the two cannot drift.
     //
-    // This deny list is defence in depth, not the load-bearing control. It cannot see through a
-    // hard link: a hard link is a second directory entry for the same file, not a reparse point,
-    // so there is no link target to resolve and its canonical form is itself. The control that
-    // actually closes that hole is FileSystemSandboxStartupValidator, which refuses to boot when
-    // a protected directory sits inside an allowed base path — a hard link cannot span volumes,
-    // so a protected file outside every allowed base path cannot be aliased into one.
+    // This deny list cannot see through a hard link, and nothing path-based can: a hard link is a
+    // second directory entry for the same file, not a reparse point, so there is no link target to
+    // resolve and its canonical form is itself. That gap is closed by asking about the file's
+    // identity instead of its path — see IsSingleLinked — because a hard link needs only the same
+    // VOLUME as its target, which no allowlist geometry can prevent.
     private readonly HashSet<string> _protectedPaths;
 
     // Directories skipped during recursive search — build artifacts and VCS internals
@@ -325,6 +328,17 @@ public sealed class FileSystemService : IFileSystemService
             return;
         }
 
+        // The same identity gate the direct read applies, for the same reason: search returns file
+        // CONTENT, so leaving it out would close reads of a hard-linked database while leaving the
+        // disclosure path — grep the workspace for a needle, read it out of the alias — wide open.
+        // On cost: this is one extra handle open per file actually scanned (bounded by
+        // MaxFilesScanned), paid only on hosts with protected paths, against a method that already
+        // opens and reads every one of those files line by line. It is not the per-file link
+        // RESOLUTION the directory-verdict memo exists to avoid — that walks parent components and
+        // is paid per enumerated entry; this is a single stat-and-open on files already being read.
+        if (!IsSingleLinked(filePath))
+            return;
+
         try
         {
             var lineNumber = 0;
@@ -377,10 +391,67 @@ public sealed class FileSystemService : IFileSystemService
             throw new UnauthorizedAccessException("Path is outside the allowed sandbox.");
         }
 
+        // Identity, after path. Everything above reasons about what the path spells; this asks the
+        // operating system what file it actually names. Only the second question sees a hard link.
+        if (!IsSingleLinked(fullPath))
+            throw new UnauthorizedAccessException(HardLinkDenialMessage);
+
         if (write)
             ValidateWriteTarget(fullPath);
 
         return fullPath;
+    }
+
+    /// <summary>
+    /// The refusal handed to a caller whose path names a file the sandbox cannot prove is unique.
+    /// </summary>
+    private const string HardLinkDenialMessage =
+        "Path names a file the sandbox cannot prove has a single directory entry, so it cannot " +
+        "rule out that the file is a hard link aliasing protected harness state.";
+
+    /// <summary>
+    /// True when <paramref name="fullPath"/> names a file with exactly one directory entry — the
+    /// only case in which a path-based sandbox decision about it is trustworthy.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Why a path check is not enough.</b> A hard link is a second directory entry for one file,
+    /// carrying no reparse point, so it resolves to itself and reads to every check above as an
+    /// ordinary workspace file. The startup validator keeps protected directories out of the
+    /// allowed tree, which is worth doing, but it is not what closes this: a hard link requires the
+    /// same VOLUME as its target, not the same subtree, and the shipped default puts
+    /// <c>workspace</c> and <c>.agent-state</c> side by side on one volume. Non-containment is
+    /// strictly narrower than volume separation, and volume separation is unreachable anyway
+    /// because <c>GovernanceStatePaths.Resolve</c> pins the database under the application base
+    /// directory.
+    /// </para>
+    /// <para>
+    /// <b>Fail closed.</b> <see cref="HardLinkInspector.LinkCount.Unknown"/> — an unimplemented
+    /// platform (anything but Windows and Linux), a failed platform call, or an untrustworthy
+    /// count — denies. A consumer running on such a platform with protected paths configured gets
+    /// a closed file tool rather than a silently unguarded one.
+    /// </para>
+    /// <para>
+    /// <b>Scoped to hosts that have something to protect.</b> With no protected paths configured
+    /// there is nothing a hard link could alias, so the inspection is skipped outright and callers
+    /// with no harness state pay nothing — neither the handle open nor the platform restriction.
+    /// </para>
+    /// </remarks>
+    /// <param name="fullPath">An absolute path. Need not exist; a file yet to be created passes.</param>
+    private bool IsSingleLinked(string fullPath)
+    {
+        if (_protectedPaths.Count == 0)
+            return true;
+
+        var linkCount = HardLinkInspector.Inspect(fullPath);
+        if (linkCount == HardLinkInspector.LinkCount.Single)
+            return true;
+
+        _logger.LogWarning(
+            "Blocked access to a path the sandbox cannot prove is singly-linked: {Path} ({LinkCount})",
+            fullPath,
+            linkCount);
+        return false;
     }
 
     private string ResolveRelative(string path)
@@ -448,8 +519,9 @@ public sealed class FileSystemService : IFileSystemService
         // Deny list wins over the allowlist. Protected directories hold the harness's own
         // governance state — the SQLite database of approval verdicts — and typically sit
         // under a configured base path, so allowlisting alone would leave them reachable.
-        // An agent able to edit that file could forge an approval verdict, so the tool must
-        // not be able to read or write it under any configuration.
+        // An agent able to read that file could mine approval payloads, and one able to write it
+        // could truncate or corrupt the harness's own state; the HMAC seal on every row is what
+        // stops it forging a verdict. The tool must not reach it under any configuration.
         if (verdict.IsProtected)
         {
             _logger.LogWarning(

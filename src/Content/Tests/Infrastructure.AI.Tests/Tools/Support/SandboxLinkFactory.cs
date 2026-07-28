@@ -47,8 +47,9 @@ internal static class SandboxLinkFactory
     /// </summary>
     /// <remarks>
     /// There is no unprivileged Windows fallback for a file symlink — <c>mklink /H</c> creates a
-    /// hard link, which is a different attack with a different defence (the boot-time containment
-    /// assertion, not link resolution) — so this skips when symlinks are unavailable.
+    /// hard link, which is a different attack with a different defence (the per-operation link-count
+    /// check, not link resolution; see <see cref="CreateHardLink"/>) — so this skips when symlinks
+    /// are unavailable.
     /// </remarks>
     /// <param name="link">The link path to create; must not already exist.</param>
     /// <param name="target">The existing file the link resolves to.</param>
@@ -64,6 +65,36 @@ internal static class SandboxLinkFactory
         {
             Skip.If(true, $"This host does not permit creating file symlinks: {ex.GetType().Name}");
         }
+    }
+
+    /// <summary>
+    /// Creates a hard link at <paramref name="link"/> naming the same file as
+    /// <paramref name="target"/>, skipping the calling test when the host forbids it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// There is no managed API for this, so both platforms shell out to the same unprivileged
+    /// command an attacker would use: <c>mklink /H</c> on Windows, <c>ln</c> everywhere else.
+    /// Neither needs elevation, neither needs Developer Mode, and the resulting entry carries no
+    /// reparse point — which is exactly why the sandbox's path canonicalization cannot see it.
+    /// </para>
+    /// <para>
+    /// The link and target must be on the same volume, which every caller satisfies by putting
+    /// both under one temporary root. That is not a limitation of the test: it is the shipped
+    /// default's geometry, where <c>workspace</c> and <c>.agent-state</c> are siblings.
+    /// </para>
+    /// </remarks>
+    /// <param name="link">The hard-link path to create; must not already exist.</param>
+    /// <param name="target">The existing file to create a second directory entry for.</param>
+    public static void CreateHardLink(string link, string target)
+    {
+        var failure = OperatingSystem.IsWindows()
+            ? RunLinkCommand("cmd.exe", ["/c", "mklink", "/H", link, target])
+            : RunLinkCommand("/bin/ln", [target, link]);
+
+        Skip.If(
+            failure is not null || !File.Exists(link),
+            $"This host does not permit creating hard links: {failure ?? "the link was not created"}.");
     }
 
     private static bool TryCreateSymbolicLink(string link, string target, out string? failure)
@@ -88,28 +119,49 @@ internal static class SandboxLinkFactory
     /// </summary>
     private static string? TryCreateJunction(string link, string target)
     {
+        var failure = RunLinkCommand("cmd.exe", ["/c", "mklink", "/J", link, target]);
+        if (failure is not null)
+            return failure;
+
+        return Directory.Exists(link) ? null : "mklink created no junction";
+    }
+
+    /// <summary>
+    /// Runs a link-creating command to completion. Returns <see langword="null"/> when it exited
+    /// zero, or a short human-readable reason otherwise.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="ProcessStartInfo.ArgumentList"/> rather than a joined argument string: it quotes
+    /// each entry, so the temporary paths these tests build survive spaces intact.
+    /// </remarks>
+    /// <param name="fileName">The executable to run.</param>
+    /// <param name="arguments">Arguments, one entry per argument.</param>
+    private static string? RunLinkCommand(string fileName, string[] arguments)
+    {
         try
         {
-            using var process = Process.Start(new ProcessStartInfo("cmd.exe")
+            var startInfo = new ProcessStartInfo(fileName)
             {
-                // ArgumentList quotes each entry, so paths with spaces survive intact.
-                ArgumentList = { "/c", "mklink", "/J", link, target },
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false,
                 CreateNoWindow = true,
-            });
+            };
 
+            foreach (var argument in arguments)
+                startInfo.ArgumentList.Add(argument);
+
+            using var process = Process.Start(startInfo);
             if (process is null)
-                return "cmd.exe did not start";
+                return $"{fileName} did not start";
 
             if (!process.WaitForExit(MkLinkTimeout))
             {
                 process.Kill(entireProcessTree: true);
-                return "mklink timed out";
+                return $"{fileName} timed out";
             }
 
-            return Directory.Exists(link) ? null : $"mklink exited {process.ExitCode}";
+            return process.ExitCode == 0 ? null : $"{fileName} exited {process.ExitCode}";
         }
         catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException)
         {

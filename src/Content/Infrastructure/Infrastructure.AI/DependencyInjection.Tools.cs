@@ -34,11 +34,13 @@ public static partial class DependencyInjection
         IEnumerable<string> allowedBasePaths)
     {
         // File system service — sandboxed file operations for direct consumption.
-        // The governance-state directory is denied unconditionally, even when it falls inside
-        // an allowed base path: it holds approval verdicts, so an agent that could read it
-        // could mine approval payloads and one that could write it could forge a verdict the
-        // reconciler would launder into the compliance audit log. Resolved through the same
-        // helper the database registration uses, so the two paths cannot drift apart.
+        // The governance-state directory is denied unconditionally, even when it falls inside an
+        // allowed base path: it holds approval verdicts, so an agent that could read it could mine
+        // approval payloads and one that could write it could truncate or corrupt the harness's own
+        // governance state. It could not forge a verdict — every row is HMAC-sealed by
+        // AttestationGovernanceRecordSealer and verified fail-closed on read — so the exposure is
+        // disclosure and tamper/denial of service. Resolved through the same helper the database
+        // registration uses, so the two paths cannot drift apart.
         var governanceStateDirectory = Path.GetDirectoryName(
             Persistence.GovernanceStatePaths.Resolve(appConfig.AI.Governance.DurableState.DatabasePath));
 
@@ -50,15 +52,16 @@ public static partial class DependencyInjection
                 allowedBasePaths,
                 protectedPaths));
 
-        // The deny list above is defence in depth; this validator is the load-bearing control.
-        // It refuses to boot when the governance-state directory sits inside an allowed base path,
-        // because a hard link created there would alias the approval-verdict database into the
-        // sandbox and no per-path check can see through a hard link. Both collections are handed
-        // over by value so the assertion covers exactly the paths the service enforces.
+        // Boot-time assertion that the governance-state directory does not sit inside an allowed
+        // base path. That geometry is a misconfiguration worth refusing on, but note what it does
+        // NOT do: it does not close the hard-link bypass. A hard link needs the same VOLUME as its
+        // target, not the same subtree, and the shipped default puts workspace and .agent-state
+        // side by side on one volume. FileSystemService's per-operation link-count check is what
+        // closes that. Both collections are handed over by value so the assertion covers exactly
+        // the paths the service enforces.
         services.AddHostedService(sp => new FileSystemSandboxStartupValidator(
             [.. allowedBasePaths],
             protectedPaths,
-            sp.GetRequiredService<IOptionsMonitor<AppConfig>>(),
             sp.GetRequiredService<ILogger<FileSystemSandboxStartupValidator>>()));
 
         // File system tool — ITool adapter for LLM consumption, registered with keyed DI

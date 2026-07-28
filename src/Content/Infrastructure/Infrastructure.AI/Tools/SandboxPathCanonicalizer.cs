@@ -36,9 +36,10 @@ internal static class SandboxPathCanonicalizer
     /// <para>
     /// Hard links are deliberately <em>not</em> covered, and cannot be: a hard link is a second
     /// directory entry for the same file, not a reparse point, so there is no link target to
-    /// resolve and the canonical form of a hard link is the hard link itself. Containment of a
-    /// protected directory inside an allowed base path is therefore asserted at boot by
-    /// <see cref="FileSystemSandboxStartupValidator"/> rather than defended per-path here.
+    /// resolve and the canonical form of a hard link is the hard link itself. No path-based
+    /// canonicalization can close that, and no allowlist geometry can either — a hard link needs
+    /// only the same volume as its target. It is closed instead by asking the operating system for
+    /// the file's link count, via <see cref="HardLinkInspector"/>, at the point of use.
     /// </para>
     /// </remarks>
     /// <param name="normalizedPath">
