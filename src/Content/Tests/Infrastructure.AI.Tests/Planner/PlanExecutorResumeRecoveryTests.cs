@@ -198,6 +198,7 @@ public sealed class PlanExecutorResumeRecoveryTests : IDisposable
             _notifier.Object,
             _escalation.Object,
             provider,
+            new PlanRunCancellationRegistry(),
             TimeProvider.System,
             NullLogger<PlanExecutor>.Instance);
     }

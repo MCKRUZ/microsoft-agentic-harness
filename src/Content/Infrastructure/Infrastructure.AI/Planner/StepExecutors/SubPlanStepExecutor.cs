@@ -131,7 +131,13 @@ public sealed class SubPlanStepExecutor : IPlanStepExecutor
                 Duration = sw.Elapsed
             };
         }
-        catch (Exception ex)
+        // OperationCanceledException is deliberately excluded, matching ToolUseStepExecutor and
+        // RetrievalPlanStepExecutor. Swallowing it would turn plan cancellation into an ordinary
+        // step failure: the executor would consume a retry and re-invoke the child plan while the
+        // plan was being torn down, and the step would be recorded Failed rather than Cancelled —
+        // which is terminal on resume, so a cancelled plan containing a sub-plan step could never
+        // be resumed. Cancellation must propagate so PlanExecutor can unwind the run.
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             sw.Stop();
             // Full detail stays in the structured log; only a stable code is persisted onto the step,

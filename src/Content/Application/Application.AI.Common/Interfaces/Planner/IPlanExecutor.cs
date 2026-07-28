@@ -29,10 +29,28 @@ public interface IPlanExecutor
     Task<Result<PlanExecutionSummary>> ExecuteAsync(PlanId planId, PlanExecutionContext context, CancellationToken ct);
 
     /// <summary>
-    /// Cancels a running plan execution. Steps already in progress complete but no new steps start.
+    /// Cancels a plan: signals any in-flight run to stop, then records every step that had not
+    /// finished as cancelled.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Cancellation is cooperative and takes effect promptly — implementations must not wait for the
+    /// run they are cancelling. The in-flight step's own token is signalled; a step that has not yet
+    /// started never starts.
+    /// </para>
+    /// <para>
+    /// Side effects are <b>at-least-once</b>. An in-flight tool call, LLM request, or sub-plan may
+    /// still complete, and any external effect it already had stands. Cancelling stops further work;
+    /// it does not roll back work already done.
+    /// </para>
+    /// <para>
+    /// The plan remains <b>resumable</b>: completed steps keep their state and output, and a later
+    /// <see cref="ExecuteAsync(PlanId, CancellationToken)"/> resumes from that checkpoint rather than
+    /// re-running finished work. Cancelling twice is idempotent.
+    /// </para>
+    /// </remarks>
     /// <param name="planId">Identifier of the plan to cancel.</param>
-    /// <param name="ct">Cancellation token.</param>
+    /// <param name="ct">Cancellation token for the cancel request itself.</param>
     Task<Result> CancelAsync(PlanId planId, CancellationToken ct);
 
     /// <summary>

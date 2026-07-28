@@ -143,7 +143,7 @@ public sealed partial class PlanExecutor
                 break;
 
             case ErrorRecovery.FailPlan:
-                MarkRemainingAsFailed(ctx.StepStates, "Plan failed due to step failure with FailPlan recovery");
+                MarkRemainingAs(ctx.StepStates, StepExecutionStatus.Failed, "Plan failed due to step failure with FailPlan recovery");
                 break;
         }
     }
@@ -377,8 +377,23 @@ public sealed partial class PlanExecutor
                 // dependencies and re-enqueues it through the canonical Pending -> Ready promotion
                 // path. Leaving it as Ready would strand it: EnqueueInitialReadyStepsAsync only picks
                 // up Pending steps, so the step would never run yet the plan would report Completed.
-                var state = existing.Status is StepExecutionStatus.Running or StepExecutionStatus.Ready
-                    ? existing with { Status = StepExecutionStatus.Pending }
+                //
+                // Cancelled is renormalised for the same reason. An operator cancel is a pause, not
+                // a verdict on the step: CancelAsync marks every non-terminal step Cancelled, and
+                // Cancelled counts as terminal to the scheduler, so without this a cancelled plan
+                // could never be resumed — re-running it would report Completed having executed
+                // nothing. Completed steps keep their state and output, so resume picks up exactly
+                // where the cancel stopped. Failed deliberately does NOT renormalise: a failure is a
+                // verdict, and re-arming it is the operator's explicit call via RetryStepAsync.
+                //
+                // The prior error text and completion timestamp are cleared on renormalisation.
+                // TransitionStepAsync carries a null ErrorMessage forward from the previous state,
+                // so leaving "Plan cancelled by user" in place would follow the step into its next
+                // Completed state and misreport a successful step as cancelled.
+                var state = existing.Status is StepExecutionStatus.Running
+                    or StepExecutionStatus.Ready
+                    or StepExecutionStatus.Cancelled
+                    ? existing with { Status = StepExecutionStatus.Pending, ErrorMessage = null, CompletedAt = null }
                     : existing;
                 stepStates[step.Id] = state;
             }
@@ -393,7 +408,16 @@ public sealed partial class PlanExecutor
         }
     }
 
-    private static void MarkRemainingAsFailed(ConcurrentDictionary<PlanStepId, StepExecutionState> stepStates, string reason)
+    /// <summary>
+    /// Drives every still-unfinished step to <paramref name="status"/> in the in-memory state map so
+    /// the returned summary describes the run honestly. This is a summary-shaping step, not a
+    /// checkpoint: it does not persist. Persisted state for these steps is written by the step's own
+    /// transition (for one that was in flight) or by <c>CancelAsync</c>'s rewrite.
+    /// </summary>
+    private static void MarkRemainingAs(
+        ConcurrentDictionary<PlanStepId, StepExecutionState> stepStates,
+        StepExecutionStatus status,
+        string reason)
     {
         foreach (var (stepId, state) in stepStates)
         {
@@ -401,7 +425,7 @@ public sealed partial class PlanExecutor
             {
                 stepStates[stepId] = state with
                 {
-                    Status = StepExecutionStatus.Failed,
+                    Status = status,
                     ErrorMessage = reason,
                     CompletedAt = DateTimeOffset.UtcNow
                 };

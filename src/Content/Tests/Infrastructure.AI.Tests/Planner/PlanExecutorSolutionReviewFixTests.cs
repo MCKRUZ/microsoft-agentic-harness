@@ -127,6 +127,7 @@ public sealed class PlanExecutorSolutionReviewFixTests
             notifier.Object,
             escalation.Object,
             provider,
+            new PlanRunCancellationRegistry(),
             TimeProvider.System,
             NullLogger<PlanExecutor>.Instance);
     }

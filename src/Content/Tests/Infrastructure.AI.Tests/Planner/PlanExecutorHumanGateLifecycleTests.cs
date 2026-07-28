@@ -289,6 +289,7 @@ public sealed class PlanExecutorHumanGateLifecycleTests : IDisposable
             _notifier.Object,
             _escalation.Object,
             provider,
+            new PlanRunCancellationRegistry(),
             TimeProvider.System,
             NullLogger<PlanExecutor>.Instance);
     }
@@ -310,6 +311,7 @@ public sealed class PlanExecutorHumanGateLifecycleTests : IDisposable
             _notifier.Object,
             _escalation.Object,
             provider,
+            new PlanRunCancellationRegistry(),
             TimeProvider.System,
             NullLogger<PlanExecutor>.Instance);
     }

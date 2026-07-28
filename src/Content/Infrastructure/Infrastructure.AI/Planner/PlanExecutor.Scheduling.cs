@@ -64,11 +64,22 @@ public sealed partial class PlanExecutor
         }
         catch (OperationCanceledException)
         {
-            // Plan-level cancellation (caller token or plan timeout) — deliberately NOT retryable.
-            // Per-attempt timeouts never surface here: ExecuteSingleAttemptAsync converts them into
-            // failed attempts, so an OperationCanceledException at this level always means the
-            // whole plan is being torn down (including cancellation during a backoff delay).
-            await TransitionStepAsync(ctx.PlanId, step.Id, StepExecutionStatus.Failed, ctx.StepStates, CancellationToken.None, errorMessage: "Cancelled");
+            // Plan-level cancellation (operator cancel, caller token, or plan timeout) —
+            // deliberately NOT retryable. Per-attempt timeouts never surface here:
+            // ExecuteSingleAttemptAsync converts them into failed attempts, so an
+            // OperationCanceledException at this level always means the whole plan is being torn
+            // down (including cancellation during a backoff delay).
+            //
+            // An operator cancel records the step Cancelled, not Failed. The distinction is not
+            // cosmetic: Cancelled is renormalised to Pending on resume (see InitializeStepStates)
+            // so the plan picks this step back up, whereas Failed is terminal and needs an explicit
+            // RetryStepAsync. Recording an operator cancel as Failed would leave the plan wedged.
+            // Whatever the step had already done externally still stands — cancellation stops
+            // further work, it does not roll anything back.
+            var cancelledStatus = ctx.RunCancellationToken.IsCancellationRequested
+                ? StepExecutionStatus.Cancelled
+                : StepExecutionStatus.Failed;
+            await TransitionStepAsync(ctx.PlanId, step.Id, cancelledStatus, ctx.StepStates, CancellationToken.None, errorMessage: "Cancelled");
             throw;
         }
         catch (Exception ex)

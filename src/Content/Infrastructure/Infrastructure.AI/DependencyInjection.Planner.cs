@@ -69,6 +69,12 @@ public static partial class DependencyInjection
         // global plans, preserving today's single-user behavior while staying ValidateOnBuild-safe.
         services.TryAddScoped<IKnowledgeScope, NullKnowledgeScope>();
 
+        // Singleton, deliberately: IPlanExecutor is scoped, and a cancel request arrives on a
+        // different scope (and thread) from the run it targets. A scoped registry would give the
+        // canceller its own empty index, so it would signal nothing and report success — the exact
+        // silent no-op this registry exists to prevent.
+        services.TryAddSingleton<IPlanRunCancellationRegistry, PlanRunCancellationRegistry>();
+
         services.AddScoped<IPlanExecutor, PlanExecutor>();
 
         // Singleton like IBundleRunExecutor: the executor owns no per-run state itself — it creates a
