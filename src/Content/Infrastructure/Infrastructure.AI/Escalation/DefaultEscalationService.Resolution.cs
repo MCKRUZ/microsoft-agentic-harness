@@ -124,6 +124,15 @@ public sealed partial class DefaultEscalationService
 				outcome.EscalationId);
 		}
 
+		// The parked-awaiting-reconciliation marker is now false in fact, so clear it before the
+		// verdict becomes observable. Without this, a decision arriving in the window between the
+		// successful audit write and the removal from the active set below would be told the
+		// escalation is awaiting reconciliation (409) when it has actually just resolved.
+		lock (state.Lock)
+		{
+			state.ResolutionFailed = false;
+		}
+
 		// Retain the verdict ONLY after it has been durably audited, so GetOutcomeAsync — and thus
 		// the plan executor's resume reconciliation — can never act on a verdict that failed the
 		// fail-closed audit write above and was rolled back to the awaiting caller. Publish it
@@ -185,14 +194,8 @@ public sealed partial class DefaultEscalationService
 		// A disposed gate means the escalation was torn down (service disposal, caller
 		// cancellation) while this timeout task was still in flight. Timing it out is moot at
 		// that point, so bail out quietly rather than faulting a background task.
-		try
-		{
-			await state.WriteGate.WaitAsync(CancellationToken.None);
-		}
-		catch (ObjectDisposedException)
-		{
+		if (!await TryEnterWriteGateAsync(state, CancellationToken.None))
 			return;
-		}
 
 		try
 		{
@@ -229,14 +232,7 @@ public sealed partial class DefaultEscalationService
 		{
 			// Same teardown race as the acquire: the gate can be disposed underneath a
 			// long-running resolution when the host shuts down mid-flight.
-			try
-			{
-				state.WriteGate.Release();
-			}
-			catch (ObjectDisposedException)
-			{
-				// Torn down while resolving; nothing left to release.
-			}
+			ReleaseWriteGate(state);
 		}
 	}
 

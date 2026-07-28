@@ -21,7 +21,8 @@ namespace Presentation.Common.Tests.Escalations;
 /// is stamped exclusively from the principal's configured claim (the body cannot supply it),
 /// that a missing claim fails closed with 403 before any dispatch, and that every
 /// <see cref="EscalationDecisionStatus"/> maps to its documented HTTP status
-/// (404 / 403 / 202 / 200). Wire-level auth and routing coverage lives in
+/// (404 / 403 / 202 / 200 / 409) — including an exhaustiveness guard proving no member falls
+/// through to a 500. Wire-level auth and routing coverage lives in
 /// <c>Presentation.AgentHub.Tests</c>.
 /// </summary>
 public sealed class EscalationsControllerTests
@@ -304,6 +305,83 @@ public sealed class EscalationsControllerTests
         var body = ok.Value.Should().BeOfType<EscalationDecisionResponse>().Subject;
         body.Status.Should().Be(EscalationDecisionStatus.Resolved);
         body.Outcome!.EscalationId.Should().Be(id);
+    }
+
+    [Fact]
+    public async Task SubmitDecision_AwaitingReconciliation_Returns409NotServerError()
+    {
+        // Reachable in the DEFAULT durability-off config: approver A's decision resolves the
+        // escalation, the fail-closed audit write throws, the escalation parks with
+        // ResolutionFailed set and stays in the active set, and approver B's decision then comes
+        // back AwaitingReconciliation. With no arm for it the switch fell through to the 500
+        // default, so an ordinary lifecycle state read to the caller as a server fault.
+        SetupDecision(new SubmitEscalationDecisionResult
+        {
+            Status = EscalationDecisionStatus.AwaitingReconciliation
+        });
+
+        var result = await CreateSut(ApproverClaim()).SubmitDecision(
+            Guid.NewGuid(), new SubmitEscalationDecisionRequest(true), CancellationToken.None);
+
+        var problem = result.Should().BeOfType<ObjectResult>().Subject;
+        problem.StatusCode.Should().Be(StatusCodes.Status409Conflict,
+            "the verdict is already decided, so this vote will never be counted no matter how " +
+            "often the request is retried — a state conflict, not the transient unavailability 503 implies");
+
+        var details = problem.Value.Should().BeAssignableTo<ProblemDetails>().Subject;
+        details.Detail.Should().Contain("not counted",
+            "the approver must be told plainly that their vote did not participate");
+        details.Detail.Should().Contain("GET /api/escalations",
+            "the caller needs the poll target for the verdict that reconciliation will publish");
+    }
+
+    [Fact]
+    public async Task SubmitDecision_ConflictingDecision_Returns409NotServerError()
+    {
+        // The handler normally translates this to a Conflict failure, so this status should not
+        // arrive here. It is mapped anyway: a handler change must not be able to silently demote
+        // a votes-cannot-be-changed conflict into a 500.
+        SetupDecision(new SubmitEscalationDecisionResult
+        {
+            Status = EscalationDecisionStatus.ConflictingDecision
+        });
+
+        var result = await CreateSut(ApproverClaim()).SubmitDecision(
+            Guid.NewGuid(), new SubmitEscalationDecisionRequest(true), CancellationToken.None);
+
+        result.Should().BeOfType<ObjectResult>()
+            .Which.StatusCode.Should().Be(StatusCodes.Status409Conflict);
+    }
+
+    [Fact]
+    public async Task SubmitDecision_EveryDecisionStatus_MapsToSomethingOtherThan500()
+    {
+        // The guard for the whole defect class: adding a member to EscalationDecisionStatus
+        // without an arm in the controller silently turns it into a 500. This fails the moment
+        // that happens, naming the unmapped member.
+        foreach (var status in Enum.GetValues<EscalationDecisionStatus>())
+        {
+            _mediator.Reset();
+            SetupDecision(new SubmitEscalationDecisionResult
+            {
+                Status = status,
+                Outcome = status == EscalationDecisionStatus.Resolved
+                    ? NewOutcomeSummary(Guid.NewGuid())
+                    : null
+            });
+
+            var result = await CreateSut(ApproverClaim()).SubmitDecision(
+                Guid.NewGuid(), new SubmitEscalationDecisionRequest(true), CancellationToken.None);
+
+            var statusCode = result switch
+            {
+                ObjectResult o => o.StatusCode,
+                StatusCodeResult s => s.StatusCode,
+                _ => null
+            };
+            statusCode.Should().NotBe(StatusCodes.Status500InternalServerError,
+                $"EscalationDecisionStatus.{status} has no explicit arm in the controller's mapping");
+        }
     }
 
     // --- Read/cancel Result mapping through the shared failure mapper ---

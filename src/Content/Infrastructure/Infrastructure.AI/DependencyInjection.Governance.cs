@@ -67,7 +67,9 @@ public static partial class DependencyInjection
         // Runs reconciliation in production — the ONLY non-test trigger for the recovery path.
         // Registered AFTER rehydration so hosted-service start order populates the active set
         // before the first pass runs (the pass distinguishes in-memory-recoverable records from
-        // durable-only ones by consulting that set). Gated internally on EscalationsEnabled.
+        // durable-only ones by consulting that set). The pass itself runs on EVERY host: the
+        // stuck state it recovers is caused by an audit-store failure, not by durable state, so
+        // it occurs with the durability toggles off. Only the retention prune is toggle-gated.
         services.AddHostedService<EscalationReconciliationService>();
 
         services.AddSingleton<IEscalationAuditStore, JsonlEscalationAuditStore>();

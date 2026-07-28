@@ -69,16 +69,22 @@ public sealed class EscalationReconciliationServiceTests
     }
 
     [Fact]
-    public async Task StartAsync_DurabilityDisabled_NeverReconciles()
+    public async Task StartAsync_DurabilityDisabled_StillReconciles()
     {
+        // The in-memory stuck shape — a resolution whose fail-closed AUDIT write threw — is
+        // caused by the audit store, not the state store, so it happens with durability off.
+        // While the whole loop was gated on the durable toggles, nothing drove recovery in the
+        // default configuration: an escalation parked on an audit outage stayed parked forever,
+        // and AwaitingReconciliation's "poll until reconciliation completes" contract was a lie.
         var service = CreateService(escalationsEnabled: false);
 
         await service.StartAsync(CancellationToken.None);
-        _time.Advance(TimeSpan.FromHours(1));
-        await service.StopAsync(CancellationToken.None);
+        await WaitForReconcileCountAsync(1);
 
-        _reconciler.Verify(
-            r => r.ReconcileStuckEscalationsAsync(It.IsAny<CancellationToken>()), Times.Never);
+        // And it keeps ticking, so a state that gets stuck later is still recovered.
+        await WaitForReconcileCountAsync(2);
+
+        await service.StopAsync(CancellationToken.None);
     }
 
     [Fact]

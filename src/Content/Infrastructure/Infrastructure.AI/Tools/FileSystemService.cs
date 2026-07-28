@@ -421,10 +421,24 @@ public sealed class FileSystemService : IFileSystemService
     }
 
     /// <summary>
-    /// Resolves a path to its canonical absolute form, expanding OS-level aliases that
-    /// <see cref="Path.GetFullPath(string)"/> leaves intact — notably Windows 8.3 short names,
-    /// which would otherwise let <c>AGENT-~1</c> sidestep a comparison against the long name.
+    /// Resolves a path to its canonical absolute form, so an alias cannot sidestep a comparison
+    /// against the long name.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The two steps cover different aliases. <see cref="Path.GetFullPath(string)"/> is what
+    /// handles Windows 8.3 short names: on Windows its normalization expands any component that
+    /// exists on disk, turning <c>PROGRA~1</c> into <c>Program Files</c>. The
+    /// <see cref="FileSystemInfo.ResolveLinkTarget(bool)"/> step then covers symlinks and
+    /// junctions, which <c>GetFullPath</c> does leave intact.
+    /// </para>
+    /// <para>
+    /// A component that does not exist is left exactly as written, because there is nothing on
+    /// disk to expand it against. That is harmless for the protected-path check: a protected
+    /// directory that does not exist holds nothing to protect, and a literal <c>AGENT-~1</c>
+    /// path then names a genuinely different directory rather than aliasing the protected one.
+    /// </para>
+    /// </remarks>
     /// <param name="path">The path to canonicalize.</param>
     private static string CanonicalizePath(string path)
     {

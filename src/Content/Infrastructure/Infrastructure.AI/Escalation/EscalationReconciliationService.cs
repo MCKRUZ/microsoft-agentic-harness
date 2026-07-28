@@ -32,11 +32,21 @@ namespace Infrastructure.AI.Escalation;
 /// scan touches the database.
 /// </para>
 /// <para>
-/// Gated on <c>EscalationsEnabled</c>: with durable escalation state off there is no
-/// durable stuck shape to recover and no database to prune, and the in-memory stuck shape is
-/// recoverable only within the process that produced it (where an operator-triggered pass
-/// still works). A pass that throws is logged and retried on the next tick — reconciliation
-/// failing must never take the host down.
+/// <b>The loop is NOT gated on the durability toggles.</b> The in-memory stuck shape — a
+/// resolution reached in this process whose fail-closed <em>audit</em> write threw — is caused
+/// by the audit store, not the state store, so it occurs in the default (durability-off)
+/// configuration too. Gating the whole service on <c>EscalationsEnabled</c> left that shape
+/// with no scheduled recovery on the very configuration most hosts run, which in turn made
+/// <c>EscalationDecisionStatus.AwaitingReconciliation</c>'s own contract ("the verdict
+/// becomes observable once reconciliation completes") false. Each sub-step therefore checks
+/// only the flag it actually needs: the reconcile pass runs always, and the retention prune —
+/// which does touch the database — stays behind the toggles. With durability off the pass's
+/// durable half is a no-op anyway, because <c>NullEscalationStateStore.GetActiveAsync</c>
+/// returns nothing.
+/// </para>
+/// <para>
+/// A pass that throws is logged and retried on the next tick — reconciliation failing must
+/// never take the host down.
 /// </para>
 /// </remarks>
 public sealed class EscalationReconciliationService : BackgroundService
@@ -88,15 +98,11 @@ public sealed class EscalationReconciliationService : BackgroundService
     /// <inheritdoc />
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        var durable = _config.CurrentValue.AI.Governance.DurableState;
-
-        // Gated on EITHER toggle: retention applies to the change-proposal table too, so a host
-        // that enables only ChangeProposalsEnabled must still get the documented retention
-        // window. Each sub-step re-checks its own flag inside the loop.
-        if (!durable.EscalationsEnabled && !durable.ChangeProposalsEnabled)
-            return;
-
-        var interval = ResolveInterval(durable.ReconcileIntervalSeconds);
+        // Deliberately unconditional (see the class remarks): the in-memory stuck shape this
+        // recovers is produced by an audit-store failure and exists with durability off. The
+        // per-sub-step flag checks live in RunPassAsync.
+        var interval = ResolveInterval(
+            _config.CurrentValue.AI.Governance.DurableState.ReconcileIntervalSeconds);
         _logger.LogInformation(
             "Escalation reconciliation active: first pass in {InitialDelay}, then every {Interval}",
             InitialDelay, interval);
@@ -118,41 +124,63 @@ public sealed class EscalationReconciliationService : BackgroundService
     }
 
     /// <summary>
-    /// Runs one reconcile pass followed by one retention prune, swallowing failures so a
-    /// transient store or audit outage never faults the host's background pipeline.
+    /// Runs one reconcile pass followed by one retention prune. Each step swallows its own
+    /// failures so a transient store or audit outage never faults the host's background pipeline,
+    /// and so a failing prune cannot suppress the next reconcile.
     /// </summary>
     /// <param name="ct">Cancellation token.</param>
     private async Task RunPassAsync(CancellationToken ct)
     {
-        var durable = _config.CurrentValue.AI.Governance.DurableState;
+        await RunReconcileAsync(ct);
+        await RunPruneAsync(ct);
+    }
 
-        // Reconciliation is escalation-only: there is no parked-awaiting-audit state for
-        // proposals. A proposals-only host still reaches the prune step below.
-        if (durable.EscalationsEnabled)
+    /// <summary>
+    /// Drives one reconcile pass. Runs on every host regardless of the durability toggles: the
+    /// in-memory stuck shape it recovers comes from a failed audit write, which is independent
+    /// of durable state. With durability off the pass's durable half self-no-ops, because the
+    /// Null state store reports no active records.
+    /// </summary>
+    /// <param name="ct">Cancellation token.</param>
+    private async Task RunReconcileAsync(CancellationToken ct)
+    {
+        try
         {
-            try
+            var result = await _reconciler.ReconcileStuckEscalationsAsync(ct);
+            if (result.Recovered.Count > 0 || result.StillStuck.Count > 0)
             {
-                var result = await _reconciler.ReconcileStuckEscalationsAsync(ct);
-                if (result.Recovered.Count > 0 || result.StillStuck.Count > 0)
-                {
-                    _logger.LogInformation(
-                        "Scheduled reconcile recovered {RecoveredCount} escalation(s); {StuckCount} still stuck",
-                        result.Recovered.Count, result.StillStuck.Count);
-                }
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                _logger.LogError(ex, "Scheduled escalation reconcile pass failed; retrying on the next interval");
+                _logger.LogInformation(
+                    "Scheduled reconcile recovered {RecoveredCount} escalation(s); {StuckCount} still stuck",
+                    result.Recovered.Count, result.StillStuck.Count);
             }
         }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogError(ex, "Scheduled escalation reconcile pass failed; retrying on the next interval");
+        }
+    }
 
-        var retentionDays = durable.RetentionDays;
-        if (retentionDays <= 0)
+    /// <summary>
+    /// Prunes terminal governance-state rows past the retention window. Gated on EITHER durable
+    /// toggle — retention applies to the change-proposal table too, so a host that enables only
+    /// <c>ChangeProposalsEnabled</c> must still get the documented window — and skipped entirely
+    /// when both are off, which is what keeps the deferred pruner factory (and with it the
+    /// schema initializer that would create the database file) unresolved on such hosts.
+    /// </summary>
+    /// <param name="ct">Cancellation token.</param>
+    private async Task RunPruneAsync(CancellationToken ct)
+    {
+        var durable = _config.CurrentValue.AI.Governance.DurableState;
+        if (!durable.EscalationsEnabled && !durable.ChangeProposalsEnabled)
+            return;
+
+        if (durable.RetentionDays <= 0)
             return;
 
         try
         {
-            await _prunerFactory().PruneAsync(_timeProvider.GetUtcNow().AddDays(-retentionDays), ct);
+            await _prunerFactory().PruneAsync(
+                _timeProvider.GetUtcNow().AddDays(-durable.RetentionDays), ct);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

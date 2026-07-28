@@ -210,64 +210,133 @@ public sealed partial class DefaultEscalationService : IEscalationService, IEsca
 	{
 		var strategy = _serviceProvider.GetRequiredKeyedService<IApprovalStrategy>(state.Request.ApprovalStrategy);
 
-		await state.WriteGate.WaitAsync(ct);
+		// The gate can be disposed underneath us by a teardown (caller cancellation, service
+		// disposal) that raced the active-set lookup in SubmitDecisionAsync. Report the
+		// escalation as unknown — exactly what a lookup a moment later would say — rather than
+		// letting an ObjectDisposedException escape to the approver as a 500.
+		if (!await TryEnterWriteGateAsync(state, ct))
+		{
+			_logger.LogWarning(
+				"Escalation {EscalationId} was torn down while a decision from {ApproverName} was in flight; " +
+				"reporting it unknown",
+				state.Request.EscalationId, decision.ApproverName);
+			return EscalationDecisionResult.UnknownEscalation();
+		}
+
 		try
 		{
-			EscalationOutcome? outcome;
-			IReadOnlyList<ApproverDecision> decisionsSnapshot;
-
-			lock (state.Lock)
-			{
-				// A verdict was already reached without this decision. If the resolution is
-				// parked on a failed durable/audit write, say so plainly rather than reporting
-				// a vote recorded that was in fact discarded.
-				if (state.IsResolved)
-				{
-					return state.ResolutionFailed
-						? EscalationDecisionResult.AwaitingReconciliation()
-						: EscalationDecisionResult.DecisionRecorded();
-				}
-
-				// Closes the race two concurrent submissions from the same approver can win against
-				// the pre-audit duplicate check: only the first may enter the decision list, and a
-				// contradicting verdict is a conflict here exactly as at the chokepoint above.
-				if (TryGetExistingDecision(state, decision.ApproverName) is { } raced)
-				{
-					return raced.Approved != decision.Approved
-						? EscalationDecisionResult.ConflictingDecision()
-						: EscalationDecisionResult.DecisionRecorded();
-				}
-
-				state.Decisions.Add(decision);
-				decisionsSnapshot = state.Decisions.ToList().AsReadOnly();
-				outcome = EvaluateResolution(state, strategy);
-			}
-
-			// Fail-closed durable decision write (no-op with the Null store): the decision must
-			// be durably recorded before it is reported recorded.
-			try
-			{
-				await _stateStore.SaveDecisionsAsync(state.Request.EscalationId, decisionsSnapshot, ct);
-			}
-			catch (Exception ex)
-			{
-				RollBackDecision(state, decision);
-				_logger.LogError(ex,
-					"Durable decision write failed for escalation {EscalationId}; failing closed (decision not recorded)",
-					state.Request.EscalationId);
-				throw new EscalationDurableStateException(
-					EscalationDurableStateException.DurableWriteFailedCode, ex);
-			}
-
-			if (outcome is null)
-				return EscalationDecisionResult.DecisionRecorded();
-
-			await ResolveEscalationAsync(state, outcome);
-			return EscalationDecisionResult.Resolved(outcome);
+			return await ApplyDecisionUnderGateAsync(state, decision, strategy, ct);
 		}
 		finally
 		{
+			ReleaseWriteGate(state);
+		}
+	}
+
+	/// <summary>
+	/// The body of <see cref="ApplyDecisionAsync"/>, run with the escalation's write gate held.
+	/// </summary>
+	/// <param name="state">The active escalation.</param>
+	/// <param name="decision">The decision to apply.</param>
+	/// <param name="strategy">The approval strategy for this escalation.</param>
+	/// <param name="ct">Cancellation token.</param>
+	private async Task<EscalationDecisionResult> ApplyDecisionUnderGateAsync(
+		EscalationState state, ApproverDecision decision, IApprovalStrategy strategy, CancellationToken ct)
+	{
+		EscalationOutcome? outcome;
+		IReadOnlyList<ApproverDecision> decisionsSnapshot;
+
+		lock (state.Lock)
+		{
+			// A verdict was already reached without this decision. If the resolution is
+			// parked on a failed durable/audit write, say so plainly rather than reporting
+			// a vote recorded that was in fact discarded.
+			if (state.IsResolved)
+			{
+				return state.ResolutionFailed
+					? EscalationDecisionResult.AwaitingReconciliation()
+					: EscalationDecisionResult.DecisionRecorded();
+			}
+
+			// Closes the race two concurrent submissions from the same approver can win against
+			// the pre-audit duplicate check: only the first may enter the decision list, and a
+			// contradicting verdict is a conflict here exactly as at the chokepoint above.
+			if (TryGetExistingDecision(state, decision.ApproverName) is { } raced)
+			{
+				return raced.Approved != decision.Approved
+					? EscalationDecisionResult.ConflictingDecision()
+					: EscalationDecisionResult.DecisionRecorded();
+			}
+
+			state.Decisions.Add(decision);
+			decisionsSnapshot = state.Decisions.ToList().AsReadOnly();
+			outcome = EvaluateResolution(state, strategy);
+		}
+
+		// Fail-closed durable decision write (no-op with the Null store): the decision must
+		// be durably recorded before it is reported recorded.
+		try
+		{
+			await _stateStore.SaveDecisionsAsync(state.Request.EscalationId, decisionsSnapshot, ct);
+		}
+		catch (Exception ex)
+		{
+			RollBackDecision(state, decision);
+			_logger.LogError(ex,
+				"Durable decision write failed for escalation {EscalationId}; failing closed (decision not recorded)",
+				state.Request.EscalationId);
+			throw new EscalationDurableStateException(
+				EscalationDurableStateException.DurableWriteFailedCode, ex);
+		}
+
+		if (outcome is null)
+			return EscalationDecisionResult.DecisionRecorded();
+
+		await ResolveEscalationAsync(state, outcome);
+		return EscalationDecisionResult.Resolved(outcome);
+	}
+
+	/// <summary>
+	/// Acquires an escalation's write gate, reporting false instead of throwing when a
+	/// concurrent teardown has already disposed it.
+	/// </summary>
+	/// <remarks>
+	/// <see cref="CleanupCancelledEscalation"/> and <see cref="Dispose"/> dispose the gate while
+	/// other paths may be between their active-set lookup and this acquire. Every holder — the
+	/// decision path, the timeout path, and cancellation — funnels through this helper and
+	/// <see cref="ReleaseWriteGate"/> so the race is handled identically in all three.
+	/// </remarks>
+	/// <param name="state">The escalation whose gate to take.</param>
+	/// <param name="ct">Cancellation token.</param>
+	/// <returns>True when the gate was acquired; false when it was already disposed.</returns>
+	private static async Task<bool> TryEnterWriteGateAsync(EscalationState state, CancellationToken ct)
+	{
+		try
+		{
+			await state.WriteGate.WaitAsync(ct);
+			return true;
+		}
+		catch (ObjectDisposedException)
+		{
+			return false;
+		}
+	}
+
+	/// <summary>
+	/// Releases an escalation's write gate, tolerating a teardown that disposed it while the
+	/// holder was still working. Never call unless <see cref="TryEnterWriteGateAsync"/> returned
+	/// true.
+	/// </summary>
+	/// <param name="state">The escalation whose gate to release.</param>
+	private static void ReleaseWriteGate(EscalationState state)
+	{
+		try
+		{
 			state.WriteGate.Release();
+		}
+		catch (ObjectDisposedException)
+		{
+			// Torn down while the holder was working; nothing left to release.
 		}
 	}
 
@@ -361,19 +430,66 @@ public sealed partial class DefaultEscalationService : IEscalationService, IEsca
 	}
 
 	/// <inheritdoc />
+	/// <remarks>
+	/// Takes the per-escalation write gate, exactly as the decision and timeout paths do.
+	/// Cancellation <em>resolves</em> an escalation, so running it concurrently with a decision
+	/// corrupts the resolution bookkeeping: a cancel that marks the state resolving while a
+	/// decision's durable write is in flight has that bookkeeping wiped by the write's failure
+	/// path (<see cref="RollBackDecision"/> clears <c>IsResolved</c>/<c>PendingOutcome</c>),
+	/// stranding the durable <c>ResolvedPendingAudit</c> row the cancel already wrote — the
+	/// in-memory reconcile shape skips it because <c>IsResolved</c> is false, the durable shape
+	/// skips it because the id is still in the active set, and the pruner correctly refuses to
+	/// delete a non-terminal row. Serializing on the gate removes the interleaving entirely.
+	/// <para>
+	/// Lock ordering is unchanged and deadlock-free: every holder takes the gate first and
+	/// <c>state.Lock</c> second, and no path holds <c>state.Lock</c> while waiting on the gate.
+	/// </para>
+	/// </remarks>
 	public async Task<EscalationOutcome> CancelEscalationAsync(
 		Guid escalationId, string reason, string cancelledBy, CancellationToken ct)
 	{
 		if (!_activeEscalations.TryGetValue(escalationId, out var state))
 			throw new InvalidOperationException($"No pending escalation found with ID {escalationId}");
 
-		EscalationOutcome outcome;
+		// A disposed gate means the escalation was torn down between the lookup and here; it is
+		// no longer pending, which is the same answer the lookup above would now give.
+		if (!await TryEnterWriteGateAsync(state, ct))
+			throw new InvalidOperationException($"No pending escalation found with ID {escalationId}");
+
+		try
+		{
+			var outcome = BuildCancellationOutcome(state, escalationId, cancelledBy);
+
+			_logger.LogInformation(
+				"Escalation {EscalationId} cancelled by {CancelledBy}: {Reason}",
+				escalationId, cancelledBy, reason);
+			await ResolveEscalationAsync(state, outcome);
+			return outcome;
+		}
+		finally
+		{
+			ReleaseWriteGate(state);
+		}
+	}
+
+	/// <summary>
+	/// Builds the force-denial outcome for a cancellation and marks the state resolving, under
+	/// the state lock. Callers must already hold the escalation's write gate.
+	/// </summary>
+	/// <param name="state">The escalation being cancelled.</param>
+	/// <param name="escalationId">The escalation id (for the failure message).</param>
+	/// <param name="cancelledBy">The actor performing the cancellation.</param>
+	/// <returns>The denial outcome to drive through resolution.</returns>
+	/// <exception cref="InvalidOperationException">The escalation is already resolved.</exception>
+	private static EscalationOutcome BuildCancellationOutcome(
+		EscalationState state, Guid escalationId, string cancelledBy)
+	{
 		lock (state.Lock)
 		{
 			if (state.IsResolved)
 				throw new InvalidOperationException($"Escalation {escalationId} is already resolved");
 
-			outcome = new EscalationOutcome
+			var outcome = new EscalationOutcome
 			{
 				EscalationId = escalationId,
 				IsApproved = false,
@@ -386,13 +502,8 @@ public sealed partial class DefaultEscalationService : IEscalationService, IEsca
 				CancelledBy = cancelledBy
 			};
 			MarkResolving(state, outcome);
+			return outcome;
 		}
-
-		_logger.LogInformation(
-			"Escalation {EscalationId} cancelled by {CancelledBy}: {Reason}",
-			escalationId, cancelledBy, reason);
-		await ResolveEscalationAsync(state, outcome);
-		return outcome;
 	}
 
 	/// <inheritdoc />
