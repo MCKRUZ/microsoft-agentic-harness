@@ -33,25 +33,45 @@ namespace Infrastructure.AI.Tools;
 /// This validator is defence in depth alongside it.
 /// </para>
 /// <para>
-/// <b>Why it refuses unconditionally.</b> An earlier version downgraded the refusal to a warning
-/// while both durable-state toggles were off, on the reasoning that the toggles are documented as
-/// restart-required so enabling one would re-run this validator before any database could be
-/// written. That does not hold. <c>EscalationReconciliationService.RunPruneAsync</c> re-reads
-/// <c>AI:Governance:DurableState</c> from <see cref="Microsoft.Extensions.Options.IOptionsMonitor{T}"/>
-/// on every reconcile tick, and <c>AppConfigHelper</c> loads appsettings with
-/// <c>reloadOnChange: true</c>, so an operator who edits <c>ChangeProposalsEnabled</c> to true on a
-/// running host resolves the pruner factory — and with it the schema initializer that creates the
-/// database file — on a host where this validator already warned and moved on. A boot-time
-/// assertion that a live configuration change can invalidate has to hold on every boot.
+/// <b>It consults no configuration of its own.</b> This validator takes the two path collections
+/// as registered and asserts about those, rather than re-reading the durable-state toggles to
+/// decide whether the assertion applies. Whether the governance-state directory is worth guarding
+/// at all is decided once, upstream, by
+/// <c>DependencyInjection.ResolveGovernanceStateProtectedPaths</c> — on the toggles <em>or</em> the
+/// presence of a database left behind by an earlier run. By the time the collections reach this
+/// constructor that question is settled, and a protected path in hand means there is something
+/// real to protect. Re-deriving the condition here would create a second copy of a rule that is
+/// already subtle, and a validator asserting against a slightly different set from the one the tool
+/// enforces is worse than none.
 /// </para>
 /// <para>
-/// <b>It also refuses a platform the hard-link control cannot run on.</b> That control is what
-/// actually closes the bypass, and it fails closed, so on an unimplemented platform — macOS and the
-/// BSDs — every file operation is denied. Without this check the operator meets that as a stream of
-/// per-call refusals whose message cannot name the real cause, since at the point of denial the
-/// service knows only that the count was unavailable. Meeting it once, at boot, with the platform
-/// named and the ways forward spelled out, is the difference between a documented limitation and an
-/// inexplicably broken template.
+/// <b>Why the upstream gate can be trusted to be a boot-time decision.</b> A boot assertion that a
+/// live configuration edit could invalidate would be worthless, and this one nearly was: an earlier
+/// design had <c>EscalationReconciliationService.RunPruneAsync</c> re-read
+/// <c>AI:Governance:DurableState</c> from <see cref="Microsoft.Extensions.Options.IOptionsMonitor{T}"/>
+/// on every reconcile tick while <c>AppConfigHelper</c> loads appsettings with
+/// <c>reloadOnChange: true</c>. An operator editing <c>ChangeProposalsEnabled</c> to true on a
+/// running host would then resolve the pruner factory — and with it the schema initializer that
+/// creates the database file — on a host whose deny list had booted disarmed. That service now
+/// snapshots the enable pair at construction, which is what makes the composition-time decision
+/// hold for the life of the process.
+/// </para>
+/// <para>
+/// <b>It also refuses a platform the hard-link control cannot run on — but only when something is
+/// actually protected.</b> That control is what closes the bypass, and it fails closed, so on an
+/// unimplemented platform (macOS and the BSDs) every file operation is denied <em>while protected
+/// paths are configured</em>. <see cref="FileSystemService"/> skips the inspection outright on an
+/// empty protected set, so this refusal arms on <see cref="HasProtectedPaths"/> and on nothing else
+/// — the two must agree, or the host refuses to boot over a configuration that would have run
+/// perfectly well. In the shipped default, with durable governance state off and no database on
+/// disk, the set is empty and the file-system tool runs on every platform.
+/// </para>
+/// <para>
+/// Where the refusal does arm, meeting it once at boot — with the platform named and the ways
+/// forward spelled out — is the difference between a documented limitation and an inexplicably
+/// broken template. Without it the operator meets a stream of per-call refusals whose message
+/// cannot name the real cause, since at the point of denial the service knows only that the link
+/// count was unavailable.
 /// </para>
 /// </remarks>
 public sealed class FileSystemSandboxStartupValidator : IHostedService
@@ -224,12 +244,19 @@ public sealed class FileSystemSandboxStartupValidator : IHostedService
     /// what it would cost to ignore, and the only two things that actually resolve it.
     /// </summary>
     /// <remarks>
-    /// The message deliberately forecloses the fix an operator would otherwise try first. Turning
-    /// the durable-governance toggles off looks like it should empty the protected list, and it does
-    /// not: <c>RegisterToolServices</c> derives the governance-state directory from
-    /// <c>GovernanceStatePaths.Resolve</c> unconditionally, consulting no toggle, and the configured
-    /// database path defaults to a non-blank value. Sending an operator down that path would cost
-    /// them an hour and end where they started.
+    /// <para>
+    /// The third option carries the detail that makes it usable, because it is the one an operator
+    /// will reach for and the one they can get half right. Protection arms on the toggles
+    /// <em>or</em> on a governance-state directory surviving from an earlier run, so setting the
+    /// toggles to false is only half a fix while that directory is still on disk — and the
+    /// half-fix looks like a full one until the next boot fails identically. The message therefore
+    /// states both conditions and says why the leftover directory is not disposable: it holds the
+    /// approval verdicts that motivated protecting it in the first place.
+    /// </para>
+    /// <para>
+    /// An earlier version of this message foreclosed the toggles outright, which was correct when
+    /// <c>RegisterToolServices</c> registered the directory unconditionally and is now wrong.
+    /// </para>
     /// </remarks>
     private string BuildUnsupportedPlatformMessage()
     {
@@ -244,15 +271,18 @@ public sealed class FileSystemSandboxStartupValidator : IHostedService
             "and statx on Linux, and it fails closed everywhere else. Booting anyway would deny " +
             "every read, write, and search the file-system tool attempts, one call at a time, with " +
             "an error that cannot name this as the cause. " +
-            "Two ways forward: (1) run the harness on Windows or Linux, the supported platforms; " +
+            "Three ways forward: (1) run the harness on Windows or Linux, the supported platforms; " +
             "(2) add a branch for this platform to HardLinkInspector — macOS and the BSDs expose the " +
             "link count only through struct stat, whose field order and widths vary by operating " +
             "system AND processor architecture, so the layout must be verified against the target " +
-            "rather than assumed; a wrong offset reads the wrong bytes and fails open silently. " +
-            "Note what will NOT work: turning the AppConfig:AI:Governance:DurableState toggles off " +
-            "does not remove the protected paths. The governance-state directory is registered as " +
-            "protected unconditionally, whatever those toggles say, so the file-system tool is " +
-            "unusable on this platform until one of the two options above is taken.";
+            "rather than assumed; a wrong offset reads the wrong bytes and fails open silently; " +
+            "(3) run without durable governance state, which leaves nothing to protect and no " +
+            "reason to arm the control. Option (3) has TWO conditions, not one: set both " +
+            "AppConfig:AI:Governance:DurableState:EscalationsEnabled and ChangeProposalsEnabled to " +
+            $"false, AND ensure no governance-state directory remains on disk at '{firstProtected}'. " +
+            "A directory left by an earlier run still holds approval verdicts, so it is protected on " +
+            "its own account whatever the toggles say — archive or relocate it rather than deleting " +
+            "it, unless you are certain those records are no longer needed.";
     }
 
     /// <summary>

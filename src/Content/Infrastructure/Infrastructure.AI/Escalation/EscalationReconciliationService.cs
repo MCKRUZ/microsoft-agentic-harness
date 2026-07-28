@@ -40,9 +40,9 @@ namespace Infrastructure.AI.Escalation;
 /// <c>EscalationDecisionStatus.AwaitingReconciliation</c>'s own contract ("the verdict
 /// becomes observable once reconciliation completes") false. Each sub-step therefore checks
 /// only the flag it actually needs: the reconcile pass runs always, and the retention prune —
-/// which does touch the database — stays behind the toggles. With durability off the pass's
-/// durable half is a no-op anyway, because <c>NullEscalationStateStore.GetActiveAsync</c>
-/// returns nothing.
+/// which does touch the database — stays behind the construction-time snapshot of the toggles.
+/// With durability off the pass's durable half is a no-op anyway, because
+/// <c>NullEscalationStateStore.GetActiveAsync</c> returns nothing.
 /// </para>
 /// <para>
 /// A pass that throws is logged and retried on the next tick — reconciliation failing must
@@ -63,6 +63,12 @@ public sealed class EscalationReconciliationService : BackgroundService
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<EscalationReconciliationService> _logger;
 
+    /// <summary>
+    /// Whether either durability toggle was on when this service was constructed. Snapshotted
+    /// rather than re-read per tick — see the constructor's <c>config</c> parameter for why.
+    /// </summary>
+    private readonly bool _durableStateEnabled;
+
     /// <summary>Initializes a new instance.</summary>
     /// <param name="reconciler">The reconciler to drive (the escalation service itself).</param>
     /// <param name="prunerFactory">
@@ -73,7 +79,20 @@ public sealed class EscalationReconciliationService : BackgroundService
     /// enable durability. Resolving it only after the enable check preserves the
     /// "zero filesystem side effects when off" guarantee.
     /// </param>
-    /// <param name="config">Supplies the enable flag, interval, and retention window.</param>
+    /// <param name="config">
+    /// Supplies the enable flags, interval, and retention window. The interval and retention window
+    /// are read live, because both are safe to retune on a running host. The <b>enable</b> pair is
+    /// snapshotted here instead, for two reasons. First, it makes the restart-required contract
+    /// documented on <c>GovernanceDurableStateConfig</c> actually true: the store selections are
+    /// already frozen at first resolution, so a pruner that honoured a live edit could prune a
+    /// database the stores were not writing, or — in the other direction — stop pruning while the
+    /// frozen stores kept writing, letting retention lapse silently. Second, it is what keeps
+    /// <c>DependencyInjection.ResolveGovernanceStateProtectedPaths</c> sound: that gate decides at
+    /// composition whether the governance-state directory is worth protecting, and resolving the
+    /// pruner is the one remaining route that could create that directory later in the process. A
+    /// live toggle edit reaching this method would create the database on a host whose file-system
+    /// deny list booted disarmed.
+    /// </param>
     /// <param name="timeProvider">Clock used for the retention cutoff.</param>
     /// <param name="logger">Structured logger.</param>
     public EscalationReconciliationService(
@@ -93,6 +112,9 @@ public sealed class EscalationReconciliationService : BackgroundService
         _config = config;
         _timeProvider = timeProvider;
         _logger = logger;
+
+        var durable = config.CurrentValue.AI.Governance.DurableState;
+        _durableStateEnabled = durable.EscalationsEnabled || durable.ChangeProposalsEnabled;
     }
 
     /// <inheritdoc />
@@ -164,23 +186,27 @@ public sealed class EscalationReconciliationService : BackgroundService
     /// Prunes terminal governance-state rows past the retention window. Gated on EITHER durable
     /// toggle — retention applies to the change-proposal table too, so a host that enables only
     /// <c>ChangeProposalsEnabled</c> must still get the documented window — and skipped entirely
-    /// when both are off, which is what keeps the deferred pruner factory (and with it the
-    /// schema initializer that would create the database file) unresolved on such hosts.
+    /// when both were off at construction, which is what keeps the deferred pruner factory (and
+    /// with it the schema initializer that would create the database file) unresolved on such
+    /// hosts. The enable check reads the construction-time snapshot, never
+    /// <see cref="IOptionsMonitor{TOptions}.CurrentValue"/>: see the constructor's <c>config</c>
+    /// parameter for why a live re-read would be unsound. The retention window itself stays live,
+    /// because retuning it on a running host changes only how far back this prune reaches.
     /// </summary>
     /// <param name="ct">Cancellation token.</param>
     private async Task RunPruneAsync(CancellationToken ct)
     {
-        var durable = _config.CurrentValue.AI.Governance.DurableState;
-        if (!durable.EscalationsEnabled && !durable.ChangeProposalsEnabled)
+        if (!_durableStateEnabled)
             return;
 
-        if (durable.RetentionDays <= 0)
+        var retentionDays = _config.CurrentValue.AI.Governance.DurableState.RetentionDays;
+        if (retentionDays <= 0)
             return;
 
         try
         {
             await _prunerFactory().PruneAsync(
-                _timeProvider.GetUtcNow().AddDays(-durable.RetentionDays), ct);
+                _timeProvider.GetUtcNow().AddDays(-retentionDays), ct);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

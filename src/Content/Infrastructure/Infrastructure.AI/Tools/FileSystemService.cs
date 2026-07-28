@@ -43,6 +43,12 @@ public sealed class FileSystemService : IFileSystemService
     // resolve and its canonical form is itself. That gap is closed by asking about the file's
     // identity instead of its path — see IsSingleLinked — because a hard link needs only the same
     // VOLUME as its target, which no allowlist geometry can prevent.
+    //
+    // Legitimately EMPTY on a host with no governance state to guard. The composition root
+    // (DependencyInjection.ResolveGovernanceStateProtectedPaths) supplies the governance-state
+    // directory only when a durable-state toggle is on or a database from an earlier run is still
+    // on disk; in the shipped default neither holds. An empty set disarms both this deny list and
+    // the identity check below, which is the correct outcome when there is nothing to alias.
     private readonly HashSet<string> _protectedPaths;
 
     // Directories skipped during recursive search — build artifacts and VCS internals
@@ -435,6 +441,9 @@ public sealed class FileSystemService : IFileSystemService
     /// <b>Scoped to hosts that have something to protect.</b> With no protected paths configured
     /// there is nothing a hard link could alias, so the inspection is skipped outright and callers
     /// with no harness state pay nothing — neither the handle open nor the platform restriction.
+    /// This is the shipped default rather than an edge case: the composition root withholds the
+    /// governance-state directory until a durable-state toggle is on or a database from an earlier
+    /// run exists, so an out-of-the-box host runs this tool on every platform, macOS included.
     /// </para>
     /// </remarks>
     /// <param name="fullPath">An absolute path. Need not exist; a file yet to be created passes.</param>

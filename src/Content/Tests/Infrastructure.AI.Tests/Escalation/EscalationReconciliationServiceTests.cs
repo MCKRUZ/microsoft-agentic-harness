@@ -32,6 +32,14 @@ public sealed class EscalationReconciliationServiceTests
             .ReturnsAsync(new GovernanceStatePruneResult(0, 0));
     }
 
+    /// <summary>
+    /// The configuration instance the monitor hands back on every <c>CurrentValue</c> read. Held as
+    /// a field so a test can mutate it mid-run, which is exactly what an operator editing
+    /// <c>appsettings.json</c> does on a host whose configuration was loaded with
+    /// <c>reloadOnChange: true</c>.
+    /// </summary>
+    private AppConfig _config = new();
+
     private EscalationReconciliationService CreateService(
         bool escalationsEnabled, int retentionDays = 90, int intervalSeconds = 300)
     {
@@ -39,6 +47,7 @@ public sealed class EscalationReconciliationServiceTests
         config.AI.Governance.DurableState.EscalationsEnabled = escalationsEnabled;
         config.AI.Governance.DurableState.RetentionDays = retentionDays;
         config.AI.Governance.DurableState.ReconcileIntervalSeconds = intervalSeconds;
+        _config = config;
 
         var monitor = new Mock<IOptionsMonitor<AppConfig>>();
         monitor.Setup(m => m.CurrentValue).Returns(config);
@@ -66,6 +75,47 @@ public sealed class EscalationReconciliationServiceTests
         await service.StopAsync(CancellationToken.None);
 
         _prunerResolved.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task StartAsync_DurabilityEnabledAfterConstruction_StillNeverResolvesThePruner()
+    {
+        // A live edit to appsettings.json must NOT bring the pruner to life, and this is the one
+        // place that guarantee is enforceable. AppConfigHelper loads configuration with
+        // reloadOnChange: true, so IOptionsMonitor.CurrentValue would observe the flip on the very
+        // next tick. Honouring it would resolve the pruner, which constructs the schema
+        // initializer, whose EnsureCreated creates the governance-state database — on a host that
+        // booted with both toggles off.
+        //
+        // Two things break if that happens. The stores are already frozen at first resolution, so
+        // the new database would sit there unwritten while retention pruned a table nothing was
+        // filling. Worse, DependencyInjection.ResolveGovernanceStateProtectedPaths decided at
+        // composition that there was nothing to protect and left the file-system tool's deny list
+        // and hard-link check disarmed — so a database would appear behind a sandbox that had
+        // already concluded it had no reason to guard that directory.
+        var service = CreateService(escalationsEnabled: false);
+
+        await service.StartAsync(CancellationToken.None);
+
+        // Wait for a real pass before touching anything, so the loop is demonstrably running.
+        // Advancing the clock and asserting immediately would prove nothing: the continuation runs
+        // on the thread pool, so the assertion could win the race and pass without a single pass
+        // having executed.
+        await WaitForReconcileCountAsync(1);
+
+        // The operator edits the file. Same instance the monitor hands back, so this is exactly
+        // what a CurrentValue read would observe on the next tick.
+        _config.AI.Governance.DurableState.ChangeProposalsEnabled = true;
+
+        // Three, not two. A pass runs reconcile THEN prune, so observing reconcile #3 is what
+        // proves prune #2 — a prune that unambiguously began after the flip — ran to completion.
+        // Any weaker wait leaves room for the prune step never to have been reached at all.
+        await WaitForReconcileCountAsync(3);
+
+        await service.StopAsync(CancellationToken.None);
+
+        _prunerResolved.Should().BeFalse(
+            "the enable pair is snapshotted at construction, so durability stays off until restart");
     }
 
     [Fact]

@@ -131,23 +131,22 @@ public sealed class FileSystemSandboxStartupValidatorTests : IDisposable
     }
 
     [Fact]
-    public async Task StartAsync_OverlapWithDurableStateDisabled_StillThrows()
+    public async Task StartAsync_OverlapWithDurableStateDisabledButDirectoryPresent_StillThrows()
     {
-        // The validator takes no configuration and makes no exception for the durable-state
-        // toggles being off. It used to: the reasoning was that the toggles are restart-required,
-        // so enabling one would re-run this validator before any database could be written. That
-        // reasoning is false. EscalationReconciliationService.RunPruneAsync re-reads
-        // AI:Governance:DurableState from IOptionsMonitor on every reconcile tick and AppConfig is
-        // loaded with reloadOnChange: true, so an operator who edits ChangeProposalsEnabled to true
-        // on a RUNNING host creates the database on a host this validator already waved through.
-        // A boot assertion a live config edit can invalidate has to hold on every boot.
+        // Models the residual case: both durable-state toggles are off, but a governance-state
+        // directory survives from an earlier run that had them on, so
+        // DependencyInjection.ResolveGovernanceStateProtectedPaths still hands it over. The
+        // validator itself reads no configuration — a protected path in hand means there is
+        // something real to protect, and the overlap is refused on that basis alone. A validator
+        // that re-derived the toggle condition here would be a second copy of a subtle rule, and
+        // could wave through a database that still holds approval verdicts.
         var protectedDir = CreateDirectory(".agent-state");
 
         var sut = NewSut([_root], [protectedDir]);
 
         await sut.Invoking(s => s.StartAsync(CancellationToken.None))
             .Should().ThrowAsync<InvalidOperationException>(
-                "the overlap is refused regardless of whether durable state is currently enabled");
+                "the overlap is refused on the paths as registered, not on the toggles' current value");
     }
 
     [Fact]
@@ -190,12 +189,16 @@ public sealed class FileSystemSandboxStartupValidatorTests : IDisposable
         ex.Which.Message.Should().Contain("HardLinkInspector",
             "the message must name the type a consumer would extend to add this platform");
 
-        // The fix an operator would otherwise reach for first, and which does not work: the
-        // governance-state directory is registered as protected unconditionally in
-        // RegisterToolServices, consulting no toggle, so emptying the protected list this way is
-        // not reachable by configuration.
+        // Turning durable governance state off IS a real way forward now that the protected path is
+        // gated — but it is a two-condition fix, and an operator who does only the first half gets
+        // an identical boot failure on the next start with no hint as to why. Both halves have to
+        // be in the message.
         ex.Which.Message.Should().Contain("AppConfig:AI:Governance:DurableState",
-            "the message must foreclose the toggles as a fix rather than leave the operator to try it");
+            "the message must name the toggles, which are now half of a genuine way forward");
+        ex.Which.Message.Should().Contain("ChangeProposalsEnabled",
+            "naming only one toggle would leave the operator with a half-fix that still refuses to boot");
+        ex.Which.Message.Should().Contain(agentState,
+            "the message must name the directory whose mere presence keeps the protection armed");
     }
 
     [Fact]
