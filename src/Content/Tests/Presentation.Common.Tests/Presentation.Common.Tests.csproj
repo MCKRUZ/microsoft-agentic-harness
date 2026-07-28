@@ -18,6 +18,11 @@
     <PackageReference Include="Moq" />
     <PackageReference Include="xunit" />
     <PackageReference Include="xunit.runner.visualstudio" />
+    <!-- KnowledgeScopeOwnershipEndToEndTests drives the real claims -> scope -> plan-store chain against
+         an in-memory SQLite database. Presentation.Common is the only project that sees both ends of that
+         seam (the identity resolver and the plan store), so the test belongs here. -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" />
+    <PackageReference Include="Microsoft.Extensions.TimeProvider.Testing" />
   </ItemGroup>
 
   <ItemGroup>

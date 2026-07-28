@@ -12,6 +12,7 @@ using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Presentation.BundleApi.Services;
 using Xunit;
 
 namespace Presentation.BundleApi.Tests;
@@ -69,11 +70,57 @@ public sealed class KnowledgeScopePipelineTests
     }
 
     [Fact]
+    public async Task SubOnlyCaller_EstablishesScope_JustLikeAnOidCaller()
+    {
+        // oid is an Entra-ism; plenty of OIDC providers issue only sub. While the scope resolver required
+        // oid, such a caller earned bundle ownership but got a NULL knowledge scope — a world-readable
+        // global plan. Bundle ownership and knowledge scope now share one resolver.
+        var recorder = new ScopeRecorder();
+        using var factory = CreateAuthenticatedFactory(recorder);
+        using var client = factory.CreateClient();
+
+        var response = await SubmitRunAsync(client, subjectHeader: HeaderIdentityAuthenticationHandler.SubHeader,
+            id: "subject-only", tid: "acme");
+
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound,
+            "a sub-only caller must be accepted as an owner, not rejected as identity-less");
+        recorder.Observed.Should().ContainSingle()
+            .Which.Should().Be(("subject-only", "acme"));
+    }
+
+    [Fact]
+    public async Task AnonymousDevMode_EstablishesAStableScope_NotAGlobalNullOwner()
+    {
+        // The shipped Development config opts into anonymous auth. Its synthetic principal now carries a
+        // stable oid, so plans written on a developer's machine are owned rather than stamped global.
+        var recorder = new ScopeRecorder();
+        using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+            builder.ConfigureTestServices(services => AddScopeRecorder(services, recorder)));
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync(
+            "/api/bundles/does-not-exist/runs",
+            new { userMessages = new[] { "hello" }, maxTurns = 1 });
+
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        recorder.Observed.Should().ContainSingle()
+            .Which.UserId.Should().Be(AnonymousAuthenticationHandler.AnonymousUserId,
+                "a null owner would be GLOBAL; the anonymous principal must resolve to a real, stable id");
+    }
+
+    [Fact]
     public async Task RequestWithoutIdentity_IsRejected_AndNeverEstablishesScope()
     {
         // Boot the host with a real Entra scheme (no anonymous opt-in), the production posture. A caller
         // with no token must be turned away by authentication rather than falling through as an
         // identity-less caller whose plans would persist with a null (global) owner.
+        //
+        // SCOPE OF THIS TEST — read before relying on it. It pins the PROPERTY "no identity => rejected",
+        // not any one mechanism. Two independent layers uphold that property: the controller's [Authorize]
+        // (plus the scheme's FallbackPolicy) and BundlesController.ResolveCallerId returning 401 on a null
+        // stable id. Mutation testing confirmed it stays green when EITHER layer alone is removed, and only
+        // fails when both are. So do NOT read a passing run here as evidence that [Authorize] is intact —
+        // if you are changing one of those two layers, it needs its own test.
         var recorder = new ScopeRecorder();
         using var factory = CreateEntraConfiguredFactory(recorder);
         using var client = factory.CreateClient();
@@ -89,13 +136,17 @@ public sealed class KnowledgeScopePipelineTests
 
     // -- Helpers --
 
-    private static async Task<HttpResponseMessage> SubmitRunAsync(HttpClient client, string oid, string tid)
+    private static Task<HttpResponseMessage> SubmitRunAsync(HttpClient client, string oid, string tid) =>
+        SubmitRunAsync(client, HeaderIdentityAuthenticationHandler.UserHeader, oid, tid);
+
+    private static async Task<HttpResponseMessage> SubmitRunAsync(
+        HttpClient client, string subjectHeader, string id, string tid)
     {
         using var request = new HttpRequestMessage(HttpMethod.Post, "/api/bundles/does-not-exist/runs")
         {
             Content = JsonContent.Create(new { userMessages = new[] { "hello" }, maxTurns = 1 })
         };
-        request.Headers.Add(HeaderIdentityAuthenticationHandler.UserHeader, oid);
+        request.Headers.Add(subjectHeader, id);
         request.Headers.Add(HeaderIdentityAuthenticationHandler.TenantHeader, tid);
         return await client.SendAsync(request);
     }
@@ -206,6 +257,7 @@ public sealed class KnowledgeScopePipelineTests
     {
         public const string SchemeName = "TestIdentity";
         public const string UserHeader = "X-Test-Oid";
+        public const string SubHeader = "X-Test-Sub";
         public const string TenantHeader = "X-Test-Tid";
 
         public HeaderIdentityAuthenticationHandler(
@@ -219,10 +271,16 @@ public sealed class KnowledgeScopePipelineTests
         protected override Task<AuthenticateResult> HandleAuthenticateAsync()
         {
             var oid = Request.Headers[UserHeader].ToString();
-            if (string.IsNullOrEmpty(oid))
+            var sub = Request.Headers[SubHeader].ToString();
+            if (string.IsNullOrEmpty(oid) && string.IsNullOrEmpty(sub))
                 return Task.FromResult(AuthenticateResult.NoResult());
 
-            var claims = new List<Claim> { new("oid", oid) };
+            var claims = new List<Claim>();
+            if (!string.IsNullOrEmpty(oid))
+                claims.Add(new Claim("oid", oid));
+            if (!string.IsNullOrEmpty(sub))
+                claims.Add(new Claim("sub", sub));
+
             var tid = Request.Headers[TenantHeader].ToString();
             if (!string.IsNullOrEmpty(tid))
                 claims.Add(new Claim("tid", tid));

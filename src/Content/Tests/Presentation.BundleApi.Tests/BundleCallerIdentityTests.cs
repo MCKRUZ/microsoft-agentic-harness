@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using FluentAssertions;
 using Presentation.BundleApi.Services;
+using Presentation.Common.Extensions;
 using Xunit;
 
 namespace Presentation.BundleApi.Tests;
@@ -44,5 +45,33 @@ public sealed class BundleCallerIdentityTests
     public void StableId_ReturnsNull_ForClaimlessPrincipal()
     {
         BundleCallerIdentity.StableId(new ClaimsPrincipal(new ClaimsIdentity())).Should().BeNull();
+    }
+
+    [Fact]
+    public void StableId_ResolvesMappedSubject_FromAProductionShapedToken()
+    {
+        // JWT inbound mapping rewrites "sub" to the NameIdentifier URI on validated tokens. Ownership must
+        // recognise that form, not just the raw claim dev handlers mint.
+        var user = Principal((ClaimTypes.NameIdentifier, "mapped-subject"));
+
+        BundleCallerIdentity.StableId(user).Should().Be("mapped-subject");
+    }
+
+    [Theory]
+    [InlineData("oid", "the-oid")]
+    [InlineData("sub", "the-sub")]
+    [InlineData(ClaimTypes.NameIdentifier, "the-mapped-sub")]
+    [InlineData("http://schemas.microsoft.com/identity/claims/objectidentifier", "the-mapped-oid")]
+    public void StableId_AgreesWithTheKnowledgeScopeResolver_ForEveryAcceptedClaimShape(
+        string claimType, string value)
+    {
+        // The anti-drift guard. Bundle ownership and knowledge scope must accept EXACTLY the same token
+        // shapes: any shape one accepts and the other rejects yields an owned bundle whose plans carry a
+        // null (globally readable) owner. StableId delegates, so this can only fail if someone reintroduces
+        // a second precedence ladder here.
+        var user = Principal((claimType, value));
+
+        BundleCallerIdentity.StableId(user).Should().Be(user.GetUserIdOrNull());
+        BundleCallerIdentity.StableId(user).Should().Be(value);
     }
 }
