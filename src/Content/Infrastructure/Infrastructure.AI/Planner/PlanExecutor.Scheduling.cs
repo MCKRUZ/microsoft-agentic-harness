@@ -179,6 +179,19 @@ public sealed partial class PlanExecutor
             return true;
         }
 
+        // The attempt failed, but if the run is being torn down that failure is a casualty of
+        // cancellation rather than a verdict on the step. Throwing here routes it through
+        // ExecuteStepAsync's cancellation catch, which records Cancelled (renormalised to
+        // Pending on resume) instead of consuming retry budget and firing OnExhausted recovery.
+        //
+        // This must not be left to the caller's DelayBeforeRetryAsync token check: that only runs
+        // when retry budget remains, so a step with RetryPolicy.MaxRetries = 0 — a single attempt,
+        // no retries — would fall straight through to FailExhaustedStepAsync below and be recorded
+        // Failed. Failed is terminal on resume, so the plan could never be resumed. A cancellation
+        // guarantee that holds only for some retry configurations is not a guarantee, so the check
+        // belongs here, before the retry decision.
+        ct.ThrowIfCancellationRequested();
+
         if (ShouldRetry(step.RetryPolicy, attemptsMade))
             return false;
 

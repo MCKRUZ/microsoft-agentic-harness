@@ -38,6 +38,15 @@ public interface IPlanRunCancellationRegistry
     /// <see cref="IPlanExecutor.ExecuteAsync(PlanId, CancellationToken)"/> and disposes the handle
     /// when the run ends.
     /// </summary>
+    /// <remarks>
+    /// <b>Nested runs inherit cancellation.</b> A run started while another run is executing — a
+    /// sub-plan invoked by a step — is registered beneath it, and cancelling the outer run cancels
+    /// it too. The nesting is detected from the execution flow, so an intermediate step executor
+    /// neither forwards anything nor needs to know this exists. That matters: a sub-plan registers
+    /// under the <i>child</i> plan's identifier, so <see cref="TryCancel"/> on the parent would
+    /// otherwise never reach it, and the child's interrupted step would be recorded as a failure
+    /// rather than a cancellation — leaving the plan unresumable.
+    /// </remarks>
     /// <param name="planId">The plan being run.</param>
     /// <returns>A live registration; dispose it to release.</returns>
     PlanRunCancellationRegistration Register(PlanId planId);

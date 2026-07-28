@@ -271,41 +271,199 @@ public sealed class PlanExecutorCancellationTests
     }
 
     /// <summary>
-    /// Cancel latency is bounded by the slowest step executor, so each must let cancellation
-    /// propagate rather than converting it into a step failure. <c>SubPlanStepExecutor</c> caught
-    /// every exception, which swallowed <see cref="OperationCanceledException"/> and turned a plan
-    /// cancellation into a retryable failure of the sub-plan step.
+    /// Cancellation must survive one level of nesting. A sub-plan registers under the CHILD plan's
+    /// identifier, so <c>TryCancel(parentPlanId)</c> does not reach it directly; without the
+    /// registry linking a nested run to the run that invoked it, the child's interrupted step is
+    /// recorded <c>Failed</c> rather than <c>Cancelled</c>. <c>Failed</c> is terminal on resume, so
+    /// the child could never re-run, its downstream step would never become ready, and the parent
+    /// step would fail on every subsequent resume — permanently unresumable.
     /// </summary>
-    [Fact]
-    public async Task SubPlanStepExecutor_WhenChildPlanIsCancelled_PropagatesInsteadOfReportingStepFailure()
+    /// <remarks>
+    /// Deliberately built from two REAL <see cref="PlanExecutor"/> instances over one shared
+    /// registry and a real <see cref="global::Infrastructure.AI.Planner.StepExecutors.SubPlanStepExecutor"/>.
+    /// An earlier version of this test stubbed the child <see cref="IPlanExecutor"/> to throw
+    /// <see cref="OperationCanceledException"/>; the real executor catches that internally and
+    /// returns a summary instead, so the stub tested a shape production never produces and the
+    /// nesting defect stayed invisible. A test whose subject is nesting cannot stub the thing being
+    /// nested.
+    /// </remarks>
+    /// <param name="childStepMaxRetries">
+    /// Exercised at both 0 and 3. With no retry budget the parent step bypasses the backoff delay
+    /// whose token check used to be the only thing recording it Cancelled, so the guarantee held
+    /// only for retry-enabled steps.
+    /// </param>
+    [Theory]
+    [InlineData(0)]
+    [InlineData(3)]
+    public async Task CancelAsync_WhileSubPlanStepInFlight_RecordsChildAndParentCancelledAndStaysResumable(
+        int childStepMaxRetries)
     {
+        var registry = new PlanRunCancellationRegistry();
+        var parentPlanId = PlanId.New();
         var childPlanId = PlanId.New();
-        var childExecutor = new Mock<IPlanExecutor>();
-        childExecutor
-            .Setup(e => e.ExecuteAsync(It.IsAny<PlanId>(), It.IsAny<PlanExecutionContext>(), It.IsAny<CancellationToken>()))
-            .ThrowsAsync(new OperationCanceledException());
 
-        var services = new ServiceCollection();
-        services.AddScoped(_ => childExecutor.Object);
+        var childHarness = new Harness(BuildPlan(childPlanId, stepCount: 2, chained: true), registry);
+        var childStep1 = childHarness.Plan.Steps[0].Id;
+        var childStep2 = childHarness.Plan.Steps[1].Id;
 
-        var sut = new global::Infrastructure.AI.Planner.StepExecutors.SubPlanStepExecutor(
-            services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>(),
-            Mock.Of<IPlanStateStore>(),
-            Mock.Of<IPlanProgressNotifier>(),
-            new PlanExecutionContext(),
-            NullLogger<global::Infrastructure.AI.Planner.StepExecutors.SubPlanStepExecutor>.Instance);
-
-        var step = new PlanStep
+        var childStep1Running = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        childHarness.OnStep = async (step, ct) =>
         {
-            Id = new PlanStepId(Guid.NewGuid()),
-            Name = "sub-plan-step",
-            Type = StepType.SubPlanInvocation,
-            Configuration = new SubPlanConfig { ChildPlanId = childPlanId },
-            RetryPolicy = new RetryPolicy { MaxRetries = 0 }
+            if (step.Id != childStep1)
+                return Completed("child-step-2");
+
+            childStep1Running.TrySetResult();
+            await Task.Delay(Timeout.Infinite, ct);
+            return Completed("child-step-1");
         };
 
-        await Assert.ThrowsAsync<OperationCanceledException>(
-            () => sut.ExecuteAsync(step, new Dictionary<PlanStepId, string>(), CancellationToken.None));
+        // The parent's single step is a real SubPlanInvocation into the child plan.
+        var parentStep = new PlanStep
+        {
+            Id = new PlanStepId(Guid.NewGuid()),
+            Name = "invoke-child",
+            Type = StepType.SubPlanInvocation,
+            Configuration = new SubPlanConfig { ChildPlanId = childPlanId },
+            RetryPolicy = new RetryPolicy { MaxRetries = childStepMaxRetries, InitialDelay = TimeSpan.FromMilliseconds(50) },
+            Timeout = TimeSpan.FromSeconds(30)
+        };
+        var parentPlan = new PlanGraph
+        {
+            Id = parentPlanId,
+            Name = "parent-plan",
+            Steps = [parentStep],
+            Edges = [],
+            Configuration = new PlanConfiguration { PlanTimeout = TimeSpan.FromSeconds(60), MaxParallelSteps = 2 }
+        };
+
+        var parentHarness = new Harness(parentPlan, registry);
+        var parentSut = parentHarness.CreateSut(subPlanChild: childHarness.CreateSut());
+
+        var parentRun = Task.Run(() => parentSut.ExecuteAsync(parentPlanId, CancellationToken.None));
+        await childStep1Running.Task.WaitAsync(DeadlockBudget);
+
+        // Cancel the PARENT. Nothing here names the child plan.
+        var cancelResult = await parentSut.CancelAsync(parentPlanId, CancellationToken.None).WaitAsync(DeadlockBudget);
+        await parentRun.WaitAsync(DeadlockBudget);
+
+        Assert.True(cancelResult.IsSuccess);
+
+        // The child's in-flight step must be Cancelled, not Failed — Failed would be terminal.
+        Assert.Equal(StepExecutionStatus.Cancelled, childHarness.PersistedStates[childStep1].Status);
+        Assert.NotEqual(StepExecutionStatus.Failed, childHarness.PersistedStates[childStep1].Status);
+
+        // The parent step likewise, independent of its retry budget.
+        Assert.Equal(StepExecutionStatus.Cancelled, parentHarness.PersistedStates[parentStep.Id].Status);
+
+        // Resumability is the property that matters: resume the child and confirm it finishes.
+        var childExecutions = new ConcurrentBag<PlanStepId>();
+        childHarness.OnStep = (step, _) =>
+        {
+            childExecutions.Add(step.Id);
+            return Task.FromResult(Completed($"{step.Name}-resumed"));
+        };
+
+        var resumedChild = await childHarness.CreateSut()
+            .ExecuteAsync(childPlanId, CancellationToken.None)
+            .WaitAsync(DeadlockBudget);
+
+        Assert.True(resumedChild.IsSuccess);
+        Assert.Equal(StepExecutionStatus.Completed, resumedChild.Value!.FinalStatus);
+        Assert.Contains(childStep1, childExecutions);
+        Assert.Contains(childStep2, childExecutions);
+    }
+
+    /// <summary>
+    /// Guards the premise of the nesting test above: the child plan must genuinely reach its second
+    /// step when nothing cancels it. Without this, the resume assertions could pass against a child
+    /// that had simply never progressed.
+    /// </summary>
+    [Fact]
+    public async Task SubPlanInvocation_WithoutCancellation_RunsChildPlanToCompletion()
+    {
+        var registry = new PlanRunCancellationRegistry();
+        var parentPlanId = PlanId.New();
+        var childPlanId = PlanId.New();
+
+        var childHarness = new Harness(BuildPlan(childPlanId, stepCount: 2, chained: true), registry);
+        var childExecutions = new ConcurrentBag<PlanStepId>();
+        childHarness.OnStep = (step, _) =>
+        {
+            childExecutions.Add(step.Id);
+            return Task.FromResult(Completed($"{step.Name}-ok"));
+        };
+
+        var parentStep = new PlanStep
+        {
+            Id = new PlanStepId(Guid.NewGuid()),
+            Name = "invoke-child",
+            Type = StepType.SubPlanInvocation,
+            Configuration = new SubPlanConfig { ChildPlanId = childPlanId },
+            RetryPolicy = new RetryPolicy { MaxRetries = 0 },
+            Timeout = TimeSpan.FromSeconds(30)
+        };
+        var parentPlan = new PlanGraph
+        {
+            Id = parentPlanId,
+            Name = "parent-plan",
+            Steps = [parentStep],
+            Edges = [],
+            Configuration = new PlanConfiguration { PlanTimeout = TimeSpan.FromSeconds(60), MaxParallelSteps = 2 }
+        };
+
+        var parentHarness = new Harness(parentPlan, registry);
+        var parentSut = parentHarness.CreateSut(subPlanChild: childHarness.CreateSut());
+
+        var result = await parentSut.ExecuteAsync(parentPlanId, CancellationToken.None).WaitAsync(DeadlockBudget);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(StepExecutionStatus.Completed, result.Value!.FinalStatus);
+        Assert.Equal(2, childExecutions.Distinct().Count());
+        Assert.Equal(StepExecutionStatus.Completed, parentHarness.PersistedStates[parentStep.Id].Status);
+    }
+
+    /// <summary>
+    /// A child plan cancelled directly, while its parent is not, is a genuine failure of the parent
+    /// step — the parent was not asked to stop. Pins the boundary of the cascade so it is not
+    /// mistaken for "any child cancellation cancels the parent".
+    /// </summary>
+    [Fact]
+    public async Task Registry_CancellingChildOnly_DoesNotCancelParentRun()
+    {
+        var registry = new PlanRunCancellationRegistry();
+        var parentPlanId = PlanId.New();
+        var childPlanId = PlanId.New();
+
+        using var parent = registry.Register(parentPlanId);
+
+        // Simulates the child registering from within the parent's execution flow.
+        using var child = registry.Register(childPlanId);
+
+        Assert.True(registry.TryCancel(childPlanId));
+        Assert.True(child.Token.IsCancellationRequested);
+        Assert.False(parent.Token.IsCancellationRequested);
+    }
+
+    /// <summary>
+    /// The cascade itself, at the registry level: a run registered inside another run's flow is
+    /// signalled when the outer run is cancelled, without the outer cancel naming it.
+    /// </summary>
+    [Fact]
+    public async Task Registry_CancellingParent_CascadesToRunRegisteredWithinItsFlow()
+    {
+        var registry = new PlanRunCancellationRegistry();
+        var parentPlanId = PlanId.New();
+        var childPlanId = PlanId.New();
+
+        using var parent = registry.Register(parentPlanId);
+
+        // Registered on a spawned flow, mirroring a step task invoking a sub-plan.
+        var child = await Task.Run(() => registry.Register(childPlanId));
+
+        Assert.True(registry.TryCancel(parentPlanId));
+        Assert.True(child.Token.IsCancellationRequested);
+
+        child.Dispose();
     }
 
     private static StepExecutionResult Completed(string output = "ok") => new()
@@ -355,17 +513,29 @@ public sealed class PlanExecutorCancellationTests
     private sealed class Harness
     {
         private readonly PlanGraph _plan;
-        private readonly PlanRunCancellationRegistry _registry = new();
+        private readonly PlanRunCancellationRegistry _registry;
         private readonly ConcurrentDictionary<PlanStepId, StepExecutionState> _states = new();
 
-        public Harness(PlanGraph plan) => _plan = plan;
+        public Harness(PlanGraph plan, PlanRunCancellationRegistry? registry = null)
+        {
+            _plan = plan;
+            _registry = registry ?? new PlanRunCancellationRegistry();
+        }
+
+        public PlanGraph Plan => _plan;
 
         public Func<PlanStep, CancellationToken, Task<StepExecutionResult>> OnStep { get; set; } =
             (_, _) => Task.FromResult(Completed());
 
         public IReadOnlyDictionary<PlanStepId, StepExecutionState> PersistedStates => _states;
 
-        public PlanExecutor CreateSut()
+        /// <summary>
+        /// Builds the executor. When <paramref name="subPlanChild"/> is supplied, a real
+        /// <c>SubPlanStepExecutor</c> is registered for <see cref="StepType.SubPlanInvocation"/>
+        /// and resolves that executor as the child — so nesting runs through production code rather
+        /// than a stub.
+        /// </summary>
+        public PlanExecutor CreateSut(PlanExecutor? subPlanChild = null)
         {
             var validator = new Mock<IPlanValidator>();
             validator.Setup(v => v.ValidateAsync(It.IsAny<PlanGraph>(), It.IsAny<CancellationToken>()))
@@ -399,6 +569,21 @@ public sealed class PlanExecutorCancellationTests
                     It.IsAny<PlanStep>(), It.IsAny<IReadOnlyDictionary<PlanStepId, string>>(), It.IsAny<CancellationToken>()))
                 .Returns<PlanStep, IReadOnlyDictionary<PlanStepId, string>, CancellationToken>((step, _, ct) => OnStep(step, ct));
             services.AddKeyedSingleton<IPlanStepExecutor>(StepType.LlmCall, stepExecutor.Object);
+
+            if (subPlanChild is not null)
+            {
+                // The real SubPlanStepExecutor, resolving the real child PlanExecutor from the
+                // scope it creates. Nothing about the nesting is stubbed.
+                services.AddScoped<IPlanExecutor>(_ => subPlanChild);
+                services.AddKeyedSingleton<IPlanStepExecutor>(
+                    StepType.SubPlanInvocation,
+                    (sp, _) => new global::Infrastructure.AI.Planner.StepExecutors.SubPlanStepExecutor(
+                        sp.GetRequiredService<IServiceScopeFactory>(),
+                        Mock.Of<IPlanStateStore>(),
+                        Mock.Of<IPlanProgressNotifier>(),
+                        new PlanExecutionContext(),
+                        NullLogger<global::Infrastructure.AI.Planner.StepExecutors.SubPlanStepExecutor>.Instance));
+            }
 
             return new PlanExecutor(
                 validator.Object,

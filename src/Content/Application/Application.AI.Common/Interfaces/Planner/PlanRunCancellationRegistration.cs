@@ -30,7 +30,7 @@ namespace Application.AI.Common.Interfaces.Planner;
 public sealed class PlanRunCancellationRegistration : IDisposable
 {
     private readonly IPlanRunCancellationRegistry _registry;
-    private readonly CancellationTokenSource _source = new();
+    private readonly CancellationTokenSource _source;
     private readonly object _gate = new();
     private bool _released;
 
@@ -41,10 +41,27 @@ public sealed class PlanRunCancellationRegistration : IDisposable
     /// </summary>
     /// <param name="registry">The registry that will remove this registration on release.</param>
     /// <param name="planId">The plan whose run this registration cancels.</param>
-    public PlanRunCancellationRegistration(IPlanRunCancellationRegistry registry, PlanId planId)
+    /// <param name="parentRunToken">
+    /// The cancellation token of the run that is invoking this one, when this run is nested (a
+    /// sub-plan). The registration's source is linked to it, so cancelling an outer run cancels
+    /// every run beneath it without the nesting call site having to forward anything. Pass
+    /// <see langword="default"/> for a root run.
+    /// </param>
+    public PlanRunCancellationRegistration(
+        IPlanRunCancellationRegistry registry,
+        PlanId planId,
+        CancellationToken parentRunToken = default)
     {
         _registry = registry;
         PlanId = planId;
+
+        // A linked source when nested, so the framework performs the cascade. A run that starts
+        // while its parent is already cancelling gets an already-signalled token, which is correct:
+        // it must not begin work the operator has asked to stop.
+        _source = parentRunToken.CanBeCanceled
+            ? CancellationTokenSource.CreateLinkedTokenSource(parentRunToken)
+            : new CancellationTokenSource();
+
         Token = _source.Token;
     }
 

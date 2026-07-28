@@ -30,10 +30,26 @@ public sealed class PlanRunCancellationRegistry : IPlanRunCancellationRegistry
     private readonly Dictionary<PlanId, List<PlanRunCancellationRegistration>> _runs = [];
     private readonly object _gate = new();
 
+    /// <summary>
+    /// The run currently executing on this async flow, used to give a nested run its parent.
+    /// <see cref="AsyncLocal{T}"/> flows into the step tasks a run spawns and onward into any
+    /// sub-plan those steps invoke, which is exactly the nesting relationship being captured — and
+    /// it flows without the intervening step executor having to forward anything, so a nesting path
+    /// cannot be added later that forgets to participate.
+    /// </summary>
+    private readonly AsyncLocal<AmbientRun?> _ambientRun = new();
+
     /// <inheritdoc />
     public PlanRunCancellationRegistration Register(PlanId planId)
     {
-        var registration = new PlanRunCancellationRegistration(this, planId);
+        var parent = _ambientRun.Value;
+        var registration = new PlanRunCancellationRegistration(
+            this, planId, parent?.Registration.Token ?? default);
+
+        // Published before returning, so a sub-plan started by this run registers beneath it.
+        // Writing an AsyncLocal affects this flow and the flows it spawns, never the caller's, so
+        // sibling runs on other flows are unaffected.
+        _ambientRun.Value = new AmbientRun(registration, parent);
 
         lock (_gate)
         {
@@ -87,8 +103,22 @@ public sealed class PlanRunCancellationRegistry : IPlanRunCancellationRegistry
             }
         }
 
+        // Pop the ambient run, but only when this registration is the one on top of THIS flow.
+        // Release normally runs on the same flow as Register (the run disposes its own handle), so
+        // the pop restores the parent and a subsequent sibling run on the same flow is not treated
+        // as nested. The identity check keeps a Release called from an unrelated flow from
+        // corrupting that flow's ambient state.
+        if (ReferenceEquals(_ambientRun.Value?.Registration, registration))
+            _ambientRun.Value = _ambientRun.Value!.Parent;
+
         // Outside the gate, and only once the registration is unreachable from the index, so no
         // TryCancel can start signalling it after this point.
         registration.CompleteRelease();
     }
+
+    /// <summary>
+    /// One frame of the run-nesting stack for an async flow: the run executing on it and the run
+    /// that invoked it. Held by <see cref="AsyncLocal{T}"/>, so each flow sees its own chain.
+    /// </summary>
+    private sealed record AmbientRun(PlanRunCancellationRegistration Registration, AmbientRun? Parent);
 }
