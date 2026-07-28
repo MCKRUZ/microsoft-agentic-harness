@@ -186,7 +186,8 @@ public sealed class EfCoreChangeProposalStore : IChangeProposalStore
     private async Task<ChangeProposal?> TryLoadAsync(
         string id, string proposalJson, string? sealJson, CancellationToken ct)
     {
-        var proposal = TryDeserialize(id, proposalJson);
+        var proposal = GovernanceStatePayload.TryDeserialize<ChangeProposal>(
+            proposalJson, _logger, "change proposal", id);
         if (proposal is null)
             return null;
 
@@ -202,7 +203,8 @@ public sealed class EfCoreChangeProposalStore : IChangeProposalStore
 
         var seal = sealJson is null
             ? null
-            : TryDeserializeSeal(id, sealJson);
+            : GovernanceStatePayload.TryDeserialize<GovernanceRecordSeal>(
+                sealJson, _logger, "change proposal seal", id);
 
         if (await _sealer.VerifyAsync(id, proposalJson, seal, ct))
             return proposal;
@@ -214,66 +216,15 @@ public sealed class EfCoreChangeProposalStore : IChangeProposalStore
         return null;
     }
 
-    /// <summary>Deserializes a stored seal, logging and returning null when it is unreadable.</summary>
-    /// <param name="id">The owning proposal, for the log line.</param>
-    /// <param name="sealJson">The stored seal JSON.</param>
-    private GovernanceRecordSeal? TryDeserializeSeal(string id, string sealJson)
-    {
-        try
-        {
-            return JsonSerializer.Deserialize<GovernanceRecordSeal>(sealJson, GovernanceStateJson.Options);
-        }
-        catch (Exception ex) when (ex is JsonException or ArgumentException or FormatException or OverflowException)
-        {
-            _logger.LogError(ex, "Failed to deserialize the persisted seal for change proposal {ProposalId}", id);
-            return null;
-        }
-    }
-
-    /// <summary>
-    /// Deserializes one stored proposal, or returns null (with an error log) when the payload
-    /// is unreadable. The row is preserved for manual inspection.
-    /// </summary>
-    /// <param name="id">The proposal id, for the log line.</param>
-    /// <param name="json">The stored aggregate JSON.</param>
-    private ChangeProposal? TryDeserialize(string id, string json)
-    {
-        try
-        {
-            return JsonSerializer.Deserialize<ChangeProposal>(json, GovernanceStateJson.Options);
-        }
-        catch (Exception ex) when (ex is JsonException or ArgumentException or FormatException or OverflowException)
-        {
-            // Matches the escalation store's guard: a corrupt tick value, a bad enum name, and
-            // a truncated target payload all surface here as different exception types, and any
-            // of them must quarantine one row rather than fail the whole list.
-            _logger.LogError(ex,
-                "Skipping unreadable durable change proposal {ProposalId}; the row is preserved for manual inspection",
-                id);
-            return null;
-        }
-    }
-
     /// <summary>
     /// Serializes the aggregate and rejects it when it exceeds the configured cap, so an
     /// oversized proposal fails loudly at the write rather than being stored and failing every
     /// later read.
     /// </summary>
     /// <param name="proposal">The proposal to serialize.</param>
-    private string SerializeGuarded(ChangeProposal proposal)
-    {
-        var json = JsonSerializer.Serialize(proposal, GovernanceStateJson.Options);
-        var maxBytes = Math.Max(1024, _config.CurrentValue.AI.Governance.DurableState.MaxPayloadBytes);
-        var byteCount = System.Text.Encoding.UTF8.GetByteCount(json);
-
-        if (byteCount > maxBytes)
-        {
-            throw new InvalidOperationException(
-                $"Change proposal {proposal.Id} serializes to {byteCount} bytes, exceeding the configured " +
-                $"maximum of {maxBytes}. Raise AppConfig:AI:Governance:DurableState:MaxPayloadBytes or " +
-                "reduce the diff size.");
-        }
-
-        return json;
-    }
+    private string SerializeGuarded(ChangeProposal proposal) =>
+        GovernanceStatePayload.SerializeGuarded(
+            proposal,
+            _config.CurrentValue.AI.Governance.DurableState.MaxPayloadBytes,
+            $"change proposal {proposal.Id}");
 }

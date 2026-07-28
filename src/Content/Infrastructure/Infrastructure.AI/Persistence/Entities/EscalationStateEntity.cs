@@ -17,9 +17,22 @@ namespace Infrastructure.AI.Persistence.Entities;
 /// </para>
 /// <para>
 /// Timestamps are stored as raw UTC-tick <see cref="long"/> columns and converted inside the
-/// store's guarded per-row mapping rather than by an EF value converter — a converter throws
-/// during materialization, outside any per-row guard, so a single corrupt tick value would
-/// fail the whole query (and with it, host startup).
+/// store's guarded per-row mapping, rather than by the <c>SqliteValueConverters</c>
+/// <c>DateTimeOffsetAsUtcTicks</c> converter that <c>PromptUsageDbContext</c> and
+/// <c>EvalDashboardDbContext</c> apply to their timestamps. A converter's conversion is compiled
+/// into EF's query shaper, so it runs during materialization — outside the per-row guard — and
+/// <c>new DateTimeOffset(ticks, TimeSpan.Zero)</c> throws for an out-of-range tick. Deferring it
+/// keeps one corrupt row quarantinable instead of failing the scan that reads past it.
+/// </para>
+/// <para>
+/// The divergence from those two sibling contexts is deliberate and rests on a difference in
+/// requirements, not taste: they serve dashboard queries pulled on demand, where failing the query
+/// is an acceptable answer, whereas <see cref="CreatedAtTicks"/> is read by the startup
+/// rehydration scan that restores pending human approvals. Losing that whole scan to one bad row
+/// would strand every pending approval. Note the guarantee is partial by necessity —
+/// <see cref="Id"/> is a Guid BLOB that EF must convert during materialization regardless — which
+/// is why <c>EscalationStateRehydrationService</c> additionally treats a scan-level failure as
+/// non-fatal (LogCritical and continue to boot) rather than letting it stop the host.
 /// </para>
 /// </remarks>
 public sealed class EscalationStateEntity

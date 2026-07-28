@@ -9,6 +9,27 @@ namespace Domain.Common.Helpers;
 public static class PathScope
 {
     /// <summary>
+    /// The string comparison that matches the host filesystem's case sensitivity: case-insensitive on
+    /// Windows, ordinal elsewhere. Exposed so callers that need an additional path comparison beyond
+    /// <see cref="IsSameOrUnderNormalized"/> (for example, asserting a path is strictly <em>under</em> a
+    /// root rather than equal to it) reuse these semantics instead of hardcoding a comparison of their
+    /// own. Hardcoding <see cref="StringComparison.OrdinalIgnoreCase"/> is the specific mistake this
+    /// guards against: on Linux <c>/app</c> and <c>/App</c> are different directories, so a
+    /// case-insensitive containment check there accepts paths that actually escape the root.
+    /// </summary>
+    public static StringComparison Comparison => OperatingSystem.IsWindows()
+        ? StringComparison.OrdinalIgnoreCase
+        : StringComparison.Ordinal;
+
+    /// <summary>
+    /// The <see cref="StringComparer"/> form of <see cref="Comparison"/>, for keying a dictionary or
+    /// set of normalized paths so lookups agree with the containment checks above.
+    /// </summary>
+    public static StringComparer Comparer => OperatingSystem.IsWindows()
+        ? StringComparer.OrdinalIgnoreCase
+        : StringComparer.Ordinal;
+
+    /// <summary>
     /// Returns the absolute, separator-trimmed form of <paramref name="path"/> so two paths can be
     /// compared for containment without being tripped up by relative segments or trailing separators.
     /// </summary>
@@ -31,9 +52,7 @@ public static class PathScope
     /// </summary>
     public static bool IsSameOrUnderNormalized(string normalizedTarget, string normalizedBase)
     {
-        var comparison = OperatingSystem.IsWindows()
-            ? StringComparison.OrdinalIgnoreCase
-            : StringComparison.Ordinal;
+        var comparison = Comparison;
 
         return string.Equals(normalizedTarget, normalizedBase, comparison)
             || normalizedTarget.StartsWith(normalizedBase + Path.DirectorySeparatorChar, comparison);

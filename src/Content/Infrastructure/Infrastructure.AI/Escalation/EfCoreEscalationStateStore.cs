@@ -78,9 +78,6 @@ public sealed class EfCoreEscalationStateStore : IEscalationStateStore
     private int MaxScanRecords =>
         Math.Max(1, _config.CurrentValue.AI.Governance.DurableState.MaxScanRecords);
 
-    private int MaxPayloadBytes =>
-        Math.Max(1024, _config.CurrentValue.AI.Governance.DurableState.MaxPayloadBytes);
-
     /// <inheritdoc />
     public async Task SavePendingAsync(EscalationRequest request, DateTimeOffset createdAt, CancellationToken ct)
     {
@@ -395,7 +392,7 @@ public sealed class EfCoreEscalationStateStore : IEscalationStateStore
                 Outcome = outcome
             };
         }
-        catch (Exception ex) when (ex is JsonException or ArgumentException or FormatException or OverflowException)
+        catch (Exception ex) when (GovernanceStatePayload.IsUnreadablePayload(ex))
         {
             _logger.LogError(ex,
                 "Skipping unreadable durable escalation record {EscalationId} (status {Status}); " +
@@ -411,20 +408,8 @@ public sealed class EfCoreEscalationStateStore : IEscalationStateStore
     /// <param name="escalationId">The owning escalation, for the log line.</param>
     /// <param name="description">What the payload is, for the log line.</param>
     private T? TryDeserialize<T>(string json, Guid escalationId, string description)
-        where T : class
-    {
-        try
-        {
-            return JsonSerializer.Deserialize<T>(json, GovernanceStateJson.Options);
-        }
-        catch (Exception ex) when (ex is JsonException or ArgumentException or FormatException or OverflowException)
-        {
-            _logger.LogError(ex,
-                "Failed to deserialize the persisted {Description} for escalation {EscalationId}",
-                description, escalationId);
-            return null;
-        }
-    }
+        where T : class =>
+        GovernanceStatePayload.TryDeserialize<T>(json, _logger, description, escalationId);
 
     /// <summary>
     /// Serializes a payload and rejects it when it exceeds the configured cap, so an oversized
@@ -433,22 +418,9 @@ public sealed class EfCoreEscalationStateStore : IEscalationStateStore
     /// <typeparam name="T">The payload type.</typeparam>
     /// <param name="value">The value to serialize.</param>
     /// <param name="columnName">The destination column, for the failure message.</param>
-    private string SerializeGuarded<T>(T value, string columnName)
-    {
-        var json = JsonSerializer.Serialize(value, GovernanceStateJson.Options);
-        var maxBytes = MaxPayloadBytes;
-        var byteCount = System.Text.Encoding.UTF8.GetByteCount(json);
-
-        if (byteCount > maxBytes)
-        {
-            throw new InvalidOperationException(
-                $"Governance-state payload for {columnName} is {byteCount} bytes, exceeding the configured " +
-                $"maximum of {maxBytes}. Raise AppConfig:AI:Governance:DurableState:MaxPayloadBytes or " +
-                "reduce the payload size.");
-        }
-
-        return json;
-    }
+    private string SerializeGuarded<T>(T value, string columnName) =>
+        GovernanceStatePayload.SerializeGuarded(
+            value, _config.CurrentValue.AI.Governance.DurableState.MaxPayloadBytes, columnName);
 
     /// <summary>
     /// Raw column values projected from SQLite, before any throwing conversion.

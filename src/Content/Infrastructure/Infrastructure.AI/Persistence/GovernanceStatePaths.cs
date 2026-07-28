@@ -1,3 +1,5 @@
+using Domain.Common.Helpers;
+
 namespace Infrastructure.AI.Persistence;
 
 /// <summary>
@@ -30,18 +32,25 @@ public static class GovernanceStatePaths
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(configuredPath);
 
-        var root = Path.GetFullPath(baseDirectory ?? AppContext.BaseDirectory);
-        var fullPath = Path.GetFullPath(Path.Combine(root, configuredPath));
+        var root = PathScope.Normalize(baseDirectory ?? AppContext.BaseDirectory);
+        var fullPath = PathScope.Normalize(Path.Combine(root, configuredPath));
 
-        var rootWithSeparator = root.EndsWith(Path.DirectorySeparatorChar)
-            ? root
-            : root + Path.DirectorySeparatorChar;
-
-        if (!fullPath.StartsWith(rootWithSeparator, StringComparison.OrdinalIgnoreCase))
+        if (!PathScope.IsSameOrUnderNormalized(fullPath, root))
         {
             throw new ArgumentException(
                 "AppConfig:AI:Governance:DurableState:DatabasePath resolves outside the application " +
                 "directory. Configure a path relative to the application base directory.",
+                nameof(configuredPath));
+        }
+
+        // Containment alone would admit the root directory itself, which names a directory rather than
+        // a database file. PathScope.Comparison keeps this check on the same case-sensitivity rules as
+        // the containment check above, so the two cannot drift apart.
+        if (string.Equals(fullPath, root, PathScope.Comparison))
+        {
+            throw new ArgumentException(
+                "AppConfig:AI:Governance:DurableState:DatabasePath must name a file inside the " +
+                "application directory, not the directory itself.",
                 nameof(configuredPath));
         }
 

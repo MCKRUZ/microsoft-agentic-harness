@@ -16,9 +16,15 @@ namespace Infrastructure.AI.Persistence.Entities;
 /// on the proposal id, so the planner's <c>SqliteVersionInterceptor</c> scheme is not applied.
 /// </para>
 /// <para>
-/// <see cref="SubmittedAtTicks"/> is a raw UTC-tick <see cref="long"/> for the same reason as
-/// the escalation entity's timestamps: an EF value converter throws during materialization,
-/// outside the store's per-row guard, so one corrupt value would fail an entire list query.
+/// <see cref="SubmittedAtTicks"/> is a raw UTC-tick <see cref="long"/>, diverging from the
+/// <c>SqliteValueConverters.DateTimeOffsetAsUtcTicks</c> converter that
+/// <c>PromptUsageDbContext</c> and <c>EvalDashboardDbContext</c> use for their timestamps. The
+/// reason is schema consistency with <see cref="EscalationStateEntity"/> in the same database and
+/// the same store pair, NOT a materialization hazard of its own: this column is only ever written,
+/// ordered by, and range-filtered server-side — <c>ListAsync</c> does not project it, and the
+/// aggregate's <c>SubmittedAt</c> is read from <see cref="ProposalJson"/> — so a converter here
+/// would have nothing to throw on during a list query. See <see cref="EscalationStateEntity"/> for
+/// the column where the hazard is real and load-bearing.
 /// </para>
 /// </remarks>
 public sealed class ChangeProposalEntity

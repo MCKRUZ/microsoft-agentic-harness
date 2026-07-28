@@ -191,15 +191,19 @@ public sealed class EscalationsController : ControllerBase
     }
 
     /// <summary>
-    /// Maps a decision status to its HTTP response. EVERY <see cref="EscalationDecisionStatus"/>
-    /// member has an explicit arm: an unmapped member falls to the 500 default and turns an
-    /// ordinary, well-understood lifecycle state into a server error, which is the defect this
-    /// exhaustive mapping exists to prevent.
+    /// Maps a decision status to its HTTP response. Every status that reaches this method has an
+    /// explicit arm: an unmapped member falls to the 500 default and turns an ordinary,
+    /// well-understood lifecycle state into a server error, which is the defect the exhaustive
+    /// mapping exists to prevent.
     /// </summary>
     /// <remarks>
-    /// UnknownEscalation → 404, ApproverNotAuthorized → 403, DecisionRecorded → 202,
-    /// Resolved → 200, ConflictingDecision → 409, AwaitingReconciliation → 409. The 500 default
-    /// survives only as a guard for a status added to the enum without being mapped here.
+    /// UnknownEscalation → 404, ApproverNotAuthorized → 403, DecisionRecorded → 202, Resolved → 200.
+    /// The two conflict statuses never arrive here: <see cref="SubmitEscalationDecisionCommandHandler"/>
+    /// converts ConflictingDecision and AwaitingReconciliation into a Conflict failure in the
+    /// Application layer, which <c>MapFailure</c> renders as a 409 — so the conflict is reported the
+    /// same way to every consumer, not just this transport. That handler owns the exhaustiveness
+    /// guarantee for them; the 500 default here survives only as a guard for a status added to the
+    /// enum without being mapped in either place.
     /// </remarks>
     /// <param name="value">The successful decision result to translate.</param>
     private IActionResult MapDecisionStatus(SubmitEscalationDecisionResult value) => value.Status switch
@@ -216,27 +220,6 @@ public sealed class EscalationsController : ControllerBase
             Accepted(new EscalationDecisionResponse(value.Status, null)),
         EscalationDecisionStatus.Resolved =>
             Ok(new EscalationDecisionResponse(value.Status, value.Outcome)),
-
-        // Normally never reaches here: SubmitEscalationDecisionCommandHandler translates a
-        // changed vote into a Conflict failure that MapFailure renders. The arm is kept so a
-        // handler change cannot silently demote that conflict into a 500.
-        EscalationDecisionStatus.ConflictingDecision => Problem(
-            title: "Conflict",
-            detail: "A decision by this approver with the opposite verdict is already recorded; " +
-                    "votes cannot be changed.",
-            statusCode: StatusCodes.Status409Conflict),
-
-        // 409, not 503. The escalation already reached a verdict before this vote arrived, so
-        // the vote was NOT counted and never will be — repeating the request is guaranteed to
-        // produce the same answer, which is a state conflict, not the transient unavailability
-        // 503 would advertise. The verdict itself is not lost: reconciliation re-drives it.
-        EscalationDecisionStatus.AwaitingReconciliation => Problem(
-            title: "Conflict",
-            detail: "The escalation had already reached a verdict whose durable record could not be " +
-                    "written, so it is parked awaiting reconciliation. This decision was not counted " +
-                    "and will not be; retrying it will not change that. Poll GET /api/escalations/{id} " +
-                    "for the final outcome.",
-            statusCode: StatusCodes.Status409Conflict),
 
         _ => Problem(
             title: "Escalation operation failed",

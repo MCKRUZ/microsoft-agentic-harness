@@ -25,6 +25,13 @@ namespace Infrastructure.AI.Persistence;
 /// </remarks>
 public sealed class GovernanceStatePruner : IGovernanceStatePruner
 {
+    // The terminal set is fixed at compile time; materializing it per pass would rebuild the same
+    // array on every retention tick for the lifetime of the host.
+    private static readonly string[] TerminalProposalStatuses = ChangeProposalStateTransitions
+        .TerminalStates
+        .Select(s => s.ToString())
+        .ToArray();
+
     private readonly IDbContextFactory<GovernanceStateDbContext> _contextFactory;
     private readonly ILogger<GovernanceStatePruner> _logger;
 
@@ -50,9 +57,6 @@ public sealed class GovernanceStatePruner : IGovernanceStatePruner
     public async Task<GovernanceStatePruneResult> PruneAsync(DateTimeOffset cutoff, CancellationToken ct)
     {
         var cutoffTicks = cutoff.UtcTicks;
-        var terminalProposalStatuses = ChangeProposalStateTransitions.TerminalStates
-            .Select(s => s.ToString())
-            .ToArray();
 
         await using var context = await _contextFactory.CreateDbContextAsync(ct);
 
@@ -62,7 +66,7 @@ public sealed class GovernanceStatePruner : IGovernanceStatePruner
             .ExecuteDeleteAsync(ct);
 
         var proposalsRemoved = await context.ChangeProposals
-            .Where(p => terminalProposalStatuses.Contains(p.Status)
+            .Where(p => TerminalProposalStatuses.Contains(p.Status)
                 && p.SubmittedAtTicks < cutoffTicks)
             .ExecuteDeleteAsync(ct);
 

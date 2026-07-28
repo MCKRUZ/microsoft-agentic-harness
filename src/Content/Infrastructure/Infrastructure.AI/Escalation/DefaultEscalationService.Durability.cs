@@ -196,9 +196,20 @@ public sealed partial class DefaultEscalationService
 			await ReconcileInMemoryAsync(recovered, stillStuck, ct);
 			await ReconcileDurableAsync(recovered, stillStuck, ct);
 
-			_logger.LogInformation(
-				"Escalation reconcile pass complete: {RecoveredCount} recovered, {StuckCount} still stuck",
-				recovered.Count, stillStuck.Count);
+			// Information only when the pass actually did something. A host with the feature off
+			// still runs this pass on every tick, and an unconditional Information line would ship
+			// hundreds of "0 recovered, 0 stuck" records per host per day through the collector for
+			// no operational value. Idle passes stay observable at Debug.
+			if (recovered.Count > 0 || stillStuck.Count > 0)
+			{
+				_logger.LogInformation(
+					"Escalation reconcile pass complete: {RecoveredCount} recovered, {StuckCount} still stuck",
+					recovered.Count, stillStuck.Count);
+			}
+			else
+			{
+				_logger.LogDebug("Escalation reconcile pass complete: nothing to recover");
+			}
 
 			return new EscalationReconcileResult
 			{

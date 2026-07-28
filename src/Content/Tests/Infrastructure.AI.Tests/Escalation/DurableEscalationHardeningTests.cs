@@ -365,6 +365,45 @@ public sealed class DurableEscalationHardeningTests : IDisposable
 		resolved.Should().EndWith("governance-state.db");
 	}
 
+	[Fact]
+	public void Resolve_CaseVariantSiblingDirectory_FollowsHostFilesystemCaseRules()
+	{
+		// The containment check must use the HOST's case rules, not a hardcoded case-insensitive
+		// comparison. On Linux — where this ships in containers — /app and /App are different
+		// directories, so a case-insensitive check would accept a path that genuinely escapes the
+		// application directory and let the approval-verdict database be written outside it.
+		var stem = Path.Combine(Path.GetTempPath(), $"gov-root-{Guid.NewGuid():N}");
+		var root = stem + "-lower";
+		var caseVariant = stem + "-LOWER";
+
+		var act = () => GovernanceStatePaths.Resolve(
+			Path.Combine(caseVariant, "governance-state.db"), root);
+
+		if (OperatingSystem.IsWindows())
+		{
+			// Windows paths are case-insensitive, so the variant IS the same directory.
+			act.Should().NotThrow();
+		}
+		else
+		{
+			act.Should().Throw<ArgumentException>(
+				"under ordinal (Linux) semantics the case variant is a different directory, so it " +
+				"escapes the application directory and must be rejected");
+		}
+	}
+
+	[Fact]
+	public void Resolve_ApplicationDirectoryItself_Throws()
+	{
+		// The configured value must name a database FILE. Containment alone would admit the root,
+		// which is a directory — caught here rather than as an opaque SQLite open failure later.
+		var root = Path.Combine(Path.GetTempPath(), $"gov-root-{Guid.NewGuid():N}");
+
+		var act = () => GovernanceStatePaths.Resolve(".", root);
+
+		act.Should().Throw<ArgumentException>();
+	}
+
 	/// <summary>Minimal context factory over fixed options.</summary>
 	private sealed class TestContextFactory(DbContextOptions<GovernanceStateDbContext> options)
 		: IDbContextFactory<GovernanceStateDbContext>
