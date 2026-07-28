@@ -60,14 +60,32 @@ public class EscalationConfigValidatorTests
     }
 
     [Fact]
-    public async Task Validate_NonAllowlistedClaimTypeWhileDisabled_NoErrors()
+    public async Task Validate_NonAllowlistedClaimTypeWhileDisabled_StillHasError()
     {
-        // These validators impose no constraints while the feature is off (documented posture):
-        // a host with escalation disabled must keep booting regardless of the claim type value.
+        // ApproverClaimType is deliberately NOT gated on Enabled, unlike its sibling rules. The
+        // change-proposal decision API reads the same setting to stamp reviewer identity on its
+        // audit records and mounts independently of this flag — which defaults to false. Gating
+        // the allowlist here would let the DEFAULT deployment run on an unvalidated claim type,
+        // so an operator could bind approval identity to a user-editable claim and get
+        // attacker-chosen strings recorded as the deciding reviewer.
         var config = CreateValidConfig();
         config.Enabled = false;
         config.PriorityLevels.Clear();
         config.ApproverClaimType = "email";
+
+        var result = await _validator.ValidateAsync(config);
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName == "ApproverClaimType");
+    }
+
+    [Fact]
+    public async Task Validate_DefaultConfigWhileDisabled_NoErrors()
+    {
+        // The counterweight to the rule above: always-on claim validation must not break hosts
+        // running on class defaults. The default (preferred_username) is allowlisted, so a
+        // host that never touches escalation config still boots.
+        var config = new EscalationConfig();
 
         var result = await _validator.ValidateAsync(config);
 
