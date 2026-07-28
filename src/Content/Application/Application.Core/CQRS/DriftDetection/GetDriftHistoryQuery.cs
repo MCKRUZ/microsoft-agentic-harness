@@ -11,8 +11,13 @@ namespace Application.Core.CQRS.DriftDetection;
 /// </summary>
 public sealed record GetDriftHistoryQuery : IRequest<Result<IReadOnlyList<DriftScore>>>
 {
-    /// <summary>The hierarchy level to query.</summary>
-    public required DriftScope Scope { get; init; }
+    /// <summary>
+    /// The hierarchy level to query. Required — but modelled as nullable so an omitted query
+    /// parameter arrives as null and is rejected, rather than silently binding
+    /// <see cref="DriftScope.Agent"/> (the enum's zero value) and answering confidently for a
+    /// scope the caller never asked about.
+    /// </summary>
+    public DriftScope? Scope { get; init; }
 
     /// <summary>Identifies the entity within the scope (agent ID, skill name, or task type).</summary>
     public required string ScopeIdentifier { get; init; }

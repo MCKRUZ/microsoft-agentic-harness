@@ -7,6 +7,7 @@ using MediatR;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.ModelBinding;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Presentation.Common.Extensions;
@@ -123,14 +124,22 @@ public sealed class DriftController : ControllerBase
     }
 
     /// <summary>Retrieves the persisted drift scores for one scope within a bounded time window.</summary>
-    /// <param name="scope">The hierarchy level to query.</param>
+    /// <param name="scope">
+    /// The hierarchy level to query. Required, and guarded twice. Bound as nullable so an
+    /// omitted parameter cannot land on <see cref="DriftScope.Agent"/> (the enum's zero value)
+    /// and answer for a scope the caller never asked about; <see cref="BindRequiredAttribute"/>
+    /// then makes its absence a model-state error, which <c>[ApiController]</c> turns into a 400
+    /// before the action body runs. The query's FluentValidation <c>NotNull</c> rule is the same
+    /// guard one layer down, for any non-HTTP dispatcher of
+    /// <see cref="GetDriftHistoryQuery"/> that never passes through model binding.
+    /// </param>
     /// <param name="scopeIdentifier">The entity within the scope (agent ID, skill name, or task type).</param>
     /// <param name="start">Start of the query window (inclusive).</param>
     /// <param name="end">End of the query window (inclusive); the window is capped server-side.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>Every evaluation recorded for the scope in the window, healthy and drifted alike.</returns>
     /// <response code="200">The drift scores (may contain zero results).</response>
-    /// <response code="400">Missing/oversized identifier, unordered window, or a window over the cap.</response>
+    /// <response code="400">Missing scope, missing/oversized identifier, unordered window, or a window over the cap.</response>
     /// <response code="401">Caller is not authenticated.</response>
     /// <response code="403">Caller lacks <see cref="ReadRole"/>.</response>
     [HttpGet("history")]
@@ -140,7 +149,7 @@ public sealed class DriftController : ControllerBase
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(StatusCodes.Status403Forbidden)]
     public async Task<IActionResult> GetHistory(
-        [FromQuery] DriftScope scope,
+        [FromQuery][BindRequired] DriftScope? scope,
         [FromQuery] string? scopeIdentifier,
         [FromQuery] DateTimeOffset start,
         [FromQuery] DateTimeOffset end,

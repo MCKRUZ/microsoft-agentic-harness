@@ -13,9 +13,13 @@ public sealed class GetDriftHistoryQueryValidator : AbstractValidator<GetDriftHi
     /// <summary>Initializes validation rules.</summary>
     public GetDriftHistoryQueryValidator()
     {
+        // A history read is always scoped, so an omitted scope is a bad request — never a
+        // default. Binding a missing value to DriftScope.Agent (enum zero) would return real
+        // Agent-scope data with a 200 to a caller who believes they asked for something else.
         RuleFor(x => x.Scope)
-            .Must(scope => Enum.IsDefined(scope))
-            .WithMessage("Scope must be a defined DriftScope value.");
+            .NotNull().WithMessage("Scope is required.")
+            .Must(scope => scope is null || Enum.IsDefined(scope.Value))
+                .WithMessage("Scope must be a defined DriftScope value.");
 
         RuleFor(x => x.ScopeIdentifier)
             .NotEmpty().WithMessage("ScopeIdentifier must not be empty.")

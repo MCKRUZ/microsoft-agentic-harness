@@ -97,6 +97,39 @@ public sealed class DriftControllerIntegrationTests : IClassFixture<TestWebAppli
     }
 
     [Fact]
+    public async Task GetHistory_OmittedScope_Returns400NotAgentScopedData()
+    {
+        // DriftScope.Agent is the enum's zero value, so a non-nullable binding would have
+        // silently answered for Agent scope with a 200 while the caller believed they had
+        // asked for something else. A missing required filter must be a 400.
+        using var client = CreateAuthedClient(roles: DriftController.ReadRole);
+
+        var response = await client.GetAsync(
+            "/api/drift/history?scopeIdentifier=summarize" +
+            "&start=2026-07-01T00:00:00Z&end=2026-07-27T00:00:00Z");
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest,
+            "an omitted scope must be rejected, never defaulted to Agent");
+    }
+
+    [Fact]
+    public async Task GetHistory_WithScope_Returns200()
+    {
+        _factory.MockMediator
+            .Setup(m => m.Send(It.IsAny<GetDriftHistoryQuery>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<IReadOnlyList<DriftScore>>.Success([]));
+
+        using var client = CreateAuthedClient(roles: DriftController.ReadRole);
+
+        var response = await client.GetAsync(
+            "/api/drift/history?scope=Skill&scopeIdentifier=summarize" +
+            "&start=2026-07-01T00:00:00Z&end=2026-07-27T00:00:00Z");
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK,
+            "an explicit scope is the supported way to read history");
+    }
+
+    [Fact]
     public async Task PushEvaluation_WithReadRoleOnly_Returns403()
     {
         using var client = CreateAuthedClient(roles: DriftController.ReadRole);

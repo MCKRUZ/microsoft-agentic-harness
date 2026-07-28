@@ -86,6 +86,9 @@ public sealed class RecalculateDriftBaselineCommandHandlerTests
         });
         OutcomeRecord().Payload.Should().Contain("drift.not_found",
             "probing baseline ids is operator activity worth attributing");
+        OutcomeRecord().Payload.Should().Contain(id.ToString(),
+            "an id sweep must leave outcome records naming the probed id, not records that only " +
+            "join back to the attempt half on ActionId");
     }
 
     [Fact]

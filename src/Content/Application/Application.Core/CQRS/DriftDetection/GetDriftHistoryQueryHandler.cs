@@ -32,9 +32,10 @@ public sealed class GetDriftHistoryQueryHandler
     public async Task<Result<IReadOnlyList<DriftScore>>> Handle(
         GetDriftHistoryQuery request, CancellationToken cancellationToken)
     {
+        // Non-null past validation, which rejects a missing scope outright.
         var result = await _driftService.GetDriftHistoryAsync(new DriftHistoryQuery
         {
-            Scope = request.Scope,
+            Scope = request.Scope!.Value,
             ScopeIdentifier = request.ScopeIdentifier,
             Start = request.Start,
             End = request.End

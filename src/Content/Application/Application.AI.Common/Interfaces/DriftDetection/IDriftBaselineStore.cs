@@ -24,9 +24,14 @@ public interface IDriftBaselineStore
     /// unknown id, so callers can map absence to their own not-found semantics.
     /// </summary>
     /// <remarks>
-    /// Baselines are keyed by scope + identifier, not by id, so this is a secondary lookup. It
-    /// exists so id-addressed callers (the drift HTTP surface's recalculate route) do not have to
-    /// pull the entire baseline set and filter in memory on every request.
+    /// <para>
+    /// Baselines are keyed by scope + identifier, not by id, so this is a secondary lookup and
+    /// implementations may still have to scan candidates. What it lets a backend avoid is
+    /// <em>materializing</em> them: the graph implementation filters on the stored
+    /// <c>BaselineId</c> property and deserializes at most one node's JSON payload, instead of
+    /// reconstructing every <see cref="DriftBaseline"/> in the store to find one. An
+    /// implementation with a real secondary index should use it.
+    /// </para>
     /// </remarks>
     /// <param name="baselineId">The baseline snapshot id to resolve.</param>
     /// <param name="ct">Cancellation token.</param>

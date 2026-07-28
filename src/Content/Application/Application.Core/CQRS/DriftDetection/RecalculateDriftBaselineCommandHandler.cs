@@ -130,9 +130,15 @@ public sealed class RecalculateDriftBaselineCommandHandler
             Succeeded = succeeded,
             CorrelationId = newBaseline?.BaselineId,
             FailureCode = succeeded ? null : DriftOperatorActionAudit.FailureCodeFor(failureType),
-            // The replaced snapshot's id, and the evidence of what the new one was built from.
-            // All four come from objects already in hand — no extra store round-trip.
-            PreviousBaselineId = target?.BaselineId,
+            // Always the id the caller asked for — which on success IS the replaced snapshot's
+            // id (the lookup resolves by it), and on failure is the id that was probed. Taking
+            // it from the resolved target instead would blank this field on a not-found, so an
+            // attacker sweeping ids to discover which baselines exist would leave outcome
+            // records naming no id at all, reconstructible only by joining back to the attempt
+            // record on ActionId. Enumeration is exactly when the id matters most, so each
+            // record stands on its own. The remaining three fields describe what the new
+            // baseline was built from; all come from objects already in hand.
+            PreviousBaselineId = request.BaselineId,
             SampleCount = newBaseline?.SampleCount,
             WindowStart = newBaseline?.WindowStart,
             WindowEnd = newBaseline?.WindowEnd

@@ -241,6 +241,22 @@ public sealed class DriftCommandValidationTests
         result.ShouldHaveValidationErrorFor(x => x.ScopeIdentifier);
     }
 
+    [Fact]
+    public void Validate_HistoryQuery_MissingScope_HasError()
+    {
+        // An omitted scope must not fall through to DriftScope.Agent (enum zero) and answer
+        // for a scope the caller never asked about.
+        var result = _historyValidator.TestValidate(CreateHistoryQuery() with { Scope = null });
+        result.ShouldHaveValidationErrorFor(x => x.Scope);
+    }
+
+    [Fact]
+    public void Validate_HistoryQuery_UndefinedScope_HasError()
+    {
+        var result = _historyValidator.TestValidate(CreateHistoryQuery() with { Scope = (DriftScope)42 });
+        result.ShouldHaveValidationErrorFor(x => x.Scope);
+    }
+
     // == GetDriftAuditsQuery ==
 
     [Fact]
