@@ -13,7 +13,19 @@ public enum DriftAuditRecordType
     /// <summary>A baseline was updated (recalculated or adjusted).</summary>
     BaselineUpdated,
     /// <summary>An escalation was triggered from a drift event.</summary>
-    EscalationTriggered
+    EscalationTriggered,
+    /// <summary>
+    /// An evaluation was pushed through the drift HTTP surface. The payload records the
+    /// authenticated caller's identity — evaluation pushes move EWMA state and feed future
+    /// baselines, so every push must be attributable to a principal.
+    /// </summary>
+    EvaluationPushed,
+    /// <summary>
+    /// A baseline recalculation was requested through the drift HTTP surface. The payload
+    /// records the authenticated caller's identity and the request outcome; the recalculated
+    /// baseline itself is still audited by the service as <see cref="BaselineUpdated"/>.
+    /// </summary>
+    BaselineRecalculationRequested
 }
 
 /// <summary>
@@ -43,6 +55,8 @@ public sealed record DriftAuditRecord
     ///   <item><see cref="DriftAuditRecordType.Resolved"/> → serialized <see cref="DriftResolution"/></item>
     ///   <item><see cref="DriftAuditRecordType.BaselineUpdated"/> → serialized <see cref="DriftBaseline"/></item>
     ///   <item><see cref="DriftAuditRecordType.EscalationTriggered"/> → serialized escalation reference</item>
+    ///   <item><see cref="DriftAuditRecordType.EvaluationPushed"/> → serialized operator-action envelope (caller identity, scope, outcome)</item>
+    ///   <item><see cref="DriftAuditRecordType.BaselineRecalculationRequested"/> → serialized operator-action envelope (caller identity, scope, outcome)</item>
     /// </list>
     /// </remarks>
     public required string Payload { get; init; }

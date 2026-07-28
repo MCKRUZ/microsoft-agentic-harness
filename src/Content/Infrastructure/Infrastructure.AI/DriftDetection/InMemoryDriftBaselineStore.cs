@@ -49,4 +49,13 @@ public sealed class InMemoryDriftBaselineStore : IDriftBaselineStore
 
         return Task.FromResult(Result<IReadOnlyList<DriftBaseline>>.Success(results.AsReadOnly()));
     }
+
+    /// <inheritdoc />
+    public Task<Result<DriftBaseline?>> GetBaselineByIdAsync(Guid baselineId, CancellationToken ct)
+    {
+        // The dictionary is keyed by scope + identifier, so an id lookup is a scan. Acceptable
+        // here: this store is the development/testing backend and holds one baseline per scope.
+        var match = _baselines.Values.FirstOrDefault(b => b.BaselineId == baselineId);
+        return Task.FromResult(Result<DriftBaseline?>.Success(match));
+    }
 }

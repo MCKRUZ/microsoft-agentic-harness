@@ -38,6 +38,14 @@ internal sealed class DevAuthHandler(
             // "preferred_username" claim above, shared with the escalation API).
             new Claim(ClaimTypes.Role, Presentation.Common.ChangeProposals.ChangeProposalsController.DecideRole),
             new Claim(ClaimTypes.Role, Presentation.Common.ChangeProposals.ChangeProposalsController.AdminRole),
+            // This dev principal deliberately holds BOTH drift roles so the whole surface is
+            // exercisable locally — which means the read/operate separation (a reader must not
+            // be able to push evaluations) is never exercised by running the app, only by the
+            // controller's integration tests. A consumer who copies this handler as the shape
+            // of their own auth inherits an operator-capable principal; in any real deployment
+            // Harness.Drift.Operate must be granted separately from Harness.Drift.Read.
+            new Claim(ClaimTypes.Role, Presentation.Common.Drift.DriftController.ReadRole),
+            new Claim(ClaimTypes.Role, Presentation.Common.Drift.DriftController.OperateRole),
         };
         var identity = new ClaimsIdentity(claims, Scheme.Name);
         var ticket = new AuthenticationTicket(new ClaimsPrincipal(identity), Scheme.Name);

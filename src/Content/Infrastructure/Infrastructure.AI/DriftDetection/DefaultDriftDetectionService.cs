@@ -86,7 +86,10 @@ public sealed class DefaultDriftDetectionService : IDriftDetectionService
         {
             sw.Stop();
             DriftMetrics.EvaluationDurationMs.Record(sw.Elapsed.TotalMilliseconds);
-            return Result<DriftScore>.Fail($"No baseline available for scope {request.Scope}:{request.ScopeIdentifier}");
+            // Conflict, not General: "no baseline yet" is an expected state of the subsystem
+            // (the caller must establish a baseline first), so HTTP surfaces map it to 409
+            // instead of an opaque 500.
+            return Result<DriftScore>.Conflict($"No baseline available for scope {request.Scope}:{request.ScopeIdentifier}");
         }
 
         var dimensionScores = new Dictionary<DriftDimension, DriftDimensionScore>();
@@ -103,7 +106,14 @@ public sealed class DefaultDriftDetectionService : IDriftDetectionService
         {
             sw.Stop();
             DriftMetrics.EvaluationDurationMs.Record(sw.Elapsed.TotalMilliseconds);
-            return Result<DriftScore>.Fail("All dimensions failed scoring");
+            // Conflict, not General: this arm is reachable from perfectly valid input. The
+            // scorer fails a dimension the baseline does not carry (EwmaDriftScorer: "Dimension
+            // {d} not found in baseline"), so a caller pushing only dimensions absent from the
+            // resolved baseline lands here. That is an expected state of the subsystem — the
+            // baseline needs to cover the pushed dimensions — so HTTP surfaces map it to 409
+            // rather than an opaque 500. Per-dimension causes are logged above, not returned.
+            return Result<DriftScore>.Conflict(
+                "No pushed dimension could be scored against the resolved baseline");
         }
 
         var overallDrift = dimensionScores.Values.Max(d => d.Deviation);
@@ -162,8 +172,11 @@ public sealed class DefaultDriftDetectionService : IDriftDetectionService
         var config = _options.CurrentValue.AI.DriftDetection;
         var now = _timeProvider.GetUtcNow();
 
+        // Conflict, not General: both failure arms below are expected states (subsystem
+        // disabled, not enough history yet), not internal errors — HTTP surfaces map them
+        // to 409 with the message intact instead of an opaque 500.
         if (!config.Enabled)
-            return Result<DriftBaseline>.Fail("Drift detection is disabled");
+            return Result<DriftBaseline>.Conflict("Drift detection is disabled");
 
         var historyQuery = new DriftHistoryQuery
         {
@@ -179,7 +192,7 @@ public sealed class DefaultDriftDetectionService : IDriftDetectionService
 
         var scores = historyResult.Value!;
         if (scores.Count < config.MinSamplesForBaseline)
-            return Result<DriftBaseline>.Fail(
+            return Result<DriftBaseline>.Conflict(
                 $"Insufficient samples: {scores.Count}/{config.MinSamplesForBaseline}");
 
         var dimensionMeans = new Dictionary<DriftDimension, double>();
@@ -221,8 +234,14 @@ public sealed class DefaultDriftDetectionService : IDriftDetectionService
         if (!saveResult.IsSuccess)
             return Result<DriftBaseline>.Fail(saveResult.Errors.ToArray());
 
+        // Pass the recomputed baseline so the audit record carries the means, sigmas, sample
+        // count, and window the recalculation produced. Writing a content-free "{}" here left
+        // the trail unable to answer "what did this recalculation change?" — and because
+        // SaveBaselineAsync overwrites the previous snapshot, that evidence existed nowhere
+        // else. Both recalculation paths (the HTTP surface and LearningsDriftBridge) audit
+        // through here, so both are covered.
         await SafeExecuteAsync("audit",
-            () => RecordAuditAsync(null, DriftAuditRecordType.BaselineUpdated, now, ct));
+            () => RecordAuditAsync(null, DriftAuditRecordType.BaselineUpdated, now, ct, baseline));
 
         DriftMetrics.BaselinesUpdated.Add(1);
         return Result<DriftBaseline>.Success(baseline);
@@ -347,14 +366,32 @@ public sealed class DefaultDriftDetectionService : IDriftDetectionService
         DriftMetrics.EscalationsTriggered.Add(1);
     }
 
-    private async Task RecordAuditAsync(DriftScore? score, DriftAuditRecordType recordType, DateTimeOffset now, CancellationToken ct)
+    /// <summary>
+    /// Appends one lifecycle audit record. Exactly one of <paramref name="score"/> or
+    /// <paramref name="baseline"/> carries the payload, matching the record type: a
+    /// <see cref="DriftAuditRecordType.Detected"/> record serializes the score, a
+    /// <see cref="DriftAuditRecordType.BaselineUpdated"/> record serializes the new baseline
+    /// (as <c>DriftAuditRecord.Payload</c> documents). The correlating id follows the same
+    /// split, so <c>GET /api/drift/audits?eventId=…</c> resolves a baseline update by its new
+    /// <see cref="DriftBaseline.BaselineId"/> instead of matching every empty-guid record.
+    /// </summary>
+    private async Task RecordAuditAsync(
+        DriftScore? score,
+        DriftAuditRecordType recordType,
+        DateTimeOffset now,
+        CancellationToken ct,
+        DriftBaseline? baseline = null)
     {
+        var payload = score is not null
+            ? JsonSerializer.Serialize(score)
+            : baseline is not null ? JsonSerializer.Serialize(baseline) : "{}";
+
         var record = new DriftAuditRecord
         {
             RecordId = Guid.NewGuid(),
-            EventId = score?.ScoreId ?? Guid.Empty,
+            EventId = score?.ScoreId ?? baseline?.BaselineId ?? Guid.Empty,
             RecordType = recordType,
-            Payload = score is not null ? JsonSerializer.Serialize(score) : "{}",
+            Payload = payload,
             RecordedAt = now
         };
 

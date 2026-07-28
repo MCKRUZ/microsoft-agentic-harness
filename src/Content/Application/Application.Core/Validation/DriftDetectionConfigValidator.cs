@@ -39,5 +39,14 @@ public sealed class DriftDetectionConfigValidator : AbstractValidator<DriftDetec
 
         RuleFor(x => x.AuditPath)
             .NotEmpty().WithMessage("AuditPath must be configured.");
+
+        // The drift HTTP surface stamps write-audit records with the caller identity resolved
+        // from this claim type. Restrict it to issuer-asserted identity claims (the same
+        // allowlist as escalation approver identity) so a user-editable claim can never become
+        // the audit attribution source.
+        RuleFor(x => x.CallerIdentityClaimType)
+            .Must(claimType => ApproverClaimTypes.Allowed.Contains(claimType, StringComparer.Ordinal))
+            .WithMessage(
+                $"CallerIdentityClaimType must be one of: {string.Join(", ", ApproverClaimTypes.Allowed)}.");
     }
 }
