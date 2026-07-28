@@ -200,6 +200,106 @@ public sealed class ThreePhasePermissionResolverAutonomyTests
             "the restrictive baseline must win over the permissive one irrespective of order");
     }
 
+    [Theory]
+    [InlineData(false)] // permissive exact-name rule listed first
+    [InlineData(true)]  // restrictive wildcard rule listed first
+    public async Task PluginBaselines_ExactNameAllow_OutranksWildcardAsk(bool wildcardFirst)
+    {
+        // PINS A DELIBERATE BEHAVIOUR CHANGE. Specificity now outranks restrictiveness, which only shows
+        // up when two baselines differ in BOTH — and the equal-specificity case in
+        // AuthoritativeBaseline_MostRestrictiveWins_RegardlessOfOrder cannot see it.
+        //
+        // Two real plugins, both Default-tier, colliding on one tool name:
+        //   Plugin A  allowed-tools: ["deploy_*"]     AutonomyLevel: Restricted  -> ("deploy_*",     Ask)
+        //   Plugin B  allowed-tools: ["deploy_widget"] AutonomyLevel: Autonomous -> ("deploy_widget", Allow)
+        //
+        // Before specificity ranking this resolved to Ask; it now resolves to Allow. An operator's
+        // restrictive wildcard plugin therefore no longer constrains a permissive plugin that names the
+        // tool more precisely, and nothing rejects wildcards in a skill's allowed-tools. That is the price
+        // of letting a provider close its own allowlist with a catch-all, and it is asserted here so the
+        // trade-off is a decision rather than an accident. Operators who need a wildcard restriction to be
+        // unconditional use DeniedTools (bypass-immune Deny), which wins in phase 1b regardless.
+        var wildcardAsk = new ToolPermissionRule("deploy_*", null, PermissionBehaviorType.Ask,
+            PermissionRuleSource.PluginDeclaration, 5, IsAuthoritativeBaseline: true);
+        var exactAllow = new ToolPermissionRule("deploy_widget", null, PermissionBehaviorType.Allow,
+            PermissionRuleSource.PluginDeclaration, 5, IsAuthoritativeBaseline: true);
+
+        var provider = wildcardFirst
+            ? BuildProvider(wildcardAsk, exactAllow)
+            : BuildProvider(exactAllow, wildcardAsk);
+
+        var resolver = CreateResolver(provider.Object);
+
+        var named = await resolver.ResolvePermissionAsync("agent", "deploy_widget");
+        named.Behavior.Should().Be(PermissionBehaviorType.Allow,
+            "the exact name is a decision about that tool; the wildcard is only a default");
+
+        // The wildcard still governs every name the exact rule does not cover.
+        var other = await resolver.ResolvePermissionAsync("agent", "deploy_database");
+        other.Behavior.Should().Be(PermissionBehaviorType.Ask,
+            "the restrictive wildcard still governs names no more-specific baseline claims");
+    }
+
+    [Theory]
+    [InlineData(false)] // boundary rules listed first
+    [InlineData(true)]  // plugin rule listed first
+    public async Task GrantBoundaryCatchAll_OutranksAPeerExactNameBaselineAllow(bool pluginFirst)
+    {
+        // The arbitration unit test behind the envelope-confinement hole. A Default-tier baseline naming a
+        // tool EXACTLY is more specific than a GrantBoundary catch-all "*", so specificity alone hands it
+        // the win. The tier is what stops that: a boundary caps the outcome regardless of how specifically
+        // a peer names the tool.
+        var boundaryGrant = new ToolPermissionRule("file_system", null, PermissionBehaviorType.Allow,
+            PermissionRuleSource.CapabilityEnvelope, 5,
+            IsAuthoritativeBaseline: true, BaselineTier: PermissionBaselineTier.GrantBoundary);
+        var boundaryClose = new ToolPermissionRule("*", null, PermissionBehaviorType.Deny,
+            PermissionRuleSource.CapabilityEnvelope, int.MaxValue,
+            IsAuthoritativeBaseline: true, BaselineTier: PermissionBaselineTier.GrantBoundary);
+        var pluginAllow = new ToolPermissionRule("k8sgpt_analyze", null, PermissionBehaviorType.Allow,
+            PermissionRuleSource.PluginDeclaration, 5, IsAuthoritativeBaseline: true);
+
+        var provider = pluginFirst
+            ? BuildProvider(pluginAllow, boundaryGrant, boundaryClose)
+            : BuildProvider(boundaryGrant, boundaryClose, pluginAllow);
+
+        var resolver = CreateResolver(provider.Object);
+
+        var outside = await resolver.ResolvePermissionAsync("agent", "k8sgpt_analyze");
+        outside.Behavior.Should().Be(PermissionBehaviorType.Deny,
+            "no Default-tier baseline may resolve past a grant boundary, however specific its pattern");
+        outside.MatchedRule!.Source.Should().Be(PermissionRuleSource.CapabilityEnvelope);
+
+        var inside = await resolver.ResolvePermissionAsync("agent", "file_system");
+        inside.Behavior.Should().Be(PermissionBehaviorType.Allow,
+            "boundary rules still arbitrate among themselves by specificity, so the grant survives");
+    }
+
+    [Fact]
+    public async Task GrantBoundaryAllow_IsStillTightenedByAStricterPeerBaseline()
+    {
+        // A boundary is a ceiling on authority, not a floor. A Default-tier baseline that is STRICTER than
+        // the boundary must still win — otherwise marking something a boundary would silently override
+        // every restriction other providers place inside it, and the envelope's documented "can only
+        // tighten, never loosen" ceiling would be false.
+        var provider = BuildProvider(
+            new ToolPermissionRule("deploy_widget", null, PermissionBehaviorType.Allow,
+                PermissionRuleSource.CapabilityEnvelope, 5,
+                IsAuthoritativeBaseline: true, BaselineTier: PermissionBaselineTier.GrantBoundary),
+            new ToolPermissionRule("*", null, PermissionBehaviorType.Deny,
+                PermissionRuleSource.CapabilityEnvelope, int.MaxValue,
+                IsAuthoritativeBaseline: true, BaselineTier: PermissionBaselineTier.GrantBoundary),
+            new ToolPermissionRule("deploy_widget", null, PermissionBehaviorType.Ask,
+                PermissionRuleSource.PluginDeclaration, 5, IsAuthoritativeBaseline: true));
+
+        var resolver = CreateResolver(provider.Object);
+
+        var decision = await resolver.ResolvePermissionAsync("agent", "deploy_widget");
+
+        decision.Behavior.Should().Be(PermissionBehaviorType.Ask);
+        decision.MatchedRule!.Source.Should().Be(PermissionRuleSource.PluginDeclaration,
+            "the stricter peer governs, and the decision stays attributable to it");
+    }
+
     [Fact]
     public async Task CatchAllBaselineDeny_LosesToSpecificBaselineGrant_ButCatchesEverythingElse()
     {

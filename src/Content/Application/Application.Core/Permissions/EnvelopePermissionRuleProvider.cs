@@ -55,6 +55,20 @@ namespace Application.Core.Permissions;
 ///   </item>
 /// </list>
 /// <para>
+/// <strong>The envelope is a grant boundary, not a default — no other provider may widen it.</strong>
+/// Both baseline kinds above carry <see cref="PermissionBaselineTier.GrantBoundary"/>, and the resolver
+/// caps phase 1.5 at whatever the boundary permits for the tool in question. Specificity alone is not
+/// sufficient here: the envelope is not the only provider emitting authoritative baselines, and a peer's
+/// baseline naming a tool exactly is <em>more</em> specific than the closing <c>*</c>. A host loading a
+/// plugin that declares <c>AutonomyLevel: Autonomous</c> gets an exact-name baseline Allow for each of
+/// that plugin's tools; without the boundary tier that Allow outranked the closing Deny and the bundle
+/// could invoke a tool the caller's envelope never granted — the confinement invariant would have held
+/// only for hosts that load no autonomy-declaring plugins. Tightening from outside still works: a
+/// stricter Default-tier baseline (a plugin marked <c>Restricted</c>, say) wins over a granted tool's
+/// Allow, because the ceiling on <see cref="CapabilityEnvelope.AutonomyCeiling"/> caps authority without
+/// establishing a floor.
+/// </para>
+/// <para>
 /// <strong>Why the closing Deny is load-bearing.</strong> Without it an ungranted name matched no
 /// envelope rule at all, so resolution continued into the tier phase. A host configured with
 /// <c>DefaultBehavior: Allow</c> and an <c>Autonomous</c> default tier — the shipped configuration of
@@ -143,7 +157,8 @@ public sealed class EnvelopePermissionRuleProvider : IPermissionRuleProvider
                 ceilingBehavior,
                 PermissionRuleSource.CapabilityEnvelope,
                 Priority: BaselinePriority,
-                IsAuthoritativeBaseline: true));
+                IsAuthoritativeBaseline: true,
+                BaselineTier: PermissionBaselineTier.GrantBoundary));
         }
 
         // 3. Closing Deny — everything the envelope did not grant. Emitted last and least specific so the
@@ -157,7 +172,8 @@ public sealed class EnvelopePermissionRuleProvider : IPermissionRuleProvider
             PermissionBehaviorType.Deny,
             PermissionRuleSource.CapabilityEnvelope,
             Priority: int.MaxValue,
-            IsAuthoritativeBaseline: true));
+            IsAuthoritativeBaseline: true,
+            BaselineTier: PermissionBaselineTier.GrantBoundary));
 
         return Task.FromResult<IReadOnlyList<ToolPermissionRule>>(rules);
     }

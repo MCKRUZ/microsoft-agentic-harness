@@ -10,9 +10,11 @@ using Domain.AI.Bundles;
 using Domain.AI.Governance;
 using Domain.AI.Permissions;
 using Domain.AI.Planner;
+using Domain.AI.Skills;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
 using Domain.Common.Config.AI.Permissions;
+using Domain.Common.Config.AI.Plugins;
 using FluentAssertions;
 using Infrastructure.AI.Permissions;
 using Microsoft.Extensions.DependencyInjection;
@@ -97,8 +99,21 @@ public sealed class EnvelopeEnforcementIntegrationTests
     /// <c>Application.Core.DependencyInjection</c> and
     /// <c>Infrastructure.AI.DependencyInjection.Governance</c> register them.
     /// </summary>
+    /// <remarks>
+    /// <strong>The plugin registry is a real input, not scenery.</strong> Most cases here run with no
+    /// plugins loaded, which is the shipped in-repo configuration — but "no plugins" is precisely the
+    /// state in which the plugin provider contributes nothing and cannot contradict the envelope, so a
+    /// suite that only ever passes an empty registry proves less about confinement than it appears to.
+    /// <see cref="AutonomousPluginTool_OutsideTheEnvelope_IsDenied"/> supplies a loaded plugin so the
+    /// second authoritative-baseline emitter is actually exercised.
+    /// </remarks>
     /// <param name="permissions">The permission configuration the host is running under.</param>
-    private ThreePhasePermissionResolver Resolver(PermissionsConfig permissions)
+    /// <param name="plugins">Loaded plugins the plugin provider should see. Empty unless a case needs one.</param>
+    /// <param name="skills">Skill metadata the plugin provider reads tool names from.</param>
+    private ThreePhasePermissionResolver Resolver(
+        PermissionsConfig permissions,
+        IReadOnlyList<LoadedPlugin>? plugins = null,
+        IReadOnlyList<SkillDefinition>? skills = null)
     {
         var appConfig = new AppConfig { AI = new AIConfig { Permissions = permissions } };
         var options = Mock.Of<IOptionsMonitor<AppConfig>>(o => o.CurrentValue == appConfig);
@@ -109,10 +124,10 @@ public sealed class EnvelopeEnforcementIntegrationTests
         tierResolver.Setup(r => r.Resolve(It.IsAny<SubagentType>())).Returns(AutonomyLevel.Autonomous);
 
         var pluginRegistry = new Mock<IPluginRegistry>();
-        pluginRegistry.Setup(r => r.GetLoadedPlugins()).Returns([]);
+        pluginRegistry.Setup(r => r.GetLoadedPlugins()).Returns(plugins ?? []);
 
         var skillRegistry = new Mock<ISkillMetadataRegistry>();
-        skillRegistry.Setup(r => r.GetAll()).Returns([]);
+        skillRegistry.Setup(r => r.GetAll()).Returns(skills ?? []);
 
         IPermissionRuleProvider[] providers =
         [
@@ -263,9 +278,117 @@ public sealed class EnvelopeEnforcementIntegrationTests
         decision.Behavior.Should().Be(PermissionBehaviorType.Ask);
     }
 
+    [Theory]
+    [MemberData(nameof(ShippedHostConfigurations))]
+    public async Task AutonomousPluginTool_OutsideTheEnvelope_IsDenied(bool useTierPolicies)
+    {
+        // THE SECOND-EMITTER REGRESSION TEST. PluginPermissionRuleProvider is the only other authoritative
+        // baseline emitter, and for a plugin declaring AutonomyLevel: Autonomous it emits an EXACT-NAME
+        // baseline Allow per declared tool. The envelope's closing rule is "*", which ranks lowest on
+        // specificity — so before the grant-boundary tier existed the plugin's Allow won phase 1.5
+        // outright and the bundle could invoke a tool the caller was never granted.
+        //
+        // The bundle's overlay declares only file_system, so EnumerateDeclaredTools never sees
+        // k8sgpt_analyze and phase 1b emits no bypass-immune Deny for it. The resolver is the sole
+        // enforcement point for tool names — ToolInvocationGovernor has no independent GrantsTool check —
+        // so if this resolves to anything but Deny, the tool runs.
+        var plugin = AutonomousPlugin("k8s-ops");
+        var skill = PluginSkill("k8s-ops", "k8sgpt_analyze");
+
+        var overlay = Overlay("file_system");
+        using (EphemeralAgentOverlayAccessor.Begin(overlay))
+        using (CapabilityEnvelopeAccessor.Begin(Envelope(["file_system"], AutonomyLevel.Autonomous)))
+        {
+            var resolver = Resolver(
+                useTierPolicies ? TierPolicyConfig() : FlatConfig(), [plugin], [skill]);
+
+            var decision = await resolver.ResolvePermissionAsync(AgentId, "k8sgpt_analyze");
+
+            decision.Behavior.Should().Be(PermissionBehaviorType.Deny,
+                "a plugin's own autonomy declaration is a default within a grant, not a grant — it must " +
+                "never widen the envelope to a tool the host did not authorise for this caller");
+            decision.Source.Should().Be(PermissionRuleSource.CapabilityEnvelope,
+                "the denial must be attributable to the envelope's closing rule");
+        }
+    }
+
+    [Fact]
+    public async Task AutonomousPluginTool_InsideTheEnvelope_StillResolvesToAllow()
+    {
+        // The confinement must not degrade into "plugins are ignored". A plugin tool the envelope DOES
+        // grant still auto-approves: the boundary caps authority, it does not veto everything outside its
+        // own rule set. Without this, a passing Deny above would be indistinguishable from the boundary
+        // simply swallowing all plugin baselines.
+        var plugin = AutonomousPlugin("k8s-ops");
+        var skill = PluginSkill("k8s-ops", "k8sgpt_analyze");
+
+        var overlay = Overlay("k8sgpt_analyze");
+        using (EphemeralAgentOverlayAccessor.Begin(overlay))
+        using (CapabilityEnvelopeAccessor.Begin(Envelope(["k8sgpt_analyze"], AutonomyLevel.Autonomous)))
+        {
+            var resolver = Resolver(FlatConfig(), [plugin], [skill]);
+
+            var decision = await resolver.ResolvePermissionAsync(AgentId, "k8sgpt_analyze");
+
+            decision.Behavior.Should().Be(PermissionBehaviorType.Allow);
+        }
+    }
+
+    [Fact]
+    public async Task RestrictivePluginBaseline_StillTightensAGrantedTool()
+    {
+        // The boundary is a CEILING, not a floor: it stops other providers widening past it but must not
+        // stop them tightening within it. A plugin marked Restricted (baseline Ask) on a tool the envelope
+        // granted with an Autonomous ceiling still forces approval. If the tier had been arbitrated as a
+        // simple "boundary wins outright", this would wrongly resolve to Allow and the envelope's
+        // documented "can only tighten, never loosen" ceiling semantics would be false.
+        var plugin = Plugin("k8s-ops", autonomyLevel: "Restricted");
+        var skill = PluginSkill("k8s-ops", "k8sgpt_analyze");
+
+        var overlay = Overlay("k8sgpt_analyze");
+        using (EphemeralAgentOverlayAccessor.Begin(overlay))
+        using (CapabilityEnvelopeAccessor.Begin(Envelope(["k8sgpt_analyze"], AutonomyLevel.Autonomous)))
+        {
+            var resolver = Resolver(FlatConfig(), [plugin], [skill]);
+
+            var decision = await resolver.ResolvePermissionAsync(AgentId, "k8sgpt_analyze");
+
+            decision.Behavior.Should().Be(PermissionBehaviorType.Ask,
+                "a stricter peer baseline tightens within the envelope; only widening is refused");
+        }
+    }
+
     private async Task<PermissionDecision> Resolve(bool useTierPolicies, string toolName)
         => await Resolver(useTierPolicies ? TierPolicyConfig() : FlatConfig())
             .ResolvePermissionAsync(AgentId, toolName);
+
+    private static LoadedPlugin AutonomousPlugin(string name) => Plugin(name, "Autonomous");
+
+    /// <summary>
+    /// A loaded plugin whose declaration sets <paramref name="autonomyLevel"/> — the manifest shape a
+    /// consumer host writes, which no in-repo manifest currently uses.
+    /// </summary>
+    private static LoadedPlugin Plugin(string name, string autonomyLevel) => new(
+        Name: name,
+        Version: "1.0.0",
+        LocalPath: $"/plugins/{name}",
+        Manifest: new PluginManifest { Name = name, Version = "1.0.0" },
+        Status: PluginLoadStatus.Loaded,
+        SkillPaths: [],
+        McpServerNames: [],
+        Declaration: new PluginDeclaration { Name = name, AutonomyLevel = autonomyLevel });
+
+    /// <summary>
+    /// A skill attributed to <paramref name="pluginName"/> declaring <paramref name="toolName"/>. The
+    /// plugin provider reads these to scope its autonomy baseline to real tool names.
+    /// </summary>
+    private static SkillDefinition PluginSkill(string pluginName, string toolName) => new()
+    {
+        Id = $"{pluginName}.skill",
+        Name = $"{pluginName} skill",
+        PluginSource = pluginName,
+        AllowedTools = [toolName]
+    };
 
     private static EphemeralAgentOverlay Overlay(params string[] declaredTools) => new()
     {

@@ -26,6 +26,19 @@ namespace Domain.AI.Permissions;
 /// falls through to the Deny. Use a plain (non-baseline) Deny when the intent is an unconditional
 /// prohibition rather than a fallback.
 /// </para>
+/// <para>
+/// Specificity arbitration only holds <em>within</em> a <see cref="BaselineTier"/>. A provider closing an
+/// allowlist that other providers must not be able to widen has to say so with
+/// <see cref="PermissionBaselineTier.GrantBoundary"/>; otherwise a peer provider's exact-name baseline
+/// outranks the catch-all and reopens it.
+/// </para>
+/// </param>
+/// <param name="BaselineTier">
+/// How authoritative this rule is relative to the baselines of <em>other</em> providers. Meaningful only
+/// when <paramref name="IsAuthoritativeBaseline"/> is true. Defaults to
+/// <see cref="PermissionBaselineTier.Default"/>: an ordinary baseline that peers may outrank on
+/// specificity. <see cref="PermissionBaselineTier.GrantBoundary"/> marks a rule as the edge of an
+/// authorisation grant, which no Default-tier baseline may widen past.
 /// </param>
 public sealed record ToolPermissionRule(
     string ToolPattern,
@@ -34,4 +47,5 @@ public sealed record ToolPermissionRule(
     PermissionRuleSource Source,
     int Priority,
     bool IsBypassImmune = false,
-    bool IsAuthoritativeBaseline = false);
+    bool IsAuthoritativeBaseline = false,
+    PermissionBaselineTier BaselineTier = PermissionBaselineTier.Default);

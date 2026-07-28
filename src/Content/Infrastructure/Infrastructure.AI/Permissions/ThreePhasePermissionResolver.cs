@@ -17,7 +17,7 @@ namespace Infrastructure.AI.Permissions;
 /// <list type="number">
 ///   <item><description><strong>Phase 0 (Rate Limit)</strong>: Check denial tracker for auto-deny before any rule evaluation.</description></item>
 ///   <item><description><strong>Phase 1 (Deny/Safety)</strong>: Check safety gates first, then find the first matching Deny rule.</description></item>
-///   <item><description><strong>Phase 1.5 (Authoritative baseline)</strong>: Arbitrate the rules flagged <see cref="ToolPermissionRule.IsAuthoritativeBaseline"/> by specificity, then restrictiveness.</description></item>
+///   <item><description><strong>Phase 1.5 (Authoritative baseline)</strong>: Arbitrate the rules flagged <see cref="ToolPermissionRule.IsAuthoritativeBaseline"/> by specificity, then restrictiveness, capped by any grant boundary among them.</description></item>
 ///   <item><description><strong>Phase 2 (Ask)</strong>: Find the first matching Ask rule. If bypass-immune, return Ask regardless.</description></item>
 ///   <item><description><strong>Phase 3 (Allow)</strong>: Find the first matching Allow rule. If no match, default to Ask.</description></item>
 /// </list>
@@ -28,6 +28,13 @@ namespace Infrastructure.AI.Permissions;
 /// grants alongside a catch-all baseline Deny, and the specificity arbitration in phase 1.5 gives the
 /// grants precedence while any name they do not cover falls to the Deny. Were baselines also visible to
 /// the phase-ordered scans, the catch-all Deny would match in phase 1b and deny the granted names too.
+/// </para>
+/// <para>
+/// Specificity alone is not enough to close an allowlist against <em>other</em> providers, because a peer
+/// provider's exact-name baseline is more specific than the catch-all and would outrank it. A provider
+/// that is expressing an authorisation boundary rather than a default therefore declares
+/// <see cref="PermissionBaselineTier.GrantBoundary"/> on its rules, and phase 1.5 caps the outcome at
+/// what that boundary permits. See <see cref="FindFirstAuthoritativeBaseline"/>.
 /// </para>
 /// </remarks>
 public sealed class ThreePhasePermissionResolver : IToolPermissionService
@@ -242,7 +249,25 @@ public sealed class ThreePhasePermissionResolver : IToolPermissionService
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Arbitration is <b>specificity first, restrictiveness second</b>:
+    /// <b>Grant boundaries cap the result.</b> Baselines are arbitrated twice: once across every matching
+    /// baseline, and once across only those declaring
+    /// <see cref="PermissionBaselineTier.GrantBoundary"/>. The more restrictive of the two governs. A
+    /// boundary is the outer edge of what a caller was authorised to do at all — a capability envelope's
+    /// grant for one bundle run — so no ordinary baseline from any other provider may resolve past it,
+    /// however specifically it names the tool. Tightening still works in both directions: a
+    /// <see cref="PermissionBaselineTier.Default"/> baseline that is <em>stricter</em> than the boundary
+    /// wins, because the boundary is a ceiling on authority and not a floor.
+    /// </para>
+    /// <para>
+    /// This is why the tier lives on the rule rather than being inferred from
+    /// <see cref="ToolPermissionRule.Source"/>. Without it, a plugin declaring
+    /// <c>AutonomyLevel: Autonomous</c> emits an exact-name baseline Allow which — being more specific
+    /// than the envelope's catch-all <c>"*"</c> Deny — silently widened the envelope to a tool the host
+    /// never granted. Ranking on a declared property keeps the resolver from having to know which
+    /// providers are privileged, and keeps that knowledge with the provider that is making the claim.
+    /// </para>
+    /// <para>
+    /// Within a single tier, arbitration is <b>specificity first, restrictiveness second</b>:
     /// </para>
     /// <list type="number">
     ///   <item><description>
@@ -276,6 +301,7 @@ public sealed class ThreePhasePermissionResolver : IToolPermissionService
         string? operation)
     {
         ToolPermissionRule? best = null;
+        ToolPermissionRule? boundary = null;
 
         foreach (var rule in rules)
         {
@@ -287,9 +313,38 @@ public sealed class ThreePhasePermissionResolver : IToolPermissionService
 
             if (best is null || Outranks(rule, best))
                 best = rule;
+
+            if (rule.BaselineTier != PermissionBaselineTier.GrantBoundary)
+                continue;
+
+            if (boundary is null || Outranks(rule, boundary))
+                boundary = rule;
         }
 
-        return best;
+        // No boundary in play (every deployment without a capability envelope) leaves `best` untouched,
+        // so this is a pure no-op off the bundle path.
+        return MoreRestrictive(best, boundary);
+    }
+
+    /// <summary>
+    /// The stricter of two candidate rules by <see cref="RestrictivenessRank"/>, treating a null as
+    /// "no opinion". Ties keep <paramref name="governing"/> so the normally-arbitrated winner — the one
+    /// carrying the specificity decision and its rule attribution — survives whenever the boundary agrees
+    /// with it.
+    /// </summary>
+    private static ToolPermissionRule? MoreRestrictive(
+        ToolPermissionRule? governing,
+        ToolPermissionRule? boundary)
+    {
+        if (governing is null)
+            return boundary;
+
+        if (boundary is null)
+            return governing;
+
+        return RestrictivenessRank(boundary.Behavior) < RestrictivenessRank(governing.Behavior)
+            ? boundary
+            : governing;
     }
 
     /// <summary>
@@ -297,6 +352,14 @@ public sealed class ThreePhasePermissionResolver : IToolPermissionService
     /// a strictly more specific pattern wins; failing that a strictly more restrictive behavior wins
     /// (Deny &gt; Ask &gt; Allow); failing that the lower (earlier) priority wins.
     /// </summary>
+    /// <remarks>
+    /// Specificity is ranked on <see cref="ToolPermissionRule.ToolPattern"/> only. An operation-scoped
+    /// rule therefore ties with an operation-agnostic one of the same tool pattern and is decided by
+    /// restrictiveness instead — the safe direction, and unreachable today because both baseline emitters
+    /// pass a null operation. A future provider emitting operation-scoped baselines must not assume its
+    /// narrower operation pattern confers precedence; give it a distinct tool pattern or extend the
+    /// ranking here deliberately.
+    /// </remarks>
     private bool Outranks(ToolPermissionRule candidate, ToolPermissionRule incumbent)
     {
         var candidateSpecificity = _patternMatcher.Specificity(candidate.ToolPattern);
