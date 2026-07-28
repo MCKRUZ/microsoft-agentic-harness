@@ -7,6 +7,7 @@ using Application.Core.CQRS.Agents.RunConversation;
 using Domain.AI.Governance;
 using Domain.AI.Planner;
 using MediatR;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
 namespace Infrastructure.AI.Planner.StepExecutors;
@@ -25,20 +26,41 @@ namespace Infrastructure.AI.Planner.StepExecutors;
 /// unmetered path defeats the point of confining the run.
 /// </para>
 /// <para>
-/// <strong>Budget.</strong> <c>RunConversationCommandHandler</c> already enforces the lifetime
-/// conversation budget — but it keys on <see cref="RunConversationCommand.ConversationId"/>, which
-/// this executor previously left to its per-command <c>Guid.NewGuid()</c> default. Every step
-/// therefore started a brand-new budget that could never accumulate, so a plan of N LlmCall steps
-/// spent N full budgets. The ambient <see cref="IAgentExecutionContext.ConversationId"/> — set once
-/// per run by <c>PlanRunExecutor</c> — is used as the key instead, so all inference in one plan run
-/// shares one budget, and the step refuses to start another conversation once it is exhausted. With
-/// no ambient conversation (direct in-process callers) the per-step fallback preserves today's
-/// behavior.
+/// <strong>Two identities, deliberately separate — see <see cref="PlanRunKeys"/>.</strong> Each step
+/// gets its <em>own</em> conversation id. A conversation id is not just a budget key: it is the sole
+/// key of <c>IAgentConversationCache</c>, which returns a cached agent on a hit and ignores the
+/// requested skills and options, so sharing one id across steps would make a step run under another
+/// step's agent (with <c>MaxParallelSteps</c> defaulting to 10, concurrent steps are the normal case)
+/// and would let the first step to finish evict the cache and clear skill tracking for steps still
+/// running. Cross-step spend is instead accumulated against a separate run-level budget key.
+/// </para>
+/// <para>
+/// <strong>Each step's conversation runs in its own DI scope.</strong> The conversation is dispatched
+/// through an <see cref="ISender"/> resolved from a fresh scope rather than the plan's scope, because
+/// <c>IAgentExecutionContext</c> is scoped and single-binding: <c>AgentContextPropagationBehavior</c>
+/// calls <c>Initialize</c> for the nested agent-turn request, whose agent id is the step's
+/// <em>deployment key</em> and whose conversation id is this step's. The plan's scope is already bound
+/// by <c>PlanRunExecutor</c> to the caller's identity and the run's conversation, and re-initializing
+/// one context with a different agent or conversation throws by design (it is normally a scope leak).
+/// Dispatching in a per-step scope gives every turn a clean context to bind, which is also what makes
+/// the per-step cache and skill-tracking isolation real rather than nominal. This mirrors
+/// <c>BundleRunExecutor</c>, which resolves its mediator from its own scope for the same reason. The
+/// capability envelope is ambient (<c>AsyncLocal</c>) and flows into the child scope unchanged, so
+/// confinement is unaffected.
+/// </para>
+/// <para>
+/// <strong>Budget ownership.</strong> <c>RunConversationCommandHandler</c> owns its conversation's
+/// budget entry and <c>Release</c>s it in a <c>finally</c>, so an entry under any conversation id is
+/// erased when that conversation ends and can never carry spend to the next step. Rather than fight
+/// that ownership, the plan run accumulates <see cref="ConversationResult.TotalTokens"/> against its
+/// own <see cref="PlanRunKeys.RunBudgetKey"/> after each step and gates the next step on it;
+/// <c>PlanRunExecutor</c> releases that key when the run ends. With no run scope (an ad-hoc direct
+/// in-process call) there is no run-level budget and behavior is exactly as before.
 /// </para>
 /// </remarks>
 public sealed class LlmCallStepExecutor : IPlanStepExecutor
 {
-    private readonly ISender _sender;
+    private readonly IServiceScopeFactory _scopeFactory;
     private readonly IPlanProgressNotifier _notifier;
     private readonly IToolInvocationGovernor _toolInvocationGovernor;
     private readonly IConversationBudgetTracker _conversationBudget;
@@ -47,7 +69,7 @@ public sealed class LlmCallStepExecutor : IPlanStepExecutor
     private readonly ILogger<LlmCallStepExecutor> _logger;
 
     /// <summary>Initializes a new instance of the <see cref="LlmCallStepExecutor"/> class.</summary>
-    /// <param name="sender">Dispatches the conversation command.</param>
+    /// <param name="scopeFactory">Creates the per-step scope the conversation is dispatched in.</param>
     /// <param name="notifier">Plan progress notifier.</param>
     /// <param name="toolInvocationGovernor">Authorizes inference against the ambient capability envelope.</param>
     /// <param name="conversationBudget">Lifetime token budget shared across the plan run's inference.</param>
@@ -55,7 +77,7 @@ public sealed class LlmCallStepExecutor : IPlanStepExecutor
     /// <param name="executionContext">Current plan execution context.</param>
     /// <param name="logger">Structured logger.</param>
     public LlmCallStepExecutor(
-        ISender sender,
+        IServiceScopeFactory scopeFactory,
         IPlanProgressNotifier notifier,
         IToolInvocationGovernor toolInvocationGovernor,
         IConversationBudgetTracker conversationBudget,
@@ -63,7 +85,7 @@ public sealed class LlmCallStepExecutor : IPlanStepExecutor
         PlanExecutionContext executionContext,
         ILogger<LlmCallStepExecutor> logger)
     {
-        _sender = sender;
+        _scopeFactory = scopeFactory;
         _notifier = notifier;
         _toolInvocationGovernor = toolInvocationGovernor;
         _conversationBudget = conversationBudget;
@@ -92,12 +114,14 @@ public sealed class LlmCallStepExecutor : IPlanStepExecutor
         if (denial is not null)
             return denial;
 
-        var conversationId = ResolveConversationId();
-        if (_conversationBudget.GetStatus(conversationId).IsExhausted)
+        var runScope = ResolveRunScope();
+        var runBudgetKey = runScope is null ? null : PlanRunKeys.RunBudgetKey(runScope);
+
+        if (runBudgetKey is not null && _conversationBudget.GetStatus(runBudgetKey).IsExhausted)
         {
             _logger.LogWarning(
-                "LlmCall step {Step} refused: conversation {ConversationId} has exhausted its lifetime token budget",
-                step.Name, conversationId);
+                "LlmCall step {Step} refused: plan run {RunScope} has exhausted its lifetime token budget",
+                step.Name, runScope);
             return new StepExecutionResult
             {
                 Status = StepExecutionStatus.Failed,
@@ -115,7 +139,11 @@ public sealed class LlmCallStepExecutor : IPlanStepExecutor
             SystemPrompt = config.SystemPrompt,
             UserMessages = BuildUserMessages(config, upstreamOutputs),
             MaxTurns = 1,
-            ConversationId = conversationId,
+            // Per-step, never shared: this id keys the agent cache, skill-completion tracking, and the
+            // observability session. See PlanRunKeys.
+            ConversationId = runScope is null
+                ? Guid.NewGuid().ToString()
+                : PlanRunKeys.StepConversationId(runScope, step.Id),
             OnProgress = async progress =>
             {
                 _logger.LogDebug("LLM turn {Turn} for step {Step}: {Status}",
@@ -124,8 +152,22 @@ public sealed class LlmCallStepExecutor : IPlanStepExecutor
             }
         };
 
-        var result = await _sender.Send(command, ct);
+        // Per-step scope: the turn binds its own IAgentExecutionContext (deployment key + this step's
+        // conversation) without colliding with the run identity the plan's scope already holds.
+        ConversationResult result;
+        await using (var stepScope = _scopeFactory.CreateAsyncScope())
+        {
+            var sender = stepScope.ServiceProvider.GetRequiredService<ISender>();
+            result = await sender.Send(command, ct);
+        }
+
         sw.Stop();
+
+        // Fold this step's spend into the run-level budget the plan owns. The handler already
+        // released its own per-conversation entry by now, which is exactly why this is accounted
+        // separately rather than read back from that entry.
+        if (runBudgetKey is not null && result.TotalTokens > 0)
+            _conversationBudget.RecordUsage(runBudgetKey, result.TotalTokens);
 
         if (result.Success)
         {
@@ -166,17 +208,30 @@ public sealed class LlmCallStepExecutor : IPlanStepExecutor
     }
 
     /// <summary>
-    /// The budget key for this step's inference: the run's ambient conversation id when one was armed,
-    /// else the current plan id, else a fresh id. The first case is what makes the budget span the whole
-    /// plan run rather than resetting per step.
+    /// Identity of the enclosing run, used to derive both the per-step conversation id and the
+    /// run-level budget key — or null when this call belongs to no armed run, in which case there is
+    /// no run-level budget and the step gets a throwaway conversation id.
     /// </summary>
-    private string ResolveConversationId()
-    {
-        if (!string.IsNullOrEmpty(_agentContext.ConversationId))
-            return _agentContext.ConversationId;
-
-        return _executionContext.CurrentPlanId?.Value.ToString() ?? Guid.NewGuid().ToString();
-    }
+    /// <remarks>
+    /// <para>
+    /// <strong>Only an explicitly armed run scope counts.</strong> The scope is read solely from the
+    /// ambient <see cref="IAgentExecutionContext.ConversationId"/>, which only <c>PlanRunExecutor</c>
+    /// sets. It deliberately does <em>not</em> fall back to the current plan id: that fallback would
+    /// create a <c>planrun:</c> budget entry on the ungoverned in-process path, where nothing exists to
+    /// release it. Because the budget tracker is a singleton and an exhausted budget is a
+    /// <em>terminal, non-retryable</em> policy denial, an orphaned entry would make a plan id
+    /// permanently un-runnable in-process after one exhaustion — bounded eviction caps the memory, not
+    /// the semantics. Keying only on the armed scope makes creation and release symmetric: the one
+    /// component that establishes a run scope is the one that releases its key.
+    /// </para>
+    /// <para>
+    /// Sub-plans inherit correctly: <c>SubPlanStepExecutor</c> re-stamps the parent's conversation onto
+    /// the child scope, so an enveloped run shares one budget across its whole sub-plan tree, released
+    /// once when the run ends.
+    /// </para>
+    /// </remarks>
+    private string? ResolveRunScope() =>
+        string.IsNullOrEmpty(_agentContext.ConversationId) ? null : _agentContext.ConversationId;
 
     private static IReadOnlyList<string> BuildUserMessages(
         LlmCallConfig config,

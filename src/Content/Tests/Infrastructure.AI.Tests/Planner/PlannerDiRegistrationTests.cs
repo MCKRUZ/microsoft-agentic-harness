@@ -77,6 +77,22 @@ public sealed class PlannerDiRegistrationTests : IDisposable
     }
 
     [Fact]
+    public void DependencyInjection_NoToolIsRegisteredUnderAReservedPlanCapabilityName()
+    {
+        // PlanCapabilities names are matched out of the same AllowedTools string space as keyed ITool
+        // registrations, so a tool registered under one of these keys would silently merge the two
+        // grants. Nothing in the container prevents it (registration order is not guaranteed), so the
+        // harness's own registrations are asserted here.
+        var offenders = _provider.GetServices<Application.AI.Common.Interfaces.Tools.ITool>()
+            .Select(t => t.Name)
+            .Where(PlanCapabilities.IsReserved)
+            .ToList();
+
+        offenders.Should().BeEmpty(
+            "a tool registered under a reserved plan-capability name would silently widen that grant");
+    }
+
+    [Fact]
     public void DependencyInjection_AllSandboxServices_Resolvable()
     {
         using var scope = _provider.CreateScope();

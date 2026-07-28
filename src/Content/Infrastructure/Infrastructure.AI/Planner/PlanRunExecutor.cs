@@ -1,3 +1,4 @@
+using Application.AI.Common.Interfaces.AI;
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Planner;
 using Application.AI.Common.Services.Governance;
@@ -34,17 +35,24 @@ namespace Infrastructure.AI.Planner;
 public sealed class PlanRunExecutor : IPlanRunExecutor
 {
     private readonly IServiceScopeFactory _scopeFactory;
+    private readonly IConversationBudgetTracker _conversationBudget;
     private readonly ILogger<PlanRunExecutor> _logger;
 
     /// <summary>Initializes a new <see cref="PlanRunExecutor"/>.</summary>
     /// <param name="scopeFactory">Creates the per-run DI scope the identity and executor resolve from.</param>
+    /// <param name="conversationBudget">Holds the run-level token budget this executor owns and releases.</param>
     /// <param name="logger">Structured logger for run auditing.</param>
-    public PlanRunExecutor(IServiceScopeFactory scopeFactory, ILogger<PlanRunExecutor> logger)
+    public PlanRunExecutor(
+        IServiceScopeFactory scopeFactory,
+        IConversationBudgetTracker conversationBudget,
+        ILogger<PlanRunExecutor> logger)
     {
         ArgumentNullException.ThrowIfNull(scopeFactory);
+        ArgumentNullException.ThrowIfNull(conversationBudget);
         ArgumentNullException.ThrowIfNull(logger);
 
         _scopeFactory = scopeFactory;
+        _conversationBudget = conversationBudget;
         _logger = logger;
     }
 
@@ -65,6 +73,18 @@ public sealed class PlanRunExecutor : IPlanRunExecutor
             return Result<PlanExecutionSummary>.Fail("plan_run.agent_identity_required");
         }
 
+        // Null means "derive the run scope from the plan id". A supplied value must be well formed:
+        // blank would yield a blank run scope, which downstream IsNullOrEmpty checks read as "no run
+        // scope", silently disabling the run-level budget gate.
+        if (request.ConversationId is not null
+            && !PlanRunRequest.IsWellFormedAgentId(request.ConversationId))
+        {
+            _logger.LogWarning(
+                "Plan run {PlanId} rejected: conversation id is malformed (length {Length})",
+                request.PlanId, request.ConversationId.Length);
+            return Result<PlanExecutionSummary>.Fail("plan_run.conversation_id_invalid");
+        }
+
         if (!PlanRunRequest.IsWellFormedAgentId(request.AgentId))
         {
             // The id is the permission-resolution key and the audit subject. The rejected value is
@@ -80,11 +100,9 @@ public sealed class PlanRunExecutor : IPlanRunExecutor
         // Identity first, envelope second — the governor fails closed on identity-less enveloped
         // tool calls, so the scoped execution context must carry the caller's identity before any
         // step can observe the envelope.
+        var runScope = request.ConversationId ?? request.PlanId.Value.ToString();
         var executionContext = scope.ServiceProvider.GetRequiredService<IAgentExecutionContext>();
-        executionContext.Initialize(
-            request.AgentId,
-            request.ConversationId ?? request.PlanId.Value.ToString(),
-            turnNumber: 1);
+        executionContext.Initialize(request.AgentId, runScope, turnNumber: 1);
 
         var planExecutor = scope.ServiceProvider.GetRequiredService<IPlanExecutor>();
 
@@ -104,6 +122,12 @@ public sealed class PlanRunExecutor : IPlanRunExecutor
                 // infrastructure exception text (paths, connection strings) can never leak out.
                 _logger.LogError(ex, "Plan run {PlanId} threw during enveloped execution", request.PlanId);
                 return Result<PlanExecutionSummary>.Fail("plan_run.execution_failed");
+            }
+            finally
+            {
+                // This run owns its budget entry — no conversation handler releases it, which is the
+                // whole reason it exists as a separate key. Freed on every exit path.
+                _conversationBudget.Release(PlanRunKeys.RunBudgetKey(runScope));
             }
         }
     }

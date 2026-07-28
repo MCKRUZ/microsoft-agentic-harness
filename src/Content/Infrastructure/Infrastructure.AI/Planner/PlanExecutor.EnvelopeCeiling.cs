@@ -40,12 +40,15 @@ public sealed partial class PlanExecutor
         if (violation is null)
             return false;
 
+        // The reason names the step and the envelope's ceiling, so it is logged but never persisted:
+        // StepExecutionState.ErrorMessage is relayed to callers through plan status, and this PR
+        // otherwise reduces that field to opaque PlanStepErrors codes for exactly this reason.
         _logger.LogWarning(
             "Step {StepId} in plan {PlanId} denied by envelope autonomy ceiling: {Reason}",
             step.Id, ctx.PlanId, violation);
 
         await _notifier.NotifyStepStartedAsync(ctx.PlanId, step.Id, step.Name, step.Type, ct);
-        await FailPolicyDeniedStepAsync(step, violation, ctx, ct);
+        await FailPolicyDeniedStepAsync(step, PlanStepErrors.AutonomyCeilingExceeded, ctx, ct);
         return true;
     }
 
@@ -101,10 +104,11 @@ public sealed partial class PlanExecutor
         // anything depending on it cannot legitimately run.
         await SkipDownstreamSubgraphAsync(step.Id, ctx);
 
-        if (result is not null)
-        {
-            await _notifier.NotifyStepCompletedAsync(
-                ctx.PlanId, step.Id, StepExecutionStatus.Failed, result.Duration, result.Output, ct);
-        }
+        // Always pair the started notification with a completed one. The ceiling denial path emits
+        // step-started and then never reaches an executor, so skipping this would leave a subscribed
+        // UI showing a denied step as permanently running.
+        await _notifier.NotifyStepCompletedAsync(
+            ctx.PlanId, step.Id, StepExecutionStatus.Failed,
+            result?.Duration ?? TimeSpan.Zero, result?.Output, ct);
     }
 }

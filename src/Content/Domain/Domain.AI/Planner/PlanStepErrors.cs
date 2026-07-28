@@ -41,4 +41,11 @@ public static class PlanStepErrors
     /// start another conversation. A spend control, not an execution fault.
     /// </summary>
     public const string BudgetExhausted = "step.budget_exhausted";
+
+    /// <summary>
+    /// The step declared a required autonomy level above the capability envelope's ceiling. Which
+    /// tier was required, and what the ceiling was, stay in the structured log: both describe the
+    /// caller's grant, which is exactly the operator policy detail this field must not relay.
+    /// </summary>
+    public const string AutonomyCeilingExceeded = "step.autonomy_ceiling_exceeded";
 }

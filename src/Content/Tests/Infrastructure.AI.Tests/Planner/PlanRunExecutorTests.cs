@@ -1,3 +1,4 @@
+using Application.AI.Common.Interfaces.AI;
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Planner;
 using Application.AI.Common.Services.Agent;
@@ -9,6 +10,7 @@ using Domain.Common;
 using Infrastructure.AI.Planner;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
+using Moq;
 using Xunit;
 
 namespace Infrastructure.AI.Tests.Planner;
@@ -22,6 +24,7 @@ namespace Infrastructure.AI.Tests.Planner;
 public sealed class PlanRunExecutorTests
 {
     private readonly RunCapture _capture = new();
+    private readonly Mock<IConversationBudgetTracker> _budget = new();
     private readonly PlanRunExecutor _sut;
 
     public PlanRunExecutorTests()
@@ -36,6 +39,7 @@ public sealed class PlanRunExecutorTests
 
         _sut = new PlanRunExecutor(
             provider.GetRequiredService<IServiceScopeFactory>(),
+            _budget.Object,
             NullLogger<PlanRunExecutor>.Instance);
     }
 
@@ -136,6 +140,36 @@ public sealed class PlanRunExecutorTests
     }
 
     [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("conv id")]
+    [InlineData("conv*")]
+    public async Task ExecuteAsync_MalformedConversationId_FailsClosedWithoutExecuting(string conversationId)
+    {
+        // A blank conversation id would yield a blank run scope, which the step executor's
+        // IsNullOrEmpty check reads as "no run scope" — silently disabling the run-level budget gate
+        // while the execution context stayed bound to an empty conversation.
+        var result = await _sut.ExecuteAsync(
+            Request(conversationId: conversationId), CancellationToken.None);
+
+        Assert.False(result.IsSuccess);
+        Assert.Contains("plan_run.conversation_id_invalid", result.Errors);
+        Assert.Equal(0, _capture.Invocations);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_NullConversationId_IsAcceptedAndDerivesScopeFromThePlan()
+    {
+        // Null is the documented "derive it from the plan id" case, distinct from blank.
+        var request = Request();
+
+        var result = await _sut.ExecuteAsync(request, CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(request.PlanId.Value.ToString(), _capture.ConversationIdDuringRun);
+    }
+
+    [Theory]
     [InlineData("bundle-agent")]
     [InlineData("tenant:team.agent_1")]
     public async Task ExecuteAsync_WellFormedAgentIdentity_Executes(string agentId)
@@ -167,6 +201,22 @@ public sealed class PlanRunExecutorTests
 
         await Assert.ThrowsAsync<OperationCanceledException>(
             () => _sut.ExecuteAsync(Request(), CancellationToken.None));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ExecuteAsync_ReleasesTheRunOwnedBudgetKey_OnEveryExitPath(bool throws)
+    {
+        // No conversation handler owns this key — that is the point of it — so the run must free it
+        // itself, including when execution throws.
+        var request = Request(conversationId: "conv-1");
+        if (throws)
+            _capture.ThrowOnExecute = new InvalidOperationException("boom");
+
+        await _sut.ExecuteAsync(request, CancellationToken.None);
+
+        _budget.Verify(b => b.Release(PlanRunKeys.RunBudgetKey("conv-1")), Times.Once);
     }
 
     /// <summary>Shared observation channel between the test and the scoped fake executor.</summary>

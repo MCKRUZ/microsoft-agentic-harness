@@ -56,8 +56,8 @@ public interface IPlanRunExecutor
     /// <returns>
     /// The plan execution summary, or a failure carrying a stable error code
     /// (<c>plan_run.envelope_required</c>, <c>plan_run.agent_identity_required</c>,
-    /// <c>plan_run.agent_identity_invalid</c>, <c>plan_run.execution_failed</c>) — never raw
-    /// exception text.
+    /// <c>plan_run.agent_identity_invalid</c>, <c>plan_run.conversation_id_invalid</c>,
+    /// <c>plan_run.execution_failed</c>) — never raw exception text.
     /// </returns>
     Task<Result<PlanExecutionSummary>> ExecuteAsync(PlanRunRequest request, CancellationToken cancellationToken);
 }
@@ -111,5 +111,13 @@ public sealed record PlanRunRequest
     /// Optional conversation/session identifier for the execution context. Defaults to the plan id
     /// when omitted.
     /// </summary>
+    /// <remarks>
+    /// When supplied it must satisfy <see cref="IsWellFormedAgentId"/>'s charset and length rules, for
+    /// the same reasons plus one more: it becomes the run scope from which every per-step conversation
+    /// id and the run's budget key are derived. A blank value would produce a blank run scope, which
+    /// downstream <c>IsNullOrEmpty</c> checks read as <em>no run scope at all</em> — silently disabling
+    /// the run-level budget gate while the execution context stayed bound to an empty conversation.
+    /// Null is accepted and means "derive the scope from the plan id"; empty or whitespace is not.
+    /// </remarks>
     public string? ConversationId { get; init; }
 }

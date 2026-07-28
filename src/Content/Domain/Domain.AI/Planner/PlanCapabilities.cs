@@ -31,6 +31,15 @@ namespace Domain.AI.Planner;
 /// which is a strictly larger change than giving the risk table a friendlier number.
 /// </para>
 /// <para>
+/// <strong>These names share a namespace with real tool keys — treat them as reserved.</strong> They
+/// are matched out of the same <c>AllowedTools</c> string space as keyed <c>ITool</c> registrations,
+/// so a host that registers a tool under one of these keys silently merges the two grants: granting
+/// the plan capability would also grant that tool, and vice versa. Nothing in the DI container
+/// prevents it, because tool registration order is not guaranteed relative to the planner's. Hosts
+/// registering tools should assert <see cref="IsReserved"/> is false for each key — the harness's own
+/// registrations are covered by a test that does exactly that.
+/// </para>
+/// <para>
 /// Withholding a name here is fail-closed for enveloped plan runs. With no ambient envelope (direct
 /// in-process <c>IPlanExecutor</c> callers) the governor is a pass-through and behavior is unchanged.
 /// </para>
@@ -52,4 +61,19 @@ public static class PlanCapabilities
     /// fully-constrained envelope from still buying unbounded tokens.
     /// </summary>
     public const string LlmCall = "llm_call";
+
+    /// <summary>
+    /// Every reserved plan-capability name. A tool must never be registered under one of these keys —
+    /// see the collision note in the type remarks.
+    /// </summary>
+    public static IReadOnlyList<string> ReservedNames { get; } = [Retrieval, LlmCall];
+
+    /// <summary>
+    /// Whether <paramref name="name"/> is a reserved plan-capability name and therefore unavailable as
+    /// a tool registration key. Case-insensitive, matching how the envelope matches allowlist entries.
+    /// </summary>
+    /// <param name="name">The candidate tool registration key.</param>
+    /// <returns><c>true</c> when the name is reserved.</returns>
+    public static bool IsReserved(string? name) =>
+        name is not null && ReservedNames.Contains(name, StringComparer.OrdinalIgnoreCase);
 }

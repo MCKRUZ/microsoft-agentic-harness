@@ -128,6 +128,41 @@ public sealed class AgentConversationCacheTests
     }
 
     [Fact]
+    public async Task GetOrCreateAsync_SameConversationId_ReturnsCachedAgentWithoutConsultingSkills()
+    {
+        // The cache is keyed SOLELY by conversation id: a hit short-circuits before the requested
+        // skills or options are looked at AT ALL. The second request here asks for "deploy" on its
+        // own, which is an invalid skill set — building it throws because its "validate" prerequisite
+        // is absent (see GetOrCreateAsync_SkillWithPrerequisites_ResolvesScopeWithoutThrowing). That
+        // it returns an agent anyway, rather than throwing, proves the requested skills were never
+        // examined.
+        //
+        // This is why concurrent plan steps must never share a conversation id: the second step gets
+        // a cache HIT and silently runs under the first step's agent — its skills, instructions,
+        // allowed tools and deployment. Proven here against the real cache so the plan engine's
+        // per-step id derivation (PlanRunKeys.StepConversationId) has a demonstrated reason to exist.
+        var first = await _cache.GetOrCreateAsync("conv-shared", [ValidateSkillId], new SkillAgentOptions());
+
+        var second = await _cache.GetOrCreateAsync("conv-shared", [DeploySkillId], new SkillAgentOptions());
+
+        second.Should().BeSameAs(first,
+            "a cache hit returns the existing agent even for a skill set that could not have been built");
+    }
+
+    [Fact]
+    public async Task GetOrCreateAsync_DistinctConversationIds_BuildIndependentAgents()
+    {
+        // The converse, and the property the plan engine relies on: distinct ids never collide, so
+        // per-step ids keep agent resolution, eviction and skill tracking isolated per step.
+        var first = await _cache.GetOrCreateAsync(
+            "conv-a", [ValidateSkillId], new SkillAgentOptions());
+        var second = await _cache.GetOrCreateAsync(
+            "conv-b", [ValidateSkillId, DeploySkillId], new SkillAgentOptions());
+
+        second.Should().NotBeSameAs(first);
+    }
+
+    [Fact]
     public async Task Evict_ClearsPrerequisiteCompletionState()
     {
         // Arrange — build the agent, then record a completion under the same scope.
