@@ -1,0 +1,354 @@
+#!/usr/bin/env bash
+#
+# run-gates.sh — run the CI merge gates locally, before pushing.
+#
+# Part of the delivery rails (see .github/RAILS.md). Every gate here is the SAME
+# gate GitHub Actions runs on the PR: same diff base, same changed-line anchors
+# (scripts/rails/diff-anchors.sh), same rubrics (.github/*-rubric.md), same
+# verdict protocol, same applicability rules, same pass/fail semantics.
+#
+# WHY IT EXISTS — two reasons, in order:
+#
+#   1. Cost. The remote reviewers run through the Claude GitHub Action against
+#      ANTHROPIC_API_KEY, i.e. metered API credits, and they re-run on EVERY push
+#      to the PR branch (the workflows trigger on `synchronize`). A fix-then-push
+#      rhythm therefore pays for the expensive Opus reviewers two or three times
+#      per PR. This script runs the identical reviewers through the LOCAL `claude`
+#      CLI, which bills the developer's Claude subscription instead. Clear the
+#      gates here, push once, pay for one remote cycle.
+#
+#   2. Latency. A local BLOCK arrives in minutes without consuming a PR cycle,
+#      a CI queue slot, or a reviewer's attention.
+#
+# WHAT THIS IS NOT: a replacement for the remote gates. It cannot be — it runs on
+# the developer's machine, on their working tree, with their credentials, and
+# nothing verifies it ran. The remote gates remain the enforcement boundary; this
+# script is the fast, cheap pre-flight that makes the remote run a formality
+# instead of a discovery process. Do not disable the workflows on the strength of
+# this script.
+#
+# HONEST DIFFERENCES FROM CI (each one deliberate, none of them silent):
+#   * Billing: local Claude subscription, not ANTHROPIC_API_KEY.
+#   * No PR comment is posted — findings print to your terminal. There is no PR.
+#   * No turn ceiling. The remote gates pass --max-turns to bound API spend; the
+#     local CLI exposes no equivalent flag, so a local review is unbounded in
+#     turns. The provisional-verdict fail-safe below still applies, so a review
+#     that dies mid-flight still reports BLOCK rather than silently passing.
+#   * Label overrides (`accepted-risk:correctness` / `accepted-risk:security`) have
+#     no local equivalent, so --accept-risk exists to mirror them for pre-flight
+#     purposes only. It records nothing and overrides nothing on the real PR.
+#   * The base is your local ref (default `main`), not github.base_ref.
+#
+# THE PROVISIONAL-VERDICT FAIL-SAFE, preserved verbatim from CI: the reviewer is
+# told to write "BLOCK / PROVISIONAL" as its FIRST action, then overwrite it with
+# a real verdict at the end. A reviewer that crashes, hangs, or is interrupted
+# therefore leaves a BLOCK behind — the correct answer when no review completed.
+# An unreplaced provisional block is reported as an INFRASTRUCTURE fault, never as
+# a finding about the code, and --accept-risk deliberately does NOT override it:
+# accepting a known defect and accepting not having looked are different decisions.
+#
+# Verdict files are written under a temp dir OUTSIDE the working tree, for the
+# same reason CI writes them under RUNNER_TEMP: a verdict file committed into the
+# repo must never be able to satisfy a gate.
+#
+# Usage:
+#   scripts/rails/run-gates.sh                  # every applicable gate
+#   scripts/rails/run-gates.sh --fast           # compile/test gates only, no AI reviewers
+#   scripts/rails/run-gates.sh --ai-only        # AI reviewers only
+#   scripts/rails/run-gates.sh --correctness    # one named gate (repeatable)
+#   scripts/rails/run-gates.sh --base develop   # diff against a different base
+#   scripts/rails/run-gates.sh --list           # show which gates apply and why
+#
+# Exit code: 0 if every selected gate passed or was not applicable; 1 otherwise.
+
+set -uo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$REPO_ROOT" || exit 1
+
+BASE_REF="main"
+ACCEPT_RISK=""
+COVERAGE=false
+LIST_ONLY=false
+SELECTED=()
+
+usage() {
+  sed -n '3,60p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  exit 0
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --all)          SELECTED=(build test owasp docs-links grader correctness security) ;;
+    --fast)         SELECTED=(build test owasp docs-links) ;;
+    --ai-only)      SELECTED=(grader correctness security) ;;
+    --build)        SELECTED+=(build) ;;
+    --test)         SELECTED+=(test) ;;
+    --owasp)        SELECTED+=(owasp) ;;
+    --docs-links)   SELECTED+=(docs-links) ;;
+    --grader)       SELECTED+=(grader) ;;
+    --correctness)  SELECTED+=(correctness) ;;
+    --security)     SELECTED+=(security) ;;
+    --coverage)     COVERAGE=true ;;
+    --list)         LIST_ONLY=true ;;
+    --base)         shift; BASE_REF="${1:-main}" ;;
+    --accept-risk)  shift; ACCEPT_RISK="${ACCEPT_RISK} ${1:-}" ;;
+    -h|--help)      usage ;;
+    *) echo "run-gates: unknown option '$1' (try --help)" >&2; exit 2 ;;
+  esac
+  shift
+done
+
+[ ${#SELECTED[@]} -eq 0 ] && SELECTED=(build test owasp docs-links grader correctness security)
+
+# ---------------------------------------------------------------------------
+# Preconditions
+# ---------------------------------------------------------------------------
+if ! git rev-parse --verify "$BASE_REF" >/dev/null 2>&1; then
+  echo "run-gates: base ref '$BASE_REF' does not resolve. Fetch it or pass --base." >&2
+  exit 2
+fi
+
+NEEDS_CLAUDE=false
+for g in "${SELECTED[@]}"; do
+  case "$g" in grader|correctness|security) NEEDS_CLAUDE=true ;; esac
+done
+if $NEEDS_CLAUDE && ! command -v claude >/dev/null 2>&1; then
+  echo "run-gates: the 'claude' CLI is not on PATH — the AI gates cannot run." >&2
+  echo "           Use --fast to run only the compile/test gates." >&2
+  exit 2
+fi
+
+TMPDIR_GATES="$(mktemp -d 2>/dev/null || echo "${TEMP:-/tmp}/run-gates.$$")"
+mkdir -p "$TMPDIR_GATES"
+trap 'rm -rf "$TMPDIR_GATES"' EXIT
+
+# The reviewer runs as a separate `claude` process. On Windows under Git Bash that
+# process is native Win32 and resolves a POSIX path like /tmp/tmp.AbCd against its
+# own root, NOT against the MSYS mount — so a verdict written to the path we handed
+# it lands somewhere we never look, and the gate reports "no verdict" (an
+# infrastructure fault) even though the review completed and passed. Hand the
+# reviewer a native path; keep the POSIX one for our own file tests.
+native_path() {
+  if command -v cygpath >/dev/null 2>&1; then cygpath -w "$1"; else printf '%s' "$1"; fi
+}
+TMPDIR_GATES_NATIVE="$(native_path "$TMPDIR_GATES")"
+
+# ---------------------------------------------------------------------------
+# Applicability — mirrors the `detect` step in each workflow exactly.
+# ---------------------------------------------------------------------------
+ANCHORS_FILE="${TMPDIR_GATES}/correctness-anchors.txt"
+if ! scripts/rails/diff-anchors.sh --base "$BASE_REF" -- 'src/' > "$ANCHORS_FILE" 2>/dev/null; then
+  echo "run-gates: diff-anchors.sh failed — cannot compute the changed-line scope. Failing closed." >&2
+  exit 1
+fi
+ANCHORS_FILE_NATIVE="$(native_path "$ANCHORS_FILE")"
+SRC_CHANGED=false
+[ -s "$ANCHORS_FILE" ] && SRC_CHANGED=true
+
+CHANGED_FILES="$(git diff --name-only "${BASE_REF}...HEAD" 2>/dev/null || true)"
+# Keep in sync with GATED_RE in .github/workflows/security-review.yml.
+GATED_RE='(^\.github/|/Auth/|/Identity/|/Security/|/SecurityAttributes/|/Migrations/|^infra/)'
+SECURITY_GATED=false
+echo "$CHANGED_FILES" | grep -Eq "$GATED_RE" && SECURITY_GATED=true
+
+DOCS_CHANGED=false
+echo "$CHANGED_FILES" | grep -Eq '^documentation/' && DOCS_CHANGED=true
+
+applies() {
+  case "$1" in
+    correctness) $SRC_CHANGED ;;
+    security)    $SECURITY_GATED ;;
+    grader)      $SRC_CHANGED ;;
+    docs-links)  $DOCS_CHANGED ;;
+    *)           true ;;
+  esac
+}
+
+reason_for() {
+  case "$1" in
+    correctness) $SRC_CHANGED && echo "$(grep -c . "$ANCHORS_FILE") changed-line range(s) under src/" || echo "no source under src/ changed" ;;
+    security)    $SECURITY_GATED && echo "gated paths changed" || echo "no gated paths changed (auth/identity/security/migrations/.github/infra)" ;;
+    grader)      $SRC_CHANGED && echo "source under src/ changed" || echo "no source under src/ changed" ;;
+    docs-links)  $DOCS_CHANGED && echo "documentation/ changed" || echo "documentation/ unchanged" ;;
+    *)           echo "always runs" ;;
+  esac
+}
+
+if $LIST_ONLY; then
+  printf 'Base: %s   HEAD: %s\n\n' "$BASE_REF" "$(git rev-parse --short HEAD)"
+  printf '%-14s %-14s %s\n' "GATE" "APPLIES" "WHY"
+  for g in "${SELECTED[@]}"; do
+    applies "$g" && a="yes" || a="no (skip)"
+    printf '%-14s %-14s %s\n' "$g" "$a" "$(reason_for "$g")"
+  done
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Gate runners
+# ---------------------------------------------------------------------------
+FAILED=()
+PASSED=()
+SKIPPED=()
+
+banner() { printf '\n\033[1m=== %s ===\033[0m\n' "$1"; }
+
+run_dotnet_gate() {
+  local name="$1"; shift
+  banner "$name"
+  if "$@"; then PASSED+=("$name"); return 0; else FAILED+=("$name"); return 1; fi
+}
+
+# Runs one AI reviewer end to end: provisional verdict, review against the
+# rubric, then enforce the replaced verdict with the same first-line prefix match
+# CI uses (a model that buries the token in prose must not pass).
+run_ai_gate() {
+  local name="$1" token="$2" model="$3" rubric="$4" scope_note="$5"
+  local verdict_file="${TMPDIR_GATES}/${name}-verdict.txt"
+  local verdict_file_native
+  verdict_file_native="$(native_path "$verdict_file")"
+
+  banner "$name (model: $model — billed to your Claude subscription)"
+  rm -f "$verdict_file"
+
+  local prompt
+  prompt=$(cat <<PROMPT
+You are running as the ${name} gate for a local pre-push check.
+
+STEP 1 — DO THIS FIRST, BEFORE READING ANYTHING ELSE.
+Write this exact two-line content to ${verdict_file_native}:
+
+${token}: BLOCK
+reason: PROVISIONAL - the review did not run to completion
+
+This is a fail-safe. If you error out or are interrupted later, that provisional
+block is what the gate sees, and it is the correct answer. Do not skip it and do
+not leave it until the end.
+
+STEP 2 — Review.
+Read the rubric at ${rubric} and follow it exactly.
+${scope_note}
+The diff base is ${BASE_REF}. Prefer a single \`git diff\` over many per-file
+reads, and do not re-read a file you have already seen.
+
+STEP 3 — Replace the verdict, then print your findings.
+Overwrite ${verdict_file_native} with your real verdict. The first line must be EXACTLY
+"${token}: PASS" or "${token}: BLOCK". On BLOCK, add a second line
+"reason: <one-line summary>" — never containing the word PROVISIONAL, which is
+reserved for the step-1 fail-safe.
+Then print your findings to stdout. There is no PR to comment on.
+PROMPT
+)
+
+  claude -p "$prompt" \
+    --model "$model" \
+    --allowedTools "Bash,Read,Grep,Glob,Write" \
+    2>/dev/null
+
+  if [ ! -f "$verdict_file" ]; then
+    echo "run-gates: ${name} wrote no verdict at all — it failed before its first action."
+    echo "           This is an INFRASTRUCTURE fault, not a finding about your code."
+    FAILED+=("$name (no verdict — infrastructure)")
+    return 1
+  fi
+
+  local first reason
+  first="$(head -n1 "$verdict_file" || true)"
+  reason="$(sed -n '2p' "$verdict_file" || true)"
+
+  case "$first" in
+    "${token}: BLOCK"*)
+      case "$reason" in
+        *PROVISIONAL*)
+          echo "run-gates: ${name} did not run to completion — its provisional block was never replaced."
+          echo "           INFRASTRUCTURE fault, not a finding. --accept-risk does NOT override this:"
+          echo "           that flag accepts a known defect, not an absent review."
+          FAILED+=("$name (incomplete — infrastructure)")
+          return 1 ;;
+      esac
+      if [[ " $ACCEPT_RISK " == *" ${name} "* ]]; then
+        echo "run-gates: ${name} found a defect, overridden locally by --accept-risk ${name}."
+        echo "           Reason: ${reason}"
+        echo "           NOTE: this override is local only. The PR still needs the real"
+        echo "                 accepted-risk:${name} label, which is audited in the timeline."
+        PASSED+=("$name (risk accepted locally)")
+        return 0
+      fi
+      echo "run-gates: ${name} BLOCKED — ${reason}"
+      FAILED+=("$name")
+      return 1 ;;
+    "${token}: PASS"*)
+      echo "run-gates: ${name} passed."
+      PASSED+=("$name")
+      return 0 ;;
+    *)
+      echo "run-gates: unrecognized ${name} verdict ('${first}'). Failing closed."
+      FAILED+=("$name (unrecognized verdict)")
+      return 1 ;;
+  esac
+}
+
+# ---------------------------------------------------------------------------
+# Execute
+# ---------------------------------------------------------------------------
+printf 'Running gates against base \033[1m%s\033[0m (HEAD %s)\n' "$BASE_REF" "$(git rev-parse --short HEAD)"
+
+for gate in "${SELECTED[@]}"; do
+  if ! applies "$gate"; then
+    SKIPPED+=("$gate — $(reason_for "$gate")")
+    continue
+  fi
+
+  case "$gate" in
+    build)
+      run_dotnet_gate "build" dotnet build src/AgenticHarness.slnx --configuration Release
+      ;;
+    test)
+      if $COVERAGE; then
+        run_dotnet_gate "test" dotnet test src/AgenticHarness.slnx --no-build --configuration Release \
+          --collect:"XPlat Code Coverage" --results-directory coverage
+      else
+        run_dotnet_gate "test" dotnet test src/AgenticHarness.slnx --no-build --configuration Release
+      fi
+      ;;
+    owasp)
+      run_dotnet_gate "owasp" dotnet test \
+        src/Content/Tests/Application.AI.Common.Tests/Application.AI.Common.Tests.csproj \
+        --no-build --configuration Release --filter "Category=OwaspAgentic"
+      ;;
+    docs-links)
+      run_dotnet_gate "docs-links" node .github/scripts/check-docs-links.mjs
+      ;;
+    grader)
+      run_ai_gate "grader" "GRADE" "sonnet" ".github/grader-rubric.md" \
+        "The changed-line anchor set is at ${ANCHORS_FILE_NATIVE} — grade ONLY those lines and the code they directly touch, and anchor every finding to a line from that file."
+      ;;
+    correctness)
+      run_ai_gate "correctness" "CORRECTNESS_VERDICT" "opus" ".github/correctness-review-rubric.md" \
+        "The changed-line anchor set is at ${ANCHORS_FILE_NATIVE} — review ONLY those lines and the code they directly touch, and anchor every finding to a line from that file."
+      ;;
+    security)
+      run_ai_gate "security" "SECURITY_VERDICT" "opus" ".github/security-review-rubric.md" \
+        "Review the changed files listed by \`git diff --name-only ${BASE_REF}...HEAD\`, concentrating on the gated paths (auth, identity, security, migrations, .github, infra) that triggered this gate."
+      ;;
+  esac
+done
+
+# ---------------------------------------------------------------------------
+# Summary
+# ---------------------------------------------------------------------------
+banner "SUMMARY"
+for s in "${SKIPPED[@]:-}"; do [ -n "$s" ] && printf '  \033[2mskip\033[0m  %s\n' "$s"; done
+for p in "${PASSED[@]:-}";  do [ -n "$p" ] && printf '  \033[32mpass\033[0m  %s\n' "$p"; done
+for f in "${FAILED[@]:-}";  do [ -n "$f" ] && printf '  \033[31mFAIL\033[0m  %s\n' "$f"; done
+
+if [ ${#FAILED[@]} -gt 0 ]; then
+  printf '\n\033[31m%d gate(s) failed.\033[0m Fix them before pushing — the same gates run on the PR.\n' "${#FAILED[@]}"
+  exit 1
+fi
+
+printf '\n\033[32mAll selected gates passed.\033[0m The remote run should be a formality.\n'
+printf 'Reminder: this does not replace the PR gates, and it records nothing — the\n'
+printf 'review-gate hook still needs its own /code-review and /simplify receipts.\n'
+exit 0

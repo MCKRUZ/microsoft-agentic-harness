@@ -22,6 +22,33 @@ them live, and how to prove they actually catch things.
 Branch protection (`rulesets/main-branch-protection.json`) makes the three
 blocking checks mandatory and requires a non-author approval + code-owner review.
 
+### Running the gates locally, before you push
+
+`scripts/rails/run-gates.sh` runs those same gates on your machine — same diff
+base, same changed-line anchors, same rubrics, same verdict protocol, same
+applicability rules.
+
+```bash
+scripts/rails/run-gates.sh --list          # which gates apply to this branch, and why
+scripts/rails/run-gates.sh                 # every applicable gate
+scripts/rails/run-gates.sh --fast          # compile/test gates only, no AI reviewers
+scripts/rails/run-gates.sh --correctness   # one named gate
+```
+
+Two reasons to use it. **Cost:** the remote reviewers run against
+`ANTHROPIC_API_KEY` (metered API credits) and re-trigger on *every* push to the
+PR branch, so a fix-then-push rhythm pays for the expensive Opus reviewers two or
+three times per PR; the local runner drives the identical reviewers through your
+`claude` CLI, billing your Claude subscription instead. Clear the gates locally,
+push once, pay for one remote cycle. **Latency:** a local BLOCK arrives in minutes
+without burning a PR cycle.
+
+It is a pre-flight, **not** a replacement. It runs on a developer's machine with
+their credentials and nothing verifies it ran, so the remote gates remain the
+enforcement boundary — do not disable the workflows on the strength of it. Its
+deliberate differences from CI (no PR comment, no turn ceiling, local-only
+`--accept-risk`) are documented in the script header.
+
 ## Go-live — what a human must do (not automatable from here)
 
 These are deliberate, outward-facing actions. Nothing in this PR performs them.
