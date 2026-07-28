@@ -33,6 +33,13 @@ public sealed class FileSystemService : IFileSystemService
     // defeated by a Windows 8.3 short alias (AGENT-~1) or any other alias that resolves to the
     // same directory but spells it differently. The canonical form comes from the same
     // resolver the database registration uses, so the two cannot drift.
+    //
+    // This deny list is defence in depth, not the load-bearing control. It cannot see through a
+    // hard link: a hard link is a second directory entry for the same file, not a reparse point,
+    // so there is no link target to resolve and its canonical form is itself. The control that
+    // actually closes that hole is FileSystemSandboxStartupValidator, which refuses to boot when
+    // a protected directory sits inside an allowed base path — a hard link cannot span volumes,
+    // so a protected file outside every allowed base path cannot be aliased into one.
     private readonly HashSet<string> _protectedPaths;
 
     // Directories skipped during recursive search — build artifacts and VCS internals
@@ -75,22 +82,30 @@ public sealed class FileSystemService : IFileSystemService
         ArgumentNullException.ThrowIfNull(allowedBasePaths);
 
         _logger = logger;
-        _allowedBasePaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        _protectedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        // Both sets are stored in PathScope-normalized form (absolute, trailing separator trimmed)
-        // because every comparison against them goes through PathScope.IsSameOrUnderNormalized,
-        // which requires normalized inputs on both sides.
+        // PathScope.Comparer, never a hardcoded StringComparer.OrdinalIgnoreCase: on Linux
+        // "/srv/state" and "/srv/State" are two different directories, and case-insensitive
+        // hashing would collapse them into one entry. For the deny set that collapse is
+        // fail-OPEN — the second protected directory silently stops being protected.
+        _allowedBasePaths = new HashSet<string>(PathScope.Comparer);
+        _protectedPaths = new HashSet<string>(PathScope.Comparer);
+
+        // Both sets are stored in canonical, PathScope-normalized form (absolute, links resolved,
+        // trailing separator trimmed). Normalized because every comparison against them goes
+        // through PathScope.IsSameOrUnderNormalized, which requires normalized inputs on both
+        // sides; canonical because the paths a comparison is fed at runtime are canonicalized, and
+        // comparing a canonical target against a literal base misses whenever the configured base
+        // is itself reached through a link.
         foreach (var path in protectedPaths ?? [])
         {
             if (!string.IsNullOrWhiteSpace(path))
-                _protectedPaths.Add(CanonicalizePath(PathScope.Normalize(path)));
+                _protectedPaths.Add(SandboxPathCanonicalizer.Canonicalize(PathScope.Normalize(path)));
         }
 
         foreach (var path in allowedBasePaths)
         {
             if (!string.IsNullOrWhiteSpace(path))
-                _allowedBasePaths.Add(PathScope.Normalize(path));
+                _allowedBasePaths.Add(SandboxPathCanonicalizer.Canonicalize(PathScope.Normalize(path)));
         }
 
         if (_allowedBasePaths.Count == 0)
@@ -177,7 +192,7 @@ public sealed class FileSystemService : IFileSystemService
         var filesScanned = 0;
 
         // Lives only for this call — see IsProtectedPath for why it must not become process-wide.
-        var directoryVerdicts = new Dictionary<string, bool>(PathScope.Comparer);
+        var directoryVerdicts = new Dictionary<string, DirectoryVerdict>(PathScope.Comparer);
 
         foreach (var file in EnumerateFilesSkippingIgnored(
             fullPath, searchPattern, directoryVerdicts, cancellationToken))
@@ -218,13 +233,43 @@ public sealed class FileSystemService : IFileSystemService
         }
     }
 
+    /// <summary>
+    /// Breadth-first walk of <paramref name="root"/>, yielding files while pruning any subtree the
+    /// sandbox refuses, and recording each directory's verdict in <paramref name="directoryVerdicts"/>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Both arms of the sandbox decision prune, not just the deny arm. A junction or symlink
+    /// planted in the workspace is not <em>protected</em> — its target is somewhere else entirely —
+    /// so a deny-only check descends into it happily, and every file it then yields carries a
+    /// literal, workspace-shaped path that satisfies a workspace-rooted allowlist. Pruning on the
+    /// canonical target is what keeps the walk inside the sandbox, and it has to happen here:
+    /// canonicalization resolves an entry's own link, not links in its parent components, so a
+    /// directory reached <em>below</em> an unpruned link would canonicalize to its literal path and
+    /// look legitimate.
+    /// </para>
+    /// <para>
+    /// Directory verdicts are resolved without the memo. Parent-verdict inheritance is sound for
+    /// files only — a file under an unprotected directory cannot itself be a protected root, but a
+    /// subdirectory can be exactly that, <c>.agent-state</c> being an ordinary non-reparse-point
+    /// directory inside an unprotected workspace.
+    /// </para>
+    /// </remarks>
+    /// <param name="root">The already-validated absolute search root.</param>
+    /// <param name="pattern">The file-name pattern to match.</param>
+    /// <param name="directoryVerdicts">Per-operation verdict memo; see <see cref="ResolveVerdict"/>.</param>
+    /// <param name="cancellationToken">Token to observe while walking.</param>
     private IEnumerable<string> EnumerateFilesSkippingIgnored(
-        string root, string pattern, Dictionary<string, bool> directoryVerdicts,
+        string root, string pattern, Dictionary<string, DirectoryVerdict> directoryVerdicts,
         CancellationToken cancellationToken)
     {
         var queue = new Queue<string>();
         queue.Enqueue(root);
-        directoryVerdicts[PathScope.Normalize(root)] = IsProtectedPath(root);
+
+        // Normalized before the verdict call, not only to key the memo: Canonicalize documents a
+        // normalized input as a precondition and returns its argument unchanged on the error path.
+        var normalizedRoot = PathScope.Normalize(root);
+        directoryVerdicts[normalizedRoot] = ResolveVerdict(normalizedRoot);
 
         while (queue.Count > 0)
         {
@@ -246,18 +291,17 @@ public sealed class FileSystemService : IFileSystemService
 
             foreach (var sub in subdirs)
             {
-                // The protected-path check must be repeated here, not just at the search root:
-                // the walk descends from an allowed root into whatever it finds, and the skip
-                // list is a performance filter (build artifacts, VCS internals), not a security
-                // boundary. Without this a search rooted at the workspace would descend into the
-                // governance-state directory and read the database's pages as text.
+                // A performance filter (build artifacts, VCS internals), never a security boundary
+                // — the sandbox decision below is what prunes protected and escaping subtrees.
                 if (SearchSkipDirectories.Contains(Path.GetFileName(sub)))
                     continue;
 
-                var isProtected = IsProtectedPath(sub);
-                directoryVerdicts[PathScope.Normalize(sub)] = isProtected;
+                // No memo here, and both arms prune — see this method's remarks for why.
+                var normalizedSub = PathScope.Normalize(sub);
+                var verdict = ResolveVerdict(normalizedSub);
+                directoryVerdicts[normalizedSub] = verdict;
 
-                if (!isProtected)
+                if (!verdict.IsProtected && IsUnderAllowedBase(verdict.CanonicalPath))
                     queue.Enqueue(sub);
             }
         }
@@ -265,13 +309,16 @@ public sealed class FileSystemService : IFileSystemService
 
     private async Task SearchFileAsync(
         string filePath, string basePath, string searchTerm,
-        List<FileSearchResult> results, Dictionary<string, bool> directoryVerdicts,
+        List<FileSearchResult> results, Dictionary<string, DirectoryVerdict> directoryVerdicts,
         CancellationToken cancellationToken)
     {
         // Last line of defence before any file content is read. The directory filter above
-        // already prunes protected subtrees; this catches a protected file reached any other
-        // way (a file directly under an allowed root, a future enumeration change) so no
-        // content leaves this method without having passed the same gate a direct read does.
+        // already prunes protected and out-of-sandbox subtrees; this catches a file reached any
+        // other way (a file directly under an allowed root, a file that is itself a link, a future
+        // enumeration change) so no content leaves this method without having passed the same gate
+        // a direct read does. "The same gate" is load-bearing and was previously untrue: the
+        // direct-read gate resolves links before comparing, and this one compared the literal
+        // enumerated path, so a link inside the workspace read through it whatever it pointed at.
         if (!IsPathAllowed(filePath, directoryVerdicts))
         {
             _logger.LogWarning("Skipped search of disallowed path: {Path}", filePath);
@@ -373,41 +420,77 @@ public sealed class FileSystemService : IFileSystemService
         return path;
     }
 
+    /// <summary>
+    /// The sandbox decision for one path: whether it is denied outright, and the canonical
+    /// location the allowlist comparison must be made against.
+    /// </summary>
+    /// <remarks>
+    /// The two travel together because they are answers to the same question — "what does this
+    /// path actually name?" — and separating them is what let a symlink escape the sandbox: the
+    /// deny arm consumed the canonical form while the allow arm compared the literal one.
+    /// </remarks>
+    /// <param name="IsProtected">
+    /// <see langword="true"/> when the path is, or lives under, a protected harness-state directory.
+    /// </param>
+    /// <param name="CanonicalPath">
+    /// The path's canonical absolute form, with links resolved. Valid on both arms.
+    /// </param>
+    private readonly record struct DirectoryVerdict(bool IsProtected, string CanonicalPath);
+
     /// <param name="fullPath">An absolute path.</param>
     /// <param name="directoryVerdicts">
-    /// Optional per-operation protected-path memo; see <see cref="IsProtectedPath"/>.
+    /// Optional per-operation sandbox-verdict memo; see <see cref="ResolveVerdict"/>.
     /// </param>
-    private bool IsPathAllowed(string fullPath, Dictionary<string, bool>? directoryVerdicts = null)
+    private bool IsPathAllowed(string fullPath, Dictionary<string, DirectoryVerdict>? directoryVerdicts = null)
     {
-        var normalized = PathScope.Normalize(fullPath);
+        var verdict = ResolveVerdict(PathScope.Normalize(fullPath), directoryVerdicts);
 
         // Deny list wins over the allowlist. Protected directories hold the harness's own
         // governance state — the SQLite database of approval verdicts — and typically sit
         // under a configured base path, so allowlisting alone would leave them reachable.
         // An agent able to edit that file could forge an approval verdict, so the tool must
         // not be able to read or write it under any configuration.
-        if (IsProtectedPath(normalized, directoryVerdicts))
+        if (verdict.IsProtected)
         {
-            _logger.LogWarning("Blocked access to protected harness state directory: {Path}", normalized);
+            _logger.LogWarning(
+                "Blocked access to protected harness state directory: {Path}", verdict.CanonicalPath);
             return false;
         }
 
-        // PathScope matches on a directory boundary, so a sibling whose name merely starts with an
-        // allowed root (C:\workspace-backup against C:\workspace) is not mistaken for a child.
-        return _allowedBasePaths.Any(basePath => PathScope.IsSameOrUnderNormalized(normalized, basePath));
+        // Compared against the CANONICAL path, never the literal one. A junction at
+        // workspace\notes pointing at C:\Users\victim\.ssh yields files whose literal paths all
+        // look like workspace\notes\..., which satisfy any workspace-rooted allowlist; only the
+        // resolved target reveals that they are outside the sandbox.
+        return IsUnderAllowedBase(verdict.CanonicalPath);
     }
 
     /// <summary>
-    /// True when <paramref name="fullPath"/> is, or lives under, a protected harness-state
-    /// directory.
+    /// True when <paramref name="canonicalPath"/> sits inside a configured allowed base path.
+    /// </summary>
+    /// <remarks>
+    /// PathScope matches on a directory boundary, so a sibling whose name merely starts with an
+    /// allowed root (<c>C:\workspace-backup</c> against <c>C:\workspace</c>) is not mistaken for a
+    /// child. Both operands are canonical: the argument by contract, the base paths because the
+    /// constructor canonicalizes them once.
+    /// </remarks>
+    /// <param name="canonicalPath">A canonical absolute path.</param>
+    private bool IsUnderAllowedBase(string canonicalPath) =>
+        _allowedBasePaths.Any(basePath => PathScope.IsSameOrUnderNormalized(canonicalPath, basePath));
+
+    /// <summary>
+    /// Canonicalizes <paramref name="normalizedPath"/> and decides whether it is protected,
+    /// returning both halves of the sandbox decision.
     /// </summary>
     /// <remarks>
     /// Compares canonicalized absolute paths on a directory boundary, so a legitimate sibling
     /// such as <c>.agent-state-docs</c> is unaffected while an alias that merely spells the
-    /// protected directory differently (a Windows 8.3 short name, a symlinked parent already
-    /// resolved upstream) still matches.
+    /// protected directory differently (a Windows 8.3 short name, a symlink, a junctioned parent)
+    /// still matches.
     /// </remarks>
-    /// <param name="fullPath">An absolute path.</param>
+    /// <param name="normalizedPath">
+    /// An absolute path, already <see cref="PathScope.Normalize"/>d — the precondition
+    /// <see cref="SandboxPathCanonicalizer.Canonicalize"/> documents.
+    /// </param>
     /// <param name="directoryVerdicts">
     /// <para>
     /// Optional memo of directory path to verdict, scoped to a <em>single</em> search operation and
@@ -423,97 +506,97 @@ public sealed class FileSystemService : IFileSystemService
     /// staleness window to the same window the directory prune already has.
     /// </para>
     /// </param>
-    private bool IsProtectedPath(string fullPath, Dictionary<string, bool>? directoryVerdicts = null)
+    private DirectoryVerdict ResolveVerdict(
+        string normalizedPath, Dictionary<string, DirectoryVerdict>? directoryVerdicts = null)
     {
-        if (_protectedPaths.Count == 0)
-            return false;
-
-        if (directoryVerdicts is not null && TryInheritParentVerdict(fullPath, directoryVerdicts, out var inherited))
+        if (directoryVerdicts is not null
+            && TryInheritParentVerdict(normalizedPath, directoryVerdicts, out var inherited))
+        {
             return inherited;
+        }
 
-        var normalized = CanonicalizePath(fullPath);
-        return _protectedPaths.Any(protectedPath =>
-            PathScope.IsSameOrUnderNormalized(normalized, protectedPath));
+        var canonical = SandboxPathCanonicalizer.Canonicalize(normalizedPath);
+        var isProtected = _protectedPaths.Any(protectedPath =>
+            PathScope.IsSameOrUnderNormalized(canonical, protectedPath));
+
+        return new DirectoryVerdict(isProtected, canonical);
     }
 
     /// <summary>
-    /// Resolves <paramref name="fullPath"/>'s verdict from its already-canonicalized parent directory
-    /// when that is sound, avoiding a link resolution per file.
+    /// Resolves <paramref name="normalizedPath"/>'s verdict from its already-canonicalized parent
+    /// directory when that is sound, avoiding a link resolution per file.
     /// </summary>
     /// <remarks>
-    /// A recorded parent verdict of <see langword="true"/> transfers unconditionally — everything under
-    /// a protected directory is protected. A verdict of <see langword="false"/> transfers only when the
-    /// entry is not itself a reparse point, because a symlink sitting in an unprotected directory can
-    /// still resolve into the protected one; those fall through to full canonicalization. Reading the
-    /// attribute costs a stat but no handle open, which is the syscall being avoided.
+    /// <para>
+    /// Inheritance is only sound for a plain file: a subdirectory can itself be a protected root,
+    /// and a reparse point resolves somewhere its parent says nothing about. Both are rejected
+    /// here, by the method rather than by convention, and fall through to full canonicalization.
+    /// Reading the attributes costs a stat but no handle open, which is the syscall being avoided.
+    /// </para>
+    /// <para>
+    /// For an entry that passes that test the composed path is exact, not an approximation: a
+    /// non-reparse-point entry genuinely lives inside its parent directory, so appending its leaf
+    /// name to the parent's canonical directory names the same location a full canonicalization
+    /// would return. That exactness is what makes the memo safe to feed the allowlist comparison —
+    /// inheriting only the boolean, as this method used to, left the allow arm with a literal path
+    /// whose parent had been canonicalized but which had not.
+    /// </para>
+    /// <para>
+    /// A parent verdict of <see langword="true"/> transfers unconditionally — everything under a
+    /// protected directory is protected, including a link planted there — but is canonicalized in
+    /// full rather than composed, because a reparse point in that position does not occupy the
+    /// composed location. That branch is effectively unreachable during a search (protected
+    /// directories are never enqueued), so the extra resolve costs nothing in practice.
+    /// </para>
     /// </remarks>
     private static bool TryInheritParentVerdict(
-        string fullPath, Dictionary<string, bool> directoryVerdicts, out bool verdict)
+        string normalizedPath,
+        Dictionary<string, DirectoryVerdict> directoryVerdicts,
+        out DirectoryVerdict verdict)
     {
-        verdict = false;
+        verdict = default;
 
-        var parent = Path.GetDirectoryName(fullPath);
-        if (parent is null || !directoryVerdicts.TryGetValue(PathScope.Normalize(parent), out var parentVerdict))
-            return false;
-
-        if (parentVerdict)
+        var parent = Path.GetDirectoryName(normalizedPath);
+        if (parent is null
+            || !directoryVerdicts.TryGetValue(PathScope.Normalize(parent), out var parentVerdict))
         {
-            verdict = true;
+            return false;
+        }
+
+        if (parentVerdict.IsProtected)
+        {
+            verdict = new DirectoryVerdict(true, SandboxPathCanonicalizer.Canonicalize(normalizedPath));
             return true;
         }
 
         try
         {
-            return !File.GetAttributes(fullPath).HasFlag(FileAttributes.ReparsePoint);
+            // Directory: a subdirectory can itself be a protected root. ReparsePoint: a link
+            // resolves somewhere its parent says nothing about. Enforced here rather than left as a
+            // caller contract, because a caller that gets it wrong fails open and fails silently.
+            var attributes = File.GetAttributes(normalizedPath);
+            if (attributes.HasFlag(FileAttributes.Directory)
+                || attributes.HasFlag(FileAttributes.ReparsePoint))
+            {
+                return false;
+            }
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        catch (Exception ex) when (ex is IOException
+                                      or UnauthorizedAccessException
+                                      or ArgumentException
+                                      or NotSupportedException)
         {
-            // Unreadable or already gone: fall through to the full check rather than guess.
+            // Unreadable, already gone, or a path shape the runtime rejects outright: fall through
+            // to the full check rather than guess. NotSupportedException is in the filter so it
+            // produces a clean deny instead of escaping SearchFilesAsync unhandled.
             return false;
         }
-    }
 
-    /// <summary>
-    /// Resolves a path to its canonical absolute form, so an alias cannot sidestep a comparison
-    /// against the long name.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// The two steps cover different aliases. <see cref="Path.GetFullPath(string)"/> is what
-    /// handles Windows 8.3 short names: on Windows its normalization expands any component that
-    /// exists on disk, turning <c>PROGRA~1</c> into <c>Program Files</c>. The
-    /// <see cref="FileSystemInfo.ResolveLinkTarget(bool)"/> step then covers symlinks and
-    /// junctions, which <c>GetFullPath</c> does leave intact.
-    /// </para>
-    /// <para>
-    /// A component that does not exist is left exactly as written, because there is nothing on
-    /// disk to expand it against. That is harmless for the protected-path check: a protected
-    /// directory that does not exist holds nothing to protect, and a literal <c>AGENT-~1</c>
-    /// path then names a genuinely different directory rather than aliasing the protected one.
-    /// </para>
-    /// </remarks>
-    /// <param name="path">
-    /// The path to canonicalize. Must already be <see cref="PathScope.Normalize"/>d — every caller
-    /// normalizes before calling, so re-running <see cref="Path.GetFullPath(string)"/> here would
-    /// repeat work already done on a per-file security check.
-    /// </param>
-    private static string CanonicalizePath(string path)
-    {
-        try
-        {
-            // One stat answers both "does it exist" and "is it a directory"; a missing entry throws
-            // and is caught below. ResolveLinkTarget(returnFinalTarget) then canonicalizes the entry —
-            // for a path that does not exist yet the normalized form is the best available answer.
-            var info = File.GetAttributes(path).HasFlag(FileAttributes.Directory)
-                ? new DirectoryInfo(path)
-                : (FileSystemInfo)new FileInfo(path);
-
-            return PathScope.Normalize(info.ResolveLinkTarget(true)?.FullName ?? info.FullName);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
-        {
-            return path;
-        }
+        verdict = new DirectoryVerdict(
+            false,
+            PathScope.Normalize(Path.Combine(
+                parentVerdict.CanonicalPath, Path.GetFileName(normalizedPath))));
+        return true;
     }
 
     private void ValidateWriteTarget(string fullPath)

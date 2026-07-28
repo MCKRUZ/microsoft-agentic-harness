@@ -82,6 +82,54 @@ public sealed class FileSystemServiceProtectedPathTests : IDisposable
         results[0].FilePath.Should().Contain("notes.txt");
     }
 
+    [Fact]
+    public async Task SearchFilesAsync_ProtectedDirectoryNestedBelowAnAllowedParent_IsStillPruned()
+    {
+        // The per-operation verdict memo must never decide a DIRECTORY's verdict. A protected
+        // directory is an ordinary, non-reparse-point directory whose parent is legitimately
+        // unprotected, so parent-verdict inheritance — which is sound for files — reports it as
+        // allowed, prunes nothing, and the walk reads the approval-verdict database. Nesting it a
+        // level down is what puts an already-memoized parent above it and exercises that path.
+        var nestedProtected = Path.Combine(_root, "deep", ".agent-state");
+        Directory.CreateDirectory(nestedProtected);
+        await File.WriteAllTextAsync(
+            Path.Combine(nestedProtected, "governance-state.db"), "needle-in-verdicts");
+
+        var sut = new FileSystemService(
+            NullLogger<FileSystemService>.Instance, [_root], [nestedProtected]);
+
+        var results = await sut.SearchFilesAsync(_root, "needle");
+
+        results.Should().BeEmpty("a protected directory is pruned wherever it sits in the walk");
+    }
+
+    [SkippableFact]
+    public async Task SearchFilesAsync_CaseDistinctProtectedDirectories_AreBothDenied()
+    {
+        Skip.If(
+            OperatingSystem.IsWindows(),
+            "Windows paths are case-insensitive, so 'state' and 'State' name one directory and the " +
+            "de-duplication this test detects cannot arise. It runs on the Linux CI runners.");
+
+        // The deny set must be keyed by PathScope.Comparer, never a hardcoded OrdinalIgnoreCase.
+        // On a case-sensitive filesystem these are two different directories; a case-insensitive
+        // HashSet collapses them into one entry and the survivor silently stops being protected.
+        // That failure direction is fail-OPEN, which is why it belongs in the deny set's tests.
+        var lower = Path.Combine(_root, "state");
+        var upper = Path.Combine(_root, "State");
+        Directory.CreateDirectory(lower);
+        Directory.CreateDirectory(upper);
+        await File.WriteAllTextAsync(Path.Combine(lower, "a.db"), "needle-lower-verdicts");
+        await File.WriteAllTextAsync(Path.Combine(upper, "b.db"), "needle-upper-verdicts");
+
+        var sut = new FileSystemService(
+            NullLogger<FileSystemService>.Instance, [_root], [lower, upper]);
+
+        var results = await sut.SearchFilesAsync(_root, "needle");
+
+        results.Should().BeEmpty("both case-distinct protected directories must survive the set");
+    }
+
     [SkippableFact]
     public async Task SearchFilesAsync_SymlinkIntoProtectedDirectory_IsStillDenied()
     {

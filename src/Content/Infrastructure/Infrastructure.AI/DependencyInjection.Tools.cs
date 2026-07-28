@@ -42,11 +42,24 @@ public static partial class DependencyInjection
         var governanceStateDirectory = Path.GetDirectoryName(
             Persistence.GovernanceStatePaths.Resolve(appConfig.AI.Governance.DurableState.DatabasePath));
 
+        string[] protectedPaths = governanceStateDirectory is null ? [] : [governanceStateDirectory];
+
         services.AddSingleton<IFileSystemService>(sp =>
             new FileSystemService(
                 sp.GetRequiredService<ILogger<FileSystemService>>(),
                 allowedBasePaths,
-                governanceStateDirectory is null ? [] : [governanceStateDirectory]));
+                protectedPaths));
+
+        // The deny list above is defence in depth; this validator is the load-bearing control.
+        // It refuses to boot when the governance-state directory sits inside an allowed base path,
+        // because a hard link created there would alias the approval-verdict database into the
+        // sandbox and no per-path check can see through a hard link. Both collections are handed
+        // over by value so the assertion covers exactly the paths the service enforces.
+        services.AddHostedService(sp => new FileSystemSandboxStartupValidator(
+            [.. allowedBasePaths],
+            protectedPaths,
+            sp.GetRequiredService<IOptionsMonitor<AppConfig>>(),
+            sp.GetRequiredService<ILogger<FileSystemSandboxStartupValidator>>()));
 
         // File system tool — ITool adapter for LLM consumption, registered with keyed DI
         services.AddKeyedSingleton<ITool>(FileSystemTool.ToolName, (sp, _) =>
