@@ -25,6 +25,7 @@ using Presentation.AgentHub.Planner;
 using Presentation.AgentHub.Config;
 using Presentation.AgentHub.Telemetry;
 using Presentation.Common.Escalations;
+using Presentation.Common.Governance;
 using Microsoft.Extensions.Options;
 
 namespace Presentation.AgentHub;
@@ -59,7 +60,11 @@ public static class DependencyInjection
             })
             // Deliberate opt-in: AgentHub runs the agent workload, so the in-process escalation
             // state lives here and the human approval API must be co-resident with it.
-            .AddEscalationApi();
+            .AddEscalationApi()
+            // Deliberate opt-in: the autonomy governance read API answers from this host's own
+            // configuration and profile registry, so it belongs in the workload host whose
+            // governance posture it describes.
+            .AddAutonomyApi();
 
         // Surfaces a missing/invalid AI provider configuration via /health/ai. Additive to the
         // health checks registered in Presentation.Common — Degraded (not Unhealthy) because the
