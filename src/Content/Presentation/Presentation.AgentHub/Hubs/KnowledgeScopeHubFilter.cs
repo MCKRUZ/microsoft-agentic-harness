@@ -29,9 +29,17 @@ public sealed class KnowledgeScopeHubFilter : IHubFilter
         if (invocationContext.ServiceProvider.GetService(typeof(IKnowledgeScopeWriter)) is not IKnowledgeScopeWriter scopeWriter)
             return await next(invocationContext);
 
+        // Same fail-closed rule as the HTTP middleware: an authenticated caller whose identity cannot be
+        // resolved must not run unscoped, because an unscoped write is a globally readable one. HubException
+        // is SignalR's client-visible rejection; its message is deliberately non-specific.
+        if (!KnowledgeScopeInitializer.TryApply(invocationContext.Context.User, scopeWriter, out var scopeToken))
+            throw new HubException("The authenticated principal carries no usable identity.");
+
         // Disposing after the hub method restores the previously ambient identity, so scope set for one
         // invocation can never survive into the connection's next invocation.
-        using var scopeToken = KnowledgeScopeInitializer.Apply(invocationContext.Context.User, scopeWriter);
-        return await next(invocationContext);
+        using (scopeToken)
+        {
+            return await next(invocationContext);
+        }
     }
 }

@@ -34,10 +34,15 @@ if (!app.Environment.IsDevelopment())
 }
 app.UseRouting();
 app.UseAuthentication();
-// Establish the per-request knowledge scope (user/tenant) from the authenticated principal, immediately
-// after authentication so HttpContext.User is populated. Without it the ambient scope stays null, and a
-// null owner is GLOBAL — not private — to PlannerScopeFilter.VisibleTo: every plan this host persists
-// would be readable by every caller in every tenant.
+// Establish the per-request knowledge scope (user/tenant) from the authenticated principal. Without it
+// the ambient scope stays null, and a null owner is GLOBAL — not private — to
+// PlannerScopeFilter.VisibleTo: every plan this host persists would be readable by every caller in
+// every tenant.
+//
+// CANONICAL POSITION — immediately after UseAuthentication, before UseAuthorization. Identical to
+// Presentation.AgentHub; see the fuller rationale there. In short: earliest point where
+// HttpContext.User exists, so nothing downstream can read the scope before it is set, and an
+// unusable-identity rejection happens before authorization does any work.
 app.UseMiddleware<KnowledgeScopeMiddleware>();
 app.UseAuthorization();
 app.UseRateLimiter();

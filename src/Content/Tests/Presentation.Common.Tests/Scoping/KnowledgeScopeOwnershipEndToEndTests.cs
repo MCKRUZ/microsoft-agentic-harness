@@ -137,10 +137,49 @@ public sealed class KnowledgeScopeOwnershipEndToEndTests : IDisposable
         }
     }
 
+    [Fact]
+    public async Task AmbiguousIdentityCaller_IsRefusedScope_SoItCannotWriteAReadableRecord()
+    {
+        // The third route to a global record: identity resolution produces nothing, and nothing means
+        // GLOBAL. Proven end to end rather than argued — the caller is refused, and had it been admitted
+        // unscoped, the plan it wrote would have been readable by an unrelated caller (asserted below).
+        var ambiguous = Authenticated(("oid", "victim"), ("oid", "attacker"));
+
+        KnowledgeScopeInitializer.TryApply(ambiguous, _accessor, out var token).Should().BeFalse(
+            "an identity we cannot determine must not establish scope");
+
+        using (token)
+        {
+            _accessor.UserId.Should().BeNull();
+        }
+
+        // Demonstrate the consequence the refusal prevents: a plan written with no ambient identity is
+        // global, and a completely unrelated caller can read it.
+        var plan = CreateTestGraph();
+        (await _store.SavePlanAsync(plan, CancellationToken.None)).IsSuccess.Should().BeTrue();
+
+        using (ApplyScope(Authenticated(("oid", "unrelated-caller"))))
+        {
+            var leaked = await _store.LoadPlanAsync(plan.Id, CancellationToken.None);
+
+            leaked.Value.Should().NotBeNull(
+                "an unscoped write IS globally readable — which is exactly why the ambiguous caller " +
+                "must be refused before it ever reaches persistence");
+        }
+    }
+
     // -- Helpers --
 
-    private IDisposable ApplyScope(ClaimsPrincipal principal) =>
-        KnowledgeScopeInitializer.Apply(principal, _accessor);
+    /// <summary>
+    /// Applies scope the way the middleware does, asserting the caller was ADMITTED. Any principal a
+    /// test scopes through this helper is one the real pipeline would have let through.
+    /// </summary>
+    private IDisposable ApplyScope(ClaimsPrincipal principal)
+    {
+        KnowledgeScopeInitializer.TryApply(principal, _accessor, out var token)
+            .Should().BeTrue("this helper is for callers the pipeline admits");
+        return token;
+    }
 
     private static ClaimsPrincipal Authenticated(params (string Type, string Value)[] claims) =>
         new(new ClaimsIdentity(claims.Select(c => new Claim(c.Type, c.Value)), "TestAuth"));

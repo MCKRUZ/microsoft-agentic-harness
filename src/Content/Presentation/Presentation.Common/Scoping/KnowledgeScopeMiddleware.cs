@@ -22,10 +22,18 @@ namespace Presentation.Common.Scoping;
 /// become readable by every caller in every tenant instead of private to their author.
 /// </para>
 /// <para>
-/// Unauthenticated requests (anonymous endpoints, health probes, a dev auth bypass without an
-/// <c>oid</c>) leave the scope at its configured default — the writer is only invoked when a user id
-/// is present. Keeping unauthenticated callers away from scope-stamped stores is the job of the host's
-/// authentication policy, not of this middleware.
+/// <b>Unauthenticated</b> requests (anonymous endpoints, health probes) proceed with the scope left at
+/// its configured default. A caller who presented no credentials has not asked to own anything, and
+/// keeping them away from scope-stamped stores is the host's authorization policy's job, not this
+/// middleware's.
+/// </para>
+/// <para>
+/// <b>Authenticated requests whose identity cannot be resolved are REJECTED</b> with 401 — no
+/// <c>oid</c>/<c>sub</c> in any accepted form, or two conflicting values. Such a caller is asking to act
+/// as somebody and we cannot say who; letting them proceed unscoped would write an unowned record, and
+/// unowned means GLOBAL. This is the middleware's fail-closed edge: every other route by which
+/// "identity resolved to nothing" could reach persistence has been closed one at a time, and this is
+/// the chokepoint where the remaining ones die.
 /// </para>
 /// </remarks>
 public sealed class KnowledgeScopeMiddleware
@@ -44,7 +52,8 @@ public sealed class KnowledgeScopeMiddleware
 
     /// <summary>
     /// Sets the knowledge scope from the authenticated principal, invokes the rest of the pipeline,
-    /// then restores the previously ambient scope.
+    /// then restores the previously ambient scope. Rejects a request whose principal authenticated but
+    /// carries no usable identity.
     /// </summary>
     /// <param name="context">The current HTTP context.</param>
     /// <param name="scopeWriter">The request-scoped knowledge scope writer.</param>
@@ -52,10 +61,37 @@ public sealed class KnowledgeScopeMiddleware
     {
         ArgumentNullException.ThrowIfNull(context);
 
+        if (!KnowledgeScopeInitializer.TryApply(context.User, scopeWriter, out var scopeToken))
+        {
+            await WriteUnusableIdentityAsync(context);
+            return;
+        }
+
         // Disposing on the way out restores the previous ambient value. Post-turn background writes
         // started during the request captured their execution context while the scope was still set,
         // so they keep the caller's identity — the restore only affects this flow.
-        using var scopeToken = KnowledgeScopeInitializer.Apply(context.User, scopeWriter);
-        await _next(context);
+        using (scopeToken)
+        {
+            await _next(context);
+        }
+    }
+
+    /// <summary>
+    /// Short-circuits with 401 when an authenticated principal has no usable identity. Matches the status
+    /// <c>BundlesController</c> already returns for the same condition, and the response body shape of
+    /// <c>GlobalExceptionMiddleware</c>. Deliberately says nothing about which claim was missing or
+    /// ambiguous — that would tell a caller probing with injected claims what to try next.
+    /// </summary>
+    private static Task WriteUnusableIdentityAsync(HttpContext context)
+    {
+        context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+        context.Response.ContentType = "application/json";
+
+        return context.Response.WriteAsJsonAsync(new
+        {
+            error = "The authenticated principal carries no usable identity.",
+            statusCode = StatusCodes.Status401Unauthorized,
+            timestamp = DateTime.UtcNow,
+        });
     }
 }

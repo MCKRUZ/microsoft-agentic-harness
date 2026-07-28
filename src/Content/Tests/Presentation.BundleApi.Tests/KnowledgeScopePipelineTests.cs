@@ -109,6 +109,36 @@ public sealed class KnowledgeScopePipelineTests
     }
 
     [Fact]
+    public async Task AmbiguousIdentity_IsRejected_ByTheRealPipeline_AndNeverEstablishesScope()
+    {
+        // An authenticated caller presenting two conflicting oid values is turned away with 401 and never
+        // reaches the handler, so it cannot persist an unowned (world-readable) plan.
+        //
+        // SCOPE OF THIS TEST — same caveat as RequestWithoutIdentity below, and it was MEASURED, not
+        // assumed. It pins the host-level PROPERTY, not the middleware. Mutation testing showed it stays
+        // GREEN with the middleware's fail-closed rejection reverted, because every BundlesController
+        // action independently 401s via ResolveCallerId. The middleware guarantee is pinned by
+        // Presentation.Common.Tests (KnowledgeScopeInitializerTests, KnowledgeScopeMiddlewareTests,
+        // KnowledgeScopeOwnershipEndToEndTests) — those DO fail when it is reverted. Do not treat a
+        // passing run here as evidence the middleware is fail-closed.
+        var recorder = new ScopeRecorder();
+        using var factory = CreateAuthenticatedFactory(recorder);
+        using var client = factory.CreateClient();
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/api/bundles/does-not-exist/runs")
+        {
+            Content = JsonContent.Create(new { userMessages = new[] { "hello" }, maxTurns = 1 })
+        };
+        request.Headers.Add(HeaderIdentityAuthenticationHandler.AmbiguousHeader, "true");
+
+        var response = await client.SendAsync(request);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Unauthorized,
+            "an identity we cannot determine must stop the request, not proceed unscoped");
+        recorder.Observed.Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task RequestWithoutIdentity_IsRejected_AndNeverEstablishesScope()
     {
         // Boot the host with a real Entra scheme (no anonymous opt-in), the production posture. A caller
@@ -260,6 +290,9 @@ public sealed class KnowledgeScopePipelineTests
         public const string SubHeader = "X-Test-Sub";
         public const string TenantHeader = "X-Test-Tid";
 
+        /// <summary>Mints two conflicting <c>oid</c> claims — an authenticated but unresolvable caller.</summary>
+        public const string AmbiguousHeader = "X-Test-Ambiguous";
+
         public HeaderIdentityAuthenticationHandler(
             IOptionsMonitor<AuthenticationSchemeOptions> options,
             ILoggerFactory logger,
@@ -270,6 +303,10 @@ public sealed class KnowledgeScopePipelineTests
 
         protected override Task<AuthenticateResult> HandleAuthenticateAsync()
         {
+            if (Request.Headers.ContainsKey(AmbiguousHeader))
+                return Task.FromResult(Success(
+                    [new Claim("oid", "victim"), new Claim("oid", "attacker")]));
+
             var oid = Request.Headers[UserHeader].ToString();
             var sub = Request.Headers[SubHeader].ToString();
             if (string.IsNullOrEmpty(oid) && string.IsNullOrEmpty(sub))
@@ -285,8 +322,13 @@ public sealed class KnowledgeScopePipelineTests
             if (!string.IsNullOrEmpty(tid))
                 claims.Add(new Claim("tid", tid));
 
+            return Task.FromResult(Success(claims));
+        }
+
+        private static AuthenticateResult Success(IEnumerable<Claim> claims)
+        {
             var principal = new ClaimsPrincipal(new ClaimsIdentity(claims, SchemeName));
-            return Task.FromResult(AuthenticateResult.Success(new AuthenticationTicket(principal, SchemeName)));
+            return AuthenticateResult.Success(new AuthenticationTicket(principal, SchemeName));
         }
     }
 }
