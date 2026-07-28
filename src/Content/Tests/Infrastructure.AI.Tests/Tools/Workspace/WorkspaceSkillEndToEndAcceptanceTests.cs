@@ -166,7 +166,11 @@ public sealed class WorkspaceSkillEndToEndAcceptanceTests : IDisposable
         var approveHandler = new Application.AI.Common.CQRS.Changes.ApproveChangeProposal.ApproveChangeProposalCommandHandler(
             store,
             sp.GetRequiredService<IChangeProposalDispatchQueue>(),
+            // Same audit sink the orchestrator writes through, so the human approval lands in the
+            // one chain alongside the gate decisions on either side of it.
+            sp.GetRequiredService<IChangeAuditWriter>(),
             _config,
+            NullLogger<Application.AI.Common.CQRS.Changes.ApproveChangeProposal.ApproveChangeProposalCommandHandler>.Instance,
             TimeProvider.System);
 
         var approveResult = await approveHandler.Handle(

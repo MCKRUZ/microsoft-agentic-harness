@@ -28,7 +28,7 @@ public sealed class GetChangeProposalQueryHandler
 
         var proposal = await _store.GetAsync(request.Id, cancellationToken).ConfigureAwait(false);
         return proposal is null
-            ? Result<ChangeProposal>.NotFound($"ChangeProposal '{request.Id}' not found.")
+            ? Result<ChangeProposal>.NotFound("The requested change proposal was not found.")
             : Result<ChangeProposal>.Success(proposal);
     }
 }

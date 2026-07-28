@@ -25,6 +25,7 @@ using Presentation.AgentHub.Planner;
 using Presentation.AgentHub.Config;
 using Presentation.AgentHub.Telemetry;
 using Domain.Common.Config;
+using Presentation.Common.ChangeProposals;
 using Presentation.Common.Drift;
 using Presentation.Common.Escalations;
 using Presentation.Common.Governance;
@@ -67,6 +68,9 @@ public static class DependencyInjection
             // configuration and profile registry, so it belongs in the workload host whose
             // governance posture it describes.
             .AddAutonomyApi()
+            // Deliberate opt-in: AgentHub also owns the in-process change-proposal store, so the
+            // human decision API for proposals must be co-resident with it too.
+            .AddChangeProposalApi()
             // Deliberate opt-in: AgentHub runs the drift subsystem (stores, EWMA state,
             // escalation bridge), so pushed evaluations must land in this process.
             .AddDriftApi();
@@ -225,6 +229,27 @@ public static class DependencyInjection
                         ?? context.Connection.RemoteIpAddress?.ToString()
                         ?? "unknown";
                     return RateLimitPartition.GetFixedWindowLimiter($"escalation:{escalationCaller}", _ => new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = 30,
+                        Window = TimeSpan.FromMinutes(1),
+                        QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                        QueueLimit = 0,
+                    });
+                }
+
+                // Change-proposal decision writes (approve/reject/cancel) mutate proposal state,
+                // append durable gate-history audit entries, and an approval enqueues real merge
+                // work; cap them per authenticated caller so a scripted or stuck client cannot
+                // hammer the decision loop or flood the audit trail. Reads (list, detail polling
+                // after an approval) stay unthrottled, matching the escalation API's write-only
+                // posture and its 30/min budget.
+                if (context.Request.Method == HttpMethods.Post &&
+                    context.Request.Path.StartsWithSegments("/api/change-proposals"))
+                {
+                    var proposalCaller = context.User.GetUserIdOrNull()
+                        ?? context.Connection.RemoteIpAddress?.ToString()
+                        ?? "unknown";
+                    return RateLimitPartition.GetFixedWindowLimiter($"proposal:{proposalCaller}", _ => new FixedWindowRateLimiterOptions
                     {
                         PermitLimit = 30,
                         Window = TimeSpan.FromMinutes(1),

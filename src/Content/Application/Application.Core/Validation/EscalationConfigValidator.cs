@@ -37,16 +37,24 @@ public sealed class EscalationConfigValidator : AbstractValidator<EscalationConf
             .NotEmpty()
             .WithMessage("AuditStoragePath must be configured.");
 
-        // Gated on Enabled like the sibling rules: while the escalation subsystem is off there
-        // is nothing the claim type can authorize, and these validators impose no constraints on
-        // disabled features (hosts booting on class defaults must keep booting).
+        // Deliberately NOT gated on Enabled, unlike the sibling rules below. This setting no
+        // longer belongs to escalation alone: the change-proposal decision API reads the same
+        // ApproverClaimType to stamp the reviewer identity on its audit records, and that API is
+        // mounted independently of EscalationConfig.Enabled (which defaults to false). Gating the
+        // allowlist behind one subsystem's flag therefore left the default deployment reading an
+        // unvalidated claim type — an operator could point it at a user-editable claim (a B2C
+        // custom attribute has no JWT inbound mapping, so it resolves cleanly) and get
+        // attacker-chosen strings recorded as the deciding identity. Claim hygiene is an
+        // invariant of the claim itself, not a feature of whoever consumes it. Safe to always
+        // enforce: the class default (preferred_username) is allowlisted, so hosts running on
+        // defaults keep booting.
         RuleFor(x => x.ApproverClaimType)
             .Must(v => ApproverClaimTypes.Allowed.Contains(v, StringComparer.Ordinal))
             .WithMessage(
                 "ApproverClaimType must be one of: " + string.Join(", ", ApproverClaimTypes.Allowed) +
-                ". Only issuer-asserted identity claims may drive roster authorization — " +
-                "user-editable claims like 'name' or unverified 'email' must never select the approver.")
-            .When(x => x.Enabled);
+                ". Only issuer-asserted identity claims may drive approval identity — " +
+                "user-editable claims like 'name' or unverified 'email' must never select the " +
+                "approver or be stamped as a change-proposal reviewer.");
 
         RuleFor(x => x.PriorityLevels)
             .NotEmpty()

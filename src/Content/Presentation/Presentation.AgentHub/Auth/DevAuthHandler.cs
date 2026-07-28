@@ -34,6 +34,10 @@ internal sealed class DevAuthHandler(
             new Claim(ClaimTypes.Role, Presentation.Common.Escalations.EscalationsController.DecideRole),
             new Claim(ClaimTypes.Role, Presentation.Common.Escalations.EscalationsController.AdminRole),
             new Claim(ClaimTypes.Role, Presentation.Common.Governance.AutonomyController.ReadRole),
+            // Change-proposal decision API roles (reviewer identity reuses the
+            // "preferred_username" claim above, shared with the escalation API).
+            new Claim(ClaimTypes.Role, Presentation.Common.ChangeProposals.ChangeProposalsController.DecideRole),
+            new Claim(ClaimTypes.Role, Presentation.Common.ChangeProposals.ChangeProposalsController.AdminRole),
             // This dev principal deliberately holds BOTH drift roles so the whole surface is
             // exercisable locally — which means the read/operate separation (a reader must not
             // be able to push evaluations) is never exercised by running the app, only by the
