@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using Domain.Common.Helpers;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -43,12 +44,22 @@ namespace Infrastructure.AI.Tools;
 /// database file — on a host where this validator already warned and moved on. A boot-time
 /// assertion that a live configuration change can invalidate has to hold on every boot.
 /// </para>
+/// <para>
+/// <b>It also refuses a platform the hard-link control cannot run on.</b> That control is what
+/// actually closes the bypass, and it fails closed, so on an unimplemented platform — macOS and the
+/// BSDs — every file operation is denied. Without this check the operator meets that as a stream of
+/// per-call refusals whose message cannot name the real cause, since at the point of denial the
+/// service knows only that the count was unavailable. Meeting it once, at boot, with the platform
+/// named and the ways forward spelled out, is the difference between a documented limitation and an
+/// inexplicably broken template.
+/// </para>
 /// </remarks>
 public sealed class FileSystemSandboxStartupValidator : IHostedService
 {
     private readonly IReadOnlyList<string> _allowedBasePaths;
     private readonly IReadOnlyList<string> _protectedPaths;
     private readonly ILogger<FileSystemSandboxStartupValidator> _logger;
+    private readonly bool _hardLinkInspectionSupported;
 
     /// <summary>
     /// Initializes a new <see cref="FileSystemSandboxStartupValidator"/>.
@@ -66,6 +77,33 @@ public sealed class FileSystemSandboxStartupValidator : IHostedService
         IReadOnlyList<string> allowedBasePaths,
         IReadOnlyList<string> protectedPaths,
         ILogger<FileSystemSandboxStartupValidator> logger)
+        : this(allowedBasePaths, protectedPaths, logger, HardLinkInspector.IsSupportedPlatform)
+    {
+    }
+
+    /// <summary>
+    /// Initializes a new <see cref="FileSystemSandboxStartupValidator"/> with the hard-link
+    /// platform-capability signal supplied explicitly.
+    /// </summary>
+    /// <remarks>
+    /// Exists so the platform assertion can be tested on every operating system CI runs on. Faking
+    /// the OS itself is not possible in-process, and a test that could only fail on macOS would
+    /// never run — the repository's CI is Linux-only. Passing the capability in means the branch is
+    /// exercised everywhere, which is the difference between a covered guard and one nobody has
+    /// watched fail.
+    /// </remarks>
+    /// <param name="allowedBasePaths">The base paths the file-system tool may reach, as registered.</param>
+    /// <param name="protectedPaths">The harness-state directories denied to the tool, as registered.</param>
+    /// <param name="logger">Logger for the validation outcome.</param>
+    /// <param name="hardLinkInspectionSupported">
+    /// Whether the running platform has a link-count implementation. Production passes
+    /// <see cref="HardLinkInspector.IsSupportedPlatform"/>.
+    /// </param>
+    internal FileSystemSandboxStartupValidator(
+        IReadOnlyList<string> allowedBasePaths,
+        IReadOnlyList<string> protectedPaths,
+        ILogger<FileSystemSandboxStartupValidator> logger,
+        bool hardLinkInspectionSupported)
     {
         ArgumentNullException.ThrowIfNull(allowedBasePaths);
         ArgumentNullException.ThrowIfNull(protectedPaths);
@@ -74,29 +112,74 @@ public sealed class FileSystemSandboxStartupValidator : IHostedService
         _allowedBasePaths = allowedBasePaths;
         _protectedPaths = protectedPaths;
         _logger = logger;
+        _hardLinkInspectionSupported = hardLinkInspectionSupported;
     }
 
     /// <inheritdoc />
     /// <exception cref="InvalidOperationException">
-    /// A protected harness-state directory lies inside an allowed base path.
+    /// A protected harness-state directory lies inside an allowed base path, or protected
+    /// directories are configured on a platform where the hard-link control cannot run.
     /// </exception>
     public Task StartAsync(CancellationToken cancellationToken)
     {
+        // Geometry first. When both are wrong, the overlap is the one that is a security
+        // misconfiguration in its own right and stays wrong after a move to a supported platform,
+        // so it is the more useful thing to say first.
         var overlaps = FindOverlaps();
-        if (overlaps.Count == 0)
-            return Task.CompletedTask;
+        if (overlaps.Count > 0)
+        {
+            // Logged structurally as well as thrown: the exception message is one string for a
+            // human, while these fields are what a log query can actually group and alert on.
+            _logger.LogError(
+                "Refusing to start: protected harness-state directory {ProtectedPath} lies inside the " +
+                "file-system tool's allowed base path {AllowedBasePath} ({OverlapCount} overlap(s) total).",
+                overlaps[0].ProtectedPath,
+                overlaps[0].AllowedBasePath,
+                overlaps.Count);
 
-        // Logged structurally as well as thrown: the exception message is one string for a human,
-        // while these fields are what a log query can actually group and alert on.
-        _logger.LogError(
-            "Refusing to start: protected harness-state directory {ProtectedPath} lies inside the " +
-            "file-system tool's allowed base path {AllowedBasePath} ({OverlapCount} overlap(s) total).",
-            overlaps[0].ProtectedPath,
-            overlaps[0].AllowedBasePath,
-            overlaps.Count);
+            throw new InvalidOperationException(BuildOverlapFailureMessage(overlaps));
+        }
 
-        throw new InvalidOperationException(BuildFailureMessage(overlaps));
+        if (HasProtectedPaths && !_hardLinkInspectionSupported)
+        {
+            _logger.LogError(
+                "Refusing to start: the file-system tool's hard-link sandbox control has no " +
+                "implementation on {Platform}, and {ProtectedPathCount} protected harness-state " +
+                "director(y/ies) are configured, so every file operation would be denied.",
+                PlatformLabel,
+                _protectedPaths.Count);
+
+            throw new InvalidOperationException(BuildUnsupportedPlatformMessage());
+        }
+
+        return Task.CompletedTask;
     }
+
+    /// <summary>
+    /// Whether any usable protected path is configured — the condition under which the file-system
+    /// tool arms its per-operation hard-link check.
+    /// </summary>
+    /// <remarks>
+    /// Blank entries are discarded to mirror <see cref="FileSystemService"/> exactly: its
+    /// constructor drops them before counting, so a list holding only blanks leaves the runtime
+    /// check disarmed. A validator that counted raw entries would refuse to boot over a
+    /// configuration the tool treats as having nothing to protect.
+    /// </remarks>
+    private bool HasProtectedPaths =>
+        _protectedPaths.Any(p => !string.IsNullOrWhiteSpace(p));
+
+    /// <summary>
+    /// A human-readable name for the running operating system.
+    /// </summary>
+    /// <remarks>
+    /// macOS is spelled out because it is the platform this refusal will overwhelmingly be read on,
+    /// and <see cref="RuntimeInformation.OSDescription"/> reports it as "Darwin" plus a kernel
+    /// version, which reads as an unrelated system to someone who has not met it before.
+    /// </remarks>
+    private static string PlatformLabel =>
+        OperatingSystem.IsMacOS()
+            ? $"macOS ({RuntimeInformation.OSDescription})"
+            : RuntimeInformation.OSDescription;
 
     /// <inheritdoc />
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
@@ -137,10 +220,46 @@ public sealed class FileSystemSandboxStartupValidator : IHostedService
     }
 
     /// <summary>
+    /// Builds the boot-failure message for the unimplemented-platform case: what is unavailable,
+    /// what it would cost to ignore, and the only two things that actually resolve it.
+    /// </summary>
+    /// <remarks>
+    /// The message deliberately forecloses the fix an operator would otherwise try first. Turning
+    /// the durable-governance toggles off looks like it should empty the protected list, and it does
+    /// not: <c>RegisterToolServices</c> derives the governance-state directory from
+    /// <c>GovernanceStatePaths.Resolve</c> unconditionally, consulting no toggle, and the configured
+    /// database path defaults to a non-blank value. Sending an operator down that path would cost
+    /// them an hour and end where they started.
+    /// </remarks>
+    private string BuildUnsupportedPlatformMessage()
+    {
+        var firstProtected = _protectedPaths.First(p => !string.IsNullOrWhiteSpace(p));
+
+        return
+            "The file-system tool's hard-link sandbox control has no implementation on this " +
+            $"platform ({PlatformLabel}), and protected harness-state directories are configured " +
+            $"(for example '{firstProtected}'). That control asks the operating system how many " +
+            "directory entries name a file, which is the only question that detects a hard link " +
+            "aliasing protected state; it is implemented with GetFileInformationByHandle on Windows " +
+            "and statx on Linux, and it fails closed everywhere else. Booting anyway would deny " +
+            "every read, write, and search the file-system tool attempts, one call at a time, with " +
+            "an error that cannot name this as the cause. " +
+            "Two ways forward: (1) run the harness on Windows or Linux, the supported platforms; " +
+            "(2) add a branch for this platform to HardLinkInspector — macOS and the BSDs expose the " +
+            "link count only through struct stat, whose field order and widths vary by operating " +
+            "system AND processor architecture, so the layout must be verified against the target " +
+            "rather than assumed; a wrong offset reads the wrong bytes and fails open silently. " +
+            "Note what will NOT work: turning the AppConfig:AI:Governance:DurableState toggles off " +
+            "does not remove the protected paths. The governance-state directory is registered as " +
+            "protected unconditionally, whatever those toggles say, so the file-system tool is " +
+            "unusable on this platform until one of the two options above is taken.";
+    }
+
+    /// <summary>
     /// Builds the boot-failure message: what is wrong, why it matters, and which setting to change.
     /// </summary>
     /// <param name="overlaps">The overlaps found; never empty.</param>
-    private static string BuildFailureMessage(IReadOnlyList<SandboxOverlap> overlaps)
+    private static string BuildOverlapFailureMessage(IReadOnlyList<SandboxOverlap> overlaps)
     {
         var detail = string.Join(
             "; ",

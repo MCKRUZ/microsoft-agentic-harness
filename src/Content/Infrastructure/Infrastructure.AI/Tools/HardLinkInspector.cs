@@ -47,6 +47,26 @@ namespace Infrastructure.AI.Tools;
 internal static class HardLinkInspector
 {
     /// <summary>
+    /// Whether this operating system has a link-count implementation in this type.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is the single authority on platform coverage, not a convenience duplicate of the checks
+    /// in <see cref="InspectFile"/>: that method refuses to run at all when this is
+    /// <see langword="false"/>, so a new platform branch is unreachable until it is also named
+    /// here. The two therefore cannot drift into disagreeing about what is supported.
+    /// </para>
+    /// <para>
+    /// It exists so callers can ask about coverage <em>before</em> they need a verdict.
+    /// <c>FileSystemSandboxStartupValidator</c> uses it to turn what would otherwise be a silent
+    /// per-operation denial on an unimplemented platform into one refusal to boot that names the
+    /// platform and says what to do about it.
+    /// </para>
+    /// </remarks>
+    internal static bool IsSupportedPlatform =>
+        OperatingSystem.IsWindows() || OperatingSystem.IsLinux();
+
+    /// <summary>
     /// How many directory entries the operating system reports for a file.
     /// </summary>
     internal enum LinkCount
@@ -111,6 +131,13 @@ internal static class HardLinkInspector
     /// <param name="path">An absolute path to an entry known not to be a directory.</param>
     private static LinkCount InspectFile(string path)
     {
+        // Asked before the handle is opened, so an unimplemented platform costs nothing per call
+        // and — more importantly — so IsSupportedPlatform is the one place platform coverage is
+        // declared. A branch added below without being named there is unreachable, which is the
+        // failure direction that leaves the guard honest.
+        if (!IsSupportedPlatform)
+            return LinkCount.Unknown;
+
         try
         {
             // FileShare.ReadWrite | Delete so inspecting never contends with a legitimate writer,

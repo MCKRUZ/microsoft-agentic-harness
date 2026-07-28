@@ -408,6 +408,36 @@ The project reads configuration from `AppConfig` bound via the Options pattern. 
 }
 ```
 
+### File-system sandbox: supported platforms
+
+**The file-system tool runs on Windows and Linux only.** On macOS and the BSDs the host refuses to
+start.
+
+The sandbox's last line of defence is a hard-link check. A hard link is a second directory entry for
+the same file — not a shortcut, not a symlink, and carrying nothing for a path check to resolve — so
+a hard link planted in `workspace` that points at the governance-state database reads to every
+path-based rule as an ordinary workspace file. The only way to catch it is to ask the operating
+system how many directory entries name the file, which `HardLinkInspector` does via
+`GetFileInformationByHandle` on Windows and `statx` on Linux. There is no portable API for this, and
+the check **fails closed**: a platform it cannot answer for denies the operation.
+
+macOS and the BSDs expose the count only through `struct stat`, whose field order and widths differ
+by operating system *and* by processor architecture. A guessed layout reads the wrong bytes and
+fails *open* — silently reporting "one link" for a file that has two — which is worse than no
+support at all, so none is shipped rather than an unverified guess.
+
+`FileSystemSandboxStartupValidator` turns this into a boot failure naming the platform, rather than
+letting every file operation fail separately with an error that cannot explain itself. Two ways
+forward:
+
+1. **Run on Windows or Linux.** The supported configuration.
+2. **Add a branch to `HardLinkInspector`** for your platform, verifying the `struct stat` layout
+   against the actual target OS and architecture rather than assuming it.
+
+Note what does *not* help: turning the `AppConfig:AI:Governance:DurableState` toggles off. Those
+control whether durable governance state is *used*; the governance-state directory is registered as
+a protected path unconditionally, so the hard-link check stays armed either way.
+
 ## Common Tasks
 
 ### How to Add a New Tool
