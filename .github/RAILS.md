@@ -14,10 +14,24 @@ them live, and how to prove they actually catch things.
 | **build-and-test** | `workflows/ci.yml` | every PR | **Blocks** (hard gate) |
 | **OWASP Agentic Top-10 Gate** | `workflows/ci.yml` | every PR | **Blocks** (hard gate) |
 | **security-review** | `workflows/security-review.yml` | every PR; reviews on gated paths / `risk:high` | **Blocks on HIGH** |
-| **correctness-review** | `workflows/correctness-review.yml` | every PR; reviews when `src/` changed | **Blocks on a high-confidence defect** (not yet a required check — see go-live) |
-| **grader** | `workflows/grader.yml` | every PR | **Advises** — never blocks |
-| **docs-drift** | `workflows/docs-drift-check.yml` | push to main (code / CI / governance paths) | **Advises** — opens a doc-sync PR |
+| **correctness-review** | `workflows/correctness-review.yml` | ~~every PR~~ — **workflow disabled** | Run locally instead (see below) |
+| **grader** | `workflows/grader.yml` | ~~every PR~~ — **workflow disabled** | Run locally instead (see below) |
+| **docs-drift** | `workflows/docs-drift-check.yml` | ~~push to main~~ — **workflow disabled** | Run locally instead (see below) |
 | **Stop gate** | `../.claude/hooks/stop-build-gate.ps1` | agent tries to finish locally | **Blocks** a red build |
+
+> **Three workflows are currently disabled at the GitHub level** (`gh workflow disable`),
+> not deleted: correctness-review, grader, and docs-drift. They call the Claude API against
+> `ANTHROPIC_API_KEY` and re-trigger on every push to a PR branch, so a fix-then-push rhythm
+> was paying for the Opus correctness reviewer several times per PR. Their local equivalents in
+> `scripts/rails/run-gates.sh` run the same rubrics through the developer's Claude subscription
+> instead. Re-enable any of them with `gh workflow enable <file>.yml`.
+>
+> **security-review stays enabled and required.** It is deliberately the exception: it is a
+> required status check in the ruleset (disabling it would wedge every PR on a check that never
+> reports), and its expensive step only fires when the diff touches a gated path, so it costs
+> little in practice. The honest consequence of the other three being off is that correctness
+> and doc-drift coverage is now on the honour system — nothing verifies a developer ran the
+> local gate. Treat that as a deliberate, reversible trade, not as those gates being retired.
 
 Branch protection (`rulesets/main-branch-protection.json`) makes the three
 blocking checks mandatory and requires a non-author approval + code-owner review.
@@ -33,7 +47,12 @@ scripts/rails/run-gates.sh --list          # which gates apply to this branch, a
 scripts/rails/run-gates.sh                 # every applicable gate
 scripts/rails/run-gates.sh --fast          # compile/test gates only, no AI reviewers
 scripts/rails/run-gates.sh --correctness   # one named gate
+scripts/rails/run-gates.sh --docs-drift    # advisory: what docs this change staled
 ```
+
+Note that the reviewers diff **committed** state (`<base>...HEAD`), exactly as CI does.
+Running the gate with work still in the working tree reviews the previous commit and will
+happily report on code you have already changed — commit first, then run.
 
 Two reasons to use it. **Cost:** the remote reviewers run against
 `ANTHROPIC_API_KEY` (metered API credits) and re-trigger on *every* push to the
