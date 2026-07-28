@@ -81,15 +81,37 @@ public sealed class PlannerDiRegistrationTests : IDisposable
     {
         // PlanCapabilities names are matched out of the same AllowedTools string space as keyed ITool
         // registrations, so a tool registered under one of these keys would silently merge the two
-        // grants. Nothing in the container prevents it (registration order is not guaranteed), so the
-        // harness's own registrations are asserted here.
-        var offenders = _provider.GetServices<Application.AI.Common.Interfaces.Tools.ITool>()
-            .Select(t => t.Name)
-            .Where(PlanCapabilities.IsReserved)
+        // grants. Production refuses the collision at boot (ReservedPlanCapabilityGuard); this pins
+        // Infrastructure.AI's own registrations without booting a host.
+        //
+        // The keys must come off the ServiceDescriptors, NOT from GetServices<ITool>(): every tool
+        // here is registered with AddKeyedSingleton, and the non-keyed GetServices overload does not
+        // return keyed registrations — asserting over it can never fail.
+        var offenders = CreateServices()
+            .Where(d => d.ServiceType == typeof(Application.AI.Common.Interfaces.Tools.ITool)
+                        && d.ServiceKey is string key
+                        && PlanCapabilities.IsReserved(key))
+            .Select(d => (string)d.ServiceKey!)
             .ToList();
 
         offenders.Should().BeEmpty(
             "a tool registered under a reserved plan-capability name would silently widen that grant");
+    }
+
+    [Fact]
+    public void DependencyInjection_KeyedToolDescriptorsAreVisibleToTheReservedNameScan()
+    {
+        // Guards the guard: the reserved-name assertion above is only meaningful if this scan
+        // actually sees the container's keyed ITool registrations. Its predecessor used
+        // GetServices<ITool>(), which returns nothing for keyed registrations, so it passed
+        // vacuously. If tool registration ever moves off keyed DI this fails and the reserved-name
+        // test must be re-pointed rather than left silently inert.
+        var keyedToolCount = CreateServices()
+            .Count(d => d.ServiceType == typeof(Application.AI.Common.Interfaces.Tools.ITool)
+                        && d.ServiceKey is string);
+
+        keyedToolCount.Should().BeGreaterThan(0,
+            "the reserved-name scan reads keyed ITool descriptors, so there must be some to read");
     }
 
     [Fact]
@@ -163,7 +185,13 @@ public sealed class PlannerDiRegistrationTests : IDisposable
         ctx.Should().NotBeNull();
     }
 
-    private static ServiceProvider CreateServiceProvider()
+    private static ServiceProvider CreateServiceProvider() => CreateServices().BuildServiceProvider();
+
+    /// <summary>
+    /// Composes the same graph the provider is built from, returned un-built so descriptor-level
+    /// assertions (registration keys, lifetimes) can inspect it without resolving anything.
+    /// </summary>
+    private static IServiceCollection CreateServices()
     {
         var appConfig = new AppConfig
         {
@@ -211,7 +239,7 @@ public sealed class PlannerDiRegistrationTests : IDisposable
         // Register all Infrastructure.AI services (now includes planner/sandbox)
         services.AddInfrastructureAIDependencies(appConfig);
 
-        return services.BuildServiceProvider();
+        return services;
     }
 
     private sealed class AppConfigMonitorStub(AppConfig config) : IOptionsMonitor<AppConfig>

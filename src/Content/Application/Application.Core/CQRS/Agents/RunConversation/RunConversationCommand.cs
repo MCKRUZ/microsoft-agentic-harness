@@ -76,9 +76,12 @@ public record ConversationResult
 	/// <para>
 	/// <strong>Not an exact meter on the failure path.</strong> A turn that fails returns before its
 	/// usage is folded into the running totals, so a conversation that burned tokens and then errored
-	/// reports zero here. A caller metering spend across many conversations therefore under-counts
-	/// failed ones. That is a deliberate consequence of the existing early-return, not a guarantee:
-	/// treat this as the accounted total, not the billed total.
+	/// reports a <em>partial</em> total: every turn that already succeeded is counted, only the
+	/// failing turn's usage is missing. The figure is zero only in the special case where the first
+	/// turn is the one that fails. A caller metering spend across many conversations therefore
+	/// under-counts each failed one by its final turn. That is a deliberate consequence of the
+	/// existing early-return, not a guarantee: treat this as the accounted total, not the billed
+	/// total.
 	/// </para>
 	/// </remarks>
 	public int TotalTokens { get; init; }

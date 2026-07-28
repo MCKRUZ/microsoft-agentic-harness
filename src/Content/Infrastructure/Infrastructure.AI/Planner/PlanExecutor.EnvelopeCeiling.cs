@@ -22,6 +22,17 @@ namespace Infrastructure.AI.Planner;
 /// <c>FailRejectedBlockAsync</c> already does for a rejected escalation and for the same reason.
 /// </para>
 /// <para>
+/// <strong>What bypassing that path also gives up.</strong> <c>HandleStepFailureAsync</c> owns the
+/// <c>MarkRemainingAsFailed</c> teardown, so skipping it means a denial does <em>not</em> tear the
+/// plan down even when the plan declares <see cref="ErrorRecovery.FailPlan"/>. Only the denied
+/// step's downstream subgraph is skipped; parallel independent branches keep running to completion,
+/// and the run's status still reports Failed once they drain. That is accepted rather than
+/// overlooked: a denial says the envelope refused <em>one</em> operation, not that the rest of the
+/// plan became unsafe, and every other branch is separately authorized by the same envelope on its
+/// own merits. Restoring <see cref="ErrorRecovery.FailPlan"/> teardown here would mean reading
+/// plan-authored recovery data on a security denial — the exact coupling this path exists to break.
+/// </para>
+/// <para>
 /// With no ambient envelope (every direct in-process <see cref="IPlanExecutor"/> caller) no ceiling
 /// applies and this partial contributes nothing to execution.
 /// </para>

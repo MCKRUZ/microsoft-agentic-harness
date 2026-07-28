@@ -34,10 +34,11 @@ namespace Domain.AI.Planner;
 /// <strong>These names share a namespace with real tool keys — treat them as reserved.</strong> They
 /// are matched out of the same <c>AllowedTools</c> string space as keyed <c>ITool</c> registrations,
 /// so a host that registers a tool under one of these keys silently merges the two grants: granting
-/// the plan capability would also grant that tool, and vice versa. Nothing in the DI container
-/// prevents it, because tool registration order is not guaranteed relative to the planner's. Hosts
-/// registering tools should assert <see cref="IsReserved"/> is false for each key — the harness's own
-/// registrations are covered by a test that does exactly that.
+/// the plan capability would also grant that tool, and vice versa. The DI container itself does not
+/// prevent it, so the harness's composition root refuses the collision at boot: Presentation.Common's
+/// <c>ValidateNoReservedPlanCapabilityToolKeys</c> scans every keyed <c>ITool</c> descriptor against
+/// <see cref="IsReserved"/> and throws, naming the offending key. A consumer host that registers
+/// tools outside that composition root should call the same guard after doing so.
 /// </para>
 /// <para>
 /// Withholding a name here is fail-closed for enveloped plan runs. With no ambient envelope (direct
