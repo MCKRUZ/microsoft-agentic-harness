@@ -29,6 +29,13 @@ namespace Domain.Common.Config.AI.WorkflowSubmission;
 /// that exceeds the runtime limit would otherwise be accepted, stored, and fail only when run — which
 /// reports a defect to whoever runs it rather than to whoever authored it.
 /// </para>
+/// <para>
+/// <strong>Ceilings reject, they do not clamp.</strong> Every <c>Max…</c> value a caller can request —
+/// timeouts, parallelism, retries — is compared against the matching ceiling here and the submission is
+/// refused if it exceeds it. Silently lowering the request would be friendlier-looking and worse: a
+/// caller who asked for a thirty-minute budget and received sixty seconds discovers the difference from
+/// a timeout in production, with nothing in the response that explains it.
+/// </para>
 /// <code>
 /// AppConfig.AI.WorkflowSubmission
 /// ├── Enabled                  — Master toggle (default false)
@@ -38,7 +45,11 @@ namespace Domain.Common.Config.AI.WorkflowSubmission;
 /// ├── MaxFanOutPerStep         — Maximum outbound edges from any one step
 /// ├── MaxSubPlanNestingDepth   — Maximum depth of the persisted ChildPlanId chain
 /// ├── MaxStringFieldLength     — Maximum length of any caller-supplied string field
-/// └── AllowInlineSubPlans      — Whether a definition may embed a child definition inline (default false)
+/// ├── MaxPlanTimeout           — Ceiling on a requested whole-workflow wall-clock budget
+/// ├── MaxStepTimeout           — Ceiling on a requested per-step timeout
+/// ├── MaxParallelSteps         — Ceiling on a requested concurrent-step count
+/// ├── MaxRetriesPerStep        — Ceiling on a requested per-step retry count
+/// └── MaxHumanGateTimeout      — Ceiling on how long a submitted step may park awaiting approval
 /// </code>
 /// </remarks>
 public class WorkflowSubmissionConfig
@@ -97,16 +108,45 @@ public class WorkflowSubmissionConfig
     public int MaxStringFieldLength { get; set; } = 8192;
 
     /// <summary>
-    /// Whether a submitted definition may embed a child workflow inline rather than referencing a
-    /// previously-submitted one by id.
+    /// Ceiling on the whole-workflow wall-clock budget a submission may request. A submission asking
+    /// for more is rejected. Bounds how long one caller can hold execution slots, which the step and
+    /// edge counts do not — a two-step workflow can request an unbounded budget.
+    /// </summary>
+    /// <value>Default: 1 hour</value>
+    public TimeSpan MaxPlanTimeout { get; set; } = TimeSpan.FromHours(1);
+
+    /// <summary>
+    /// Ceiling on the per-step timeout a submission may request. Distinct from
+    /// <see cref="MaxPlanTimeout"/> because a single step blocking for the entire plan budget starves
+    /// every step that would otherwise have run beside it.
+    /// </summary>
+    /// <value>Default: 15 minutes</value>
+    public TimeSpan MaxStepTimeout { get; set; } = TimeSpan.FromMinutes(15);
+
+    /// <summary>
+    /// Ceiling on the concurrent-step count a submission may request. This is the practical limit on
+    /// how much host capacity one submission can consume at any instant, and therefore the control
+    /// that most directly bounds a caller's effect on everyone else's latency.
+    /// </summary>
+    /// <value>Default: 16</value>
+    public int MaxParallelSteps { get; set; } = 16;
+
+    /// <summary>
+    /// Ceiling on the retry count a submission may request for any one step. Each retry re-runs the
+    /// step's full cost — an inference call, a tool invocation — so this multiplies, rather than adds
+    /// to, the workflow's ceiling cost.
+    /// </summary>
+    /// <value>Default: 10</value>
+    public int MaxRetriesPerStep { get; set; } = 10;
+
+    /// <summary>
+    /// Ceiling on how long a submitted human-gate step may park awaiting approval.
     /// </summary>
     /// <remarks>
-    /// Off by default, deliberately. An inline child makes the request body recursive, which turns
-    /// <see cref="MaxSubPlanNestingDepth"/> from a graph walk into a parser concern — the depth must
-    /// then be bounded during deserialization, before the object exists to inspect. Reference-only
-    /// submission keeps every child a separately-admitted, separately-owned plan, so the depth walk
-    /// happens over persisted rows the caller has already been authorized for.
+    /// A parked gate holds a run open and a pending approval in an operator's queue. Left unbounded, a
+    /// submission could enqueue approvals that never expire, so the queue grows without limit and no
+    /// operator can tell which entries are still meaningful.
     /// </remarks>
-    /// <value>Default: false</value>
-    public bool AllowInlineSubPlans { get; set; }
+    /// <value>Default: 24 hours</value>
+    public TimeSpan MaxHumanGateTimeout { get; set; } = TimeSpan.FromHours(24);
 }
