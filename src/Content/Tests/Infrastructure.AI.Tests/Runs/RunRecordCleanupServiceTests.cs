@@ -49,11 +49,11 @@ public sealed class RunRecordCleanupServiceTests
         public RunRecord? FindLiveRunForTarget(RunKind kind, string targetId) =>
             inner.FindLiveRunForTarget(kind, targetId);
 
-        public int SweepExpired()
+        public IReadOnlyList<string> SweepExpired()
         {
             Sweeps++;
             var removed = inner.SweepExpired();
-            Reclaimed += removed;
+            Reclaimed += removed.Count;
             return removed;
         }
     }
@@ -72,6 +72,7 @@ public sealed class RunRecordCleanupServiceTests
 
         var monitor = new StaticOptionsMonitor<AppConfig>(_config);
         var store = new CountingStore(new InMemoryRunJobStore(monitor, _time));
+        var progress = new InMemoryRunProgressBroker(monitor, _time);
 
         store.TryCreate(Queued("finished"), int.MaxValue).Should().Be(RunAdmission.Accepted);
         store.TryCreate(Queued("still-going"), int.MaxValue).Should().Be(RunAdmission.Accepted);
@@ -81,7 +82,8 @@ public sealed class RunRecordCleanupServiceTests
 
         _time.Advance(TimeSpan.FromHours(1));
 
-        var sut = new RunRecordCleanupService(store, monitor, NullLogger<RunRecordCleanupService>.Instance);
+        var sut = new RunRecordCleanupService(
+            store, progress, monitor, NullLogger<RunRecordCleanupService>.Instance);
 
         using var cts = new CancellationTokenSource();
         await sut.StartAsync(cts.Token);
@@ -96,6 +98,67 @@ public sealed class RunRecordCleanupServiceTests
         store.Reclaimed.Should().Be(1, "the finished run was past its retention and its memory is owed back");
         store.Get("still-going", "alice", null).Should().NotBeNull(
             "an unfinished run a caller is still polling must survive every sweep");
+    }
+
+    [Fact]
+    public async Task TheSweepAlsoReleasesTheProgressBookkeepingForTheRunsItReclaims()
+    {
+        // A run identifier keys more than its record. Reclaiming one without the other trades a
+        // bounded leak for an unbounded one: the broker would hold an entry for every run the host
+        // ever streamed, for the life of the process. This is the shape of defect that hides — the
+        // reclaiming method existed, was documented as being called here, and had no caller at all.
+        _config.AI.WorkflowSubmission.RunRecordTtl = TimeSpan.FromMinutes(5);
+        _config.AI.WorkflowSubmission.RunSweepInterval = TimeSpan.Zero;
+
+        var monitor = new StaticOptionsMonitor<AppConfig>(_config);
+        var store = new CountingStore(new InMemoryRunJobStore(monitor, _time));
+        var progress = new RecordingBroker(new InMemoryRunProgressBroker(monitor, _time));
+
+        store.TryCreate(Queued("finished"), int.MaxValue).Should().Be(RunAdmission.Accepted);
+        var claimed = store.TryBeginRun("finished", _time.GetUtcNow())!;
+        store.Update(claimed with { Status = RunStatus.Succeeded, CompletedAt = _time.GetUtcNow() });
+
+        _time.Advance(TimeSpan.FromHours(1));
+
+        var sut = new RunRecordCleanupService(
+            store, progress, monitor, NullLogger<RunRecordCleanupService>.Instance);
+
+        using var cts = new CancellationTokenSource();
+        await sut.StartAsync(cts.Token);
+
+        for (var attempt = 0; attempt < 60 && progress.Forgotten.Count == 0; attempt++)
+            await Task.Delay(100);
+
+        await cts.CancelAsync();
+        await sut.StopAsync(CancellationToken.None);
+
+        progress.Forgotten.Should().Contain("finished");
+    }
+
+    /// <summary>Records which runs the sweeper asked the broker to forget.</summary>
+    private sealed class RecordingBroker(IRunProgressBroker inner) : IRunProgressBroker
+    {
+        public List<string> Forgotten { get; } = [];
+
+        public void Publish(
+            string jobId,
+            RunProgressKind kind,
+            string? stepId = null,
+            string? stepName = null,
+            string? status = null,
+            string? detail = null) =>
+            inner.Publish(jobId, kind, stepId, stepName, status, detail);
+
+        public IRunProgressSubscription? Subscribe(string jobId, string ownerId, string? tenantId) =>
+            inner.Subscribe(jobId, ownerId, tenantId);
+
+        public void Forget(string jobId)
+        {
+            lock (Forgotten)
+                Forgotten.Add(jobId);
+
+            inner.Forget(jobId);
+        }
     }
 
     private RunRecord Queued(string jobId) => new()

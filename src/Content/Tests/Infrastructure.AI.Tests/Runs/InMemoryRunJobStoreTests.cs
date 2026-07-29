@@ -301,7 +301,7 @@ public sealed class InMemoryRunJobStoreTests
 
         _time.Advance(TimeSpan.FromDays(7));
 
-        sut.SweepExpired().Should().Be(0);
+        sut.SweepExpired().Should().BeEmpty();
         sut.Get("job-1", "alice", null).Should().NotBeNull();
     }
 
@@ -314,10 +314,10 @@ public sealed class InMemoryRunJobStoreTests
         sut.Update(claimed with { Status = RunStatus.Succeeded, CompletedAt = _time.GetUtcNow() });
 
         _time.Advance(TimeSpan.FromMinutes(4));
-        sut.SweepExpired().Should().Be(0);
+        sut.SweepExpired().Should().BeEmpty();
 
         _time.Advance(TimeSpan.FromMinutes(2));
-        sut.SweepExpired().Should().Be(1);
+        sut.SweepExpired().Should().HaveCount(1);
         sut.Get("job-1", "alice", null).Should().BeNull();
     }
 
@@ -334,7 +334,7 @@ public sealed class InMemoryRunJobStoreTests
 
         _time.Advance(TimeSpan.FromMinutes(5));
 
-        sut.SweepExpired().Should().Be(0, "retention runs from completion, not from acceptance");
+        sut.SweepExpired().Should().BeEmpty("retention runs from completion, not from acceptance");
         sut.Get("job-1", "alice", null).Should().NotBeNull();
     }
 

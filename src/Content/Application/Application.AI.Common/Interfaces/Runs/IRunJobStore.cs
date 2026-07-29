@@ -94,6 +94,13 @@ public interface IRunJobStore
     /// <param name="targetId">The thing being run.</param>
     RunRecord? FindLiveRunForTarget(RunKind kind, string targetId);
 
-    /// <summary>Drops runs whose retention has elapsed, returning how many were removed.</summary>
-    int SweepExpired();
+    /// <summary>
+    /// Drops runs whose retention has elapsed, returning the identifiers of those removed.
+    /// </summary>
+    /// <remarks>
+    /// Reports which runs went, not merely how many. A run's records are not the only thing keyed by
+    /// its identifier — progress bookkeeping is too — and a sweep that returned a count would leave
+    /// every other holder guessing which entries it may now release.
+    /// </remarks>
+    IReadOnlyList<string> SweepExpired();
 }

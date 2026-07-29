@@ -280,6 +280,35 @@ public sealed class InMemoryRunProgressBrokerTests
     }
 
     [Fact]
+    public async Task ConcurrentPublishers_DeliverInSequenceOrder()
+    {
+        // A plan runs steps concurrently, so two threads publish at once. Taking a number and then
+        // writing as separate steps lets the thread that drew 4 write after the thread that drew 5 —
+        // and a client reading Sequence as the run's order, which is what it is documented as, would
+        // report a gap that never happened.
+        var sut = BuildSut(buffer: 512);
+        using var subscription = sut.Subscribe("job-1", "alice", "acme")!;
+
+        const int Publishers = 16;
+        const int Each = 20;
+
+        var threads = Enumerable.Range(0, Publishers).Select(_ => new Thread(() =>
+        {
+            for (var i = 0; i < Each; i++)
+                sut.Publish("job-1", RunProgressKind.StepStarted, stepId: "s");
+        })).ToList();
+
+        foreach (var thread in threads) thread.Start();
+        foreach (var thread in threads) thread.Join();
+
+        var received = await DrainAsync(subscription, Publishers * Each);
+        var sequences = received.Select(e => e.Sequence).ToList();
+
+        sequences.Should().BeInAscendingOrder("delivery order must match the numbering a client reads");
+        sequences.Should().OnlyHaveUniqueItems("a number identifies one event, so it is never reused");
+    }
+
+    [Fact]
     public void PublishingAfterTheLastWatcherLeaves_IsHarmless()
     {
         // Runs outlive their watchers routinely — a client closes the tab and the workflow carries on.

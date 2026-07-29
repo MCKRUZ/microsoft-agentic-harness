@@ -222,10 +222,10 @@ public sealed class InMemoryRunJobStore : IRunJobStore
     }
 
     /// <inheritdoc />
-    public int SweepExpired()
+    public IReadOnlyList<string> SweepExpired()
     {
         var now = _time.GetUtcNow();
-        var removed = 0;
+        var removed = new List<string>();
 
         foreach (var (jobId, entry) in _entries)
         {
@@ -239,7 +239,7 @@ public sealed class InMemoryRunJobStore : IRunJobStore
                     continue;
 
                 if (_entries.TryRemove(jobId, out _))
-                    removed++;
+                    removed.Add(jobId);
             }
         }
 

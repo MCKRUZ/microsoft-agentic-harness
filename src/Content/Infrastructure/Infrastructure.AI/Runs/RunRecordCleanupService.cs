@@ -18,7 +18,9 @@ namespace Infrastructure.AI.Runs;
 /// </para>
 /// <para>
 /// Only terminal runs are ever reclaimed — that rule lives in the store, not here, so no scheduling
-/// change can make a run a caller is still polling disappear.
+/// change can make a run a caller is still polling disappear. The progress broker's bookkeeping is
+/// released for the same runs at the same moment, because it is keyed by the same identifier and
+/// nothing can publish for a reclaimed run.
 /// </para>
 /// </remarks>
 internal sealed class RunRecordCleanupService : BackgroundService
@@ -31,20 +33,24 @@ internal sealed class RunRecordCleanupService : BackgroundService
     private static readonly TimeSpan MinInterval = TimeSpan.FromSeconds(1);
 
     private readonly IRunJobStore _store;
+    private readonly IRunProgressBroker _progress;
     private readonly IOptionsMonitor<AppConfig> _config;
     private readonly ILogger<RunRecordCleanupService> _logger;
 
     /// <summary>Initializes a new <see cref="RunRecordCleanupService"/>.</summary>
     public RunRecordCleanupService(
         IRunJobStore store,
+        IRunProgressBroker progress,
         IOptionsMonitor<AppConfig> config,
         ILogger<RunRecordCleanupService> logger)
     {
         ArgumentNullException.ThrowIfNull(store);
+        ArgumentNullException.ThrowIfNull(progress);
         ArgumentNullException.ThrowIfNull(config);
         ArgumentNullException.ThrowIfNull(logger);
 
         _store = store;
+        _progress = progress;
         _config = config;
         _logger = logger;
     }
@@ -75,8 +81,17 @@ internal sealed class RunRecordCleanupService : BackgroundService
         try
         {
             var reclaimed = _store.SweepExpired();
-            if (reclaimed > 0)
-                _logger.LogInformation("Run sweep reclaimed {Count} expired run record(s).", reclaimed);
+            if (reclaimed.Count == 0)
+                return;
+
+            // A run's identifier keys more than its record. Reclaiming one without the other would
+            // trade a bounded leak for an unbounded one — the progress bookkeeping would outlive every
+            // run the host ever streamed.
+            foreach (var jobId in reclaimed)
+                _progress.Forget(jobId);
+
+            _logger.LogInformation(
+                "Run sweep reclaimed {Count} expired run record(s).", reclaimed.Count);
         }
         catch (Exception ex)
         {

@@ -96,6 +96,7 @@ public sealed class InMemoryRunProgressBroker : IRunProgressBroker
         new(StringComparer.Ordinal);
 
     private readonly ConcurrentDictionary<string, long> _sequences = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, Lock> _publishLocks = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, int> _perPrincipal = new(StringComparer.Ordinal);
     private readonly IOptionsMonitor<AppConfig> _config;
     private readonly TimeProvider _time;
@@ -125,32 +126,39 @@ public sealed class InMemoryRunProgressBroker : IRunProgressBroker
         if (!_watchers.TryGetValue(jobId, out var subscribers) || subscribers.IsEmpty)
             return;
 
-        // Numbered per run, and only for runs someone is watching. A gap in what a client receives
-        // therefore means events were dropped for that client, not that the run skipped a number.
-        var sequence = _sequences.AddOrUpdate(jobId, 1, static (_, current) => current + 1);
-
-        var evt = new RunProgressEvent
+        // Numbering and delivery happen together, per run. A plan runs steps concurrently, so two
+        // threads can publish at once — and taking a number then writing separately lets the thread
+        // that drew 4 write after the thread that drew 5. A watcher would then see 5 before 4 and, on
+        // the documented reading of Sequence as position in the run's order, report a gap that never
+        // happened. The lock is per run and held only for the enqueue, which cannot block: a full
+        // buffer drops rather than waits.
+        lock (_publishLocks.GetOrAdd(jobId, static _ => new Lock()))
         {
-            JobId = jobId,
-            Sequence = sequence,
-            Kind = kind,
-            OccurredAt = _time.GetUtcNow(),
-            StepId = stepId,
-            StepName = stepName,
-            Status = status,
-            Detail = detail
-        };
+            var sequence = _sequences.AddOrUpdate(jobId, 1, static (_, current) => current + 1);
 
-        foreach (var subscription in subscribers.Keys)
-        {
-            // A full DropOldest channel evicts silently, so the eviction is counted here rather than
-            // inferred: the reader compares its own count against the sequence numbers it saw. The
-            // count is advisory — a reader draining concurrently can make it approximate — and it is
-            // used to say "you missed some", never to say exactly how many.
-            if (subscription.Channel.Reader.Count >= subscription.Capacity)
-                subscription.RecordDrop();
+            var evt = new RunProgressEvent
+            {
+                JobId = jobId,
+                Sequence = sequence,
+                Kind = kind,
+                OccurredAt = _time.GetUtcNow(),
+                StepId = stepId,
+                StepName = stepName,
+                Status = status,
+                Detail = detail
+            };
 
-            subscription.Channel.Writer.TryWrite(evt);
+            foreach (var subscription in subscribers.Keys)
+            {
+                // A full DropOldest channel evicts silently, so the eviction is counted here rather
+                // than inferred: the reader compares its own count against the sequence numbers it
+                // saw. The count is advisory — a reader draining concurrently can make it approximate
+                // — and it is used to say "you missed some", never exactly how many.
+                if (subscription.Channel.Reader.Count >= subscription.Capacity)
+                    subscription.RecordDrop();
+
+                subscription.Channel.Writer.TryWrite(evt);
+            }
         }
     }
 
@@ -213,8 +221,16 @@ public sealed class InMemoryRunProgressBroker : IRunProgressBroker
         // records are swept.
     }
 
-    private void ReleasePrincipal(string principal) =>
-        _perPrincipal.AddOrUpdate(principal, 0, static (_, current) => current > 0 ? current - 1 : 0);
+    private void ReleasePrincipal(string principal)
+    {
+        // Removed at zero rather than left holding a count of none, so the table is bounded by callers
+        // streaming right now instead of by every caller that ever has.
+        var remaining = _perPrincipal.AddOrUpdate(
+            principal, 0, static (_, current) => current > 0 ? current - 1 : 0);
+
+        if (remaining == 0)
+            _perPrincipal.TryRemove(new KeyValuePair<string, int>(principal, 0));
+    }
 
     /// <summary>
     /// Identifies the principal a stream is charged to, on the same two legs — tenant and owner —
@@ -240,5 +256,6 @@ public sealed class InMemoryRunProgressBroker : IRunProgressBroker
 
         _watchers.TryRemove(jobId, out _);
         _sequences.TryRemove(jobId, out _);
+        _publishLocks.TryRemove(jobId, out _);
     }
 }

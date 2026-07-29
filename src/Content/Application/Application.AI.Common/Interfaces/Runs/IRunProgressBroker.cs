@@ -58,6 +58,18 @@ public interface IRunProgressBroker
     /// other tenant.
     /// </returns>
     IRunProgressSubscription? Subscribe(string jobId, string ownerId, string? tenantId);
+
+    /// <summary>
+    /// Releases the bookkeeping held for a run that will report no further progress.
+    /// </summary>
+    /// <remarks>
+    /// Separate from unsubscribing on purpose: a watcher leaving does not mean the run is over, and
+    /// deciding that it does is what makes a watcher arriving at the same moment vanish. Called when
+    /// the run's own records are reclaimed, by which point it is terminal and nothing can publish for
+    /// it again. Without a caller, a host holds one entry per run it ever streamed for its whole life.
+    /// </remarks>
+    /// <param name="jobId">The run to forget.</param>
+    void Forget(string jobId);
 }
 
 /// <summary>
