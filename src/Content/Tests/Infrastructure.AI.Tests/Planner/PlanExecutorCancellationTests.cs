@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.Interfaces.Planner;
 using Domain.AI.Planner;
@@ -582,6 +583,7 @@ public sealed class PlanExecutorCancellationTests
                         Mock.Of<IPlanStateStore>(),
                         Mock.Of<IPlanProgressNotifier>(),
                         new PlanExecutionContext(),
+                        Mock.Of<IAgentExecutionContext>(),
                         NullLogger<global::Infrastructure.AI.Planner.StepExecutors.SubPlanStepExecutor>.Instance));
             }
 
