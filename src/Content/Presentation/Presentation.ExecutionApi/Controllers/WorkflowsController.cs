@@ -198,6 +198,18 @@ public sealed class WorkflowsController : ControllerBase
     /// the two look interchangeable and are not: removing the broker's per-caller cap on the grounds
     /// that the endpoint "is already rate limited" would leave simultaneous streams unbounded.
     /// </para>
+    /// <para>
+    /// <strong>A stream is authorized once, when it opens, and then runs for the life of the run.</strong>
+    /// The credential is validated at request start and never re-checked, so a token that expires or is
+    /// revoked mid-run keeps delivering until the run ends. This is inherent to a long-lived response
+    /// rather than an oversight, and it is bounded twice over: by the run's own duration, and by the
+    /// frames carrying nothing beyond what the same caller can already read from the run's status —
+    /// no step output, prompts, tool arguments, or host internals. A host that needs revocation to take
+    /// effect sooner than a run can finish should bound run duration, not add a re-check here; the
+    /// alternative is a stream that drops a legitimate watcher part-way through for no observable
+    /// reason. Recorded so the property is a decision on the record rather than something rediscovered
+    /// during the next review.
+    /// </para>
     /// </remarks>
     /// <param name="workflowId">The workflow the run belongs to.</param>
     /// <param name="jobId">The run to watch.</param>
@@ -232,9 +244,13 @@ public sealed class WorkflowsController : ControllerBase
             result.Value.JobId, User.GetUserId(), User.GetTenantId());
         if (subscription is null)
         {
+            // Deliberately does not say which ceiling was reached. The caller's own cap and the
+            // host-wide one are refused identically, so a caller cannot use its own refusals to
+            // measure how busy the host is with everyone else's work. What it can act on is the same
+            // either way: poll, or try again shortly.
             return StatusCode(
                 StatusCodes.Status503ServiceUnavailable,
-                "This host is already carrying as many progress streams as it permits. "
+                "No progress stream is available for this run right now. "
                 + "Poll the run's status instead, or retry shortly.");
         }
 
