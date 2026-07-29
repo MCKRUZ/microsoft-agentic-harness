@@ -222,6 +222,7 @@ public sealed class PlanExecutorCancellationTests
         var planId = PlanId.New();
         var failures = new ConcurrentBag<Exception>();
         var observedCancellations = 0;
+        var cancelRounds = 0;
 
         // Iteration-bounded rather than wall-clock bounded, and yielding rather than spinning: this
         // assembly also holds child-process tests whose timing a CPU-saturating loop destabilises.
@@ -234,7 +235,18 @@ public sealed class PlanExecutorCancellationTests
                 try
                 {
                     using var registration = registry.Register(planId);
-                    Thread.Yield();
+
+                    // Hold the registration open until a canceller has completed at least one round
+                    // since it was taken, so the signal genuinely lands on a LIVE registration.
+                    // A bare Thread.Yield() here made the overlap a matter of luck: on a runner with
+                    // fewer cores the registrars can drain their whole loop between canceller
+                    // iterations, and the premise assertion below then fails the build for a
+                    // scheduling accident rather than a defect. Bounded so a stalled canceller
+                    // cannot hang the run.
+                    var roundsAtEntry = Volatile.Read(ref cancelRounds);
+                    for (var spin = 0; spin < 1000 && Volatile.Read(ref cancelRounds) == roundsAtEntry; spin++)
+                        Thread.Yield();
+
                     if (registration.Token.IsCancellationRequested)
                         Interlocked.Increment(ref observedCancellations);
                 }
@@ -252,6 +264,7 @@ public sealed class PlanExecutorCancellationTests
                 try
                 {
                     registry.TryCancel(planId);
+                    Interlocked.Increment(ref cancelRounds);
                     Thread.Yield();
                 }
                 catch (Exception ex)
