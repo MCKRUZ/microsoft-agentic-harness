@@ -127,9 +127,17 @@ public sealed class CallerIdentityResolutionBoundaryTests
     }
 
     /// <summary>
-    /// Removes line and XML-doc comments so prose mentioning a claim name never trips the scan.
-    /// Crude but sufficient: identity lookups are not written inside string literals containing "//".
+    /// Removes line and XML-doc comments so prose mentioning a claim name never trips the scan,
+    /// while leaving string literals intact.
     /// </summary>
+    /// <remarks>
+    /// The string tracking is not incidental rigour — it is the difference between this guard working
+    /// and quietly not working. The mapped-token claim types this guard exists to catch are URIs
+    /// (<c>http://schemas.microsoft.com/identity/claims/objectidentifier</c>), and a naive
+    /// "truncate at the first //" would cut such a line down to <c>…FindFirstValue("http:</c> — losing
+    /// the very literal being searched for and passing a hand-rolled resolver as clean. So a "//"
+    /// only ends the line when it appears outside a string or character literal.
+    /// </remarks>
     private static string StripComment(string line)
     {
         var trimmed = line.TrimStart();
@@ -139,9 +147,73 @@ public sealed class CallerIdentityResolutionBoundaryTests
             return string.Empty;
         }
 
-        var index = line.IndexOf("//", StringComparison.Ordinal);
-        return index >= 0 ? line[..index] : line;
+        var inString = false;
+        var verbatim = false;
+
+        for (var i = 0; i < line.Length; i++)
+        {
+            var c = line[i];
+
+            if (inString)
+            {
+                if (verbatim)
+                {
+                    // Inside @"…", the only escape is a doubled quote.
+                    if (c != '"')
+                        continue;
+                    if (i + 1 < line.Length && line[i + 1] == '"')
+                        i++;
+                    else
+                        inString = false;
+                }
+                else if (c == '\\')
+                {
+                    i++;
+                }
+                else if (c == '"')
+                {
+                    inString = false;
+                }
+
+                continue;
+            }
+
+            switch (c)
+            {
+                case '"':
+                    inString = true;
+                    verbatim = i > 0 && line[i - 1] == '@';
+                    break;
+
+                // Skip a char literal wholesale so '"' cannot be mistaken for a string opener.
+                case '\'':
+                    i += i + 1 < line.Length && line[i + 1] == '\\' ? 3 : 2;
+                    break;
+
+                case '/' when i + 1 < line.Length && line[i + 1] == '/':
+                    return line[..i];
+            }
+        }
+
+        return line;
     }
+
+    [Theory]
+    // The regression this guard nearly shipped with: a claim-type URI must survive stripping.
+    [InlineData(
+        """principal.FindFirstValue("http://schemas.microsoft.com/identity/claims/objectidentifier");""",
+        """principal.FindFirstValue("http://schemas.microsoft.com/identity/claims/objectidentifier");""")]
+    [InlineData("""var x = @"http://example/claims/nameidentifier";""", """var x = @"http://example/claims/nameidentifier";""")]
+    // A real trailing comment still gets cut, including one that follows a URI literal.
+    [InlineData("""var x = "oid"; // resolves the caller""", """var x = "oid"; """)]
+    [InlineData("""var u = "http://a/b"; // trailing""", """var u = "http://a/b"; """)]
+    // A quote inside a char literal must not open a string and swallow the rest of the line.
+    [InlineData("""var q = '"'; // note""", """var q = '"'; """)]
+    // Doc and block-comment continuation lines contribute nothing.
+    [InlineData("""    /// Mentions "oid" in prose.""", "")]
+    [InlineData("""     * Mentions "oid" in prose.""", "")]
+    public void StripComment_KeepsStringLiterals_AndCutsOnlyRealComments(string line, string expected)
+        => StripComment(line).Should().Be(expected);
 
     private static bool IsGeneratedOrBuildOutput(string path) =>
         path.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
