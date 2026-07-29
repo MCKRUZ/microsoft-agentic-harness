@@ -31,6 +31,8 @@ public sealed class WorkflowSubmissionConfigValidatorTests
     [InlineData(nameof(WorkflowSubmissionConfig.MaxSubPlanNestingDepth))]
     [InlineData(nameof(WorkflowSubmissionConfig.MaxStringFieldLength))]
     [InlineData(nameof(WorkflowSubmissionConfig.MaxParallelSteps))]
+    [InlineData(nameof(WorkflowSubmissionConfig.MaxTokensPerStep))]
+    [InlineData(nameof(WorkflowSubmissionConfig.MaxTopK))]
     public void Validate_NonPositiveIntegerCap_IsRejected(string property)
     {
         var config = new WorkflowSubmissionConfig();

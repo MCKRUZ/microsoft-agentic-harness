@@ -67,6 +67,14 @@ public sealed class WorkflowSubmissionConfigValidator : AbstractValidator<Workfl
             .GreaterThanOrEqualTo(0)
             .WithMessage("MaxRetriesPerStep must be >= 0 — zero is meaningful (no retries permitted), negative is not.");
 
+        RuleFor(x => x.MaxTokensPerStep)
+            .GreaterThan(0)
+            .WithMessage("MaxTokensPerStep must be > 0 — a non-positive ceiling would reject every requested completion length.");
+
+        RuleFor(x => x.MaxTopK)
+            .GreaterThan(0)
+            .WithMessage("MaxTopK must be > 0 — a non-positive ceiling would reject every retrieval step that asks for results.");
+
         RuleFor(x => x.MaxHumanGateTimeout)
             .GreaterThan(TimeSpan.Zero)
             .WithMessage("MaxHumanGateTimeout must be > 0 — a non-positive ceiling would reject every requested gate timeout.");

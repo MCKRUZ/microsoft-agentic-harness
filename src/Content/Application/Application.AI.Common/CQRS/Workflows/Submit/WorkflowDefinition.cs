@@ -23,9 +23,10 @@ namespace Application.AI.Common.CQRS.Workflows.Submit;
 /// </para>
 /// <para>
 /// Structural validity — cycles, referential integrity, reachability, branch completeness — is not
-/// re-implemented here. <c>PlanValidator</c> already enforces all of it via Kahn's algorithm, and the
-/// submission path delegates to the existing plan-creation flow so those rules run unchanged. What
-/// this contract adds is admission bounding, which <c>PlanValidator</c> has no opinion about; see
+/// re-implemented here. <c>PlanValidator</c> already enforces all of it via Kahn's algorithm, and
+/// <c>SubmitWorkflowCommandHandler</c> runs it directly on the mapped graph before persisting, so a
+/// structurally broken submission is refused rather than stored and left to fail on first execution.
+/// What this contract adds is admission bounding, which <c>PlanValidator</c> has no opinion about; see
 /// <c>WorkflowSubmissionConfig</c>.
 /// </para>
 /// </remarks>

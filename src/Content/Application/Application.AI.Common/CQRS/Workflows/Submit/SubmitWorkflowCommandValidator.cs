@@ -100,7 +100,15 @@ public sealed class SubmitWorkflowCommandValidator : AbstractValidator<SubmitWor
                 .WithMessage(s => $"Step '{s.Name}' declares type {s.Type} but carries a configuration for a different type.")
             .Must(RespectConfigurationStringCaps).WithMessage(StringCapMessage)
             .Must(RespectHumanGateTimeout)
-                .WithMessage(s => $"Step '{s.Name}' may park awaiting approval for at most {Caps.MaxHumanGateTimeout}.");
+                .WithMessage(s => $"Step '{s.Name}' may park awaiting approval for at most {Caps.MaxHumanGateTimeout}.")
+            .Must(CarryRequiredContent)
+                .WithMessage(s => $"Step '{s.Name}' omits content its type requires — a prompt, tool name, query, "
+                    + "condition, or an escalation message with at least one approver.")
+            .Must(RespectPerStepCostCeilings)
+                .WithMessage(s => $"Step '{s.Name}' requests more than the host permits: at most "
+                    + $"{Caps.MaxTokensPerStep} response tokens and {Caps.MaxTopK} retrieval results.")
+            .Must(NameAPermittedDeployment)
+                .WithMessage(s => $"Step '{s.Name}' names a model deployment this host does not offer.");
 
         step.RuleFor(s => s.Timeout)
             .Must(timeout => timeout is null or { Ticks: > 0 })
@@ -152,6 +160,60 @@ public sealed class SubmitWorkflowCommandValidator : AbstractValidator<SubmitWor
         RetrievalWorkflowStepConfiguration c => BeWithinStringCap(c.Query),
         _ => true
     };
+
+    /// <summary>
+    /// Requires each step to carry the content its type cannot function without.
+    /// </summary>
+    /// <remarks>
+    /// A human gate with no approvers is the case worth naming: it is admitted happily, parks the run,
+    /// and can never be answered by anyone, so it occupies a slot until it times out. An empty prompt,
+    /// tool name, query, or condition fails sooner and louder, but all of them describe a step that
+    /// cannot do the thing it names.
+    /// </remarks>
+    private static bool CarryRequiredContent(WorkflowStepConfiguration? configuration) => configuration switch
+    {
+        LlmCallStepConfiguration c => !string.IsNullOrWhiteSpace(c.SystemPrompt)
+            && !string.IsNullOrWhiteSpace(c.ModelDeploymentKey),
+        ToolUseStepConfiguration c => !string.IsNullOrWhiteSpace(c.ToolName),
+        HumanGateStepConfiguration c => !string.IsNullOrWhiteSpace(c.EscalationMessage)
+            && c.Approvers.Count > 0
+            && c.Approvers.All(approver => !string.IsNullOrWhiteSpace(approver)),
+        ConditionalBranchStepConfiguration c => !string.IsNullOrWhiteSpace(c.ConditionExpression),
+        RetrievalWorkflowStepConfiguration c => !string.IsNullOrWhiteSpace(c.Query),
+        _ => true
+    };
+
+    /// <summary>
+    /// Applies the per-step spend ceilings. Response tokens and retrieval breadth are the two
+    /// quantities a single step can inflate without touching any graph-size cap.
+    /// </summary>
+    private bool RespectPerStepCostCeilings(WorkflowStepConfiguration? configuration) => configuration switch
+    {
+        LlmCallStepConfiguration c => c.MaxTokens is null
+            || (c.MaxTokens >= 1 && c.MaxTokens <= Caps.MaxTokensPerStep),
+        RetrievalWorkflowStepConfiguration c => c.TopK is null
+            || (c.TopK >= 1 && c.TopK <= Caps.MaxTopK),
+        _ => true
+    };
+
+    /// <summary>
+    /// Confirms an LLM step names a deployment the host has declared.
+    /// </summary>
+    /// <remarks>
+    /// When <c>AgentFramework.AvailableDeployments</c> is empty the host has declared no allow-list, and
+    /// the key passes through to be resolved at run time. That is a deliberate pass-through, not a
+    /// fail-open on identity: an unrecognised deployment key fails the step that used it and grants the
+    /// caller nothing. A host that wants submitted workflows confined to specific models states them.
+    /// </remarks>
+    private bool NameAPermittedDeployment(WorkflowStepConfiguration? configuration)
+    {
+        if (configuration is not LlmCallStepConfiguration llmCall)
+            return true;
+
+        var permitted = _config.CurrentValue.AgentFramework.AvailableDeployments;
+        return permitted.Count == 0
+            || permitted.Contains(llmCall.ModelDeploymentKey, StringComparer.OrdinalIgnoreCase);
+    }
 
     private bool RespectHumanGateTimeout(WorkflowStepConfiguration? configuration) =>
         configuration is not HumanGateStepConfiguration gate

@@ -287,4 +287,23 @@ public sealed class WorkflowsControllerIntegrationTests : IClassFixture<WebAppli
 
         response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
     }
+
+    [Fact]
+    public async Task Submit_CyclicWorkflow_IsRejectedAtSubmissionRatherThanAtFirstRun()
+    {
+        // The wire contract states PlanValidator enforces cycles for submissions. Only an end-to-end
+        // request proves that validator is actually reached: every wire-level rule passes here, so
+        // without the handler calling it this returns 201 and the cycle surfaces on first execution,
+        // reported to whoever ran the workflow instead of whoever wrote it.
+        var client = _factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync("/api/workflows", Definition(
+            [LlmStep("alpha"), LlmStep("beta")],
+            [
+                new { from = "alpha", to = "beta", type = "ControlFlow" },
+                new { from = "beta", to = "alpha", type = "ControlFlow" }
+            ]));
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
 }

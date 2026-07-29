@@ -7,10 +7,16 @@ namespace Domain.Common.Config.AI.WorkflowSubmission;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <strong>Off by default.</strong> A submitted workflow is untrusted, externally-authored input that
-/// ultimately drives model inference, tool invocation and retrieval on the host's credentials. A fresh
-/// consumer pays no cost and exposes no surface until they deliberately opt in — the same posture as
-/// <see cref="BundleExecution.BundleExecutionConfig"/>, for the same reason.
+/// <strong>Off by default — meaning the class default is <see langword="false"/>.</strong> A submitted
+/// workflow is untrusted, externally-authored input that ultimately drives model inference, tool
+/// invocation and retrieval on the host's credentials, so a consumer who binds this section without
+/// setting anything gets no surface at all.
+/// </para>
+/// <para>
+/// <c>Presentation.ExecutionApi</c> sets <c>Enabled: true</c> in its own <c>appsettings.json</c>,
+/// because serving this API is that host's entire purpose — exactly as it does for
+/// <see cref="BundleExecution.BundleExecutionConfig"/>. The default protects every <em>other</em>
+/// host in the solution, and any consumer who copies the section without meaning to enable it.
 /// </para>
 /// <para>
 /// <strong>These caps bound admission, not execution.</strong> They exist to reject a hostile or
@@ -49,7 +55,9 @@ namespace Domain.Common.Config.AI.WorkflowSubmission;
 /// ├── MaxStepTimeout           — Ceiling on a requested per-step timeout
 /// ├── MaxParallelSteps         — Ceiling on a requested concurrent-step count
 /// ├── MaxRetriesPerStep        — Ceiling on a requested per-step retry count
-/// └── MaxHumanGateTimeout      — Ceiling on how long a submitted step may park awaiting approval
+/// ├── MaxHumanGateTimeout      — Ceiling on how long a submitted step may park awaiting approval
+/// ├── MaxTokensPerStep         — Ceiling on a requested LLM response-token count
+/// └── MaxTopK                  — Ceiling on a requested retrieval result count
 /// </code>
 /// </remarks>
 public class WorkflowSubmissionConfig
@@ -149,4 +157,19 @@ public class WorkflowSubmissionConfig
     /// </remarks>
     /// <value>Default: 24 hours</value>
     public TimeSpan MaxHumanGateTimeout { get; set; } = TimeSpan.FromHours(24);
+
+    /// <summary>
+    /// Ceiling on the response-token count a submitted LLM step may request. Tokens are the direct
+    /// unit of inference spend, so this is the per-step cost limit the graph-size caps cannot express:
+    /// a one-step workflow can otherwise request an unbounded completion.
+    /// </summary>
+    /// <value>Default: 32768</value>
+    public int MaxTokensPerStep { get; set; } = 32768;
+
+    /// <summary>
+    /// Ceiling on the result count a submitted retrieval step may request. Bounds both the retrieval
+    /// work performed and the volume of retrieved text that subsequently enters a model's context.
+    /// </summary>
+    /// <value>Default: 100</value>
+    public int MaxTopK { get; set; } = 100;
 }

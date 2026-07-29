@@ -218,10 +218,13 @@ public sealed class SubmitWorkflowCommandValidatorTests
         {
             Name = "gate",
             Type = StepType.HumanGate,
+            // Approvers supplied deliberately: without them the required-content rule would also
+            // reject this gate, and the test would keep passing after the timeout ceiling was removed.
             Configuration = new HumanGateStepConfiguration
             {
                 EscalationMessage = "approve",
                 ApprovalStrategy = ApprovalStrategy.AnyOf,
+                Approvers = ["alice"],
                 Timeout = TimeSpan.FromHours(2)
             }
         };
@@ -271,5 +274,156 @@ public sealed class SubmitWorkflowCommandValidatorTests
         var result = Sut.Validate(Command([LlmStep("source"), .. targets], edges));
 
         result.IsValid.Should().BeFalse();
+    }
+
+    [Fact]
+    public void Validate_HumanGateWithNoApprovers_IsRejected()
+    {
+        // Admitted, this parks the run and can never be answered by anyone — it holds a slot until it
+        // times out, and no operator can act on it because none was named.
+        var gate = new WorkflowStep
+        {
+            Name = "gate",
+            Type = StepType.HumanGate,
+            Configuration = new HumanGateStepConfiguration
+            {
+                EscalationMessage = "approve the spend",
+                ApprovalStrategy = ApprovalStrategy.AnyOf,
+                Approvers = []
+            }
+        };
+
+        Sut.Validate(Command([gate])).IsValid.Should().BeFalse();
+    }
+
+    [Fact]
+    public void Validate_HumanGateWithABlankApprover_IsRejected()
+    {
+        var gate = new WorkflowStep
+        {
+            Name = "gate",
+            Type = StepType.HumanGate,
+            Configuration = new HumanGateStepConfiguration
+            {
+                EscalationMessage = "approve",
+                ApprovalStrategy = ApprovalStrategy.AnyOf,
+                Approvers = ["alice", "   "]
+            }
+        };
+
+        Sut.Validate(Command([gate])).IsValid.Should().BeFalse();
+    }
+
+    [Fact]
+    public void Validate_HumanGateWithABlankMessage_IsRejected()
+    {
+        // The message is the only context most approvers will have.
+        var gate = new WorkflowStep
+        {
+            Name = "gate",
+            Type = StepType.HumanGate,
+            Configuration = new HumanGateStepConfiguration
+            {
+                EscalationMessage = "   ",
+                ApprovalStrategy = ApprovalStrategy.AnyOf,
+                Approvers = ["alice"]
+            }
+        };
+
+        Sut.Validate(Command([gate])).IsValid.Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData(StepType.LlmCall)]
+    [InlineData(StepType.ToolUse)]
+    [InlineData(StepType.Retrieval)]
+    [InlineData(StepType.ConditionalBranch)]
+    public void Validate_StepMissingTheContentItsTypeRequires_IsRejected(StepType type)
+    {
+        WorkflowStepConfiguration configuration = type switch
+        {
+            StepType.LlmCall => new LlmCallStepConfiguration { SystemPrompt = "  ", ModelDeploymentKey = "k" },
+            StepType.ToolUse => new ToolUseStepConfiguration { ToolName = "  " },
+            StepType.Retrieval => new RetrievalWorkflowStepConfiguration { Query = "  " },
+            _ => new ConditionalBranchStepConfiguration { ConditionExpression = "  " }
+        };
+
+        var step = new WorkflowStep { Name = "empty", Type = type, Configuration = configuration };
+
+        Sut.Validate(Command([step])).IsValid.Should().BeFalse();
+    }
+
+    [Fact]
+    public void Validate_TokenRequestAboveTheCeiling_IsRejected()
+    {
+        // Tokens are the direct unit of inference spend, and no graph-size cap bounds them: a
+        // one-step workflow can otherwise ask for an unbounded completion.
+        _config.WorkflowSubmission.MaxTokensPerStep = 1000;
+        var step = new WorkflowStep
+        {
+            Name = "expensive",
+            Type = StepType.LlmCall,
+            Configuration = new LlmCallStepConfiguration
+            {
+                SystemPrompt = "p", ModelDeploymentKey = "k", MaxTokens = 1001
+            }
+        };
+
+        Sut.Validate(Command([step])).IsValid.Should().BeFalse();
+    }
+
+    [Fact]
+    public void Validate_TopKAboveTheCeiling_IsRejected()
+    {
+        _config.WorkflowSubmission.MaxTopK = 10;
+        var step = new WorkflowStep
+        {
+            Name = "broad",
+            Type = StepType.Retrieval,
+            Configuration = new RetrievalWorkflowStepConfiguration { Query = "q", TopK = 11 }
+        };
+
+        Sut.Validate(Command([step])).IsValid.Should().BeFalse();
+    }
+
+    [Fact]
+    public void Validate_ModelDeploymentOutsideTheHostsAllowList_IsRejected()
+    {
+        _config.AgentFramework.AvailableDeployments = ["gpt-4o", "gpt-4o-mini"];
+        var step = new WorkflowStep
+        {
+            Name = "wrong-model",
+            Type = StepType.LlmCall,
+            Configuration = new LlmCallStepConfiguration
+            {
+                SystemPrompt = "p", ModelDeploymentKey = "some-other-model"
+            }
+        };
+
+        Sut.Validate(Command([step])).IsValid.Should().BeFalse();
+    }
+
+    [Fact]
+    public void Validate_ModelDeploymentInsideTheHostsAllowList_IsAccepted()
+    {
+        _config.AgentFramework.AvailableDeployments = ["gpt-4o"];
+        var step = new WorkflowStep
+        {
+            Name = "right-model",
+            Type = StepType.LlmCall,
+            Configuration = new LlmCallStepConfiguration { SystemPrompt = "p", ModelDeploymentKey = "gpt-4o" }
+        };
+
+        Sut.Validate(Command([step])).IsValid.Should().BeTrue();
+    }
+
+    [Fact]
+    public void Validate_WhenTheHostDeclaresNoAllowList_AnyDeploymentKeyPassesThrough()
+    {
+        // Empty means the host has declared no allow-list, so the key resolves at run time. This is a
+        // deliberate pass-through: an unrecognised key fails the step that used it and grants nothing.
+        _config.AgentFramework.AvailableDeployments = [];
+
+        Sut.Validate(Command([LlmStep("any")])).IsValid.Should().BeTrue();
     }
 }
