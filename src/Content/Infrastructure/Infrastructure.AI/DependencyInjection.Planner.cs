@@ -91,6 +91,11 @@ public static partial class DependencyInjection
         services.TryAddSingleton<IRunJobStore, InMemoryRunJobStore>();
         services.TryAddSingleton<IRunDispatchQueue, InMemoryRunDispatchQueue>();
 
+        // Singleton for the same reason: the run publishes from the dispatcher and the watcher reads
+        // from a request, so a scoped broker would give each side its own instance and every stream
+        // would sit silent while the run reported into nothing.
+        services.TryAddSingleton<IRunProgressBroker, InMemoryRunProgressBroker>();
+
         // Keyed by RunKind, which is what makes a new kind of work a registration rather than a
         // change to the dispatcher. Scoped: the dispatcher creates a fresh scope per run and resolves
         // the executor inside it, so each run gets its own scoped dependencies.

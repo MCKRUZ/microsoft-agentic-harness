@@ -46,6 +46,9 @@ public sealed class RunRecordCleanupServiceTests
 
         public bool Update(RunRecord record) => inner.Update(record);
 
+        public RunRecord? FindLiveRunForTarget(RunKind kind, string targetId) =>
+            inner.FindLiveRunForTarget(kind, targetId);
+
         public int SweepExpired()
         {
             Sweeps++;

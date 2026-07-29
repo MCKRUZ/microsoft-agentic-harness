@@ -199,6 +199,29 @@ public sealed class InMemoryRunJobStore : IRunJobStore
     }
 
     /// <inheritdoc />
+    public RunRecord? FindLiveRunForTarget(RunKind kind, string targetId)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(targetId);
+
+        foreach (var entry in _entries.Values)
+        {
+            lock (entry)
+            {
+                if (entry.Record.IsTerminal)
+                    continue;
+
+                if (entry.Record.Kind == kind
+                    && string.Equals(entry.Record.TargetId, targetId, StringComparison.Ordinal))
+                {
+                    return entry.Record;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /// <inheritdoc />
     public int SweepExpired()
     {
         var now = _time.GetUtcNow();

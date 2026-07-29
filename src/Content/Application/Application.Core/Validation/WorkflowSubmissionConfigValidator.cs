@@ -91,6 +91,14 @@ public sealed class WorkflowSubmissionConfigValidator : AbstractValidator<Workfl
             .GreaterThan(0)
             .WithMessage("MaxConcurrentDispatchedRuns must be > 0 — a non-positive degree would leave every accepted run queued and never executed.");
 
+        RuleFor(x => x.MaxConcurrentProgressStreams)
+            .GreaterThan(0)
+            .WithMessage("MaxConcurrentProgressStreams must be > 0 — a non-positive limit would refuse every stream, leaving polling as the only way to follow a run.");
+
+        RuleFor(x => x.ProgressBufferSize)
+            .GreaterThan(0)
+            .WithMessage("ProgressBufferSize must be > 0 — a non-positive buffer would drop every event before any watcher could read it.");
+
         RuleFor(x => x.RunSweepInterval)
             .GreaterThan(TimeSpan.Zero)
             .WithMessage("RunSweepInterval must be > 0 — a non-positive interval would spin the sweeper continuously instead of scheduling it.");

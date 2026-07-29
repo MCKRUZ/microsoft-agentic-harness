@@ -2,6 +2,7 @@ using Application.AI.Common.CQRS.Workflows.GetRun;
 using Application.AI.Common.CQRS.Workflows.StartRun;
 using Application.AI.Common.CQRS.Workflows.Submit;
 using Application.AI.Common.Interfaces.Governance;
+using Application.AI.Common.Interfaces.Runs;
 using Domain.Common;
 using Presentation.ExecutionApi.DTOs;
 using MediatR;
@@ -11,6 +12,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using Presentation.ExecutionApi.Extensions;
 using Presentation.ExecutionApi.Services;
+using Presentation.ExecutionApi.Streaming;
 using Presentation.Common.Extensions;
 
 namespace Presentation.ExecutionApi.Controllers;
@@ -52,15 +54,21 @@ public sealed class WorkflowsController : ControllerBase
 {
     private readonly IMediator _mediator;
     private readonly ICapabilityEnvelopeResolver _envelopeResolver;
+    private readonly IRunProgressBroker _progressBroker;
 
     /// <summary>Initializes the controller with its MediatR and envelope-resolver dependencies.</summary>
-    public WorkflowsController(IMediator mediator, ICapabilityEnvelopeResolver envelopeResolver)
+    public WorkflowsController(
+        IMediator mediator,
+        ICapabilityEnvelopeResolver envelopeResolver,
+        IRunProgressBroker progressBroker)
     {
         ArgumentNullException.ThrowIfNull(mediator);
         ArgumentNullException.ThrowIfNull(envelopeResolver);
+        ArgumentNullException.ThrowIfNull(progressBroker);
 
         _mediator = mediator;
         _envelopeResolver = envelopeResolver;
+        _progressBroker = progressBroker;
     }
 
     /// <summary>
@@ -166,6 +174,68 @@ public sealed class WorkflowsController : ControllerBase
         return result.IsSuccess && result.Value is not null
             ? Ok(WorkflowRunResponse.FromRecord(result.Value))
             : MapFailure(result);
+    }
+
+    /// <summary>Streams a run's progress as Server-Sent-Events until it finishes.</summary>
+    /// <remarks>
+    /// <para>
+    /// Authorized exactly like reading the run: another caller's run, a job that never existed, and a
+    /// job read through the wrong workflow's route are one answer, so a stream cannot be used to
+    /// discover work the caller was not given the identifier for.
+    /// </para>
+    /// <para>
+    /// Answers 503 when the host already carries as many streams as it permits. Each open stream holds
+    /// a connection and a buffer for as long as the client keeps it, and serving one that cannot keep
+    /// up would report the run with gaps in it — so the honest answer is to refuse and let the caller
+    /// poll instead.
+    /// </para>
+    /// </remarks>
+    /// <param name="workflowId">The workflow the run belongs to.</param>
+    /// <param name="jobId">The run to watch.</param>
+    /// <param name="cancellationToken">Ends the stream when the client disconnects.</param>
+    [HttpGet("{workflowId:guid}/runs/{jobId}/stream")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status503ServiceUnavailable)]
+    public async Task<IActionResult> StreamRun(
+        Guid workflowId, string jobId, CancellationToken cancellationToken)
+    {
+        // Authorized before anything is subscribed or written, so an unauthorized caller never holds
+        // one of the host's stream slots.
+        var result = await _mediator.Send(
+            new GetWorkflowRunQuery
+            {
+                WorkflowId = workflowId,
+                JobId = jobId,
+                OwnerId = User.GetUserId(),
+                TenantId = User.GetTenantId()
+            },
+            cancellationToken).ConfigureAwait(false);
+
+        if (!result.IsSuccess || result.Value is null)
+            return MapFailure(result);
+
+        using var subscription = _progressBroker.Subscribe(result.Value.JobId);
+        if (subscription is null)
+        {
+            return StatusCode(
+                StatusCodes.Status503ServiceUnavailable,
+                "This host is already carrying as many progress streams as it permits. "
+                + "Poll the run's status instead, or retry shortly.");
+        }
+
+        Response.Headers.ContentType = "text/event-stream";
+        Response.Headers.CacheControl = "no-cache";
+
+        // Chunked responses must not be buffered by a proxy, or the client receives the whole stream
+        // at once when it is already over — which defeats the point of streaming it.
+        Response.Headers["X-Accel-Buffering"] = "no";
+
+        var streamer = new WorkflowProgressStreamer(Response.Body);
+        await streamer.StreamAsync(result.Value, subscription, cancellationToken).ConfigureAwait(false);
+
+        return new EmptyResult();
     }
 
     private IActionResult MapFailure(Result result) =>

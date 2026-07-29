@@ -74,6 +74,26 @@ public interface IRunJobStore
     /// <param name="record">The updated run.</param>
     bool Update(RunRecord record);
 
+    /// <summary>
+    /// Finds the live run against <paramref name="targetId"/>, or <see langword="null"/> when there
+    /// is none.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Answerable at all only because admission permits one live run per target: without that rule
+    /// this question would have no single answer, and progress reported against a target could not be
+    /// attributed to a particular run.
+    /// </para>
+    /// <para>
+    /// Takes no caller and applies no scope. It exists for work already executing under an identity
+    /// the host established, which needs to know which run it is — not for answering a caller. Nothing
+    /// reached through a request may use it to resolve a run it was not given the id of.
+    /// </para>
+    /// </remarks>
+    /// <param name="kind">The kind of work.</param>
+    /// <param name="targetId">The thing being run.</param>
+    RunRecord? FindLiveRunForTarget(RunKind kind, string targetId);
+
     /// <summary>Drops runs whose retention has elapsed, returning how many were removed.</summary>
     int SweepExpired();
 }

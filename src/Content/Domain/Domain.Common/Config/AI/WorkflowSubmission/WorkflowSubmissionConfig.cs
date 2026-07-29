@@ -62,7 +62,9 @@ namespace Domain.Common.Config.AI.WorkflowSubmission;
 /// ├── RunRecordTtl             — How long a finished run stays readable
 /// ├── MaxConcurrentRunsPerOwner — Cap on how many runs one caller may have in flight
 /// ├── RunSweepInterval         — How often expired run records are reclaimed
-/// └── MaxConcurrentDispatchedRuns — How many runs the host executes at once, across all callers
+/// ├── MaxConcurrentDispatchedRuns — How many runs the host executes at once, across all callers
+/// ├── MaxConcurrentProgressStreams — How many progress streams may be open at once
+/// └── ProgressBufferSize        — How far behind one watcher may fall before it loses events
 /// </code>
 /// </remarks>
 public class WorkflowSubmissionConfig
@@ -246,4 +248,27 @@ public class WorkflowSubmissionConfig
     /// </remarks>
     /// <value>Default: 4</value>
     public int MaxConcurrentDispatchedRuns { get; set; } = 4;
+
+    /// <summary>
+    /// How many progress streams may be open across the host at once.
+    /// </summary>
+    /// <remarks>
+    /// Each open stream holds a connection and a buffer for as long as the client keeps it, so an
+    /// unbounded number of them is a way to exhaust the host by asking politely. A caller that would
+    /// exceed this is refused rather than served slowly, because a stream that cannot keep up is worse
+    /// than one that never opened: it reports a run's progress with gaps in it.
+    /// </remarks>
+    /// <value>Default: 64</value>
+    public int MaxConcurrentProgressStreams { get; set; } = 64;
+
+    /// <summary>
+    /// How many progress events one watcher may fall behind by before it starts losing the oldest.
+    /// </summary>
+    /// <remarks>
+    /// A watcher never applies backpressure — it is an observer, and letting a slow reader hold up
+    /// work the caller is paying for would be the wrong trade. Falling further behind than this drops
+    /// the oldest events, which the stream reports rather than hides.
+    /// </remarks>
+    /// <value>Default: 256</value>
+    public int ProgressBufferSize { get; set; } = 256;
 }
