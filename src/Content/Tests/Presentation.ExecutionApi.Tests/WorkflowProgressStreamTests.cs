@@ -49,6 +49,17 @@ public sealed class WorkflowProgressStreamTests
         }
     }
 
+    /// <summary>
+    /// How long a stream may stay open before the test gives up on it.
+    /// </summary>
+    /// <remarks>
+    /// A deadlock guard, not a performance assertion. A passing test returns the moment the server
+    /// closes the stream, so a generous budget costs nothing — while a tight one turns a loaded build
+    /// agent into a failure, which is what a 20-second budget did here when the rest of the suite was
+    /// competing for the machine.
+    /// </remarks>
+    private static readonly TimeSpan StreamBudget = TimeSpan.FromSeconds(90);
+
     private readonly SemaphoreSlim _release = new(0, 1);
 
     private WebApplicationFactory<Program> CreateFactory() =>
@@ -148,7 +159,7 @@ public sealed class WorkflowProgressStreamTests
         response.Content.Headers.ContentType!.MediaType.Should().Be("text/event-stream");
 
         var stream = await response.Content.ReadAsStreamAsync();
-        var reading = ReadFramesAsync(stream, TimeSpan.FromSeconds(20));
+        var reading = ReadFramesAsync(stream, StreamBudget);
 
         // Released only once the stream is open, so the step's progress cannot have been published
         // before anyone was listening — which is what makes this an assertion about live delivery
@@ -158,10 +169,12 @@ public sealed class WorkflowProgressStreamTests
 
         var (frames, closed) = await reading;
 
-        frames.Should().NotBeEmpty("the stream must carry the run, not merely open");
-        closed.Should().BeTrue("the stream must close when the run ends, not hold the client open");
-
         var types = frames.Select(f => f.GetProperty("type").GetString()).ToList();
+        var seen = string.Join(", ", types);
+
+        frames.Should().NotBeEmpty("the stream must carry the run, not merely open");
+        closed.Should().BeTrue(
+            "the stream must close when the run ends, not hold the client open. Frames seen: [{0}]", seen);
         types.Should().StartWith(["SNAPSHOT"], "every stream opens by saying where the run already is");
         types.Should().Contain("STEP", "the run's steps must actually reach the watcher");
         types.Should().Contain("FINISHED", "the stream must report the run reaching its end");
@@ -198,7 +211,7 @@ public sealed class WorkflowProgressStreamTests
             HttpCompletionOption.ResponseHeadersRead);
 
         var (frames, closed) = await ReadFramesAsync(
-            await response.Content.ReadAsStreamAsync(), TimeSpan.FromSeconds(10));
+            await response.Content.ReadAsStreamAsync(), StreamBudget);
 
         // Closing is the assertion that matters. A stream that sends the snapshot and then waits for
         // events that can never come produces an identical frame list, and the client experiences it
