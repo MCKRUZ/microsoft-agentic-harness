@@ -179,10 +179,10 @@ public sealed partial class PlanExecutor
             return true;
         }
 
-        // The attempt failed, but if the run is being torn down that failure is a casualty of
-        // cancellation rather than a verdict on the step. Throwing here routes it through
-        // ExecuteStepAsync's cancellation catch, which records Cancelled (renormalised to
-        // Pending on resume) instead of consuming retry budget and firing OnExhausted recovery.
+        // The attempt failed, but if an OPERATOR cancelled the run then that failure is a casualty of
+        // the cancellation rather than a verdict on the step. Throwing here routes it through
+        // ExecuteStepAsync's cancellation catch, which records Cancelled (renormalised to Pending on
+        // resume) instead of consuming retry budget and firing OnExhausted recovery.
         //
         // This must not be left to the caller's DelayBeforeRetryAsync token check: that only runs
         // when retry budget remains, so a step with RetryPolicy.MaxRetries = 0 — a single attempt,
@@ -190,7 +190,13 @@ public sealed partial class PlanExecutor
         // Failed. Failed is terminal on resume, so the plan could never be resumed. A cancellation
         // guarantee that holds only for some retry configurations is not a guarantee, so the check
         // belongs here, before the retry decision.
-        ct.ThrowIfCancellationRequested();
+        //
+        // It reads ctx.RunCancellationToken — the operator-cancel source — and deliberately NOT the
+        // ambient ct, which also folds in CancelAfter(PlanTimeout). A plan that ran out of time is a
+        // failure with a real cause, and its steps must keep reaching FailExhaustedStepAsync so
+        // OnExhausted recovery (Escalate, in particular) still fires and the persisted error names
+        // the actual fault instead of "Cancelled". Timeout is not something to resume from.
+        ctx.RunCancellationToken.ThrowIfCancellationRequested();
 
         if (ShouldRetry(step.RetryPolicy, attemptsMade))
             return false;

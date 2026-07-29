@@ -140,6 +140,43 @@ public sealed class PlanExecutorCancellationTests
     }
 
     [Fact]
+    public async Task PlanTimeout_WithNoRetryBudget_KeepsTheRealErrorAndDoesNotRecordCancelled()
+    {
+        // The distinction the operator-cancel check must preserve. Both a cancel and a timeout end the
+        // run, but they mean opposite things: a cancel is "stop, I will resume this", a timeout is
+        // "this failed, and here is why".
+        //
+        // The step must FAIL rather than throw, so the outcome reaches TryFinishAttemptAsync with the
+        // plan token already cancelled — that is the only path through the check under test. A step
+        // that honours the token instead throws out of ExecuteSingleAttemptAsync and is handled by
+        // ExecuteStepAsync's cancellation catch, never reaching the check at all. (A first version of
+        // this test did exactly that and passed against both the fixed and the broken code.)
+        const string realError = "upstream-service-unavailable";
+        var planId = PlanId.New();
+        var plan = BuildPlan(planId, stepCount: 1, chained: false, planTimeout: TimeSpan.FromMilliseconds(150));
+        var stepId = plan.Steps[0].Id;
+
+        var harness = new Harness(plan);
+        harness.OnStep = async (_, _) =>
+        {
+            // Deliberately ignores the token: outlast the plan timeout, then report a real failure.
+            await Task.Delay(TimeSpan.FromMilliseconds(600), CancellationToken.None);
+            return new StepExecutionResult
+            {
+                Status = StepExecutionStatus.Failed,
+                ErrorMessage = realError,
+                Duration = TimeSpan.FromMilliseconds(1)
+            };
+        };
+
+        await harness.CreateSut().ExecuteAsync(planId, CancellationToken.None).WaitAsync(DeadlockBudget);
+
+        var persisted = harness.PersistedStates[stepId];
+        Assert.Equal(StepExecutionStatus.Failed, persisted.Status);
+        Assert.Equal(realError, persisted.ErrorMessage);
+    }
+
+    [Fact]
     public async Task CancelAsync_CalledTwiceWhileRunning_IsIdempotent()
     {
         var planId = PlanId.New();
@@ -261,7 +298,14 @@ public sealed class PlanExecutorCancellationTests
         var planId = PlanId.New();
 
         using var queued = registry.Register(planId);
-        var running = registry.Register(planId);
+
+        // Registered on an INDEPENDENT flow. Calling Register again here would inherit the ambient run
+        // published by the line above and make `running` a CHILD of `queued`, which is the nesting
+        // case — not the sibling case this test is named for. Suppressing execution-context flow is
+        // what makes the second run a genuine peer.
+        PlanRunCancellationRegistration running;
+        using (ExecutionContext.SuppressFlow())
+            running = Task.Run(() => registry.Register(planId)).GetAwaiter().GetResult();
 
         // The finishing run releases. Releasing by plan id alone would tear down the queued run's
         // registration too, leaving it silently uncancellable.
@@ -429,7 +473,7 @@ public sealed class PlanExecutorCancellationTests
     /// mistaken for "any child cancellation cancels the parent".
     /// </summary>
     [Fact]
-    public async Task Registry_CancellingChildOnly_DoesNotCancelParentRun()
+    public void Registry_CancellingChildOnly_DoesNotCancelParentRun()
     {
         var registry = new PlanRunCancellationRegistry();
         var parentPlanId = PlanId.New();
@@ -475,6 +519,9 @@ public sealed class PlanExecutorCancellationTests
     };
 
     private static PlanGraph BuildPlan(PlanId planId, int stepCount, bool chained = false)
+        => BuildPlan(planId, stepCount, chained, TimeSpan.FromSeconds(60));
+
+    private static PlanGraph BuildPlan(PlanId planId, int stepCount, bool chained, TimeSpan planTimeout)
     {
         var steps = Enumerable.Range(0, stepCount).Select(i => new PlanStep
         {
@@ -500,7 +547,7 @@ public sealed class PlanExecutorCancellationTests
             Edges = edges,
             Configuration = new PlanConfiguration
             {
-                PlanTimeout = TimeSpan.FromSeconds(60),
+                PlanTimeout = planTimeout,
                 MaxParallelSteps = 2
             }
         };

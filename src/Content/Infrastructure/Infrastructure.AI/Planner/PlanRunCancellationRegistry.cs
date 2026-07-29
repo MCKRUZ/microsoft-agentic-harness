@@ -47,8 +47,12 @@ public sealed class PlanRunCancellationRegistry : IPlanRunCancellationRegistry
             this, planId, parent?.Registration.Token ?? default);
 
         // Published before returning, so a sub-plan started by this run registers beneath it.
-        // Writing an AsyncLocal affects this flow and the flows it spawns, never the caller's, so
-        // sibling runs on other flows are unaffected.
+        //
+        // Register is synchronous, so this write lands in the CALLING async method's context — which
+        // is the mechanism, not a leak: it is what makes the run visible to that method's own
+        // continuations and to every step task it spawns. What it does not do is escape further, to
+        // that method's caller or to sibling runs on other flows, because an async method restores
+        // its own execution context on return.
         _ambientRun.Value = new AmbientRun(registration, parent);
 
         lock (_gate)

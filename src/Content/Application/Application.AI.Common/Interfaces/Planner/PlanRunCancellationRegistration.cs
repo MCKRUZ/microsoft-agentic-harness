@@ -21,10 +21,19 @@ namespace Application.AI.Common.Interfaces.Planner;
 /// <para>
 /// <b>Thread safety.</b> <see cref="SignalCancellation"/> and <see cref="CompleteRelease"/> are
 /// mutually exclusive under a private gate, so the underlying
-/// <see cref="CancellationTokenSource"/> can never be cancelled and disposed concurrently — the one
-/// race that <see cref="CancellationTokenSource"/> does not tolerate. Cancelling a run that has
-/// already been released is a no-op rather than an error: the run it would have stopped has already
-/// finished, which is precisely why it was released.
+/// <see cref="CancellationTokenSource"/> is never cancelled and disposed concurrently from two
+/// threads — the one race that <see cref="CancellationTokenSource"/> does not tolerate. Cancelling a
+/// run that has already been released is a no-op rather than an error: the run it would have stopped
+/// has already finished, which is precisely why it was released.
+/// </para>
+/// <para>
+/// The gate excludes other <em>threads</em>, not re-entry on the same one. <c>Cancel()</c> runs its
+/// registered callbacks inline while the gate is held, and a <c>lock</c> is reentrant, so a callback
+/// that unwound a run synchronously all the way back to <c>Dispose()</c> on this thread would re-enter
+/// <see cref="CompleteRelease"/> and dispose the source mid-cancel. That cannot happen as the executor
+/// is written — the unwind path is asynchronous through several awaits, so the continuation never runs
+/// on this stack — but the guarantee above is a property of the caller, not of this lock, and should
+/// not be relied on by a future caller that cancels from a synchronous continuation.
 /// </para>
 /// </remarks>
 public sealed class PlanRunCancellationRegistration : IDisposable
