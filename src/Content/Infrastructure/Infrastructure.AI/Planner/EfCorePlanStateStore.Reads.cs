@@ -11,6 +11,15 @@ namespace Infrastructure.AI.Planner;
 public sealed partial class EfCorePlanStateStore
 {
     /// <inheritdoc />
+    public async Task<Result<bool>> IsPlanWritableByCallerAsync(PlanId planId, CancellationToken ct)
+    {
+        await using var ctx = _factory.CreateDbContext();
+
+        var writable = await IsPlanWritableAsync(ctx, planId.Value, ct).ConfigureAwait(false);
+
+        return Result<bool>.Success(writable);
+    }
+
     /// <inheritdoc />
     public async Task<Result<int>> CountOwnedPlansAsync(CancellationToken ct)
     {

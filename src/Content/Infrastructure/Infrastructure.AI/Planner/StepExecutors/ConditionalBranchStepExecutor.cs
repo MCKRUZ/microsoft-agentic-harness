@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 using Application.AI.Common.Interfaces.Planner;
 using Domain.AI.Planner;
 using Microsoft.Extensions.Logging;
@@ -11,7 +10,7 @@ namespace Infrastructure.AI.Planner.StepExecutors;
 /// Evaluates a condition expression against upstream outputs and activates the appropriate edge.
 /// Pure logic — no external service dependencies.
 /// </summary>
-public sealed partial class ConditionalBranchStepExecutor : IPlanStepExecutor
+public sealed class ConditionalBranchStepExecutor : IPlanStepExecutor
 {
 
     private readonly ILogger<ConditionalBranchStepExecutor> _logger;

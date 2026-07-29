@@ -58,7 +58,11 @@ namespace Domain.Common.Config.AI.WorkflowSubmission;
 /// ├── MaxHumanGateTimeout      — Ceiling on how long a submitted step may park awaiting approval
 /// ├── MaxTokensPerStep         — Ceiling on a requested LLM response-token count
 /// ├── MaxTopK                  — Ceiling on a requested retrieval result count
-/// └── MaxStoredWorkflowsPerOwner — Cap on how many workflows one caller may keep stored
+/// ├── MaxStoredWorkflowsPerOwner — Cap on how many workflows one caller may keep stored
+/// ├── RunRecordTtl             — How long a finished run stays readable
+/// ├── MaxConcurrentRunsPerOwner — Cap on how many runs one caller may have in flight
+/// ├── RunSweepInterval         — How often expired run records are reclaimed
+/// └── MaxConcurrentDispatchedRuns — How many runs the host executes at once, across all callers
 /// </code>
 /// </remarks>
 public class WorkflowSubmissionConfig
@@ -186,4 +190,60 @@ public class WorkflowSubmissionConfig
     /// </remarks>
     /// <value>Default: 500</value>
     public int MaxStoredWorkflowsPerOwner { get; set; } = 500;
+
+    /// <summary>
+    /// How long a finished run stays readable before it is reclaimed.
+    /// </summary>
+    /// <remarks>
+    /// The clock starts when the run reaches a terminal state, not when it was accepted, so a run that
+    /// waited a long time in the queue still gets its full readable window afterwards. A run that has
+    /// not finished is never reclaimed at all — expiring one a caller is still polling would make it
+    /// silently disappear rather than report an outcome.
+    /// </remarks>
+    /// <value>Default: 1 hour</value>
+    public TimeSpan RunRecordTtl { get; set; } = TimeSpan.FromHours(1);
+
+    /// <summary>
+    /// Maximum number of runs one caller may have queued or executing at once.
+    /// </summary>
+    /// <remarks>
+    /// Distinct from <see cref="MaxStoredWorkflowsPerOwner"/>, which bounds stored definitions: this
+    /// bounds work in flight. A caller within the storage quota can otherwise start every workflow it
+    /// owns simultaneously, and the per-workflow parallelism ceiling multiplies by that count.
+    /// </remarks>
+    /// <value>Default: 10</value>
+    public int MaxConcurrentRunsPerOwner { get; set; } = 10;
+
+    /// <summary>
+    /// How often finished runs past their <see cref="RunRecordTtl"/> are reclaimed.
+    /// </summary>
+    /// <remarks>
+    /// Separate from the retention window rather than derived from it. The two answer different
+    /// questions — how long a caller may read a finished run, and how promptly the host gives that
+    /// memory back — and an operator who lengthens the readable window rarely means to make sweeps
+    /// correspondingly rare. Only terminal records are ever reclaimed, so this cannot shorten the life
+    /// of work still in flight.
+    /// </remarks>
+    /// <value>Default: 5 minutes</value>
+    public TimeSpan RunSweepInterval { get; set; } = TimeSpan.FromMinutes(5);
+
+    /// <summary>
+    /// How many runs the host executes at once, across all callers.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Distinct from <see cref="MaxConcurrentRunsPerOwner"/>, which bounds what one caller may have
+    /// <em>accepted</em>. This bounds what the host actually executes. At 1 the dispatcher is strictly
+    /// serial and a single long workflow delays every other caller's — which makes the per-owner cap
+    /// read as a concurrency guarantee the host does not provide.
+    /// </para>
+    /// <para>
+    /// <strong>This is not a fairness mechanism.</strong> Runs are dispatched in the order they were
+    /// accepted, so a caller that queues many runs at once still occupies the slots ahead of a caller
+    /// that queues one. Per-caller fair scheduling is a separate piece of work; raising this reduces
+    /// how long anyone waits but does not decide who waits.
+    /// </para>
+    /// </remarks>
+    /// <value>Default: 4</value>
+    public int MaxConcurrentDispatchedRuns { get; set; } = 4;
 }

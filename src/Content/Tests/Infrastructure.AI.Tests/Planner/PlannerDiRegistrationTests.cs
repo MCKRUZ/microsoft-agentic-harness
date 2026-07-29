@@ -16,6 +16,7 @@ using Infrastructure.AI.KnowledgeGraph;
 using Infrastructure.AI.Persistence;
 using Infrastructure.AI.Planner;
 using Infrastructure.AI.Planner.StepExecutors;
+using Infrastructure.AI.Runs;
 using Infrastructure.AI.Sandbox;
 using MediatR;
 using Microsoft.EntityFrameworkCore;
@@ -53,6 +54,21 @@ public sealed class PlannerDiRegistrationTests : IDisposable
         sp.GetService<IPlanValidator>().Should().NotBeNull().And.BeOfType<PlanValidator>();
         sp.GetService<IPlanGenerator>().Should().NotBeNull().And.BeOfType<LlmPlanGeneratorService>();
         sp.GetService<IPlanStateStore>().Should().NotBeNull().And.BeOfType<EfCorePlanStateStore>();
+    }
+
+    [Fact]
+    public void DependencyInjection_RunSubstrate_HasBothADispatcherAndASweeper()
+    {
+        // Registration is the whole feature for these two. Each is a background loop nothing else
+        // calls, so an unregistered one is not a failure anyone sees — the dispatcher's absence leaves
+        // every run sitting Queued, and the sweeper's leaves the configured retention as a claim the
+        // host never honours while finished runs accumulate for the life of the process.
+        var hosted = _provider.GetServices<Microsoft.Extensions.Hosting.IHostedService>()
+            .Select(service => service.GetType())
+            .ToList();
+
+        hosted.Should().Contain(typeof(RunDispatchBackgroundService));
+        hosted.Should().Contain(typeof(RunRecordCleanupService));
     }
 
     [Fact]

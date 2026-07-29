@@ -79,6 +79,22 @@ public sealed class WorkflowSubmissionConfigValidator : AbstractValidator<Workfl
             .GreaterThan(0)
             .WithMessage("MaxStoredWorkflowsPerOwner must be > 0 — a non-positive quota would reject every caller's first submission.");
 
+        RuleFor(x => x.RunRecordTtl)
+            .GreaterThan(TimeSpan.Zero)
+            .WithMessage("RunRecordTtl must be > 0 — a non-positive retention reclaims every run the moment it finishes, so no caller could ever read an outcome.");
+
+        RuleFor(x => x.MaxConcurrentRunsPerOwner)
+            .GreaterThan(0)
+            .WithMessage("MaxConcurrentRunsPerOwner must be > 0 — a non-positive limit would refuse every caller's first run.");
+
+        RuleFor(x => x.MaxConcurrentDispatchedRuns)
+            .GreaterThan(0)
+            .WithMessage("MaxConcurrentDispatchedRuns must be > 0 — a non-positive degree would leave every accepted run queued and never executed.");
+
+        RuleFor(x => x.RunSweepInterval)
+            .GreaterThan(TimeSpan.Zero)
+            .WithMessage("RunSweepInterval must be > 0 — a non-positive interval would spin the sweeper continuously instead of scheduling it.");
+
         RuleFor(x => x.MaxHumanGateTimeout)
             .GreaterThan(TimeSpan.Zero)
             .WithMessage("MaxHumanGateTimeout must be > 0 — a non-positive ceiling would reject every requested gate timeout.");

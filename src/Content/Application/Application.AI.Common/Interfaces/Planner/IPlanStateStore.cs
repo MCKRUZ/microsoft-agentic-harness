@@ -55,12 +55,24 @@ public interface IPlanStateStore
     Task<Result<IReadOnlyList<PlanExecutionLogEntry>>> GetExecutionHistoryAsync(PlanId planId, CancellationToken ct);
 
     /// <summary>
-    /// Lists plans with optional filtering by status and time range.
+    /// Whether the plan exists and the ambient caller may mutate it.
     /// </summary>
-    /// <param name="statusFilter">Optional status filter.</param>
-    /// <param name="from">Optional start of time range.</param>
-    /// <param name="to">Optional end of time range.</param>
-    /// <param name="ct">Cancellation token.</param>
+    /// <remarks>
+    /// Exists so a caller can be authorized <em>before</em> an irreversible side effect, not merely
+    /// before a persisted write. Cancellation is the case that forced it: signalling an in-flight run
+    /// stops real work immediately, so checking ownership only at the subsequent state rewrite would
+    /// let one caller abort another's run and then be told the plan was not found — with the run
+    /// already dead.
+    /// </remarks>
+    /// <param name="planId">The plan to probe.</param>
+    /// <param name="ct">Cancels the query.</param>
+    /// <returns>
+    /// <see langword="true"/> only when the plan exists and belongs to the ambient scope. A plan the
+    /// caller can read but not mutate — a globally readable one, for instance — returns
+    /// <see langword="false"/>, and callers must report that identically to a missing plan.
+    /// </returns>
+    Task<Result<bool>> IsPlanWritableByCallerAsync(PlanId planId, CancellationToken ct);
+
     /// <summary>
     /// Counts the plans the ambient caller owns outright, for quota enforcement.
     /// </summary>

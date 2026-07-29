@@ -603,6 +603,10 @@ public sealed class PlanExecutorCancellationTests
                 .ReturnsAsync(Result<PlanValidationResult>.Success(new PlanValidationResult { IsValid = true }));
 
             var stateStore = new Mock<IPlanStateStore>();
+            // The caller owns the plan here. CancelAsync authorizes through this probe BEFORE it
+            // signals, so leaving it unset makes the plan read as absent and no cancel reaches the run.
+            stateStore.Setup(s => s.IsPlanWritableByCallerAsync(It.IsAny<PlanId>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(Result<bool>.Success(true));
             stateStore.Setup(s => s.LoadPlanAsync(It.IsAny<PlanId>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(Result<PlanGraph?>.Success(_plan));
             stateStore.Setup(s => s.ResumeAsync(It.IsAny<PlanId>(), It.IsAny<CancellationToken>()))
