@@ -378,9 +378,18 @@ public sealed class RunDispatchBackgroundServiceTests
 
         using var cts = new CancellationTokenSource();
         await service.StartAsync(cts.Token);
-        await Task.Delay(250);
 
-        peak.Should().BeLessThanOrEqualTo(2);
+        // Waits for dispatch to saturate rather than sleeping a fixed interval, then gives the loop a
+        // brief window to overshoot if it is going to. Six jobs are already queued before the service
+        // starts, so an unbounded loop would have all six running by the end of that window — the
+        // recorded peak is what catches it.
+        for (var attempt = 0; attempt < 200 && Volatile.Read(in peak) < 2; attempt++)
+            await Task.Delay(10);
+
+        await Task.Delay(50);
+
+        peak.Should().Be(2, "dispatch must reach the configured degree and must never exceed it");
+        Volatile.Read(in running).Should().BeLessThanOrEqualTo(2);
 
         release.Release(6);
         await cts.CancelAsync();
