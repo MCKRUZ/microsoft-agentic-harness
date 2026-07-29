@@ -66,14 +66,45 @@ public sealed record RunRecord
     /// <summary>When the run reached a terminal state, if it has.</summary>
     public DateTimeOffset? CompletedAt { get; init; }
 
+    /// <summary>When the run parked awaiting a decision, if it is parked.</summary>
+    /// <remarks>
+    /// Distinct from <see cref="StartedAt"/> because a run can park and resume more than once, and the
+    /// thing that needs bounding is how long it has been waiting <em>this</em> time. A gate nobody
+    /// answers is otherwise indistinguishable from one answered a moment ago.
+    /// </remarks>
+    public DateTimeOffset? ParkedAt { get; init; }
+
     /// <summary>Whether the run has finished and will not change again.</summary>
     /// <remarks>
+    /// <para>
     /// Expressed as "not one of the live states" rather than "one of the terminal states" on purpose.
-    /// Queued and Running are the only two the dispatcher can move a run out of, and enumerating the
-    /// terminal side instead means every future outcome added to <see cref="RunStatus"/> is silently
-    /// treated as live until someone remembers to list it here — which would strand it at the
-    /// concurrency cap and keep it from ever being reclaimed.
+    /// The live states are the ones a run can still move out of, and enumerating the terminal side
+    /// instead means every future outcome added to <see cref="RunStatus"/> is silently treated as live
+    /// until someone remembers to list it here — which would strand it at the concurrency cap and keep
+    /// it from ever being reclaimed.
+    /// </para>
+    /// <para>
+    /// <see cref="RunStatus.Blocked"/> is live: a parked run resumes under this same job id when its
+    /// gate is answered. Listing it here is what keeps its workflow locked — admission permits one live
+    /// run per target, so a parked run read as finished would release its workflow to a second run
+    /// against the same plan state machine.
+    /// </para>
     /// </remarks>
     public bool IsTerminal =>
-        Status is not (RunStatus.Queued or RunStatus.Running);
+        Status is not (RunStatus.Queued or RunStatus.Running or RunStatus.Blocked);
+
+    /// <summary>Whether the run is parked awaiting a decision it cannot make for itself.</summary>
+    public bool IsAwaitingDecision => Status is RunStatus.Blocked;
+
+    /// <summary>
+    /// Whether the run will produce nothing further unless something outside it acts.
+    /// </summary>
+    /// <remarks>
+    /// The question a progress watcher actually needs answered, and it is not
+    /// <see cref="IsTerminal"/>. A parked run is live, but nothing will be published for it until a
+    /// human answers its gate — so a stream that waited on it would hold a connection and a slot for
+    /// as long as the approver took, having already said everything it can say. Both quiesced states
+    /// mean "stop waiting"; only one of them means "this is over".
+    /// </remarks>
+    public bool IsQuiescent => IsTerminal || IsAwaitingDecision;
 }

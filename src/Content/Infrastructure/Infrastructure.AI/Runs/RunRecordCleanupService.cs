@@ -80,6 +80,10 @@ internal sealed class RunRecordCleanupService : BackgroundService
     {
         try
         {
+            // Ageing out abandoned gates first, so a run that expires on this tick is reclaimable on
+            // this tick rather than waiting a whole interval to become eligible.
+            ExpireStaleParkedRuns();
+
             var reclaimed = _store.SweepExpired();
             if (reclaimed.Count == 0)
                 return;
@@ -99,5 +103,25 @@ internal sealed class RunRecordCleanupService : BackgroundService
             // retention window would stop being honoured for the life of the process.
             _logger.LogError(ex, "Run record sweep failed; will retry on the next interval.");
         }
+    }
+
+    /// <summary>
+    /// Gives up on runs that have been waiting for an approval far longer than the host permits.
+    /// </summary>
+    /// <remarks>
+    /// Logged at warning rather than information: every run this touches is one a human was asked to
+    /// decide and never did. That is worth someone's attention, whereas an ordinary reclaim is not.
+    /// </remarks>
+    private void ExpireStaleParkedRuns()
+    {
+        var ceiling = _config.CurrentValue.AI.WorkflowSubmission.MaxParkedRunDuration;
+
+        var expired = _store.ExpireStaleParkedRuns(ceiling);
+        if (expired.Count == 0)
+            return;
+
+        _logger.LogWarning(
+            "Failed {Count} run(s) parked longer than {Ceiling} awaiting an approval that never arrived.",
+            expired.Count, ceiling);
     }
 }

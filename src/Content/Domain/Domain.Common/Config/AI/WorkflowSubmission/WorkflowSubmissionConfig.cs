@@ -285,4 +285,21 @@ public class WorkflowSubmissionConfig
     /// </remarks>
     /// <value>Default: 256</value>
     public int ProgressBufferSize { get; set; } = 256;
+
+    /// <summary>
+    /// How long a run may stay parked on a human gate before the host gives up on it.
+    /// </summary>
+    /// <remarks>
+    /// A parked run is live, which is what keeps its workflow locked against a second run sharing its
+    /// plan state machine — and which also means retention never reclaims it, because retention only
+    /// reclaims terminal runs. Without a ceiling, one gate nobody ever answers holds a workflow and an
+    /// owner's concurrency slot for the life of the process. Expiring the run fails it with a
+    /// caller-safe reason, which makes it terminal and reclaimable again.
+    /// <para>
+    /// This is a backstop, not the gate's own deadline. An individual gate carries its own
+    /// <c>Timeout</c>; this bounds the case where that timeout never takes effect.
+    /// </para>
+    /// </remarks>
+    /// <value>Default: 7 days</value>
+    public TimeSpan MaxParkedRunDuration { get; set; } = TimeSpan.FromDays(7);
 }

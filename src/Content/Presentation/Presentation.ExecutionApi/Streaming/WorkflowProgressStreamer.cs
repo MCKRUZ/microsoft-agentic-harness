@@ -82,9 +82,11 @@ public sealed class WorkflowProgressStreamer
         if (!delivered)
             return;
 
-        // A run that had already finished has nothing further to report, and waiting on its stream
-        // would hold the connection open until the client gave up.
-        if (run.IsTerminal)
+        // A run that has quiesced has nothing further to report, and waiting on its stream would hold
+        // the connection open until the client gave up. That covers a run already finished and a run
+        // parked on a human gate alike: the second is still live, but nothing will be published for it
+        // until somebody answers, and an approver may take days.
+        if (run.IsQuiescent)
             return;
 
         var reportedDrops = 0L;
@@ -115,7 +117,10 @@ public sealed class WorkflowProgressStreamer
                 return;
             }
 
-            if (evt.Kind == RunProgressKind.RunFinished)
+            // Both kinds end the stream; only one ends the run. A parked run will publish nothing
+            // further until somebody answers its gate, so continuing to wait would hold a connection
+            // and a stream slot for as long as that takes.
+            if (evt.Kind is RunProgressKind.RunFinished or RunProgressKind.RunParked)
                 return;
         }
     }

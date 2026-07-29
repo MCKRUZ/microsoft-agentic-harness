@@ -71,5 +71,17 @@ public enum RunProgressKind
     StepCompleted = 2,
 
     /// <summary>The run reached a terminal state. Emitted once, last.</summary>
-    RunFinished = 3
+    RunFinished = 3,
+
+    /// <summary>
+    /// The run parked awaiting a decision it cannot make for itself, such as a human approval gate.
+    /// </summary>
+    /// <remarks>
+    /// Separate from <see cref="RunFinished"/> because the run is not over — answering the gate
+    /// continues it under the same job id. It ends a <em>stream</em> without ending the <em>run</em>:
+    /// nothing further will be published until somebody acts, and an approver may take days, so a
+    /// watcher is told to stop waiting rather than being left holding a connection. A client that
+    /// wants to follow the rest of the run opens a new stream once it has answered.
+    /// </remarks>
+    RunParked = 4
 }

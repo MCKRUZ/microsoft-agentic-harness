@@ -95,6 +95,25 @@ public interface IRunJobStore
     RunRecord? FindLiveRunForTarget(RunKind kind, string targetId);
 
     /// <summary>
+    /// Fails runs that have been parked awaiting a decision for longer than
+    /// <paramref name="maxParkedDuration"/>, returning the identifiers of those failed.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A parked run is live, so retention never reclaims it and its target stays locked. That is the
+    /// point — a workflow waiting on an approval is genuinely still in flight — but it means an
+    /// unanswered gate would otherwise hold a workflow and an owner's concurrency slot for the life of
+    /// the process. Failing the run makes it terminal, which lets both go.
+    /// </para>
+    /// <para>
+    /// Fails rather than deletes. A caller that comes back to a run it started is owed an answer about
+    /// what became of it, and "no such run" is the one answer that tells it nothing.
+    /// </para>
+    /// </remarks>
+    /// <param name="maxParkedDuration">How long a run may stay parked before it is given up on.</param>
+    IReadOnlyList<string> ExpireStaleParkedRuns(TimeSpan maxParkedDuration);
+
+    /// <summary>
     /// Drops runs whose retention has elapsed, returning the identifiers of those removed.
     /// </summary>
     /// <remarks>

@@ -222,6 +222,47 @@ public sealed class InMemoryRunJobStore : IRunJobStore
     }
 
     /// <inheritdoc />
+    public IReadOnlyList<string> ExpireStaleParkedRuns(TimeSpan maxParkedDuration)
+    {
+        if (maxParkedDuration <= TimeSpan.Zero)
+            return [];
+
+        var now = _time.GetUtcNow();
+        var expired = new List<string>();
+
+        foreach (var entry in _entries.Values)
+        {
+            lock (entry)
+            {
+                if (!entry.Record.IsAwaitingDecision)
+                    continue;
+
+                // A parked run with no ParkedAt cannot be aged, and guessing an age from CreatedAt
+                // would expire a run that parked a moment ago on a workflow submitted last week. Left
+                // alone deliberately: the stamp is written on the same update that sets the status, so
+                // its absence means something wrote Blocked without going through the park path.
+                var parkedAt = entry.Record.ParkedAt;
+                if (parkedAt is null || now - parkedAt.Value < maxParkedDuration)
+                    continue;
+
+                entry.Record = entry.Record with
+                {
+                    Status = RunStatus.Failed,
+                    Error = "The run was waiting for an approval that did not arrive in time.",
+                    CompletedAt = now
+                };
+
+                // Now terminal, so retention applies from this moment — the same rule the ordinary
+                // finishing path follows.
+                entry.ExpiresAt = now + Ttl;
+                expired.Add(entry.Record.JobId);
+            }
+        }
+
+        return expired;
+    }
+
+    /// <inheritdoc />
     public IReadOnlyList<string> SweepExpired()
     {
         var now = _time.GetUtcNow();

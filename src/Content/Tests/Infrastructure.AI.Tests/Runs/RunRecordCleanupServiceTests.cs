@@ -49,6 +49,18 @@ public sealed class RunRecordCleanupServiceTests
         public RunRecord? FindLiveRunForTarget(RunKind kind, string targetId) =>
             inner.FindLiveRunForTarget(kind, targetId);
 
+        /// <summary>The ceilings the service asked the store to apply, in order.</summary>
+        public List<TimeSpan> ParkedCeilings { get; } = [];
+
+        public IReadOnlyList<string> ExpireStaleParkedRuns(TimeSpan maxParkedDuration)
+        {
+            // Recorded rather than merely forwarded: the ceiling reaching the store is the whole of
+            // what this service contributes to the parked-run rule, and a service that read the wrong
+            // config value would forward a plausible-looking TimeSpan that expired nothing.
+            ParkedCeilings.Add(maxParkedDuration);
+            return inner.ExpireStaleParkedRuns(maxParkedDuration);
+        }
+
         public IReadOnlyList<string> SweepExpired()
         {
             Sweeps++;
