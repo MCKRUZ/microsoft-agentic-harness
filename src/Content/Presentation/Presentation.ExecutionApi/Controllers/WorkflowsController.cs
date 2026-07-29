@@ -2,6 +2,7 @@ using Application.AI.Common.CQRS.Workflows.GetRun;
 using Application.AI.Common.CQRS.Workflows.StartRun;
 using Application.AI.Common.CQRS.Workflows.Submit;
 using Application.AI.Common.Interfaces.Governance;
+using Application.AI.Common.Interfaces.Runs;
 using Domain.Common;
 using Presentation.ExecutionApi.DTOs;
 using MediatR;
@@ -11,6 +12,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using Presentation.ExecutionApi.Extensions;
 using Presentation.ExecutionApi.Services;
+using Presentation.ExecutionApi.Streaming;
 using Presentation.Common.Extensions;
 
 namespace Presentation.ExecutionApi.Controllers;
@@ -52,15 +54,21 @@ public sealed class WorkflowsController : ControllerBase
 {
     private readonly IMediator _mediator;
     private readonly ICapabilityEnvelopeResolver _envelopeResolver;
+    private readonly IRunProgressBroker _progressBroker;
 
     /// <summary>Initializes the controller with its MediatR and envelope-resolver dependencies.</summary>
-    public WorkflowsController(IMediator mediator, ICapabilityEnvelopeResolver envelopeResolver)
+    public WorkflowsController(
+        IMediator mediator,
+        ICapabilityEnvelopeResolver envelopeResolver,
+        IRunProgressBroker progressBroker)
     {
         ArgumentNullException.ThrowIfNull(mediator);
         ArgumentNullException.ThrowIfNull(envelopeResolver);
+        ArgumentNullException.ThrowIfNull(progressBroker);
 
         _mediator = mediator;
         _envelopeResolver = envelopeResolver;
+        _progressBroker = progressBroker;
     }
 
     /// <summary>
@@ -166,6 +174,112 @@ public sealed class WorkflowsController : ControllerBase
         return result.IsSuccess && result.Value is not null
             ? Ok(WorkflowRunResponse.FromRecord(result.Value))
             : MapFailure(result);
+    }
+
+    /// <summary>Streams a run's progress as Server-Sent-Events until it finishes.</summary>
+    /// <remarks>
+    /// <para>
+    /// Authorized exactly like reading the run: another caller's run, a job that never existed, and a
+    /// job read through the wrong workflow's route are one answer, so a stream cannot be used to
+    /// discover work the caller was not given the identifier for.
+    /// </para>
+    /// <para>
+    /// Answers 503 when the host, or this caller, already carries as many streams as either permits.
+    /// Each open stream holds a connection and a buffer for as long as the client keeps it, and
+    /// serving one that cannot keep up would report the run with gaps in it — so the honest answer is
+    /// to refuse and let the caller poll instead.
+    /// </para>
+    /// <para>
+    /// <strong>Simultaneous streams are bounded by the broker, not by a concurrency rate-limit
+    /// policy.</strong> This route inherits the controller's fixed-window limiter, which counts
+    /// requests started rather than connections held — on its own that would bound nothing about a
+    /// long-lived stream. What actually bounds it is
+    /// <c>MaxProgressStreamsPerOwner</c>, enforced when the subscription is taken. Recorded because
+    /// the two look interchangeable and are not: removing the broker's per-caller cap on the grounds
+    /// that the endpoint "is already rate limited" would leave simultaneous streams unbounded.
+    /// </para>
+    /// <para>
+    /// <strong>A stream is authorized once, when it opens, and then runs for the life of the run.</strong>
+    /// The credential is validated at request start and never re-checked, so a token that expires or is
+    /// revoked mid-run keeps delivering until the run ends. This is inherent to a long-lived response
+    /// rather than an oversight, and it is bounded twice over: by the run's own duration, and by the
+    /// frames carrying nothing beyond what the same caller can already read from the run's status —
+    /// no step output, prompts, tool arguments, or host internals. A host that needs revocation to take
+    /// effect sooner than a run can finish should bound run duration, not add a re-check here; the
+    /// alternative is a stream that drops a legitimate watcher part-way through for no observable
+    /// reason. Recorded so the property is a decision on the record rather than something rediscovered
+    /// during the next review.
+    /// </para>
+    /// </remarks>
+    /// <param name="workflowId">The workflow the run belongs to.</param>
+    /// <param name="jobId">The run to watch.</param>
+    /// <param name="cancellationToken">Ends the stream when the client disconnects.</param>
+    [HttpGet("{workflowId:guid}/runs/{jobId}/stream")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status503ServiceUnavailable)]
+    public async Task<IActionResult> StreamRun(
+        Guid workflowId, string jobId, CancellationToken cancellationToken)
+    {
+        // One query, asked twice. The two reads differ only in when they happen, and building the
+        // second by hand invites the pair to drift — an authorization check and a snapshot that no
+        // longer describe the same run is exactly the divergence nothing here would catch.
+        var query = new GetWorkflowRunQuery
+        {
+            WorkflowId = workflowId,
+            JobId = jobId,
+            OwnerId = User.GetUserId(),
+            TenantId = User.GetTenantId()
+        };
+
+        // Authorized before anything is subscribed or written, so an unauthorized caller never holds
+        // one of the host's stream slots.
+        var result = await _mediator.Send(query, cancellationToken).ConfigureAwait(false);
+
+        if (!result.IsSuccess || result.Value is null)
+            return MapFailure(result);
+
+        using var subscription = _progressBroker.Subscribe(
+            result.Value.JobId, User.GetUserId(), User.GetTenantId());
+        if (subscription is null)
+        {
+            // Deliberately does not say which ceiling was reached. The caller's own cap and the
+            // host-wide one are refused identically, so a caller cannot use its own refusals to
+            // measure how busy the host is with everyone else's work. What it can act on is the same
+            // either way: poll, or try again shortly.
+            return StatusCode(
+                StatusCodes.Status503ServiceUnavailable,
+                "No progress stream is available for this run right now. "
+                + "Poll the run's status instead, or retry shortly.");
+        }
+
+        // Re-read AFTER subscribing, and stream that. The first read authorized the caller; this one
+        // is the snapshot. Reporting the first read instead would describe the run as it stood before
+        // anyone was listening, so anything that happened in between would be missing from both the
+        // snapshot and the live feed — invisible to the client, because a gap it never saw the far
+        // side of looks like nothing happening.
+        var current = await _mediator.Send(query, cancellationToken).ConfigureAwait(false);
+
+        // A run that has gone between the two reads was swept, and only a terminal run is ever swept.
+        // Falling back to the older read would describe it as still live and then wait for events
+        // nothing can publish — a stream that never ends, holding a slot until the client gives up.
+        // Answering as the polling endpoint would is both truthful and something callers already
+        // handle. Nothing has been written yet, so a status code is still available to say it with.
+        if (!current.IsSuccess || current.Value is null)
+            return MapFailure(current);
+
+        Response.Headers.ContentType = "text/event-stream";
+        Response.Headers.CacheControl = "no-cache";
+
+        // Chunked responses must not be buffered by a proxy, or the client receives the whole stream
+        // at once when it is already over — which defeats the point of streaming it.
+        Response.Headers["X-Accel-Buffering"] = "no";
+
+        var streamer = new WorkflowProgressStreamer(Response.Body);
+        await streamer.StreamAsync(current.Value, subscription, cancellationToken).ConfigureAwait(false);
+
+        return new EmptyResult();
     }
 
     private IActionResult MapFailure(Result result) =>

@@ -76,6 +76,13 @@ public sealed class RunDispatchBackgroundServiceTests
     private readonly AppConfig _config = new();
     private readonly RecordingScopeWriter _scopeWriter = new();
 
+    /// <summary>
+    /// A real broker, so the dispatcher's terminal event is actually publishable. The dispatcher owns
+    /// that event precisely because it is the one place every run reaches a terminal state.
+    /// </summary>
+    private InMemoryRunProgressBroker Progress => field ??= new InMemoryRunProgressBroker(
+        new StaticOptionsMonitor<AppConfig>(_config), _time);
+
     private (RunDispatchBackgroundService Service, IRunJobStore Store, IRunDispatchQueue Queue) Build(
         IRunKindExecutor? executor, bool registerScopeWriter = true)
     {
@@ -91,7 +98,8 @@ public sealed class RunDispatchBackgroundServiceTests
         var queue = new InMemoryRunDispatchQueue();
 
         var service = new RunDispatchBackgroundService(
-            queue, store, services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>(),
+            queue, store, Progress,
+            services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>(),
             monitor, _time, NullLogger<RunDispatchBackgroundService>.Instance);
 
         return (service, store, queue);
@@ -240,6 +248,76 @@ public sealed class RunDispatchBackgroundServiceTests
 
         record!.Status.Should().Be(outcome);
         record.Error.Should().Be("waiting on a person");
+    }
+
+    [Theory]
+    [InlineData(RunStatus.Succeeded)]
+    [InlineData(RunStatus.Failed)]
+    [InlineData(RunStatus.Cancelled)]
+    [InlineData(RunStatus.Blocked)]
+    public async Task EveryWayARunCanEnd_TellsAnyoneWatchingThatItEnded(RunStatus outcome)
+    {
+        // A watcher's stream ends on this event and nothing else, so an ending that does not publish
+        // one holds the client's connection — and its stream slot — open on a run that is already over.
+        // Sourcing it from the planner covered only the endings the planner announces: a workflow
+        // parked on a human gate, one an operator cancelled, and every run failed before the planner
+        // ran at all each left a watcher waiting forever.
+        var completion = outcome == RunStatus.Succeeded
+            ? RunCompletion.Succeeded()
+            : new RunCompletion { Status = outcome, Detail = "why it ended" };
+
+        var executor = new StubExecutor(_ => Task.FromResult(Result<RunCompletion>.Success(completion)));
+        var (service, store, queue) = Build(executor);
+        Admit(store, Queued());
+
+        using var watcher = Progress.Subscribe("job-1", "alice", "acme")!;
+        await queue.EnqueueAsync("job-1", CancellationToken.None);
+
+        await DrainUntilTerminalAsync(service, store, "job-1");
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var sawFinish = false;
+
+        await foreach (var evt in watcher.ReadAllAsync(cts.Token))
+        {
+            if (evt.Kind != RunProgressKind.RunFinished)
+                continue;
+
+            evt.Status.Should().Be(outcome.ToString());
+            sawFinish = true;
+            break;
+        }
+
+        sawFinish.Should().BeTrue("a run that ended must say so, however it ended");
+    }
+
+    [Fact]
+    public async Task ARunThatFailsBeforeItsWorkBegins_StillTellsAnyoneWatching()
+    {
+        // The endings that never reach an executor at all: a host that cannot establish the run's
+        // identity, or one with no executor for the kind. The planner never runs, so a planner-sourced
+        // terminal event would never fire and the watcher would wait on a run that is already failed.
+        var (service, store, queue) = Build(executor: null);
+        Admit(store, Queued());
+
+        using var watcher = Progress.Subscribe("job-1", "alice", "acme")!;
+        await queue.EnqueueAsync("job-1", CancellationToken.None);
+
+        await DrainUntilTerminalAsync(service, store, "job-1");
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var statuses = new List<string?>();
+
+        await foreach (var evt in watcher.ReadAllAsync(cts.Token))
+        {
+            if (evt.Kind != RunProgressKind.RunFinished)
+                continue;
+
+            statuses.Add(evt.Status);
+            break;
+        }
+
+        statuses.Should().Equal([nameof(RunStatus.Failed)]);
     }
 
     [Fact]

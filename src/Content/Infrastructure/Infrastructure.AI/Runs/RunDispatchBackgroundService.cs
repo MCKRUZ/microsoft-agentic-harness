@@ -55,6 +55,7 @@ public sealed class RunDispatchBackgroundService : BackgroundService
 {
     private readonly IRunDispatchQueue _queue;
     private readonly IRunJobStore _store;
+    private readonly IRunProgressBroker _progress;
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly IOptionsMonitor<AppConfig> _config;
     private readonly TimeProvider _time;
@@ -64,6 +65,7 @@ public sealed class RunDispatchBackgroundService : BackgroundService
     public RunDispatchBackgroundService(
         IRunDispatchQueue queue,
         IRunJobStore store,
+        IRunProgressBroker progress,
         IServiceScopeFactory scopeFactory,
         IOptionsMonitor<AppConfig> config,
         TimeProvider time,
@@ -71,6 +73,7 @@ public sealed class RunDispatchBackgroundService : BackgroundService
     {
         ArgumentNullException.ThrowIfNull(queue);
         ArgumentNullException.ThrowIfNull(store);
+        ArgumentNullException.ThrowIfNull(progress);
         ArgumentNullException.ThrowIfNull(scopeFactory);
         ArgumentNullException.ThrowIfNull(config);
         ArgumentNullException.ThrowIfNull(time);
@@ -78,6 +81,7 @@ public sealed class RunDispatchBackgroundService : BackgroundService
 
         _queue = queue;
         _store = store;
+        _progress = progress;
         _scopeFactory = scopeFactory;
         _config = config;
         _time = time;
@@ -233,15 +237,31 @@ public sealed class RunDispatchBackgroundService : BackgroundService
     }
 
     /// <summary>
-    /// Writes a claimed run's terminal state. Takes the claimed record rather than re-reading it: the
-    /// run is Running by this point, so it can no longer be re-claimed, and the dispatcher holds no
-    /// caller identity to read it back with.
+    /// Writes a claimed run's terminal state, and tells anyone watching that it ended.
     /// </summary>
-    private void Finish(RunRecord claimed, RunStatus status, string? error) =>
+    /// <remarks>
+    /// <para>
+    /// Takes the claimed record rather than re-reading it: the run is Running by this point, so it can
+    /// no longer be re-claimed, and the dispatcher holds no caller identity to read it back with.
+    /// </para>
+    /// <para>
+    /// <strong>The terminal progress event is published here, not by whatever performed the work.</strong>
+    /// This is the one place every claimed run passes through on its way to a terminal state — which is
+    /// exactly the property that makes a watcher's stream end. Sourcing it from the planner instead
+    /// covered only the endings the planner announces: a workflow that parked on a human gate, one an
+    /// operator cancelled, and every run failed before the planner ran at all would each leave a
+    /// watcher's connection open forever, holding a stream slot, on a run that was already over.
+    /// </para>
+    /// </remarks>
+    private void Finish(RunRecord claimed, RunStatus status, string? error)
+    {
         _store.Update(claimed with
         {
             Status = status,
             Error = error,
             CompletedAt = _time.GetUtcNow()
         });
+
+        _progress.Publish(claimed.JobId, RunProgressKind.RunFinished, status: status.ToString(), detail: error);
+    }
 }

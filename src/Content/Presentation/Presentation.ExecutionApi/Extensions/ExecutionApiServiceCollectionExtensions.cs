@@ -1,10 +1,12 @@
 using System.Text.Json.Serialization;
+using Application.AI.Common.Interfaces.Planner;
 using System.Threading.RateLimiting;
 using Domain.Common.Config.AI.BundleExecution;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
+using Infrastructure.AI.Runs;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -67,6 +69,14 @@ public static class ExecutionApiServiceCollectionExtensions
         // service (rather than a plain attribute) because the limit is an operator setting read live,
         // not a compile-time constant.
         services.AddScoped<WorkflowRequestSizeLimitFilter>();
+
+        // Replaces the NullPlanProgressNotifier that Presentation.Common registers as the host-
+        // overridable default, so this host's plan notifications reach the run progress broker instead
+        // of being discarded. Last-write-wins, and this runs after the shared defaults.
+        //
+        // Singleton because it holds no per-request state and its two dependencies are singletons; a
+        // scoped registration would fail to resolve on the dispatcher thread, which has no request.
+        services.AddSingleton<IPlanProgressNotifier, PlanProgressRunBridge>();
 
         services.AddExecutionApiAuthentication(bundleConfig.Auth);
 
