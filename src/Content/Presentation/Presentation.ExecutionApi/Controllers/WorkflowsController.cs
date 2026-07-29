@@ -210,17 +210,20 @@ public sealed class WorkflowsController : ControllerBase
     public async Task<IActionResult> StreamRun(
         Guid workflowId, string jobId, CancellationToken cancellationToken)
     {
+        // One query, asked twice. The two reads differ only in when they happen, and building the
+        // second by hand invites the pair to drift — an authorization check and a snapshot that no
+        // longer describe the same run is exactly the divergence nothing here would catch.
+        var query = new GetWorkflowRunQuery
+        {
+            WorkflowId = workflowId,
+            JobId = jobId,
+            OwnerId = User.GetUserId(),
+            TenantId = User.GetTenantId()
+        };
+
         // Authorized before anything is subscribed or written, so an unauthorized caller never holds
         // one of the host's stream slots.
-        var result = await _mediator.Send(
-            new GetWorkflowRunQuery
-            {
-                WorkflowId = workflowId,
-                JobId = jobId,
-                OwnerId = User.GetUserId(),
-                TenantId = User.GetTenantId()
-            },
-            cancellationToken).ConfigureAwait(false);
+        var result = await _mediator.Send(query, cancellationToken).ConfigureAwait(false);
 
         if (!result.IsSuccess || result.Value is null)
             return MapFailure(result);
@@ -247,15 +250,7 @@ public sealed class WorkflowsController : ControllerBase
         // anyone was listening, so anything that happened in between would be missing from both the
         // snapshot and the live feed — invisible to the client, because a gap it never saw the far
         // side of looks like nothing happening.
-        var current = await _mediator.Send(
-            new GetWorkflowRunQuery
-            {
-                WorkflowId = workflowId,
-                JobId = jobId,
-                OwnerId = User.GetUserId(),
-                TenantId = User.GetTenantId()
-            },
-            cancellationToken).ConfigureAwait(false);
+        var current = await _mediator.Send(query, cancellationToken).ConfigureAwait(false);
 
         var snapshot = current.IsSuccess && current.Value is not null ? current.Value : result.Value;
 
