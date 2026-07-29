@@ -184,10 +184,19 @@ public sealed class WorkflowsController : ControllerBase
     /// discover work the caller was not given the identifier for.
     /// </para>
     /// <para>
-    /// Answers 503 when the host already carries as many streams as it permits. Each open stream holds
-    /// a connection and a buffer for as long as the client keeps it, and serving one that cannot keep
-    /// up would report the run with gaps in it — so the honest answer is to refuse and let the caller
-    /// poll instead.
+    /// Answers 503 when the host, or this caller, already carries as many streams as either permits.
+    /// Each open stream holds a connection and a buffer for as long as the client keeps it, and
+    /// serving one that cannot keep up would report the run with gaps in it — so the honest answer is
+    /// to refuse and let the caller poll instead.
+    /// </para>
+    /// <para>
+    /// <strong>Simultaneous streams are bounded by the broker, not by a concurrency rate-limit
+    /// policy.</strong> This route inherits the controller's fixed-window limiter, which counts
+    /// requests started rather than connections held — on its own that would bound nothing about a
+    /// long-lived stream. What actually bounds it is
+    /// <c>MaxProgressStreamsPerOwner</c>, enforced when the subscription is taken. Recorded because
+    /// the two look interchangeable and are not: removing the broker's per-caller cap on the grounds
+    /// that the endpoint "is already rate limited" would leave simultaneous streams unbounded.
     /// </para>
     /// </remarks>
     /// <param name="workflowId">The workflow the run belongs to.</param>

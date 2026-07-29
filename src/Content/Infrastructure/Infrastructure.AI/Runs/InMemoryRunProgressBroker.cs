@@ -97,10 +97,21 @@ public sealed class InMemoryRunProgressBroker : IRunProgressBroker
 
     private readonly ConcurrentDictionary<string, long> _sequences = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, Lock> _publishLocks = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, byte> _pendingForget = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, int> _perPrincipal = new(StringComparer.Ordinal);
     private readonly IOptionsMonitor<AppConfig> _config;
     private readonly TimeProvider _time;
     private int _openSubscriptions;
+
+    /// <summary>
+    /// How many runs this broker still holds bookkeeping for.
+    /// </summary>
+    /// <remarks>
+    /// Exposed so a test can assert that reclaiming actually happens. The count is the thing that
+    /// grows without bound if it does not, and it is not observable from the outside any other way —
+    /// a leak of this shape is invisible until a host has been up long enough to matter.
+    /// </remarks>
+    public int HeldRunCount => _watchers.Count;
 
     /// <summary>Initializes the broker with the host's streaming limits and clock.</summary>
     public InMemoryRunProgressBroker(IOptionsMonitor<AppConfig> config, TimeProvider time)
@@ -214,11 +225,17 @@ public sealed class InMemoryRunProgressBroker : IRunProgressBroker
 
         subscribers.TryRemove(subscription, out _);
 
-        // Pruning is deliberately NOT done here. Removing the per-run dictionary after observing it
-        // empty is a check-then-act: a watcher subscribing in between is added to a dictionary that
-        // is then unregistered, and it silently receives nothing for the rest of the run. Empty
-        // dictionaries are cheap and are reclaimed with the run's sequence counter when the run's
-        // records are swept.
+        // Pruning a live run's entry is deliberately NOT done here. Removing the per-run dictionary
+        // after observing it empty is a check-then-act: a watcher subscribing in between is added to a
+        // dictionary that is then unregistered, and it silently receives nothing for the rest of the
+        // run. Reclaiming is the sweep's job, and it only ever runs for a run whose records are gone.
+        //
+        // The exception is a run the sweep already tried to forget while this watcher was attached.
+        // Nothing will call Forget for it again, so the last watcher out completes what the sweep
+        // deferred — and it is safe precisely because that run's records are gone, so nothing can
+        // subscribe to or publish for it again.
+        if (subscribers.IsEmpty && _pendingForget.TryRemove(jobId, out _))
+            Purge(jobId);
     }
 
     private void ReleasePrincipal(string principal)
@@ -252,8 +269,23 @@ public sealed class InMemoryRunProgressBroker : IRunProgressBroker
         ArgumentException.ThrowIfNullOrEmpty(jobId);
 
         if (_watchers.TryGetValue(jobId, out var subscribers) && !subscribers.IsEmpty)
-            return;
+        {
+            // Deferred rather than dropped. This is called once per run, so returning here without a
+            // record of having tried would leave the run's entries held for the life of the process —
+            // the last watcher to leave completes it instead.
+            _pendingForget[jobId] = 0;
 
+            // Re-checked because that watcher may have left while the flag was being set, in which
+            // case nobody else is coming to finish the job.
+            if (!subscribers.IsEmpty || !_pendingForget.TryRemove(jobId, out _))
+                return;
+        }
+
+        Purge(jobId);
+    }
+
+    private void Purge(string jobId)
+    {
         _watchers.TryRemove(jobId, out _);
         _sequences.TryRemove(jobId, out _);
         _publishLocks.TryRemove(jobId, out _);

@@ -32,6 +32,15 @@ public sealed class WorkflowProgressStreamer
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
     };
 
+    /// <summary>
+    /// How long a stream may stay silent before it says something. Short enough to sit well inside the
+    /// idle timeouts intermediaries commonly apply, long enough to cost nothing.
+    /// </summary>
+    private static readonly TimeSpan KeepAliveInterval = TimeSpan.FromSeconds(15);
+
+    /// <summary>An SSE comment. Conformant clients ignore it; intermediaries see traffic.</summary>
+    private const string KeepAliveFrame = ": keep-alive\n\n";
+
     private readonly Stream _body;
 
     /// <summary>Initializes a streamer writing to <paramref name="responseBody"/>.</summary>
@@ -65,8 +74,13 @@ public sealed class WorkflowProgressStreamer
 
         var reportedDrops = 0L;
 
-        await foreach (var evt in subscription.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+        await foreach (var evt in HeartbeatAsync(subscription, cancellationToken).ConfigureAwait(false))
         {
+            // A heartbeat is not an event; it has already been written as an SSE comment to keep the
+            // connection observably alive.
+            if (evt is null)
+                continue;
+
             // Checked per frame rather than once: a watcher can start keeping up again, and the count
             // only matters when it has grown since the client was last told.
             var dropped = subscription.DroppedCount;
@@ -83,6 +97,55 @@ public sealed class WorkflowProgressStreamer
             if (evt.Kind == RunProgressKind.RunFinished)
                 return;
         }
+    }
+
+    /// <summary>
+    /// Yields the subscription's events, emitting a keep-alive comment whenever it goes quiet.
+    /// </summary>
+    /// <remarks>
+    /// A workflow step can run for minutes without producing anything to report, and a stream that
+    /// sends no bytes for that long is indistinguishable from a dead one: proxies and load balancers
+    /// with an idle-read timeout close it, and the client sees the run abandoned rather than running.
+    /// An SSE comment is ignored by every conformant client, so this costs the caller nothing to
+    /// consume — it exists so both ends can tell a quiet stream from a broken one.
+    /// </remarks>
+    private async IAsyncEnumerable<RunProgressEvent?> HeartbeatAsync(
+        IRunProgressSubscription subscription,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        var events = subscription.ReadAllAsync(cancellationToken).GetAsyncEnumerator(cancellationToken);
+
+        try
+        {
+            while (true)
+            {
+                var next = events.MoveNextAsync().AsTask();
+                var completed = await Task.WhenAny(next, Task.Delay(KeepAliveInterval, cancellationToken))
+                    .ConfigureAwait(false);
+
+                if (completed != next)
+                {
+                    await WriteRawAsync(KeepAliveFrame, cancellationToken).ConfigureAwait(false);
+                    yield return null;
+                    continue;
+                }
+
+                if (!await next.ConfigureAwait(false))
+                    yield break;
+
+                yield return events.Current;
+            }
+        }
+        finally
+        {
+            await events.DisposeAsync().ConfigureAwait(false);
+        }
+    }
+
+    private async Task WriteRawAsync(string frame, CancellationToken cancellationToken)
+    {
+        await _body.WriteAsync(Encoding.UTF8.GetBytes(frame), cancellationToken).ConfigureAwait(false);
+        await _body.FlushAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private async Task WriteAsync(WorkflowProgressEvent evt, CancellationToken cancellationToken)

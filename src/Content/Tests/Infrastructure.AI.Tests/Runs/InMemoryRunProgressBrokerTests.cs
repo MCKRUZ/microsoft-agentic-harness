@@ -309,6 +309,47 @@ public sealed class InMemoryRunProgressBrokerTests
     }
 
     [Fact]
+    public void ForgettingARunSomeoneIsStillWatching_CompletesWhenTheyLeave()
+    {
+        // Forget is called once per run, by the sweep. Returning early because a watcher was attached
+        // and recording nothing would hold that run's entries for the life of the process — nothing
+        // calls Forget again. Safe to finish on the watcher's way out precisely because the run's
+        // records are already gone, so nothing can subscribe to or publish for it again.
+        var sut = BuildSut();
+        var watcher = sut.Subscribe("job-1", "alice", "acme")!;
+
+        sut.Forget("job-1");
+        sut.HeldRunCount.Should().Be(1, "the run is still being watched, so nothing is reclaimed yet");
+
+        watcher.Dispose();
+
+        sut.HeldRunCount.Should().Be(0, "the last watcher out finishes what the sweep deferred");
+    }
+
+    [Fact]
+    public void ForgettingAnUnwatchedRun_ReclaimsItImmediately()
+    {
+        var sut = BuildSut();
+        sut.Subscribe("job-1", "alice", "acme")!.Dispose();
+        sut.Publish("job-1", RunProgressKind.StepStarted);
+
+        sut.Forget("job-1");
+
+        sut.HeldRunCount.Should().Be(0);
+    }
+
+    [Fact]
+    public void ARunNobodyForgot_IsStillHeld()
+    {
+        // The negative case, so the two tests above cannot both pass by reclaiming everything.
+        var sut = BuildSut();
+        sut.Subscribe("job-1", "alice", "acme")!.Dispose();
+        sut.Publish("job-1", RunProgressKind.StepStarted);
+
+        sut.HeldRunCount.Should().Be(1, "reclaiming is the sweep's decision, not a side effect of leaving");
+    }
+
+    [Fact]
     public void PublishingAfterTheLastWatcherLeaves_IsHarmless()
     {
         // Runs outlive their watchers routinely — a client closes the tab and the workflow carries on.
