@@ -23,10 +23,11 @@ public sealed class InMemoryRunProgressBrokerTests
     private readonly FakeTimeProvider _time = new(new DateTimeOffset(2026, 7, 29, 12, 0, 0, TimeSpan.Zero));
     private readonly AppConfig _config = new();
 
-    private InMemoryRunProgressBroker BuildSut(int buffer = 256, int maxStreams = 64)
+    private InMemoryRunProgressBroker BuildSut(int buffer = 256, int maxStreams = 64, int perOwner = 64)
     {
         _config.AI.WorkflowSubmission.ProgressBufferSize = buffer;
         _config.AI.WorkflowSubmission.MaxConcurrentProgressStreams = maxStreams;
+        _config.AI.WorkflowSubmission.MaxProgressStreamsPerOwner = perOwner;
         return new InMemoryRunProgressBroker(new StaticOptionsMonitor<AppConfig>(_config), _time);
     }
 
@@ -50,7 +51,7 @@ public sealed class InMemoryRunProgressBrokerTests
     public async Task ASubscriberReceivesWhatIsPublishedForItsRun()
     {
         var sut = BuildSut();
-        using var subscription = sut.Subscribe("job-1")!;
+        using var subscription = sut.Subscribe("job-1", "alice", "acme")!;
 
         sut.Publish("job-1", RunProgressKind.StepStarted, stepId: "s1", stepName: "first");
         sut.Publish("job-1", RunProgressKind.StepCompleted, stepId: "s1", status: "Completed");
@@ -69,7 +70,7 @@ public sealed class InMemoryRunProgressBrokerTests
         // A job identifier is the only thing separating callers here too. A watcher that received
         // another run's steps would learn about work it was never given the identifier for.
         var sut = BuildSut();
-        using var subscription = sut.Subscribe("job-1")!;
+        using var subscription = sut.Subscribe("job-1", "alice", "acme")!;
 
         sut.Publish("job-2", RunProgressKind.StepStarted, stepId: "not-mine");
         sut.Publish("job-1", RunProgressKind.StepStarted, stepId: "mine");
@@ -90,7 +91,7 @@ public sealed class InMemoryRunProgressBrokerTests
         for (var i = 0; i < 1000; i++)
             sut.Publish("job-1", RunProgressKind.StepStarted, stepId: $"s{i}");
 
-        using var subscription = sut.Subscribe("job-1")!;
+        using var subscription = sut.Subscribe("job-1", "alice", "acme")!;
         sut.Publish("job-1", RunProgressKind.StepCompleted, stepId: "after");
 
         subscription.DroppedCount.Should().Be(0, "nothing was buffered, so nothing was dropped");
@@ -102,8 +103,8 @@ public sealed class InMemoryRunProgressBrokerTests
         // The numbering is what makes a gap detectable. Without it a client cannot tell a stream that
         // skipped an event from one that had nothing to say.
         var sut = BuildSut();
-        using var first = sut.Subscribe("job-1")!;
-        using var second = sut.Subscribe("job-2")!;
+        using var first = sut.Subscribe("job-1", "alice", "acme")!;
+        using var second = sut.Subscribe("job-2", "alice", "acme")!;
 
         sut.Publish("job-1", RunProgressKind.StepStarted);
         sut.Publish("job-1", RunProgressKind.StepCompleted);
@@ -123,7 +124,7 @@ public sealed class InMemoryRunProgressBrokerTests
         // The alternative on a full buffer is to block the publisher, which is the run — an observer
         // would then be able to slow paid work down by reading slowly, or by walking away.
         var sut = BuildSut(buffer: 4);
-        using var subscription = sut.Subscribe("job-1")!;
+        using var subscription = sut.Subscribe("job-1", "alice", "acme")!;
 
         for (var i = 0; i < 20; i++)
             sut.Publish("job-1", RunProgressKind.StepStarted, stepId: $"s{i}");
@@ -138,8 +139,8 @@ public sealed class InMemoryRunProgressBrokerTests
         // Per-watcher buffers, not per run. A shared buffer would make the slowest reader the whole
         // run's reader.
         var sut = BuildSut(buffer: 4);
-        using var slow = sut.Subscribe("job-1")!;
-        using var fast = sut.Subscribe("job-1")!;
+        using var slow = sut.Subscribe("job-1", "alice", "acme")!;
+        using var fast = sut.Subscribe("job-1", "alice", "acme")!;
 
         for (var i = 0; i < 4; i++)
             sut.Publish("job-1", RunProgressKind.StepStarted, stepId: $"s{i}");
@@ -157,9 +158,9 @@ public sealed class InMemoryRunProgressBrokerTests
         // unbounded number of them exhausts the host by asking politely.
         var sut = BuildSut(maxStreams: 2);
 
-        using var first = sut.Subscribe("job-1");
-        using var second = sut.Subscribe("job-2");
-        var third = sut.Subscribe("job-3");
+        using var first = sut.Subscribe("job-1", "alice", "acme");
+        using var second = sut.Subscribe("job-2", "alice", "acme");
+        var third = sut.Subscribe("job-3", "alice", "acme");
 
         first.Should().NotBeNull();
         second.Should().NotBeNull();
@@ -173,14 +174,109 @@ public sealed class InMemoryRunProgressBrokerTests
         // refusal looks identical to genuine saturation.
         var sut = BuildSut(maxStreams: 1);
 
-        var first = sut.Subscribe("job-1");
+        var first = sut.Subscribe("job-1", "alice", "acme");
         first.Should().NotBeNull();
-        sut.Subscribe("job-2").Should().BeNull();
+        sut.Subscribe("job-2", "alice", "acme").Should().BeNull();
 
         first!.Dispose();
 
-        using var afterRelease = sut.Subscribe("job-2");
+        using var afterRelease = sut.Subscribe("job-2", "alice", "acme");
         afterRelease.Should().NotBeNull();
+    }
+
+    [Fact]
+    public void OneCallerCannotOccupyEveryStreamSlot()
+    {
+        // A host-wide ceiling on its own is a ceiling any single caller can take: it opens streams to
+        // its own runs and holds the connections, and every other tenant is refused for as long as it
+        // does. Rate limiting does not help — it bounds how often a caller asks, not how long it holds.
+        var sut = BuildSut(maxStreams: 64, perOwner: 2);
+
+        using var mineOne = sut.Subscribe("job-1", "alice", "acme");
+        using var mineTwo = sut.Subscribe("job-2", "alice", "acme");
+        var mineThree = sut.Subscribe("job-3", "alice", "acme");
+
+        mineThree.Should().BeNull("a caller is bounded by its own ceiling, not only the host's");
+
+        using var theirs = sut.Subscribe("job-4", "bob", "acme");
+        theirs.Should().NotBeNull("one caller at its limit must not deny the endpoint to everyone else");
+    }
+
+    [Fact]
+    public void TheSameOwnerInAnotherTenantIsADifferentPrincipal()
+    {
+        // The same two legs that decide whether a caller may read the run at all.
+        var sut = BuildSut(perOwner: 1);
+
+        using var acme = sut.Subscribe("job-1", "alice", "acme");
+        using var other = sut.Subscribe("job-2", "alice", "other-tenant");
+
+        acme.Should().NotBeNull();
+        other.Should().NotBeNull();
+    }
+
+    [Fact]
+    public void ARefusedSubscriptionDoesNotConsumeASlot()
+    {
+        // A refusal that still charged the caller would ratchet: repeated attempts would exhaust the
+        // very allowance being enforced, and the caller could never recover without a restart.
+        var sut = BuildSut(perOwner: 1);
+
+        using var held = sut.Subscribe("job-1", "alice", "acme");
+        for (var attempt = 0; attempt < 5; attempt++)
+            sut.Subscribe("job-2", "alice", "acme").Should().BeNull();
+
+        held!.Dispose();
+
+        using var afterRelease = sut.Subscribe("job-2", "alice", "acme");
+        afterRelease.Should().NotBeNull();
+    }
+
+    [Fact]
+    public void DisposingTwice_DoesNotHandBackASlotTwice()
+    {
+        // Double disposal is ordinary — a using block around something already disposed. Refunding
+        // twice would inflate the allowance until the caps stopped meaning anything.
+        var sut = BuildSut(perOwner: 1);
+
+        var subscription = sut.Subscribe("job-1", "alice", "acme")!;
+        subscription.Dispose();
+        subscription.Dispose();
+
+        using var first = sut.Subscribe("job-2", "alice", "acme");
+        var second = sut.Subscribe("job-3", "alice", "acme");
+
+        first.Should().NotBeNull();
+        second.Should().BeNull("the caller holds one stream, so its second must still be refused");
+    }
+
+    [Fact]
+    public async Task AWatcherArrivingAsAnotherLeaves_StillReceivesEvents()
+    {
+        // Removing a run's watcher set after observing it empty is a check-then-act: a watcher that
+        // subscribes in between is added to a set that is then unregistered, and receives nothing for
+        // the rest of the run while believing it saw everything.
+        var sut = BuildSut();
+
+        for (var attempt = 0; attempt < 200; attempt++)
+        {
+            var leaving = sut.Subscribe("job-1", "alice", "acme")!;
+            var arriving = sut.Subscribe("job-1", "bob", "acme")!;
+
+            leaving.Dispose();
+            sut.Publish("job-1", RunProgressKind.StepStarted, stepId: $"s{attempt}");
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            var received = 0;
+            await foreach (var _ in arriving.ReadAllAsync(cts.Token))
+            {
+                received++;
+                break;
+            }
+
+            received.Should().Be(1, "a watcher that subscribed must receive what is published after it");
+            arriving.Dispose();
+        }
     }
 
     [Fact]
@@ -188,7 +284,7 @@ public sealed class InMemoryRunProgressBrokerTests
     {
         // Runs outlive their watchers routinely — a client closes the tab and the workflow carries on.
         var sut = BuildSut();
-        var subscription = sut.Subscribe("job-1")!;
+        var subscription = sut.Subscribe("job-1", "alice", "acme")!;
         subscription.Dispose();
 
         var act = () => sut.Publish("job-1", RunProgressKind.RunFinished, status: "Succeeded");

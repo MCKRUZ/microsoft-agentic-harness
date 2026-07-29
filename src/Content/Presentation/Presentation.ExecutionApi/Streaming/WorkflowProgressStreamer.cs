@@ -17,10 +17,11 @@ namespace Presentation.ExecutionApi.Streaming;
 /// stream truthful from its first frame about what it can and cannot show.
 /// </para>
 /// <para>
-/// <strong>The subscription is taken before the snapshot is read.</strong> The other order has a
-/// window in which the run advances after the snapshot but before anyone is listening, and those
-/// events are lost with nothing to indicate it. Subscribing first means the worst case is an event
-/// the client sees twice — which its sequence numbers make obvious — rather than one it never sees.
+/// <strong>The caller subscribes before reading the state this reports.</strong> The other order has
+/// a window in which the run advances after the snapshot but before anyone is listening, and those
+/// events are lost with nothing to indicate it — invisible to the client, because a gap it never saw
+/// the far side of looks like nothing happening. Subscribing first makes the worst case an event the
+/// client sees twice, which its sequence numbers make obvious.
 /// </para>
 /// </remarks>
 public sealed class WorkflowProgressStreamer

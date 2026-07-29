@@ -216,7 +216,8 @@ public sealed class WorkflowsController : ControllerBase
         if (!result.IsSuccess || result.Value is null)
             return MapFailure(result);
 
-        using var subscription = _progressBroker.Subscribe(result.Value.JobId);
+        using var subscription = _progressBroker.Subscribe(
+            result.Value.JobId, User.GetUserId(), User.GetTenantId());
         if (subscription is null)
         {
             return StatusCode(
@@ -232,8 +233,25 @@ public sealed class WorkflowsController : ControllerBase
         // at once when it is already over — which defeats the point of streaming it.
         Response.Headers["X-Accel-Buffering"] = "no";
 
+        // Re-read AFTER subscribing, and stream that. The first read authorized the caller; this one
+        // is the snapshot. Reporting the first read instead would describe the run as it stood before
+        // anyone was listening, so anything that happened in between would be missing from both the
+        // snapshot and the live feed — invisible to the client, because a gap it never saw the far
+        // side of looks like nothing happening.
+        var current = await _mediator.Send(
+            new GetWorkflowRunQuery
+            {
+                WorkflowId = workflowId,
+                JobId = jobId,
+                OwnerId = User.GetUserId(),
+                TenantId = User.GetTenantId()
+            },
+            cancellationToken).ConfigureAwait(false);
+
+        var snapshot = current.IsSuccess && current.Value is not null ? current.Value : result.Value;
+
         var streamer = new WorkflowProgressStreamer(Response.Body);
-        await streamer.StreamAsync(result.Value, subscription, cancellationToken).ConfigureAwait(false);
+        await streamer.StreamAsync(snapshot, subscription, cancellationToken).ConfigureAwait(false);
 
         return new EmptyResult();
     }

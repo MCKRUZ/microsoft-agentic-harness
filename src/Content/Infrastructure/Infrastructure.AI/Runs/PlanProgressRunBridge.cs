@@ -91,7 +91,9 @@ public sealed class PlanProgressRunBridge : IPlanProgressNotifier
     /// <inheritdoc />
     public Task NotifyPlanCompletedAsync(PlanId planId, TimeSpan totalDuration, CancellationToken ct)
     {
-        Publish(planId, RunProgressKind.RunFinished, status: nameof(RunStatus.Succeeded));
+        // Deliberately silent. The run's terminal event is published by the dispatcher, which is the
+        // one place every run passes through on its way to ending — the planner only announces the
+        // endings it produces, and a run can end without it having run at all.
         return Task.CompletedTask;
     }
 
@@ -99,15 +101,9 @@ public sealed class PlanProgressRunBridge : IPlanProgressNotifier
     public Task NotifyPlanFailedAsync(
         PlanId planId, PlanStepId failedStepId, string errorMessage, CancellationToken ct)
     {
-        // The planner's message is caller-safe by the same contract the run's own Error field relies
-        // on, so it passes through: a watcher learns why its own run stopped.
-        Publish(
-            planId,
-            RunProgressKind.RunFinished,
-            stepId: failedStepId.Value.ToString(),
-            status: nameof(RunStatus.Failed),
-            detail: errorMessage);
-
+        // Silent for the same reason as completion. The failing step already reached the watcher as a
+        // step event, and the run's ending — with its caller-safe reason — is the dispatcher's to
+        // report, so that every way a run can end is announced by the same code.
         return Task.CompletedTask;
     }
 

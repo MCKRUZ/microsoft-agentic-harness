@@ -63,7 +63,8 @@ namespace Domain.Common.Config.AI.WorkflowSubmission;
 /// ├── MaxConcurrentRunsPerOwner — Cap on how many runs one caller may have in flight
 /// ├── RunSweepInterval         — How often expired run records are reclaimed
 /// ├── MaxConcurrentDispatchedRuns — How many runs the host executes at once, across all callers
-/// ├── MaxConcurrentProgressStreams — How many progress streams may be open at once
+/// ├── MaxConcurrentProgressStreams — How many progress streams may be open at once, host-wide
+/// ├── MaxProgressStreamsPerOwner — How many one caller may hold open at once
 /// └── ProgressBufferSize        — How far behind one watcher may fall before it loses events
 /// </code>
 /// </remarks>
@@ -260,6 +261,19 @@ public class WorkflowSubmissionConfig
     /// </remarks>
     /// <value>Default: 64</value>
     public int MaxConcurrentProgressStreams { get; set; } = 64;
+
+    /// <summary>
+    /// How many progress streams one caller may hold open at once.
+    /// </summary>
+    /// <remarks>
+    /// The host-wide ceiling on its own is a ceiling any single caller can occupy: it opens streams to
+    /// its own runs and holds the connections, and every other tenant is refused for as long as it
+    /// does. Rate limiting does not help, because that bounds how often a caller asks, not how long it
+    /// holds what it was given. Mirrors <see cref="MaxConcurrentRunsPerOwner"/>, which bounds work in
+    /// flight for the same reason.
+    /// </remarks>
+    /// <value>Default: 8</value>
+    public int MaxProgressStreamsPerOwner { get; set; } = 8;
 
     /// <summary>
     /// How many progress events one watcher may fall behind by before it starts losing the oldest.

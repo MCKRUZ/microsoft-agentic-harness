@@ -48,12 +48,16 @@ public interface IRunProgressBroker
     /// Starts watching a run. Dispose the subscription to stop, which also releases its buffer.
     /// </summary>
     /// <param name="jobId">The run to watch.</param>
+    /// <param name="ownerId">Stable identity of the caller the stream is charged to.</param>
+    /// <param name="tenantId">Tenant of that caller, when the host resolves one.</param>
     /// <returns>
-    /// A subscription, or <see langword="null"/> when the host is already carrying as many watchers as
-    /// it permits. Refusing is deliberate: each open stream holds a connection and a buffer, so an
-    /// unbounded number of them is a way to exhaust the host by asking politely.
+    /// A subscription, or <see langword="null"/> when either the host or this caller is already
+    /// carrying as many watchers as it permits. Refusing is deliberate: each open stream holds a
+    /// connection and a buffer, so an unbounded number of them is a way to exhaust the host by asking
+    /// politely — and a purely host-wide ceiling is one any single caller can occupy, denying every
+    /// other tenant.
     /// </returns>
-    IRunProgressSubscription? Subscribe(string jobId);
+    IRunProgressSubscription? Subscribe(string jobId, string ownerId, string? tenantId);
 }
 
 /// <summary>

@@ -95,6 +95,10 @@ public sealed class WorkflowSubmissionConfigValidator : AbstractValidator<Workfl
             .GreaterThan(0)
             .WithMessage("MaxConcurrentProgressStreams must be > 0 — a non-positive limit would refuse every stream, leaving polling as the only way to follow a run.");
 
+        RuleFor(x => x.MaxProgressStreamsPerOwner)
+            .GreaterThan(0)
+            .WithMessage("MaxProgressStreamsPerOwner must be > 0 — a non-positive per-caller limit would refuse every stream.");
+
         RuleFor(x => x.ProgressBufferSize)
             .GreaterThan(0)
             .WithMessage("ProgressBufferSize must be > 0 — a non-positive buffer would drop every event before any watcher could read it.");
