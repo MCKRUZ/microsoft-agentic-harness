@@ -24,10 +24,18 @@ namespace Presentation.BundleApi.Controllers;
 /// </para>
 /// <para>
 /// <strong>Ownership is never taken from the request.</strong> There is no owner field on the wire and
-/// none passed into the command. The knowledge scope established by
-/// <c>KnowledgeScopeMiddleware</c> from the authenticated principal is what the plan store stamps. In
-/// this codebase an unscoped write is not a private record but a world-readable one, so the identity
-/// check below rejects rather than proceeding when a principal carries nothing usable.
+/// none passed into the command. The knowledge scope established by <c>KnowledgeScopeMiddleware</c>
+/// from the authenticated principal is what the plan store stamps.
+/// </para>
+/// <para>
+/// There is deliberately <em>no</em> identity check in the action itself. In this codebase an unscoped
+/// write is not a private record but a world-readable one, so the instinct is to re-check here — but
+/// <c>KnowledgeScopeMiddleware</c> runs before authorization, resolves identity through the same single
+/// authority (<c>ClaimsPrincipalExtensions.GetUserIdOrNull</c>), and already answers 401 when an
+/// authenticated principal carries nothing usable. A duplicate check would be unreachable, and an
+/// unreachable check is worse than none: it cannot be tested, so it reads as protection that is not
+/// being verified. What actually guards this is the middleware being mounted, which
+/// <c>KnowledgeScopePipelineTests</c> asserts against this very host.
 /// </para>
 /// </remarks>
 [ApiController]
@@ -61,17 +69,6 @@ public sealed class WorkflowsController : ControllerBase
         [FromBody] WorkflowDefinition definition, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(definition);
-
-        // Identity is resolved solely through the shared extension, the single authority for caller
-        // identity in this solution. A principal with nothing usable is rejected here rather than
-        // allowed to reach a store that would read its null owner as "global".
-        if (User.GetUserIdOrNull() is null)
-        {
-            return Problem(
-                title: "Unauthorized",
-                detail: "The authenticated principal carries no usable identity.",
-                statusCode: StatusCodes.Status401Unauthorized);
-        }
 
         var result = await _mediator
             .Send(new SubmitWorkflowCommand { Definition = definition }, cancellationToken)
