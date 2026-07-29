@@ -1,3 +1,4 @@
+using Domain.AI.Planner;
 namespace Application.AI.Common.CQRS.Workflows.Submit;
 
 /// <summary>
@@ -19,6 +20,9 @@ namespace Application.AI.Common.CQRS.Workflows.Submit;
 /// </remarks>
 public sealed record LlmCallStepConfiguration : WorkflowStepConfiguration
 {
+    /// <inheritdoc />
+    public override StepType StepType => StepType.LlmCall;
+
     /// <summary>The system prompt for this inference step.</summary>
     public required string SystemPrompt { get; init; }
 

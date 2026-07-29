@@ -1,3 +1,4 @@
+using Domain.AI.Planner;
 namespace Application.AI.Common.CQRS.Workflows.Submit;
 
 /// <summary>
@@ -19,6 +20,9 @@ namespace Application.AI.Common.CQRS.Workflows.Submit;
 /// </remarks>
 public sealed record ToolUseStepConfiguration : WorkflowStepConfiguration
 {
+    /// <inheritdoc />
+    public override StepType StepType => StepType.ToolUse;
+
     /// <summary>
     /// The registered name of the tool to invoke, matched case-insensitively — the same comparison the
     /// envelope allowlist uses, so a name that resolves here resolves identically when authorized.

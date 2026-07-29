@@ -1,3 +1,4 @@
+using Domain.AI.Planner;
 namespace Application.AI.Common.CQRS.Workflows.Submit;
 
 /// <summary>
@@ -27,6 +28,9 @@ namespace Application.AI.Common.CQRS.Workflows.Submit;
 /// </remarks>
 public sealed record SubPlanStepConfiguration : WorkflowStepConfiguration
 {
+    /// <inheritdoc />
+    public override StepType StepType => StepType.SubPlanInvocation;
+
     /// <summary>
     /// Identifier of the previously-submitted workflow to invoke as the child. Must resolve to a
     /// workflow visible to the submitting caller.

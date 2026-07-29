@@ -50,4 +50,18 @@ namespace Application.AI.Common.CQRS.Workflows.Submit;
 [JsonDerivedType(typeof(ConditionalBranchStepConfiguration), "conditional_branch")]
 [JsonDerivedType(typeof(SubPlanStepConfiguration), "sub_plan")]
 [JsonDerivedType(typeof(RetrievalWorkflowStepConfiguration), "retrieval")]
-public abstract record WorkflowStepConfiguration;
+public abstract record WorkflowStepConfiguration
+{
+    /// <summary>
+    /// The step type this configuration belongs to, so a submission's <see cref="WorkflowStep.Type"/>
+    /// can be checked against the body it actually carries.
+    /// </summary>
+    /// <remarks>
+    /// Derived from the concrete type rather than deserialized, and marked <see cref="JsonIgnoreAttribute"/>
+    /// so it is never read from or written to the wire — the JSON <c>type</c> discriminator is the only
+    /// thing a caller supplies. Without this, the two statements of a step's kind (its <c>Type</c>
+    /// property and its configuration's discriminator) could disagree with nothing able to notice.
+    /// </remarks>
+    [JsonIgnore]
+    public abstract Domain.AI.Planner.StepType StepType { get; }
+}

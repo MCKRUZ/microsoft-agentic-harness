@@ -24,6 +24,9 @@ namespace Application.AI.Common.CQRS.Workflows.Submit;
 /// </remarks>
 public sealed record HumanGateStepConfiguration : WorkflowStepConfiguration
 {
+    /// <inheritdoc />
+    public override StepType StepType => StepType.HumanGate;
+
     /// <summary>
     /// The message shown to approvers explaining what they are being asked to approve. This is the
     /// only context most approvers will have, so an empty or generic message is a validation failure.

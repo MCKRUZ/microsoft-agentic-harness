@@ -1,3 +1,4 @@
+using Domain.AI.Planner;
 namespace Application.AI.Common.CQRS.Workflows.Submit;
 
 /// <summary>
@@ -20,6 +21,9 @@ namespace Application.AI.Common.CQRS.Workflows.Submit;
 /// </remarks>
 public sealed record ConditionalBranchStepConfiguration : WorkflowStepConfiguration
 {
+    /// <inheritdoc />
+    public override StepType StepType => StepType.ConditionalBranch;
+
     /// <summary>
     /// The expression evaluated to choose a branch. Evaluated against the workflow's own execution
     /// state by the host's expression evaluator — it is not a general-purpose scripting hook, and an

@@ -1,3 +1,4 @@
+using Domain.AI.Planner;
 using Domain.AI.RAG.Enums;
 
 namespace Application.AI.Common.CQRS.Workflows.Submit;
@@ -27,6 +28,9 @@ namespace Application.AI.Common.CQRS.Workflows.Submit;
 /// </remarks>
 public sealed record RetrievalWorkflowStepConfiguration : WorkflowStepConfiguration
 {
+    /// <inheritdoc />
+    public override StepType StepType => StepType.Retrieval;
+
     /// <summary>The query text to retrieve against.</summary>
     public required string Query { get; init; }
 
