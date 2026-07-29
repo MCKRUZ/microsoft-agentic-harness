@@ -95,8 +95,18 @@ public sealed class WorkflowProgressStreamTests
         return JsonDocument.Parse(body).RootElement.GetProperty("jobId").GetString()!;
     }
 
-    /// <summary>Reads SSE frames until the stream ends or the budget is spent.</summary>
-    private static async Task<List<JsonElement>> ReadFramesAsync(Stream stream, TimeSpan budget)
+    /// <summary>
+    /// Reads SSE frames, reporting both what arrived and whether the server actually closed the
+    /// stream.
+    /// </summary>
+    /// <remarks>
+    /// <c>Closed</c> is load-bearing and not a detail: "sent one frame and finished" and "sent one
+    /// frame then held the connection open until the client gave up" produce identical frame lists.
+    /// A test that only counted frames would pass against a stream that hangs, which is precisely the
+    /// failure a client would experience as the feature being broken.
+    /// </remarks>
+    private static async Task<(List<JsonElement> Frames, bool Closed)> ReadFramesAsync(
+        Stream stream, TimeSpan budget)
     {
         var frames = new List<JsonElement>();
         using var reader = new StreamReader(stream);
@@ -111,13 +121,14 @@ public sealed class WorkflowProgressStreamTests
 
                 frames.Add(JsonDocument.Parse(line[6..]).RootElement.Clone());
             }
+
+            return (frames, true);
         }
         catch (OperationCanceledException)
         {
-            // Budget spent; whatever arrived is what the assertions judge.
+            // Budget spent with the stream still open.
+            return (frames, false);
         }
-
-        return frames;
     }
 
     [Fact]
@@ -145,9 +156,10 @@ public sealed class WorkflowProgressStreamTests
         await Task.Delay(500);
         _release.Release();
 
-        var frames = await reading;
+        var (frames, closed) = await reading;
 
         frames.Should().NotBeEmpty("the stream must carry the run, not merely open");
+        closed.Should().BeTrue("the stream must close when the run ends, not hold the client open");
 
         var types = frames.Select(f => f.GetProperty("type").GetString()).ToList();
         types.Should().StartWith(["SNAPSHOT"], "every stream opens by saying where the run already is");
@@ -185,8 +197,13 @@ public sealed class WorkflowProgressStreamTests
             Request(HttpMethod.Get, $"/api/workflows/{workflowId}/runs/{jobId}/stream", null, "alice"),
             HttpCompletionOption.ResponseHeadersRead);
 
-        var frames = await ReadFramesAsync(await response.Content.ReadAsStreamAsync(), TimeSpan.FromSeconds(10));
+        var (frames, closed) = await ReadFramesAsync(
+            await response.Content.ReadAsStreamAsync(), TimeSpan.FromSeconds(10));
 
+        // Closing is the assertion that matters. A stream that sends the snapshot and then waits for
+        // events that can never come produces an identical frame list, and the client experiences it
+        // as the feature hanging.
+        closed.Should().BeTrue("a finished run's stream must end rather than hold the connection open");
         frames.Should().ContainSingle("a finished run has nothing left to report beyond where it ended");
         frames[0].GetProperty("type").GetString().Should().Be("SNAPSHOT");
         frames[0].GetProperty("isTerminal").GetBoolean().Should().BeTrue();
