@@ -75,6 +75,10 @@ public sealed class WorkflowSubmissionConfigValidator : AbstractValidator<Workfl
             .GreaterThan(0)
             .WithMessage("MaxTopK must be > 0 — a non-positive ceiling would reject every retrieval step that asks for results.");
 
+        RuleFor(x => x.MaxStoredWorkflowsPerOwner)
+            .GreaterThan(0)
+            .WithMessage("MaxStoredWorkflowsPerOwner must be > 0 — a non-positive quota would reject every caller's first submission.");
+
         RuleFor(x => x.MaxHumanGateTimeout)
             .GreaterThan(TimeSpan.Zero)
             .WithMessage("MaxHumanGateTimeout must be > 0 — a non-positive ceiling would reject every requested gate timeout.");

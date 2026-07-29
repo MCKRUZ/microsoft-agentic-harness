@@ -109,6 +109,15 @@ public sealed class SubmitWorkflowCommandHandler
         if (structure.Value is { IsValid: false } invalid)
             return Result<SubmitWorkflowResult>.ValidationFailure([.. invalid.Errors]);
 
+        var quota = await EnforceStorageQuotaAsync(
+            submissionConfig.MaxStoredWorkflowsPerOwner, cancellationToken).ConfigureAwait(false);
+        if (!quota.IsSuccess)
+        {
+            return quota.FailureType == ResultFailureType.Validation
+                ? Result<SubmitWorkflowResult>.ValidationFailure([.. quota.Errors])
+                : Result<SubmitWorkflowResult>.Fail([.. quota.Errors]);
+        }
+
         var saved = await _planStore.SavePlanAsync(plan, cancellationToken).ConfigureAwait(false);
         if (!saved.IsSuccess)
         {
@@ -132,6 +141,40 @@ public sealed class SubmitWorkflowCommandHandler
             // mapping and a second copy could only ever disagree with it.
             StepIds = plan.Steps.ToDictionary(step => step.Name, step => step.Id.Value, StringComparer.Ordinal)
         });
+    }
+
+    /// <summary>
+    /// Refuses the submission when the caller already holds as many stored workflows as the host
+    /// permits.
+    /// </summary>
+    /// <remarks>
+    /// Checked immediately before the write rather than at the start of the handler: the count is a
+    /// snapshot either way, and taking it late keeps the window in which it can go stale as small as
+    /// this design allows. Two submissions racing at the boundary can both observe a count one below
+    /// the cap and both succeed, leaving the caller one over — accepted deliberately, because the
+    /// quota exists to bound unbounded accumulation, and the alternative is a transaction spanning
+    /// count-and-write for a limit whose exact edge carries no meaning.
+    /// </remarks>
+    private async Task<Result> EnforceStorageQuotaAsync(int maxStored, CancellationToken cancellationToken)
+    {
+        var owned = await _planStore.CountOwnedPlansAsync(cancellationToken).ConfigureAwait(false);
+        if (!owned.IsSuccess)
+        {
+            _logger.LogError(
+                "Could not count stored workflows for the calling scope: {Errors}",
+                string.Join("; ", owned.Errors));
+
+            return Result.Fail("The workflow could not be stored.");
+        }
+
+        if (owned.Value >= maxStored)
+        {
+            return Result.ValidationFailure(
+                [$"This caller already holds the maximum of {maxStored} stored workflows. "
+                 + "Remove one before submitting another."]);
+        }
+
+        return Result.Success();
     }
 
     /// <summary>

@@ -47,17 +47,24 @@ public sealed class SubmitWorkflowCommandValidator : AbstractValidator<SubmitWor
         RuleFor(x => x.Definition)
             .NotNull().WithMessage("A workflow definition is required.");
 
+        // Guarded like every other null case in this file. `required` is a compile-time modifier only,
+        // so a null Definition is constructible; it is not reachable over HTTP (the controller's
+        // non-nullable body parameter is rejected by MVC first), but a validator that hard-depends on
+        // a Presentation-layer behaviour it cannot see is relying on something it does not control.
         RuleFor(x => x.Definition.Name)
             .NotEmpty().WithMessage("The workflow requires a name.")
-            .Must(BeWithinStringCap).WithMessage(StringCapMessage);
+            .Must(BeWithinStringCap).WithMessage(StringCapMessage)
+            .When(x => x.Definition is not null);
 
         RuleFor(x => x.Definition.Steps)
+            .Cascade(CascadeMode.Continue)
             .NotEmpty().WithMessage("A workflow requires at least one step.")
             .Must(ContainNoNullElements).WithMessage("A workflow may not contain a null step.")
             .Must(steps => steps.Count <= Caps.MaxSteps)
                 .WithMessage(_ => $"A workflow may declare at most {Caps.MaxSteps} steps.")
             .Must(HaveUniqueNames)
-                .WithMessage("Step names must be unique within a submission; edges refer to steps by name.");
+                .WithMessage("Step names must be unique within a submission; edges refer to steps by name.")
+            .When(x => x.Definition is not null);
 
         RuleFor(x => x.Definition.Edges)
             .NotNull().WithMessage("An edge list is required; send an empty list for a single-step workflow.")
@@ -65,7 +72,8 @@ public sealed class SubmitWorkflowCommandValidator : AbstractValidator<SubmitWor
             .Must(edges => edges.Count <= Caps.MaxEdges)
                 .WithMessage(_ => $"A workflow may declare at most {Caps.MaxEdges} edges.")
             .Must(edges => edges.All(e => e is null || BeWithinStringCap(e.Condition)))
-                .WithMessage(StringCapMessage);
+                .WithMessage(StringCapMessage)
+            .When(x => x.Definition is not null);
 
         RuleFor(x => x.Definition.Configuration!)
             .Must(RespectExecutionCeilings)
@@ -73,7 +81,10 @@ public sealed class SubmitWorkflowCommandValidator : AbstractValidator<SubmitWor
                     + $"run for at most {Caps.MaxPlanTimeout} with at most {Caps.MaxParallelSteps} steps in parallel.")
             .When(x => x.Definition?.Configuration is not null);
 
-        RuleForEach(x => x.Definition.Steps).Where(step => step is not null).ChildRules(ConfigureStepRules);
+        RuleForEach(x => x.Definition.Steps)
+            .Where(step => step is not null)
+            .ChildRules(ConfigureStepRules)
+            .When(x => x.Definition?.Steps is not null);
 
         // Cross-field rules: each needs both collections, so they hang off the definition rather than
         // off either one. Reported as one failure each so a caller fixing a definition sees every

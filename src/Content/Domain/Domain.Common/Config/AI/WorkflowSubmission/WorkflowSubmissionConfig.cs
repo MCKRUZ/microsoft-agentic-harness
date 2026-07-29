@@ -57,7 +57,8 @@ namespace Domain.Common.Config.AI.WorkflowSubmission;
 /// ├── MaxRetriesPerStep        — Ceiling on a requested per-step retry count
 /// ├── MaxHumanGateTimeout      — Ceiling on how long a submitted step may park awaiting approval
 /// ├── MaxTokensPerStep         — Ceiling on a requested LLM response-token count
-/// └── MaxTopK                  — Ceiling on a requested retrieval result count
+/// ├── MaxTopK                  — Ceiling on a requested retrieval result count
+/// └── MaxStoredWorkflowsPerOwner — Cap on how many workflows one caller may keep stored
 /// </code>
 /// </remarks>
 public class WorkflowSubmissionConfig
@@ -172,4 +173,17 @@ public class WorkflowSubmissionConfig
     /// </summary>
     /// <value>Default: 100</value>
     public int MaxTopK { get; set; } = 100;
+
+    /// <summary>
+    /// Maximum number of workflows one caller may have stored at once. A submission that would exceed
+    /// it is refused until the caller removes some.
+    /// </summary>
+    /// <remarks>
+    /// Every other cap here bounds a <em>single</em> submission, and the rate limiter bounds the
+    /// <em>rate</em> of submissions. Neither bounds the total. Without this, a caller staying politely
+    /// within both can still accumulate storage without limit, one well-formed request at a time —
+    /// the aggregate being the one quantity an otherwise carefully-capped surface left open.
+    /// </remarks>
+    /// <value>Default: 500</value>
+    public int MaxStoredWorkflowsPerOwner { get; set; } = 500;
 }

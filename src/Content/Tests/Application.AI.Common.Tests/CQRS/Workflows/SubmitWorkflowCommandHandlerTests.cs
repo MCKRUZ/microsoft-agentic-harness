@@ -38,6 +38,10 @@ public sealed class SubmitWorkflowCommandHandlerTests
             .Setup(s => s.SavePlanAsync(It.IsAny<PlanGraph>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result.Success());
 
+        _planStore
+            .Setup(s => s.CountOwnedPlansAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<int>.Success(0));
+
         _structuralValidator
             .Setup(v => v.ValidateAsync(It.IsAny<PlanGraph>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result<PlanValidationResult>.Success(new PlanValidationResult { IsValid = true }));
@@ -275,6 +279,10 @@ public sealed class SubmitWorkflowCommandHandlerTests
         // and passed while the handler turned every rejected plan into a 500; the integration test
         // caught it. Mock what the implementation actually returns.
         var sut = BuildSut();
+        _planStore
+            .Setup(s => s.CountOwnedPlansAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<int>.Success(0));
+
         _structuralValidator
             .Setup(v => v.ValidateAsync(It.IsAny<PlanGraph>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result<PlanValidationResult>.ValidationFailure(
@@ -313,6 +321,10 @@ public sealed class SubmitWorkflowCommandHandlerTests
         // The interface permits Success(IsValid: false) even though the shipped implementation does
         // not use it, so an alternative validator must not be able to have its verdict ignored.
         var sut = BuildSut();
+        _planStore
+            .Setup(s => s.CountOwnedPlansAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<int>.Success(0));
+
         _structuralValidator
             .Setup(v => v.ValidateAsync(It.IsAny<PlanGraph>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result<PlanValidationResult>.Success(new PlanValidationResult
@@ -333,6 +345,10 @@ public sealed class SubmitWorkflowCommandHandlerTests
     public async Task Handle_WhenValidationItselfFaults_ReportsAFaultNotAMalformedRequest()
     {
         var sut = BuildSut();
+        _planStore
+            .Setup(s => s.CountOwnedPlansAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<int>.Success(0));
+
         _structuralValidator
             .Setup(v => v.ValidateAsync(It.IsAny<PlanGraph>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result<PlanValidationResult>.Fail("validator dependency unavailable"));
@@ -413,4 +429,73 @@ public sealed class SubmitWorkflowCommandHandlerTests
         Edges = [],
         Configuration = new PlanConfiguration()
     };
+
+    [Fact]
+    public async Task Handle_WhenTheCallerIsAtTheStorageQuota_IsRejectedBeforePersisting()
+    {
+        // Every other cap bounds one submission and the rate limiter bounds the rate; neither bounds
+        // the total. A caller staying politely within both can otherwise accumulate storage without
+        // limit, one well-formed request at a time.
+        var sut = BuildSut();
+        var config = new AppConfig();
+        config.AI.WorkflowSubmission.Enabled = true;
+        config.AI.WorkflowSubmission.MaxStoredWorkflowsPerOwner = 2;
+        sut = new SubmitWorkflowCommandHandler(
+            _planStore.Object, _structuralValidator.Object,
+            new StaticOptionsMonitor<AppConfig>(config),
+            NullLogger<SubmitWorkflowCommandHandler>.Instance);
+
+        _planStore
+            .Setup(s => s.CountOwnedPlansAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<int>.Success(2));
+
+        var result = await sut.Handle(Command(LlmStep("only")), CancellationToken.None);
+
+        result.IsSuccess.Should().BeFalse();
+        result.FailureType.Should().Be(ResultFailureType.Validation);
+        result.Errors.Should().ContainMatch("*maximum of 2 stored workflows*");
+        _planStore.Verify(
+            s => s.SavePlanAsync(It.IsAny<PlanGraph>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Handle_WhenTheCallerIsOneBelowTheQuota_IsAccepted()
+    {
+        var config = new AppConfig();
+        config.AI.WorkflowSubmission.Enabled = true;
+        config.AI.WorkflowSubmission.MaxStoredWorkflowsPerOwner = 2;
+        _planStore
+            .Setup(s => s.SavePlanAsync(It.IsAny<PlanGraph>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success());
+        _structuralValidator
+            .Setup(v => v.ValidateAsync(It.IsAny<PlanGraph>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<PlanValidationResult>.Success(new PlanValidationResult { IsValid = true }));
+        _planStore
+            .Setup(s => s.CountOwnedPlansAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<int>.Success(1));
+
+        var sut = new SubmitWorkflowCommandHandler(
+            _planStore.Object, _structuralValidator.Object,
+            new StaticOptionsMonitor<AppConfig>(config),
+            NullLogger<SubmitWorkflowCommandHandler>.Instance);
+
+        var result = await sut.Handle(Command(LlmStep("only")), CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Handle_WhenTheQuotaCountFails_ReportsAFaultNotAMalformedRequest()
+    {
+        var sut = BuildSut();
+        _planStore
+            .Setup(s => s.CountOwnedPlansAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<int>.Fail("database is locked"));
+
+        var result = await sut.Handle(Command(LlmStep("only")), CancellationToken.None);
+
+        result.IsSuccess.Should().BeFalse();
+        result.FailureType.Should().NotBe(ResultFailureType.Validation);
+        result.Errors.Should().NotContainMatch("*database is locked*");
+    }
 }

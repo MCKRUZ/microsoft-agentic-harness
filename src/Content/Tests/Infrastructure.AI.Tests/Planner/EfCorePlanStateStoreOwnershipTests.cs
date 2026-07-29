@@ -378,6 +378,46 @@ public sealed class EfCorePlanStateStoreOwnershipTests : IDisposable
         return graph;
     }
 
+    // --- Storage quota counting ---
+
+    [Fact]
+    public async Task CountOwnedPlansAsync_CountsOnlyWhatTheCallerOwns()
+    {
+        _scope.UserId = "alice";
+        _scope.TenantId = "acme";
+        await _store.SavePlanAsync(CreateTestGraph(), CancellationToken.None);
+        await _store.SavePlanAsync(CreateTestGraph(), CancellationToken.None);
+
+        _scope.UserId = "mallory";
+        await _store.SavePlanAsync(CreateTestGraph(), CancellationToken.None);
+
+        var mallorysCount = await _store.CountOwnedPlansAsync(CancellationToken.None);
+        mallorysCount.Value.Should().Be(1, "a quota must charge each caller only for its own records");
+
+        _scope.UserId = "alice";
+        var alicesCount = await _store.CountOwnedPlansAsync(CancellationToken.None);
+        alicesCount.Value.Should().Be(2);
+    }
+
+    [Fact]
+    public async Task CountOwnedPlansAsync_DoesNotChargeTheCallerForGloballyReadablePlans()
+    {
+        // A null-owner plan is readable by everyone and belongs to no one. Counting visible plans
+        // rather than owned ones would charge every caller for records none of them created, so one
+        // shared record could exhaust every caller's quota at once.
+        _scope.UserId = null;
+        _scope.TenantId = null;
+        await _store.SavePlanAsync(CreateTestGraph(), CancellationToken.None);
+
+        _scope.UserId = "alice";
+        _scope.TenantId = "acme";
+
+        var count = await _store.CountOwnedPlansAsync(CancellationToken.None);
+
+        count.IsSuccess.Should().BeTrue();
+        count.Value.Should().Be(0);
+    }
+
     private static PlanGraph CreateTestGraph()
     {
         var steps = Enumerable.Range(0, 2).Select(i => new PlanStep
