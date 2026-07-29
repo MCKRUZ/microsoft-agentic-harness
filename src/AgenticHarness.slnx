@@ -3,7 +3,7 @@
   <Folder Name="/Content/Application/" />
   <Folder Name="/Content/Domain/" />
   <Folder Name="/Content/Presentation/">
-    <Project Path="Content/Presentation/Presentation.BundleApi/Presentation.BundleApi.csproj">
+    <Project Path="Content/Presentation/Presentation.ExecutionApi/Presentation.ExecutionApi.csproj">
       <BuildType Solution="Debug-AgentHub-All|*" Project="Debug" />
       <BuildType Solution="Debug-AgentHub-Dashboard|*" Project="Debug" />
       <BuildType Solution="Debug-AgentHub-WebUI|*" Project="Debug" />
@@ -270,7 +270,7 @@
       <BuildType Solution="Debug-AgentHub-Dashboard|*" Project="Debug" />
       <BuildType Solution="Debug-AgentHub-WebUI|*" Project="Debug" />
     </Project>
-    <Project Path="Content/Tests/Presentation.BundleApi.Tests/Presentation.BundleApi.Tests.csproj">
+    <Project Path="Content/Tests/Presentation.ExecutionApi.Tests/Presentation.ExecutionApi.Tests.csproj">
       <BuildType Solution="Debug-AgentHub-All|*" Project="Debug" />
       <BuildType Solution="Debug-AgentHub-Dashboard|*" Project="Debug" />
       <BuildType Solution="Debug-AgentHub-WebUI|*" Project="Debug" />

@@ -1,7 +1,7 @@
 namespace Domain.Common.Config.AI.BundleExecution;
 
 /// <summary>
-/// Authentication configuration for the standalone <c>Presentation.BundleApi</c> host — the HTTP front door
+/// Authentication configuration for the standalone <c>Presentation.ExecutionApi</c> host — the HTTP front door
 /// through which an external system registers and runs agent bundles. Bound from
 /// <c>AppConfig:AI:BundleExecution:Auth</c>.
 /// </summary>
