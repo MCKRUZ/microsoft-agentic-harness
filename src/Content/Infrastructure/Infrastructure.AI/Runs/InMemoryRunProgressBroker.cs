@@ -96,7 +96,6 @@ public sealed class InMemoryRunProgressBroker : IRunProgressBroker
         new(StringComparer.Ordinal);
 
     private readonly ConcurrentDictionary<string, long> _sequences = new(StringComparer.Ordinal);
-    private readonly ConcurrentDictionary<string, Lock> _publishLocks = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, byte> _pendingForget = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, int> _perPrincipal = new(StringComparer.Ordinal);
     private readonly IOptionsMonitor<AppConfig> _config;
@@ -141,9 +140,16 @@ public sealed class InMemoryRunProgressBroker : IRunProgressBroker
         // threads can publish at once — and taking a number then writing separately lets the thread
         // that drew 4 write after the thread that drew 5. A watcher would then see 5 before 4 and, on
         // the documented reading of Sequence as position in the run's order, report a gap that never
-        // happened. The lock is per run and held only for the enqueue, which cannot block: a full
-        // buffer drops rather than waits.
-        lock (_publishLocks.GetOrAdd(jobId, static _ => new Lock()))
+        // happened. The lock is held only for the enqueue, which cannot block: a full buffer drops
+        // rather than waits.
+        //
+        // The run's own subscriber dictionary IS the lock, rather than an entry in a second table
+        // keyed by job id. A separate table has to be looked up again here, and that lookup can race
+        // the sweep removing it: one publisher would then hold the old lock object while another
+        // created and held a new one, and the two would number and deliver concurrently — losing
+        // exactly the ordering this exists to guarantee. Both publishers necessarily hold the same
+        // dictionary instance, because that is what they just read the subscribers out of.
+        lock (subscribers)
         {
             var sequence = _sequences.AddOrUpdate(jobId, 1, static (_, current) => current + 1);
 
@@ -288,6 +294,5 @@ public sealed class InMemoryRunProgressBroker : IRunProgressBroker
     {
         _watchers.TryRemove(jobId, out _);
         _sequences.TryRemove(jobId, out _);
-        _publishLocks.TryRemove(jobId, out _);
     }
 }

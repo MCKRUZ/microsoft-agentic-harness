@@ -254,13 +254,6 @@ public sealed class WorkflowsController : ControllerBase
                 + "Poll the run's status instead, or retry shortly.");
         }
 
-        Response.Headers.ContentType = "text/event-stream";
-        Response.Headers.CacheControl = "no-cache";
-
-        // Chunked responses must not be buffered by a proxy, or the client receives the whole stream
-        // at once when it is already over — which defeats the point of streaming it.
-        Response.Headers["X-Accel-Buffering"] = "no";
-
         // Re-read AFTER subscribing, and stream that. The first read authorized the caller; this one
         // is the snapshot. Reporting the first read instead would describe the run as it stood before
         // anyone was listening, so anything that happened in between would be missing from both the
@@ -268,10 +261,23 @@ public sealed class WorkflowsController : ControllerBase
         // side of looks like nothing happening.
         var current = await _mediator.Send(query, cancellationToken).ConfigureAwait(false);
 
-        var snapshot = current.IsSuccess && current.Value is not null ? current.Value : result.Value;
+        // A run that has gone between the two reads was swept, and only a terminal run is ever swept.
+        // Falling back to the older read would describe it as still live and then wait for events
+        // nothing can publish — a stream that never ends, holding a slot until the client gives up.
+        // Answering as the polling endpoint would is both truthful and something callers already
+        // handle. Nothing has been written yet, so a status code is still available to say it with.
+        if (!current.IsSuccess || current.Value is null)
+            return MapFailure(current);
+
+        Response.Headers.ContentType = "text/event-stream";
+        Response.Headers.CacheControl = "no-cache";
+
+        // Chunked responses must not be buffered by a proxy, or the client receives the whole stream
+        // at once when it is already over — which defeats the point of streaming it.
+        Response.Headers["X-Accel-Buffering"] = "no";
 
         var streamer = new WorkflowProgressStreamer(Response.Body);
-        await streamer.StreamAsync(snapshot, subscription, cancellationToken).ConfigureAwait(false);
+        await streamer.StreamAsync(current.Value, subscription, cancellationToken).ConfigureAwait(false);
 
         return new EmptyResult();
     }

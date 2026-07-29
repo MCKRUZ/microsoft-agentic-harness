@@ -73,9 +73,14 @@ public sealed class WorkflowProgressStreamer
         ArgumentNullException.ThrowIfNull(run);
         ArgumentNullException.ThrowIfNull(subscription);
 
-        await WriteAsync(
+        var delivered = await WriteAsync(
             new WorkflowProgressSnapshotEvent(run.JobId, run.TargetId, run.Status.ToString(), run.IsTerminal),
             cancellationToken).ConfigureAwait(false);
+
+        // A client can be gone before the first frame lands — it need only close the tab while the
+        // request was in flight — and there is then nothing to stream to.
+        if (!delivered)
+            return;
 
         // A run that had already finished has nothing further to report, and waiting on its stream
         // would hold the connection open until the client gave up.
@@ -97,12 +102,18 @@ public sealed class WorkflowProgressStreamer
             if (dropped > reportedDrops)
             {
                 reportedDrops = dropped;
-                await WriteAsync(new WorkflowProgressGapEvent(dropped), cancellationToken).ConfigureAwait(false);
+
+                if (!await WriteAsync(new WorkflowProgressGapEvent(dropped), cancellationToken)
+                        .ConfigureAwait(false))
+                    return;
             }
 
             var frame = WorkflowProgressEventMapper.ToFrame(evt);
-            if (frame is not null)
-                await WriteAsync(frame, cancellationToken).ConfigureAwait(false);
+            if (frame is not null
+                && !await WriteAsync(frame, cancellationToken).ConfigureAwait(false))
+            {
+                return;
+            }
 
             if (evt.Kind == RunProgressKind.RunFinished)
                 return;
@@ -125,17 +136,20 @@ public sealed class WorkflowProgressStreamer
     {
         var events = subscription.ReadAllAsync(cancellationToken).GetAsyncEnumerator(cancellationToken);
 
+        // Held across iterations rather than started fresh each time round. When the keep-alive wins
+        // the race below, this read is still outstanding — asking the enumerator for another one while
+        // the first has not finished is two concurrent MoveNextAsync calls on a single async
+        // enumerator, which is undefined and in practice corrupts its state machine. It faulted on a
+        // thread-pool thread with nobody left to observe it, which ends the process, and every step
+        // quieter than the keep-alive interval took that path: the ordinary case for real work, not an
+        // edge one. The pending read is reused until it actually completes.
+        //
+        // Declared outside the try so the finally can see whether a read is still in flight, which
+        // decides whether the enumerator may be disposed at all.
+        Task<bool>? next = null;
+
         try
         {
-            // Held across iterations rather than started fresh each time round. When the keep-alive
-            // wins the race below, this read is still outstanding — asking the enumerator for another
-            // one while the first has not finished is two concurrent MoveNextAsync calls on a single
-            // async enumerator, which is undefined and in practice corrupts its state machine. It
-            // faulted on a thread-pool thread with nobody left to observe it, which ends the process,
-            // and every step quieter than the keep-alive interval took that path: the ordinary case
-            // for real work, not an edge one. The pending read is reused until it actually completes.
-            Task<bool>? next = null;
-
             while (true)
             {
                 next ??= events.MoveNextAsync().AsTask();
@@ -161,21 +175,42 @@ public sealed class WorkflowProgressStreamer
                     continue;
                 }
 
-                if (!await next.ConfigureAwait(false))
-                    yield break;
+                var moved = await next.ConfigureAwait(false);
 
-                var current = events.Current;
-
-                // Cleared only now the read has completed and its value has been taken, so the next
-                // iteration is the only place a fresh one is ever started.
+                // Cleared as soon as the read has completed and its value has been taken. Beyond
+                // reserving the next iteration as the only place a fresh read starts, this is what
+                // makes a non-null value below mean "still in flight" rather than merely "was used".
                 next = null;
 
-                yield return current;
+                if (!moved)
+                    yield break;
+
+                yield return events.Current;
             }
         }
         finally
         {
-            await events.DisposeAsync().ConfigureAwait(false);
+            // An async iterator suspended at an await cannot be disposed — DisposeAsync throws
+            // NotSupportedException — so the enumerator may only be disposed when its read is not in
+            // flight. Exactly one exit leaves one in flight: the client went away while the stream was
+            // quiet, which is an ordinary way for a stream to end rather than a rare one.
+            if (next is null || next.IsCompleted)
+            {
+                await events.DisposeAsync().ConfigureAwait(false);
+            }
+            else
+            {
+                // Left to finish on its own instead. It completes as soon as the request aborts or the
+                // caller disposes the subscription, both of which follow from the client having gone,
+                // and the enumerator becomes collectable with it. The continuation exists only to
+                // observe whatever the read finishes with: an unobserved fault on a detached task is
+                // the exact shape of bug that already took this process down once.
+                _ = next.ContinueWith(
+                    static finished => _ = finished.Exception,
+                    CancellationToken.None,
+                    TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
+            }
         }
     }
 
@@ -196,12 +231,18 @@ public sealed class WorkflowProgressStreamer
         }
     }
 
-    private async Task WriteAsync(WorkflowProgressEvent evt, CancellationToken cancellationToken)
+    /// <summary>Writes one frame, reporting whether the client was still there to receive it.</summary>
+    /// <remarks>
+    /// Goes through the same guarded write as the keep-alive rather than writing directly. A client
+    /// disconnecting between events is every bit as ordinary as one disconnecting during a quiet
+    /// patch, and handling only the second would mean the two write paths disagreed about what a
+    /// departed client is: a quiet end on one, an exception out of the request pipeline on the other —
+    /// on a response whose headers have already been sent, so there is not even a status code left to
+    /// say it with.
+    /// </remarks>
+    private Task<bool> WriteAsync(WorkflowProgressEvent evt, CancellationToken cancellationToken)
     {
         var json = JsonSerializer.Serialize(evt, typeof(WorkflowProgressEvent), SerializerOptions);
-        var frame = Encoding.UTF8.GetBytes($"data: {json}\n\n");
-
-        await _body.WriteAsync(frame, cancellationToken).ConfigureAwait(false);
-        await _body.FlushAsync(cancellationToken).ConfigureAwait(false);
+        return TryWriteRawAsync($"data: {json}\n\n", cancellationToken);
     }
 }

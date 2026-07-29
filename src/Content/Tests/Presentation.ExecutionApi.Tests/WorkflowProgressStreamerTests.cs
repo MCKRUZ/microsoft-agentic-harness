@@ -85,6 +85,38 @@ public sealed class WorkflowProgressStreamerTests
         public override void SetLength(long value) => throw new NotSupportedException();
     }
 
+    /// <summary>A stream that starts refusing writes, the way a departed client's does.</summary>
+    private sealed class DepartingStream : Stream
+    {
+        private int _writes;
+
+        /// <summary>How many writes succeed before the client is treated as gone.</summary>
+        public required int WritesBeforeLeaving { get; init; }
+
+        public override ValueTask WriteAsync(
+            ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            if (Interlocked.Increment(ref _writes) > WritesBeforeLeaving)
+                throw new IOException("The client has gone.");
+
+            return ValueTask.CompletedTask;
+        }
+
+        public override void Write(byte[] buffer, int offset, int count) =>
+            WriteAsync(buffer.AsMemory(offset, count)).AsTask().GetAwaiter().GetResult();
+
+        public override bool CanRead => false;
+        public override bool CanSeek => false;
+        public override bool CanWrite => true;
+        public override long Length => 0;
+        public override long Position { get => 0; set { } }
+        public override void Flush() { }
+        public override Task FlushAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+    }
+
     private static readonly TimeSpan ShortKeepAlive = TimeSpan.FromMilliseconds(100);
 
     /// <summary>A deadlock guard. A working stream returns as soon as the run finishes.</summary>
@@ -145,5 +177,34 @@ public sealed class WorkflowProgressStreamerTests
         var text = body.Text;
         text.Should().Contain(": keep-alive", "a stream that goes quiet must keep saying so");
         text.Should().Contain("FINISHED", "the event published after the silence must still arrive");
+    }
+
+    [Fact]
+    public async Task AClientThatLeavesWhileTheStreamIsQuiet_EndsItQuietly()
+    {
+        // The other half of the quiet path, and the ordinary way one of these streams actually ends:
+        // the client closes the tab during a silence, and the server finds out when the keep-alive
+        // fails to write. At that moment a read is still in flight, and an async iterator suspended at
+        // an await cannot be disposed — DisposeAsync throws NotSupportedException. So the loop must
+        // not simply stop; it has to leave the pending read alone.
+        //
+        // The failure this pins is not a hang or a wrong frame: it is an exception escaping the
+        // request pipeline on a response whose headers have already gone, where there is no status
+        // code left to report it with.
+        using var subscription = new ManualSubscription();
+
+        // One write for the snapshot, then the client is gone — so the first keep-alive is what
+        // discovers it, which is the interleaving that leaves a read outstanding.
+        var body = new DepartingStream { WritesBeforeLeaving = 1 };
+        var streamer = new WorkflowProgressStreamer(body, ShortKeepAlive);
+
+        var streaming = streamer.StreamAsync(LiveRun(), subscription, CancellationToken.None);
+
+        var completed = await Task.WhenAny(streaming, Task.Delay(Budget));
+        completed.Should().BeSameAs(streaming, "a departed client must end the stream, not hang it");
+
+        // The assertion: this await must not throw. Nothing is published for this run and nothing
+        // ever will be, so the stream ends because the client did.
+        await streaming;
     }
 }
