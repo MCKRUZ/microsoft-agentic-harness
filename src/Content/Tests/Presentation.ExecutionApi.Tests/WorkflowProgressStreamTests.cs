@@ -121,24 +121,24 @@ public sealed class WorkflowProgressStreamTests
     {
         var frames = new List<JsonElement>();
         using var reader = new StreamReader(stream);
-        using var cts = new CancellationTokenSource(budget);
+        var deadline = Task.Delay(budget);
 
-        try
+        while (true)
         {
-            while (await reader.ReadLineAsync(cts.Token) is { } line)
-            {
-                if (!line.StartsWith("data: ", StringComparison.Ordinal))
-                    continue;
+            // Raced against the deadline rather than cancelled by a token. The test server does not
+            // reliably abort a pending read on cancellation, so a token alone lets a regression hang
+            // the suite instead of failing it — and a hanging test tells whoever is looking at CI far
+            // less than a failing one.
+            var read = reader.ReadLineAsync();
+            if (await Task.WhenAny(read, deadline).ConfigureAwait(false) != read)
+                return (frames, false);
 
+            var line = await read.ConfigureAwait(false);
+            if (line is null)
+                return (frames, true);
+
+            if (line.StartsWith("data: ", StringComparison.Ordinal))
                 frames.Add(JsonDocument.Parse(line[6..]).RootElement.Clone());
-            }
-
-            return (frames, true);
-        }
-        catch (OperationCanceledException)
-        {
-            // Budget spent with the stream still open.
-            return (frames, false);
         }
     }
 

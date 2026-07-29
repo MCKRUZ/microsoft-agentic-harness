@@ -120,12 +120,24 @@ public sealed class WorkflowProgressStreamer
             while (true)
             {
                 var next = events.MoveNextAsync().AsTask();
-                var completed = await Task.WhenAny(next, Task.Delay(KeepAliveInterval, cancellationToken))
-                    .ConfigureAwait(false);
+
+                // The delay deliberately takes no cancellation token. Whichever task loses this race
+                // is abandoned, and an abandoned cancellable delay faults when the token fires — with
+                // nobody left to observe it. That is an unhandled exception on a thread-pool thread
+                // every time a client disconnects, which is the ordinary way a stream ends. The read
+                // already honours cancellation, so the token is not needed here to stop the loop.
+                var keepAlive = Task.Delay(KeepAliveInterval);
+                var completed = await Task.WhenAny(next, keepAlive).ConfigureAwait(false);
 
                 if (completed != next)
                 {
-                    await WriteRawAsync(KeepAliveFrame, cancellationToken).ConfigureAwait(false);
+                    // A client that has gone is the ordinary way a stream ends — a closed tab, a
+                    // dropped connection — and the first the server hears of it is often a failed
+                    // write. Ending quietly is the honest response: the run is unaffected, and there
+                    // is nobody left to tell.
+                    if (!await TryWriteRawAsync(KeepAliveFrame, cancellationToken).ConfigureAwait(false))
+                        yield break;
+
                     yield return null;
                     continue;
                 }
@@ -142,10 +154,21 @@ public sealed class WorkflowProgressStreamer
         }
     }
 
-    private async Task WriteRawAsync(string frame, CancellationToken cancellationToken)
+    /// <summary>Writes a raw frame, reporting whether the client was still there to receive it.</summary>
+    private async Task<bool> TryWriteRawAsync(string frame, CancellationToken cancellationToken)
     {
-        await _body.WriteAsync(Encoding.UTF8.GetBytes(frame), cancellationToken).ConfigureAwait(false);
-        await _body.FlushAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await _body.WriteAsync(Encoding.UTF8.GetBytes(frame), cancellationToken).ConfigureAwait(false);
+            await _body.FlushAsync(cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException or IOException)
+        {
+            // The three ways a gone client presents itself. Anything else is a real fault and is left
+            // to propagate rather than being swallowed as a disconnect.
+            return false;
+        }
     }
 
     private async Task WriteAsync(WorkflowProgressEvent evt, CancellationToken cancellationToken)
