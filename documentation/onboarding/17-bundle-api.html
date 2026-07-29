@@ -140,7 +140,7 @@
                         <tbody>
                             <tr>
                                 <td><strong>Bundle API</strong></td>
-                                <td><code>Presentation.BundleApi</code></td>
+                                <td><code>Presentation.ExecutionApi</code></td>
                                 <td>The agent is authored <em>outside</em> the host and shipped in with the request. One-off runs, tenant-supplied agents, CI jobs that carry their own agent definition.</td>
                             </tr>
                             <tr>
@@ -345,7 +345,7 @@ cd my-bundle &amp;&amp; zip -r ../bundle.zip . &amp;&amp; cd ..</code></pre>
                     <div class="code-block">
                         <div class="code-block-header"><span class="code-block-lang">bash · register, run, poll</span></div>
                         <pre><code># The host ships no launch profile, so pick the address explicitly:
-#   ASPNETCORE_URLS=http://localhost:5000 dotnet run --project src/Content/Presentation/Presentation.BundleApi
+#   ASPNETCORE_URLS=http://localhost:5000 dotnet run --project src/Content/Presentation/Presentation.ExecutionApi
 API=http://localhost:5000
 
 # Anonymous dev mode needs no token. Against a real Entra host, add
@@ -891,7 +891,7 @@ The agent runs with exactly one tool: file_system.</code></pre>
                     <div class="code-block">
                         <div class="code-block-header"><span class="code-block-lang">bash</span></div>
                         <pre><code>ASPNETCORE_URLS=http://localhost:5000 \
-  dotnet run --project src/Content/Presentation/Presentation.BundleApi</code></pre>
+  dotnet run --project src/Content/Presentation/Presentation.ExecutionApi</code></pre>
                     </div>
                     <p>
                         The shipped <code>appsettings.json</code> enables bundle execution but leaves <code>Auth</code>

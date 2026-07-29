@@ -143,7 +143,7 @@ DELETE /api/bundles/{handle}                → 204   (explicit cleanup; TTL als
 - Parser content overloads: `AgentMetadataParser.ParseFromContent`, `SkillMetadataParser` pure-string overload, `PluginManifestReader.ReadFromJson`.
 - MCP envelope filter in `ToolChainBuilder` (Injected path + MCP provisioning) — filter by envelope's allowed server names. **(the one new gate)**
 
-### Presentation (`Presentation.AgentHub` OR new `Presentation.BundleApi` — see open decision)
+### Presentation (`Presentation.AgentHub` OR new `Presentation.ExecutionApi` — see open decision)
 - `Controllers/BundlesController.cs` — the REST endpoints; `[Authorize]`, role-gated, per-path rate limits.
 - Middleware: extend scope capture to also set ambient `CapabilityEnvelope` from ClaimsPrincipal.
 - SSE stream endpoint reusing `AgUiEventWriter` + `AgentTurnStreamSink`.
@@ -188,7 +188,7 @@ an agent dir with nested skills), and the bundle's envelope (Bundle-PR2) sits on
 ceiling. Doing the core-model first is what makes the bundle drop in cleanly instead of bolting on.
 
 ## Decisions (resolved)
-- **Host: DECIDED — new lean isolated `Presentation.BundleApi` web app.** Its own auth audience + rate
+- **Host: DECIDED — new lean isolated `Presentation.ExecutionApi` web app.** Its own auth audience + rate
   limits; no shared front door with the dashboard, since it runs externally-authored agents.
 - **Job records:** in-memory (non-durable), aligned with "not system of record". CONFIRMED.
 - **Envelope granularity:** per-credential (subject) with role/default fallback. CONFIRMED.

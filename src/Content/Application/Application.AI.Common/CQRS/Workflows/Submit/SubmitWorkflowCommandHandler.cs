@@ -1,0 +1,363 @@
+using Application.AI.Common.Interfaces.Planner;
+using Domain.AI.Planner;
+using Domain.Common;
+using Domain.Common.Config;
+using MediatR;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+
+namespace Application.AI.Common.CQRS.Workflows.Submit;
+
+/// <summary>
+/// Handles <see cref="SubmitWorkflowCommand"/>: refuses when workflow submission is disabled, resolves
+/// and bounds any referenced child workflows, maps the definition to a plan graph, and persists it.
+/// </summary>
+/// <remarks>
+/// <para>
+/// <strong>Submission stores; it does not run.</strong> The returned identifier names a stored
+/// workflow, and starting one is a separately-authorized operation. A caller who can author a workflow
+/// therefore does not automatically hold the right to spend the host's credentials executing it.
+/// </para>
+/// <para>
+/// <strong>Ownership is stamped by the store from the caller's ambient scope</strong>, established at
+/// the transport boundary before the request reached MediatR. This handler never reads or writes an
+/// owner, because a handler that could would be a handler that could get it wrong — and in this
+/// codebase an unscoped write is not a private record, it is a world-readable one.
+/// </para>
+/// </remarks>
+public sealed class SubmitWorkflowCommandHandler
+    : IRequestHandler<SubmitWorkflowCommand, Result<SubmitWorkflowResult>>
+{
+    private readonly IPlanStateStore _planStore;
+    private readonly IPlanValidator _validator;
+    private readonly IOptionsMonitor<AppConfig> _config;
+    private readonly ILogger<SubmitWorkflowCommandHandler> _logger;
+
+    /// <summary>Initializes a new <see cref="SubmitWorkflowCommandHandler"/>.</summary>
+    public SubmitWorkflowCommandHandler(
+        IPlanStateStore planStore,
+        IPlanValidator validator,
+        IOptionsMonitor<AppConfig> config,
+        ILogger<SubmitWorkflowCommandHandler> logger)
+    {
+        ArgumentNullException.ThrowIfNull(planStore);
+        ArgumentNullException.ThrowIfNull(validator);
+        ArgumentNullException.ThrowIfNull(config);
+        ArgumentNullException.ThrowIfNull(logger);
+
+        _planStore = planStore;
+        _validator = validator;
+        _config = config;
+        _logger = logger;
+    }
+
+    /// <inheritdoc />
+    public async Task<Result<SubmitWorkflowResult>> Handle(
+        SubmitWorkflowCommand request, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var submissionConfig = _config.CurrentValue.AI.WorkflowSubmission;
+        if (!submissionConfig.Enabled)
+        {
+            return Result<SubmitWorkflowResult>.Forbidden(
+                "Workflow submission is disabled. Set AppConfig.AI.WorkflowSubmission.Enabled = true to enable it.");
+        }
+
+        var nesting = await ValidateChildReferencesAsync(
+            request.Definition, submissionConfig.MaxSubPlanNestingDepth, cancellationToken).ConfigureAwait(false);
+        if (!nesting.IsSuccess)
+            return Propagate(nesting);
+
+        var mapped = WorkflowDefinitionMapper.MapToPlanGraph(request.Definition);
+        if (!mapped.IsSuccess || mapped.Value is null)
+            return Result<SubmitWorkflowResult>.ValidationFailure([.. mapped.Errors]);
+
+        var plan = mapped.Value;
+
+        var structure = await ValidateStructureAsync(plan, cancellationToken).ConfigureAwait(false);
+        if (!structure.IsSuccess)
+            return Propagate(structure);
+
+        var quota = await EnforceStorageQuotaAsync(
+            submissionConfig.MaxStoredWorkflowsPerOwner, cancellationToken).ConfigureAwait(false);
+        if (!quota.IsSuccess)
+            return Propagate(quota);
+
+        return await PersistAsync(plan, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Carries a step's failure outward while preserving whether it blames the caller or the host.
+    /// </summary>
+    /// <remarks>
+    /// Every stage of this handler can fail either way, and collapsing the two would tell a caller its
+    /// request was malformed when a database was briefly unavailable — so it would not retry something
+    /// that would have worked.
+    /// </remarks>
+    private static Result<SubmitWorkflowResult> Propagate(Result failure) =>
+        failure.FailureType == ResultFailureType.Validation
+            ? Result<SubmitWorkflowResult>.ValidationFailure([.. failure.Errors])
+            : Result<SubmitWorkflowResult>.Fail([.. failure.Errors]);
+
+    /// <summary>
+    /// Runs the shared structural validation — cycles, reachability, branch completeness — on the
+    /// mapped graph.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The wire contract deliberately does not re-implement any of these rules, which only holds if
+    /// they actually run here. Without this a submission whose steps form a cycle passes every
+    /// admission rule, is stored, and fails on first execution — reporting the defect to whoever ran
+    /// the workflow rather than to whoever wrote it.
+    /// </para>
+    /// <para>
+    /// <see cref="IPlanValidator"/> reports a structurally invalid plan as a <em>failed</em> result of
+    /// validation type, not as a successful one carrying <c>IsValid = false</c>. Reading it the other
+    /// way round turns every rejected plan into a 500. The <c>IsValid</c> check still runs because the
+    /// interface permits that shape and an alternative implementation may use it.
+    /// </para>
+    /// </remarks>
+    private async Task<Result> ValidateStructureAsync(PlanGraph plan, CancellationToken cancellationToken)
+    {
+        var structure = await _validator.ValidateAsync(plan, cancellationToken).ConfigureAwait(false);
+
+        if (!structure.IsSuccess)
+        {
+            if (structure.FailureType == ResultFailureType.Validation)
+                return Result.ValidationFailure([.. structure.Errors]);
+
+            _logger.LogError(
+                "Structural validation could not be completed for submitted workflow {WorkflowName}: {Errors}",
+                plan.Name, string.Join("; ", structure.Errors));
+
+            return Result.Fail("The workflow could not be validated.");
+        }
+
+        return structure.Value is { IsValid: false } invalid
+            ? Result.ValidationFailure([.. invalid.Errors])
+            : Result.Success();
+    }
+
+    /// <summary>Stores the admitted plan and builds the caller's response.</summary>
+    private async Task<Result<SubmitWorkflowResult>> PersistAsync(
+        PlanGraph plan, CancellationToken cancellationToken)
+    {
+        var saved = await _planStore.SavePlanAsync(plan, cancellationToken).ConfigureAwait(false);
+        if (!saved.IsSuccess)
+        {
+            _logger.LogError(
+                "Failed to persist submitted workflow {WorkflowName} ({WorkflowId}): {Errors}",
+                plan.Name, plan.Id.Value, string.Join("; ", saved.Errors));
+
+            return Result<SubmitWorkflowResult>.Fail("The workflow could not be stored.");
+        }
+
+        _logger.LogInformation(
+            "Stored submitted workflow {WorkflowName} ({WorkflowId}) with {StepCount} step(s) and {EdgeCount} edge(s).",
+            plan.Name, plan.Id.Value, plan.Steps.Count, plan.Edges.Count);
+
+        return Result<SubmitWorkflowResult>.Success(new SubmitWorkflowResult
+        {
+            WorkflowId = plan.Id.Value,
+            Name = plan.Name,
+            // Derived from the mapped plan rather than tracked alongside it: step names are unique
+            // within a submission and are carried through unchanged, so the plan already holds the
+            // mapping and a second copy could only ever disagree with it.
+            StepIds = plan.Steps.ToDictionary(step => step.Name, step => step.Id.Value, StringComparer.Ordinal)
+        });
+    }
+
+    /// <summary>
+    /// Refuses the submission when the caller already holds as many stored workflows as the host
+    /// permits.
+    /// </summary>
+    /// <remarks>
+    /// Checked immediately before the write rather than at the start of the handler: the count is a
+    /// snapshot either way, and taking it late keeps the window in which it can go stale as small as
+    /// this design allows. Two submissions racing at the boundary can both observe a count one below
+    /// the cap and both succeed, leaving the caller one over — accepted deliberately, because the
+    /// quota exists to bound unbounded accumulation, and the alternative is a transaction spanning
+    /// count-and-write for a limit whose exact edge carries no meaning.
+    /// </remarks>
+    private async Task<Result> EnforceStorageQuotaAsync(int maxStored, CancellationToken cancellationToken)
+    {
+        var owned = await _planStore.CountOwnedPlansAsync(cancellationToken).ConfigureAwait(false);
+        if (!owned.IsSuccess)
+        {
+            _logger.LogError(
+                "Could not count stored workflows for the calling scope: {Errors}",
+                string.Join("; ", owned.Errors));
+
+            return Result.Fail("The workflow could not be stored.");
+        }
+
+        if (owned.Value >= maxStored)
+        {
+            return Result.ValidationFailure(
+                [$"This caller already holds the maximum of {maxStored} stored workflows. "
+                 + "Remove one before submitting another."]);
+        }
+
+        return Result.Success();
+    }
+
+    /// <summary>
+    /// Resolves every child workflow the definition references, confirming each is visible to the
+    /// caller and that the resulting chain stays within the host's nesting cap.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This runs at admission rather than being left to the executor, for two reasons. A dangling or
+    /// unauthorized reference otherwise stores cleanly and fails only when run, which reports the
+    /// defect to whoever ran the workflow rather than to whoever wrote it. And an over-deep chain
+    /// otherwise trips <see cref="PlanConfiguration.MaxSubPlanDepth"/> mid-run, after the earlier
+    /// steps have already spent real inference and tool calls.
+    /// </para>
+    /// <para>
+    /// <see cref="IPlanStateStore.LoadPlanAsync"/> is scope-filtered, so a child belonging to another
+    /// owner or tenant resolves to <see langword="null"/> — indistinguishable from one that does not
+    /// exist. That is deliberate: the caller learns its reference is unusable without learning whether
+    /// someone else's workflow carries that identifier.
+    /// </para>
+    /// </remarks>
+    private async Task<Result> ValidateChildReferencesAsync(
+        WorkflowDefinition definition, int maxDepth, CancellationToken cancellationToken)
+    {
+        var roots = definition.Steps
+            .Select(step => step.Configuration)
+            .OfType<SubPlanStepConfiguration>()
+            .Select(configuration => new PlanId(configuration.ChildWorkflowId))
+            .Distinct()
+            .ToList();
+
+        if (roots.Count == 0)
+            return Result.Success();
+
+        var context = new ChildWalkContext(maxDepth);
+        foreach (var rootId in roots)
+        {
+            var outcome = await MeasureChainAsync(rootId, depth: 1, context, cancellationToken)
+                .ConfigureAwait(false);
+            if (!outcome.IsSuccess)
+                return outcome;
+        }
+
+        return Result.Success();
+    }
+
+    /// <summary>
+    /// Walks one child reference and everything beneath it, failing when the chain outgrows the cap,
+    /// references itself, or names a workflow this caller cannot see.
+    /// </summary>
+    /// <remarks>
+    /// Depth is carried down the path rather than tracked in a shared visited set. A shared set
+    /// under-counts: a plan first reached at depth 1 is marked seen, and when the same plan is reached
+    /// again at depth 3 through a longer route its subtree is not re-expanded, so a chain that exceeds
+    /// the cap can be admitted. Measuring per path is what makes the reported depth the real one.
+    /// Recursion is bounded by the cap itself — the walk stops the moment it exceeds it — and
+    /// <see cref="ChildWalkContext.Path"/> catches a reference cycle, which would otherwise recurse
+    /// until that bound on every submission that contains one.
+    /// </remarks>
+    private async Task<Result> MeasureChainAsync(
+        PlanId childId, int depth, ChildWalkContext context, CancellationToken cancellationToken)
+    {
+        if (depth > context.MaxDepth)
+        {
+            return Result.ValidationFailure(
+                [$"The referenced sub-workflow chain is deeper than the host's limit of {context.MaxDepth}."]);
+        }
+
+        // Depth alone does not bound the walk's cost: breadth multiplies at every level. A caller can
+        // cheaply admit a plan with N sub-plan steps all naming the same child, then another with N
+        // naming that one, and a final single request expands to N^depth store reads. Each admission
+        // on its own looks small, and rate limiting counts requests rather than the work behind them.
+        if (!context.TryConsumeVisit())
+        {
+            return Result.ValidationFailure(
+                [$"Resolving this workflow's sub-workflow references exceeds the host's budget of "
+                 + $"{ChildWalkContext.MaxVisits} lookups."]);
+        }
+
+        if (!context.Path.Add(childId))
+            return Result.Fail($"Child workflow '{childId.Value}' takes part in a sub-workflow cycle.");
+
+        try
+        {
+            var loaded = await _planStore.LoadPlanAsync(childId, cancellationToken).ConfigureAwait(false);
+            if (!loaded.IsSuccess)
+            {
+                // A store fault, not a malformed submission. Reporting it as a validation failure would
+                // tell the caller its request was wrong and stop it retrying something that would work.
+                _logger.LogError(
+                    "Could not read child workflow {ChildWorkflowId} during admission: {Errors}",
+                    childId.Value, string.Join("; ", loaded.Errors));
+
+                return Result.Fail("A referenced child workflow could not be read.");
+            }
+
+            if (loaded.Value is null)
+            {
+                return Result.ValidationFailure(
+                    [$"Child workflow '{childId.Value}' does not exist or is not available to this caller."]);
+            }
+
+            foreach (var grandchildId in ChildReferencesOf(loaded.Value))
+            {
+                var outcome = await MeasureChainAsync(grandchildId, depth + 1, context, cancellationToken)
+                    .ConfigureAwait(false);
+                if (!outcome.IsSuccess)
+                    return outcome;
+            }
+
+            return Result.Success();
+        }
+        finally
+        {
+            context.Path.Remove(childId);
+        }
+    }
+
+    /// <summary>State carried through one submission's child-reference walk.</summary>
+    /// <param name="MaxDepth">The host's admission cap on chain depth.</param>
+    private sealed record ChildWalkContext(int MaxDepth)
+    {
+        /// <summary>
+        /// Total store lookups one submission's walk may perform, whatever its shape.
+        /// </summary>
+        /// <remarks>
+        /// Fixed rather than configurable: it bounds a denial-of-service path, not a capability, so
+        /// there is no legitimate reason for an operator to raise it — and raising the depth cap must
+        /// not silently raise this too, since cost grows as breadth to the power of depth. A workflow
+        /// needing more than this many distinct sub-workflow lookups to admit is past the point where
+        /// a caller should be composing it as one submission.
+        /// </remarks>
+        public const int MaxVisits = 512;
+
+        private int _visits;
+
+        /// <summary>The plans on the path currently being measured, used to detect a reference cycle.</summary>
+        public HashSet<PlanId> Path { get; } = [];
+
+        /// <summary>Charges one lookup against the budget, reporting whether it was available.</summary>
+        public bool TryConsumeVisit() => ++_visits <= MaxVisits;
+    }
+
+    /// <summary>
+    /// The distinct child workflows one plan invokes.
+    /// </summary>
+    /// <remarks>
+    /// Distinct, because a plan with two hundred steps all naming the same child describes one subtree,
+    /// not two hundred. Deduping here is not the shared-visited-set mistake: that one deduped across
+    /// the whole walk and so under-reported depth, whereas this dedupes within a single node, where
+    /// every copy sits at the same depth by construction.
+    /// </remarks>
+    private static IEnumerable<PlanId> ChildReferencesOf(PlanGraph plan) => plan.Steps
+        .Select(step => step.Configuration)
+        .OfType<SubPlanConfig>()
+        .Select(configuration => configuration.ChildPlanId)
+        .Where(childPlanId => childPlanId.HasValue)
+        .Select(childPlanId => childPlanId!.Value)
+        .Distinct();
+}

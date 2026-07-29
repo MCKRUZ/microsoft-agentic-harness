@@ -45,7 +45,7 @@ namespace Infrastructure.AI.Tests.Permissions;
 /// <para>
 /// <see cref="TierPolicyConfig"/> mirrors <c>Presentation.FoundryHost</c> (which defines
 /// <c>TierPolicies</c> with <c>Autonomous → Allow</c>) and <see cref="FlatConfig"/> mirrors
-/// <c>Presentation.BundleApi</c> (which defines none, so the flat <c>DefaultBehavior</c> applies). Both
+/// <c>Presentation.ExecutionApi</c> (which defines none, so the flat <c>DefaultBehavior</c> applies). Both
 /// resolve the tier catch-all to Allow by different routes, so the confinement assertions run against
 /// both.
 /// </para>
@@ -66,7 +66,7 @@ public sealed class EnvelopeEnforcementIntegrationTests
     }
 
     /// <summary>
-    /// The permission configuration <c>Presentation.BundleApi</c> ships: a flat Allow default and an
+    /// The permission configuration <c>Presentation.ExecutionApi</c> ships: a flat Allow default and an
     /// Autonomous default tier, with no per-tier policy block.
     /// </summary>
     private static PermissionsConfig FlatConfig() => new()

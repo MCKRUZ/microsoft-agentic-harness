@@ -398,7 +398,7 @@ src/
     ├── Presentation.AgentHub/          SignalR hub — real-time streaming to the WebUI
     │   ├── Auth/                       DevAuthHandler (dev bypass), Azure AD integration
     │   └── AgUi/                       AG-UI event protocol (34 event types, SSE streaming)
-    ├── Presentation.BundleApi/         HTTP front door for running externally-authored agent bundles
+    ├── Presentation.ExecutionApi/         HTTP front door for running externally-authored agent bundles
     │                                   → guide: https://mckruz.github.io/microsoft-agentic-harness/17-bundle-api.html
     │   ├── Controllers/                register → run → poll/stream → delete, owner-bound
     │   └── Streaming/                  AG-UI-shaped SSE for live runs

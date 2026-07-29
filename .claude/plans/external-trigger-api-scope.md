@@ -18,7 +18,7 @@ CLI, and **26** — including all 8 plan operations — have no host reference a
 | Host | Surface | Trust boundary |
 |---|---|---|
 | `Presentation.AgentHub` | 40 routes — chat, conversations, documents, evals results, metrics, sessions, MCP proxy | Interactive / first-party |
-| `Presentation.BundleApi` | 5 routes — register + run external agent bundles | **Untrusted external automation** |
+| `Presentation.ExecutionApi` | 5 routes — register + run external agent bundles | **Untrusted external automation** |
 | `Infrastructure.AI.MCPServer` | MCP transport, 3 skill-listing tools | MCP clients |
 | `Presentation.FoundryHost` | Foundry Responses protocol, one hard-wired agent | Foundry runtime |
 

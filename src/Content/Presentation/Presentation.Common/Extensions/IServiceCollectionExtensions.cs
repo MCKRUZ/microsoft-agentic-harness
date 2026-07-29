@@ -7,6 +7,7 @@ using Application.Core.Validation;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
 using Domain.Common.Config.AI.BundleExecution;
+using Domain.Common.Config.AI.WorkflowSubmission;
 using Domain.Common.Config.AI.GitOps;
 using Domain.Common.Config.AI.Governance;
 using Domain.Common.Config.AI.HarmonicMemory;
@@ -226,6 +227,16 @@ public static class IServiceCollectionExtensions
         services.AddOptions<BundleExecutionConfig>()
             .Bind(configuration.GetSection("AppConfig:AI:BundleExecution"))
             .ValidateFluentValidation<BundleExecutionConfig, BundleExecutionConfigValidator>()
+            .ValidateOnStart();
+
+        // Workflow-submission admission caps (graph size, string lengths, nesting depth) and the
+        // ceilings a submission may request (timeouts, parallelism, retries). Same posture as above:
+        // unconditional positivity rules over all-valid defaults, so hosts that omit the section keep
+        // booting, and a host that sets an explicit bad cap fails closed at startup rather than
+        // rejecting every submission with a message that reads like the feature is broken.
+        services.AddOptions<WorkflowSubmissionConfig>()
+            .Bind(configuration.GetSection("AppConfig:AI:WorkflowSubmission"))
+            .ValidateFluentValidation<WorkflowSubmissionConfig, WorkflowSubmissionConfigValidator>()
             .ValidateOnStart();
 
         // OTel logs-signal knobs (export toggle, min export level, PII redaction). Rules are

@@ -132,7 +132,7 @@ public class BundleExecutionConfig
     public TimeSpan CleanupInterval { get; set; } = TimeSpan.FromSeconds(60);
 
     /// <summary>
-    /// Authentication for the standalone <c>Presentation.BundleApi</c> HTTP host. The bundle API is isolated
+    /// Authentication for the standalone <c>Presentation.ExecutionApi</c> HTTP host. The bundle API is isolated
     /// behind its own authentication audience (it runs externally-authored agents); this section carries that
     /// audience's Entra identifiers. Fail-closed: the host refuses to start unless a scheme is configured or
     /// anonymous serving is explicitly opted into. Only consulted by the bundle API host.

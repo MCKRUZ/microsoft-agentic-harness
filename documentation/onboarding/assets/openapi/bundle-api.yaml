@@ -1,13 +1,13 @@
 # Bundle API — OpenAPI description
 #
 # Hand-written from the shipped implementation in
-# src/Content/Presentation/Presentation.BundleApi/. This host does NOT serve a generated
+# src/Content/Presentation/Presentation.ExecutionApi/. This host does NOT serve a generated
 # OpenAPI document at runtime (no Swashbuckle / AddOpenApi registration in Program.cs), so
 # this file is the machine-readable contract.
 #
 # This file is one of several hand-maintained descriptions of the same contract. The canonical
 # list of everything that must change together lives in the "Change the wire contract" section
-# of src/Content/Presentation/Presentation.BundleApi/README.md -- follow it, not just this note.
+# of src/Content/Presentation/Presentation.ExecutionApi/README.md -- follow it, not just this note.
 #
 # Deployed alongside the developer guide at:
 #   <site>/assets/openapi/bundle-api.yaml
@@ -52,7 +52,7 @@ info:
 servers:
   - url: "{scheme}://{host}"
     description: >-
-      The Presentation.BundleApi host. It ships no launch profile, so the bind address is entirely
+      The Presentation.ExecutionApi host. It ships no launch profile, so the bind address is entirely
       deployment-defined — set ASPNETCORE_URLS explicitly. The defaults below match the local
       quickstart in chapter 17 of the developer guide (`ASPNETCORE_URLS=http://localhost:5000`);
       use `https` for any deployment that is not a developer's own machine.

@@ -61,6 +61,19 @@ public interface IPlanStateStore
     /// <param name="from">Optional start of time range.</param>
     /// <param name="to">Optional end of time range.</param>
     /// <param name="ct">Cancellation token.</param>
+    /// <summary>
+    /// Counts the plans the ambient caller owns outright, for quota enforcement.
+    /// </summary>
+    /// <remarks>
+    /// Counts what the caller <em>owns</em>, not what it can <em>see</em>: a globally readable plan is
+    /// visible to everyone and belongs to no one's quota. A count rather than a list because the
+    /// caller of this only needs the number, and materializing every stored graph to length-check it
+    /// would make the quota check cost grow with the thing it exists to bound.
+    /// </remarks>
+    /// <param name="ct">Cancels the query.</param>
+    /// <returns>The number of plans owned by the ambient scope.</returns>
+    Task<Result<int>> CountOwnedPlansAsync(CancellationToken ct);
+
     Task<Result<IReadOnlyList<PlanGraph>>> ListPlansAsync(
         StepExecutionStatus? statusFilter = null,
         DateTimeOffset? from = null,

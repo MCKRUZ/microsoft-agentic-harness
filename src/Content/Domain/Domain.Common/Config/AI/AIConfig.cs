@@ -21,6 +21,7 @@ using Domain.Common.Config.AI.Resilience;
 using Domain.Common.Config.AI.Routing;
 using Domain.Common.Config.AI.Sandbox;
 using Domain.Common.Config.AI.Telemetry;
+using Domain.Common.Config.AI.WorkflowSubmission;
 using Domain.Common.Config.AI.WorkMemory;
 
 namespace Domain.Common.Config.AI;
@@ -203,6 +204,15 @@ public class AIConfig
     /// a bundle arrives at runtime from an external caller and is confined as untrusted input.
     /// </summary>
     public BundleExecutionConfig BundleExecution { get; set; } = new();
+
+    /// <summary>
+    /// Workflow-submission surface configuration. Off by default — when enabled, the host can accept an
+    /// externally-authored workflow definition over HTTP, validate it against admission caps, and persist
+    /// it as an owner-scoped plan the caller can later run. Distinct from <see cref="BundleExecution"/>:
+    /// a bundle is a self-contained agent delivered as an archive, whereas a workflow is a DAG of steps
+    /// executed by the planner against the host's own registered tools and skills.
+    /// </summary>
+    public WorkflowSubmissionConfig WorkflowSubmission { get; set; } = new();
 
     /// <summary>Agent Governance Toolkit configuration.</summary>
     public GovernanceConfig Governance { get; init; } = new();

@@ -11,6 +11,18 @@ namespace Infrastructure.AI.Planner;
 public sealed partial class EfCorePlanStateStore
 {
     /// <inheritdoc />
+    /// <inheritdoc />
+    public async Task<Result<int>> CountOwnedPlansAsync(CancellationToken ct)
+    {
+        await using var ctx = _factory.CreateDbContext();
+
+        // WritableBy, not VisiblePlans: quota counts what this caller owns. Counting globally readable
+        // plans would charge every caller for records none of them created.
+        var count = await WritablePlans(ctx).AsNoTracking().CountAsync(ct).ConfigureAwait(false);
+
+        return Result<int>.Success(count);
+    }
+
     public async Task<Result<PlanGraph?>> LoadPlanAsync(PlanId planId, CancellationToken ct)
     {
         await using var ctx = _factory.CreateDbContext();
