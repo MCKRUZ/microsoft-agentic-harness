@@ -89,14 +89,23 @@ public sealed class KnowledgeScopeAccessor : IKnowledgeScope, IKnowledgeScopeWri
     /// <param name="datasetId">The dataset ID (overrides config default).</param>
     /// <param name="datasetName">The dataset display name.</param>
     /// <param name="datasetOwnerId">The dataset owner's user ID.</param>
-    public void SetScope(
+    /// <returns>A token that restores the previously ambient identity when disposed.</returns>
+    /// <remarks>
+    /// The token captures and restores the <em>previous</em> value rather than clearing to null, which
+    /// is what makes nested scopes (A → B → dispose → back to A) behave. A long-lived
+    /// <c>BackgroundService</c> that drains a job queue must dispose per job; otherwise job N's identity
+    /// stays ambient in the loop's execution context and job N+1 silently runs as job N's user.
+    /// </remarks>
+    public IDisposable SetScope(
         string? userId = null,
         string? tenantId = null,
         string? datasetId = null,
         string? datasetName = null,
         string? datasetOwnerId = null)
     {
+        var previous = s_identity.Value;
         s_identity.Value = new ScopeIdentity(userId, tenantId, datasetId, datasetName, datasetOwnerId);
+        return new ScopeToken(previous);
     }
 
     private sealed record ScopeIdentity(
@@ -105,4 +114,25 @@ public sealed class KnowledgeScopeAccessor : IKnowledgeScope, IKnowledgeScopeWri
         string? DatasetId,
         string? DatasetName,
         string? DatasetOwnerId);
+
+    /// <summary>
+    /// Restore token mirroring <c>AmbientRequestScope.ScopeToken</c>: reinstates the identity that was
+    /// ambient before the corresponding <see cref="SetScope"/> call. Idempotent — a second dispose is a
+    /// no-op rather than a second (wrong) restore.
+    /// </summary>
+    private sealed class ScopeToken : IDisposable
+    {
+        private readonly ScopeIdentity? _previous;
+        private bool _disposed;
+
+        public ScopeToken(ScopeIdentity? previous) => _previous = previous;
+
+        public void Dispose()
+        {
+            if (_disposed)
+                return;
+            _disposed = true;
+            s_identity.Value = _previous;
+        }
+    }
 }

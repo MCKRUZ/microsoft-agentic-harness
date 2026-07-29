@@ -208,15 +208,19 @@ public sealed class BundlesController : ControllerBase
 
     /// <summary>
     /// Resolves a stable identifier for the calling principal, used to bind and authorize bundle handles and
-    /// runs per owner. Prefers the Entra object id (<c>oid</c>, stable per user across tokens), then the
-    /// subject (<c>sub</c>/name-identifier), then the name. In the anonymous development mode every request
+    /// runs per owner. Delegates wholly to <see cref="BundleCallerIdentity.StableId"/> so ownership accepts
+    /// exactly the token shapes the knowledge scope does. In the anonymous development mode every request
     /// carries the same synthetic principal, so all callers share one owner — there is no cross-caller
     /// isolation without real authentication, by design.
     /// </summary>
-    private string? ResolveCallerId() =>
-        BundleCallerIdentity.StableId(User) ?? NullIfBlank(User.Identity?.Name);
-
-    private static string? NullIfBlank(string? value) => string.IsNullOrWhiteSpace(value) ? null : value;
+    /// <remarks>
+    /// There is deliberately no display-name fallback. <c>name</c> is not unique — two people can share one —
+    /// so accepting it here would let unrelated callers collide into a single plan owner. It existed only to
+    /// give the anonymous dev principal an identity; that principal now carries a synthetic <c>oid</c>
+    /// instead, so the fallback bought nothing but a way for a real token with no stable claim to own records
+    /// under a shared name.
+    /// </remarks>
+    private string? ResolveCallerId() => BundleCallerIdentity.StableId(User);
 
     /// <summary>401 response when the authenticated principal has no usable identity to own resources under.</summary>
     private IActionResult NoUsableIdentity() => Problem(

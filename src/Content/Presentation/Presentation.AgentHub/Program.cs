@@ -47,10 +47,19 @@ if (!app.Environment.IsDevelopment())
 app.UseRouting();
 app.UseCors("AgentHubCors");
 app.UseAuthentication();
+// Establish the per-request knowledge scope (user/tenant) from the authenticated principal. Covers
+// controllers + the AG-UI endpoint.
+//
+// CANONICAL POSITION — immediately after UseAuthentication, before UseAuthorization. Both hosts that
+// mount this middleware use this position; keep them identical. Two reasons it is the right one:
+//   1. It is the EARLIEST point where HttpContext.User is populated, so nothing downstream can consult
+//      the scope before it exists. No authorization handler reads IKnowledgeScope today, but one that
+//      did — a tenant-scoped requirement, say — would silently see a null scope if we mounted later,
+//      and null reads as GLOBAL rather than as "denied".
+//   2. The middleware now REJECTS an authenticated principal with no usable identity. Doing that before
+//      authorization means we never run authorization work for a caller we are about to turn away.
+app.UseMiddleware<Presentation.Common.Scoping.KnowledgeScopeMiddleware>();
 app.UseAuthorization();
-// Establish the per-request knowledge scope (user/tenant) from the authenticated principal,
-// after auth so HttpContext.User is populated. Covers controllers + the AG-UI endpoint.
-app.UseMiddleware<Presentation.AgentHub.Middleware.KnowledgeScopeMiddleware>();
 app.UseRateLimiter();
 app.MapControllers();
 app.MapHub<AgentTelemetryHub>("/hubs/agent");

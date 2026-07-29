@@ -28,6 +28,12 @@ public sealed class AgUiRunHandlerTests
     private static ClaimsPrincipal MakeUser(string oid) =>
         new(new ClaimsIdentity([new Claim("oid", oid)], "test"));
 
+    /// <summary>
+    /// A principal carrying <c>sub</c> and nothing else — the shape of a non-Entra OIDC token.
+    /// </summary>
+    private static ClaimsPrincipal MakeSubOnlyUser(string sub) =>
+        new(new ClaimsIdentity([new Claim("sub", sub)], "test"));
+
     private static RunAgentInput MakeInput(string threadId, string userContent) =>
         MakeInput(threadId, userContent, Guid.NewGuid().ToString());
 
@@ -203,6 +209,67 @@ public sealed class AgUiRunHandlerTests
         frames.Should().NotContain(f => EventType(f) == AgUiEventType.RunFinished);
 
         mediator.Verify(m => m.Send(It.IsAny<IRequest<AgentTurnResult>>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task HandleRunAsync_SubOnlyToken_IsRecognisedAsTheOwner()
+    {
+        // The drift this covers, behaviourally rather than structurally: GetCallerId used to be a
+        // hand-rolled copy of the shared ladder whose comment claimed it "mirrors" the authority. It
+        // stopped mirroring it when the shared ladder learned to accept "sub", so a non-Entra OIDC
+        // caller who owned the conversation everywhere else in the harness was rejected here.
+        // CallerIdentityResolutionBoundaryTests stops a fourth ladder appearing; this asserts the
+        // outcome that mattered — the owner is let in.
+        const string threadId = "conv-sub-owner";
+        const string sub = "sub-only-owner";
+
+        var mediator = new Mock<IMediator>();
+        var store = new Mock<IConversationStore>();
+        store.Setup(s => s.GetAsync(threadId, It.IsAny<CancellationToken>()))
+             .ReturnsAsync(MakeRecord(threadId, sub));
+        store.Setup(s => s.GetHistoryForDispatch(threadId, It.IsAny<int>(), It.IsAny<CancellationToken>()))
+             .ReturnsAsync([]);
+        store.Setup(s => s.AppendMessageAsync(threadId, It.IsAny<ConversationMessage>(), It.IsAny<CancellationToken>()))
+             .Returns(Task.CompletedTask);
+        mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(MakeSuccessResult("Hello."));
+
+        var handler = BuildHandler(mediator, store);
+
+        using var ms = new MemoryStream();
+        await handler.HandleRunAsync(
+            MakeInput(threadId, "Hi"), new AgUiEventWriter(ms), MakeSubOnlyUser(sub));
+
+        var frames = ParseSseFrames(ms);
+        frames.Should().NotContain(f => EventType(f) == AgUiEventType.RunError,
+            "a sub-only owner must not be treated as an intruder");
+        frames.Should().Contain(f => EventType(f) == AgUiEventType.RunFinished);
+    }
+
+    [Fact]
+    public async Task HandleRunAsync_SubOnlyToken_StillCannotReadAnotherOwnersThread()
+    {
+        // The other half: accepting "sub" must widen who is recognised, never who is authorised.
+        // Without this, "resolve sub to the owner id" and "resolve sub to whatever the record says"
+        // look identical from the test above.
+        const string threadId = "conv-sub-intruder";
+
+        var mediator = new Mock<IMediator>();
+        var store = new Mock<IConversationStore>();
+        store.Setup(s => s.GetAsync(threadId, It.IsAny<CancellationToken>()))
+             .ReturnsAsync(MakeRecord(threadId, "the-real-owner"));
+
+        var handler = BuildHandler(mediator, store);
+
+        using var ms = new MemoryStream();
+        await handler.HandleRunAsync(
+            MakeInput(threadId, "Hi"), new AgUiEventWriter(ms), MakeSubOnlyUser("someone-else"));
+
+        var frames = ParseSseFrames(ms);
+        frames.Should().Contain(f => EventType(f) == AgUiEventType.RunError);
+        frames.Should().NotContain(f => EventType(f) == AgUiEventType.RunFinished);
+        mediator.Verify(
+            m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]

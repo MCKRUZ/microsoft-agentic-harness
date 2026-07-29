@@ -1,7 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.SignalR;
 using Presentation.AgentHub.DTOs;
-using Presentation.AgentHub.Extensions;
+using Presentation.Common.Extensions;
 using Presentation.AgentHub.Interfaces;
 
 namespace Presentation.AgentHub.Hubs;

@@ -10,6 +10,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Hosting;
 using Presentation.AgentHub.DTOs;
+using Presentation.Common.Extensions;
 
 namespace Presentation.AgentHub.Controllers;
 
@@ -136,7 +137,10 @@ public sealed class McpController : ControllerBase
         if (tool is null)
             return NotFound();
 
-        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier) ?? "anonymous";
+        // Audit attribution goes through the single identity authority. Hand-rolling NameIdentifier here
+        // logged an Entra caller carrying only an oid as "anonymous" — an audit trail that misattributes
+        // a real caller is worse than one that admits it does not know.
+        var userId = User.GetUserIdOrNull() ?? "anonymous";
         var rawArgs = request.Arguments.GetRawText();
         var inputHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(rawArgs))).ToLowerInvariant();
 

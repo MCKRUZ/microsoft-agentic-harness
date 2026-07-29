@@ -12,6 +12,7 @@ using Microsoft.Extensions.Logging;
 using Presentation.AgentHub.DTOs;
 using Presentation.AgentHub.Hubs;
 using Presentation.AgentHub.Interfaces;
+using Presentation.Common.Extensions;
 
 namespace Presentation.AgentHub.AgUi;
 
@@ -358,19 +359,15 @@ public sealed class AgUiRunHandler
     }
 
     /// <summary>
-    /// Extracts the Azure AD object ID (OID) from the user principal.
-    /// Mirrors <c>ClaimsPrincipalExtensions.GetUserId()</c>.
+    /// Resolves the caller's stable identity through the single authority.
     /// </summary>
-    private static string GetCallerId(ClaimsPrincipal principal)
-    {
-        var oid = principal.FindFirstValue("oid")
-            ?? principal.FindFirstValue("http://schemas.microsoft.com/identity/claims/objectidentifier");
-
-        if (string.IsNullOrEmpty(oid))
-            throw new InvalidOperationException("The 'oid' claim is missing from the authenticated user's token.");
-
-        return oid;
-    }
+    /// <remarks>
+    /// This used to hand-roll the lookup with a comment saying it "mirrors" the shared extension. It
+    /// stopped mirroring it the moment the shared ladder learned to accept <c>sub</c>: a sub-only token
+    /// resolved everywhere else in the harness but threw here. That is the drift
+    /// <c>CallerIdentityResolutionBoundaryTests</c> now prevents — delegate, never copy.
+    /// </remarks>
+    private static string GetCallerId(ClaimsPrincipal principal) => principal.GetUserId();
 
     /// <summary>
     /// Parses a client-supplied message id into a <see cref="Guid"/>, falling back to a freshly

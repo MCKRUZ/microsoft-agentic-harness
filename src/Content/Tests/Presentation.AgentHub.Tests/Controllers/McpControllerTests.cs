@@ -198,6 +198,38 @@ public sealed class McpControllerTests : IClassFixture<TestWebApplicationFactory
             e.Message.Contains("InputHash"));
     }
 
+    /// <summary>
+    /// An Entra caller whose token carries only <c>oid</c> is attributed by that oid, not logged as
+    /// "anonymous".
+    /// </summary>
+    /// <remarks>
+    /// This is the defect the audit trail actually shipped with: the controller hand-rolled a
+    /// NameIdentifier lookup, so the most common real Entra token shape — oid and nothing else —
+    /// produced an audit line claiming the tool was invoked anonymously. A trail that misattributes a
+    /// known caller is worse than one that admits it does not know, because it reads as an answer.
+    /// </remarks>
+    [Fact]
+    public async Task InvokeTool_OidOnlyToken_IsAttributedToTheOid_NotAnonymous()
+    {
+        var (client, logs) = CreateClientWithFakeTool("attribution-tool");
+        client.DefaultRequestHeaders.Remove(TestAuthHandler.UserIdHeader);
+        client.DefaultRequestHeaders.Add(TestAuthHandler.UserIdHeader, "entra-oid-caller");
+        client.DefaultRequestHeaders.Add(TestAuthHandler.ClaimShapeHeader, "oid-only");
+
+        var body = new StringContent(
+            JsonSerializer.Serialize(new { Arguments = new { key = "value" } }),
+            Encoding.UTF8, "application/json");
+
+        using var _ = await client.PostAsync("/api/mcp/tools/attribution-tool/invoke", body);
+
+        var audit = logs.Entries.Where(e =>
+            e.Level == LogLevel.Information && e.Message.Contains("MCP tool invoked")).ToList();
+
+        audit.Should().ContainSingle();
+        audit[0].Message.Should().Contain("entra-oid-caller");
+        audit[0].Message.Should().NotContain("anonymous");
+    }
+
     /// <summary>POST body exceeding 32 KB returns 413 Request Entity Too Large.</summary>
     [Fact]
     public async Task InvokeTool_OversizedBody_Returns413()

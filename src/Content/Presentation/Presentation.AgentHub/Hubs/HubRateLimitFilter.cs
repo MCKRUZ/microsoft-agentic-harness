@@ -1,7 +1,7 @@
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.DependencyInjection;
-using Presentation.AgentHub.Extensions;
+using Presentation.Common.Extensions;
 
 namespace Presentation.AgentHub.Hubs;
 

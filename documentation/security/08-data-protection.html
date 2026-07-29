@@ -269,7 +269,12 @@
                         right tenant and owner, with no extra plumbing.
                     </p>
 
-                    <p>Identity is captured at the entry point, after authentication, by two thin adapters:</p>
+                    <p>
+                        Identity is captured at the entry point, after authentication, by one thin adapter per
+                        transport — mounted on <em>every</em> HTTP host, not just the agent hub. A host that
+                        forgets to mount it does not fall back to something safe: unscoped records are stored as
+                        global, so every caller can read them.
+                    </p>
 
                     <table>
                         <thead>
@@ -281,14 +286,30 @@
                         </thead>
                         <tbody>
                             <tr>
-                                <td>HTTP</td>
+                                <td>HTTP (Agent Hub)</td>
                                 <td>
-                                    <code>src/Content/Presentation/Presentation.AgentHub/Middleware/KnowledgeScopeMiddleware.cs</code>
+                                    <code>src/Content/Presentation/Presentation.Common/Scoping/KnowledgeScopeMiddleware.cs</code>
                                 </td>
                                 <td>
-                                    Runs after authentication; calls <code>KnowledgeScopeInitializer</code> to pull
+                                    Runs immediately after authentication and before authorization; calls
+                                    <code>KnowledgeScopeInitializer</code> to pull
                                     <code>userId</code>/<code>tenantId</code> from the authenticated
-                                    <code>ClaimsPrincipal</code> and seed the accessor.
+                                    <code>ClaimsPrincipal</code> and seed the accessor. An <em>authenticated</em>
+                                    caller whose identity cannot be resolved is rejected with 401 rather than
+                                    allowed to proceed unscoped.
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>HTTP (Bundle API)</td>
+                                <td>
+                                    The same class, mounted in
+                                    <code>src/Content/Presentation/Presentation.BundleApi/Program.cs</code>
+                                </td>
+                                <td>
+                                    Identical behaviour and identical position in the pipeline, so plans and records
+                                    created by an externally-triggered bundle run are scoped exactly as agent-hub
+                                    turns are. This host previously mounted no scope adapter at all, which meant
+                                    bundle-created records were written unscoped — that is, global.
                                 </td>
                             </tr>
                             <tr>
