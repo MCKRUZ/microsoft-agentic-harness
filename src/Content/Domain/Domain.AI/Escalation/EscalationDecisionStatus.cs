@@ -46,5 +46,24 @@ public enum EscalationDecisionStatus
     /// This decision resolved the escalation. <see cref="EscalationDecisionResult.Outcome"/>
     /// carries the final <see cref="EscalationOutcome"/>. Maps naturally to HTTP 200.
     /// </summary>
-    Resolved
+    Resolved,
+
+    /// <summary>
+    /// The escalation already reached a resolution that could not be durably recorded (the
+    /// compliance audit or durable-state write failed), so it is parked awaiting an operator
+    /// reconcile pass. This decision was <em>not</em> recorded and did not participate — the
+    /// verdict was already decided before it arrived. Reporting
+    /// <see cref="DecisionRecorded"/> here would tell an approver their vote counted when it
+    /// was discarded. Poll <c>IEscalationService.GetOutcomeAsync</c>; the verdict becomes
+    /// observable once reconciliation completes — <c>EscalationReconciliationService</c> drives
+    /// that pass on every host, including hosts with durable governance state switched off,
+    /// because this parked state is produced by an <em>audit</em>-store failure and is therefore
+    /// independent of the durability toggles.
+    /// <para>
+    /// Maps to HTTP 409, not 503: the verdict is already decided, so this vote will never be
+    /// counted no matter how often the request is retried. That is a state conflict, not the
+    /// transient unavailability a 503 advertises.
+    /// </para>
+    /// </summary>
+    AwaitingReconciliation
 }

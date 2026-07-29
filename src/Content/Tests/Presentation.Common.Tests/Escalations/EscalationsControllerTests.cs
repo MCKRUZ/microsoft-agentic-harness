@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using Application.AI.Common.Interfaces.Escalation;
 using Application.Core.CQRS.Escalation;
 using Domain.AI.Escalation;
 using Domain.Common;
@@ -21,7 +22,8 @@ namespace Presentation.Common.Tests.Escalations;
 /// is stamped exclusively from the principal's configured claim (the body cannot supply it),
 /// that a missing claim fails closed with 403 before any dispatch, and that every
 /// <see cref="EscalationDecisionStatus"/> maps to its documented HTTP status
-/// (404 / 403 / 202 / 200). Wire-level auth and routing coverage lives in
+/// (404 / 403 / 202 / 200 / 409) — including an exhaustiveness guard proving no member falls
+/// through to a 500. Wire-level auth and routing coverage lives in
 /// <c>Presentation.AgentHub.Tests</c>.
 /// </summary>
 public sealed class EscalationsControllerTests
@@ -304,6 +306,109 @@ public sealed class EscalationsControllerTests
         var body = ok.Value.Should().BeOfType<EscalationDecisionResponse>().Subject;
         body.Status.Should().Be(EscalationDecisionStatus.Resolved);
         body.Outcome!.EscalationId.Should().Be(id);
+    }
+
+    [Fact]
+    public async Task SubmitDecision_ConflictFailure_Returns409WithTheHandlersDetail()
+    {
+        // End-to-end proof that a conflict still surfaces as 409 now that the controller has no
+        // hand-rolled arm for it. SubmitEscalationDecisionCommandHandler classifies both conflict
+        // statuses in the Application layer; the controller's only job is to let the shared
+        // failure mapper render that verdict, detail intact.
+        _mediator.Setup(m => m.Send(It.IsAny<SubmitEscalationDecisionCommand>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<SubmitEscalationDecisionResult>.Conflict(
+                "The escalation had already reached a verdict whose durable record could not be " +
+                "written, so it is parked awaiting reconciliation. This decision was not counted."));
+
+        var result = await CreateSut(ApproverClaim()).SubmitDecision(
+            Guid.NewGuid(), new SubmitEscalationDecisionRequest(true), CancellationToken.None);
+
+        var problem = result.Should().BeOfType<ObjectResult>().Subject;
+        problem.StatusCode.Should().Be(StatusCodes.Status409Conflict,
+            "the verdict is already decided, so this vote will never be counted no matter how " +
+            "often the request is retried — a state conflict, not the transient unavailability 503 implies");
+
+        var details = problem.Value.Should().BeAssignableTo<ProblemDetails>().Subject;
+        details.Detail.Should().Contain("not counted",
+            "the approver must be told plainly that their vote did not participate");
+    }
+
+    [Fact]
+    public async Task SubmitDecision_EveryStatusTheHandlerPassesThrough_MapsToSomethingOtherThan500()
+    {
+        // The transport half of the exhaustiveness guard. The handler owns classification (see
+        // SubmitEscalationDecisionCommandHandlerTests); what must hold HERE is that every status
+        // the handler forwards as data has an explicit arm. Running the real handler to decide
+        // which statuses those are keeps this test from hardcoding — and then silently
+        // disagreeing with — the handler's list.
+        foreach (var status in Enum.GetValues<EscalationDecisionStatus>())
+        {
+            var handlerResult = await RunRealHandlerAsync(status);
+            if (!handlerResult.IsSuccess)
+                continue;
+
+            _mediator.Reset();
+            SetupDecision(handlerResult.Value!);
+
+            var result = await CreateSut(ApproverClaim()).SubmitDecision(
+                Guid.NewGuid(), new SubmitEscalationDecisionRequest(true), CancellationToken.None);
+
+            var statusCode = result switch
+            {
+                ObjectResult o => o.StatusCode,
+                StatusCodeResult s => s.StatusCode,
+                _ => null
+            };
+            statusCode.Should().NotBe(StatusCodes.Status500InternalServerError,
+                $"EscalationDecisionStatus.{status} has no explicit arm in the controller's mapping");
+        }
+    }
+
+    /// <summary>
+    /// Runs the real command handler over a stubbed escalation service so this test can ask the
+    /// Application layer — rather than a copy of its rules — which statuses reach the controller.
+    /// </summary>
+    /// <param name="status">The service status to simulate.</param>
+    private static async Task<Result<SubmitEscalationDecisionResult>> RunRealHandlerAsync(
+        EscalationDecisionStatus status)
+    {
+        var outcome = new EscalationOutcome
+        {
+            EscalationId = Guid.NewGuid(),
+            IsApproved = true,
+            ResolutionType = EscalationResolutionType.Approved,
+            ResolvedAt = DateTimeOffset.UtcNow,
+            Decisions = []
+        };
+
+        var decisionResult = status switch
+        {
+            EscalationDecisionStatus.UnknownEscalation => EscalationDecisionResult.UnknownEscalation(),
+            EscalationDecisionStatus.ApproverNotAuthorized => EscalationDecisionResult.ApproverNotAuthorized(),
+            EscalationDecisionStatus.DecisionRecorded => EscalationDecisionResult.DecisionRecorded(),
+            EscalationDecisionStatus.ConflictingDecision => EscalationDecisionResult.ConflictingDecision(),
+            EscalationDecisionStatus.AwaitingReconciliation => EscalationDecisionResult.AwaitingReconciliation(),
+            EscalationDecisionStatus.Resolved => EscalationDecisionResult.Resolved(outcome),
+            _ => throw new ArgumentOutOfRangeException(
+                nameof(status), status,
+                "A new EscalationDecisionStatus has no test factory; add one so this guard covers it.")
+        };
+
+        var service = new Mock<IEscalationService>();
+        service.Setup(s => s.SubmitDecisionAsync(
+                It.IsAny<Guid>(), It.IsAny<ApproverDecision>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(decisionResult);
+
+        var handler = new SubmitEscalationDecisionCommandHandler(
+            service.Object, NullLogger<SubmitEscalationDecisionCommandHandler>.Instance);
+
+        return await handler.Handle(new SubmitEscalationDecisionCommand
+        {
+            EscalationId = Guid.NewGuid(),
+            ApproverName = "alice@contoso.com",
+            Approve = true,
+            Reason = null
+        }, CancellationToken.None);
     }
 
     // --- Read/cancel Result mapping through the shared failure mapper ---

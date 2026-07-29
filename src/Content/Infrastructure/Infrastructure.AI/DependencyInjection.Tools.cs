@@ -8,6 +8,7 @@ using Azure.AI.Projects;
 using Application.Common.Factories;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
+using Domain.Common.Config.AI.Governance;
 using Domain.Common.Config.MetaHarness;
 using Infrastructure.AI.Embeddings;
 using Infrastructure.AI.Factories;
@@ -33,11 +34,39 @@ public static partial class DependencyInjection
         AppConfig appConfig,
         IEnumerable<string> allowedBasePaths)
     {
-        // File system service — sandboxed file operations for direct consumption
+        // File system service — sandboxed file operations for direct consumption.
+        // The governance-state directory is denied even when it falls inside an allowed base path:
+        // it holds approval verdicts, so an agent that could read it could mine approval payloads
+        // and one that could write it could truncate or corrupt the harness's own governance state.
+        // It could not forge a verdict — every row is HMAC-sealed by
+        // AttestationGovernanceRecordSealer and verified fail-closed on read — so the exposure is
+        // disclosure and tamper/denial of service. Resolved through the same helper the database
+        // registration uses, so the two paths cannot drift apart.
+        var governanceStateDirectory = Path.GetDirectoryName(
+            Persistence.GovernanceStatePaths.Resolve(appConfig.AI.Governance.DurableState.DatabasePath));
+
+        // Armed only when there is genuinely something to protect — see the helper for why the
+        // toggles alone are not the whole condition.
+        var protectedPaths = ResolveGovernanceStateProtectedPaths(
+            appConfig.AI.Governance.DurableState, governanceStateDirectory);
+
         services.AddSingleton<IFileSystemService>(sp =>
             new FileSystemService(
                 sp.GetRequiredService<ILogger<FileSystemService>>(),
-                allowedBasePaths));
+                allowedBasePaths,
+                protectedPaths));
+
+        // Boot-time assertion that the governance-state directory does not sit inside an allowed
+        // base path. That geometry is a misconfiguration worth refusing on, but note what it does
+        // NOT do: it does not close the hard-link bypass. A hard link needs the same VOLUME as its
+        // target, not the same subtree, and the shipped default puts workspace and .agent-state
+        // side by side on one volume. FileSystemService's per-operation link-count check is what
+        // closes that. Both collections are handed over by value so the assertion covers exactly
+        // the paths the service enforces.
+        services.AddHostedService(sp => new FileSystemSandboxStartupValidator(
+            [.. allowedBasePaths],
+            protectedPaths,
+            sp.GetRequiredService<ILogger<FileSystemSandboxStartupValidator>>()));
 
         // File system tool — ITool adapter for LLM consumption, registered with keyed DI
         services.AddKeyedSingleton<ITool>(FileSystemTool.ToolName, (sp, _) =>
@@ -107,6 +136,68 @@ public static partial class DependencyInjection
         // acknowledgement synchronously (non-interactive). General-purpose; opt-in per skill.
         services.AddKeyedSingleton<ITool>(RenderTableTool.ToolName, (sp, _) =>
             new RenderTableTool(sp.GetRequiredService<IClientToolBridge>()));
+    }
+
+    /// <summary>
+    /// Decides whether the governance-state directory is handed to <see cref="FileSystemService"/>
+    /// as a protected path, and returns it in the (at most one element) form the service and its
+    /// startup validator both receive.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Why this is gated at all.</b> Arming the deny list also arms
+    /// <see cref="FileSystemService"/>'s per-operation hard-link identity check, and that check
+    /// fails closed on any platform <see cref="HardLinkInspector"/> has no implementation for.
+    /// Registering the directory unconditionally therefore made the file-system tool unusable on
+    /// macOS and the BSDs under <em>every</em> configuration — including the shipped default, where
+    /// both durable-state toggles are off and no database has ever existed. A control armed for a
+    /// feature that is not running is cost with no matching benefit.
+    /// </para>
+    /// <para>
+    /// <b>Why the toggles alone are not the condition.</b> A database left behind by an earlier run
+    /// with durability enabled still holds approval verdicts after someone sets the toggles back to
+    /// false. Gating on the toggles alone would silently un-protect that residue, so an existing
+    /// directory arms the protection on its own. The probe is a single
+    /// <see cref="Directory.Exists"/> call at composition — once per host, never per file operation.
+    /// </para>
+    /// <para>
+    /// <b>Why a composition-time snapshot is sound.</b> The directory can only come into existence
+    /// on a host whose composition-time toggles were already on. Every route to
+    /// <c>GovernanceStatePaths.EnsureDirectory</c> runs inside the <c>GovernanceStateDbContext</c>
+    /// options callback, which is reached only by resolving <c>EfCoreEscalationStateStore</c>,
+    /// <c>EfCoreChangeProposalStore</c>, or <c>GovernanceStatePruner</c>: the first two are selected
+    /// by a toggle read once at first resolution, and the third sits behind
+    /// <c>EscalationReconciliationService</c>'s construction-time enable snapshot. Nothing re-reads
+    /// the toggles afterwards, so no live <c>appsettings.json</c> edit can conjure a database that
+    /// this decision did not see. That last property is load-bearing — if the pruner ever goes back
+    /// to reading <see cref="Microsoft.Extensions.Options.IOptionsMonitor{T}"/> per tick, a host
+    /// that booted with nothing to protect could grow a database behind a disarmed deny list.
+    /// </para>
+    /// </remarks>
+    /// <param name="durableState">The durable governance-state configuration.</param>
+    /// <param name="governanceStateDirectory">
+    /// The resolved directory holding the governance-state database. Never <see langword="null"/>
+    /// in practice — <c>GovernanceStatePaths.Resolve</c> rejects a path with no containing
+    /// directory — so the null case is here to satisfy nullable analysis, not to describe a
+    /// reachable configuration.
+    /// </param>
+    /// <returns>
+    /// A single-element array holding the directory when protecting it is meaningful; otherwise an
+    /// empty array, which leaves both the deny list and the hard-link check disarmed.
+    /// </returns>
+    internal static string[] ResolveGovernanceStateProtectedPaths(
+        GovernanceDurableStateConfig durableState,
+        string? governanceStateDirectory)
+    {
+        ArgumentNullException.ThrowIfNull(durableState);
+
+        if (string.IsNullOrWhiteSpace(governanceStateDirectory))
+            return [];
+
+        if (durableState.EscalationsEnabled || durableState.ChangeProposalsEnabled)
+            return [governanceStateDirectory];
+
+        return Directory.Exists(governanceStateDirectory) ? [governanceStateDirectory] : [];
     }
 
     /// <summary>

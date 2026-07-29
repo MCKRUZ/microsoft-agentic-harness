@@ -121,6 +121,12 @@ public static class HarmonicWriteEvalCli
     // Offline runs need no services (deterministic providers touch nothing). The paid path builds the eval
     // host so the chat-client factory + judge resolve; hosted services are intentionally not started — the
     // chat client and judge are constructed on demand and depend only on configuration.
+    //
+    // DO NOT copy this pattern into an agent-bearing host. Not starting hosted services also skips every
+    // startup validator registered as one — FileSystemSandboxStartupValidator among them — so a host built
+    // this way would run agents with its sandbox assertions never having executed. It is safe HERE only
+    // because this container never resolves IFileSystemService, ITool or IMediator and never runs an agent
+    // turn; the moment any of that changes, this must become a started host.
     private static ServiceProvider BuildProvider(bool useLlm)
     {
         var services = new ServiceCollection();

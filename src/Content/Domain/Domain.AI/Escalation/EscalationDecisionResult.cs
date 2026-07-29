@@ -37,6 +37,8 @@ public sealed record EscalationDecisionResult
         new() { Status = EscalationDecisionStatus.DecisionRecorded };
     private static readonly EscalationDecisionResult ConflictingInstance =
         new() { Status = EscalationDecisionStatus.ConflictingDecision };
+    private static readonly EscalationDecisionResult AwaitingReconciliationInstance =
+        new() { Status = EscalationDecisionStatus.AwaitingReconciliation };
 
     /// <summary>Creates a result for a decision targeting an escalation that is not pending.</summary>
     public static EscalationDecisionResult UnknownEscalation() => UnknownInstance;
@@ -46,6 +48,13 @@ public sealed record EscalationDecisionResult
 
     /// <summary>Creates a result for a decision that was recorded but left the escalation unresolved.</summary>
     public static EscalationDecisionResult DecisionRecorded() => RecordedInstance;
+
+    /// <summary>
+    /// Creates a result for a decision submitted against an escalation that already resolved but
+    /// whose resolution could not be durably recorded, leaving it parked for reconciliation. The
+    /// decision was not recorded and did not participate in the verdict.
+    /// </summary>
+    public static EscalationDecisionResult AwaitingReconciliation() => AwaitingReconciliationInstance;
 
     /// <summary>
     /// Creates a result for a decision rejected because the same approver already recorded the

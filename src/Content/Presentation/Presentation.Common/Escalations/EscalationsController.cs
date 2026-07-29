@@ -156,7 +156,12 @@ public sealed class EscalationsController : ControllerBase
     /// <response code="401">Caller is not authenticated.</response>
     /// <response code="403">Caller lacks <see cref="DecideRole"/>, has no approver identity claim, or is not on this escalation's roster.</response>
     /// <response code="404">No pending escalation with the given id.</response>
-    /// <response code="409">This approver already recorded the opposite verdict; votes cannot be changed. (A repeat with the same verdict echoes 202.)</response>
+    /// <response code="409">
+    /// Either this approver already recorded the opposite verdict (votes cannot be changed; a
+    /// repeat with the same verdict echoes 202), or the escalation had already reached a verdict
+    /// that failed its durable/audit write and is parked awaiting reconciliation — in which case
+    /// this decision was not counted and never will be. Poll <c>GET /{id}</c> for the outcome.
+    /// </response>
     [HttpPost("{id:guid}/decision")]
     [Authorize(Roles = DecideRole)]
     [ProducesResponseType(typeof(EscalationDecisionResponse), StatusCodes.Status200OK)]
@@ -182,33 +187,45 @@ public sealed class EscalationsController : ControllerBase
             Reason = request.Reason
         }, cancellationToken).ConfigureAwait(false);
 
-        if (!result.IsSuccess)
-            return MapFailure(result);
-
-        // The four decision statuses map exactly as documented on EscalationDecisionStatus:
-        // UnknownEscalation → 404, ApproverNotAuthorized → 403, DecisionRecorded → 202,
-        // Resolved → 200.
-        var value = result.Value!;
-        return value.Status switch
-        {
-            EscalationDecisionStatus.UnknownEscalation => Problem(
-                title: "Not found",
-                detail: "No pending escalation with the given id.",
-                statusCode: StatusCodes.Status404NotFound),
-            EscalationDecisionStatus.ApproverNotAuthorized => Problem(
-                title: "Forbidden",
-                detail: "The caller is not on this escalation's approver roster.",
-                statusCode: StatusCodes.Status403Forbidden),
-            EscalationDecisionStatus.DecisionRecorded =>
-                Accepted(new EscalationDecisionResponse(value.Status, null)),
-            EscalationDecisionStatus.Resolved =>
-                Ok(new EscalationDecisionResponse(value.Status, value.Outcome)),
-            _ => Problem(
-                title: "Escalation operation failed",
-                detail: "An error occurred processing the request. See server logs for details.",
-                statusCode: StatusCodes.Status500InternalServerError)
-        };
+        return result.IsSuccess ? MapDecisionStatus(result.Value!) : MapFailure(result);
     }
+
+    /// <summary>
+    /// Maps a decision status to its HTTP response. Every status that reaches this method has an
+    /// explicit arm: an unmapped member falls to the 500 default and turns an ordinary,
+    /// well-understood lifecycle state into a server error, which is the defect the exhaustive
+    /// mapping exists to prevent.
+    /// </summary>
+    /// <remarks>
+    /// UnknownEscalation → 404, ApproverNotAuthorized → 403, DecisionRecorded → 202, Resolved → 200.
+    /// The two conflict statuses never arrive here: <see cref="SubmitEscalationDecisionCommandHandler"/>
+    /// converts ConflictingDecision and AwaitingReconciliation into a Conflict failure in the
+    /// Application layer, which <c>MapFailure</c> renders as a 409 — so the conflict is reported the
+    /// same way to every consumer, not just this transport. That handler owns the exhaustiveness
+    /// guarantee for them; the 500 default here survives only as a guard for a status added to the
+    /// enum without being mapped in either place.
+    /// </remarks>
+    /// <param name="value">The successful decision result to translate.</param>
+    private IActionResult MapDecisionStatus(SubmitEscalationDecisionResult value) => value.Status switch
+    {
+        EscalationDecisionStatus.UnknownEscalation => Problem(
+            title: "Not found",
+            detail: "No pending escalation with the given id.",
+            statusCode: StatusCodes.Status404NotFound),
+        EscalationDecisionStatus.ApproverNotAuthorized => Problem(
+            title: "Forbidden",
+            detail: "The caller is not on this escalation's approver roster.",
+            statusCode: StatusCodes.Status403Forbidden),
+        EscalationDecisionStatus.DecisionRecorded =>
+            Accepted(new EscalationDecisionResponse(value.Status, null)),
+        EscalationDecisionStatus.Resolved =>
+            Ok(new EscalationDecisionResponse(value.Status, value.Outcome)),
+
+        _ => Problem(
+            title: "Escalation operation failed",
+            detail: "An error occurred processing the request. See server logs for details.",
+            statusCode: StatusCodes.Status500InternalServerError)
+    };
 
     /// <summary>
     /// Administratively cancels a pending escalation, resolving it as denied and releasing any

@@ -46,12 +46,32 @@ public static partial class DependencyInjection
     }
 
     /// <summary>
-    /// Registers escalation pipeline services: service, audit store, composite notifier,
-    /// and no-op notification channel stubs.
+    /// Registers escalation pipeline services: service (also exposed as the operator-facing
+    /// <see cref="IEscalationReconciler"/>), audit store, composite notifier, no-op
+    /// notification channel stubs, and the startup rehydration step for durable escalation
+    /// state (a no-op while durability is disabled).
     /// </summary>
     private static void RegisterEscalationServices(IServiceCollection services)
     {
-        services.AddSingleton<IEscalationService, DefaultEscalationService>();
+        // Concrete registration with interface forwards so IEscalationService and
+        // IEscalationReconciler resolve to the SAME singleton — the reconciler must see the
+        // exact in-memory state the service accumulates.
+        services.AddSingleton<DefaultEscalationService>();
+        services.AddSingleton<IEscalationService>(sp => sp.GetRequiredService<DefaultEscalationService>());
+        services.AddSingleton<IEscalationReconciler>(sp => sp.GetRequiredService<DefaultEscalationService>());
+
+        // Restores durably persisted pending escalations at host start. With durable state
+        // disabled the Null state store yields nothing and this is a silent no-op.
+        services.AddHostedService<EscalationStateRehydrationService>();
+
+        // Runs reconciliation in production — the ONLY non-test trigger for the recovery path.
+        // Registered AFTER rehydration so hosted-service start order populates the active set
+        // before the first pass runs (the pass distinguishes in-memory-recoverable records from
+        // durable-only ones by consulting that set). The pass itself runs on EVERY host: the
+        // stuck state it recovers is caused by an audit-store failure, not by durable state, so
+        // it occurs with the durability toggles off. Only the retention prune is toggle-gated.
+        services.AddHostedService<EscalationReconciliationService>();
+
         services.AddSingleton<IEscalationAuditStore, JsonlEscalationAuditStore>();
         services.AddSingleton<IEscalationNotifier, CompositeEscalationNotifier>();
         services.AddSingleton<IEscalationNotificationChannel, NoOpSlackNotifier>();

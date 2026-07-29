@@ -397,12 +397,71 @@ The project reads configuration from `AppConfig` bound via the Options pattern. 
     },
     "Infrastructure": {
       "FileSystem": {
-        "AllowedBasePaths": ["../../../.."] // Sandboxed directories for file tools
+        // Sandboxed directories for file tools, resolved against AppContext.BaseDirectory.
+        // Keep this NARROW. "../../../.." resolves to the project directory, which contains
+        // bin/<config>/<tfm>/.agent-state — the governance-state database — and
+        // FileSystemSandboxStartupValidator refuses to boot on that overlap.
+        "AllowedBasePaths": ["workspace"]
       }
     }
   }
 }
 ```
+
+### File-system sandbox: supported platforms
+
+**With durable governance state in use, the file-system tool runs on Windows and Linux only.** On
+macOS and the BSDs such a host refuses to start. A host with nothing to protect — the shipped
+default — runs the tool on every platform.
+
+The sandbox's last line of defence is a hard-link check. A hard link is a second directory entry for
+the same file — not a shortcut, not a symlink, and carrying nothing for a path check to resolve — so
+a hard link planted in `workspace` that points at the governance-state database reads to every
+path-based rule as an ordinary workspace file. The only way to catch it is to ask the operating
+system how many directory entries name the file, which `HardLinkInspector` does via
+`GetFileInformationByHandle` on Windows and `statx` on Linux. There is no portable API for this, and
+the check **fails closed**: a platform it cannot answer for denies the operation.
+
+macOS and the BSDs expose the count only through `struct stat`, whose field order and widths differ
+by operating system *and* by processor architecture. A guessed layout reads the wrong bytes and
+fails *open* — silently reporting "one link" for a file that has two — which is worse than no
+support at all, so none is shipped rather than an unverified guess.
+
+`FileSystemSandboxStartupValidator` turns this into a boot failure naming the platform, rather than
+letting every file operation fail separately with an error that cannot explain itself. Three ways
+forward:
+
+1. **Run on Windows or Linux.** The supported configuration.
+2. **Add a branch to `HardLinkInspector`** for your platform, verifying the `struct stat` layout
+   against the actual target OS and architecture rather than assuming it.
+3. **Run without durable governance state**, so there is nothing to protect and no reason to arm
+   the check. This has *two* conditions — see below.
+
+#### When the check is armed
+
+`DependencyInjection.ResolveGovernanceStateProtectedPaths` hands the governance-state directory to
+`FileSystemService` only when protecting it is meaningful:
+
+| `EscalationsEnabled` / `ChangeProposalsEnabled` | Governance-state directory on disk | Protected path registered | macOS / BSD |
+| --- | --- | --- | --- |
+| either `true` | irrelevant | yes | host refuses to start |
+| both `false` | present (left by an earlier run) | yes | host refuses to start |
+| both `false` | absent (**shipped default**) | no | file-system tool works |
+
+The middle row is the one that catches people out. A database left behind by a run that *did* have
+durability enabled still holds approval verdicts, and those do not stop being sensitive because
+someone later set a flag to `false` — so an existing directory arms the protection on its own
+account. Option 3 above therefore means: set **both** toggles to `false` **and** make sure no
+governance-state directory remains at the configured `DatabasePath`. Archive or relocate that
+directory rather than deleting it, unless you are certain the records are no longer needed.
+
+The decision is made once, at composition, with a single `Directory.Exists` probe — never per file
+operation. That is sound because the directory can only be created by a host whose toggles were
+already on at composition: every route to `GovernanceStatePaths.EnsureDirectory` runs inside the
+`GovernanceStateDbContext` options callback, reachable only through `EfCoreEscalationStateStore`,
+`EfCoreChangeProposalStore`, or `GovernanceStatePruner`, and all three sit behind a toggle read that
+is frozen at startup. Editing the toggles on a running host changes nothing until it restarts, which
+is the restart-required contract documented on `GovernanceDurableStateConfig`.
 
 ## Common Tasks
 

@@ -68,6 +68,14 @@ public sealed class GovernanceConfig
     public EscalationConfig Escalation { get; init; } = new();
 
     /// <summary>
+    /// Durable governance-state persistence (SQLite) for pending escalations and change
+    /// proposals. Both toggles default to off — in-memory behavior is unchanged until a
+    /// consumer opts in. See <see cref="GovernanceDurableStateConfig"/> for restart and
+    /// consistency semantics.
+    /// </summary>
+    public GovernanceDurableStateConfig DurableState { get; init; } = new();
+
+    /// <summary>
     /// Deterministic spin / no-progress guard for the agent's live tool-call path. Opt-in via
     /// <see cref="Governance.ProgressGuardConfig.Enabled"/>; off by default. Independent of
     /// <see cref="EnforceToolInvocation"/> — it answers "is the agent making progress?" rather than
