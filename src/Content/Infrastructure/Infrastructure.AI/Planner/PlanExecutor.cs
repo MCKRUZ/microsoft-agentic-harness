@@ -164,6 +164,22 @@ public sealed partial class PlanExecutor : IPlanExecutor
     {
         _logger.LogInformation("Plan {PlanId} cancellation requested", planId);
 
+        // Authorize BEFORE signalling. Signalling stops real work immediately and irreversibly, so a
+        // scope check placed only at the persisted rewrite below would let one caller abort another
+        // tenant's in-flight run and then receive NotFound — with the run already dead. The probe is
+        // scope-filtered, and a plan the caller may read but not mutate answers false, so a
+        // cross-owner cancel is reported identically to a cancel of a plan that does not exist.
+        var writable = await _stateStore.IsPlanWritableByCallerAsync(planId, ct);
+        if (!writable.IsSuccess)
+            return Result.Fail(writable.Errors.ToArray());
+
+        if (!writable.Value)
+        {
+            _logger.LogInformation(
+                "Plan {PlanId} cancellation refused: not present in the calling scope", planId);
+            return Result.NotFound($"No plan {planId} found.");
+        }
+
         var signalled = _cancellationRegistry.TryCancel(planId);
         _logger.LogInformation(
             signalled

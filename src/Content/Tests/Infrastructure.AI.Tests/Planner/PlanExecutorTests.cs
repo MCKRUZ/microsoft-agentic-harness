@@ -42,6 +42,11 @@ public sealed class PlanExecutorTests : IDisposable
 
         _stateStore.Setup(s => s.UpdateStepStateAsync(It.IsAny<StepExecutionState>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result.Success());
+        // The caller owns the plan in every scenario here. Cancellation authorizes through this probe
+        // BEFORE it signals, so a mock that leaves it unset reports the plan as absent and no cancel
+        // reaches the run — which is the point of the check, not an artefact of the mock.
+        _stateStore.Setup(s => s.IsPlanWritableByCallerAsync(It.IsAny<PlanId>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<bool>.Success(true));
         _stateStore.Setup(s => s.ResumeAsync(It.IsAny<PlanId>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result<IReadOnlyDictionary<PlanStepId, StepExecutionState>>.Success(
                 new Dictionary<PlanStepId, StepExecutionState>()));
@@ -1052,5 +1057,58 @@ public sealed class PlanExecutorTests : IDisposable
     public void Dispose()
     {
         _serviceProvider?.Dispose();
+    }
+
+    [Fact]
+    public async Task CancelAsync_PlanNotWritableByCaller_NeitherSignalsNorRewritesState()
+    {
+        // The security property: signalling stops real work immediately and irreversibly. Checking
+        // ownership only at the persisted rewrite would let one tenant abort another's in-flight run
+        // and merely receive NotFound afterwards — with the run already dead.
+        var planId = PlanId.New();
+        var registry = new Mock<IPlanRunCancellationRegistry>();
+
+        _stateStore.Setup(s => s.IsPlanWritableByCallerAsync(planId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<bool>.Success(false));
+
+        var sut = new PlanExecutor(
+            _validator.Object, _stateStore.Object, _notifier.Object, _escalation.Object,
+            _serviceProvider, registry.Object, TimeProvider.System,
+            NullLogger<PlanExecutor>.Instance);
+
+        var result = await sut.CancelAsync(planId, CancellationToken.None);
+
+        Assert.False(result.IsSuccess);
+
+        // NotFound, not Forbidden: a cross-owner cancel must be indistinguishable from cancelling a
+        // plan that does not exist, or the response becomes an existence oracle for other tenants.
+        Assert.Equal(ResultFailureType.NotFound, result.FailureType);
+
+        registry.Verify(r => r.TryCancel(It.IsAny<PlanId>()), Times.Never);
+        _stateStore.Verify(
+            s => s.CheckpointAsync(It.IsAny<PlanId>(), It.IsAny<IReadOnlyList<StepExecutionState>>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task CancelAsync_WhenTheWritabilityProbeFaults_DoesNotSignal()
+    {
+        // A store fault must not be read as permission. Failing open here would make a transient
+        // database error the way to cancel anyone's run.
+        var planId = PlanId.New();
+        var registry = new Mock<IPlanRunCancellationRegistry>();
+
+        _stateStore.Setup(s => s.IsPlanWritableByCallerAsync(planId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<bool>.Fail("database is locked"));
+
+        var sut = new PlanExecutor(
+            _validator.Object, _stateStore.Object, _notifier.Object, _escalation.Object,
+            _serviceProvider, registry.Object, TimeProvider.System,
+            NullLogger<PlanExecutor>.Instance);
+
+        var result = await sut.CancelAsync(planId, CancellationToken.None);
+
+        Assert.False(result.IsSuccess);
+        registry.Verify(r => r.TryCancel(It.IsAny<PlanId>()), Times.Never);
     }
 }
