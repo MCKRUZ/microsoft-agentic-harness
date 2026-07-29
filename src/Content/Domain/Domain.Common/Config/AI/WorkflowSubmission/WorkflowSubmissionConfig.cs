@@ -58,7 +58,9 @@ namespace Domain.Common.Config.AI.WorkflowSubmission;
 /// ├── MaxHumanGateTimeout      — Ceiling on how long a submitted step may park awaiting approval
 /// ├── MaxTokensPerStep         — Ceiling on a requested LLM response-token count
 /// ├── MaxTopK                  — Ceiling on a requested retrieval result count
-/// └── MaxStoredWorkflowsPerOwner — Cap on how many workflows one caller may keep stored
+/// ├── MaxStoredWorkflowsPerOwner — Cap on how many workflows one caller may keep stored
+/// ├── RunRecordTtl             — How long a finished run stays readable
+/// └── MaxConcurrentRunsPerOwner — Cap on how many runs one caller may have in flight
 /// </code>
 /// </remarks>
 public class WorkflowSubmissionConfig
@@ -186,4 +188,27 @@ public class WorkflowSubmissionConfig
     /// </remarks>
     /// <value>Default: 500</value>
     public int MaxStoredWorkflowsPerOwner { get; set; } = 500;
+
+    /// <summary>
+    /// How long a finished run stays readable before it is reclaimed.
+    /// </summary>
+    /// <remarks>
+    /// The clock starts when the run reaches a terminal state, not when it was accepted, so a run that
+    /// waited a long time in the queue still gets its full readable window afterwards. A run that has
+    /// not finished is never reclaimed at all — expiring one a caller is still polling would make it
+    /// silently disappear rather than report an outcome.
+    /// </remarks>
+    /// <value>Default: 1 hour</value>
+    public TimeSpan RunRecordTtl { get; set; } = TimeSpan.FromHours(1);
+
+    /// <summary>
+    /// Maximum number of runs one caller may have queued or executing at once.
+    /// </summary>
+    /// <remarks>
+    /// Distinct from <see cref="MaxStoredWorkflowsPerOwner"/>, which bounds stored definitions: this
+    /// bounds work in flight. A caller within the storage quota can otherwise start every workflow it
+    /// owns simultaneously, and the per-workflow parallelism ceiling multiplies by that count.
+    /// </remarks>
+    /// <value>Default: 10</value>
+    public int MaxConcurrentRunsPerOwner { get; set; } = 10;
 }

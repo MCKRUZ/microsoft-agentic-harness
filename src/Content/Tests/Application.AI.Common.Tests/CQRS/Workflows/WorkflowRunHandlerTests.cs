@@ -1,0 +1,233 @@
+using Application.AI.Common.CQRS.Workflows.GetRun;
+using Application.AI.Common.CQRS.Workflows.StartRun;
+using Application.AI.Common.Interfaces.Planner;
+using Application.AI.Common.Interfaces.Runs;
+using Domain.AI.Bundles;
+using Domain.AI.Planner;
+using Domain.AI.Runs;
+using Domain.Common;
+using Domain.Common.Config;
+using FluentAssertions;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
+using Microsoft.Extensions.Time.Testing;
+using Moq;
+using Xunit;
+
+namespace Application.AI.Common.Tests.CQRS.Workflows;
+
+/// <summary>
+/// Tests for the run start and status handlers.
+/// </summary>
+/// <remarks>
+/// The load-bearing properties are that a caller cannot start or read a run against a workflow it
+/// does not own, and that neither refusal reveals whether the thing exists — a job identifier is the
+/// only thing separating callers, so an answer that distinguishes "not yours" from "not there" turns
+/// the endpoint into a way to enumerate other people's work.
+/// </remarks>
+public sealed class WorkflowRunHandlerTests
+{
+    private sealed class StaticOptionsMonitor<T>(T value) : IOptionsMonitor<T>
+    {
+        public T CurrentValue { get; } = value;
+        public T Get(string? name) => CurrentValue;
+        public IDisposable? OnChange(Action<T, string?> listener) => null;
+    }
+
+    private readonly Mock<IPlanStateStore> _planStore = new();
+    private readonly Mock<IRunJobStore> _runStore = new();
+    private readonly Mock<IRunDispatchQueue> _queue = new();
+    private readonly FakeTimeProvider _time = new(new DateTimeOffset(2026, 7, 29, 12, 0, 0, TimeSpan.Zero));
+    private readonly AppConfig _config = new();
+
+    private StartWorkflowRunCommandHandler BuildStartSut(bool ownsWorkflow = true, int maxConcurrent = 10)
+    {
+        _config.AI.WorkflowSubmission.Enabled = true;
+        _config.AI.WorkflowSubmission.MaxConcurrentRunsPerOwner = maxConcurrent;
+
+        _planStore.Setup(s => s.IsPlanWritableByCallerAsync(It.IsAny<PlanId>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<bool>.Success(ownsWorkflow));
+
+        return new StartWorkflowRunCommandHandler(
+            _planStore.Object, _runStore.Object, _queue.Object,
+            new StaticOptionsMonitor<AppConfig>(_config), _time,
+            NullLogger<StartWorkflowRunCommandHandler>.Instance);
+    }
+
+    private GetWorkflowRunQueryHandler BuildGetSut()
+    {
+        _config.AI.WorkflowSubmission.Enabled = true;
+        return new GetWorkflowRunQueryHandler(_runStore.Object, new StaticOptionsMonitor<AppConfig>(_config));
+    }
+
+    private static StartWorkflowRunCommand StartCommand(Guid workflowId, string ownerId = "alice") => new()
+    {
+        WorkflowId = workflowId,
+        OwnerId = ownerId,
+        TenantId = "acme",
+        Envelope = new CapabilityEnvelope()
+    };
+
+    [Fact]
+    public async Task Start_WorkflowTheCallerDoesNotOwn_IsNotFoundAndQueuesNothing()
+    {
+        var sut = BuildStartSut(ownsWorkflow: false);
+
+        var result = await sut.Handle(StartCommand(Guid.NewGuid()), CancellationToken.None);
+
+        result.IsSuccess.Should().BeFalse();
+        result.FailureType.Should().Be(ResultFailureType.NotFound,
+            "not-yours and not-there must be the same answer, or the endpoint enumerates other callers' work");
+
+        _runStore.Verify(s => s.Create(It.IsAny<RunRecord>()), Times.Never);
+        _queue.Verify(q => q.EnqueueAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Start_OwnedWorkflow_RecordsTheRunBeforeQueueingIt()
+    {
+        // Order matters: queued first, a dispatcher could claim a job the store has never heard of and
+        // the run would vanish while the caller holds an identifier that never resolves.
+        var sut = BuildStartSut();
+        var sequence = new List<string>();
+
+        _runStore.Setup(s => s.Create(It.IsAny<RunRecord>())).Callback(() => sequence.Add("create"));
+        _queue.Setup(q => q.EnqueueAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Callback(() => sequence.Add("enqueue"))
+            .Returns(ValueTask.CompletedTask);
+
+        var result = await sut.Handle(StartCommand(Guid.NewGuid()), CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value!.JobId.Should().NotBeNullOrWhiteSpace();
+        sequence.Should().Equal("create", "enqueue");
+    }
+
+    [Fact]
+    public async Task Start_RecordsTheCallerAndTheirEnvelopeOnTheRun()
+    {
+        // The run outlives the request and executes with no caller attached, so the identity that
+        // authorized it has to travel on the record itself.
+        var sut = BuildStartSut();
+        RunRecord? created = null;
+        _runStore.Setup(s => s.Create(It.IsAny<RunRecord>()))
+            .Callback<RunRecord>(record => created = record);
+        _queue.Setup(q => q.EnqueueAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns(ValueTask.CompletedTask);
+
+        var workflowId = Guid.NewGuid();
+        await sut.Handle(StartCommand(workflowId), CancellationToken.None);
+
+        created.Should().NotBeNull();
+        created!.OwnerId.Should().Be("alice");
+        created.TenantId.Should().Be("acme");
+        created.TargetId.Should().Be(workflowId.ToString());
+        created.Kind.Should().Be(RunKind.Workflow);
+        created.Status.Should().Be(RunStatus.Queued);
+    }
+
+    [Fact]
+    public async Task Start_WhenTheCallerIsAtItsConcurrencyCap_IsRefused()
+    {
+        var sut = BuildStartSut(maxConcurrent: 2);
+        _runStore.Setup(s => s.CountActiveRuns("alice")).Returns(2);
+
+        var result = await sut.Handle(StartCommand(Guid.NewGuid()), CancellationToken.None);
+
+        result.IsSuccess.Should().BeFalse();
+        result.Errors.Should().ContainMatch("*in flight*");
+        _runStore.Verify(s => s.Create(It.IsAny<RunRecord>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Start_WhenTheCallerIsBelowItsCap_IsAccepted()
+    {
+        var sut = BuildStartSut(maxConcurrent: 2);
+        _runStore.Setup(s => s.CountActiveRuns("alice")).Returns(1);
+        _queue.Setup(q => q.EnqueueAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns(ValueTask.CompletedTask);
+
+        var result = await sut.Handle(StartCommand(Guid.NewGuid()), CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Start_WhenSubmissionIsDisabled_IsRefused()
+    {
+        var sut = BuildStartSut();
+        _config.AI.WorkflowSubmission.Enabled = false;
+
+        var result = await sut.Handle(StartCommand(Guid.NewGuid()), CancellationToken.None);
+
+        result.FailureType.Should().Be(ResultFailureType.Forbidden);
+        _runStore.Verify(s => s.Create(It.IsAny<RunRecord>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Get_RunBelongingToAnotherCaller_IsNotFound()
+    {
+        // The store answers null for another owner, and the handler must not soften that into
+        // anything that distinguishes it from a job id that was never issued.
+        var sut = BuildGetSut();
+        _runStore.Setup(s => s.Get("job-1", "mallory")).Returns((RunRecord?)null);
+
+        var result = await sut.Handle(
+            new GetWorkflowRunQuery { WorkflowId = Guid.NewGuid(), JobId = "job-1", OwnerId = "mallory" },
+            CancellationToken.None);
+
+        result.IsSuccess.Should().BeFalse();
+        result.FailureType.Should().Be(ResultFailureType.NotFound);
+    }
+
+    [Fact]
+    public async Task Get_RunBelongingToADifferentWorkflow_IsNotFound()
+    {
+        // The route asserts a relationship. Answering it with a record that contradicts the route
+        // would let a caller discover which workflow a job belongs to by trying routes until one hit.
+        var sut = BuildGetSut();
+        var requested = Guid.NewGuid();
+
+        _runStore.Setup(s => s.Get("job-1", "alice")).Returns(new RunRecord
+        {
+            JobId = "job-1",
+            Kind = RunKind.Workflow,
+            TargetId = Guid.NewGuid().ToString(),
+            OwnerId = "alice",
+            Envelope = new CapabilityEnvelope(),
+            Status = RunStatus.Queued,
+            CreatedAt = _time.GetUtcNow()
+        });
+
+        var result = await sut.Handle(
+            new GetWorkflowRunQuery { WorkflowId = requested, JobId = "job-1", OwnerId = "alice" },
+            CancellationToken.None);
+
+        result.FailureType.Should().Be(ResultFailureType.NotFound);
+    }
+
+    [Fact]
+    public async Task Get_TheCallersOwnRun_IsReturned()
+    {
+        var sut = BuildGetSut();
+        var workflowId = Guid.NewGuid();
+
+        _runStore.Setup(s => s.Get("job-1", "alice")).Returns(new RunRecord
+        {
+            JobId = "job-1",
+            Kind = RunKind.Workflow,
+            TargetId = workflowId.ToString(),
+            OwnerId = "alice",
+            Envelope = new CapabilityEnvelope(),
+            Status = RunStatus.Running,
+            CreatedAt = _time.GetUtcNow()
+        });
+
+        var result = await sut.Handle(
+            new GetWorkflowRunQuery { WorkflowId = workflowId, JobId = "job-1", OwnerId = "alice" },
+            CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value!.Status.Should().Be(RunStatus.Running);
+    }
+}

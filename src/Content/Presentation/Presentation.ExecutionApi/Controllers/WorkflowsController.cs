@@ -1,5 +1,9 @@
+using Application.AI.Common.CQRS.Workflows.GetRun;
+using Application.AI.Common.CQRS.Workflows.StartRun;
 using Application.AI.Common.CQRS.Workflows.Submit;
+using Application.AI.Common.Interfaces.Governance;
 using Domain.Common;
+using Presentation.ExecutionApi.DTOs;
 using MediatR;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
@@ -45,12 +49,16 @@ namespace Presentation.ExecutionApi.Controllers;
 public sealed class WorkflowsController : ControllerBase
 {
     private readonly IMediator _mediator;
+    private readonly ICapabilityEnvelopeResolver _envelopeResolver;
 
-    /// <summary>Initializes the controller with its MediatR dependency.</summary>
-    public WorkflowsController(IMediator mediator)
+    /// <summary>Initializes the controller with its MediatR and envelope-resolver dependencies.</summary>
+    public WorkflowsController(IMediator mediator, ICapabilityEnvelopeResolver envelopeResolver)
     {
         ArgumentNullException.ThrowIfNull(mediator);
+        ArgumentNullException.ThrowIfNull(envelopeResolver);
+
         _mediator = mediator;
+        _envelopeResolver = envelopeResolver;
     }
 
     /// <summary>
@@ -80,6 +88,75 @@ public sealed class WorkflowsController : ControllerBase
         return Created($"/api/workflows/{result.Value.WorkflowId}", result.Value);
     }
 
+
+    /// <summary>
+    /// Starts a run of a stored workflow, returning a job identifier to poll.
+    /// </summary>
+    /// <remarks>
+    /// Accepts and queues; it does not wait. The response says the work was taken, not that it
+    /// finished, which is why it carries a status URL rather than a result.
+    /// </remarks>
+    /// <param name="workflowId">The stored workflow to run.</param>
+    /// <param name="cancellationToken">Cancels the request.</param>
+    [HttpPost("{workflowId:guid}/runs")]
+    [ProducesResponseType(typeof(StartWorkflowRunResponse), StatusCodes.Status202Accepted)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> StartRun(Guid workflowId, CancellationToken cancellationToken)
+    {
+        // Resolved here, at the transport boundary, from the credential that invoked THIS request —
+        // never from anything stored with the workflow. A run therefore executes under the grant of
+        // whoever started it, so a workflow authored by a broadly-permitted caller confers nothing on
+        // a narrowly-permitted one that runs it later.
+        var envelope = _envelopeResolver.Resolve(User);
+
+        var result = await _mediator.Send(
+            new StartWorkflowRunCommand
+            {
+                WorkflowId = workflowId,
+                OwnerId = User.GetUserId(),
+                TenantId = User.GetTenantId(),
+                Envelope = envelope
+            },
+            cancellationToken).ConfigureAwait(false);
+
+        if (!result.IsSuccess || result.Value is null)
+            return MapFailure(result);
+
+        var statusUrl = $"/api/workflows/{workflowId}/runs/{result.Value.JobId}";
+        return Accepted(statusUrl, new StartWorkflowRunResponse
+        {
+            JobId = result.Value.JobId,
+            StatusUrl = statusUrl
+        });
+    }
+
+    /// <summary>Reads the current state of a run the caller started.</summary>
+    /// <param name="workflowId">The workflow the run belongs to.</param>
+    /// <param name="jobId">The run to read.</param>
+    /// <param name="cancellationToken">Cancels the request.</param>
+    [HttpGet("{workflowId:guid}/runs/{jobId}")]
+    [ProducesResponseType(typeof(WorkflowRunResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetRun(
+        Guid workflowId, string jobId, CancellationToken cancellationToken)
+    {
+        var result = await _mediator.Send(
+            new GetWorkflowRunQuery
+            {
+                WorkflowId = workflowId,
+                JobId = jobId,
+                OwnerId = User.GetUserId()
+            },
+            cancellationToken).ConfigureAwait(false);
+
+        return result.IsSuccess && result.Value is not null
+            ? Ok(WorkflowRunResponse.FromRecord(result.Value))
+            : MapFailure(result);
+    }
+
     private IActionResult MapFailure(Result result) =>
-        this.FailureResponse(result, "Workflow submission failed");
+        this.FailureResponse(result, "Workflow operation failed");
 }

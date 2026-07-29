@@ -2,14 +2,17 @@ using Application.AI.Common.Interfaces.Attestation;
 using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Application.AI.Common.Interfaces.Planner;
+using Application.AI.Common.Interfaces.Runs;
 using Application.AI.Common.Interfaces.Sandbox;
 using Application.AI.Common.Services.KnowledgeGraph;
 using Domain.AI.Planner;
+using Domain.AI.Runs;
 using Domain.AI.Sandbox;
 using Domain.Common.Config;
 using Infrastructure.AI.Attestation;
 using Infrastructure.AI.Persistence;
 using Infrastructure.AI.Planner;
+using Infrastructure.AI.Runs;
 using Infrastructure.AI.Planner.StepExecutors;
 using Infrastructure.AI.Sandbox;
 using Microsoft.EntityFrameworkCore;
@@ -79,9 +82,23 @@ public static partial class DependencyInjection
 
         // Singleton like IBundleRunExecutor: the executor owns no per-run state itself — it creates a
         // fresh DI scope per run and arms the caller's capability envelope + governance identity
-        // around IPlanExecutor inside that scope. Registration is unconditional and passive; nothing
-        // resolves it until a host surface (W4) calls it.
+        // around IPlanExecutor inside that scope.
         services.AddSingleton<IPlanRunExecutor, PlanRunExecutor>();
+
+        // Shared run substrate. Singletons because a run outlives the request that queued it: the
+        // store and queue are the handoff between a request thread and the dispatcher, so a scoped
+        // registration would give each request its own empty queue and nothing would ever run.
+        services.TryAddSingleton<IRunJobStore, InMemoryRunJobStore>();
+        services.TryAddSingleton<IRunDispatchQueue, InMemoryRunDispatchQueue>();
+
+        // Keyed by RunKind, which is what makes a new kind of work a registration rather than a
+        // change to the dispatcher. Scoped: the dispatcher creates a fresh scope per run and resolves
+        // the executor inside it, so each run gets its own scoped dependencies.
+        services.AddKeyedScoped<IRunKindExecutor, WorkflowRunKindExecutor>(RunKind.Workflow);
+
+        // The dispatcher is passive until something enqueues; registering it unconditionally keeps a
+        // host from queueing work that nothing drains.
+        services.AddHostedService<RunDispatchBackgroundService>();
 
         services.AddScoped<IPlanValidator, PlanValidator>();
         services.AddScoped<IPlanGenerator, LlmPlanGeneratorService>();
