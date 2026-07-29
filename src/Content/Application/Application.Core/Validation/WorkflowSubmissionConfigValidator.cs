@@ -87,6 +87,10 @@ public sealed class WorkflowSubmissionConfigValidator : AbstractValidator<Workfl
             .GreaterThan(0)
             .WithMessage("MaxConcurrentRunsPerOwner must be > 0 — a non-positive limit would refuse every caller's first run.");
 
+        RuleFor(x => x.RunSweepInterval)
+            .GreaterThan(TimeSpan.Zero)
+            .WithMessage("RunSweepInterval must be > 0 — a non-positive interval would spin the sweeper continuously instead of scheduling it.");
+
         RuleFor(x => x.MaxHumanGateTimeout)
             .GreaterThan(TimeSpan.Zero)
             .WithMessage("MaxHumanGateTimeout must be > 0 — a non-positive ceiling would reject every requested gate timeout.");

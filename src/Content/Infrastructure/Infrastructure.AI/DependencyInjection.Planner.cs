@@ -100,6 +100,11 @@ public static partial class DependencyInjection
         // host from queueing work that nothing drains.
         services.AddHostedService<RunDispatchBackgroundService>();
 
+        // Likewise the sweeper: without it the configured retention is a claim nothing honours, and
+        // every finished run — each holding the envelope it executed under — is held for the life of
+        // the process.
+        services.AddHostedService<RunRecordCleanupService>();
+
         services.AddScoped<IPlanValidator, PlanValidator>();
         services.AddScoped<IPlanGenerator, LlmPlanGeneratorService>();
         services.AddScoped<IPlanStateStore, EfCorePlanStateStore>();

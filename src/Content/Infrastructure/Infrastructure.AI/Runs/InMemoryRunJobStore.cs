@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using Application.AI.Common.Interfaces.Runs;
+using Domain.AI.KnowledgeGraph.Scoping;
 using Domain.AI.Runs;
 using Domain.Common.Config;
 using Microsoft.Extensions.Options;
@@ -23,6 +24,14 @@ namespace Infrastructure.AI.Runs;
 /// claiming. The concurrent dictionary handles lookup; the per-entry lock makes each
 /// read-decide-write atomic, which is what <see cref="TryBeginRun"/> needs to arm exactly once.
 /// </para>
+/// <para>
+/// <strong>Admission is the one exception, and takes a store-wide lock.</strong> Deciding it means
+/// reading across entries — is this target already running, is this owner at capacity — so no
+/// per-entry lock can make it atomic. It is serialized deliberately: starting a run is rare next to
+/// polling one, and each admission is followed by an LLM workflow, so a scan of the entries costs
+/// nothing measurable against what it gates. Held while the per-entry locks are taken, never the
+/// reverse, so the two cannot deadlock.
+/// </para>
 /// </remarks>
 public sealed class InMemoryRunJobStore : IRunJobStore
 {
@@ -33,6 +42,7 @@ public sealed class InMemoryRunJobStore : IRunJobStore
     }
 
     private readonly ConcurrentDictionary<string, Entry> _entries = new(StringComparer.Ordinal);
+    private readonly Lock _admission = new();
     private readonly IOptionsMonitor<AppConfig> _config;
     private readonly TimeProvider _time;
 
@@ -49,18 +59,61 @@ public sealed class InMemoryRunJobStore : IRunJobStore
     private TimeSpan Ttl => _config.CurrentValue.AI.WorkflowSubmission.RunRecordTtl;
 
     /// <inheritdoc />
-    public void Create(RunRecord record)
+    public RunAdmission TryCreate(RunRecord record, int maxActiveRunsPerOwner)
     {
         ArgumentNullException.ThrowIfNull(record);
 
-        // A queued run is not yet reclaimable, so it is seeded with an expiry far enough out that it
-        // cannot be swept while waiting; the real retention clock starts when it reaches a terminal
-        // state. Seeding it with the TTL directly would let a run that sat in a long queue vanish
-        // before it ever ran.
-        var entry = new Entry(record, _time.GetUtcNow() + Ttl);
+        lock (_admission)
+        {
+            var (targetIsRunning, ownerActiveRuns) = SurveyActiveRuns(record.Kind, record.TargetId, record.OwnerId);
 
-        if (!_entries.TryAdd(record.JobId, entry))
-            throw new InvalidOperationException($"A run with job id '{record.JobId}' already exists.");
+            if (targetIsRunning)
+                return RunAdmission.TargetAlreadyRunning;
+
+            if (ownerActiveRuns >= maxActiveRunsPerOwner)
+                return RunAdmission.OwnerAtCapacity;
+
+            // The expiry seeded here is a placeholder that never elapses in practice: IsExpired only
+            // reclaims terminal runs, and Update restamps the expiry the moment a run becomes one. It
+            // exists so an entry always carries a value, not because a queued run is on a clock.
+            var entry = new Entry(record, _time.GetUtcNow() + Ttl);
+
+            if (!_entries.TryAdd(record.JobId, entry))
+                throw new InvalidOperationException($"A run with job id '{record.JobId}' already exists.");
+
+            return RunAdmission.Accepted;
+        }
+    }
+
+    /// <summary>
+    /// Answers both admission questions in one pass: whether <paramref name="targetId"/> already has a
+    /// live run of <paramref name="kind"/>, and how many live runs <paramref name="ownerId"/> holds.
+    /// </summary>
+    private (bool TargetIsRunning, int OwnerActiveRuns) SurveyActiveRuns(
+        RunKind kind, string targetId, string ownerId)
+    {
+        var targetIsRunning = false;
+        var ownerActiveRuns = 0;
+
+        foreach (var entry in _entries.Values)
+        {
+            RunRecord record;
+            lock (entry)
+            {
+                if (entry.Record.IsTerminal)
+                    continue;
+
+                record = entry.Record;
+            }
+
+            if (record.Kind == kind && string.Equals(record.TargetId, targetId, StringComparison.Ordinal))
+                targetIsRunning = true;
+
+            if (ScopeIdentity.AreSame(record.OwnerId, ownerId))
+                ownerActiveRuns++;
+        }
+
+        return (targetIsRunning, ownerActiveRuns);
     }
 
     /// <inheritdoc />
@@ -77,12 +130,11 @@ public sealed class InMemoryRunJobStore : IRunJobStore
             if (IsExpired(entry, _time.GetUtcNow()))
                 return null;
 
-            // Ordinal, matching how ownership is compared everywhere else in this solution. A
-            // case-insensitive match here would let two identities that the rest of the system treats
-            // as distinct read each other's runs.
-            return string.Equals(entry.Record.OwnerId, ownerId, StringComparison.Ordinal)
-                ? entry.Record
-                : null;
+            // Canonicalized, which is how plan ownership is compared (PlannerScopeFilter) and how the
+            // identity on this record was stamped. A stricter comparison here would deny a caller its
+            // own run whenever a token differed only in casing from the one that started it, while
+            // the plan store went on treating the two as the same principal.
+            return ScopeIdentity.AreSame(entry.Record.OwnerId, ownerId) ? entry.Record : null;
         }
     }
 
@@ -126,27 +178,6 @@ public sealed class InMemoryRunJobStore : IRunJobStore
         }
 
         return true;
-    }
-
-    /// <inheritdoc />
-    public int CountActiveRuns(string ownerId)
-    {
-        ArgumentException.ThrowIfNullOrEmpty(ownerId);
-
-        var active = 0;
-        foreach (var entry in _entries.Values)
-        {
-            lock (entry)
-            {
-                if (!entry.Record.IsTerminal
-                    && string.Equals(entry.Record.OwnerId, ownerId, StringComparison.Ordinal))
-                {
-                    active++;
-                }
-            }
-        }
-
-        return active;
     }
 
     /// <inheritdoc />

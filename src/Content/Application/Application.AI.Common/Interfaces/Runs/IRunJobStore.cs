@@ -19,12 +19,26 @@ namespace Application.AI.Common.Interfaces.Runs;
 /// dispatcher would run the same work twice, and duplicate execution here means duplicate model and
 /// tool spend, not just a duplicate row.
 /// </para>
+/// <para>
+/// <strong>Admission is decided here too, for the same reason.</strong> Both limits on accepting a
+/// run — one live run per target, and a ceiling on what one caller may have in flight — are
+/// read-then-write decisions. Deciding them in a handler and inserting afterwards leaves a window in
+/// which concurrent requests all observe the limit as unmet and all proceed.
+/// </para>
 /// </remarks>
 public interface IRunJobStore
 {
-    /// <summary>Stores a newly accepted run. Throws when the job id already exists.</summary>
+    /// <summary>
+    /// Admits a newly accepted run, or refuses it, deciding and inserting as one atomic step.
+    /// </summary>
     /// <param name="record">The run to store, already stamped with its owner.</param>
-    void Create(RunRecord record);
+    /// <param name="maxActiveRunsPerOwner">
+    /// How many runs one owner may have queued or executing at once. Supplied by the caller rather
+    /// than read here, because it is host policy rather than a property of storage.
+    /// </param>
+    /// <returns>Whether the run was admitted, and if not, which limit refused it.</returns>
+    /// <exception cref="InvalidOperationException">The job id is already held.</exception>
+    RunAdmission TryCreate(RunRecord record, int maxActiveRunsPerOwner);
 
     /// <summary>
     /// Reads a run visible to <paramref name="ownerId"/>, or <see langword="null"/> when it does not
@@ -52,18 +66,6 @@ public interface IRunJobStore
     /// </summary>
     /// <param name="record">The updated run.</param>
     bool Update(RunRecord record);
-
-    /// <summary>
-    /// Counts the runs <paramref name="ownerId"/> currently has queued or executing.
-    /// </summary>
-    /// <remarks>
-    /// In-flight only — finished runs are history, not load. This is what bounds a caller's claim on
-    /// the host at any instant, which neither the per-request rate limit nor any per-workflow ceiling
-    /// expresses: a caller within both can otherwise start every workflow it owns at once, and each
-    /// one then multiplies by its own parallel-step allowance.
-    /// </remarks>
-    /// <param name="ownerId">Stable identity of the calling principal.</param>
-    int CountActiveRuns(string ownerId);
 
     /// <summary>Drops runs whose retention has elapsed, returning how many were removed.</summary>
     int SweepExpired();

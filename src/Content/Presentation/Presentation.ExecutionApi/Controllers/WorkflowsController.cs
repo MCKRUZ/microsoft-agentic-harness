@@ -93,8 +93,15 @@ public sealed class WorkflowsController : ControllerBase
     /// Starts a run of a stored workflow, returning a job identifier to poll.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Accepts and queues; it does not wait. The response says the work was taken, not that it
     /// finished, which is why it carries a status URL rather than a result.
+    /// </para>
+    /// <para>
+    /// Answers 409 while the workflow already has a run in progress. A workflow's execution state is
+    /// held against the workflow rather than the run, so a second concurrent run would not be a second
+    /// independent execution — it would share one state machine with the first.
+    /// </para>
     /// </remarks>
     /// <param name="workflowId">The stored workflow to run.</param>
     /// <param name="cancellationToken">Cancels the request.</param>
@@ -103,6 +110,7 @@ public sealed class WorkflowsController : ControllerBase
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status403Forbidden)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
     public async Task<IActionResult> StartRun(Guid workflowId, CancellationToken cancellationToken)
     {
         // Resolved here, at the transport boundary, from the credential that invoked THIS request —

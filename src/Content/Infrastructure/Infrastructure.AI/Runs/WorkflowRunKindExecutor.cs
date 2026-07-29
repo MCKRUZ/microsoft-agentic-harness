@@ -34,7 +34,7 @@ public sealed class WorkflowRunKindExecutor : IRunKindExecutor
     }
 
     /// <inheritdoc />
-    public async Task<Result> ExecuteAsync(RunRecord record, CancellationToken cancellationToken)
+    public async Task<Result<RunCompletion>> ExecuteAsync(RunRecord record, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(record);
 
@@ -44,7 +44,7 @@ public sealed class WorkflowRunKindExecutor : IRunKindExecutor
             // is still answered rather than thrown, because a malformed target must fail this one run
             // instead of surfacing as an unexpected dispatcher exception.
             _logger.LogError("Run {JobId} names a target that is not a workflow id.", record.JobId);
-            return Result.Fail("The run names a workflow that cannot be resolved.");
+            return Result<RunCompletion>.Fail("The run names a workflow that cannot be resolved.");
         }
 
         var outcome = await _planRunExecutor.ExecuteAsync(
@@ -66,17 +66,35 @@ public sealed class WorkflowRunKindExecutor : IRunKindExecutor
             cancellationToken).ConfigureAwait(false);
 
         if (!outcome.IsSuccess)
-            return Result.Fail([.. outcome.Errors]);
+            return Result<RunCompletion>.Fail([.. outcome.Errors]);
 
         var summary = outcome.Value;
         if (summary is null)
-            return Result.Fail("The run produced no execution summary.");
+            return Result<RunCompletion>.Fail("The run produced no execution summary.");
 
-        // A plan that ran to completion but ended in a failed state is a failed run. Reporting it as
-        // success because the executor returned Success would tell a caller polling for an outcome
-        // that work succeeded when its steps did not.
-        return summary.FinalStatus == StepExecutionStatus.Failed
-            ? Result.Fail($"The workflow completed with status {summary.FinalStatus}.")
-            : Result.Success();
+        return Result<RunCompletion>.Success(Interpret(summary.FinalStatus));
     }
+
+    /// <summary>
+    /// Translates the plan's final status into how the run ended.
+    /// </summary>
+    /// <remarks>
+    /// Written as "succeed only on <see cref="StepExecutionStatus.Completed"/>", matching
+    /// <c>SubPlanStepExecutor</c>, rather than "fail only on <see cref="StepExecutionStatus.Failed"/>".
+    /// The two read the same until you notice that a plan can also end Blocked or Cancelled — under
+    /// the inverted form both fall through to success, and a workflow parked awaiting an approval
+    /// reports to its caller as finished work.
+    /// </remarks>
+    private static RunCompletion Interpret(StepExecutionStatus finalStatus) => finalStatus switch
+    {
+        StepExecutionStatus.Completed => RunCompletion.Succeeded(),
+
+        StepExecutionStatus.Blocked => RunCompletion.Blocked(
+            "The workflow is waiting on an approval before it can continue."),
+
+        StepExecutionStatus.Cancelled => RunCompletion.Cancelled(
+            "The workflow was cancelled before it finished."),
+
+        _ => RunCompletion.Failed($"The workflow ended with status {finalStatus}.")
+    };
 }

@@ -26,6 +26,12 @@ namespace Application.AI.Common.CQRS.Workflows.StartRun;
 /// after this point happens on the dispatcher, which is why the run carries its own owner and
 /// envelope rather than expecting an ambient caller.
 /// </para>
+/// <para>
+/// <strong>The limits are applied by the store, not here.</strong> Both are read-then-write decisions
+/// — is this workflow already running, is this caller at its ceiling — and asking then inserting
+/// leaves a window in which concurrent requests all see the limit as unmet. This decides what a
+/// refusal <em>means</em> to a caller; the store decides whether one happened.
+/// </para>
 /// </remarks>
 public sealed class StartWorkflowRunCommandHandler
     : IRequestHandler<StartWorkflowRunCommand, Result<StartWorkflowRunResult>>
@@ -89,16 +95,6 @@ public sealed class StartWorkflowRunCommandHandler
         if (!owned.Value)
             return Result<StartWorkflowRunResult>.NotFound($"No workflow {request.WorkflowId} found.");
 
-        // Checked after ownership so a caller at its cap is not told about the existence of a
-        // workflow it does not own.
-        var active = _runStore.CountActiveRuns(request.OwnerId);
-        if (active >= config.MaxConcurrentRunsPerOwner)
-        {
-            return Result<StartWorkflowRunResult>.ValidationFailure(
-                [$"This caller already has {active} run(s) in flight, the maximum this host permits. "
-                 + "Wait for one to finish before starting another."]);
-        }
-
         var record = new RunRecord
         {
             JobId = Guid.NewGuid().ToString("N"),
@@ -111,7 +107,11 @@ public sealed class StartWorkflowRunCommandHandler
             CreatedAt = _time.GetUtcNow()
         };
 
-        _runStore.Create(record);
+        // Admission is offered after ownership, so a caller at its cap is never told about the
+        // existence of a workflow it does not own.
+        var admission = _runStore.TryCreate(record, config.MaxConcurrentRunsPerOwner);
+        if (admission != RunAdmission.Accepted)
+            return Refuse(admission, request.WorkflowId, config.MaxConcurrentRunsPerOwner);
 
         // Queued only after the record exists. The other order has a window in which a dispatcher
         // claims a job the store has never heard of, and the run vanishes with the caller holding an
@@ -123,4 +123,20 @@ public sealed class StartWorkflowRunCommandHandler
 
         return Result<StartWorkflowRunResult>.Success(new StartWorkflowRunResult { JobId = record.JobId });
     }
+
+    /// <summary>Explains a refused admission in terms the caller can act on.</summary>
+    private static Result<StartWorkflowRunResult> Refuse(
+        RunAdmission admission, Guid workflowId, int maxConcurrentRuns) => admission switch
+    {
+        RunAdmission.TargetAlreadyRunning => Result<StartWorkflowRunResult>.Conflict(
+            $"Workflow {workflowId} already has a run in progress. A workflow's execution state is "
+            + "held against the workflow itself, so a second run would share it with the first. Wait "
+            + "for the current run to finish."),
+
+        RunAdmission.OwnerAtCapacity => Result<StartWorkflowRunResult>.ValidationFailure(
+            [$"This caller already has {maxConcurrentRuns} run(s) in flight, the maximum this host "
+             + "permits. Wait for one to finish before starting another."]),
+
+        _ => Result<StartWorkflowRunResult>.Fail("The run could not be accepted.")
+    };
 }

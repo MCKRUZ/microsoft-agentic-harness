@@ -40,13 +40,21 @@ public sealed class WorkflowRunHandlerTests
     private readonly FakeTimeProvider _time = new(new DateTimeOffset(2026, 7, 29, 12, 0, 0, TimeSpan.Zero));
     private readonly AppConfig _config = new();
 
-    private StartWorkflowRunCommandHandler BuildStartSut(bool ownsWorkflow = true, int maxConcurrent = 10)
+    private StartWorkflowRunCommandHandler BuildStartSut(
+        bool ownsWorkflow = true,
+        int maxConcurrent = 10,
+        RunAdmission admission = RunAdmission.Accepted)
     {
         _config.AI.WorkflowSubmission.Enabled = true;
         _config.AI.WorkflowSubmission.MaxConcurrentRunsPerOwner = maxConcurrent;
 
         _planStore.Setup(s => s.IsPlanWritableByCallerAsync(It.IsAny<PlanId>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result<bool>.Success(ownsWorkflow));
+
+        _runStore.Setup(s => s.TryCreate(It.IsAny<RunRecord>(), It.IsAny<int>())).Returns(admission);
+
+        _queue.Setup(q => q.EnqueueAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns(ValueTask.CompletedTask);
 
         return new StartWorkflowRunCommandHandler(
             _planStore.Object, _runStore.Object, _queue.Object,
@@ -79,7 +87,7 @@ public sealed class WorkflowRunHandlerTests
         result.FailureType.Should().Be(ResultFailureType.NotFound,
             "not-yours and not-there must be the same answer, or the endpoint enumerates other callers' work");
 
-        _runStore.Verify(s => s.Create(It.IsAny<RunRecord>()), Times.Never);
+        _runStore.Verify(s => s.TryCreate(It.IsAny<RunRecord>(), It.IsAny<int>()), Times.Never);
         _queue.Verify(q => q.EnqueueAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
@@ -91,7 +99,10 @@ public sealed class WorkflowRunHandlerTests
         var sut = BuildStartSut();
         var sequence = new List<string>();
 
-        _runStore.Setup(s => s.Create(It.IsAny<RunRecord>())).Callback(() => sequence.Add("create"));
+        _runStore.Setup(s => s.TryCreate(It.IsAny<RunRecord>(), It.IsAny<int>()))
+            .Callback(() => sequence.Add("create"))
+            .Returns(RunAdmission.Accepted);
+
         _queue.Setup(q => q.EnqueueAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .Callback(() => sequence.Add("enqueue"))
             .Returns(ValueTask.CompletedTask);
@@ -110,10 +121,9 @@ public sealed class WorkflowRunHandlerTests
         // authorized it has to travel on the record itself.
         var sut = BuildStartSut();
         RunRecord? created = null;
-        _runStore.Setup(s => s.Create(It.IsAny<RunRecord>()))
-            .Callback<RunRecord>(record => created = record);
-        _queue.Setup(q => q.EnqueueAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .Returns(ValueTask.CompletedTask);
+        _runStore.Setup(s => s.TryCreate(It.IsAny<RunRecord>(), It.IsAny<int>()))
+            .Callback<RunRecord, int>((record, _) => created = record)
+            .Returns(RunAdmission.Accepted);
 
         var workflowId = Guid.NewGuid();
         await sut.Handle(StartCommand(workflowId), CancellationToken.None);
@@ -127,29 +137,42 @@ public sealed class WorkflowRunHandlerTests
     }
 
     [Fact]
+    public async Task Start_PassesTheConfiguredCapToTheStoreRatherThanCheckingItHere()
+    {
+        // The cap has to be applied where it can be applied atomically. Deciding it here and inserting
+        // afterwards leaves a window in which concurrent requests all see room and all proceed.
+        var sut = BuildStartSut(maxConcurrent: 4);
+
+        await sut.Handle(StartCommand(Guid.NewGuid()), CancellationToken.None);
+
+        _runStore.Verify(s => s.TryCreate(It.IsAny<RunRecord>(), 4), Times.Once);
+    }
+
+    [Fact]
     public async Task Start_WhenTheCallerIsAtItsConcurrencyCap_IsRefused()
     {
-        var sut = BuildStartSut(maxConcurrent: 2);
-        _runStore.Setup(s => s.CountActiveRuns("alice")).Returns(2);
+        var sut = BuildStartSut(maxConcurrent: 2, admission: RunAdmission.OwnerAtCapacity);
 
         var result = await sut.Handle(StartCommand(Guid.NewGuid()), CancellationToken.None);
 
         result.IsSuccess.Should().BeFalse();
         result.Errors.Should().ContainMatch("*in flight*");
-        _runStore.Verify(s => s.Create(It.IsAny<RunRecord>()), Times.Never);
+        _queue.Verify(q => q.EnqueueAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
-    public async Task Start_WhenTheCallerIsBelowItsCap_IsAccepted()
+    public async Task Start_WhenTheWorkflowIsAlreadyRunning_IsAConflict()
     {
-        var sut = BuildStartSut(maxConcurrent: 2);
-        _runStore.Setup(s => s.CountActiveRuns("alice")).Returns(1);
-        _queue.Setup(q => q.EnqueueAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .Returns(ValueTask.CompletedTask);
+        // Distinct from being at capacity, and distinct from a validation error: the caller is not at
+        // fault and nothing about the request is malformed. It is a state that clears on its own, and
+        // 409 is what tells a caller to retry rather than to change what it asked for.
+        var sut = BuildStartSut(admission: RunAdmission.TargetAlreadyRunning);
 
         var result = await sut.Handle(StartCommand(Guid.NewGuid()), CancellationToken.None);
 
-        result.IsSuccess.Should().BeTrue();
+        result.FailureType.Should().Be(ResultFailureType.Conflict);
+        result.Errors.Should().ContainMatch("*already has a run in progress*");
+        _queue.Verify(q => q.EnqueueAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -161,7 +184,7 @@ public sealed class WorkflowRunHandlerTests
         var result = await sut.Handle(StartCommand(Guid.NewGuid()), CancellationToken.None);
 
         result.FailureType.Should().Be(ResultFailureType.Forbidden);
-        _runStore.Verify(s => s.Create(It.IsAny<RunRecord>()), Times.Never);
+        _runStore.Verify(s => s.TryCreate(It.IsAny<RunRecord>(), It.IsAny<int>()), Times.Never);
     }
 
     [Fact]

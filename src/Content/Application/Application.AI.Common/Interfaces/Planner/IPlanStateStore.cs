@@ -55,13 +55,6 @@ public interface IPlanStateStore
     Task<Result<IReadOnlyList<PlanExecutionLogEntry>>> GetExecutionHistoryAsync(PlanId planId, CancellationToken ct);
 
     /// <summary>
-    /// Lists plans with optional filtering by status and time range.
-    /// </summary>
-    /// <param name="statusFilter">Optional status filter.</param>
-    /// <param name="from">Optional start of time range.</param>
-    /// <param name="to">Optional end of time range.</param>
-    /// <param name="ct">Cancellation token.</param>
-    /// <summary>
     /// Whether the plan exists and the ambient caller may mutate it.
     /// </summary>
     /// <remarks>

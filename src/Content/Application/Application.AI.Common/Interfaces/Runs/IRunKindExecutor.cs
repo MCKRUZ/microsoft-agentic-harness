@@ -18,7 +18,15 @@ public interface IRunKindExecutor
     /// <param name="record">The claimed run, carrying its target, owner and capability envelope.</param>
     /// <param name="cancellationToken">Cancels the work.</param>
     /// <returns>
-    /// Success when the work completed, or a failure whose message is safe to hand back to the caller.
+    /// <para>
+    /// On success, how the work ended — which is not the same question as whether this call worked.
+    /// A workflow that parked on a human gate or was cancelled mid-flight ran exactly as asked, and
+    /// says so through <see cref="RunCompletion.Status"/>.
+    /// </para>
+    /// <para>
+    /// A failed result means the executor could not run the work at all, and its message must be safe
+    /// to hand back to the caller.
+    /// </para>
     /// </returns>
-    Task<Result> ExecuteAsync(RunRecord record, CancellationToken cancellationToken);
+    Task<Result<RunCompletion>> ExecuteAsync(RunRecord record, CancellationToken cancellationToken);
 }

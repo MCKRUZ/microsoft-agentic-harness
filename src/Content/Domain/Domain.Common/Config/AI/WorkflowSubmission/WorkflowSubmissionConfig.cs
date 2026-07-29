@@ -60,7 +60,8 @@ namespace Domain.Common.Config.AI.WorkflowSubmission;
 /// ├── MaxTopK                  — Ceiling on a requested retrieval result count
 /// ├── MaxStoredWorkflowsPerOwner — Cap on how many workflows one caller may keep stored
 /// ├── RunRecordTtl             — How long a finished run stays readable
-/// └── MaxConcurrentRunsPerOwner — Cap on how many runs one caller may have in flight
+/// ├── MaxConcurrentRunsPerOwner — Cap on how many runs one caller may have in flight
+/// └── RunSweepInterval         — How often expired run records are reclaimed
 /// </code>
 /// </remarks>
 public class WorkflowSubmissionConfig
@@ -211,4 +212,17 @@ public class WorkflowSubmissionConfig
     /// </remarks>
     /// <value>Default: 10</value>
     public int MaxConcurrentRunsPerOwner { get; set; } = 10;
+
+    /// <summary>
+    /// How often finished runs past their <see cref="RunRecordTtl"/> are reclaimed.
+    /// </summary>
+    /// <remarks>
+    /// Separate from the retention window rather than derived from it. The two answer different
+    /// questions — how long a caller may read a finished run, and how promptly the host gives that
+    /// memory back — and an operator who lengthens the readable window rarely means to make sweeps
+    /// correspondingly rare. Only terminal records are ever reclaimed, so this cannot shorten the life
+    /// of work still in flight.
+    /// </remarks>
+    /// <value>Default: 5 minutes</value>
+    public TimeSpan RunSweepInterval { get; set; } = TimeSpan.FromMinutes(5);
 }

@@ -1,3 +1,4 @@
+using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Application.AI.Common.Interfaces.Runs;
 using Domain.AI.Bundles;
 using Domain.AI.Runs;
@@ -17,10 +18,18 @@ namespace Infrastructure.AI.Tests.Runs;
 /// Tests for <see cref="RunDispatchBackgroundService"/>.
 /// </summary>
 /// <remarks>
+/// <para>
 /// The property that matters most is that a claimed run always reaches a terminal state. Once a run
 /// is claimed it is <see cref="RunStatus.Running"/>, and only the dispatcher can move it out of that
 /// state — so any path that escapes without recording an outcome leaves a caller polling a run
 /// nothing will ever finish.
+/// </para>
+/// <para>
+/// The second is that the run executes as the caller who started it. Scope is ambient and set at an
+/// HTTP entry point; it does not survive the hop onto this thread. Unscoped is not a harmless default
+/// in this codebase — an absent owner reads as a global record — so the dispatcher must either
+/// establish the run's identity or refuse to run it.
+/// </para>
 /// </remarks>
 public sealed class RunDispatchBackgroundServiceTests
 {
@@ -31,26 +40,57 @@ public sealed class RunDispatchBackgroundServiceTests
         public IDisposable? OnChange(Action<T, string?> listener) => null;
     }
 
-    private sealed class StubExecutor(Func<RunRecord, Task<Result>> behaviour) : IRunKindExecutor
+    private sealed class StubExecutor(Func<RunRecord, Task<Result<RunCompletion>>> behaviour) : IRunKindExecutor
     {
         public int Invocations { get; private set; }
 
-        public Task<Result> ExecuteAsync(RunRecord record, CancellationToken cancellationToken)
+        public Task<Result<RunCompletion>> ExecuteAsync(RunRecord record, CancellationToken cancellationToken)
         {
             Invocations++;
             return behaviour(record);
         }
     }
 
+    /// <summary>
+    /// Records the scope armed around each job, and whether it was still armed when the executor ran.
+    /// </summary>
+    private sealed class RecordingScopeWriter : IKnowledgeScopeWriter
+    {
+        private sealed class Restore(RecordingScopeWriter owner) : IDisposable
+        {
+            public void Dispose() => owner.Current = null;
+        }
+
+        public (string? UserId, string? TenantId)? Current { get; private set; }
+
+        public List<(string? UserId, string? TenantId)> Armed { get; } = [];
+
+        public IDisposable SetScope(
+            string? userId = null,
+            string? tenantId = null,
+            string? datasetId = null,
+            string? datasetName = null,
+            string? datasetOwnerId = null)
+        {
+            Current = (userId, tenantId);
+            Armed.Add((userId, tenantId));
+            return new Restore(this);
+        }
+    }
+
     private readonly FakeTimeProvider _time = new(new DateTimeOffset(2026, 7, 29, 12, 0, 0, TimeSpan.Zero));
     private readonly AppConfig _config = new();
+    private readonly RecordingScopeWriter _scopeWriter = new();
 
     private (RunDispatchBackgroundService Service, IRunJobStore Store, IRunDispatchQueue Queue) Build(
-        IRunKindExecutor? executor)
+        IRunKindExecutor? executor, bool registerScopeWriter = true)
     {
         var services = new ServiceCollection();
         if (executor is not null)
             services.AddKeyedSingleton(RunKind.Workflow, executor);
+
+        if (registerScopeWriter)
+            services.AddSingleton<IKnowledgeScopeWriter>(_scopeWriter);
 
         var store = new InMemoryRunJobStore(new StaticOptionsMonitor<AppConfig>(_config), _time);
         var queue = new InMemoryRunDispatchQueue();
@@ -62,16 +102,20 @@ public sealed class RunDispatchBackgroundServiceTests
         return (service, store, queue);
     }
 
-    private RunRecord Queued(string jobId = "job-1") => new()
+    private RunRecord Queued(string jobId = "job-1", string ownerId = "alice", string? tenantId = "acme") => new()
     {
         JobId = jobId,
         Kind = RunKind.Workflow,
         TargetId = Guid.NewGuid().ToString(),
-        OwnerId = "alice",
+        OwnerId = ownerId,
+        TenantId = tenantId,
         Envelope = new CapabilityEnvelope(),
         Status = RunStatus.Queued,
         CreatedAt = _time.GetUtcNow()
     };
+
+    private static void Admit(IRunJobStore store, RunRecord record) =>
+        store.TryCreate(record, int.MaxValue).Should().Be(RunAdmission.Accepted);
 
     /// <summary>Runs the dispatcher until <paramref name="jobId"/> is terminal, or the attempt budget is spent.</summary>
     private static async Task<RunRecord?> DrainUntilTerminalAsync(
@@ -98,9 +142,9 @@ public sealed class RunDispatchBackgroundServiceTests
     [Fact]
     public async Task ASuccessfulRun_IsRecordedSucceeded()
     {
-        var executor = new StubExecutor(_ => Task.FromResult(Result.Success()));
+        var executor = new StubExecutor(_ => Task.FromResult(Result<RunCompletion>.Success(RunCompletion.Succeeded())));
         var (service, store, queue) = Build(executor);
-        store.Create(Queued());
+        Admit(store, Queued());
         await queue.EnqueueAsync("job-1", CancellationToken.None);
 
         var record = await DrainUntilTerminalAsync(service, store, "job-1");
@@ -111,19 +155,96 @@ public sealed class RunDispatchBackgroundServiceTests
     }
 
     [Fact]
+    public async Task TheRunsOwnerAndTenantAreArmedBeforeTheExecutorRuns()
+    {
+        // The whole point of carrying identity on the record. Without this the executor runs as nobody,
+        // and in this codebase nobody reads as everybody — so the caller's own plan is invisible to its
+        // own run while every global record is not.
+        (string? UserId, string? TenantId)? seenByExecutor = null;
+        var executor = new StubExecutor(_ =>
+        {
+            seenByExecutor = _scopeWriter.Current;
+            return Task.FromResult(Result<RunCompletion>.Success(RunCompletion.Succeeded()));
+        });
+
+        var (service, store, queue) = Build(executor);
+        Admit(store, Queued(ownerId: "alice", tenantId: "acme"));
+        await queue.EnqueueAsync("job-1", CancellationToken.None);
+
+        await DrainUntilTerminalAsync(service, store, "job-1");
+
+        seenByExecutor.Should().Be(("alice", "acme"));
+    }
+
+    [Fact]
+    public async Task TheRunsScopeIsReleasedBeforeTheNextJob()
+    {
+        // Disposed per job, not per loop. Left armed, job N's caller stays ambient for job N+1 and the
+        // second run executes as the first user — a cross-owner read with no attacker required.
+        var executor = new StubExecutor(_ => Task.FromResult(Result<RunCompletion>.Success(RunCompletion.Succeeded())));
+        var (service, store, queue) = Build(executor);
+        Admit(store, Queued());
+        await queue.EnqueueAsync("job-1", CancellationToken.None);
+
+        await DrainUntilTerminalAsync(service, store, "job-1");
+
+        _scopeWriter.Armed.Should().ContainSingle();
+        _scopeWriter.Current.Should().BeNull("the scope must not outlive the job it was armed for");
+    }
+
+    [Fact]
+    public async Task AHostThatCannotEstablishIdentity_FailsTheRunRatherThanRunningItUnscoped()
+    {
+        // Running unscoped is not a degraded mode. An absent owner is read as a global record, so the
+        // work would silently see and touch every caller's data.
+        var executor = new StubExecutor(_ => Task.FromResult(Result<RunCompletion>.Success(RunCompletion.Succeeded())));
+        var (service, store, queue) = Build(executor, registerScopeWriter: false);
+        Admit(store, Queued());
+        await queue.EnqueueAsync("job-1", CancellationToken.None);
+
+        var record = await DrainUntilTerminalAsync(service, store, "job-1");
+
+        record!.Status.Should().Be(RunStatus.Failed);
+        record.Error.Should().Contain("identity");
+        executor.Invocations.Should().Be(0, "the work must not run at all");
+    }
+
+    [Fact]
     public async Task AFailedRun_KeepsTheExecutorsReason()
     {
         // The executor's messages are caller-safe by contract, so they reach the caller rather than
         // being flattened into a uniform "it failed" that says nothing actionable.
-        var executor = new StubExecutor(_ => Task.FromResult(Result.Fail("the model deployment was rejected")));
+        var executor = new StubExecutor(_ =>
+            Task.FromResult(Result<RunCompletion>.Fail("the model deployment was rejected")));
+
         var (service, store, queue) = Build(executor);
-        store.Create(Queued());
+        Admit(store, Queued());
         await queue.EnqueueAsync("job-1", CancellationToken.None);
 
         var record = await DrainUntilTerminalAsync(service, store, "job-1");
 
         record!.Status.Should().Be(RunStatus.Failed);
         record.Error.Should().Contain("the model deployment was rejected");
+    }
+
+    [Theory]
+    [InlineData(RunStatus.Cancelled)]
+    [InlineData(RunStatus.Blocked)]
+    public async Task AnOutcomeThatIsNeitherSuccessNorFailure_IsRecordedAsItself(RunStatus outcome)
+    {
+        // Work can end in more ways than worked and broke. Collapsing those onto a boolean is what
+        // makes a workflow parked awaiting an approval report to its caller as finished work.
+        var completion = new RunCompletion { Status = outcome, Detail = "waiting on a person" };
+        var executor = new StubExecutor(_ => Task.FromResult(Result<RunCompletion>.Success(completion)));
+
+        var (service, store, queue) = Build(executor);
+        Admit(store, Queued());
+        await queue.EnqueueAsync("job-1", CancellationToken.None);
+
+        var record = await DrainUntilTerminalAsync(service, store, "job-1");
+
+        record!.Status.Should().Be(outcome);
+        record.Error.Should().Be("waiting on a person");
     }
 
     [Fact]
@@ -133,7 +254,7 @@ public sealed class RunDispatchBackgroundServiceTests
         // and a caller polls a job nothing will ever finish.
         var executor = new StubExecutor(_ => throw new InvalidOperationException("boom"));
         var (service, store, queue) = Build(executor);
-        store.Create(Queued());
+        Admit(store, Queued());
         await queue.EnqueueAsync("job-1", CancellationToken.None);
 
         var record = await DrainUntilTerminalAsync(service, store, "job-1");
@@ -148,8 +269,8 @@ public sealed class RunDispatchBackgroundServiceTests
         // A wiring gap must not take the loop down: that would turn one mis-registration into an
         // outage for every other kind of work in the host.
         var (service, store, queue) = Build(executor: null);
-        store.Create(Queued("orphan"));
-        store.Create(Queued("job-1"));
+        Admit(store, Queued("orphan"));
+        Admit(store, Queued("job-1"));
         await queue.EnqueueAsync("orphan", CancellationToken.None);
         await queue.EnqueueAsync("job-1", CancellationToken.None);
 
@@ -170,9 +291,9 @@ public sealed class RunDispatchBackgroundServiceTests
     public async Task ARunAlreadyClaimed_IsSkippedRatherThanRunTwice()
     {
         // Redelivery is harmless precisely because the claim is what gates execution.
-        var executor = new StubExecutor(_ => Task.FromResult(Result.Success()));
+        var executor = new StubExecutor(_ => Task.FromResult(Result<RunCompletion>.Success(RunCompletion.Succeeded())));
         var (service, store, queue) = Build(executor);
-        store.Create(Queued());
+        Admit(store, Queued());
         store.TryBeginRun("job-1", _time.GetUtcNow());
 
         await queue.EnqueueAsync("job-1", CancellationToken.None);
@@ -189,9 +310,9 @@ public sealed class RunDispatchBackgroundServiceTests
     [Fact]
     public async Task AnUnknownJobId_IsSkippedWithoutStoppingTheLoop()
     {
-        var executor = new StubExecutor(_ => Task.FromResult(Result.Success()));
+        var executor = new StubExecutor(_ => Task.FromResult(Result<RunCompletion>.Success(RunCompletion.Succeeded())));
         var (service, store, queue) = Build(executor);
-        store.Create(Queued("real"));
+        Admit(store, Queued("real"));
 
         await queue.EnqueueAsync("never-existed", CancellationToken.None);
         await queue.EnqueueAsync("real", CancellationToken.None);

@@ -67,6 +67,13 @@ public sealed record RunRecord
     public DateTimeOffset? CompletedAt { get; init; }
 
     /// <summary>Whether the run has finished and will not change again.</summary>
+    /// <remarks>
+    /// Expressed as "not one of the live states" rather than "one of the terminal states" on purpose.
+    /// Queued and Running are the only two the dispatcher can move a run out of, and enumerating the
+    /// terminal side instead means every future outcome added to <see cref="RunStatus"/> is silently
+    /// treated as live until someone remembers to list it here — which would strand it at the
+    /// concurrency cap and keep it from ever being reclaimed.
+    /// </remarks>
     public bool IsTerminal =>
-        Status is RunStatus.Succeeded or RunStatus.Failed or RunStatus.Cancelled;
+        Status is not (RunStatus.Queued or RunStatus.Running);
 }

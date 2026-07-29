@@ -1,3 +1,4 @@
+using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Application.AI.Common.Interfaces.Runs;
 using Domain.AI.Runs;
 using Microsoft.Extensions.DependencyInjection;
@@ -22,6 +23,19 @@ namespace Infrastructure.AI.Runs;
 /// <strong>An unregistered kind fails the run rather than the dispatcher.</strong> A missing executor
 /// is a wiring gap, and taking the whole loop down for it would stop every other kind of work in the
 /// host — turning one mis-registration into a total outage.
+/// </para>
+/// <para>
+/// <strong>The caller's knowledge scope is re-established per job, here rather than in each
+/// executor.</strong> Scope is ambient (<c>AsyncLocal</c>) and set at an HTTP entry point; it does not
+/// survive the hop onto this thread. Every run carries the owner and tenant that authorized it for
+/// exactly this reason, and re-arming them is a property of dispatching any run, not of any one kind
+/// — leaving it to executors means the next kind added inherits the bug. The token is disposed per
+/// job, so one caller's identity can never stay ambient for the next.
+/// </para>
+/// <para>
+/// A run whose scope cannot be established is <em>failed</em>, never executed. Running unscoped is not
+/// a degraded mode: an absent owner reads as a global record, so the work would silently see and
+/// touch every caller's data.
 /// </para>
 /// </remarks>
 public sealed class RunDispatchBackgroundService : BackgroundService
@@ -114,6 +128,7 @@ public sealed class RunDispatchBackgroundService : BackgroundService
     private async Task ExecuteClaimedAsync(RunRecord claimed, CancellationToken stoppingToken)
     {
         await using var scope = _scopeFactory.CreateAsyncScope();
+
         var executor = scope.ServiceProvider.GetKeyedService<IRunKindExecutor>(claimed.Kind);
         if (executor is null)
         {
@@ -125,20 +140,45 @@ public sealed class RunDispatchBackgroundService : BackgroundService
             return;
         }
 
-        var outcome = await executor.ExecuteAsync(claimed, stoppingToken).ConfigureAwait(false);
-
-        if (outcome.IsSuccess)
+        // Required, not optional. A host that has not registered the scope writer cannot tell this
+        // work who it is acting as, and the work would run as nobody — which reads as everybody.
+        var scopeWriter = scope.ServiceProvider.GetService<IKnowledgeScopeWriter>();
+        if (scopeWriter is null)
         {
-            Finish(claimed, RunStatus.Succeeded, error: null);
-            _logger.LogInformation("Run {JobId} ({RunKind}) succeeded.", claimed.JobId, claimed.Kind);
+            _logger.LogError(
+                "Run {JobId} cannot execute: this host registers no {Writer}, so the run's identity "
+                + "cannot be established and it must not run unscoped.",
+                claimed.JobId, nameof(IKnowledgeScopeWriter));
+
+            Finish(claimed, RunStatus.Failed, "This host cannot establish the run's identity.");
             return;
         }
 
-        // The executor's messages are caller-safe by contract, so they pass through rather than being
-        // flattened into "it failed" — a caller learns why its own run did not work.
-        var error = string.Join("; ", outcome.Errors);
-        Finish(claimed, RunStatus.Failed, error);
-        _logger.LogWarning("Run {JobId} ({RunKind}) failed: {Error}", claimed.JobId, claimed.Kind, error);
+        // Disposed before the next job is claimed, restoring whatever was ambient before. Without the
+        // restore, job N's owner stays ambient for job N+1 and the second run executes as the first
+        // caller.
+        using var identity = scopeWriter.SetScope(claimed.OwnerId, claimed.TenantId);
+
+        var outcome = await executor.ExecuteAsync(claimed, stoppingToken).ConfigureAwait(false);
+
+        if (!outcome.IsSuccess || outcome.Value is null)
+        {
+            // The executor could not run the work. Its messages are caller-safe by contract, so they
+            // pass through rather than being flattened into "it failed" — a caller learns why its own
+            // run did not work.
+            var error = outcome.Errors.Count > 0
+                ? string.Join("; ", outcome.Errors)
+                : "The run reported no outcome.";
+
+            Finish(claimed, RunStatus.Failed, error);
+            _logger.LogWarning("Run {JobId} ({RunKind}) failed: {Error}", claimed.JobId, claimed.Kind, error);
+            return;
+        }
+
+        var completion = outcome.Value;
+        Finish(claimed, completion.Status, completion.Detail);
+        _logger.LogInformation(
+            "Run {JobId} ({RunKind}) ended {RunStatus}.", claimed.JobId, claimed.Kind, completion.Status);
     }
 
     /// <summary>
