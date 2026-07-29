@@ -92,12 +92,13 @@ public sealed class RunDispatchBackgroundServiceTests
         if (registerScopeWriter)
             services.AddSingleton<IKnowledgeScopeWriter>(_scopeWriter);
 
-        var store = new InMemoryRunJobStore(new StaticOptionsMonitor<AppConfig>(_config), _time);
+        var monitor = new StaticOptionsMonitor<AppConfig>(_config);
+        var store = new InMemoryRunJobStore(monitor, _time);
         var queue = new InMemoryRunDispatchQueue();
 
         var service = new RunDispatchBackgroundService(
             queue, store, services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>(),
-            _time, NullLogger<RunDispatchBackgroundService>.Instance);
+            monitor, _time, NullLogger<RunDispatchBackgroundService>.Instance);
 
         return (service, store, queue);
     }
@@ -127,7 +128,7 @@ public sealed class RunDispatchBackgroundServiceTests
         RunRecord? record = null;
         for (var attempt = 0; attempt < 200; attempt++)
         {
-            record = store.Get(jobId, "alice");
+            record = store.Get(jobId, "alice", "acme");
             if (record?.IsTerminal == true)
                 break;
 
@@ -283,7 +284,7 @@ public sealed class RunDispatchBackgroundServiceTests
         // never configured to execute that kind of work — a different problem with a different fix.
         orphan.Error.Should().Contain("cannot execute that kind of run");
 
-        store.Get("job-1", "alice")!.IsTerminal.Should().BeTrue(
+        store.Get("job-1", "alice", "acme")!.IsTerminal.Should().BeTrue(
             "the dispatcher must keep draining after a run it cannot execute");
     }
 
@@ -305,6 +306,95 @@ public sealed class RunDispatchBackgroundServiceTests
         await service.StopAsync(CancellationToken.None);
 
         executor.Invocations.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task RunsExecuteConcurrentlyUpToTheConfiguredDegree()
+    {
+        // Awaiting each run before dequeuing the next makes host-wide throughput exactly one, so any
+        // caller's long workflow delays every other caller's — and it makes the per-owner cap read as
+        // a concurrency allowance the host never honours.
+        _config.AI.WorkflowSubmission.MaxConcurrentDispatchedRuns = 3;
+
+        var running = 0;
+        var peak = 0;
+        using var release = new SemaphoreSlim(0, 3);
+
+        var executor = new StubExecutor(async _ =>
+        {
+            var now = Interlocked.Increment(ref running);
+            InterlockedMax(ref peak, now);
+            await release.WaitAsync();
+            Interlocked.Decrement(ref running);
+            return Result<RunCompletion>.Success(RunCompletion.Succeeded());
+        });
+
+        var (service, store, queue) = Build(executor);
+        for (var i = 0; i < 3; i++)
+        {
+            Admit(store, Queued($"job-{i}"));
+            await queue.EnqueueAsync($"job-{i}", CancellationToken.None);
+        }
+
+        using var cts = new CancellationTokenSource();
+        await service.StartAsync(cts.Token);
+
+        for (var attempt = 0; attempt < 200 && Volatile.Read(in peak) < 3; attempt++)
+            await Task.Delay(10);
+
+        release.Release(3);
+        await cts.CancelAsync();
+        await service.StopAsync(CancellationToken.None);
+
+        peak.Should().Be(3, "the dispatcher must run up to its configured degree at once");
+    }
+
+    [Fact]
+    public async Task NoMoreRunsExecuteAtOnceThanTheConfiguredDegree()
+    {
+        // The other half of the same property. Unbounded dispatch would let one burst of accepted work
+        // start every run simultaneously, which is what the degree exists to prevent.
+        _config.AI.WorkflowSubmission.MaxConcurrentDispatchedRuns = 2;
+
+        var running = 0;
+        var peak = 0;
+        using var release = new SemaphoreSlim(0, 6);
+
+        var executor = new StubExecutor(async _ =>
+        {
+            var now = Interlocked.Increment(ref running);
+            InterlockedMax(ref peak, now);
+            await release.WaitAsync();
+            Interlocked.Decrement(ref running);
+            return Result<RunCompletion>.Success(RunCompletion.Succeeded());
+        });
+
+        var (service, store, queue) = Build(executor);
+        for (var i = 0; i < 6; i++)
+        {
+            Admit(store, Queued($"job-{i}"));
+            await queue.EnqueueAsync($"job-{i}", CancellationToken.None);
+        }
+
+        using var cts = new CancellationTokenSource();
+        await service.StartAsync(cts.Token);
+        await Task.Delay(250);
+
+        peak.Should().BeLessThanOrEqualTo(2);
+
+        release.Release(6);
+        await cts.CancelAsync();
+        await service.StopAsync(CancellationToken.None);
+    }
+
+    private static void InterlockedMax(ref int target, int candidate)
+    {
+        int seen;
+        while ((seen = Volatile.Read(in target)) < candidate
+               && Interlocked.CompareExchange(ref target, candidate, seen) != seen)
+        {
+            // Another thread moved the peak while we were deciding; re-read and try again.
+        }
     }
 
     [Fact]

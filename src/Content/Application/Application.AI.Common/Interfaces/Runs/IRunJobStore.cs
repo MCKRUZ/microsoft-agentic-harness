@@ -41,12 +41,19 @@ public interface IRunJobStore
     RunAdmission TryCreate(RunRecord record, int maxActiveRunsPerOwner);
 
     /// <summary>
-    /// Reads a run visible to <paramref name="ownerId"/>, or <see langword="null"/> when it does not
-    /// exist, has expired, or belongs to someone else — the three are deliberately indistinguishable.
+    /// Reads a run visible to the caller, or <see langword="null"/> when it does not exist, has
+    /// expired, or belongs to someone else — the three are deliberately indistinguishable.
     /// </summary>
+    /// <remarks>
+    /// Scoped by tenant as well as owner, matching how plan ownership is decided on the same request
+    /// path. A single-tenant issuer makes the owner alone sufficient today, so the tenant leg buys
+    /// nothing until a host accepts tokens from a second tenant — at which point its absence would be
+    /// a cross-tenant read, and the record already carries what is needed to prevent it.
+    /// </remarks>
     /// <param name="jobId">The run to read.</param>
     /// <param name="ownerId">Stable identity of the calling principal.</param>
-    RunRecord? Get(string jobId, string ownerId);
+    /// <param name="tenantId">Tenant of the calling principal, when the host resolves one.</param>
+    RunRecord? Get(string jobId, string ownerId, string? tenantId);
 
     /// <summary>
     /// Atomically claims a queued run for execution, returning the updated record to the winner and

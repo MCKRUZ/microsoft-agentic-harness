@@ -1,9 +1,12 @@
+using System.Collections.Concurrent;
 using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Application.AI.Common.Interfaces.Runs;
 using Domain.AI.Runs;
+using Domain.Common.Config;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace Infrastructure.AI.Runs;
 
@@ -43,6 +46,7 @@ public sealed class RunDispatchBackgroundService : BackgroundService
     private readonly IRunDispatchQueue _queue;
     private readonly IRunJobStore _store;
     private readonly IServiceScopeFactory _scopeFactory;
+    private readonly IOptionsMonitor<AppConfig> _config;
     private readonly TimeProvider _time;
     private readonly ILogger<RunDispatchBackgroundService> _logger;
 
@@ -51,18 +55,21 @@ public sealed class RunDispatchBackgroundService : BackgroundService
         IRunDispatchQueue queue,
         IRunJobStore store,
         IServiceScopeFactory scopeFactory,
+        IOptionsMonitor<AppConfig> config,
         TimeProvider time,
         ILogger<RunDispatchBackgroundService> logger)
     {
         ArgumentNullException.ThrowIfNull(queue);
         ArgumentNullException.ThrowIfNull(store);
         ArgumentNullException.ThrowIfNull(scopeFactory);
+        ArgumentNullException.ThrowIfNull(config);
         ArgumentNullException.ThrowIfNull(time);
         ArgumentNullException.ThrowIfNull(logger);
 
         _queue = queue;
         _store = store;
         _scopeFactory = scopeFactory;
+        _config = config;
         _time = time;
         _logger = logger;
     }
@@ -70,26 +77,73 @@ public sealed class RunDispatchBackgroundService : BackgroundService
     /// <inheritdoc />
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        await foreach (var jobId in _queue.DequeueAllAsync(stoppingToken).ConfigureAwait(false))
-        {
-            if (stoppingToken.IsCancellationRequested)
-                break;
+        // Bounded parallelism rather than one-at-a-time. Awaiting each run to completion before
+        // dequeuing the next makes host-wide throughput exactly one, so any caller's long workflow
+        // delays every other caller's — and it makes the per-owner cap read as a concurrency
+        // allowance the host never honours.
+        //
+        // Safe to run runs side by side because nothing here is what keeps them apart: TryBeginRun
+        // arms each run exactly once, and admission permits only one live run per workflow, so two
+        // dispatched runs can never be the same work nor share one plan's execution state.
+        //
+        // The degree is read once, at start. A host that changes it takes effect on restart, which is
+        // the honest bound — reshaping a running drain loop mid-flight buys nothing and would make
+        // the number of in-flight runs unpredictable.
+        var degree = Math.Max(1, _config.CurrentValue.AI.WorkflowSubmission.MaxConcurrentDispatchedRuns);
+        using var slots = new SemaphoreSlim(degree, degree);
+        var inFlight = new ConcurrentDictionary<Task, byte>();
 
-            try
+        try
+        {
+            await foreach (var jobId in _queue.DequeueAllAsync(stoppingToken).ConfigureAwait(false))
             {
-                await DispatchAsync(jobId, stoppingToken).ConfigureAwait(false);
+                if (stoppingToken.IsCancellationRequested)
+                    break;
+
+                await slots.WaitAsync(stoppingToken).ConfigureAwait(false);
+
+                var task = DispatchGuardedAsync(jobId, slots, stoppingToken);
+                inFlight[task] = 0;
+                _ = task.ContinueWith(
+                    completed => inFlight.TryRemove(completed, out _),
+                    CancellationToken.None,
+                    TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
             }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-            {
-                break;
-            }
-            catch (Exception ex)
-            {
-                // Reached only when the claim itself failed, so no run was moved to Running and none
-                // is left stranded. A failure after the claim is handled inside DispatchAsync, which
-                // holds the claimed record and can mark it terminal.
-                _logger.LogError(ex, "Run {JobId} could not be dispatched.", jobId);
-            }
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+            // Host shutdown while waiting for a slot or for the next job.
+        }
+
+        // Runs already dispatched are awaited rather than abandoned. Each one holds a claimed record
+        // that only its own dispatch can move out of Running, so walking away here would leave those
+        // runs stranded for whatever remains of the process.
+        await Task.WhenAll(inFlight.Keys).ConfigureAwait(false);
+    }
+
+    /// <summary>Dispatches one run and always releases its slot, whatever happens.</summary>
+    private async Task DispatchGuardedAsync(string jobId, SemaphoreSlim slots, CancellationToken stoppingToken)
+    {
+        try
+        {
+            await DispatchAsync(jobId, stoppingToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+            // Host shutdown. DispatchAsync has already recorded the run as cancelled if it had claimed
+            // one, so there is nothing left to record here.
+        }
+        catch (Exception ex)
+        {
+            // Reached only when the claim itself failed, so no run was moved to Running and none is
+            // left stranded. A failure after the claim is handled inside DispatchAsync, which holds
+            // the claimed record and can mark it terminal.
+            _logger.LogError(ex, "Run {JobId} could not be dispatched.", jobId);
+        }
+        finally
+        {
+            slots.Release();
         }
     }
 

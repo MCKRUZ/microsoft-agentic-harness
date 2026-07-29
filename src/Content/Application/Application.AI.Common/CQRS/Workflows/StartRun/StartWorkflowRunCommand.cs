@@ -9,9 +9,12 @@ namespace Application.AI.Common.CQRS.Workflows.StartRun;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <strong>Starting a run is a separate right from submitting a workflow.</strong> Submission stores a
-/// definition; this spends the host's model and tool credentials on it. Keeping them apart means a
-/// caller that can author work does not automatically get to execute it.
+/// <strong>Starting a run is kept separable from submitting a workflow.</strong> Submission stores a
+/// definition; this spends the host's model and tool credentials on it. They are distinct operations
+/// so a host <em>can</em> authorize them differently — as shipped both carry the same authorization,
+/// and a consumer that wants the two held apart attaches its own policy to each. What the separation
+/// guarantees today is structural, not enforced: nothing here confers execution on an author, because
+/// a caller can only run workflows it owns and only under its own envelope.
 /// </para>
 /// <para>
 /// <strong><see cref="Envelope"/> is resolved at the transport boundary from the credential that

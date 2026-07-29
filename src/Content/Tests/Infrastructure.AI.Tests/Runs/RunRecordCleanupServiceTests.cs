@@ -44,7 +44,8 @@ public sealed class RunRecordCleanupServiceTests
         public RunAdmission TryCreate(RunRecord record, int maxActiveRunsPerOwner) =>
             inner.TryCreate(record, maxActiveRunsPerOwner);
 
-        public RunRecord? Get(string jobId, string ownerId) => inner.Get(jobId, ownerId);
+        public RunRecord? Get(string jobId, string ownerId, string? tenantId) =>
+            inner.Get(jobId, ownerId, tenantId);
 
         public RunRecord? TryBeginRun(string jobId, DateTimeOffset startedAt) =>
             inner.TryBeginRun(jobId, startedAt);
@@ -96,7 +97,7 @@ public sealed class RunRecordCleanupServiceTests
 
         store.Sweeps.Should().BeGreaterThan(0, "nothing reclaims runs unless this service asks");
         store.Reclaimed.Should().Be(1, "the finished run was past its retention and its memory is owed back");
-        store.Get("still-going", "alice").Should().NotBeNull(
+        store.Get("still-going", "alice", null).Should().NotBeNull(
             "an unfinished run a caller is still polling must survive every sweep");
     }
 

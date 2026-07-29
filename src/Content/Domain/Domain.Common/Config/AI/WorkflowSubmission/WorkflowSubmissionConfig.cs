@@ -61,7 +61,8 @@ namespace Domain.Common.Config.AI.WorkflowSubmission;
 /// ├── MaxStoredWorkflowsPerOwner — Cap on how many workflows one caller may keep stored
 /// ├── RunRecordTtl             — How long a finished run stays readable
 /// ├── MaxConcurrentRunsPerOwner — Cap on how many runs one caller may have in flight
-/// └── RunSweepInterval         — How often expired run records are reclaimed
+/// ├── RunSweepInterval         — How often expired run records are reclaimed
+/// └── MaxConcurrentDispatchedRuns — How many runs the host executes at once, across all callers
 /// </code>
 /// </remarks>
 public class WorkflowSubmissionConfig
@@ -225,4 +226,24 @@ public class WorkflowSubmissionConfig
     /// </remarks>
     /// <value>Default: 5 minutes</value>
     public TimeSpan RunSweepInterval { get; set; } = TimeSpan.FromMinutes(5);
+
+    /// <summary>
+    /// How many runs the host executes at once, across all callers.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Distinct from <see cref="MaxConcurrentRunsPerOwner"/>, which bounds what one caller may have
+    /// <em>accepted</em>. This bounds what the host actually executes. At 1 the dispatcher is strictly
+    /// serial and a single long workflow delays every other caller's — which makes the per-owner cap
+    /// read as a concurrency guarantee the host does not provide.
+    /// </para>
+    /// <para>
+    /// <strong>This is not a fairness mechanism.</strong> Runs are dispatched in the order they were
+    /// accepted, so a caller that queues many runs at once still occupies the slots ahead of a caller
+    /// that queues one. Per-caller fair scheduling is a separate piece of work; raising this reduces
+    /// how long anyone waits but does not decide who waits.
+    /// </para>
+    /// </remarks>
+    /// <value>Default: 4</value>
+    public int MaxConcurrentDispatchedRuns { get; set; } = 4;
 }

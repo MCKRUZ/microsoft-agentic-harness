@@ -22,4 +22,12 @@ public sealed record GetWorkflowRunQuery : IRequest<Result<RunRecord>>
 
     /// <summary>Stable identity of the calling principal, resolved from its token.</summary>
     public required string OwnerId { get; init; }
+
+    /// <summary>Tenant of the calling principal, resolved from its token, when the host resolves one.</summary>
+    /// <remarks>
+    /// Carried alongside the owner so run visibility is decided on the same two legs as plan
+    /// ownership. Not <c>required</c>, because a host may legitimately resolve no tenant — a run
+    /// stored without one is then readable only by a caller who also has none.
+    /// </remarks>
+    public string? TenantId { get; init; }
 }

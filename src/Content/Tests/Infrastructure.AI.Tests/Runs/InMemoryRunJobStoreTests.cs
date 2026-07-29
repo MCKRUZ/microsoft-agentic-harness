@@ -41,12 +41,16 @@ public sealed class InMemoryRunJobStoreTests
     }
 
     private RunRecord Queued(
-        string jobId = "job-1", string ownerId = "alice", string? targetId = null) => new()
+        string jobId = "job-1",
+        string ownerId = "alice",
+        string? targetId = null,
+        string? tenantId = null) => new()
     {
         JobId = jobId,
         Kind = RunKind.Workflow,
         TargetId = targetId ?? Guid.NewGuid().ToString(),
         OwnerId = ownerId,
+        TenantId = tenantId,
         Envelope = new CapabilityEnvelope(),
         Status = RunStatus.Queued,
         CreatedAt = _time.GetUtcNow()
@@ -116,7 +120,7 @@ public sealed class InMemoryRunJobStoreTests
         var second = sut.TryCreate(Queued("job-2", targetId: workflow), UncappedOwner);
 
         second.Should().Be(RunAdmission.TargetAlreadyRunning);
-        sut.Get("job-2", "alice").Should().BeNull("a refused run must not be stored");
+        sut.Get("job-2", "alice", null).Should().BeNull("a refused run must not be stored");
     }
 
     [Fact]
@@ -251,9 +255,35 @@ public sealed class InMemoryRunJobStoreTests
         var sut = BuildSut();
         Admit(sut, Queued(ownerId: "alice"));
 
-        sut.Get("job-1", "mallory").Should().BeNull();
-        sut.Get("no-such-job", "mallory").Should().BeNull();
-        sut.Get("job-1", "alice").Should().NotBeNull();
+        sut.Get("job-1", "mallory", null).Should().BeNull();
+        sut.Get("no-such-job", "mallory", null).Should().BeNull();
+        sut.Get("job-1", "alice", null).Should().NotBeNull();
+    }
+
+    [Fact]
+    public void Get_ByTheSameOwnerIdInAnotherTenant_IsIndistinguishableFromMissing()
+    {
+        // Plan ownership is decided on tenant AND owner on this same request path. Comparing only the
+        // owner here is invisible while an issuer is pinned to one tenant — and is a cross-tenant read
+        // the day it is not.
+        var sut = BuildSut();
+        Admit(sut, Queued(ownerId: "alice", tenantId: "acme"));
+
+        sut.Get("job-1", "alice", "other-tenant").Should().BeNull();
+        sut.Get("job-1", "alice", null).Should().BeNull();
+        sut.Get("job-1", "alice", "acme").Should().NotBeNull();
+    }
+
+    [Fact]
+    public void TryCreate_CountsTheSameOwnerInAnotherTenantSeparately()
+    {
+        // Same two legs as the read. One principal's load is its own; another tenant's caller sharing
+        // an identifier string is a different principal and must not consume this one's allowance.
+        var sut = BuildSut();
+        Admit(sut, Queued("job-1", ownerId: "alice", tenantId: "acme"), cap: 1);
+
+        sut.TryCreate(Queued("job-2", ownerId: "alice", tenantId: "other-tenant"), maxActiveRunsPerOwner: 1)
+            .Should().Be(RunAdmission.Accepted);
     }
 
     [Fact]
@@ -265,7 +295,7 @@ public sealed class InMemoryRunJobStoreTests
         var sut = BuildSut();
         Admit(sut, Queued(ownerId: "Alice"));
 
-        sut.Get("job-1", "alice").Should().NotBeNull();
+        sut.Get("job-1", "alice", null).Should().NotBeNull();
     }
 
     [Fact]
@@ -278,7 +308,7 @@ public sealed class InMemoryRunJobStoreTests
         _time.Advance(TimeSpan.FromDays(7));
 
         sut.SweepExpired().Should().Be(0);
-        sut.Get("job-1", "alice").Should().NotBeNull();
+        sut.Get("job-1", "alice", null).Should().NotBeNull();
     }
 
     [Fact]
@@ -294,7 +324,7 @@ public sealed class InMemoryRunJobStoreTests
 
         _time.Advance(TimeSpan.FromMinutes(2));
         sut.SweepExpired().Should().Be(1);
-        sut.Get("job-1", "alice").Should().BeNull();
+        sut.Get("job-1", "alice", null).Should().BeNull();
     }
 
     [Fact]
@@ -311,7 +341,7 @@ public sealed class InMemoryRunJobStoreTests
         _time.Advance(TimeSpan.FromMinutes(5));
 
         sut.SweepExpired().Should().Be(0, "retention runs from completion, not from acceptance");
-        sut.Get("job-1", "alice").Should().NotBeNull();
+        sut.Get("job-1", "alice", null).Should().NotBeNull();
     }
 
     [Theory]

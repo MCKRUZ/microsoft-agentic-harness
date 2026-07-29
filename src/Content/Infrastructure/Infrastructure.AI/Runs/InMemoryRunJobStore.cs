@@ -65,7 +65,7 @@ public sealed class InMemoryRunJobStore : IRunJobStore
 
         lock (_admission)
         {
-            var (targetIsRunning, ownerActiveRuns) = SurveyActiveRuns(record.Kind, record.TargetId, record.OwnerId);
+            var (targetIsRunning, ownerActiveRuns) = SurveyActiveRuns(record);
 
             if (targetIsRunning)
                 return RunAdmission.TargetAlreadyRunning;
@@ -86,11 +86,16 @@ public sealed class InMemoryRunJobStore : IRunJobStore
     }
 
     /// <summary>
-    /// Answers both admission questions in one pass: whether <paramref name="targetId"/> already has a
-    /// live run of <paramref name="kind"/>, and how many live runs <paramref name="ownerId"/> holds.
+    /// Answers both admission questions in one pass: whether the target of <paramref name="candidate"/>
+    /// already has a live run, and how many live runs its caller holds.
     /// </summary>
-    private (bool TargetIsRunning, int OwnerActiveRuns) SurveyActiveRuns(
-        RunKind kind, string targetId, string ownerId)
+    /// <remarks>
+    /// The two questions are scoped differently on purpose. A target conflict is about the workflow's
+    /// state, so it ignores who is asking — a second caller with access to the same workflow would
+    /// corrupt the first caller's run just as surely. The capacity count is about the caller, so it is
+    /// scoped to that principal by tenant and owner, the same pair every other read here compares.
+    /// </remarks>
+    private (bool TargetIsRunning, int OwnerActiveRuns) SurveyActiveRuns(RunRecord candidate)
     {
         var targetIsRunning = false;
         var ownerActiveRuns = 0;
@@ -106,18 +111,24 @@ public sealed class InMemoryRunJobStore : IRunJobStore
                 record = entry.Record;
             }
 
-            if (record.Kind == kind && string.Equals(record.TargetId, targetId, StringComparison.Ordinal))
+            if (record.Kind == candidate.Kind
+                && string.Equals(record.TargetId, candidate.TargetId, StringComparison.Ordinal))
+            {
                 targetIsRunning = true;
+            }
 
-            if (ScopeIdentity.AreSame(record.OwnerId, ownerId))
+            if (ScopeIdentity.AreSame(record.OwnerId, candidate.OwnerId)
+                && ScopeIdentity.AreSame(record.TenantId, candidate.TenantId))
+            {
                 ownerActiveRuns++;
+            }
         }
 
         return (targetIsRunning, ownerActiveRuns);
     }
 
     /// <inheritdoc />
-    public RunRecord? Get(string jobId, string ownerId)
+    public RunRecord? Get(string jobId, string ownerId, string? tenantId)
     {
         ArgumentException.ThrowIfNullOrEmpty(jobId);
         ArgumentException.ThrowIfNullOrEmpty(ownerId);
@@ -130,11 +141,18 @@ public sealed class InMemoryRunJobStore : IRunJobStore
             if (IsExpired(entry, _time.GetUtcNow()))
                 return null;
 
-            // Canonicalized, which is how plan ownership is compared (PlannerScopeFilter) and how the
-            // identity on this record was stamped. A stricter comparison here would deny a caller its
-            // own run whenever a token differed only in casing from the one that started it, while
-            // the plan store went on treating the two as the same principal.
-            return ScopeIdentity.AreSame(entry.Record.OwnerId, ownerId) ? entry.Record : null;
+            // Tenant AND owner, canonicalized — the same two legs and the same canonical form that
+            // decide plan ownership (PlannerScopeFilter.WritableBy) on this very request path. Owner
+            // alone is sufficient while an issuer is pinned to one tenant, which is exactly why the
+            // divergence would be invisible until the day it is a cross-tenant read.
+            //
+            // Canonicalized rather than compared strictly: a stricter comparison would deny a caller
+            // its own run whenever a token differed only in casing from the one that started it,
+            // while the plan store went on treating the two as the same principal.
+            return ScopeIdentity.AreSame(entry.Record.OwnerId, ownerId)
+                && ScopeIdentity.AreSame(entry.Record.TenantId, tenantId)
+                    ? entry.Record
+                    : null;
         }
     }
 
@@ -188,14 +206,18 @@ public sealed class InMemoryRunJobStore : IRunJobStore
 
         foreach (var (jobId, entry) in _entries)
         {
-            bool expired;
+            // Decided and removed under the same lock. Only terminal entries expire today and nothing
+            // re-arms a terminal entry, so splitting the two would be harmless right now — but it
+            // would be a live race the moment any non-terminal state becomes reclaimable, and the
+            // thing being raced away is a run a caller may still be polling.
             lock (entry)
             {
-                expired = IsExpired(entry, now);
-            }
+                if (!IsExpired(entry, now))
+                    continue;
 
-            if (expired && _entries.TryRemove(jobId, out _))
-                removed++;
+                if (_entries.TryRemove(jobId, out _))
+                    removed++;
+            }
         }
 
         return removed;

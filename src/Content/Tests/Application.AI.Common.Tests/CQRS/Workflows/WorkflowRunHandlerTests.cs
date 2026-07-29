@@ -176,6 +176,55 @@ public sealed class WorkflowRunHandlerTests
     }
 
     [Fact]
+    public async Task Start_DoesNotQueueOnTheCallersToken()
+    {
+        // Past admission the record is committed. A record that is committed but never queued is never
+        // claimed, never finishes, and — because only terminal runs are reclaimed — never goes away:
+        // it pins its workflow at 409 and holds one of the owner's slots for the life of the process.
+        // Hanging up mid-request is ordinary client behaviour and must not be able to do that.
+        var sut = BuildStartSut();
+        CancellationToken observed = default;
+        _queue.Setup(q => q.EnqueueAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Callback<string, CancellationToken>((_, token) => observed = token)
+            .Returns(ValueTask.CompletedTask);
+
+        using var cts = new CancellationTokenSource();
+        await sut.Handle(StartCommand(Guid.NewGuid()), cts.Token);
+
+        observed.CanBeCanceled.Should().BeFalse(
+            "the caller's token must not be able to abandon a run the caller was already told was accepted");
+    }
+
+    [Fact]
+    public async Task Start_WhenQueueingFails_TheRunIsRecordedTerminalRatherThanLeftQueued()
+    {
+        // Unreachable with an in-process channel, but the queue is the seam for a durable one. The cost
+        // of an unguarded failure is not a lost run: it is a workflow no caller can ever start again.
+        var sut = BuildStartSut();
+        RunRecord? created = null;
+        RunRecord? updated = null;
+
+        _runStore.Setup(s => s.TryCreate(It.IsAny<RunRecord>(), It.IsAny<int>()))
+            .Callback<RunRecord, int>((record, _) => created = record)
+            .Returns(RunAdmission.Accepted);
+
+        _runStore.Setup(s => s.Update(It.IsAny<RunRecord>()))
+            .Callback<RunRecord>(record => updated = record)
+            .Returns(true);
+
+        _queue.Setup(q => q.EnqueueAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Throws(new InvalidOperationException("the queue is gone"));
+
+        var result = await sut.Handle(StartCommand(Guid.NewGuid()), CancellationToken.None);
+
+        result.IsSuccess.Should().BeFalse();
+        updated.Should().NotBeNull("a committed record that cannot be queued must be released, not stranded");
+        updated!.JobId.Should().Be(created!.JobId);
+        updated.IsTerminal.Should().BeTrue();
+        updated.Error.Should().NotBeNullOrWhiteSpace();
+    }
+
+    [Fact]
     public async Task Start_WhenSubmissionIsDisabled_IsRefused()
     {
         var sut = BuildStartSut();
@@ -193,7 +242,7 @@ public sealed class WorkflowRunHandlerTests
         // The store answers null for another owner, and the handler must not soften that into
         // anything that distinguishes it from a job id that was never issued.
         var sut = BuildGetSut();
-        _runStore.Setup(s => s.Get("job-1", "mallory")).Returns((RunRecord?)null);
+        _runStore.Setup(s => s.Get("job-1", "mallory", It.IsAny<string?>())).Returns((RunRecord?)null);
 
         var result = await sut.Handle(
             new GetWorkflowRunQuery { WorkflowId = Guid.NewGuid(), JobId = "job-1", OwnerId = "mallory" },
@@ -211,7 +260,7 @@ public sealed class WorkflowRunHandlerTests
         var sut = BuildGetSut();
         var requested = Guid.NewGuid();
 
-        _runStore.Setup(s => s.Get("job-1", "alice")).Returns(new RunRecord
+        _runStore.Setup(s => s.Get("job-1", "alice", It.IsAny<string?>())).Returns(new RunRecord
         {
             JobId = "job-1",
             Kind = RunKind.Workflow,
@@ -235,7 +284,7 @@ public sealed class WorkflowRunHandlerTests
         var sut = BuildGetSut();
         var workflowId = Guid.NewGuid();
 
-        _runStore.Setup(s => s.Get("job-1", "alice")).Returns(new RunRecord
+        _runStore.Setup(s => s.Get("job-1", "alice", It.IsAny<string?>())).Returns(new RunRecord
         {
             JobId = "job-1",
             Kind = RunKind.Workflow,

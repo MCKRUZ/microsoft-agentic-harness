@@ -21,10 +21,12 @@ namespace Presentation.ExecutionApi.Controllers;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <strong>Submission and execution are deliberately separate rights.</strong> This endpoint stores a
-/// workflow and nothing more. A caller who can author one therefore does not automatically hold the
-/// right to spend the host's model and tool credentials running it, and the two can be authorized
-/// independently.
+/// <strong>Submission and execution are deliberately separable.</strong> Submitting stores a workflow
+/// and nothing more; running one spends the host's model and tool credentials. They are distinct
+/// endpoints so a consumer <em>can</em> attach a different policy to each — as shipped both carry the
+/// same class-level authorization, so the separation is structural rather than enforced. It still
+/// holds that authoring confers nothing: a caller can only run workflows it owns, under its own
+/// envelope.
 /// </para>
 /// <para>
 /// <strong>Ownership is never taken from the request.</strong> There is no owner field on the wire and
@@ -156,7 +158,8 @@ public sealed class WorkflowsController : ControllerBase
             {
                 WorkflowId = workflowId,
                 JobId = jobId,
-                OwnerId = User.GetUserId()
+                OwnerId = User.GetUserId(),
+                TenantId = User.GetTenantId()
             },
             cancellationToken).ConfigureAwait(false);
 

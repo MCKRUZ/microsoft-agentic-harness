@@ -44,7 +44,7 @@ public sealed class GetWorkflowRunQueryHandler : IRequestHandler<GetWorkflowRunQ
                 "Workflow submission is disabled. Set AppConfig.AI.WorkflowSubmission.Enabled = true to enable it."));
         }
 
-        var record = _runStore.Get(request.JobId, request.OwnerId);
+        var record = _runStore.Get(request.JobId, request.OwnerId, request.TenantId);
 
         // A run under a different workflow is reported as missing rather than returned: the route
         // states a relationship, and answering it with a record that contradicts the route would let a

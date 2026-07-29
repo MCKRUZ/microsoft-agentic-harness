@@ -22,10 +22,13 @@ public enum RunAdmission
     TargetAlreadyRunning = 1,
 
     /// <summary>
-    /// The owner already holds as many live runs as the host permits. Bounds one caller's claim on
-    /// the host at any instant, which neither the per-request rate limit nor any per-workflow ceiling
-    /// expresses: a caller within both can otherwise start every workflow it owns at once, and each
-    /// one then multiplies by its own parallel-step allowance.
+    /// The owner already holds as many live runs as the host permits.
     /// </summary>
+    /// <remarks>
+    /// Bounds how much work one caller may have <em>accepted</em> — queued or executing — which
+    /// neither the per-request rate limit nor any per-workflow ceiling expresses: a caller within both
+    /// can otherwise start every workflow it owns at once. It is not a statement about how much runs
+    /// concurrently; that is the host's dispatch degree, and it is not a fairness mechanism either.
+    /// </remarks>
     OwnerAtCapacity = 2
 }
