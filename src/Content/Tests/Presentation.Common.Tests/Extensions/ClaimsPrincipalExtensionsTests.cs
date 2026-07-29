@@ -134,6 +134,18 @@ public sealed class ClaimsPrincipalExtensionsTests
     }
 
     [Fact]
+    public void GetUserIdOrNull_ReturnsNull_WhenTwoValuesDifferOnlyByCase()
+    {
+        // Ownership is compared ordinally downstream (record.UserId != callerId), so "VICTIM" and
+        // "victim" are two different owners there. Deduping them case-insensitively here would
+        // resolve one identity and hand the record to whichever casing happened to arrive first —
+        // an attacker-chosen one, if they can smuggle a claim. Ambiguous, therefore rejected.
+        var principal = Authenticated(("oid", "victim"), ("oid", "VICTIM"));
+
+        principal.GetUserIdOrNull().Should().BeNull();
+    }
+
+    [Fact]
     public void GetUserIdOrNull_IgnoresMutableAndDisplayNameClaims()
     {
         // upn/preferred_username are reassignable and name is not unique — none may key ownership.

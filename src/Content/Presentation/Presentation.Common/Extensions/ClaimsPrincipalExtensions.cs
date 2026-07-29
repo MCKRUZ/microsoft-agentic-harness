@@ -98,7 +98,11 @@ public static class ClaimsPrincipalExtensions
                 .SelectMany(principal.FindAll)
                 .Select(claim => claim.Value)
                 .Where(value => !string.IsNullOrWhiteSpace(value))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
+                // Ordinal, matching how ownership is compared downstream (record.UserId != callerId).
+                // Deduping case-insensitively here while comparing ordinally there would let two
+                // claims differing only in case collapse to one, and whichever arrived first would
+                // silently decide the stored owner. Treating them as ambiguous fails closed instead.
+                .Distinct(StringComparer.Ordinal)
                 .Take(2)
                 .ToList();
 
