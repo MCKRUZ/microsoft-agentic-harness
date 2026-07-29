@@ -457,7 +457,7 @@ allowed-tools: ["file_system", "shell", "http_client"]
     },
     "BySubject": {
       "11111111-2222-3333-4444-555555555555": {
-        "AllowedTools": [ "file_system", "calculation_engine" ],
+        "AllowedTools": [ "file_system", "calculation_engine", "docs_search" ],
         "AllowedMcpServers": [ "internal-docs" ],
         "AutonomyCeiling": "Autonomous"
       }
@@ -488,6 +488,33 @@ allowed-tools: ["file_system", "shell", "http_client"]
                         than opening up, and a numeric or comma-composite value is rejected outright for the same reason.
                     </p>
                     <p>
+                        The two allowlists gate <em>different things</em>, and you almost always need both:
+                        <strong><code>AllowedMcpServers</code> controls which servers may be
+                        <em>contacted</em>; <code>AllowedTools</code> controls which tools may be
+                        <em>invoked</em></strong> — including the tools those servers publish. Granting
+                        <code>internal-docs</code> lets the run reach that server and put its tool schemas in front of
+                        the model; actually calling <code>docs_search</code> still requires
+                        <code>docs_search</code> in <code>AllowedTools</code>, which is why it appears in the example
+                        above alongside the two local tools.
+                    </p>
+
+                    <div class="callout callout-warn">
+                        <span class="callout-icon">!</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Granting MCP servers but no tools grants nothing usable</div>
+                            <p style="margin: 0">
+                                An envelope with a non-empty <code>AllowedMcpServers</code> and an empty
+                                <code>AllowedTools</code> is the one combination that looks permissive and behaves
+                                inert. The run contacts every granted server, pays the round trip, publishes the fetched
+                                schemas to the model — and then denies every resulting call, because none of those tool
+                                names is on the invocation allowlist. The host logs a warning naming the granted servers
+                                when it resolves an envelope in that shape. It warns rather than refusing to start:
+                                the configuration fails <em>closed</em>, and an empty tool list is legitimate for a
+                                caller who is meant to have no tool access at all.
+                            </p>
+                        </div>
+                    </div>
+                    <p>
                         Worked through end to end, with the config shown above, a run looks like this:
                     </p>
                     <div class="code-block">
@@ -496,13 +523,16 @@ allowed-tools: ["file_system", "shell", "http_client"]
 The caller's token says:          sub = 1111…5555
 
   → host looks up BySubject["1111…5555"]
-  → that envelope grants:         file_system, calculation_engine
+  → that envelope grants:         file_system, calculation_engine, docs_search
+                                  (+ the internal-docs MCP server)
 
   overlap (ask ∩ grant)  =  file_system
   shell        → DENIED  (asked for, not granted)
   http_client  → DENIED  (asked for, not granted)
   calculation_engine     → granted, but the bundle never asked, so it is
                            simply never wired into the agent
+  docs_search            → granted, and reachable via the granted MCP server,
+                           but this bundle never asked for it either
 
 The agent runs with exactly one tool: file_system.</code></pre>
                     </div>
