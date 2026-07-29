@@ -63,6 +63,11 @@ public static class BundleApiServiceCollectionExtensions
         // Stateless — per-request state is local to each call.
         services.AddTransient<BundleRunStreamer>();
 
+        // Applies the configured workflow-submission body cap before the body is read. Registered as a
+        // service (rather than a plain attribute) because the limit is an operator setting read live,
+        // not a compile-time constant.
+        services.AddScoped<WorkflowRequestSizeLimitFilter>();
+
         services.AddBundleApiAuthentication(bundleConfig.Auth);
 
         // Bound the multipart upload at the transport boundary to the same limit the staging service enforces,
