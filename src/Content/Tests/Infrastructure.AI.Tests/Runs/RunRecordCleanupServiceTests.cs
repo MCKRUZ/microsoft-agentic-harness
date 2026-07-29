@@ -4,6 +4,7 @@ using Domain.AI.Runs;
 using Domain.Common.Config;
 using FluentAssertions;
 using Infrastructure.AI.Runs;
+using Infrastructure.AI.Tests.Runs.Support;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Time.Testing;
@@ -23,13 +24,6 @@ namespace Infrastructure.AI.Tests.Runs;
 /// </remarks>
 public sealed class RunRecordCleanupServiceTests
 {
-    private sealed class StaticOptionsMonitor<T>(T value) : IOptionsMonitor<T>
-    {
-        public T CurrentValue { get; } = value;
-        public T Get(string? name) => CurrentValue;
-        public IDisposable? OnChange(Action<T, string?> listener) => null;
-    }
-
     /// <summary>
     /// Counts sweeps and what they reclaimed. Both are needed: an expired record is already hidden
     /// from <see cref="Get"/> before anything reclaims it, so absence proves nothing about whether the

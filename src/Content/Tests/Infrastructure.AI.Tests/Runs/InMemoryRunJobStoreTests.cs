@@ -4,6 +4,7 @@ using Domain.AI.Runs;
 using Domain.Common.Config;
 using FluentAssertions;
 using Infrastructure.AI.Runs;
+using Infrastructure.AI.Tests.Runs.Support;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Time.Testing;
 using Xunit;
@@ -23,13 +24,6 @@ namespace Infrastructure.AI.Tests.Runs;
 public sealed class InMemoryRunJobStoreTests
 {
     private const int UncappedOwner = int.MaxValue;
-
-    private sealed class StaticOptionsMonitor<T>(T value) : IOptionsMonitor<T>
-    {
-        public T CurrentValue { get; } = value;
-        public T Get(string? name) => CurrentValue;
-        public IDisposable? OnChange(Action<T, string?> listener) => null;
-    }
 
     private readonly FakeTimeProvider _time = new(new DateTimeOffset(2026, 7, 29, 12, 0, 0, TimeSpan.Zero));
     private readonly AppConfig _config = new();

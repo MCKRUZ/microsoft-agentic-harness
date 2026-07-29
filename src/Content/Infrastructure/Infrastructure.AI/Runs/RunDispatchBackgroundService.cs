@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Application.AI.Common.Interfaces.Runs;
 using Domain.AI.Runs;
@@ -42,7 +41,7 @@ namespace Infrastructure.AI.Runs;
 /// </para>
 /// <para>
 /// <strong>Two things here rest on both seams being in-process, and stop being true when either is
-/// replaced.</strong> A job taken off the queue is lost if the host stops before a slot frees, leaving
+/// replaced.</strong> A job taken off the queue is lost if the host stops before its body runs, leaving
 /// its record <c>Queued</c> — harmless only because an in-memory store dies with the process, and
 /// because a durable queue would redeliver an unacknowledged message. Pair a durable store with a
 /// non-redelivering queue and that record is stranded: never claimed, never terminal, never reclaimed,
@@ -101,40 +100,31 @@ public sealed class RunDispatchBackgroundService : BackgroundService
         // the honest bound — reshaping a running drain loop mid-flight buys nothing and would make
         // the number of in-flight runs unpredictable.
         var degree = Math.Max(1, _config.CurrentValue.AI.WorkflowSubmission.MaxConcurrentDispatchedRuns);
-        using var slots = new SemaphoreSlim(degree, degree);
-        var inFlight = new ConcurrentDictionary<Task, byte>();
 
         try
         {
-            await foreach (var jobId in _queue.DequeueAllAsync(stoppingToken).ConfigureAwait(false))
-            {
-                if (stoppingToken.IsCancellationRequested)
-                    break;
-
-                await slots.WaitAsync(stoppingToken).ConfigureAwait(false);
-
-                var task = DispatchGuardedAsync(jobId, slots, stoppingToken);
-                inFlight[task] = 0;
-                _ = task.ContinueWith(
-                    completed => inFlight.TryRemove(completed, out _),
-                    CancellationToken.None,
-                    TaskContinuationOptions.ExecuteSynchronously,
-                    TaskScheduler.Default);
-            }
+            // Parallel.ForEachAsync already is this loop: it bounds concurrency, keeps pulling as slots
+            // free, and does not return until every started item has finished — that last part being
+            // the one that matters at shutdown, since each in-flight run holds a claimed record only
+            // its own dispatch can move out of Running.
+            //
+            // Its one sharp edge is that a body which throws tears down the whole loop.
+            // DispatchGuardedAsync is written never to, so this ends only when the queue completes or
+            // the host stops.
+            await Parallel.ForEachAsync(
+                _queue.DequeueAllAsync(stoppingToken),
+                new ParallelOptions { MaxDegreeOfParallelism = degree, CancellationToken = stoppingToken },
+                async (jobId, token) => await DispatchGuardedAsync(jobId, token).ConfigureAwait(false))
+                .ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {
-            // Host shutdown while waiting for a slot or for the next job.
+            // Host shutdown.
         }
-
-        // Runs already dispatched are awaited rather than abandoned. Each one holds a claimed record
-        // that only its own dispatch can move out of Running, so walking away here would leave those
-        // runs stranded for whatever remains of the process.
-        await Task.WhenAll(inFlight.Keys).ConfigureAwait(false);
     }
 
-    /// <summary>Dispatches one run and always releases its slot, whatever happens.</summary>
-    private async Task DispatchGuardedAsync(string jobId, SemaphoreSlim slots, CancellationToken stoppingToken)
+    /// <summary>Dispatches one run, never letting a failure escape into the drain loop.</summary>
+    private async Task DispatchGuardedAsync(string jobId, CancellationToken stoppingToken)
     {
         try
         {
@@ -151,10 +141,6 @@ public sealed class RunDispatchBackgroundService : BackgroundService
             // left stranded. A failure after the claim is handled inside DispatchAsync, which holds
             // the claimed record and can mark it terminal.
             _logger.LogError(ex, "Run {JobId} could not be dispatched.", jobId);
-        }
-        finally
-        {
-            slots.Release();
         }
     }
 

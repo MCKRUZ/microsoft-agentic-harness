@@ -6,6 +6,7 @@ using Domain.Common;
 using Domain.Common.Config;
 using FluentAssertions;
 using Infrastructure.AI.Runs;
+using Infrastructure.AI.Tests.Runs.Support;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -33,13 +34,6 @@ namespace Infrastructure.AI.Tests.Runs;
 /// </remarks>
 public sealed class RunDispatchBackgroundServiceTests
 {
-    private sealed class StaticOptionsMonitor<T>(T value) : IOptionsMonitor<T>
-    {
-        public T CurrentValue { get; } = value;
-        public T Get(string? name) => CurrentValue;
-        public IDisposable? OnChange(Action<T, string?> listener) => null;
-    }
-
     private sealed class StubExecutor(Func<RunRecord, Task<Result<RunCompletion>>> behaviour) : IRunKindExecutor
     {
         public int Invocations { get; private set; }
