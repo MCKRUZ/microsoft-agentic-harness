@@ -47,6 +47,12 @@ public sealed partial class PlanExecutor
         };
     }
 
+    /// <param name="RunCancellationToken">
+    /// The operator-cancellation token for this run, from the plan run cancellation registry. It is
+    /// deliberately NOT the token the work runs under (that one also carries the caller's token and
+    /// the plan timeout) — it exists only so an interrupted step can tell an operator cancel apart
+    /// from a timeout or a host shutdown, and record itself Cancelled rather than Failed.
+    /// </param>
     private sealed record PlanExecutionRuntime(
         PlanId PlanId,
         ConcurrentDictionary<PlanStepId, StepExecutionState> StepStates,
@@ -55,5 +61,6 @@ public sealed partial class PlanExecutor
         Dictionary<PlanStepId, List<(PlanStepId Target, EdgeType Type)>> DependentMap,
         Dictionary<PlanStepId, PlanStep> StepLookup,
         ConcurrentQueue<PlanStep> ReadyQueue,
-        SemaphoreSlim Concurrency);
+        SemaphoreSlim Concurrency,
+        CancellationToken RunCancellationToken);
 }

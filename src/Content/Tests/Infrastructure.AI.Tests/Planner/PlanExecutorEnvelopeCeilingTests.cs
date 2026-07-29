@@ -63,6 +63,7 @@ public sealed class PlanExecutorEnvelopeCeilingTests : IDisposable
             _notifier.Object,
             _escalation.Object,
             _serviceProvider,
+            new PlanRunCancellationRegistry(),
             TimeProvider.System,
             NullLogger<PlanExecutor>.Instance);
     }

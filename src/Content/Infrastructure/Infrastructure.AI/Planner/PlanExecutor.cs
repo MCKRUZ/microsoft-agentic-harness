@@ -39,6 +39,7 @@ public sealed partial class PlanExecutor : IPlanExecutor
     private readonly IPlanProgressNotifier _notifier;
     private readonly IEscalationService _escalationService;
     private readonly IServiceProvider _serviceProvider;
+    private readonly IPlanRunCancellationRegistry _cancellationRegistry;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<PlanExecutor> _logger;
 
@@ -50,6 +51,11 @@ public sealed partial class PlanExecutor : IPlanExecutor
     /// <param name="notifier">Receives plan and step lifecycle notifications.</param>
     /// <param name="escalationService">Resolves human-gate and escalate-on-failure outcomes.</param>
     /// <param name="serviceProvider">Resolves keyed step executors by <see cref="StepType"/>.</param>
+    /// <param name="cancellationRegistry">
+    /// Process-wide index of in-flight runs. <see cref="ExecuteAsync(PlanId, PlanExecutionContext, CancellationToken)"/>
+    /// registers each run here and <see cref="CancelAsync"/> signals it, which is what makes a
+    /// cancel stop work rather than only rewrite state after the run ends.
+    /// </param>
     /// <param name="timeProvider">Clock used for retry backoff delays; injectable for tests.</param>
     /// <param name="logger">Structured logger for execution auditing.</param>
     public PlanExecutor(
@@ -58,6 +64,7 @@ public sealed partial class PlanExecutor : IPlanExecutor
         IPlanProgressNotifier notifier,
         IEscalationService escalationService,
         IServiceProvider serviceProvider,
+        IPlanRunCancellationRegistry cancellationRegistry,
         TimeProvider timeProvider,
         ILogger<PlanExecutor> logger)
     {
@@ -66,6 +73,7 @@ public sealed partial class PlanExecutor : IPlanExecutor
         _notifier = notifier;
         _escalationService = escalationService;
         _serviceProvider = serviceProvider;
+        _cancellationRegistry = cancellationRegistry;
         _timeProvider = timeProvider;
         _logger = logger;
     }
@@ -77,6 +85,14 @@ public sealed partial class PlanExecutor : IPlanExecutor
     {
         if (context.Depth >= context.MaxDepth)
             return Result<PlanExecutionSummary>.Fail($"Maximum sub-plan depth {context.MaxDepth} exceeded at depth {context.Depth}.");
+
+        // Registration is taken BEFORE the plan lock so a run still queued behind an earlier run is
+        // cancellable too — it then acquires the lock with an already-signalled token and unwinds
+        // immediately instead of starting work someone has asked to stop. `using` makes release
+        // symmetric with registration by construction: the component that registers is the only one
+        // that can release, and it does so on every exit path.
+        using var registration = _cancellationRegistry.Register(planId);
+        using var runCts = CancellationTokenSource.CreateLinkedTokenSource(ct, registration.Token);
 
         var planLock = AcquirePlanLockHandle(planId);
         try
@@ -91,7 +107,17 @@ public sealed partial class PlanExecutor : IPlanExecutor
 
         try
         {
-            return await ExecuteCoreAsync(planId, context, ct);
+            return await ExecuteCoreAsync(planId, context, runCts.Token, registration.Token);
+        }
+        catch (OperationCanceledException) when (registration.Token.IsCancellationRequested && !ct.IsCancellationRequested)
+        {
+            // A registry cancel that landed outside the scheduling loop (during load, validation,
+            // blocked-step reconciliation, or the initial enqueue). Inside the loop the existing
+            // handler already unwinds to a summary. Returning a failure Result rather than throwing
+            // keeps ExecuteAsync total for cancellation: a cancel is an expected outcome, so callers
+            // — including a run API — read it from the Result instead of catching.
+            _logger.LogInformation("Plan {PlanId} run cancelled before the scheduling loop completed", planId);
+            return Result<PlanExecutionSummary>.Fail($"Plan {planId} execution was cancelled.");
         }
         finally
         {
@@ -99,9 +125,51 @@ public sealed partial class PlanExecutor : IPlanExecutor
         }
     }
 
+    /// <summary>
+    /// Cancels a plan. Signals any in-flight run first, then rewrites persisted state for every
+    /// step that is not already terminal.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The signal must come first, and must not take the plan lock.</b> A run holds the per-plan
+    /// lock for its entire duration, so a cancel that acquired the lock before signalling would
+    /// block until the run it is trying to stop had finished naturally, and would then "cancel"
+    /// work that had already completed — a cancel that silently does nothing. The registry pre-pass
+    /// below is non-blocking: it signals the run's token and returns, and the run releases the lock
+    /// as it unwinds, which is what lets the state rewrite that follows describe a genuinely
+    /// stopped plan.
+    /// </para>
+    /// <para>
+    /// <b>Side effects are at-least-once.</b> Cancelling signals the token that the in-flight step
+    /// is executing under; it does not roll anything back. A tool call, LLM request, or sub-plan
+    /// that had already started may complete, and any external effect it had — a file written, a
+    /// message sent, a row inserted — stands. Cancellation stops further work; it does not undo
+    /// work already done.
+    /// </para>
+    /// <para>
+    /// <b>The plan stays resumable.</b> Steps that finished keep their <c>Completed</c> state and
+    /// their output; everything else is recorded as <see cref="StepExecutionStatus.Cancelled"/>.
+    /// A later <see cref="ExecuteAsync(PlanId, CancellationToken)"/> resumes from that checkpoint —
+    /// <c>InitializeStepStates</c> renormalises <c>Cancelled</c> back to <c>Pending</c>, so the plan
+    /// picks up where it stopped rather than re-running completed work.
+    /// </para>
+    /// <para>
+    /// <b>Idempotent.</b> A second cancel signals an already-signalled token (or finds no live run)
+    /// and rewrites state that is already terminal, so it is a no-op that still reports success.
+    /// </para>
+    /// </remarks>
+    /// <param name="planId">Identifier of the plan to cancel.</param>
+    /// <param name="ct">Cancellation token for the cancel request itself.</param>
     public async Task<Result> CancelAsync(PlanId planId, CancellationToken ct)
     {
         _logger.LogInformation("Plan {PlanId} cancellation requested", planId);
+
+        var signalled = _cancellationRegistry.TryCancel(planId);
+        _logger.LogInformation(
+            signalled
+                ? "Plan {PlanId} had an in-flight run; cancellation signalled"
+                : "Plan {PlanId} had no in-flight run to signal; rewriting persisted state only",
+            planId);
 
         var planLock = AcquirePlanLockHandle(planId);
         try
@@ -314,7 +382,16 @@ public sealed partial class PlanExecutor : IPlanExecutor
         public int RefCount { get; set; }
     }
 
-    private async Task<Result<PlanExecutionSummary>> ExecuteCoreAsync(PlanId planId, PlanExecutionContext context, CancellationToken ct)
+    /// <param name="runCancellationToken">
+    /// The registry token alone, without the caller's token folded in. <paramref name="ct"/> is the
+    /// union of the two and drives the work; this one only answers "was this an operator cancel?",
+    /// which decides whether an interrupted step is recorded as Cancelled (resumable) or Failed.
+    /// </param>
+    private async Task<Result<PlanExecutionSummary>> ExecuteCoreAsync(
+        PlanId planId,
+        PlanExecutionContext context,
+        CancellationToken ct,
+        CancellationToken runCancellationToken)
     {
         using var activity = ActivitySource.StartActivity("plan.execute");
         activity?.SetTag("plan.id", planId.Value.ToString());
@@ -383,7 +460,8 @@ public sealed partial class PlanExecutor : IPlanExecutor
         var runningTasks = new HashSet<Task>();
 
         var execCtx = new PlanExecutionRuntime(
-            planId, stepStates, stepOutputs, dependencyMap, dependentMap, stepLookup, readyQueue, concurrency);
+            planId, stepStates, stepOutputs, dependencyMap, dependentMap, stepLookup, readyQueue, concurrency,
+            runCancellationToken);
 
         // Resolve any steps parked in Blocked whose escalation has since been decided. Approved gates
         // complete and release their downstream (which this may enqueue), rejected ones fail through
@@ -400,13 +478,21 @@ public sealed partial class PlanExecutor : IPlanExecutor
         {
             _logger.LogWarning("Plan {PlanId} timed out after {Timeout}", planId, plan.Configuration.PlanTimeout);
             try { await Task.WhenAll(runningTasks); } catch (OperationCanceledException) { }
-            MarkRemainingAsFailed(stepStates, "Plan timeout exceeded");
+            MarkRemainingAs(stepStates, StepExecutionStatus.Failed, "Plan timeout exceeded");
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
-            _logger.LogInformation("Plan {PlanId} cancelled by caller", planId);
+            // An operator cancel is a pause, not a failure: its steps are recorded Cancelled so the
+            // plan resumes from this checkpoint. A caller-token cancel (host shutdown, request
+            // abort) keeps the historical Failed marking.
+            var wasOperatorCancel = runCancellationToken.IsCancellationRequested;
+            _logger.LogInformation(
+                "Plan {PlanId} cancelled ({Origin})", planId, wasOperatorCancel ? "operator" : "caller");
             try { await Task.WhenAll(runningTasks); } catch (OperationCanceledException) { }
-            MarkRemainingAsFailed(stepStates, "Execution cancelled");
+            MarkRemainingAs(
+                stepStates,
+                wasOperatorCancel ? StepExecutionStatus.Cancelled : StepExecutionStatus.Failed,
+                "Execution cancelled");
         }
 
         sw.Stop();
