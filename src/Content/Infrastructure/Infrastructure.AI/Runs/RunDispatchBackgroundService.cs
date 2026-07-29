@@ -40,6 +40,17 @@ namespace Infrastructure.AI.Runs;
 /// a degraded mode: an absent owner reads as a global record, so the work would silently see and
 /// touch every caller's data.
 /// </para>
+/// <para>
+/// <strong>Two things here rest on both seams being in-process, and stop being true when either is
+/// replaced.</strong> A job taken off the queue is lost if the host stops before a slot frees, leaving
+/// its record <c>Queued</c> — harmless only because an in-memory store dies with the process, and
+/// because a durable queue would redeliver an unacknowledged message. Pair a durable store with a
+/// non-redelivering queue and that record is stranded: never claimed, never terminal, never reclaimed,
+/// pinning its workflow and holding one of its owner's slots. Likewise a run that ends by throwing
+/// <see cref="OperationCanceledException"/> for any reason other than host shutdown is recorded
+/// Failed rather than Cancelled, losing a distinction <see cref="RunStatus"/> exists to make; today
+/// no executor does that, because <c>IPlanRunExecutor</c> reports cancellation as a result.
+/// </para>
 /// </remarks>
 public sealed class RunDispatchBackgroundService : BackgroundService
 {

@@ -169,7 +169,7 @@ public sealed partial class PlanExecutor : IPlanExecutor
         // tenant's in-flight run and then receive NotFound — with the run already dead. The probe is
         // scope-filtered, and a plan the caller may read but not mutate answers false, so a
         // cross-owner cancel is reported identically to a cancel of a plan that does not exist.
-        var writable = await _stateStore.IsPlanWritableByCallerAsync(planId, ct);
+        var writable = await _stateStore.IsPlanWritableByCallerAsync(planId, ct).ConfigureAwait(false);
         if (!writable.IsSuccess)
             return Result.Fail(writable.Errors.ToArray());
 
