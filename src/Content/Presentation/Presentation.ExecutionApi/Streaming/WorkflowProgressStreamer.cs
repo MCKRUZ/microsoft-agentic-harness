@@ -36,18 +36,28 @@ public sealed class WorkflowProgressStreamer
     /// How long a stream may stay silent before it says something. Short enough to sit well inside the
     /// idle timeouts intermediaries commonly apply, long enough to cost nothing.
     /// </summary>
-    private static readonly TimeSpan KeepAliveInterval = TimeSpan.FromSeconds(15);
+    public static readonly TimeSpan DefaultKeepAliveInterval = TimeSpan.FromSeconds(15);
 
     /// <summary>An SSE comment. Conformant clients ignore it; intermediaries see traffic.</summary>
     private const string KeepAliveFrame = ": keep-alive\n\n";
 
     private readonly Stream _body;
+    private readonly TimeSpan _keepAliveInterval;
 
     /// <summary>Initializes a streamer writing to <paramref name="responseBody"/>.</summary>
-    public WorkflowProgressStreamer(Stream responseBody)
+    /// <param name="responseBody">Where frames are written.</param>
+    /// <param name="keepAliveInterval">
+    /// How long the stream may stay silent before emitting a keep-alive comment. Defaults to
+    /// <see cref="DefaultKeepAliveInterval"/>. Injectable because the quiet path is otherwise only
+    /// reachable by a test that waits out the production interval, which is long enough that nobody
+    /// writes that test — and the quiet path is where this class is least like the busy one.
+    /// </param>
+    public WorkflowProgressStreamer(Stream responseBody, TimeSpan? keepAliveInterval = null)
     {
         ArgumentNullException.ThrowIfNull(responseBody);
+
         _body = responseBody;
+        _keepAliveInterval = keepAliveInterval ?? DefaultKeepAliveInterval;
     }
 
     /// <summary>
@@ -117,16 +127,25 @@ public sealed class WorkflowProgressStreamer
 
         try
         {
+            // Held across iterations rather than started fresh each time round. When the keep-alive
+            // wins the race below, this read is still outstanding — asking the enumerator for another
+            // one while the first has not finished is two concurrent MoveNextAsync calls on a single
+            // async enumerator, which is undefined and in practice corrupts its state machine. It
+            // faulted on a thread-pool thread with nobody left to observe it, which ends the process,
+            // and every step quieter than the keep-alive interval took that path: the ordinary case
+            // for real work, not an edge one. The pending read is reused until it actually completes.
+            Task<bool>? next = null;
+
             while (true)
             {
-                var next = events.MoveNextAsync().AsTask();
+                next ??= events.MoveNextAsync().AsTask();
 
                 // The delay deliberately takes no cancellation token. Whichever task loses this race
                 // is abandoned, and an abandoned cancellable delay faults when the token fires — with
                 // nobody left to observe it. That is an unhandled exception on a thread-pool thread
                 // every time a client disconnects, which is the ordinary way a stream ends. The read
                 // already honours cancellation, so the token is not needed here to stop the loop.
-                var keepAlive = Task.Delay(KeepAliveInterval);
+                var keepAlive = Task.Delay(_keepAliveInterval);
                 var completed = await Task.WhenAny(next, keepAlive).ConfigureAwait(false);
 
                 if (completed != next)
@@ -145,7 +164,13 @@ public sealed class WorkflowProgressStreamer
                 if (!await next.ConfigureAwait(false))
                     yield break;
 
-                yield return events.Current;
+                var current = events.Current;
+
+                // Cleared only now the read has completed and its value has been taken, so the next
+                // iteration is the only place a fresh one is ever started.
+                next = null;
+
+                yield return current;
             }
         }
         finally
