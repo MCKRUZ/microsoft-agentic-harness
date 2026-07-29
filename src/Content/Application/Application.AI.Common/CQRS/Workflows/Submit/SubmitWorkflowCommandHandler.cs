@@ -196,8 +196,19 @@ public sealed class SubmitWorkflowCommandHandler
     {
         if (depth > context.MaxDepth)
         {
-            return Result.Fail(
-                $"The referenced sub-workflow chain is deeper than the host's limit of {context.MaxDepth}.");
+            return Result.ValidationFailure(
+                [$"The referenced sub-workflow chain is deeper than the host's limit of {context.MaxDepth}."]);
+        }
+
+        // Depth alone does not bound the walk's cost: breadth multiplies at every level. A caller can
+        // cheaply admit a plan with N sub-plan steps all naming the same child, then another with N
+        // naming that one, and a final single request expands to N^depth store reads. Each admission
+        // on its own looks small, and rate limiting counts requests rather than the work behind them.
+        if (!context.TryConsumeVisit())
+        {
+            return Result.ValidationFailure(
+                [$"Resolving this workflow's sub-workflow references exceeds the host's budget of "
+                 + $"{ChildWalkContext.MaxVisits} lookups."]);
         }
 
         if (!context.Path.Add(childId))
@@ -243,14 +254,41 @@ public sealed class SubmitWorkflowCommandHandler
     /// <param name="MaxDepth">The host's admission cap on chain depth.</param>
     private sealed record ChildWalkContext(int MaxDepth)
     {
+        /// <summary>
+        /// Total store lookups one submission's walk may perform, whatever its shape.
+        /// </summary>
+        /// <remarks>
+        /// Fixed rather than configurable: it bounds a denial-of-service path, not a capability, so
+        /// there is no legitimate reason for an operator to raise it — and raising the depth cap must
+        /// not silently raise this too, since cost grows as breadth to the power of depth. A workflow
+        /// needing more than this many distinct sub-workflow lookups to admit is past the point where
+        /// a caller should be composing it as one submission.
+        /// </remarks>
+        public const int MaxVisits = 512;
+
+        private int _visits;
+
         /// <summary>The plans on the path currently being measured, used to detect a reference cycle.</summary>
         public HashSet<PlanId> Path { get; } = [];
+
+        /// <summary>Charges one lookup against the budget, reporting whether it was available.</summary>
+        public bool TryConsumeVisit() => ++_visits <= MaxVisits;
     }
 
+    /// <summary>
+    /// The distinct child workflows one plan invokes.
+    /// </summary>
+    /// <remarks>
+    /// Distinct, because a plan with two hundred steps all naming the same child describes one subtree,
+    /// not two hundred. Deduping here is not the shared-visited-set mistake: that one deduped across
+    /// the whole walk and so under-reported depth, whereas this dedupes within a single node, where
+    /// every copy sits at the same depth by construction.
+    /// </remarks>
     private static IEnumerable<PlanId> ChildReferencesOf(PlanGraph plan) => plan.Steps
         .Select(step => step.Configuration)
         .OfType<SubPlanConfig>()
         .Select(configuration => configuration.ChildPlanId)
         .Where(childPlanId => childPlanId.HasValue)
-        .Select(childPlanId => childPlanId!.Value);
+        .Select(childPlanId => childPlanId!.Value)
+        .Distinct();
 }

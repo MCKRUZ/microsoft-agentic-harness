@@ -13,8 +13,6 @@ namespace Infrastructure.AI.Planner.StepExecutors;
 /// </summary>
 public sealed partial class ConditionalBranchStepExecutor : IPlanStepExecutor
 {
-    private static readonly Regex UnsafePattern = UnsafeExpressionRegex();
-    private static readonly Regex AllowedPattern = AllowedExpressionRegex();
 
     private readonly ILogger<ConditionalBranchStepExecutor> _logger;
 
@@ -40,7 +38,7 @@ public sealed partial class ConditionalBranchStepExecutor : IPlanStepExecutor
             });
         }
 
-        if (!IsExpressionSafe(config.ConditionExpression))
+        if (!ConditionExpressionRules.IsSafe(config.ConditionExpression))
         {
             return Task.FromResult(new StepExecutionResult
             {
@@ -67,20 +65,6 @@ public sealed partial class ConditionalBranchStepExecutor : IPlanStepExecutor
             Duration = sw.Elapsed,
             ActiveEdgeTarget = target
         });
-    }
-
-    private static bool IsExpressionSafe(string expression)
-    {
-        if (expression.Length > 500)
-            return false;
-
-        if (expression.Contains('.'))
-            return false;
-
-        if (UnsafePattern.IsMatch(expression))
-            return false;
-
-        return AllowedPattern.IsMatch(expression);
     }
 
     private static Dictionary<string, object?> BuildEvaluationContext(
@@ -231,9 +215,4 @@ public sealed partial class ConditionalBranchStepExecutor : IPlanStepExecutor
         return parts;
     }
 
-    [GeneratedRegex(@"(unsafe|dynamic|typeof|nameof)", RegexOptions.IgnoreCase)]
-    private static partial Regex UnsafeExpressionRegex();
-
-    [GeneratedRegex(@"^[\w\s\(\)>=<!&|""\d\-\+\*\/]+$")]
-    private static partial Regex AllowedExpressionRegex();
 }

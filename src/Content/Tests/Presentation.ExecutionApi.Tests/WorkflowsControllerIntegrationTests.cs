@@ -306,4 +306,70 @@ public sealed class WorkflowsControllerIntegrationTests : IClassFixture<WebAppli
 
         response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
     }
+
+    [Fact]
+    public async Task Submit_WithANullStepElement_Returns400NotAServerError()
+    {
+        // MVC's implicit-required rejects "steps": null but says nothing about "steps": [null] —
+        // element nullability is not enforced by model binding — and FluentValidation keeps evaluating
+        // rules after one fails. So the first predicate to touch the element used to throw, turning a
+        // malformed body into a 500 from the component whose whole job is to answer 400.
+        var client = _factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync(
+            "/api/workflows", new { name = "w", steps = new object?[] { null }, edges = Array.Empty<object>() });
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task Submit_WithANullEdgeElement_Returns400NotAServerError()
+    {
+        var client = _factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync(
+            "/api/workflows", new { name = "w", steps = new[] { LlmStep("a") }, edges = new object?[] { null } });
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task Submit_WithAMixOfRealAndNullSteps_Returns400NotAServerError()
+    {
+        // The per-step rules run over the surviving elements; the null must not reach them.
+        var client = _factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync("/api/workflows", new
+        {
+            name = "w",
+            steps = new object?[] { LlmStep("real"), null },
+            edges = Array.Empty<object>()
+        });
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task Submit_ConditionTheBranchEvaluatorWouldRefuse_IsRejectedAtSubmission()
+    {
+        // Admission and the executor must agree on what a condition may contain. A dotted expression is
+        // refused by ConditionalBranchStepExecutor, so admitting it would store a workflow that looks
+        // healthy and fails at the branch on first run — telling the runner, not the author.
+        var client = _factory.CreateClient();
+        var branch = new
+        {
+            name = "branch",
+            type = "ConditionalBranch",
+            configuration = new { type = "conditional_branch", conditionExpression = "score.value > 5" }
+        };
+
+        var response = await client.PostAsJsonAsync("/api/workflows", Definition(
+            [branch, LlmStep("approve"), LlmStep("reject")],
+            [
+                new { from = "branch", to = "approve", type = "ConditionalTrue" },
+                new { from = "branch", to = "reject", type = "ConditionalFalse" }
+            ]));
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
 }

@@ -53,6 +53,7 @@ public sealed class SubmitWorkflowCommandValidator : AbstractValidator<SubmitWor
 
         RuleFor(x => x.Definition.Steps)
             .NotEmpty().WithMessage("A workflow requires at least one step.")
+            .Must(ContainNoNullElements).WithMessage("A workflow may not contain a null step.")
             .Must(steps => steps.Count <= Caps.MaxSteps)
                 .WithMessage(_ => $"A workflow may declare at most {Caps.MaxSteps} steps.")
             .Must(HaveUniqueNames)
@@ -60,9 +61,11 @@ public sealed class SubmitWorkflowCommandValidator : AbstractValidator<SubmitWor
 
         RuleFor(x => x.Definition.Edges)
             .NotNull().WithMessage("An edge list is required; send an empty list for a single-step workflow.")
+            .Must(ContainNoNullElements).WithMessage("A workflow may not contain a null edge.")
             .Must(edges => edges.Count <= Caps.MaxEdges)
                 .WithMessage(_ => $"A workflow may declare at most {Caps.MaxEdges} edges.")
-            .Must(edges => edges.All(e => BeWithinStringCap(e.Condition))).WithMessage(StringCapMessage);
+            .Must(edges => edges.All(e => e is null || BeWithinStringCap(e.Condition)))
+                .WithMessage(StringCapMessage);
 
         RuleFor(x => x.Definition.Configuration!)
             .Must(RespectExecutionCeilings)
@@ -70,7 +73,7 @@ public sealed class SubmitWorkflowCommandValidator : AbstractValidator<SubmitWor
                     + $"run for at most {Caps.MaxPlanTimeout} with at most {Caps.MaxParallelSteps} steps in parallel.")
             .When(x => x.Definition?.Configuration is not null);
 
-        RuleForEach(x => x.Definition.Steps).ChildRules(ConfigureStepRules);
+        RuleForEach(x => x.Definition.Steps).Where(step => step is not null).ChildRules(ConfigureStepRules);
 
         // Cross-field rules: each needs both collections, so they hang off the definition rather than
         // off either one. Reported as one failure each so a caller fixing a definition sees every
@@ -108,7 +111,11 @@ public sealed class SubmitWorkflowCommandValidator : AbstractValidator<SubmitWor
                 .WithMessage(s => $"Step '{s.Name}' requests more than the host permits: at most "
                     + $"{Caps.MaxTokensPerStep} response tokens and {Caps.MaxTopK} retrieval results.")
             .Must(NameAPermittedDeployment)
-                .WithMessage(s => $"Step '{s.Name}' names a model deployment this host does not offer.");
+                .WithMessage(s => $"Step '{s.Name}' names a model deployment this host does not offer.")
+            .Must(CarryAnEvaluableCondition)
+                .WithMessage(s => $"Step '{s.Name}' declares a condition the branch evaluator will refuse: at most "
+                    + $"{ConditionExpressionRules.MaxLength} characters, no member access, and only comparison and "
+                    + "boolean operators over upstream step names.");
 
         step.RuleFor(s => s.Timeout)
             .Must(timeout => timeout is null or { Ticks: > 0 })
@@ -128,8 +135,23 @@ public sealed class SubmitWorkflowCommandValidator : AbstractValidator<SubmitWor
     private bool BeWithinStringCap(string? value) =>
         value is null || value.Length <= Caps.MaxStringFieldLength;
 
+    /// <summary>
+    /// Whether a caller-supplied collection contains no null entries.
+    /// </summary>
+    /// <remarks>
+    /// This is load-bearing, not defensive dressing. MVC's implicit-required rejects <c>"steps": null</c>
+    /// but says nothing about <c>"steps": [null]</c> — element nullability is not enforced by model
+    /// binding — and FluentValidation's default cascade keeps evaluating later rules after an earlier
+    /// one fails. Without this the first predicate to touch the element throws, and a malformed body
+    /// becomes a 500 from the component whose entire job is to reject malformed bodies with a 400.
+    /// Every predicate below therefore also tolerates a null entry rather than relying on rule order.
+    /// </remarks>
+    private static bool ContainNoNullElements<T>(IReadOnlyList<T>? items) where T : class =>
+        items is null || items.All(item => item is not null);
+
     private static bool HaveUniqueNames(IReadOnlyList<WorkflowStep> steps) =>
-        steps.Select(s => s.Name).Distinct(StringComparer.Ordinal).Count() == steps.Count;
+        !ContainNoNullElements(steps)
+        || steps.Select(s => s.Name).Distinct(StringComparer.Ordinal).Count() == steps.Count;
 
     /// <summary>
     /// Confirms the step's declared <see cref="StepType"/> agrees with the polymorphic configuration
@@ -153,13 +175,29 @@ public sealed class SubmitWorkflowCommandValidator : AbstractValidator<SubmitWor
     private bool RespectConfigurationStringCaps(WorkflowStepConfiguration? configuration) => configuration switch
     {
         LlmCallStepConfiguration c => BeWithinStringCap(c.SystemPrompt) && BeWithinStringCap(c.ModelDeploymentKey),
-        ToolUseStepConfiguration c => BeWithinStringCap(c.ToolName),
+        // Argument values as well as the tool name: the config documents this cap as covering "tool
+        // arguments", and they are the part of a tool step a caller can actually make enormous.
+        ToolUseStepConfiguration c => BeWithinStringCap(c.ToolName)
+            && c.InputParameters.Values.OfType<string>().All(BeWithinStringCap),
         HumanGateStepConfiguration c => BeWithinStringCap(c.EscalationMessage)
             && c.Approvers.All(BeWithinStringCap),
         ConditionalBranchStepConfiguration c => BeWithinStringCap(c.ConditionExpression),
         RetrievalWorkflowStepConfiguration c => BeWithinStringCap(c.Query),
         _ => true
     };
+
+    /// <summary>
+    /// Holds a submitted condition expression to the same rule the branch executor applies.
+    /// </summary>
+    /// <remarks>
+    /// Without this, an expression the executor will refuse is admitted and stored: the workflow looks
+    /// healthy, and the first run fails at the branch with a rejection the author never saw. Both sides
+    /// call <see cref="ConditionExpressionRules"/> so there is one definition rather than two that can
+    /// drift apart.
+    /// </remarks>
+    private static bool CarryAnEvaluableCondition(WorkflowStepConfiguration? configuration) =>
+        configuration is not ConditionalBranchStepConfiguration branch
+        || ConditionExpressionRules.IsSafe(branch.ConditionExpression);
 
     /// <summary>
     /// Requires each step to carry the content its type cannot function without.
@@ -242,12 +280,16 @@ public sealed class SubmitWorkflowCommandValidator : AbstractValidator<SubmitWor
 
     private static bool HaveResolvableEdgeEndpoints(WorkflowDefinition definition)
     {
+        if (!ContainNoNullElements(definition.Steps) || !ContainNoNullElements(definition.Edges))
+            return true; // reported by the null-element rules; do not also throw here
+
         var names = definition.Steps.Select(s => s.Name).ToHashSet(StringComparer.Ordinal);
         return definition.Edges.All(e => names.Contains(e.From) && names.Contains(e.To));
     }
 
     private bool RespectFanOutCap(WorkflowDefinition definition) =>
-        definition.Edges
+        !ContainNoNullElements(definition.Edges)
+        || definition.Edges
             .GroupBy(e => e.From, StringComparer.Ordinal)
             .All(group => group.Count() <= Caps.MaxFanOutPerStep);
 
@@ -263,6 +305,9 @@ public sealed class SubmitWorkflowCommandValidator : AbstractValidator<SubmitWor
     /// </remarks>
     private static bool HaveUnambiguousConditionalBranches(WorkflowDefinition definition)
     {
+        if (!ContainNoNullElements(definition.Steps) || !ContainNoNullElements(definition.Edges))
+            return true; // reported by the null-element rules; do not also throw here
+
         var conditionalSteps = definition.Steps
             .Where(s => s.Type == StepType.ConditionalBranch)
             .Select(s => s.Name);

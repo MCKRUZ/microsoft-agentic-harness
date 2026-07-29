@@ -426,4 +426,65 @@ public sealed class SubmitWorkflowCommandValidatorTests
 
         Sut.Validate(Command([LlmStep("any")])).IsValid.Should().BeTrue();
     }
+
+    [Fact]
+    public void Validate_OversizedToolArgumentValue_IsRejected()
+    {
+        // The cap documents itself as covering "tool arguments", and the argument values are the part
+        // of a tool step a caller can actually make enormous — the tool name is short by nature.
+        _config.WorkflowSubmission.MaxStringFieldLength = 16;
+
+        var step = new WorkflowStep
+        {
+            Name = "tool",
+            Type = StepType.ToolUse,
+            Configuration = new ToolUseStepConfiguration
+            {
+                ToolName = "file_system",
+                InputParameters = new Dictionary<string, object?> { ["content"] = new string('x', 17) }
+            }
+        };
+
+        Sut.Validate(Command([step])).IsValid.Should().BeFalse();
+    }
+
+    [Fact]
+    public void Validate_ToolArgumentWithinTheCap_IsAccepted()
+    {
+        _config.WorkflowSubmission.MaxStringFieldLength = 16;
+
+        var step = new WorkflowStep
+        {
+            Name = "tool",
+            Type = StepType.ToolUse,
+            Configuration = new ToolUseStepConfiguration
+            {
+                ToolName = "fs",
+                InputParameters = new Dictionary<string, object?> { ["content"] = "short", ["count"] = 3 }
+            }
+        };
+
+        Sut.Validate(Command([step])).IsValid.Should().BeTrue();
+    }
+
+    [Theory]
+    [InlineData("score.value > 5")]
+    [InlineData("typeof(x)")]
+    public void Validate_ConditionTheBranchEvaluatorWouldRefuse_IsRejected(string expression)
+    {
+        var branch = new WorkflowStep
+        {
+            Name = "branch",
+            Type = StepType.ConditionalBranch,
+            Configuration = new ConditionalBranchStepConfiguration { ConditionExpression = expression }
+        };
+
+        var edges = new List<WorkflowEdge>
+        {
+            new() { From = "branch", To = "yes", Type = EdgeType.ConditionalTrue },
+            new() { From = "branch", To = "no", Type = EdgeType.ConditionalFalse }
+        };
+
+        Sut.Validate(Command([branch, LlmStep("yes"), LlmStep("no")], edges)).IsValid.Should().BeFalse();
+    }
 }

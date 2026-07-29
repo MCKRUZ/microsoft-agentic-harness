@@ -343,4 +343,74 @@ public sealed class SubmitWorkflowCommandHandlerTests
         result.FailureType.Should().NotBe(ResultFailureType.Validation);
         result.Errors.Should().NotContainMatch("*dependency unavailable*");
     }
+
+    [Fact]
+    public async Task Handle_ChildGraphThatFansOutBeyondTheLookupBudget_IsRejected()
+    {
+        // Depth alone does not bound the walk: breadth multiplies at every level. A caller can admit
+        // cheap plans that each name one child many times, then submit one request whose resolution
+        // costs breadth^depth store reads. Rate limiting counts requests, not the work behind them.
+        var sut = BuildSut(maxNestingDepth: 3);
+
+        // 40 distinct children, each of which names 40 distinct grandchildren: 1 + 40 + 1600 lookups.
+        var roots = Enumerable.Range(0, 40).Select(_ => Guid.NewGuid()).ToList();
+        var leaves = Enumerable.Range(0, 40).Select(_ => Guid.NewGuid()).ToList();
+
+        foreach (var leafId in leaves)
+            SetupVisiblePlan(new PlanId(leafId));
+
+        foreach (var rootId in roots)
+            _planStore
+                .Setup(s => s.LoadPlanAsync(new PlanId(rootId), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(Result<PlanGraph?>.Success(PlanInvoking(new PlanId(rootId), leaves)));
+
+        var steps = roots.Select((id, i) => SubPlanStep($"child{i}", id)).ToArray();
+
+        var result = await sut.Handle(Command(steps), CancellationToken.None);
+
+        result.IsSuccess.Should().BeFalse();
+        result.Errors.Should().ContainMatch("*budget*");
+    }
+
+    [Fact]
+    public async Task Handle_StoredChildNamingOneGrandchildManyTimes_CostsOneLookup()
+    {
+        // The dedupe under test is inside ChildReferencesOf — a STORED plan whose steps all invoke the
+        // same grandchild describes one subtree, not fifty. (The root list is deduped separately, so a
+        // test that repeats a reference in the SUBMITTED steps proves the wrong thing.) Deduping within
+        // a node is not the shared-visited-set mistake: every copy inside one plan sits at the same
+        // depth, so collapsing them cannot under-report depth.
+        var sut = BuildSut();
+        var childId = Guid.NewGuid();
+        var grandchildId = Guid.NewGuid();
+
+        _planStore
+            .Setup(s => s.LoadPlanAsync(new PlanId(childId), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<PlanGraph?>.Success(PlanInvoking(
+                new PlanId(childId), [.. Enumerable.Repeat(grandchildId, 50)])));
+        SetupVisiblePlan(new PlanId(grandchildId));
+
+        var result = await sut.Handle(Command(SubPlanStep("child", childId)), CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        _planStore.Verify(
+            s => s.LoadPlanAsync(new PlanId(grandchildId), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    /// <summary>A stored plan whose steps invoke each of <paramref name="childIds"/> once.</summary>
+    private static PlanGraph PlanInvoking(PlanId id, IReadOnlyList<Guid> childIds) => new()
+    {
+        Id = id,
+        Name = "fan-out",
+        Steps = [.. childIds.Select((childId, i) => new PlanStep
+        {
+            Id = PlanStepId.New(),
+            Name = $"invoke{i}",
+            Type = StepType.SubPlanInvocation,
+            Configuration = new SubPlanConfig { ChildPlanId = new PlanId(childId) },
+            RetryPolicy = new RetryPolicy()
+        })],
+        Edges = [],
+        Configuration = new PlanConfiguration()
+    };
 }
