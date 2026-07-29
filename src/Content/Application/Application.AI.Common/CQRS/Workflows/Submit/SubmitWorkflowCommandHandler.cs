@@ -68,13 +68,7 @@ public sealed class SubmitWorkflowCommandHandler
         var nesting = await ValidateChildReferencesAsync(
             request.Definition, submissionConfig.MaxSubPlanNestingDepth, cancellationToken).ConfigureAwait(false);
         if (!nesting.IsSuccess)
-        {
-            // The walk distinguishes a bad submission from a store fault, and that distinction has to
-            // survive: a caller told its request is malformed will not retry a transient read failure.
-            return nesting.FailureType == ResultFailureType.Validation
-                ? Result<SubmitWorkflowResult>.ValidationFailure([.. nesting.Errors])
-                : Result<SubmitWorkflowResult>.Fail([.. nesting.Errors]);
-        }
+            return Propagate(nesting);
 
         var mapped = WorkflowDefinitionMapper.MapToPlanGraph(request.Definition);
         if (!mapped.IsSuccess || mapped.Value is null)
@@ -82,42 +76,74 @@ public sealed class SubmitWorkflowCommandHandler
 
         var plan = mapped.Value;
 
-        // Structural validation — cycles, reachability, branch completeness — via the same
-        // IPlanValidator the executor runs, on the mapped graph. The wire contract deliberately does
-        // not re-implement any of it, which only holds if it actually runs here: without this call a
-        // submission whose steps form a cycle passes every admission rule, is stored, and fails on
-        // first execution. That reports the defect to whoever ran the workflow rather than to whoever
-        // wrote it, which is the whole thing admission exists to prevent.
+        var structure = await ValidateStructureAsync(plan, cancellationToken).ConfigureAwait(false);
+        if (!structure.IsSuccess)
+            return Propagate(structure);
+
+        var quota = await EnforceStorageQuotaAsync(
+            submissionConfig.MaxStoredWorkflowsPerOwner, cancellationToken).ConfigureAwait(false);
+        if (!quota.IsSuccess)
+            return Propagate(quota);
+
+        return await PersistAsync(plan, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Carries a step's failure outward while preserving whether it blames the caller or the host.
+    /// </summary>
+    /// <remarks>
+    /// Every stage of this handler can fail either way, and collapsing the two would tell a caller its
+    /// request was malformed when a database was briefly unavailable — so it would not retry something
+    /// that would have worked.
+    /// </remarks>
+    private static Result<SubmitWorkflowResult> Propagate(Result failure) =>
+        failure.FailureType == ResultFailureType.Validation
+            ? Result<SubmitWorkflowResult>.ValidationFailure([.. failure.Errors])
+            : Result<SubmitWorkflowResult>.Fail([.. failure.Errors]);
+
+    /// <summary>
+    /// Runs the shared structural validation — cycles, reachability, branch completeness — on the
+    /// mapped graph.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The wire contract deliberately does not re-implement any of these rules, which only holds if
+    /// they actually run here. Without this a submission whose steps form a cycle passes every
+    /// admission rule, is stored, and fails on first execution — reporting the defect to whoever ran
+    /// the workflow rather than to whoever wrote it.
+    /// </para>
+    /// <para>
+    /// <see cref="IPlanValidator"/> reports a structurally invalid plan as a <em>failed</em> result of
+    /// validation type, not as a successful one carrying <c>IsValid = false</c>. Reading it the other
+    /// way round turns every rejected plan into a 500. The <c>IsValid</c> check still runs because the
+    /// interface permits that shape and an alternative implementation may use it.
+    /// </para>
+    /// </remarks>
+    private async Task<Result> ValidateStructureAsync(PlanGraph plan, CancellationToken cancellationToken)
+    {
         var structure = await _validator.ValidateAsync(plan, cancellationToken).ConfigureAwait(false);
 
-        // IPlanValidator reports a structurally invalid plan as a *failed* Result of validation type —
-        // not as a successful result carrying IsValid = false. Reading it the other way round turns
-        // every rejected plan into a 500. The IsValid check below still runs because the interface
-        // permits that shape and an alternative implementation may use it.
         if (!structure.IsSuccess)
         {
             if (structure.FailureType == ResultFailureType.Validation)
-                return Result<SubmitWorkflowResult>.ValidationFailure([.. structure.Errors]);
+                return Result.ValidationFailure([.. structure.Errors]);
 
             _logger.LogError(
                 "Structural validation could not be completed for submitted workflow {WorkflowName}: {Errors}",
                 plan.Name, string.Join("; ", structure.Errors));
 
-            return Result<SubmitWorkflowResult>.Fail("The workflow could not be validated.");
+            return Result.Fail("The workflow could not be validated.");
         }
 
-        if (structure.Value is { IsValid: false } invalid)
-            return Result<SubmitWorkflowResult>.ValidationFailure([.. invalid.Errors]);
+        return structure.Value is { IsValid: false } invalid
+            ? Result.ValidationFailure([.. invalid.Errors])
+            : Result.Success();
+    }
 
-        var quota = await EnforceStorageQuotaAsync(
-            submissionConfig.MaxStoredWorkflowsPerOwner, cancellationToken).ConfigureAwait(false);
-        if (!quota.IsSuccess)
-        {
-            return quota.FailureType == ResultFailureType.Validation
-                ? Result<SubmitWorkflowResult>.ValidationFailure([.. quota.Errors])
-                : Result<SubmitWorkflowResult>.Fail([.. quota.Errors]);
-        }
-
+    /// <summary>Stores the admitted plan and builds the caller's response.</summary>
+    private async Task<Result<SubmitWorkflowResult>> PersistAsync(
+        PlanGraph plan, CancellationToken cancellationToken)
+    {
         var saved = await _planStore.SavePlanAsync(plan, cancellationToken).ConfigureAwait(false);
         if (!saved.IsSuccess)
         {

@@ -4,6 +4,7 @@ using System.Text.Json;
 using FluentAssertions;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Xunit;
+using static Presentation.ExecutionApi.Tests.WorkflowRequests;
 
 namespace Presentation.ExecutionApi.Tests;
 
@@ -62,20 +63,6 @@ public sealed class WorkflowsControllerIntegrationTests : IClassFixture<WebAppli
         }
     }
 
-    private static object LlmStep(string name) => new
-    {
-        name,
-        type = "LlmCall",
-        configuration = new { type = "llm_call", systemPrompt = "do the thing", modelDeploymentKey = "gpt-4o" }
-    };
-
-    private static object Definition(object[] steps, object[]? edges = null) => new
-    {
-        name = "integration-workflow",
-        steps,
-        edges = edges ?? []
-    };
-
     [Fact]
     public async Task Submit_ValidWorkflow_IsStoredAndReturnsTheMintedIdentifiers()
     {
@@ -88,7 +75,7 @@ public sealed class WorkflowsControllerIntegrationTests : IClassFixture<WebAppli
 
         var body = await response.Content.ReadFromJsonAsync<JsonElement>();
         body.GetProperty("workflowId").GetGuid().Should().NotBeEmpty();
-        body.GetProperty("name").GetString().Should().Be("integration-workflow");
+        body.GetProperty("name").GetString().Should().Be("test-workflow");
 
         var stepIds = body.GetProperty("stepIds");
         stepIds.GetProperty("draft").GetGuid().Should().NotBeEmpty();

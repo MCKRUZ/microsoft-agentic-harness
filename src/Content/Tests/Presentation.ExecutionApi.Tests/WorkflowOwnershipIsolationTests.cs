@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit;
+using static Presentation.ExecutionApi.Tests.WorkflowRequests;
 
 namespace Presentation.ExecutionApi.Tests;
 
@@ -47,20 +48,6 @@ public sealed class WorkflowOwnershipIsolationTests
         return request;
     }
 
-    private static object LlmStep(string name) => new
-    {
-        name,
-        type = "LlmCall",
-        configuration = new { type = "llm_call", systemPrompt = "do the thing", modelDeploymentKey = "gpt-4o" }
-    };
-
-    private static object Definition(object[] steps) => new
-    {
-        name = "owned-workflow",
-        steps,
-        edges = Array.Empty<object>()
-    };
-
     /// <summary>
     /// Reads the minted workflow id, asserting the submission actually succeeded first. Without the
     /// status assertion a failed submission surfaces as a KeyNotFoundException from the JSON read,
@@ -83,15 +70,7 @@ public sealed class WorkflowOwnershipIsolationTests
         var childId = await WorkflowIdOfAsync(owned);
 
         var stolen = await client.SendAsync(Submit(
-            Definition(
-            [
-                new
-                {
-                    name = "invoke-someone-elses",
-                    type = "SubPlanInvocation",
-                    configuration = new { type = "sub_plan", childWorkflowId = childId }
-                }
-            ]),
+            Definition([SubPlanStep("invoke-someone-elses", childId)]),
             "mallory", "acme"));
 
         // Rejected, and rejected as "does not exist or is not available" — the same answer a genuinely
@@ -112,15 +91,7 @@ public sealed class WorkflowOwnershipIsolationTests
         var childId = await WorkflowIdOfAsync(owned);
 
         var reused = await client.SendAsync(Submit(
-            Definition(
-            [
-                new
-                {
-                    name = "invoke-my-own",
-                    type = "SubPlanInvocation",
-                    configuration = new { type = "sub_plan", childWorkflowId = childId }
-                }
-            ]),
+            Definition([SubPlanStep("invoke-my-own", childId)]),
             "alice", "acme"));
 
         reused.StatusCode.Should().Be(HttpStatusCode.Created);
@@ -136,15 +107,7 @@ public sealed class WorkflowOwnershipIsolationTests
         var childId = await WorkflowIdOfAsync(owned);
 
         var crossTenant = await client.SendAsync(Submit(
-            Definition(
-            [
-                new
-                {
-                    name = "invoke-across-tenants",
-                    type = "SubPlanInvocation",
-                    configuration = new { type = "sub_plan", childWorkflowId = childId }
-                }
-            ]),
+            Definition([SubPlanStep("invoke-across-tenants", childId)]),
             "alice", "other-corp"));
 
         crossTenant.StatusCode.Should().Be(HttpStatusCode.BadRequest);
