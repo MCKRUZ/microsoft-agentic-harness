@@ -412,6 +412,33 @@ public sealed class SubmitWorkflowCommandValidatorTests
     }
 
     [Fact]
+    public void Validate_HumanGateWithANullApproverList_IsRejectedRatherThanThrowing()
+    {
+        // `"approvers": null` on the wire overwrites the property's empty-list initializer, so every
+        // rule that reads the list would dereference null. The caller is authenticated and the outcome
+        // would be a 500 from the admission path — the same shape a null step element produced once
+        // before, and the reason every collection predicate here has to tolerate one.
+        _config.WorkflowSubmission.PermittedApprovers = ["alice"];
+
+        var gate = new WorkflowStep
+        {
+            Name = "gate",
+            Type = StepType.HumanGate,
+            Configuration = new HumanGateStepConfiguration
+            {
+                EscalationMessage = "approve the spend",
+                ApprovalStrategy = ApprovalStrategy.AnyOf,
+                Approvers = null!
+            }
+        };
+
+        var act = () => Sut.Validate(Command([gate]) with { SubmitterApproverName = "dave" });
+
+        act.Should().NotThrow();
+        act().IsValid.Should().BeFalse("a gate nobody can answer is refused, not accepted");
+    }
+
+    [Fact]
     public void Validate_AWorkflowWithNoGate_IsUnaffectedByTheApproverRules()
     {
         // The roster governs gates, not submissions. A workflow that asks nobody to approve anything

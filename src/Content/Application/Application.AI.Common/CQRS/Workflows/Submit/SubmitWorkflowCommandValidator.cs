@@ -140,7 +140,7 @@ public sealed class SubmitWorkflowCommandValidator : AbstractValidator<SubmitWor
     /// </remarks>
     private bool GatesNameOnlyPermittedApprovers(IReadOnlyList<WorkflowStep>? steps) =>
         HumanGatesIn(steps).All(gate =>
-            gate.Approvers.All(approver => Caps.PermittedApprovers.Contains(approver, ApproverNames.Comparer)));
+            ApproversOf(gate).All(approver => Caps.PermittedApprovers.Contains(approver, ApproverNames.Comparer)));
 
     /// <summary>
     /// No submitted gate may name the caller submitting it.
@@ -173,8 +173,22 @@ public sealed class SubmitWorkflowCommandValidator : AbstractValidator<SubmitWor
         if (command.SubmitterApproverName is not { } submitter)
             return false;
 
-        return gates.All(gate => !gate.Approvers.Contains(submitter, ApproverNames.Comparer));
+        return gates.All(gate => !ApproversOf(gate).Contains(submitter, ApproverNames.Comparer));
     }
+
+    /// <summary>
+    /// A gate's approver list, or an empty one when the caller sent <c>"approvers": null</c>.
+    /// </summary>
+    /// <remarks>
+    /// The property carries an empty-list initializer, which System.Text.Json overwrites with null for
+    /// an explicit JSON null — so the initializer is not the guarantee it looks like. Every rule that
+    /// reads the list goes through here, because the alternative is an unhandled dereference and a 500
+    /// on the admission path, which is the same failure a null step element already produced once. The
+    /// empty result then fails the "at least one approver" rule and the caller gets the 400 it should
+    /// have had.
+    /// </remarks>
+    private static IReadOnlyList<string> ApproversOf(HumanGateStepConfiguration gate) =>
+        gate.Approvers ?? [];
 
     /// <summary>The human-gate configurations in a submission, skipping nulls and other step types.</summary>
     private static IEnumerable<HumanGateStepConfiguration> HumanGatesIn(IReadOnlyList<WorkflowStep>? steps) =>
@@ -271,7 +285,7 @@ public sealed class SubmitWorkflowCommandValidator : AbstractValidator<SubmitWor
         ToolUseStepConfiguration c => BeWithinStringCap(c.ToolName)
             && c.InputParameters.Values.OfType<string>().All(BeWithinStringCap),
         HumanGateStepConfiguration c => BeWithinStringCap(c.EscalationMessage)
-            && c.Approvers.All(BeWithinStringCap),
+            && ApproversOf(c).All(BeWithinStringCap),
         ConditionalBranchStepConfiguration c => BeWithinStringCap(c.ConditionExpression),
         RetrievalWorkflowStepConfiguration c => BeWithinStringCap(c.Query),
         _ => true
@@ -305,8 +319,8 @@ public sealed class SubmitWorkflowCommandValidator : AbstractValidator<SubmitWor
             && !string.IsNullOrWhiteSpace(c.ModelDeploymentKey),
         ToolUseStepConfiguration c => !string.IsNullOrWhiteSpace(c.ToolName),
         HumanGateStepConfiguration c => !string.IsNullOrWhiteSpace(c.EscalationMessage)
-            && c.Approvers.Count > 0
-            && c.Approvers.All(approver => !string.IsNullOrWhiteSpace(approver)),
+            && ApproversOf(c).Count > 0
+            && ApproversOf(c).All(approver => !string.IsNullOrWhiteSpace(approver)),
         ConditionalBranchStepConfiguration c => !string.IsNullOrWhiteSpace(c.ConditionExpression),
         RetrievalWorkflowStepConfiguration c => !string.IsNullOrWhiteSpace(c.Query),
         _ => true
