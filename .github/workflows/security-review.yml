@@ -18,7 +18,7 @@ name: Security Review
 # reports three distinct outcomes — a real finding, an incomplete review, and a
 # reviewer that never started — because they need different responses from a human.
 # Do not collapse them back into one message: an earlier version blamed a missing
-# ANTHROPIC_API_KEY for every empty verdict, and that guess cost real debugging time
+# a missing credential for every empty verdict, and that guess cost real debugging time
 # on PR #186 when the actual cause was the reviewer exhausting its turn budget.
 
 on:
@@ -169,7 +169,7 @@ jobs:
             echo "::error::Security review wrote no verdict at all — it failed before its first action. Failing closed."
             echo "This is an infrastructure fault, NOT a finding about this PR."
             echo "Reviewer step outcome: ${REVIEWER_OUTCOME}. Check the 'Run security-reviewer' step log."
-            echo "Common causes: ANTHROPIC_API_KEY missing or invalid, the Claude GitHub App not installed, or the action failing to start (see .github/RAILS.md)."
+            echo "Common causes: CLAUDE_CODE_OAUTH_TOKEN missing, expired or rejected, the Claude GitHub App not installed, or the action failing to start (see .github/RAILS.md). Note the rails authenticate with the OAuth token, NOT ANTHROPIC_API_KEY."
             exit 1
           fi
           echo "Verdict file:"; cat "$VERDICT_FILE"

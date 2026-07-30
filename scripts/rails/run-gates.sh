@@ -10,7 +10,7 @@
 # WHY IT EXISTS — two reasons, in order:
 #
 #   1. Cost. The remote reviewers run through the Claude GitHub Action against
-#      ANTHROPIC_API_KEY, i.e. metered API credits, and they re-run on EVERY push
+#      the SAME Claude subscription this script uses, and they re-run on EVERY push
 #      to the PR branch (the workflows trigger on `synchronize`). A fix-then-push
 #      rhythm therefore pays for the expensive Opus reviewers two or three times
 #      per PR. This script runs the identical reviewers through the LOCAL `claude`
@@ -28,7 +28,7 @@
 # this script.
 #
 # HONEST DIFFERENCES FROM CI (each one deliberate, none of them silent):
-#   * Billing: local Claude subscription, not ANTHROPIC_API_KEY.
+#   * Billing: your local `claude` CLI session; CI uses CLAUDE_CODE_OAUTH_TOKEN. Same pot.
 #   * No PR comment is posted — findings print to your terminal. There is no PR.
 #   * No turn ceiling. The remote gates pass --max-turns to bound API spend; the
 #     local CLI exposes no equivalent flag, so a local review is unbounded in

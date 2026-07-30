@@ -17,11 +17,11 @@ name: Correctness Review
 # `accepted-risk:correctness` label.
 #
 # Fail-safe: a source change whose review cannot complete (e.g. missing
-# ANTHROPIC_API_KEY before go-live) BLOCKS rather than passes.
+# CLAUDE_CODE_OAUTH_TOKEN before go-live) BLOCKS rather than passes.
 #
 # NOT YET A REQUIRED CHECK: this ships wired and fail-closed, but is intentionally
 # left out of .github/rulesets/main-branch-protection.json so merging it does not
-# wedge every source PR before the Claude GitHub App + ANTHROPIC_API_KEY are live.
+# wedge every source PR before the Claude GitHub App + CLAUDE_CODE_OAUTH_TOKEN are live.
 # Flipping it on is a documented go-live step — see .github/RAILS.md.
 
 on:
@@ -105,7 +105,7 @@ jobs:
         continue-on-error: true
         uses: anthropics/claude-code-action@v1
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           prompt: |
             You are running as the correctness-reviewer for PR #${{ github.event.pull_request.number }}.
@@ -160,7 +160,7 @@ jobs:
             echo "::error::Correctness review wrote no verdict at all — it failed before its first action. Failing closed."
             echo "This is an infrastructure fault, NOT a finding about this PR."
             echo "Reviewer step outcome: ${REVIEWER_OUTCOME}. Check the 'Run correctness-reviewer' step log."
-            echo "Common causes: ANTHROPIC_API_KEY missing or invalid, the Claude GitHub App not installed, or the action failing to start (see .github/RAILS.md)."
+            echo "Common causes: CLAUDE_CODE_OAUTH_TOKEN missing, expired or rejected, the Claude GitHub App not installed, or the action failing to start (see .github/RAILS.md). Note the rails authenticate with the OAuth token, NOT ANTHROPIC_API_KEY."
             exit 1
           fi
           echo "Verdict file:"; cat "$VERDICT_FILE"

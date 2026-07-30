@@ -14,28 +14,31 @@ them live, and how to prove they actually catch things.
 | **build-and-test** | `workflows/ci.yml` | every PR | **Blocks** (hard gate) |
 | **OWASP Agentic Top-10 Gate** | `workflows/ci.yml` | every PR | **Blocks** (hard gate) |
 | **security-review** | `workflows/security-review.yml` | every PR; reviews when the diff contains security-relevant code, touches a gated path, or carries `risk:high` | **Blocks on HIGH** |
-| **correctness-review** | `workflows/correctness-review.yml` | ~~every PR~~ — **workflow disabled** | Run locally instead (see below) |
-| **grader** | `workflows/grader.yml` | ~~every PR~~ — **workflow disabled** | Run locally instead (see below) |
-| **docs-drift** | `workflows/docs-drift-check.yml` | ~~push to main~~ — **workflow disabled** | Run locally instead (see below) |
+| **correctness-review** | `workflows/correctness-review.yml` | every PR | Advisory comment |
+| **grader** | `workflows/grader.yml` | every PR | Advisory comment |
+| **docs-drift** | `workflows/docs-drift-check.yml` | push to main | Advisory comment |
 | **Stop gate** | `../.claude/hooks/stop-build-gate.ps1` | agent tries to finish locally | **Blocks** a red build |
 
-> **Three workflows are currently disabled at the GitHub level** (`gh workflow disable`),
-> not deleted: correctness-review, grader, and docs-drift. They call the Claude API against
-> `ANTHROPIC_API_KEY` and re-trigger on every push to a PR branch, so a fix-then-push rhythm
-> was paying for the Opus correctness reviewer several times per PR. Their local equivalents in
-> `scripts/rails/run-gates.sh` run the same rubrics through the developer's Claude subscription
-> instead. Re-enable any of them with `gh workflow enable <file>.yml`.
+> **All four AI rails run on the Claude subscription, not metered API credits.** Every one of
+> them passes `claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}` and **no**
+> `anthropic_api_key`. That is the whole reason they can be enabled at all: correctness-review,
+> grader and docs-drift were previously disabled at the GitHub level because they billed
+> `ANTHROPIC_API_KEY` and re-trigger on every push to a PR branch, so a fix-then-push rhythm paid
+> for the Opus correctness reviewer several times per PR. Same reviewers, same rubrics, different
+> pot — the one `scripts/rails/run-gates.sh` already used locally.
 >
-> **security-review stays enabled and required.** It is deliberately the exception: it is a
-> required status check in the ruleset (disabling it would wedge every PR on a check that never
-> reports), and its expensive step only fires when the diff is actually security-relevant. With
-> the other three rails off it is the only remote review that runs, which is exactly why its
-> trigger was widened from folder names to diff content — see
-> `.github/scripts/security-gate-scope.sh`. Expect it to fire on most `src/**` PRs in this repo
-> and to cost accordingly; that is the intended trade, not a misconfiguration.
-> The honest consequence of the other three being off is that correctness
-> and doc-drift coverage is now on the honour system — nothing verifies a developer ran the
-> local gate. Treat that as a deliberate, reversible trade, not as those gates being retired.
+> **Do not add `anthropic_api_key` back as a fallback.** The action forwards both credentials to
+> the CLI and does not itself decide precedence, so passing both leaves the billing pot undefined
+> and silently reintroduces the metered spend. A missing or rejected token must fail loudly.
+>
+> `run-gates.sh` is now a genuine pre-flight rather than a substitute: it catches findings before
+> a PR cycle, but the remote rails are the enforcement boundary again. Correctness and doc-drift
+> coverage is no longer on the honour system.
+>
+> **security-review is the only one that is also a *required* check**, so disabling it would wedge
+> every PR on a check that never reports. Its expensive step fires when the diff is actually
+> security-relevant — see `.github/scripts/security-gate-scope.sh`. Expect it on most `src/**` PRs;
+> that is the intended trade, not a misconfiguration.
 
 Branch protection (`rulesets/main-branch-protection.json`) makes the three
 blocking checks mandatory and requires a non-author approval + code-owner review.
@@ -58,12 +61,11 @@ Note that the reviewers diff **committed** state (`<base>...HEAD`), exactly as C
 Running the gate with work still in the working tree reviews the previous commit and will
 happily report on code you have already changed — commit first, then run.
 
-Two reasons to use it. **Cost:** the remote reviewers run against
-`ANTHROPIC_API_KEY` (metered API credits) and re-trigger on *every* push to the
-PR branch, so a fix-then-push rhythm pays for the expensive Opus reviewers two or
-three times per PR; the local runner drives the identical reviewers through your
-`claude` CLI, billing your Claude subscription instead. Clear the gates locally,
-push once, pay for one remote cycle. **Latency:** a local BLOCK arrives in minutes
+Two reasons to use it. **Cost:** the remote reviewers re-trigger on *every* push to the PR
+branch, so a fix-then-push rhythm pays for the expensive Opus reviewers two or three times per
+PR. Both now bill the same Claude subscription, so this is a question of how much of your
+subscription allowance a PR consumes rather than which pot it comes from. Clear the gates
+locally, push once, pay for one remote cycle. **Latency:** a local BLOCK arrives in minutes
 without burning a PR cycle.
 
 It is a pre-flight, **not** a replacement. It runs on a developer's machine with
@@ -79,11 +81,14 @@ These are deliberate, outward-facing actions. Nothing in this PR performs them.
 1. **Install the Claude GitHub App** on the repo: run `/install-github-app` in
    Claude Code, or install from <https://github.com/apps/claude>. Needed for the
    grader, security-review, and docs-drift workflows. (Repo admin required.)
-2. **Add the `ANTHROPIC_API_KEY` repository secret** (Settings → Secrets and
-   variables → Actions). The grader, security-review, and correctness-review steps
-   call the Claude API; there is a real per-PR token cost. Until this is set, the
-   security-review and correctness-review gates **fail closed on the PRs they
-   review** (by design) and the grader stays green/no-op.
+2. **Add the `CLAUDE_CODE_OAUTH_TOKEN` repository secret.** Mint it in a real terminal with
+   `claude setup-token` (it needs an interactive TTY — running it inside an agent session
+   produces no output), then `gh secret set CLAUDE_CODE_OAUTH_TOKEN` and paste at the prompt so
+   the value never reaches your shell history. All four AI rails authenticate with this and
+   nothing else, so the spend lands on the Claude subscription. Until it is set, the
+   security-review and correctness-review gates **fail closed on the PRs they review** (by
+   design) and the grader stays green/no-op. `ANTHROPIC_API_KEY` is no longer used by any
+   workflow — see the note under the gates table before adding it back.
 3. **Apply branch protection** once you've read the desired ruleset:
    ```bash
    scripts/rails/apply-branch-protection.sh --dry-run   # review the plan
