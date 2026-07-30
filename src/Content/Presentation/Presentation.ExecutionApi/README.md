@@ -28,6 +28,13 @@ It is a composition root, exactly like `Presentation.AgentHub`: `builder.Service
 │  │  GET    /{handle}/runs/{jobId}/stream → BundleRunStreamer (SSE)        │ │
 │  │  DELETE /{handle}                → DeleteBundleCommand                 │ │
 │  └───────────────────────────────┬────────────────────────────────────────┘ │
+│  ┌───────────────────────────────┴────────────────────────────────────────┐ │
+│  │  ToolsController  [Authorize]  /api/tools        ← read-only discovery │ │
+│  │                                                                        │ │
+│  │  GET    /                        → IToolCatalog.ListGranted            │ │
+│  │  GET    /{name}                  → IToolCatalog.FindGranted (404 both  │ │
+│  │                                    for absent AND ungranted)           │ │
+│  └───────────────────────────────┬────────────────────────────────────────┘ │
 └──────────────────────────────────┼──────────────────────────────────────────┘
                                    │ MediatR (validation + audit behaviors)
                                    ▼
@@ -109,9 +116,13 @@ The stream policy is concurrency rather than rate on purpose: a streamed run exe
 Presentation.ExecutionApi/
 ├── Program.cs                       Composition root + middleware pipeline (order is not negotiable)
 ├── Controllers/
-│   └── BundlesController.cs         The five endpoints; resolves the envelope; maps Result → ProblemDetails
+│   ├── BundlesController.cs         The five endpoints; resolves the envelope; maps Result → ProblemDetails
+│   ├── WorkflowsController.cs       Workflow submission, runs, progress stream, cancel
+│   └── ToolsController.cs           Read-only tool discovery, filtered by the caller's envelope
 ├── DTOs/
-│   └── BundleApiContracts.cs        Register/Start/Run responses; BundleRunResponse projects the record
+│   ├── BundleApiContracts.cs        Register/Start/Run responses; BundleRunResponse projects the record
+│   ├── WorkflowRunContracts.cs      Run start/cancel/status projections
+│   └── ToolCatalogContracts.cs      Catalog entry + listing; RiskTier travels as a name, not an ordinal
 ├── Extensions/
 │   └── ExecutionApiServiceCollectionExtensions.cs   Controllers, auth, FormOptions cap, rate limiters
 ├── Services/
@@ -170,6 +181,26 @@ There is no `Properties/launchSettings.json`, so set `ASPNETCORE_URLS` explicitl
 ### Grant a caller some capabilities
 
 Add an entry under `Envelopes:BySubject` keyed on the caller's `sub`/name-identifier claim (**not** `oid`), or under `Envelopes:ByRole` keyed on an app role. Remember that multiple matching roles *intersect*, and that only an `Autonomous` ceiling currently permits tool execution -- `Supervised`/`Restricted` suspend tool use entirely because mid-run approval routing is deferred (documented on `CapabilityEnvelope.AutonomyCeiling`).
+
+### Decide what to put in a caller's `AllowedTools`
+
+`GET /api/tools` answers this from the caller's side, but two things are the operator's job and no
+endpoint can decide them for you.
+
+**Never grant these over HTTP.** `dashboard_control` and the `render_*` tools (`render_chart`,
+`render_image`, `render_form`, `render_table`) exist to drive an interactive client through
+`IClientToolBridge`, which **only AgentHub registers**. Granting them to an HTTP caller is
+meaningless at best: there is no client on the other end to render into. `echo_lookup` and
+`echo_calculate` are demo fixtures — grant them in a smoke test, never in an environment that
+matters.
+
+**Registered is not the same as available.** Those same five tools are registered in *every* host
+because tool registration is shared, but in any host without `IClientToolBridge` they cannot be
+constructed at all. The catalog resolves tools one key at a time precisely so one such tool cannot
+fail the whole listing; it omits them and logs a warning naming the key. If you see that warning,
+it is telling you the truth about the host — not about the catalog. (The underlying sloppiness —
+hosts registering tools whose dependencies they do not provide — predates the catalog and is
+tracked separately; the catalog only made it visible.)
 
 ### Add an endpoint
 

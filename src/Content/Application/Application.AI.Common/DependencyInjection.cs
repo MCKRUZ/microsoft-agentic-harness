@@ -1,4 +1,5 @@
 using System.Reflection;
+using Microsoft.Extensions.Logging;
 using Application.AI.Common.Evaluation.Interfaces;
 using Application.AI.Common.Evaluation.Metrics.Governance;
 using Application.AI.Common.Evaluation.Metrics.Owasp;
@@ -154,6 +155,22 @@ public static class DependencyInjection
         // graded-autonomy gate and escalation-severity derivation.
         services.AddSingleton<Interfaces.Tools.IToolRiskClassifier, Services.Tools.ToolRiskClassifier>();
 
+        // Tool catalog — enumerates the host's keyed ITool registrations for callers that need to
+        // discover what they may invoke. Singleton because the registrations cannot change once the
+        // container is built, and because resolving every tool per request would be pure waste.
+        // Registered unconditionally and passively — nothing resolves it unless a host mounts a
+        // surface that lists tools.
+        //
+        // The factory closes over `services` deliberately. Reading the keys at REGISTRATION time
+        // would capture only the tools registered before this line, silently omitting the skill packs
+        // and connector tools that register after it; reading them when the catalog is first resolved
+        // sees the completed collection. This is what keeps discovery drift-free — there is no list
+        // for a new tool's DI file to remember to update.
+        services.AddSingleton<Interfaces.Tools.IToolCatalog>(sp => new Services.Tools.ToolCatalog(
+            sp,
+            KeyedToolRegistrationKeys(services),
+            sp.GetRequiredService<ILogger<Services.Tools.ToolCatalog>>()));
+
         // Context budget tracking
         services.AddSingleton<IContextBudgetTracker, ContextBudgetTracker>();
 
@@ -221,4 +238,23 @@ public static class DependencyInjection
 
         return services;
     }
+
+    /// <summary>
+    /// The keys under which <see cref="ITool"/> implementations are registered in
+    /// <paramref name="services"/>.
+    /// </summary>
+    /// <remarks>
+    /// Materialized on each call so the caller observes the collection as it stands then; the tool
+    /// catalog calls it when it is first resolved, by which point every skill pack and connector has
+    /// registered. Non-string keys are skipped: tools are keyed by name throughout the harness, and a
+    /// non-string key could not be supplied on the wire anyway.
+    /// </remarks>
+    private static IReadOnlyList<string> KeyedToolRegistrationKeys(IServiceCollection services) =>
+    [
+        .. services
+            .Where(descriptor => descriptor.IsKeyedService && descriptor.ServiceType == typeof(ITool))
+            .Select(descriptor => descriptor.ServiceKey as string)
+            .Where(key => !string.IsNullOrWhiteSpace(key))
+            .Select(key => key!)
+    ];
 }
