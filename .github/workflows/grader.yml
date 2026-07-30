@@ -9,7 +9,7 @@ name: Grader
 #
 # Prerequisites to go live (see .github/RAILS.md):
 #   * Claude GitHub App installed on the repo.
-#   * ANTHROPIC_API_KEY repository secret set.
+#   * CLAUDE_CODE_OAUTH_TOKEN repository secret set (subscription billing, not API credits).
 # Until then this workflow runs but the Claude step no-ops on the missing key
 # (continue-on-error keeps it green so it never adds false red to PRs).
 
@@ -79,7 +79,7 @@ jobs:
         continue-on-error: true
         uses: anthropics/claude-code-action@v1
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           prompt: |
             You are running as the grader for PR #${{ github.event.pull_request.number }}.
