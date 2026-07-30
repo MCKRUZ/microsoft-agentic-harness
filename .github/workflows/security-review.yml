@@ -107,7 +107,13 @@ jobs:
         continue-on-error: true
         uses: anthropics/claude-code-action@v1
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Billed to the Claude subscription, not metered API credits — the same
+          # pot scripts/rails/run-gates.sh uses locally. Deliberately the ONLY
+          # credential passed: handing the CLI both leaves precedence undefined,
+          # and a silent fallback to the API key would defeat the point of this.
+          # If the token is missing or rejected the check goes red, which is the
+          # correct direction for a required security gate.
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           prompt: |
             You are running as the security-reviewer for PR #${{ github.event.pull_request.number }}.
