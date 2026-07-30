@@ -1,3 +1,4 @@
+using Domain.AI.Escalation;
 using Domain.AI.Planner;
 using Domain.Common.Config.AI;
 using Domain.Common.Config.AI.WorkflowSubmission;
@@ -66,6 +67,21 @@ public sealed class SubmitWorkflowCommandValidator : AbstractValidator<SubmitWor
                 .WithMessage("Step names must be unique within a submission; edges refer to steps by name.")
             .When(x => x.Definition is not null);
 
+        // Human gates, checked where the whole command is visible: one rule needs the host's roster,
+        // the other needs the submitter's identity, and neither is reachable from the per-step child
+        // rules below.
+        RuleFor(x => x.Definition.Steps)
+            .Cascade(CascadeMode.Continue)
+            .Must(GatesNameOnlyPermittedApprovers)
+                .WithMessage("A human gate names an approver this host does not recognise. A gate can "
+                    + "only be answered by someone the host knows, so one naming anyone else would park "
+                    + "the workflow until it was given up on.")
+            .Must((command, steps) => NoGateIsApprovableByItsAuthor(command, steps))
+                .WithMessage("A human gate names its own submitter as an approver. A gate the author "
+                    + "can answer is not an approval — the workflow would pause and continue on the say-so "
+                    + "of the person who wrote it.")
+            .When(x => x.Definition?.Steps is not null);
+
         RuleFor(x => x.Definition.Edges)
             .NotNull().WithMessage("An edge list is required; send an empty list for a single-step workflow.")
             .Must(ContainNoNullElements).WithMessage("A workflow may not contain a null edge.")
@@ -101,6 +117,84 @@ public sealed class SubmitWorkflowCommandValidator : AbstractValidator<SubmitWor
     }
 
     private WorkflowSubmissionConfig Caps => _config.CurrentValue.WorkflowSubmission;
+
+    /// <summary>
+    /// Every approver a submitted gate names must be someone the host recognises.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A gate is answerable only by the people it names, so a name the host does not know is a gate
+    /// that can never be answered: the workflow runs, reaches it, parks, and is failed by the
+    /// parked-run ceiling however long later. Refusing at submission turns that into a 400 the author
+    /// can act on.
+    /// </para>
+    /// <para>
+    /// An empty roster therefore refuses every gate. That is deliberate and is the shipped default —
+    /// a host that has not said who may approve things has said that nothing may be approved, and the
+    /// alternative reading ("no roster means anyone") is a check that exists and enforces nothing.
+    /// </para>
+    /// <para>
+    /// The failure message names no roster entry. Which names the host recognises is not something a
+    /// submission surface should teach a caller who is guessing.
+    /// </para>
+    /// </remarks>
+    private bool GatesNameOnlyPermittedApprovers(IReadOnlyList<WorkflowStep>? steps) =>
+        HumanGatesIn(steps).All(gate =>
+            ApproversOf(gate).All(approver => Caps.PermittedApprovers.Contains(approver, ApproverNames.Comparer)));
+
+    /// <summary>
+    /// No submitted gate may name the caller submitting it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A gate its own author can answer is not an approval — the workflow pauses and continues on the
+    /// say-so of the person who wrote it, while the audit record shows a human decided. The whole
+    /// value of a gate is that someone other than the author has to agree.
+    /// </para>
+    /// <para>
+    /// Compares against the identity the transport resolved from the caller's token through the same
+    /// claim the decision path reads, so the two are the same string for the same person. Comparing
+    /// against the owner id instead would compare an object id to a roster of sign-in names and match
+    /// nothing, and this check would pass for everyone while appearing to work.
+    /// </para>
+    /// <para>
+    /// A caller whose approver identity could not be established cannot submit a gate at all. The
+    /// check cannot be performed, and the fail-open reading of that — "we could not tell, so allow
+    /// it" — is exactly the self-approval this exists to prevent.
+    /// </para>
+    /// </remarks>
+    private static bool NoGateIsApprovableByItsAuthor(
+        SubmitWorkflowCommand command, IReadOnlyList<WorkflowStep>? steps)
+    {
+        var gates = HumanGatesIn(steps).ToList();
+        if (gates.Count == 0)
+            return true;
+
+        if (command.SubmitterApproverName is not { } submitter)
+            return false;
+
+        return gates.All(gate => !ApproversOf(gate).Contains(submitter, ApproverNames.Comparer));
+    }
+
+    /// <summary>
+    /// A gate's approver list, or an empty one when the caller sent <c>"approvers": null</c>.
+    /// </summary>
+    /// <remarks>
+    /// The property carries an empty-list initializer, which System.Text.Json overwrites with null for
+    /// an explicit JSON null — so the initializer is not the guarantee it looks like. Every rule that
+    /// reads the list goes through here, because the alternative is an unhandled dereference and a 500
+    /// on the admission path, which is the same failure a null step element already produced once. The
+    /// empty result then fails the "at least one approver" rule and the caller gets the 400 it should
+    /// have had.
+    /// </remarks>
+    private static IReadOnlyList<string> ApproversOf(HumanGateStepConfiguration gate) =>
+        gate.Approvers ?? [];
+
+    /// <summary>The human-gate configurations in a submission, skipping nulls and other step types.</summary>
+    private static IEnumerable<HumanGateStepConfiguration> HumanGatesIn(IReadOnlyList<WorkflowStep>? steps) =>
+        (steps ?? []).Where(step => step is not null)
+            .Select(step => step.Configuration)
+            .OfType<HumanGateStepConfiguration>();
 
     private void ConfigureStepRules(InlineValidator<WorkflowStep> step)
     {
@@ -191,7 +285,7 @@ public sealed class SubmitWorkflowCommandValidator : AbstractValidator<SubmitWor
         ToolUseStepConfiguration c => BeWithinStringCap(c.ToolName)
             && c.InputParameters.Values.OfType<string>().All(BeWithinStringCap),
         HumanGateStepConfiguration c => BeWithinStringCap(c.EscalationMessage)
-            && c.Approvers.All(BeWithinStringCap),
+            && ApproversOf(c).All(BeWithinStringCap),
         ConditionalBranchStepConfiguration c => BeWithinStringCap(c.ConditionExpression),
         RetrievalWorkflowStepConfiguration c => BeWithinStringCap(c.Query),
         _ => true
@@ -225,8 +319,8 @@ public sealed class SubmitWorkflowCommandValidator : AbstractValidator<SubmitWor
             && !string.IsNullOrWhiteSpace(c.ModelDeploymentKey),
         ToolUseStepConfiguration c => !string.IsNullOrWhiteSpace(c.ToolName),
         HumanGateStepConfiguration c => !string.IsNullOrWhiteSpace(c.EscalationMessage)
-            && c.Approvers.Count > 0
-            && c.Approvers.All(approver => !string.IsNullOrWhiteSpace(approver)),
+            && ApproversOf(c).Count > 0
+            && ApproversOf(c).All(approver => !string.IsNullOrWhiteSpace(approver)),
         ConditionalBranchStepConfiguration c => !string.IsNullOrWhiteSpace(c.ConditionExpression),
         RetrievalWorkflowStepConfiguration c => !string.IsNullOrWhiteSpace(c.Query),
         _ => true

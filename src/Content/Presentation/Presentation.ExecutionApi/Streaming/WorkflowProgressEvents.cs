@@ -22,6 +22,7 @@ namespace Presentation.ExecutionApi.Streaming;
 [JsonDerivedType(typeof(WorkflowProgressStepEvent), "STEP")]
 [JsonDerivedType(typeof(WorkflowProgressFinishedEvent), "FINISHED")]
 [JsonDerivedType(typeof(WorkflowProgressGapEvent), "GAP")]
+[JsonDerivedType(typeof(WorkflowProgressParkedEvent), "PARKED")]
 public abstract record WorkflowProgressEvent;
 
 /// <summary>
@@ -79,6 +80,34 @@ public sealed record WorkflowProgressGapEvent(
     /// <summary>How many events have been dropped for this watcher so far.</summary>
     [property: JsonPropertyName("droppedCount")] long DroppedCount) : WorkflowProgressEvent;
 
+/// <summary>
+/// Sent when a run parks awaiting a decision while someone is watching, and is the last frame on that
+/// stream.
+/// </summary>
+/// <remarks>
+/// <para>
+/// Ends the stream without ending the run. A client that treated this as completion would report a
+/// workflow as done while it sits waiting for an approval; one that kept waiting would hold a
+/// connection for however long the approver takes. Neither is what it wants — it wants to know the ball
+/// is in someone else's court, and to come back afterwards.
+/// </para>
+/// <para>
+/// <strong>A stream opened on an <em>already</em>-parked run does not carry this frame.</strong> It
+/// receives the snapshot and ends immediately, because the park happened before anyone was listening
+/// and the substrate does not replay it. The snapshot's <c>status</c> is what distinguishes that from a
+/// dropped connection, which is the same rule that already applies to opening a stream on a run that
+/// has already finished — a client must read the snapshot rather than infer state from which frames
+/// arrive.
+/// </para>
+/// </remarks>
+public sealed record WorkflowProgressParkedEvent(
+    /// <summary>Position in this run's event order.</summary>
+    [property: JsonPropertyName("sequence")] long Sequence,
+    /// <summary>When the run parked.</summary>
+    [property: JsonPropertyName("occurredAt")] DateTimeOffset OccurredAt,
+    /// <summary>What the run is waiting for, in caller-safe terms.</summary>
+    [property: JsonPropertyName("detail")] string? Detail) : WorkflowProgressEvent;
+
 /// <summary>Projects substrate progress events onto the caller-visible frames.</summary>
 internal static class WorkflowProgressEventMapper
 {
@@ -90,6 +119,9 @@ internal static class WorkflowProgressEventMapper
 
         RunProgressKind.RunFinished =>
             new WorkflowProgressFinishedEvent(evt.Sequence, evt.OccurredAt, evt.Status, evt.Detail),
+
+        RunProgressKind.RunParked =>
+            new WorkflowProgressParkedEvent(evt.Sequence, evt.OccurredAt, evt.Detail),
 
         // RunStarted is not forwarded: the snapshot frame that opens every stream already says the run
         // is running, and a second frame saying so would only ever be redundant or contradictory.

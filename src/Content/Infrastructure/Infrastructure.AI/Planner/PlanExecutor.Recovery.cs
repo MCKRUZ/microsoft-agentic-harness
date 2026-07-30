@@ -1,5 +1,4 @@
 using System.Collections.Concurrent;
-using System.Text.Json;
 using Application.AI.Common.Interfaces.Planner;
 using Domain.AI.Escalation;
 using Domain.AI.Planner;
@@ -14,13 +13,6 @@ namespace Infrastructure.AI.Planner;
 /// </summary>
 public sealed partial class PlanExecutor
 {
-    /// <summary>
-    /// JSON property under which a blocked step's escalation identifier is stored in its output.
-    /// Must match the shape written by <c>HumanGateStepExecutor</c> (<c>{ "escalationId": "&lt;guid&gt;" }</c>)
-    /// and by the escalate failure-recovery branch below.
-    /// </summary>
-    private const string EscalationIdProperty = "escalationId";
-
     /// <summary>
     /// Exponent cap for exponential backoff. Prevents a pathological
     /// <see cref="RetryPolicy.MaxRetries"/> configuration from overflowing
@@ -130,7 +122,7 @@ public sealed partial class PlanExecutor
                 // Persist the escalation id so the resume path can resolve this block. Without it the
                 // escalated step would be a permanent dead end exactly like an unpersisted human gate.
                 await TransitionStepAsync(ctx.PlanId, step.Id, StepExecutionStatus.Blocked, ctx.StepStates, ct,
-                    output: SerializeEscalationRef(escalationId));
+                    output: EscalationStepOutput.Serialize(escalationId));
 
                 _logger.LogWarning(
                     "Step {StepId} in plan {PlanId} escalated as {EscalationId} — step blocked pending human approval",
@@ -188,7 +180,7 @@ public sealed partial class PlanExecutor
             if (state is null || state.Status != StepExecutionStatus.Blocked)
                 continue;
 
-            var escalationId = TryReadEscalationId(state.Output);
+            var escalationId = EscalationStepOutput.TryReadEscalationId(state.Output);
             if (escalationId is null)
                 continue;
 
@@ -253,41 +245,6 @@ public sealed partial class PlanExecutor
 
         await TransitionStepAsync(ctx.PlanId, step.Id, StepExecutionStatus.Failed, ctx.StepStates, ct, errorMessage: reason);
         await SkipDownstreamSubgraphAsync(step.Id, ctx);
-    }
-
-    /// <summary>
-    /// Serializes an escalation identifier into the JSON output shape stored on a blocked step,
-    /// matching the format read by <see cref="TryReadEscalationId"/>.
-    /// </summary>
-    private static string SerializeEscalationRef(Guid escalationId)
-        => JsonSerializer.Serialize(new Dictionary<string, string> { [EscalationIdProperty] = escalationId.ToString() });
-
-    /// <summary>
-    /// Extracts the escalation identifier previously persisted in a blocked step's output, or null
-    /// when the output is absent, malformed, or carries no escalation reference.
-    /// </summary>
-    private static Guid? TryReadEscalationId(string? output)
-    {
-        if (string.IsNullOrEmpty(output))
-            return null;
-
-        try
-        {
-            using var doc = JsonDocument.Parse(output);
-            if (doc.RootElement.ValueKind == JsonValueKind.Object
-                && doc.RootElement.TryGetProperty(EscalationIdProperty, out var idElement)
-                && idElement.ValueKind == JsonValueKind.String
-                && Guid.TryParse(idElement.GetString(), out var id))
-            {
-                return id;
-            }
-        }
-        catch (JsonException)
-        {
-            // Non-JSON or corrupt output — no escalation reference to recover.
-        }
-
-        return null;
     }
 
     private async Task SkipDownstreamSubgraphAsync(PlanStepId fromStepId, PlanExecutionRuntime ctx, bool includeRoot = false)

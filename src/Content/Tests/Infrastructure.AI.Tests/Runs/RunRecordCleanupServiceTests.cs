@@ -1,5 +1,7 @@
+using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.Interfaces.Runs;
 using Domain.AI.Bundles;
+using Domain.AI.Escalation;
 using Domain.AI.Runs;
 using Domain.Common.Config;
 using FluentAssertions;
@@ -8,6 +10,7 @@ using Infrastructure.AI.Tests.Runs.Support;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Time.Testing;
+using Moq;
 using Xunit;
 
 namespace Infrastructure.AI.Tests.Runs;
@@ -49,6 +52,27 @@ public sealed class RunRecordCleanupServiceTests
         public RunRecord? FindLiveRunForTarget(RunKind kind, string targetId) =>
             inner.FindLiveRunForTarget(kind, targetId);
 
+        public IReadOnlyList<RunRecord> GetParkedRuns() => inner.GetParkedRuns();
+
+        public RunRecord? TryResume(string jobId) => inner.TryResume(jobId);
+
+        public bool TryRepark(RunRecord parked) => inner.TryRepark(parked);
+
+        public RunRecord? TryCancel(string jobId, DateTimeOffset cancelledAt) =>
+            inner.TryCancel(jobId, cancelledAt);
+
+        /// <summary>The ceilings the service asked the store to apply, in order.</summary>
+        public List<TimeSpan> ParkedCeilings { get; } = [];
+
+        public IReadOnlyList<RunRecord> ExpireStaleParkedRuns(TimeSpan maxParkedDuration)
+        {
+            // Recorded rather than merely forwarded: the ceiling reaching the store is the whole of
+            // what this service contributes to the parked-run rule, and a service that read the wrong
+            // config value would forward a plausible-looking TimeSpan that expired nothing.
+            ParkedCeilings.Add(maxParkedDuration);
+            return inner.ExpireStaleParkedRuns(maxParkedDuration);
+        }
+
         public IReadOnlyList<string> SweepExpired()
         {
             Sweeps++;
@@ -60,6 +84,82 @@ public sealed class RunRecordCleanupServiceTests
 
     private readonly FakeTimeProvider _time = new(new DateTimeOffset(2026, 7, 29, 12, 0, 0, TimeSpan.Zero));
     private readonly AppConfig _config = new();
+    private readonly Mock<IEscalationService> _escalations = new();
+
+    [Fact]
+    public async Task GivingUpOnAParkedRunAlsoWithdrawsTheApprovalItWasWaitingOn()
+    {
+        // The hazard is sharper here than on the cancel path. Failing the run makes it terminal, which
+        // UNLOCKS its workflow — so a second run can start against the same persisted plan, and an
+        // approver answering the first run's gate would have that verdict reconciled into the second.
+        // Leaving the approval pending is not merely confusing for the approver; it is a decision
+        // applied to work it was never about.
+        _config.AI.WorkflowSubmission.RunSweepInterval = TimeSpan.Zero;
+        _config.AI.WorkflowSubmission.MaxParkedRunDuration = TimeSpan.FromHours(1);
+
+        var monitor = new StaticOptionsMonitor<AppConfig>(_config);
+        var store = new CountingStore(new InMemoryRunJobStore(monitor, _time));
+        var progress = new InMemoryRunProgressBroker(monitor, _time);
+
+        var escalation = Guid.NewGuid();
+        store.TryCreate(Queued("abandoned"), int.MaxValue).Should().Be(RunAdmission.Accepted);
+        var claimed = store.TryBeginRun("abandoned", _time.GetUtcNow())!;
+        store.Update(claimed with
+        {
+            Status = RunStatus.Blocked,
+            ParkedAt = _time.GetUtcNow(),
+            AwaitingEscalationIds = [escalation]
+        });
+
+        var withdrawn = new List<(Guid Id, string By)>();
+        _escalations
+            .Setup(e => e.CancelEscalationAsync(
+                It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Callback<Guid, string, string, CancellationToken>((id, _, by, _) =>
+            {
+                lock (withdrawn)
+                    withdrawn.Add((id, by));
+            })
+            .ReturnsAsync(new EscalationOutcome
+            {
+                EscalationId = escalation,
+                IsApproved = false,
+                Decisions = [],
+                ResolutionType = EscalationResolutionType.Denied,
+                ResolvedAt = DateTimeOffset.UnixEpoch,
+                Approvers = ["carol"]
+            });
+
+        _time.Advance(TimeSpan.FromDays(1));
+
+        var sut = new RunRecordCleanupService(
+            store, progress, _escalations.Object, monitor,
+            NullLogger<RunRecordCleanupService>.Instance);
+
+        using var cts = new CancellationTokenSource();
+        await sut.StartAsync(cts.Token);
+
+        for (var attempt = 0; attempt < 60; attempt++)
+        {
+            lock (withdrawn)
+            {
+                if (withdrawn.Count > 0)
+                    break;
+            }
+
+            await Task.Delay(100);
+        }
+
+        await cts.CancelAsync();
+        await sut.StopAsync(CancellationToken.None);
+
+        withdrawn.Should().ContainSingle();
+        withdrawn[0].Id.Should().Be(escalation);
+        withdrawn[0].By.Should().StartWith("system:",
+            "nobody asked for a ceiling expiry, so an audit row naming a human would be untrue");
+
+        store.Get("abandoned", "alice", null)!.Status.Should().Be(RunStatus.Failed);
+    }
 
     [Fact]
     public async Task TheServiceActuallyReclaimsFinishedRunsPastTheirRetention()
@@ -83,7 +183,8 @@ public sealed class RunRecordCleanupServiceTests
         _time.Advance(TimeSpan.FromHours(1));
 
         var sut = new RunRecordCleanupService(
-            store, progress, monitor, NullLogger<RunRecordCleanupService>.Instance);
+            store, progress, _escalations.Object, monitor,
+            NullLogger<RunRecordCleanupService>.Instance);
 
         using var cts = new CancellationTokenSource();
         await sut.StartAsync(cts.Token);
@@ -121,7 +222,8 @@ public sealed class RunRecordCleanupServiceTests
         _time.Advance(TimeSpan.FromHours(1));
 
         var sut = new RunRecordCleanupService(
-            store, progress, monitor, NullLogger<RunRecordCleanupService>.Instance);
+            store, progress, _escalations.Object, monitor,
+            NullLogger<RunRecordCleanupService>.Instance);
 
         using var cts = new CancellationTokenSource();
         await sut.StartAsync(cts.Token);

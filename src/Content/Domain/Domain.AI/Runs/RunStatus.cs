@@ -36,8 +36,27 @@ public enum RunStatus
 
     /// <summary>
     /// Parked awaiting a decision this run cannot make for itself — typically a human approval gate.
-    /// Terminal for the run, because the dispatcher is done with it; acting on the decision starts a
-    /// new run rather than reviving this one.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>Live, not terminal.</strong> The dispatcher is idle on this run, but the work is not
+    /// over: answering the gate continues <em>this</em> run under the same job id. That is what a
+    /// caller means by "my workflow" — one identifier for one unit of work, whatever it had to wait
+    /// for along the way — and it is why <see cref="RunRecord.IsTerminal"/> lists this among the live
+    /// states.
+    /// </para>
+    /// <para>
+    /// Reading it as terminal has a sharper consequence than an untidy status. Admission permits one
+    /// live run per target, so a parked run reported as finished <em>releases its workflow</em>: a
+    /// second run starts against the same plan state machine and can answer the first run's gate. A
+    /// parked run therefore keeps its slot, and keeps the workflow locked, until the gate is resolved.
+    /// </para>
+    /// <para>
+    /// The cost of being live is that retention only reclaims terminal runs, so a gate nobody ever
+    /// answers would hold a slot for the host's life. <c>MaxParkedRunDuration</c> bounds it: a run
+    /// parked longer than that is failed with a caller-safe reason, which makes it terminal and
+    /// reclaimable again.
+    /// </para>
+    /// </remarks>
     Blocked = 5
 }

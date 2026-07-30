@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Text.Json;
 using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.Interfaces.Planner;
 using Domain.AI.Escalation;
@@ -79,7 +78,12 @@ public sealed class HumanGateStepExecutor : IPlanStepExecutor
         return new StepExecutionResult
         {
             Status = StepExecutionStatus.Blocked,
-            Output = JsonSerializer.Serialize(new { escalationId }),
+
+            // Written through the shared shape rather than an anonymous object: the plan executor
+            // reads this back on resume to reconcile the gate, and the run substrate reads it to learn
+            // which decision the run is waiting on. A local literal here drifting from either reader
+            // fails silently — the gate simply never releases.
+            Output = EscalationStepOutput.Serialize(escalationId),
             Duration = sw.Elapsed
         };
     }

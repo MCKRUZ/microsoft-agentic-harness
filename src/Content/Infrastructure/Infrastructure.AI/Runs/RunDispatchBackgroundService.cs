@@ -231,9 +231,53 @@ public sealed class RunDispatchBackgroundService : BackgroundService
         }
 
         var completion = outcome.Value;
+
+        // Parking is not an ending, and routing it through Finish would claim it was one: a
+        // CompletedAt stamp on work still in progress, and a RunFinished event closing every
+        // watcher's stream on a run that is going to carry on.
+        if (completion.Status is RunStatus.Blocked)
+        {
+            Park(claimed, completion.Detail, completion.AwaitingEscalationIds);
+            _logger.LogInformation(
+                "Run {JobId} ({RunKind}) parked awaiting a decision.", claimed.JobId, claimed.Kind);
+            return;
+        }
+
         Finish(claimed, completion.Status, completion.Detail);
         _logger.LogInformation(
             "Run {JobId} ({RunKind}) ended {RunStatus}.", claimed.JobId, claimed.Kind, completion.Status);
+    }
+
+    /// <summary>
+    /// Records that a claimed run has parked awaiting a decision, and tells watchers to stop waiting.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Deliberately leaves <see cref="RunRecord.CompletedAt"/> unset and <see cref="RunRecord.Error"/>
+    /// alone. Neither is true of a parked run: it has not completed, and waiting for an approval is not
+    /// a fault. <see cref="RunRecord.ParkedAt"/> is stamped instead, which is what bounds how long a
+    /// gate nobody answers may hold the workflow.
+    /// </para>
+    /// <para>
+    /// The status leaves <c>Running</c>, so the claim is released and this dispatcher is done with the
+    /// run — but the run stays live, so its workflow stays locked against a second run that would share
+    /// its plan state machine. Resuming re-queues this same job id.
+    /// </para>
+    /// </remarks>
+    private void Park(RunRecord claimed, string? detail, IReadOnlyList<Guid> awaitingEscalationIds)
+    {
+        _store.Update(claimed with
+        {
+            Status = RunStatus.Blocked,
+            ParkedAt = _time.GetUtcNow(),
+            AwaitingEscalationIds = awaitingEscalationIds
+        });
+
+        _progress.Publish(
+            claimed.JobId,
+            RunProgressKind.RunParked,
+            status: nameof(RunStatus.Blocked),
+            detail: detail);
     }
 
     /// <summary>

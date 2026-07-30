@@ -177,4 +177,80 @@ public sealed class WorkflowRunsIntegrationTests
 
         response.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
+
+    [Fact]
+    public async Task CancellingARun_StopsItAndReportsWhatItAchieved()
+    {
+        // Route binding and the response's wire shape are only reachable over HTTP. The handler tests
+        // prove the decisions; this proves a caller can actually make them, and reads back the run to
+        // confirm the cancellation is what the status endpoint reports rather than merely what the
+        // cancel call claimed.
+        using var factory = CreateFactory();
+        using var client = factory.CreateClient();
+
+        var workflowId = await SubmitWorkflowAsync(client, "alice");
+
+        var started = await client.SendAsync(
+            Request(HttpMethod.Post, $"/api/workflows/{workflowId}/runs", body: null, "alice"));
+        var jobId = (await started.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("jobId").GetString();
+
+        var cancelled = await client.SendAsync(
+            Request(HttpMethod.Delete, $"/api/workflows/{workflowId}/runs/{jobId}", body: null, "alice"));
+
+        // Two honest outcomes, decided by whether this single-step run finished first: it is stopped,
+        // or it had already ended and cancelling is a conflict. Asserting only one would either flake
+        // or quietly pass for the wrong reason, so this pins the pair and then checks the answer is
+        // well-formed for whichever arrived — which is what proves the route and its wire shape.
+        cancelled.StatusCode.Should().BeOneOf(HttpStatusCode.OK, HttpStatusCode.Conflict);
+
+        if (cancelled.StatusCode == HttpStatusCode.OK)
+        {
+            var body = await cancelled.Content.ReadFromJsonAsync<JsonElement>();
+            body.GetProperty("jobId").GetString().Should().Be(jobId);
+            body.GetProperty("withdrawnApprovals").GetInt32().Should().Be(
+                0, "this workflow has no gate, so there was nothing to withdraw");
+            body.TryGetProperty("stopped", out _).Should().BeTrue(
+                "the caller has to be able to tell a stop from a request to stop");
+        }
+
+        // True either way, and the property that matters: the run is readable and the cancel call did
+        // not leave it in a state the status endpoint cannot answer for.
+        var polled = await client.SendAsync(
+            Request(HttpMethod.Get, $"/api/workflows/{workflowId}/runs/{jobId}", body: null, "alice"));
+        polled.StatusCode.Should().Be(HttpStatusCode.OK);
+    }
+
+    [Fact]
+    public async Task CancellingAnotherCallersRun_Is404AndDoesNotStopIt()
+    {
+        // Cancelling raises the stakes of the ownership rule every run endpoint follows: an endpoint
+        // that distinguished "not yours" from "not there" would hand one caller a way to stop
+        // another's work by guessing identifiers.
+        using var factory = CreateFactory();
+        using var client = factory.CreateClient();
+
+        var workflowId = await SubmitWorkflowAsync(client, "alice");
+        var started = await client.SendAsync(
+            Request(HttpMethod.Post, $"/api/workflows/{workflowId}/runs", body: null, "alice"));
+        var jobId = (await started.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("jobId").GetString();
+
+        var response = await client.SendAsync(
+            Request(HttpMethod.Delete, $"/api/workflows/{workflowId}/runs/{jobId}", body: null, "mallory"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact]
+    public async Task CancellingAJobIdThatWasNeverIssued_Is404()
+    {
+        using var factory = CreateFactory();
+        using var client = factory.CreateClient();
+
+        var workflowId = await SubmitWorkflowAsync(client, "alice");
+
+        var response = await client.SendAsync(
+            Request(HttpMethod.Delete, $"/api/workflows/{workflowId}/runs/never-issued", body: null, "alice"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
 }

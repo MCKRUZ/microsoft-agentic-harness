@@ -72,11 +72,11 @@ public sealed class WorkflowRunKindExecutor : IRunKindExecutor
         if (summary is null)
             return Result<RunCompletion>.Fail("The run produced no execution summary.");
 
-        return Result<RunCompletion>.Success(Interpret(summary.FinalStatus));
+        return Result<RunCompletion>.Success(Interpret(summary));
     }
 
     /// <summary>
-    /// Translates the plan's final status into how the run ended.
+    /// Translates how the plan ended into how the run ended.
     /// </summary>
     /// <remarks>
     /// Written as "succeed only on <see cref="StepExecutionStatus.Completed"/>", matching
@@ -85,16 +85,47 @@ public sealed class WorkflowRunKindExecutor : IRunKindExecutor
     /// the inverted form both fall through to success, and a workflow parked awaiting an approval
     /// reports to its caller as finished work.
     /// </remarks>
-    private static RunCompletion Interpret(StepExecutionStatus finalStatus) => finalStatus switch
+    private RunCompletion Interpret(PlanExecutionSummary summary) => summary.FinalStatus switch
     {
         StepExecutionStatus.Completed => RunCompletion.Succeeded(),
 
         StepExecutionStatus.Blocked => RunCompletion.Blocked(
-            "The workflow is waiting on an approval before it can continue."),
+            "The workflow is waiting on an approval before it can continue.",
+            ReadAwaitedEscalations(summary)),
 
         StepExecutionStatus.Cancelled => RunCompletion.Cancelled(
             "The workflow was cancelled before it finished."),
 
-        _ => RunCompletion.Failed($"The workflow ended with status {finalStatus}.")
+        _ => RunCompletion.Failed($"The workflow ended with status {summary.FinalStatus}.")
     };
+
+    /// <summary>
+    /// Collects the escalations the plan's blocked steps are waiting on, which is what makes the park
+    /// recoverable: a verdict on any of them is the signal to run this workflow again.
+    /// </summary>
+    /// <remarks>
+    /// An empty result is possible and is not treated as an error — a step can be blocked with an
+    /// output that carries no readable escalation reference. It is logged rather than swallowed,
+    /// because the consequence is severe and otherwise invisible: the run parks with nothing that can
+    /// ever release it, and waits out the host's parked-run ceiling before failing.
+    /// </remarks>
+    private IReadOnlyList<Guid> ReadAwaitedEscalations(PlanExecutionSummary summary)
+    {
+        var escalationIds = summary.StepStates
+            .Where(state => state.Status == StepExecutionStatus.Blocked)
+            .Select(state => EscalationStepOutput.TryReadEscalationId(state.Output))
+            .OfType<Guid>()
+            .Distinct()
+            .ToList();
+
+        if (escalationIds.Count == 0)
+        {
+            _logger.LogWarning(
+                "Plan {PlanId} ended blocked but names no decision that could release it; the run will "
+                + "park until the host's parked-run ceiling fails it.",
+                summary.PlanId.Value);
+        }
+
+        return escalationIds;
+    }
 }

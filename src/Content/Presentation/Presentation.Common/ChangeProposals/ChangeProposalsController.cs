@@ -295,28 +295,23 @@ public sealed class ChangeProposalsController : ControllerBase
     /// one distinct value (per <c>ApproverNames.Comparer</c>) is an ambiguous identity and is
     /// rejected rather than silently first-picked — an attacker who can smuggle a second
     /// instance of the claim must not get to choose which one wins; the same value appearing
-    /// under both forms counts as one. Identical logic to <c>EscalationsController.ResolveApproverName</c> —
-    /// both surfaces share <c>EscalationConfig.ApproverClaimType</c> so one config knob governs
-    /// reviewer identity everywhere.
+    /// under both forms counts as one. All of that lives in
+    /// <c>ClaimsPrincipalExtensions.GetApproverNameOrNull</c>, which every surface reading a roster
+    /// identity shares, so one config knob governs reviewer identity everywhere and no copy of the
+    /// rule can drift. Only the wording of the diagnostic differs here.
     /// </summary>
     private string? ResolveReviewerId()
     {
         var claimType = _config.CurrentValue.ApproverClaimType;
-        var values = ApproverClaimTypes.EquivalentFormsOf(claimType)
-            .SelectMany(form => User.FindAll(form))
-            .Select(c => c.Value)
-            .Where(v => !string.IsNullOrWhiteSpace(v))
-            .Distinct(ApproverNames.Comparer)
-            .ToList();
+        var reviewerId = User.GetApproverNameOrNull(claimType);
+        if (reviewerId is not null)
+            return reviewerId;
 
-        if (values.Count == 1)
-            return values[0];
-
-        // Diagnostic detail (which claim type, how many values) goes to the log only; the HTTP
-        // body stays generic so the response never teaches a caller which claim to forge.
+        // Diagnostic detail (which claim type) goes to the log only; the HTTP body stays generic so
+        // the response never teaches a caller which claim to forge.
         _logger.LogWarning(
-            "Reviewer identity resolution failed: configured claim '{ApproverClaimType}' (incl. mapped forms) yielded {Count} distinct value(s) on the principal",
-            claimType, values.Count);
+            "Reviewer identity resolution failed: configured claim '{ApproverClaimType}' (incl. mapped forms) did not yield exactly one distinct value on the principal",
+            claimType);
         return null;
     }
 

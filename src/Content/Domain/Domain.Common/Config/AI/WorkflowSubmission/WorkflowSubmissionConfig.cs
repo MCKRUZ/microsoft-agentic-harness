@@ -65,7 +65,10 @@ namespace Domain.Common.Config.AI.WorkflowSubmission;
 /// ├── MaxConcurrentDispatchedRuns — How many runs the host executes at once, across all callers
 /// ├── MaxConcurrentProgressStreams — How many progress streams may be open at once, host-wide
 /// ├── MaxProgressStreamsPerOwner — How many one caller may hold open at once
-/// └── ProgressBufferSize        — How far behind one watcher may fall before it loses events
+/// ├── ProgressBufferSize        — How far behind one watcher may fall before it loses events
+/// ├── MaxParkedRunDuration      — How long a run may wait on an approval before the host gives up
+/// ├── ParkedRunResumeInterval  — How often the host checks whether an approval has been answered
+/// └── PermittedApprovers        — Who a submitted human gate may name; empty refuses gates entirely
 /// </code>
 /// </remarks>
 public class WorkflowSubmissionConfig
@@ -285,4 +288,67 @@ public class WorkflowSubmissionConfig
     /// </remarks>
     /// <value>Default: 256</value>
     public int ProgressBufferSize { get; set; } = 256;
+
+    /// <summary>
+    /// How long a run may stay parked on a human gate before the host gives up on it.
+    /// </summary>
+    /// <remarks>
+    /// A parked run is live, which is what keeps its workflow locked against a second run sharing its
+    /// plan state machine — and which also means retention never reclaims it, because retention only
+    /// reclaims terminal runs. Without a ceiling, one gate nobody ever answers holds a workflow and an
+    /// owner's concurrency slot for the life of the process. Expiring the run fails it with a
+    /// caller-safe reason, which makes it terminal and reclaimable again.
+    /// <para>
+    /// This is a backstop, not the gate's own deadline. An individual gate carries its own
+    /// <c>Timeout</c>; this bounds the case where that timeout never takes effect.
+    /// </para>
+    /// </remarks>
+    /// <value>Default: 7 days</value>
+    public TimeSpan MaxParkedRunDuration { get; set; } = TimeSpan.FromDays(7);
+
+    /// <summary>
+    /// How often the host checks whether a parked run's approval has been answered.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Checking on a clock rather than reacting to each verdict is deliberate. A decision can be taken
+    /// while the host is down — or by a different instance — and an in-process notification is lost in
+    /// both cases, leaving the run parked until the ceiling fails it. Re-reading the verdict is the
+    /// only form of the trigger that survives a restart.
+    /// </para>
+    /// <para>
+    /// Its own setting rather than sharing <see cref="RunSweepInterval"/>: that one paces giving memory
+    /// back, this one paces how long a caller waits after their approver has already said yes, and an
+    /// operator who relaxes the first rarely means to slow the second.
+    /// </para>
+    /// </remarks>
+    /// <value>Default: 5 seconds</value>
+    public TimeSpan ParkedRunResumeInterval { get; set; } = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// The people a submitted human gate may name as its approvers.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>Empty means no workflow may contain a human gate.</strong> That is the default, and it
+    /// is the honest one: a gate names who decides it, and a name the host does not recognise is a
+    /// gate nobody can ever answer — the workflow reaches it, parks, and waits out the parked-run
+    /// ceiling. Letting an unset list mean "any name is fine" would turn this into a check that exists
+    /// and enforces nothing, which is worse than not having it.
+    /// </para>
+    /// <para>
+    /// Names are matched with <c>ApproverNames.Comparer</c> and must be written in whatever form
+    /// <c>AI.Governance.Escalation.ApproverClaimType</c> selects — object ids if that is set to
+    /// <c>oid</c>, sign-in names if it is left at <c>preferred_username</c>. Authoring them in one form
+    /// while the host reads the other produces gates that validate at submission and can never be
+    /// answered, which is precisely the failure this list exists to prevent.
+    /// </para>
+    /// <para>
+    /// This is an allowlist for <em>authoring</em>, not the authorization that decides a gate. Whether
+    /// a particular caller may answer a particular escalation is settled at decision time against that
+    /// escalation's own roster, from the caller's token.
+    /// </para>
+    /// </remarks>
+    /// <value>Default: empty — human gates are refused until a host names its approvers</value>
+    public List<string> PermittedApprovers { get; set; } = [];
 }

@@ -121,8 +121,23 @@ public sealed class RunDispatchBackgroundServiceTests
         store.TryCreate(record, int.MaxValue).Should().Be(RunAdmission.Accepted);
 
     /// <summary>Runs the dispatcher until <paramref name="jobId"/> is terminal, or the attempt budget is spent.</summary>
-    private static async Task<RunRecord?> DrainUntilTerminalAsync(
-        RunDispatchBackgroundService service, IRunJobStore store, string jobId)
+    private static Task<RunRecord?> DrainUntilTerminalAsync(
+        RunDispatchBackgroundService service, IRunJobStore store, string jobId) =>
+        DrainUntilAsync(service, store, jobId, r => r.IsTerminal);
+
+    /// <summary>
+    /// Runs the dispatcher until <paramref name="reached"/> holds for the run, or the attempts run out.
+    /// </summary>
+    /// <remarks>
+    /// Predicated rather than fixed on terminality, because not every state the dispatcher drives a run
+    /// into is terminal any more: a parked run has left <c>Running</c> and will never become terminal on
+    /// its own, so waiting for terminality would time out on exactly the case under test.
+    /// </remarks>
+    private static async Task<RunRecord?> DrainUntilAsync(
+        RunDispatchBackgroundService service,
+        IRunJobStore store,
+        string jobId,
+        Func<RunRecord, bool> reached)
     {
         using var cts = new CancellationTokenSource();
         await service.StartAsync(cts.Token);
@@ -131,7 +146,7 @@ public sealed class RunDispatchBackgroundServiceTests
         for (var attempt = 0; attempt < 200; attempt++)
         {
             record = store.Get(jobId, "alice", "acme");
-            if (record?.IsTerminal == true)
+            if (record is not null && reached(record))
                 break;
 
             await Task.Delay(10);
@@ -232,12 +247,11 @@ public sealed class RunDispatchBackgroundServiceTests
 
     [Theory]
     [InlineData(RunStatus.Cancelled)]
-    [InlineData(RunStatus.Blocked)]
     public async Task AnOutcomeThatIsNeitherSuccessNorFailure_IsRecordedAsItself(RunStatus outcome)
     {
         // Work can end in more ways than worked and broke. Collapsing those onto a boolean is what
         // makes a workflow parked awaiting an approval report to its caller as finished work.
-        var completion = new RunCompletion { Status = outcome, Detail = "waiting on a person" };
+        var completion = new RunCompletion { Status = outcome, Detail = "stopped on request" };
         var executor = new StubExecutor(_ => Task.FromResult(Result<RunCompletion>.Success(completion)));
 
         var (service, store, queue) = Build(executor);
@@ -247,14 +261,44 @@ public sealed class RunDispatchBackgroundServiceTests
         var record = await DrainUntilTerminalAsync(service, store, "job-1");
 
         record!.Status.Should().Be(outcome);
-        record.Error.Should().Be("waiting on a person");
+        record.Error.Should().Be("stopped on request");
+    }
+
+    [Fact]
+    public async Task AParkedRun_IsRecordedAsWaitingRatherThanAsFinishedOrFaulted()
+    {
+        // Parking is not an ending, and the record has to say so in every field a caller or an operator
+        // reads. A CompletedAt stamp would claim work finished that has not; an Error would send someone
+        // hunting for a fault when what is needed is an approval. ParkedAt is what carries the one fact
+        // that is true — and it is also what bounds how long the gate may hold the workflow, so a park
+        // that forgot to stamp it would park forever.
+        var escalation = Guid.NewGuid();
+        var completion = RunCompletion.Blocked("waiting on a person", [escalation]);
+        var executor = new StubExecutor(_ => Task.FromResult(Result<RunCompletion>.Success(completion)));
+
+        var (service, store, queue) = Build(executor);
+        Admit(store, Queued());
+        await queue.EnqueueAsync("job-1", CancellationToken.None);
+
+        var record = await DrainUntilAsync(
+            service, store, "job-1", r => r.Status == RunStatus.Blocked);
+
+        record.Should().NotBeNull("the run must leave Running even though it has not finished");
+        record!.Status.Should().Be(RunStatus.Blocked);
+        record.IsTerminal.Should().BeFalse("a parked run is live — that is what keeps its workflow locked");
+        record.IsAwaitingDecision.Should().BeTrue();
+        record.ParkedAt.Should().NotBeNull("without this stamp the gate can never be aged out");
+        record.CompletedAt.Should().BeNull("the run has not completed");
+        record.Error.Should().BeNull("waiting for an approval is not a fault");
+        record.AwaitingEscalationIds.Should().Equal([escalation],
+            "what the run is waiting on is the only thing that can ever release it — a park that "
+            + "dropped it would sit until the ceiling failed it, however promptly the approver answered");
     }
 
     [Theory]
     [InlineData(RunStatus.Succeeded)]
     [InlineData(RunStatus.Failed)]
     [InlineData(RunStatus.Cancelled)]
-    [InlineData(RunStatus.Blocked)]
     public async Task EveryWayARunCanEnd_TellsAnyoneWatchingThatItEnded(RunStatus outcome)
     {
         // A watcher's stream ends on this event and nothing else, so an ending that does not publish
@@ -289,6 +333,46 @@ public sealed class RunDispatchBackgroundServiceTests
         }
 
         sawFinish.Should().BeTrue("a run that ended must say so, however it ended");
+    }
+
+    [Fact]
+    public async Task AParkedRun_TellsWatchersToStopWaiting_WithoutClaimingItFinished()
+    {
+        // Two requirements at once, and they pull in opposite directions. A watcher must be released —
+        // nothing more will be published until a human acts, and an approver may take days, so a stream
+        // left open holds a connection and a stream slot for all of it. But it must NOT be told the run
+        // finished, because it did not: a client that recorded RunFinished here would report a workflow
+        // as complete while it sits waiting for approval.
+        var executor = new StubExecutor(_ =>
+            Task.FromResult(Result<RunCompletion>.Success(
+                RunCompletion.Blocked("two approvals needed", [Guid.NewGuid(), Guid.NewGuid()]))));
+
+        var (service, store, queue) = Build(executor);
+        Admit(store, Queued());
+
+        using var watcher = Progress.Subscribe("job-1", "alice", "acme")!;
+        await queue.EnqueueAsync("job-1", CancellationToken.None);
+
+        await DrainUntilAsync(service, store, "job-1", r => r.Status == RunStatus.Blocked);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var kinds = new List<RunProgressKind>();
+
+        await foreach (var evt in watcher.ReadAllAsync(cts.Token))
+        {
+            kinds.Add(evt.Kind);
+
+            if (evt.Kind != RunProgressKind.RunParked)
+                continue;
+
+            evt.Status.Should().Be(nameof(RunStatus.Blocked));
+            evt.Detail.Should().Be("two approvals needed", "the watcher is owed what the run is waiting for");
+            break;
+        }
+
+        kinds.Should().Contain(RunProgressKind.RunParked, "a parked run must release its watchers");
+        kinds.Should().NotContain(
+            RunProgressKind.RunFinished, "parking is not finishing, and a watcher must not be told it was");
     }
 
     [Fact]

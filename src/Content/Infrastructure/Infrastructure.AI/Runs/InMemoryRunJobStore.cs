@@ -172,9 +172,118 @@ public sealed class InMemoryRunJobStore : IRunJobStore
             if (entry.Record.Status != RunStatus.Queued || IsExpired(entry, _time.GetUtcNow()))
                 return null;
 
-            entry.Record = entry.Record with { Status = RunStatus.Running, StartedAt = startedAt };
+            entry.Record = entry.Record with
+            {
+                Status = RunStatus.Running,
+
+                // First claim only. A run that parked on a gate and was resumed is claimed again, and
+                // overwriting would report the run as having started after the approver answered —
+                // hiding however long it ran before reaching the gate. ParkedAt is what tracks the
+                // current wait; this tracks when the work began.
+                StartedAt = entry.Record.StartedAt ?? startedAt
+            };
+
             return entry.Record;
         }
+    }
+
+    /// <inheritdoc />
+    public RunRecord? TryResume(string jobId)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(jobId);
+
+        if (!_entries.TryGetValue(jobId, out var entry))
+            return null;
+
+        lock (entry)
+        {
+            // Read, decide and write under one lock, exactly as TryBeginRun does: two resumers that
+            // both saw the run parked would both enqueue it, and the second dispatch would run the same
+            // plan alongside the first.
+            if (!entry.Record.IsAwaitingDecision)
+                return null;
+
+            entry.Record = entry.Record with
+            {
+                Status = RunStatus.Queued,
+                ParkedAt = null,
+                AwaitingEscalationIds = []
+            };
+
+            return entry.Record;
+        }
+    }
+
+    /// <inheritdoc />
+    public bool TryRepark(RunRecord parked)
+    {
+        ArgumentNullException.ThrowIfNull(parked);
+
+        if (!_entries.TryGetValue(parked.JobId, out var entry))
+            return false;
+
+        lock (entry)
+        {
+            // Only a run this caller's own resume left queued. Anything else means something acted on
+            // the run in the meantime — most consequentially a cancellation, whose approvals are
+            // already withdrawn and which must not be put back to waiting on them.
+            if (entry.Record.Status != RunStatus.Queued)
+                return false;
+
+            entry.Record = parked;
+            return true;
+        }
+    }
+
+    /// <inheritdoc />
+    public RunRecord? TryCancel(string jobId, DateTimeOffset cancelledAt)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(jobId);
+
+        if (!_entries.TryGetValue(jobId, out var entry))
+            return null;
+
+        lock (entry)
+        {
+            // Queued and parked only. A running run's status belongs to the dispatch executing it, and
+            // a terminal one has already been answered — cancelling either here would overwrite a fact
+            // with an intention.
+            if (entry.Record.Status is not (RunStatus.Queued or RunStatus.Blocked))
+                return null;
+
+            var previous = entry.Record;
+
+            entry.Record = previous with
+            {
+                Status = RunStatus.Cancelled,
+                CompletedAt = cancelledAt,
+                ParkedAt = null,
+                AwaitingEscalationIds = []
+            };
+
+            // Terminal now, so retention runs from this moment — the same rule every other ending
+            // follows.
+            entry.ExpiresAt = cancelledAt + Ttl;
+
+            return previous;
+        }
+    }
+
+    /// <inheritdoc />
+    public IReadOnlyList<RunRecord> GetParkedRuns()
+    {
+        var parked = new List<RunRecord>();
+
+        foreach (var entry in _entries.Values)
+        {
+            lock (entry)
+            {
+                if (entry.Record.IsAwaitingDecision)
+                    parked.Add(entry.Record);
+            }
+        }
+
+        return parked;
     }
 
     /// <inheritdoc />
@@ -219,6 +328,53 @@ public sealed class InMemoryRunJobStore : IRunJobStore
         }
 
         return null;
+    }
+
+    /// <inheritdoc />
+    public IReadOnlyList<RunRecord> ExpireStaleParkedRuns(TimeSpan maxParkedDuration)
+    {
+        if (maxParkedDuration <= TimeSpan.Zero)
+            return [];
+
+        var now = _time.GetUtcNow();
+        var expired = new List<RunRecord>();
+
+        foreach (var entry in _entries.Values)
+        {
+            lock (entry)
+            {
+                if (!entry.Record.IsAwaitingDecision)
+                    continue;
+
+                // A parked run with no ParkedAt cannot be aged, and guessing an age from CreatedAt
+                // would expire a run that parked a moment ago on a workflow submitted last week. Left
+                // alone deliberately: the stamp is written on the same update that sets the status, so
+                // its absence means something wrote Blocked without going through the park path.
+                var parkedAt = entry.Record.ParkedAt;
+                if (parkedAt is null || now - parkedAt.Value < maxParkedDuration)
+                    continue;
+
+                // Captured before the write, so the caller can still see which approvals this run was
+                // parked on and withdraw them.
+                var previous = entry.Record;
+
+                entry.Record = previous with
+                {
+                    Status = RunStatus.Failed,
+                    Error = "The run was waiting for an approval that did not arrive in time.",
+                    CompletedAt = now,
+                    ParkedAt = null,
+                    AwaitingEscalationIds = []
+                };
+
+                // Now terminal, so retention applies from this moment — the same rule the ordinary
+                // finishing path follows.
+                entry.ExpiresAt = now + Ttl;
+                expired.Add(previous);
+            }
+        }
+
+        return expired;
     }
 
     /// <inheritdoc />

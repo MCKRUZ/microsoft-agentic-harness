@@ -314,6 +314,141 @@ public sealed class SubmitWorkflowCommandValidatorTests
         Sut.Validate(Command([gate])).IsValid.Should().BeFalse();
     }
 
+    /// <summary>A well-formed gate naming <paramref name="approvers"/>.</summary>
+    private static WorkflowStep GateStep(params string[] approvers) => new()
+    {
+        Name = "gate",
+        Type = StepType.HumanGate,
+        Configuration = new HumanGateStepConfiguration
+        {
+            EscalationMessage = "approve the spend",
+            ApprovalStrategy = ApprovalStrategy.AnyOf,
+            Approvers = approvers
+        }
+    };
+
+    private SubmitWorkflowCommand GateCommand(string? submitter, params string[] approvers) =>
+        Command([GateStep(approvers)]) with { SubmitterApproverName = submitter };
+
+    [Fact]
+    public void Validate_HumanGate_WhenTheHostNamesNoApprovers_IsRejected()
+    {
+        // The shipped default, and deliberately fail-closed. A host that has not said who may approve
+        // things has said that nothing may be approved — reading an unset roster as "anyone" would make
+        // this a check that exists and enforces nothing, which is worse than not having it.
+        _config.WorkflowSubmission.PermittedApprovers = [];
+
+        var result = Sut.Validate(GateCommand("dave", "alice"));
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.ErrorMessage.Contains("does not recognise"));
+    }
+
+    [Fact]
+    public void Validate_HumanGate_NamingSomeoneTheHostDoesNotKnow_IsRejected()
+    {
+        // A gate can only be answered by the people it names. One naming a stranger parks the workflow
+        // for as long as the host permits and is then failed — so the honest place to say no is here,
+        // where the author can still fix it.
+        _config.WorkflowSubmission.PermittedApprovers = ["alice", "bob"];
+
+        Sut.Validate(GateCommand("dave", "alice", "mallory")).IsValid.Should().BeFalse();
+    }
+
+    [Fact]
+    public void Validate_HumanGate_NamingPermittedApprovers_IsAccepted()
+    {
+        // The door this wave opens. Everything the gate needs now exists — a roster the host
+        // recognises, a resume trigger, and a way to cancel — so a workflow containing one is no longer
+        // a trap.
+        _config.WorkflowSubmission.PermittedApprovers = ["alice", "bob"];
+
+        Sut.Validate(GateCommand("dave", "alice", "bob")).IsValid.Should().BeTrue();
+    }
+
+    [Fact]
+    public void Validate_HumanGate_MatchesTheRosterCaseInsensitively()
+    {
+        // Rosters are operator-authored and tokens are issuer-minted; casing differences between them
+        // are accidental, not semantic. Matching case-sensitively here while the decision path matches
+        // case-insensitively would reject gates naming approvers who could in fact answer them.
+        _config.WorkflowSubmission.PermittedApprovers = ["Alice@contoso.com"];
+
+        Sut.Validate(GateCommand("dave", "alice@CONTOSO.com")).IsValid.Should().BeTrue();
+    }
+
+    [Fact]
+    public void Validate_HumanGate_NamingItsOwnSubmitter_IsRejected()
+    {
+        // A gate its author can answer is not an approval: the workflow pauses and continues on the
+        // say-so of the person who wrote it, while the audit record shows a human decided.
+        _config.WorkflowSubmission.PermittedApprovers = ["alice", "dave"];
+
+        var result = Sut.Validate(GateCommand("dave", "alice", "dave"));
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.ErrorMessage.Contains("own submitter"));
+    }
+
+    [Fact]
+    public void Validate_HumanGate_NamingItsSubmitterInDifferentCasing_IsStillRejected()
+    {
+        // Self-approval must not be reachable by typing your own name differently. The roster match is
+        // case-insensitive, so a case-sensitive self-check would let the same person through.
+        _config.WorkflowSubmission.PermittedApprovers = ["Dave@contoso.com"];
+
+        Sut.Validate(GateCommand("dave@CONTOSO.com", "Dave@contoso.com")).IsValid.Should().BeFalse();
+    }
+
+    [Fact]
+    public void Validate_HumanGate_WhenTheSubmittersIdentityIsUnknown_IsRejected()
+    {
+        // The check cannot be performed, and the fail-open reading of that — "we could not tell, so
+        // allow it" — is exactly the self-approval it exists to prevent. Refusing costs a caller with
+        // no usable claim the ability to author gates; permitting costs everyone the guarantee.
+        _config.WorkflowSubmission.PermittedApprovers = ["alice"];
+
+        Sut.Validate(GateCommand(submitter: null, "alice")).IsValid.Should().BeFalse();
+    }
+
+    [Fact]
+    public void Validate_HumanGateWithANullApproverList_IsRejectedRatherThanThrowing()
+    {
+        // `"approvers": null` on the wire overwrites the property's empty-list initializer, so every
+        // rule that reads the list would dereference null. The caller is authenticated and the outcome
+        // would be a 500 from the admission path — the same shape a null step element produced once
+        // before, and the reason every collection predicate here has to tolerate one.
+        _config.WorkflowSubmission.PermittedApprovers = ["alice"];
+
+        var gate = new WorkflowStep
+        {
+            Name = "gate",
+            Type = StepType.HumanGate,
+            Configuration = new HumanGateStepConfiguration
+            {
+                EscalationMessage = "approve the spend",
+                ApprovalStrategy = ApprovalStrategy.AnyOf,
+                Approvers = null!
+            }
+        };
+
+        var act = () => Sut.Validate(Command([gate]) with { SubmitterApproverName = "dave" });
+
+        act.Should().NotThrow();
+        act().IsValid.Should().BeFalse("a gate nobody can answer is refused, not accepted");
+    }
+
+    [Fact]
+    public void Validate_AWorkflowWithNoGate_IsUnaffectedByTheApproverRules()
+    {
+        // The roster governs gates, not submissions. A workflow that asks nobody to approve anything
+        // must not be refused because the host has not named any approvers.
+        _config.WorkflowSubmission.PermittedApprovers = [];
+
+        Sut.Validate(Command([LlmStep("only")]) with { SubmitterApproverName = null })
+            .IsValid.Should().BeTrue();
+    }
+
     [Fact]
     public void Validate_HumanGateWithABlankMessage_IsRejected()
     {
