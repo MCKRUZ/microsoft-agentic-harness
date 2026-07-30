@@ -32,9 +32,13 @@
 #
 # OUTPUT (key=value lines; `github` format also appends them to $GITHUB_OUTPUT)
 #   required=true|false   whether the reviewer must run
-#   trigger=path|content|none
+#   trigger=path|content|path+content|none
 #   reason=<one line, human-readable>
-#   signals=<comma-separated markers matched, empty when trigger=path>
+#   signals=<comma-separated markers matched; empty only when nothing matched>
+#
+# The two signals are additive: a diff can trigger on both, and the scope file is
+# then the UNION. Never make one branch suppress the other — see the comment on the
+# TRIGGER block for the hole that created.
 #
 # The matched files are written to the path given by SECURITY_SCOPE_FILE when set,
 # so the caller can point the reviewer at them instead of the whole diff.
@@ -73,7 +77,11 @@ CHANGED_FILES="$(git diff --name-only "$MERGE_BASE" "$HEAD_REF")"
 # Every segment is slash-anchored so it matches a whole directory component.
 # Keep in sync with .github/CODEOWNERS.
 # ---------------------------------------------------------------------------
-PATH_RE='(^\.github/|/Auth/|/Identity/|/Security/|/SecurityAttributes/|/Migrations/|^infra/)'
+# `scripts/rails/` is here because those scripts ARE the gates — a change to
+# run-gates.sh is a change to what gets reviewed, exactly like a change to
+# .github/. It is the only addition to the original list; everything else is
+# preserved verbatim, so this trigger can only widen, never narrow.
+PATH_RE='(^\.github/|^scripts/rails/|/Auth/|/Identity/|/Security/|/SecurityAttributes/|/Migrations/|^infra/)'
 
 # ---------------------------------------------------------------------------
 # Signal 2 — security-relevant code, by what the changed lines actually contain.
@@ -89,34 +97,75 @@ CONTENT_RE="${CONTENT_RE}"'|Jwt|Bearer|AccessToken|RefreshToken|SasToken|ApiKey|
 CONTENT_RE="${CONTENT_RE}"'|\[Http(Get|Post|Put|Delete|Patch)|MapGet\(|MapPost\(|MapDelete\(|UseCors|RateLimit'                               # externally reachable surface
 CONTENT_RE="${CONTENT_RE}"'|Sanitiz|Redact|Scrub)'                                                                                            # output safety
 
-# Added/removed lines only (drop the +++/--- file headers), restricted to shipped
-# source. Docs and scripts reach the gate through the path list when they matter.
-CHANGED_LINES="$(git diff "$MERGE_BASE" "$HEAD_REF" -- 'src/*' | grep -E '^[+-]' | grep -vE '^(\+\+\+|---)' || true)"
+# Prose is excluded from the content scan — a security guide legitimately says
+# "password" on every page. Everything else that ships or executes is scanned,
+# including scripts/ and the rails themselves, so a file is never in scope for the
+# gate but out of scope for the reviewer.
+# This script and its tests are excluded because they DEFINE the marker list rather
+# than use it: scanning them matches every marker at once and drowns the `signals`
+# output in noise. They still reach the reviewer through the path list above, which
+# is the stronger trigger anyway — so this exclusion cannot hide a change to them.
+scannable() {
+  printf '%s' "$CHANGED_FILES" \
+    | grep -vE '(^documentation/|\.md$|^\.github/scripts/security-gate-scope(\.test)?\.sh$)' || true
+}
 
-SIGNALS="$(printf '%s' "$CHANGED_LINES" | grep -oE "$CONTENT_RE" | sort -u | paste -sd, - 2>/dev/null || true)"
+# Added/removed lines only; the +++/--- file headers are not content.
+diff_lines() { # <pathspec...>
+  git diff "$MERGE_BASE" "$HEAD_REF" -- "$@" | grep -E '^[+-]' | grep -vE '^(\+\+\+|---)' || true
+}
+
+SCANNABLE_FILES="$(scannable)"
+SIGNALS=""
+if [ -n "$SCANNABLE_FILES" ]; then
+  # shellcheck disable=SC2046 — the file list is git output, one path per line.
+  SIGNALS="$(printf '%s\n' "$SCANNABLE_FILES" | tr '\n' '\0' | xargs -0 -r git diff "$MERGE_BASE" "$HEAD_REF" -- \
+    | grep -E '^[+-]' | grep -vE '^(\+\+\+|---)' | grep -oE "$CONTENT_RE" | sort -u | paste -sd, - || true)"
+fi
+
+PATH_FILES="$(printf '%s' "$CHANGED_FILES" | grep -E "$PATH_RE" || true)"
+
+# The two signals are ADDITIVE, never exclusive. An earlier draft made the path
+# branch an `elif`, so a PR touching one .github/ file plus src/ tenant-scoping code
+# was handed a scope file naming only the .github file — and the reviewer is told to
+# start there. That is a hole big enough to walk an owner-check regression through,
+# and this very change was an instance of it. Compute both, union the file lists.
+CONTENT_FILES=""
+if [ -n "$SIGNALS" ]; then
+  # Name the files whose OWN changed lines carry a marker, so the reviewer reads the
+  # security-relevant part of a large diff first rather than end to end.
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    if diff_lines "$f" | grep -qE "$CONTENT_RE"; then
+      CONTENT_FILES="${CONTENT_FILES}${f}"$'\n'
+    fi
+  done <<EOF
+$SCANNABLE_FILES
+EOF
+fi
 
 REQUIRED=false
 TRIGGER=none
 REASON="no gated path and no security-relevant code changed"
-SCOPED_FILES=""
 
-if printf '%s' "$CHANGED_FILES" | grep -Eq "$PATH_RE"; then
-  REQUIRED=true
-  TRIGGER=path
-  SCOPED_FILES="$(printf '%s' "$CHANGED_FILES" | grep -E "$PATH_RE" || true)"
-  REASON="gated path changed (auth/identity/security/migrations/.github/infra)"
-  SIGNALS=""
+if [ -n "$PATH_FILES" ] && [ -n "$SIGNALS" ]; then
+  REQUIRED=true; TRIGGER="path+content"
+  REASON="gated path changed AND security-relevant code changed"
+elif [ -n "$PATH_FILES" ]; then
+  REQUIRED=true; TRIGGER="path"
+  REASON="gated path changed (auth/identity/security/migrations/.github/rails/infra)"
 elif [ -n "$SIGNALS" ]; then
-  REQUIRED=true
-  TRIGGER=content
-  # Name the files whose own changed lines carry a marker, so the reviewer reads
-  # the security-relevant part of a large diff rather than all of it.
-  for f in $(printf '%s' "$CHANGED_FILES" | grep -E '^src/.*\.(cs|csproj|json|props|targets)$' || true); do
-    if git diff "$MERGE_BASE" "$HEAD_REF" -- "$f" | grep -E '^[+-]' | grep -vE '^(\+\+\+|---)' | grep -qE "$CONTENT_RE"; then
-      SCOPED_FILES="${SCOPED_FILES}${f}"$'\n'
-    fi
-  done
-  REASON="security-relevant code changed under src/"
+  REQUIRED=true; TRIGGER="content"
+  REASON="security-relevant code changed"
+fi
+
+SCOPED_FILES="$(printf '%s\n%s\n' "$PATH_FILES" "$CONTENT_FILES" | grep -E . | sort -u || true)"
+
+# A scope file must never say "nothing" while the gate says "review this". If the
+# union came out empty despite a trigger, hand over the whole diff — an over-wide
+# scope costs turns; an empty one reads as "there is nothing here".
+if [ "$REQUIRED" = "true" ] && [ -z "$SCOPED_FILES" ]; then
+  SCOPED_FILES="$CHANGED_FILES"
 fi
 
 if [ -n "${SECURITY_SCOPE_FILE:-}" ]; then
