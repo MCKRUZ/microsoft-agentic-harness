@@ -27,6 +27,17 @@ public sealed record RunCompletion
     /// </summary>
     public string? Detail { get; init; }
 
+    /// <summary>
+    /// The decisions a parked run is waiting on. Empty for every other status.
+    /// </summary>
+    /// <remarks>
+    /// This is what makes a park recoverable. A run that parks without naming what it waits on can
+    /// only ever be released by the host's parked-run ceiling — which fails it — so the ids are
+    /// carried from the executor that knows them rather than rediscovered later by a reader that
+    /// would have to reach into another subsystem's state to find them.
+    /// </remarks>
+    public IReadOnlyList<Guid> AwaitingEscalationIds { get; init; } = [];
+
     /// <summary>The run produced its result.</summary>
     public static RunCompletion Succeeded() => new() { Status = RunStatus.Succeeded };
 
@@ -42,6 +53,17 @@ public sealed record RunCompletion
 
     /// <summary>The run parked awaiting a decision it cannot make for itself.</summary>
     /// <param name="detail">Caller-safe explanation of what is being waited on.</param>
-    public static RunCompletion Blocked(string detail) =>
-        new() { Status = RunStatus.Blocked, Detail = detail };
+    /// <param name="awaitingEscalationIds">
+    /// The decisions whose verdicts release the run. Required rather than optional: an empty list is a
+    /// legitimate answer — a plan can park with no readable escalation reference — but it means the run
+    /// is unrecoverable except by the host's parked-run ceiling, and a caller should have to say so
+    /// rather than arrive there by omitting an argument.
+    /// </param>
+    public static RunCompletion Blocked(string detail, IReadOnlyList<Guid> awaitingEscalationIds) =>
+        new()
+        {
+            Status = RunStatus.Blocked,
+            Detail = detail,
+            AwaitingEscalationIds = awaitingEscalationIds
+        };
 }

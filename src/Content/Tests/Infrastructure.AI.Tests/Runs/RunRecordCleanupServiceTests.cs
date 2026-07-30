@@ -49,6 +49,10 @@ public sealed class RunRecordCleanupServiceTests
         public RunRecord? FindLiveRunForTarget(RunKind kind, string targetId) =>
             inner.FindLiveRunForTarget(kind, targetId);
 
+        public IReadOnlyList<RunRecord> GetParkedRuns() => inner.GetParkedRuns();
+
+        public RunRecord? TryResume(string jobId) => inner.TryResume(jobId);
+
         /// <summary>The ceilings the service asked the store to apply, in order.</summary>
         public List<TimeSpan> ParkedCeilings { get; } = [];
 

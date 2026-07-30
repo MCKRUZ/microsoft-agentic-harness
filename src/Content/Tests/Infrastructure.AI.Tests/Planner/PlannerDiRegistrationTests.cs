@@ -57,18 +57,21 @@ public sealed class PlannerDiRegistrationTests : IDisposable
     }
 
     [Fact]
-    public void DependencyInjection_RunSubstrate_HasBothADispatcherAndASweeper()
+    public void DependencyInjection_RunSubstrate_HasADispatcherASweeperAndAResumeCheck()
     {
-        // Registration is the whole feature for these two. Each is a background loop nothing else
+        // Registration is the whole feature for these three. Each is a background loop nothing else
         // calls, so an unregistered one is not a failure anyone sees — the dispatcher's absence leaves
-        // every run sitting Queued, and the sweeper's leaves the configured retention as a claim the
-        // host never honours while finished runs accumulate for the life of the process.
+        // every run sitting Queued, the sweeper's leaves the configured retention as a claim the host
+        // never honours while finished runs accumulate for the life of the process, and the resume
+        // check's leaves every approved human gate to wait out the parked-run ceiling and fail, days
+        // after the approver said yes.
         var hosted = _provider.GetServices<Microsoft.Extensions.Hosting.IHostedService>()
             .Select(service => service.GetType())
             .ToList();
 
         hosted.Should().Contain(typeof(RunDispatchBackgroundService));
         hosted.Should().Contain(typeof(RunRecordCleanupService));
+        hosted.Should().Contain(typeof(ParkedRunResumeService));
     }
 
     [Fact]

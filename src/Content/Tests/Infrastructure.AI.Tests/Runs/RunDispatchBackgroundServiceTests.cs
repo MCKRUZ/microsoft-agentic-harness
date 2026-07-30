@@ -272,7 +272,8 @@ public sealed class RunDispatchBackgroundServiceTests
         // hunting for a fault when what is needed is an approval. ParkedAt is what carries the one fact
         // that is true — and it is also what bounds how long the gate may hold the workflow, so a park
         // that forgot to stamp it would park forever.
-        var completion = RunCompletion.Blocked("waiting on a person");
+        var escalation = Guid.NewGuid();
+        var completion = RunCompletion.Blocked("waiting on a person", [escalation]);
         var executor = new StubExecutor(_ => Task.FromResult(Result<RunCompletion>.Success(completion)));
 
         var (service, store, queue) = Build(executor);
@@ -289,6 +290,9 @@ public sealed class RunDispatchBackgroundServiceTests
         record.ParkedAt.Should().NotBeNull("without this stamp the gate can never be aged out");
         record.CompletedAt.Should().BeNull("the run has not completed");
         record.Error.Should().BeNull("waiting for an approval is not a fault");
+        record.AwaitingEscalationIds.Should().Equal([escalation],
+            "what the run is waiting on is the only thing that can ever release it — a park that "
+            + "dropped it would sit until the ceiling failed it, however promptly the approver answered");
     }
 
     [Theory]
@@ -340,7 +344,8 @@ public sealed class RunDispatchBackgroundServiceTests
         // finished, because it did not: a client that recorded RunFinished here would report a workflow
         // as complete while it sits waiting for approval.
         var executor = new StubExecutor(_ =>
-            Task.FromResult(Result<RunCompletion>.Success(RunCompletion.Blocked("two approvals needed"))));
+            Task.FromResult(Result<RunCompletion>.Success(
+                RunCompletion.Blocked("two approvals needed", [Guid.NewGuid(), Guid.NewGuid()]))));
 
         var (service, store, queue) = Build(executor);
         Admit(store, Queued());

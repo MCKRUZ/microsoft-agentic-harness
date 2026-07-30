@@ -125,6 +125,99 @@ public sealed class WorkflowRunKindExecutorTests
     }
 
     [Fact]
+    public async Task AParkedPlan_NamesTheDecisionsThatCouldReleaseIt()
+    {
+        // Without these ids the park is unrecoverable. Nothing else on the run says what it is waiting
+        // for, so the resume check has nothing to ask about and the run sits until the host's
+        // parked-run ceiling fails it — an approval turning into a silent expiry days later.
+        var gateEscalation = Guid.NewGuid();
+
+        PlanEndsWithStates(StepExecutionStatus.Blocked,
+        [
+            State(StepExecutionStatus.Completed, output: "the real output of a finished step"),
+            State(StepExecutionStatus.Blocked, output: EscalationStepOutput.Serialize(gateEscalation))
+        ]);
+
+        var result = await BuildSut().ExecuteAsync(Record(), CancellationToken.None);
+
+        result.Value!.AwaitingEscalationIds.Should().Equal(gateEscalation);
+    }
+
+    [Fact]
+    public async Task TwoGatesReachedAtOnce_AreBothNamed()
+    {
+        // Parallel branches can both reach a gate before the plan drains. Reporting only the first
+        // would tie the run's resume to one approver: if the other answered first, nothing would
+        // notice, and the run would wait on a decision that had already been made.
+        var first = Guid.NewGuid();
+        var second = Guid.NewGuid();
+
+        PlanEndsWithStates(StepExecutionStatus.Blocked,
+        [
+            State(StepExecutionStatus.Blocked, output: EscalationStepOutput.Serialize(first)),
+            State(StepExecutionStatus.Blocked, output: EscalationStepOutput.Serialize(second))
+        ]);
+
+        var result = await BuildSut().ExecuteAsync(Record(), CancellationToken.None);
+
+        result.Value!.AwaitingEscalationIds.Should().BeEquivalentTo([first, second]);
+    }
+
+    [Fact]
+    public async Task AStepBlockedWithNoReadableEscalation_StillParksRatherThanFailing()
+    {
+        // The run is genuinely blocked and saying otherwise would be worse than saying nothing: a
+        // caller told the work failed would retry it, against a plan whose gate is still pending. The
+        // honest report is "parked, with nothing named" — which the ceiling eventually resolves.
+        PlanEndsWithStates(StepExecutionStatus.Blocked,
+        [
+            State(StepExecutionStatus.Blocked, output: "{\"somethingElse\":\"not an escalation\"}")
+        ]);
+
+        var result = await BuildSut().ExecuteAsync(Record(), CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value!.Status.Should().Be(RunStatus.Blocked);
+        result.Value.AwaitingEscalationIds.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task AnEscalationOnAStepThatIsNotBlocked_IsNotWaitedOn()
+    {
+        // A gate that was approved on an earlier resume keeps its escalation reference in history.
+        // Treating it as still-awaited would resume the run on a verdict it has already acted on,
+        // every single pass, for as long as the run lives.
+        PlanEndsWithStates(StepExecutionStatus.Blocked,
+        [
+            State(StepExecutionStatus.Completed, output: EscalationStepOutput.Serialize(Guid.NewGuid())),
+            State(StepExecutionStatus.Blocked, output: null)
+        ]);
+
+        var result = await BuildSut().ExecuteAsync(Record(), CancellationToken.None);
+
+        result.Value!.AwaitingEscalationIds.Should().BeEmpty();
+    }
+
+    private static StepExecutionState State(StepExecutionStatus status, string? output) => new()
+    {
+        StepId = new PlanStepId(Guid.NewGuid()),
+        Status = status,
+        Output = output
+    };
+
+    private void PlanEndsWithStates(
+        StepExecutionStatus finalStatus, IReadOnlyList<StepExecutionState> stepStates) =>
+        _planRunExecutor
+            .Setup(e => e.ExecuteAsync(It.IsAny<PlanRunRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<PlanExecutionSummary>.Success(new PlanExecutionSummary
+            {
+                PlanId = new PlanId(Guid.NewGuid()),
+                FinalStatus = finalStatus,
+                TotalDuration = TimeSpan.FromSeconds(1),
+                StepStates = stepStates
+            }));
+
+    [Fact]
     public async Task AnExecutorThatCouldNotRunThePlan_IsAFailedResultRatherThanAnOutcome()
     {
         // The distinction the return type exists for: "I ran it and it ended this way" is not the same

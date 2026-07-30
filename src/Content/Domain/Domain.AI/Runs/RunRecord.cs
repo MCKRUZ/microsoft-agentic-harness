@@ -60,7 +60,10 @@ public sealed record RunRecord
     /// <summary>When the run was accepted and queued.</summary>
     public required DateTimeOffset CreatedAt { get; init; }
 
-    /// <summary>When a dispatcher claimed the run, if it has been claimed.</summary>
+    /// <summary>
+    /// When the run first began executing, if it has. Not re-stamped when a parked run resumes — the
+    /// work started when it started, and <see cref="ParkedAt"/> is what tracks the current wait.
+    /// </summary>
     public DateTimeOffset? StartedAt { get; init; }
 
     /// <summary>When the run reached a terminal state, if it has.</summary>
@@ -73,6 +76,23 @@ public sealed record RunRecord
     /// answers is otherwise indistinguishable from one answered a moment ago.
     /// </remarks>
     public DateTimeOffset? ParkedAt { get; init; }
+
+    /// <summary>
+    /// The decisions this run is parked on. Empty unless the run is parked.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Recorded on the run rather than rediscovered by whatever wants to resume it. The alternative is
+    /// to ask the workflow's plan state which of its steps are blocked and on what — which makes the
+    /// run substrate a reader of the planner's internals, and makes "which run is waiting on this
+    /// decision" a scan of every plan rather than a lookup.
+    /// </para>
+    /// <para>
+    /// Several at once is normal: a plan can reach two gates on parallel branches, park on both, and be
+    /// resumable by either verdict — reconciliation on the next execution re-reads all of them.
+    /// </para>
+    /// </remarks>
+    public IReadOnlyList<Guid> AwaitingEscalationIds { get; init; } = [];
 
     /// <summary>Whether the run has finished and will not change again.</summary>
     /// <remarks>

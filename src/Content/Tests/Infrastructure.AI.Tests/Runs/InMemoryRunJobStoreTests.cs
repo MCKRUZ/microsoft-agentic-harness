@@ -453,6 +453,127 @@ public sealed class InMemoryRunJobStoreTests
     }
 
     [Fact]
+    public void TryResume_ReturnsAParkedRunToTheQueueAndClearsWhatItWasWaitingFor()
+    {
+        // The transition the whole gate feature turns on. Queued is the only status a dispatcher will
+        // claim, so a resume that left the run in any other state would enqueue an id nothing acts on.
+        var sut = BuildSut();
+        Admit(sut, Queued());
+        var claimed = sut.TryBeginRun("job-1", _time.GetUtcNow())!;
+        var escalation = Guid.NewGuid();
+        sut.Update(claimed with
+        {
+            Status = RunStatus.Blocked,
+            ParkedAt = _time.GetUtcNow(),
+            AwaitingEscalationIds = [escalation]
+        });
+
+        var resumed = sut.TryResume("job-1");
+
+        resumed.Should().NotBeNull();
+        resumed!.Status.Should().Be(RunStatus.Queued);
+        resumed.ParkedAt.Should().BeNull("the wait this recorded is over");
+        resumed.AwaitingEscalationIds.Should().BeEmpty(
+            "a run that is running again is not waiting on anyone, and leaving the id would resume it "
+            + "on the same verdict on every later pass");
+    }
+
+    [Fact]
+    public void AResumedRunKeepsTheJobIdAndTheEnvelopeItWasAcceptedUnder()
+    {
+        // The caller's contract: one submission, one id, whatever happens in between. And the grant is
+        // the one resolved when the run was accepted — a gate approval authorizes the work to continue,
+        // not to continue with anything more than it started with.
+        var sut = BuildSut();
+        var original = Admit(sut, Queued());
+        var claimed = sut.TryBeginRun("job-1", _time.GetUtcNow())!;
+        sut.Update(claimed with { Status = RunStatus.Blocked, ParkedAt = _time.GetUtcNow() });
+
+        var resumed = sut.TryResume("job-1")!;
+
+        resumed.JobId.Should().Be("job-1");
+        resumed.Envelope.Should().BeSameAs(original.Envelope);
+        resumed.OwnerId.Should().Be(original.OwnerId);
+    }
+
+    [Fact]
+    public void TryResume_UnderConcurrency_ReleasesExactlyOnce()
+    {
+        // Same hazard TryBeginRun exists for. Two resumers both observing the run as parked would both
+        // enqueue it, and the second dispatch would execute the same plan alongside the first — two
+        // schedulers writing one plan's step states.
+        var sut = BuildSut();
+        Admit(sut, Queued());
+        var claimed = sut.TryBeginRun("job-1", _time.GetUtcNow())!;
+        sut.Update(claimed with { Status = RunStatus.Blocked, ParkedAt = _time.GetUtcNow() });
+
+        var winners = 0;
+        Parallel.For(0, 64, _ =>
+        {
+            if (sut.TryResume("job-1") is not null)
+                Interlocked.Increment(ref winners);
+        });
+
+        winners.Should().Be(1);
+    }
+
+    [Fact]
+    public void TryResume_RefusesARunThatIsNotParked()
+    {
+        // Resuming is only ever a transition out of Blocked. Applied to a finished run it would
+        // resurrect completed work; applied to a running one it would queue a second execution of a
+        // plan already in flight.
+        var sut = BuildSut();
+        Admit(sut, Queued("job-running"));
+        sut.TryBeginRun("job-running", _time.GetUtcNow());
+
+        Admit(sut, Queued("job-done"));
+        var done = sut.TryBeginRun("job-done", _time.GetUtcNow())!;
+        sut.Update(done with { Status = RunStatus.Succeeded, CompletedAt = _time.GetUtcNow() });
+
+        sut.TryResume("job-running").Should().BeNull();
+        sut.TryResume("job-done").Should().BeNull();
+        sut.TryResume("job-never-existed").Should().BeNull();
+    }
+
+    [Fact]
+    public void AResumedRunDoesNotHaveItsStartTimeRewritten()
+    {
+        // StartedAt answers "when did this work begin", and a caller reads it to know how long the run
+        // has been going. Restamping it on resume would report a workflow that ran for an hour, waited
+        // a day for approval, and then finished as having started after the approver answered.
+        var sut = BuildSut();
+        Admit(sut, Queued());
+        var firstStart = _time.GetUtcNow();
+        var claimed = sut.TryBeginRun("job-1", firstStart)!;
+        sut.Update(claimed with { Status = RunStatus.Blocked, ParkedAt = _time.GetUtcNow() });
+
+        _time.Advance(TimeSpan.FromDays(1));
+        sut.TryResume("job-1");
+        var reclaimed = sut.TryBeginRun("job-1", _time.GetUtcNow())!;
+
+        reclaimed.StartedAt.Should().Be(firstStart);
+    }
+
+    [Fact]
+    public void GetParkedRuns_ListsOnlyRunsActuallyWaitingOnADecision()
+    {
+        // What the resume check iterates. Including a queued or running run would have it asking the
+        // escalation service about work nobody is gating; missing a parked one would leave that run to
+        // the ceiling however promptly its approver answered.
+        var sut = BuildSut();
+        Admit(sut, Queued("job-parked"));
+        var claimed = sut.TryBeginRun("job-parked", _time.GetUtcNow())!;
+        sut.Update(claimed with { Status = RunStatus.Blocked, ParkedAt = _time.GetUtcNow() });
+
+        Admit(sut, Queued("job-queued"));
+        Admit(sut, Queued("job-running"));
+        sut.TryBeginRun("job-running", _time.GetUtcNow());
+
+        sut.GetParkedRuns().Select(run => run.JobId).Should().BeEquivalentTo(["job-parked"]);
+    }
+
+    [Fact]
     public void TryCreate_WithADuplicateJobId_Throws()
     {
         var sut = BuildSut();

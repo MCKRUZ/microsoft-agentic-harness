@@ -110,6 +110,12 @@ public static partial class DependencyInjection
         // the process.
         services.AddHostedService<RunRecordCleanupService>();
 
+        // And likewise the resume check: a workflow that parks on a human gate is released by nothing
+        // else. Without this the approval machinery still records verdicts correctly and the plan
+        // executor still knows how to act on them — but nothing ever asks it to, so an approved gate
+        // waits out the parked-run ceiling and fails.
+        services.AddHostedService<ParkedRunResumeService>();
+
         services.AddScoped<IPlanValidator, PlanValidator>();
         services.AddScoped<IPlanGenerator, LlmPlanGeneratorService>();
         services.AddScoped<IPlanStateStore, EfCorePlanStateStore>();

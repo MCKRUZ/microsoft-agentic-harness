@@ -172,9 +172,63 @@ public sealed class InMemoryRunJobStore : IRunJobStore
             if (entry.Record.Status != RunStatus.Queued || IsExpired(entry, _time.GetUtcNow()))
                 return null;
 
-            entry.Record = entry.Record with { Status = RunStatus.Running, StartedAt = startedAt };
+            entry.Record = entry.Record with
+            {
+                Status = RunStatus.Running,
+
+                // First claim only. A run that parked on a gate and was resumed is claimed again, and
+                // overwriting would report the run as having started after the approver answered —
+                // hiding however long it ran before reaching the gate. ParkedAt is what tracks the
+                // current wait; this tracks when the work began.
+                StartedAt = entry.Record.StartedAt ?? startedAt
+            };
+
             return entry.Record;
         }
+    }
+
+    /// <inheritdoc />
+    public RunRecord? TryResume(string jobId)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(jobId);
+
+        if (!_entries.TryGetValue(jobId, out var entry))
+            return null;
+
+        lock (entry)
+        {
+            // Read, decide and write under one lock, exactly as TryBeginRun does: two resumers that
+            // both saw the run parked would both enqueue it, and the second dispatch would run the same
+            // plan alongside the first.
+            if (!entry.Record.IsAwaitingDecision)
+                return null;
+
+            entry.Record = entry.Record with
+            {
+                Status = RunStatus.Queued,
+                ParkedAt = null,
+                AwaitingEscalationIds = []
+            };
+
+            return entry.Record;
+        }
+    }
+
+    /// <inheritdoc />
+    public IReadOnlyList<RunRecord> GetParkedRuns()
+    {
+        var parked = new List<RunRecord>();
+
+        foreach (var entry in _entries.Values)
+        {
+            lock (entry)
+            {
+                if (entry.Record.IsAwaitingDecision)
+                    parked.Add(entry.Record);
+            }
+        }
+
+        return parked;
     }
 
     /// <inheritdoc />

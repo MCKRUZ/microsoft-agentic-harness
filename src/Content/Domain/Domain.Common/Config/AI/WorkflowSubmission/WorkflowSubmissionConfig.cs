@@ -65,7 +65,9 @@ namespace Domain.Common.Config.AI.WorkflowSubmission;
 /// ├── MaxConcurrentDispatchedRuns — How many runs the host executes at once, across all callers
 /// ├── MaxConcurrentProgressStreams — How many progress streams may be open at once, host-wide
 /// ├── MaxProgressStreamsPerOwner — How many one caller may hold open at once
-/// └── ProgressBufferSize        — How far behind one watcher may fall before it loses events
+/// ├── ProgressBufferSize        — How far behind one watcher may fall before it loses events
+/// ├── MaxParkedRunDuration      — How long a run may wait on an approval before the host gives up
+/// └── ParkedRunResumeInterval  — How often the host checks whether an approval has been answered
 /// </code>
 /// </remarks>
 public class WorkflowSubmissionConfig
@@ -302,4 +304,23 @@ public class WorkflowSubmissionConfig
     /// </remarks>
     /// <value>Default: 7 days</value>
     public TimeSpan MaxParkedRunDuration { get; set; } = TimeSpan.FromDays(7);
+
+    /// <summary>
+    /// How often the host checks whether a parked run's approval has been answered.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Checking on a clock rather than reacting to each verdict is deliberate. A decision can be taken
+    /// while the host is down — or by a different instance — and an in-process notification is lost in
+    /// both cases, leaving the run parked until the ceiling fails it. Re-reading the verdict is the
+    /// only form of the trigger that survives a restart.
+    /// </para>
+    /// <para>
+    /// Its own setting rather than sharing <see cref="RunSweepInterval"/>: that one paces giving memory
+    /// back, this one paces how long a caller waits after their approver has already said yes, and an
+    /// operator who relaxes the first rarely means to slow the second.
+    /// </para>
+    /// </remarks>
+    /// <value>Default: 5 seconds</value>
+    public TimeSpan ParkedRunResumeInterval { get; set; } = TimeSpan.FromSeconds(5);
 }

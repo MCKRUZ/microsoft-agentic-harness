@@ -95,6 +95,44 @@ public interface IRunJobStore
     RunRecord? FindLiveRunForTarget(RunKind kind, string targetId);
 
     /// <summary>
+    /// Lists the runs currently parked awaiting a decision.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Takes no caller and applies no scope, for the same reason as
+    /// <see cref="FindLiveRunForTarget"/>: it answers the host's own question — which parked work can
+    /// now continue — rather than any caller's. Nothing reached through a request may use it.
+    /// </para>
+    /// <para>
+    /// Returns the records, not their identifiers, because the caller's next question is what each run
+    /// is waiting on. Handing back ids would make the caller read each one again through a scoped
+    /// accessor it has no identity for.
+    /// </para>
+    /// </remarks>
+    IReadOnlyList<RunRecord> GetParkedRuns();
+
+    /// <summary>
+    /// Atomically returns a parked run to the queue, handing the updated record to the caller that won
+    /// and <see langword="null"/> to everyone else.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The counterpart of <see cref="TryBeginRun"/>, and atomic for the same reason: two resumers that
+    /// both observed the run as parked would both enqueue it, and the second dispatch would execute the
+    /// same plan concurrently with the first. Winning the transition — not observing the verdict — is
+    /// what entitles a caller to enqueue.
+    /// </para>
+    /// <para>
+    /// <see cref="RunRecord.ParkedAt"/> and <see cref="RunRecord.AwaitingEscalationIds"/> are cleared:
+    /// both describe a wait that is over. Leaving them would make a run that parks again look like it
+    /// had been waiting since its first gate, and would keep it eligible for the parked-run ceiling
+    /// while it is running.
+    /// </para>
+    /// </remarks>
+    /// <param name="jobId">The parked run to return to the queue.</param>
+    RunRecord? TryResume(string jobId);
+
+    /// <summary>
     /// Fails runs that have been parked awaiting a decision for longer than
     /// <paramref name="maxParkedDuration"/>, returning the identifiers of those failed.
     /// </summary>

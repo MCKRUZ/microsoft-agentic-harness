@@ -237,7 +237,7 @@ public sealed class RunDispatchBackgroundService : BackgroundService
         // watcher's stream on a run that is going to carry on.
         if (completion.Status is RunStatus.Blocked)
         {
-            Park(claimed, completion.Detail);
+            Park(claimed, completion.Detail, completion.AwaitingEscalationIds);
             _logger.LogInformation(
                 "Run {JobId} ({RunKind}) parked awaiting a decision.", claimed.JobId, claimed.Kind);
             return;
@@ -281,12 +281,13 @@ public sealed class RunDispatchBackgroundService : BackgroundService
     /// its plan state machine. Resuming re-queues this same job id.
     /// </para>
     /// </remarks>
-    private void Park(RunRecord claimed, string? detail)
+    private void Park(RunRecord claimed, string? detail, IReadOnlyList<Guid> awaitingEscalationIds)
     {
         _store.Update(claimed with
         {
             Status = RunStatus.Blocked,
-            ParkedAt = _time.GetUtcNow()
+            ParkedAt = _time.GetUtcNow(),
+            AwaitingEscalationIds = awaitingEscalationIds
         });
 
         _progress.Publish(
