@@ -92,8 +92,10 @@ internal sealed class RunRecordCleanupService : BackgroundService
     {
         try
         {
-            // Ageing out abandoned gates first, so a run that expires on this tick is reclaimable on
-            // this tick rather than waiting a whole interval to become eligible.
+            // Ageing out abandoned gates first, so a run given up on here has released its workflow and
+            // its owner's slot before this same tick's reclaim runs. It is NOT reclaimable yet — being
+            // failed starts its retention window afresh, so its memory comes back a full TTL later,
+            // exactly as for a run that finished normally.
             await ExpireStaleParkedRunsAsync().ConfigureAwait(false);
 
             var reclaimed = _store.SweepExpired();

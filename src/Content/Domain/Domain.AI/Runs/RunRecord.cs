@@ -45,9 +45,21 @@ public sealed record RunRecord
     /// The grant this run executes under, resolved from the credential that <em>started</em> it.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Carried per run rather than re-resolved at execution time, so a run performs exactly what the
     /// caller who triggered it was entitled to at that moment — a later change to that caller's grant
     /// does not retroactively widen work already queued.
+    /// </para>
+    /// <para>
+    /// <strong>Accepted property, disclosed rather than discovered later: the grant is not
+    /// re-evaluated when a parked run resumes.</strong> A workflow waiting on a human gate may sit for
+    /// up to the host's <c>MaxParkedRunDuration</c> — a week by default — and it then continues under
+    /// the grant its submitter held when it started, even if that grant has since been narrowed. It is
+    /// a ceiling on what one caller could already do rather than a way to exceed it, and the window is
+    /// operator-bounded; re-resolving it would need a credential to resolve <em>from</em>, and by then
+    /// there is no request and no principal. A host that needs revocation to take effect sooner than a
+    /// gate can be answered should shorten that ceiling.
+    /// </para>
     /// </remarks>
     public required CapabilityEnvelope Envelope { get; init; }
 

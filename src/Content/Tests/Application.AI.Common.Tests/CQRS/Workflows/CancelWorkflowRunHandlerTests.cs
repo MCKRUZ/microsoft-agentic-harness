@@ -187,6 +187,46 @@ public sealed class CancelWorkflowRunHandlerTests
     }
 
     [Fact]
+    public async Task ACallerHangingUpMidCancel_DoesNotStrandTheRemainingApprovals()
+    {
+        // The run is already cancelled by the time withdrawal starts, so abandoning the loop on the
+        // caller's token leaves approvals pending with nothing to retry them — the ceiling only looks
+        // at parked runs and this one is terminal. Same shape as queueing a run on its caller's abort
+        // token, which stranded workflows permanently.
+        var parked = Run(RunStatus.Blocked, Guid.NewGuid(), Guid.NewGuid());
+        StoreHolds(visible: parked, cancelReturns: parked);
+
+        // Cancelled part-way through rather than up front: the handler refuses a request that arrives
+        // already abandoned, so an up-front cancellation would never reach the loop this is about.
+        using var hangsUpMidway = new CancellationTokenSource();
+        var seen = new List<CancellationToken>();
+        _escalations
+            .Setup(e => e.CancelEscalationAsync(
+                It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Callback<Guid, string, string, CancellationToken>((_, _, _, token) =>
+            {
+                seen.Add(token);
+                hangsUpMidway.Cancel();
+            })
+            .ReturnsAsync(new EscalationOutcome
+            {
+                EscalationId = Guid.NewGuid(),
+                IsApproved = false,
+                Decisions = [],
+                ResolutionType = EscalationResolutionType.Denied,
+                ResolvedAt = DateTimeOffset.UnixEpoch,
+                Approvers = ["carol"]
+            });
+
+        var result = await BuildSut().Handle(Command(), hangsUpMidway.Token);
+
+        result.Value!.WithdrawnApprovals.Should().Be(2, "both approvals must still be withdrawn");
+        seen.Should().OnlyContain(token => !token.CanBeCanceled,
+            "the withdrawal must not run on the caller's token — the run is already cancelled, and "
+            + "nothing retries the approvals it abandons");
+    }
+
+    [Fact]
     public async Task TheRunIsStoppedBeforeItsApprovalIsWithdrawn()
     {
         // Order is a correctness property, not a style choice. Withdrawing first resolves the

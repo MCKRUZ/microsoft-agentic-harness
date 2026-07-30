@@ -133,6 +133,28 @@ public interface IRunJobStore
     RunRecord? TryResume(string jobId);
 
     /// <summary>
+    /// Undoes a <see cref="TryResume"/> whose caller could not go on to queue the run, returning it to
+    /// the parked state it held. Applies only while the run is still queued, and reports whether it
+    /// did.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Exists because a run left <see cref="RunStatus.Queued"/> but absent from the queue is the one
+    /// state nothing recovers from: no dispatcher claims a run it was never handed, and the parked-run
+    /// ceiling only inspects parked runs. Re-parking puts it back under that ceiling and lets the next
+    /// resume attempt try again.
+    /// </para>
+    /// <para>
+    /// Guarded rather than a blind write, for the same reason every other transition here is. In the
+    /// window between the failed queue write and this call, the run's owner may have cancelled it —
+    /// and an unconditional restore would put a cancelled run back to waiting on approvals that have
+    /// already been withdrawn.
+    /// </para>
+    /// </remarks>
+    /// <param name="parked">The record as it stood before it was resumed.</param>
+    bool TryRepark(RunRecord parked);
+
+    /// <summary>
     /// Atomically cancels a run that has not started executing, or is parked awaiting a decision,
     /// returning the run <em>as it stood immediately before</em> the transition.
     /// </summary>

@@ -197,16 +197,24 @@ public sealed class WorkflowRunsIntegrationTests
         var cancelled = await client.SendAsync(
             Request(HttpMethod.Delete, $"/api/workflows/{workflowId}/runs/{jobId}", body: null, "alice"));
 
-        cancelled.StatusCode.Should().Be(HttpStatusCode.OK);
+        // Two honest outcomes, decided by whether this single-step run finished first: it is stopped,
+        // or it had already ended and cancelling is a conflict. Asserting only one would either flake
+        // or quietly pass for the wrong reason, so this pins the pair and then checks the answer is
+        // well-formed for whichever arrived — which is what proves the route and its wire shape.
+        cancelled.StatusCode.Should().BeOneOf(HttpStatusCode.OK, HttpStatusCode.Conflict);
 
-        var body = await cancelled.Content.ReadFromJsonAsync<JsonElement>();
-        body.GetProperty("jobId").GetString().Should().Be(jobId);
-        body.GetProperty("withdrawnApprovals").GetInt32().Should().Be(
-            0, "this workflow has no gate, so there was nothing to withdraw");
+        if (cancelled.StatusCode == HttpStatusCode.OK)
+        {
+            var body = await cancelled.Content.ReadFromJsonAsync<JsonElement>();
+            body.GetProperty("jobId").GetString().Should().Be(jobId);
+            body.GetProperty("withdrawnApprovals").GetInt32().Should().Be(
+                0, "this workflow has no gate, so there was nothing to withdraw");
+            body.TryGetProperty("stopped", out _).Should().BeTrue(
+                "the caller has to be able to tell a stop from a request to stop");
+        }
 
-        // A single-step workflow may already have run to completion, in which case cancelling is a
-        // conflict rather than a stop — so this asserts what is true either way: whatever the run's
-        // final state, it is terminal and the cancel call did not leave it live.
+        // True either way, and the property that matters: the run is readable and the cancel call did
+        // not leave it in a state the status endpoint cannot answer for.
         var polled = await client.SendAsync(
             Request(HttpMethod.Get, $"/api/workflows/{workflowId}/runs/{jobId}", body: null, "alice"));
         polled.StatusCode.Should().Be(HttpStatusCode.OK);

@@ -586,6 +586,53 @@ public sealed class InMemoryRunJobStoreTests
     }
 
     [Fact]
+    public void TryRepark_RestoresARunWhoseResumeCouldNotQueueIt()
+    {
+        // Queued-but-not-in-the-queue is the one state nothing recovers from: no dispatcher claims a
+        // run it was never handed, and the ceiling only inspects parked runs. Re-parking puts it back
+        // where something can act on it.
+        var sut = BuildSut();
+        Admit(sut, Queued());
+        var claimed = sut.TryBeginRun("job-1", _time.GetUtcNow())!;
+        var escalation = Guid.NewGuid();
+        var parked = claimed with
+        {
+            Status = RunStatus.Blocked,
+            ParkedAt = _time.GetUtcNow(),
+            AwaitingEscalationIds = [escalation]
+        };
+        sut.Update(parked);
+        sut.TryResume("job-1").Should().NotBeNull();
+
+        sut.TryRepark(parked).Should().BeTrue();
+
+        var restored = sut.Get("job-1", "alice", null)!;
+        restored.Status.Should().Be(RunStatus.Blocked);
+        restored.ParkedAt.Should().NotBeNull("the ceiling can only age a run whose wait it can measure");
+        restored.AwaitingEscalationIds.Should().Equal([escalation],
+            "the next resume attempt has to know what to ask about");
+    }
+
+    [Fact]
+    public void TryRepark_RefusesToResurrectARunThatWasCancelledInTheMeantime()
+    {
+        // The window is narrow but the consequence is not: the cancellation has already withdrawn this
+        // run's approvals, so restoring it would leave a run waiting on decisions nobody can make and
+        // nobody has been asked for.
+        var sut = BuildSut();
+        Admit(sut, Queued());
+        var claimed = sut.TryBeginRun("job-1", _time.GetUtcNow())!;
+        var parked = claimed with { Status = RunStatus.Blocked, ParkedAt = _time.GetUtcNow() };
+        sut.Update(parked);
+
+        sut.TryResume("job-1").Should().NotBeNull();
+        sut.TryCancel("job-1", _time.GetUtcNow()).Should().NotBeNull();
+
+        sut.TryRepark(parked).Should().BeFalse();
+        sut.Get("job-1", "alice", null)!.Status.Should().Be(RunStatus.Cancelled);
+    }
+
+    [Fact]
     public void TryCancel_ReturnsWhatTheRunWasDoing_SoItsApprovalsCanBeWithdrawn()
     {
         // The previous record, not the updated one. Reading the awaited approvals separately beforehand

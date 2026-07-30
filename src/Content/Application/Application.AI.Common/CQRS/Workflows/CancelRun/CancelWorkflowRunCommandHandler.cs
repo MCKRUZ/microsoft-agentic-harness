@@ -141,7 +141,13 @@ public sealed class CancelWorkflowRunCommandHandler
             // lands beside approver names in the escalation audit, so an owner id would read
             // differently from every other row there — still attributable, but not comparable.
             request.CancellerApproverName ?? request.OwnerId,
-            cancellationToken).ConfigureAwait(false);
+
+            // Deliberately NOT the request's token. The run is already cancelled by this point, so a
+            // caller that hangs up mid-withdrawal would leave the rest of its approvals pending with
+            // nothing to retry them — the parked-run ceiling only looks at parked runs, and this one is
+            // terminal. The same shape as a run being queued on its caller's abort token, which stranded
+            // workflows permanently.
+            CancellationToken.None).ConfigureAwait(false);
 
         return Result<CancelWorkflowRunResult>.Success(new CancelWorkflowRunResult
         {

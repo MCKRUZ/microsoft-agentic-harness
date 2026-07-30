@@ -157,6 +157,13 @@ public static class ClaimsPrincipalExtensions
         ArgumentNullException.ThrowIfNull(principal);
         ArgumentException.ThrowIfNullOrWhiteSpace(approverClaimType);
 
+        // Matching GetUserIdOrNull rather than reading claims off whatever is handed in. Every caller
+        // today sits behind [Authorize], so this is unreachable — but this method is now the single
+        // authority for roster identity, and an authority whose two halves disagree about what an
+        // unauthenticated principal means is what the next caller trips over.
+        if (principal.Identity?.IsAuthenticated != true)
+            return null;
+
         var values = ApproverClaimTypes.EquivalentFormsOf(approverClaimType)
             .SelectMany(principal.FindAll)
             .Select(claim => claim.Value)

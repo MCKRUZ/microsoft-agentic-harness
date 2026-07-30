@@ -56,6 +56,8 @@ public sealed class RunRecordCleanupServiceTests
 
         public RunRecord? TryResume(string jobId) => inner.TryResume(jobId);
 
+        public bool TryRepark(RunRecord parked) => inner.TryRepark(parked);
+
         public RunRecord? TryCancel(string jobId, DateTimeOffset cancelledAt) =>
             inner.TryCancel(jobId, cancelledAt);
 

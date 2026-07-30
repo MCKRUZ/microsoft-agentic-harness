@@ -158,9 +158,12 @@ internal sealed class ParkedRunResumeService : BackgroundService
             // The run is Queued at this point but nothing holds it: no dispatcher will ever claim a run
             // that is not in the queue, and the parked-run ceiling only ever looks at parked runs — so
             // leaving it here strands the run in the one state from which nothing can recover it.
-            // Restoring the record it had a moment ago puts it back under the ceiling and lets the next
-            // pass try again.
-            _store.Update(parked);
+            // Re-parking puts it back under the ceiling and lets the next pass try again.
+            //
+            // Guarded rather than written blind: its owner may have cancelled it in this window, and
+            // restoring a cancelled run would set it waiting on approvals the cancellation has already
+            // withdrawn.
+            _store.TryRepark(parked);
             throw;
         }
 

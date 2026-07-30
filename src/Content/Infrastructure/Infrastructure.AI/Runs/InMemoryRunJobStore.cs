@@ -215,6 +215,27 @@ public sealed class InMemoryRunJobStore : IRunJobStore
     }
 
     /// <inheritdoc />
+    public bool TryRepark(RunRecord parked)
+    {
+        ArgumentNullException.ThrowIfNull(parked);
+
+        if (!_entries.TryGetValue(parked.JobId, out var entry))
+            return false;
+
+        lock (entry)
+        {
+            // Only a run this caller's own resume left queued. Anything else means something acted on
+            // the run in the meantime — most consequentially a cancellation, whose approvals are
+            // already withdrawn and which must not be put back to waiting on them.
+            if (entry.Record.Status != RunStatus.Queued)
+                return false;
+
+            entry.Record = parked;
+            return true;
+        }
+    }
+
+    /// <inheritdoc />
     public RunRecord? TryCancel(string jobId, DateTimeOffset cancelledAt)
     {
         ArgumentException.ThrowIfNullOrEmpty(jobId);
