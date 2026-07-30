@@ -30,7 +30,8 @@
         "required_status_checks": [
           { "context": "build-and-test" },
           { "context": "OWASP Agentic Top-10 Gate" },
-          { "context": "security-review" }
+          { "context": "security-review" },
+          { "context": "correctness-review" }
         ]
       }
     },
