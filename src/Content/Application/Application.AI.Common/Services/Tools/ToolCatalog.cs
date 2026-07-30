@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Application.AI.Common.Interfaces.Tools;
 using Domain.AI.Bundles;
 using Microsoft.Extensions.DependencyInjection;
@@ -28,6 +29,13 @@ namespace Application.AI.Common.Services.Tools;
 /// a host registering a tool it cannot build is a real misconfiguration that was previously invisible.
 /// </para>
 /// <para>
+/// <strong>Work is proportional to the grant, not to the host.</strong> Only keys the caller's envelope
+/// already grants are ever resolved, and each is projected at most once for the catalog's lifetime. A
+/// caller granted nothing therefore constructs nothing — which matters because the shipped default
+/// grants nothing, so that is the common case rather than an edge one. Projecting everything up front
+/// would do the host's entire construction cost on behalf of a caller not permitted to invoke any of it.
+/// </para>
+/// <para>
 /// <strong>The registration key is the identity.</strong> Descriptors are keyed by the DI registration
 /// key, not by <see cref="ITool.Name"/>, because the key is what <c>GetKeyedService</c> answers to and
 /// therefore what an invocation must supply. The harness assumes the two are equal — see
@@ -35,22 +43,25 @@ namespace Application.AI.Common.Services.Tools;
 /// over.
 /// </para>
 /// <para>
-/// The projection is materialized once because registrations cannot change after the container is
-/// built, and because constructing tools per request would be pure waste.
+/// Each projection is cached for the catalog's lifetime because registrations cannot change after the
+/// container is built, so re-resolving per request would be pure waste.
 /// </para>
 /// </remarks>
 public sealed class ToolCatalog : IToolCatalog
 {
-    private readonly IReadOnlyList<ToolDescriptor> _descriptors;
+    private readonly IServiceProvider _serviceProvider;
+    private readonly ILogger<ToolCatalog> _logger;
+    private readonly IReadOnlyList<string> _keys;
+    private readonly ConcurrentDictionary<string, ToolDescriptor?> _describedByKey = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
-    /// Initializes the catalog by resolving and projecting each registered tool key.
+    /// Initializes the catalog over the registered tool keys. No tool is constructed here.
     /// </summary>
     /// <param name="serviceProvider">Provider used to resolve keyed <see cref="ITool"/> registrations.</param>
     /// <param name="registeredToolKeys">
     /// The keys under which tools are registered, read from the host's service collection. Duplicates
     /// are collapsed: keyed resolution answers with one instance per key regardless of how many
-    /// registrations share it.
+    /// registrations share it. Ordered here once so every listing is stable.
     /// </param>
     /// <param name="logger">Records tools that could not be constructed or whose name disagrees with their key.</param>
     public ToolCatalog(
@@ -62,18 +73,15 @@ public sealed class ToolCatalog : IToolCatalog
         ArgumentNullException.ThrowIfNull(registeredToolKeys);
         ArgumentNullException.ThrowIfNull(logger);
 
-        var descriptors = new List<ToolDescriptor>();
-
-        foreach (var key in registeredToolKeys
-            .Where(static key => !string.IsNullOrWhiteSpace(key))
-            .Distinct(StringComparer.OrdinalIgnoreCase))
-        {
-            var descriptor = TryDescribe(serviceProvider, key, logger);
-            if (descriptor is not null)
-                descriptors.Add(descriptor);
-        }
-
-        _descriptors = [.. descriptors.OrderBy(static descriptor => descriptor.Name, StringComparer.Ordinal)];
+        _serviceProvider = serviceProvider;
+        _logger = logger;
+        _keys =
+        [
+            .. registeredToolKeys
+                .Where(static key => !string.IsNullOrWhiteSpace(key))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(static key => key, StringComparer.Ordinal)
+        ];
     }
 
     /// <inheritdoc />
@@ -81,7 +89,13 @@ public sealed class ToolCatalog : IToolCatalog
     {
         ArgumentNullException.ThrowIfNull(envelope);
 
-        return [.. _descriptors.Where(descriptor => envelope.GrantsTool(descriptor.Name))];
+        return
+        [
+            .. _keys
+                .Where(envelope.GrantsTool)
+                .Select(Describe)
+                .OfType<ToolDescriptor>()
+        ];
     }
 
     /// <inheritdoc />
@@ -92,9 +106,22 @@ public sealed class ToolCatalog : IToolCatalog
         if (string.IsNullOrWhiteSpace(toolName) || !envelope.GrantsTool(toolName))
             return null;
 
-        return _descriptors.FirstOrDefault(
-            descriptor => string.Equals(descriptor.Name, toolName, StringComparison.OrdinalIgnoreCase));
+        var key = _keys.FirstOrDefault(
+            candidate => string.Equals(candidate, toolName, StringComparison.OrdinalIgnoreCase));
+
+        return key is null ? null : Describe(key);
     }
+
+    /// <summary>
+    /// Projects one key, constructing its tool at most once per catalog.
+    /// </summary>
+    /// <remarks>
+    /// The factory can run more than once for a key under a race. That is harmless and deliberately
+    /// not locked against: the tools are singletons, so both callers resolve the same instance and
+    /// produce equal descriptors.
+    /// </remarks>
+    private ToolDescriptor? Describe(string key) =>
+        _describedByKey.GetOrAdd(key, k => TryDescribe(_serviceProvider, k, _logger));
 
     private static ToolDescriptor? TryDescribe(IServiceProvider serviceProvider, string key, ILogger logger)
     {

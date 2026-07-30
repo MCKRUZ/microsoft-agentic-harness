@@ -207,6 +207,43 @@ public sealed class ToolCatalogTests
     }
 
     [Fact]
+    public void Catalog_ConstructsOnlyTheToolsTheEnvelopeGrants()
+    {
+        // Work must be proportional to the grant, not to the host. The shipped default envelope
+        // grants nothing, so "caller granted nothing" is the common case — and projecting the whole
+        // host on its behalf would do every tool's construction cost for a caller not permitted to
+        // invoke any of it. Counting constructions is the only way to assert this; a test that only
+        // checked the returned list would pass just as happily against eager projection.
+        var constructed = new List<string>();
+        var services = new ServiceCollection();
+        foreach (var name in new[] { "alpha", "beta", "gamma" })
+        {
+            var captured = name;
+            services.AddKeyedSingleton<ITool>(captured, (_, _) =>
+            {
+                constructed.Add(captured);
+                return new FakeTool(captured);
+            });
+        }
+
+        var sut = new ToolCatalog(
+            services.BuildServiceProvider(),
+            ["alpha", "beta", "gamma"],
+            NullLogger<ToolCatalog>.Instance);
+
+        constructed.Should().BeEmpty("building the catalog must not construct anything");
+
+        sut.ListGranted(new CapabilityEnvelope()).Should().BeEmpty();
+        constructed.Should().BeEmpty("a caller granted nothing must construct nothing");
+
+        sut.ListGranted(Granting("beta")).Should().ContainSingle();
+        constructed.Should().Equal(["beta"], "only the granted tool may be constructed");
+
+        sut.ListGranted(Granting("beta"));
+        constructed.Should().Equal(["beta"], "a projection is cached, not recomputed per request");
+    }
+
+    [Fact]
     public void ListGranted_NullEnvelope_Throws()
     {
         var sut = CreateCatalog(new FakeTool("alpha"));
