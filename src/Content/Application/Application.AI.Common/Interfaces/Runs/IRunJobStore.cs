@@ -175,9 +175,17 @@ public interface IRunJobStore
     /// Fails rather than deletes. A caller that comes back to a run it started is owed an answer about
     /// what became of it, and "no such run" is the one answer that tells it nothing.
     /// </para>
+    /// <para>
+    /// Returns each run <em>as it stood immediately before</em> being failed, for the same reason
+    /// <see cref="TryCancel"/> does: giving up on a run has to release what it was holding, and the
+    /// approvals it was parked on are part of that. A caller handed only identifiers could not withdraw
+    /// them, and an approval that outlives its run is answerable by someone who cannot know it is moot
+    /// — worse here than on the cancel path, because failing the run unlocks its workflow, so the next
+    /// run inherits the plan the stale verdict will be reconciled against.
+    /// </para>
     /// </remarks>
     /// <param name="maxParkedDuration">How long a run may stay parked before it is given up on.</param>
-    IReadOnlyList<string> ExpireStaleParkedRuns(TimeSpan maxParkedDuration);
+    IReadOnlyList<RunRecord> ExpireStaleParkedRuns(TimeSpan maxParkedDuration);
 
     /// <summary>
     /// Drops runs whose retention has elapsed, returning the identifiers of those removed.

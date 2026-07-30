@@ -310,13 +310,13 @@ public sealed class InMemoryRunJobStore : IRunJobStore
     }
 
     /// <inheritdoc />
-    public IReadOnlyList<string> ExpireStaleParkedRuns(TimeSpan maxParkedDuration)
+    public IReadOnlyList<RunRecord> ExpireStaleParkedRuns(TimeSpan maxParkedDuration)
     {
         if (maxParkedDuration <= TimeSpan.Zero)
             return [];
 
         var now = _time.GetUtcNow();
-        var expired = new List<string>();
+        var expired = new List<RunRecord>();
 
         foreach (var entry in _entries.Values)
         {
@@ -333,17 +333,23 @@ public sealed class InMemoryRunJobStore : IRunJobStore
                 if (parkedAt is null || now - parkedAt.Value < maxParkedDuration)
                     continue;
 
-                entry.Record = entry.Record with
+                // Captured before the write, so the caller can still see which approvals this run was
+                // parked on and withdraw them.
+                var previous = entry.Record;
+
+                entry.Record = previous with
                 {
                     Status = RunStatus.Failed,
                     Error = "The run was waiting for an approval that did not arrive in time.",
-                    CompletedAt = now
+                    CompletedAt = now,
+                    ParkedAt = null,
+                    AwaitingEscalationIds = []
                 };
 
                 // Now terminal, so retention applies from this moment — the same rule the ordinary
                 // finishing path follows.
                 entry.ExpiresAt = now + Ttl;
-                expired.Add(entry.Record.JobId);
+                expired.Add(previous);
             }
         }
 

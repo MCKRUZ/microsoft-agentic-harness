@@ -249,23 +249,6 @@ public sealed class RunDispatchBackgroundService : BackgroundService
     }
 
     /// <summary>
-    /// Writes a claimed run's terminal state, and tells anyone watching that it ended.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// Takes the claimed record rather than re-reading it: the run is Running by this point, so it can
-    /// no longer be re-claimed, and the dispatcher holds no caller identity to read it back with.
-    /// </para>
-    /// <para>
-    /// <strong>The terminal progress event is published here, not by whatever performed the work.</strong>
-    /// This is the one place every claimed run passes through on its way to a terminal state — which is
-    /// exactly the property that makes a watcher's stream end. Sourcing it from the planner instead
-    /// covered only the endings the planner announces: a workflow that parked on a human gate, one an
-    /// operator cancelled, and every run failed before the planner ran at all would each leave a
-    /// watcher's connection open forever, holding a stream slot, on a run that was already over.
-    /// </para>
-    /// </remarks>
-    /// <summary>
     /// Records that a claimed run has parked awaiting a decision, and tells watchers to stop waiting.
     /// </summary>
     /// <remarks>
@@ -297,6 +280,23 @@ public sealed class RunDispatchBackgroundService : BackgroundService
             detail: detail);
     }
 
+    /// <summary>
+    /// Writes a claimed run's terminal state, and tells anyone watching that it ended.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Takes the claimed record rather than re-reading it: the run is Running by this point, so it can
+    /// no longer be re-claimed, and the dispatcher holds no caller identity to read it back with.
+    /// </para>
+    /// <para>
+    /// <strong>The terminal progress event is published here, not by whatever performed the work.</strong>
+    /// This is the one place every claimed run passes through on its way to a terminal state — which is
+    /// exactly the property that makes a watcher's stream end. Sourcing it from the planner instead
+    /// covered only the endings the planner announces: a workflow that parked on a human gate, one an
+    /// operator cancelled, and every run failed before the planner ran at all would each leave a
+    /// watcher's connection open forever, holding a stream slot, on a run that was already over.
+    /// </para>
+    /// </remarks>
     private void Finish(RunRecord claimed, RunStatus status, string? error)
     {
         _store.Update(claimed with

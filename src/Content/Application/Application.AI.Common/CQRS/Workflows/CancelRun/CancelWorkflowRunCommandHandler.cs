@@ -131,8 +131,17 @@ public sealed class CancelWorkflowRunCommandHandler
             status: nameof(RunStatus.Cancelled),
             detail: "The run was cancelled by its owner.");
 
-        var withdrawn = await WithdrawApprovalsAsync(stopped, request.OwnerId, cancellationToken)
-            .ConfigureAwait(false);
+        var withdrawn = await ApprovalWithdrawal.WithdrawAsync(
+            _escalations,
+            _logger,
+            stopped,
+            "The run this approval was raised for was cancelled.",
+
+            // The caller's approver-shaped identity where the host could establish one. This value
+            // lands beside approver names in the escalation audit, so an owner id would read
+            // differently from every other row there — still attributable, but not comparable.
+            request.CancellerApproverName ?? request.OwnerId,
+            cancellationToken).ConfigureAwait(false);
 
         return Result<CancelWorkflowRunResult>.Success(new CancelWorkflowRunResult
         {
@@ -141,61 +150,4 @@ public sealed class CancelWorkflowRunCommandHandler
         });
     }
 
-    /// <summary>
-    /// Withdraws every approval the cancelled run was waiting on, reporting how many were actually
-    /// withdrawn.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// A failure to withdraw one does not fail the cancellation. The run is already stopped by this
-    /// point, and reporting failure would invite the caller to retry a cancel that has nothing left to
-    /// do.
-    /// </para>
-    /// <para>
-    /// <strong>An approval that is no longer pending is the ordinary case, not a fault.</strong> A gate
-    /// can time out, or be decided, in the window between a run parking on it and anyone cancelling
-    /// that run — the escalation service reports that by throwing, which is its documented contract for
-    /// "no pending escalation with this id". Treating it as an error would fill an operator's log with
-    /// warnings about races that resolved themselves correctly. Anything else that goes wrong does
-    /// leave a request sitting in somebody's queue with nothing to decide, and is logged as the problem
-    /// it is.
-    /// </para>
-    /// </remarks>
-    private async Task<int> WithdrawApprovalsAsync(
-        RunRecord cancelled, string cancelledBy, CancellationToken cancellationToken)
-    {
-        var withdrawn = 0;
-
-        foreach (var escalationId in cancelled.AwaitingEscalationIds)
-        {
-            try
-            {
-                await _escalations.CancelEscalationAsync(
-                    escalationId,
-                    "The run this approval was raised for was cancelled.",
-                    cancelledBy,
-                    cancellationToken).ConfigureAwait(false);
-
-                withdrawn++;
-            }
-            catch (InvalidOperationException)
-            {
-                // Documented contract of the escalation service: no pending escalation with that id.
-                // It was decided or timed out between the run parking and this cancellation, so there
-                // is nothing in anyone's queue and nothing to report.
-                _logger.LogDebug(
-                    "Approval {EscalationId} for cancelled run {JobId} was already resolved.",
-                    escalationId, cancelled.JobId);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex,
-                    "Run {JobId} was cancelled but its approval {EscalationId} could not be withdrawn; "
-                    + "it remains pending in its approvers' queues with nothing left to decide.",
-                    cancelled.JobId, escalationId);
-            }
-        }
-
-        return withdrawn;
-    }
 }

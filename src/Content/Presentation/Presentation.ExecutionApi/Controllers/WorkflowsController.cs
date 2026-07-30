@@ -231,7 +231,12 @@ public sealed class WorkflowsController : ControllerBase
                 WorkflowId = workflowId,
                 JobId = jobId,
                 OwnerId = User.GetUserId(),
-                TenantId = User.GetTenantId()
+                TenantId = User.GetTenantId(),
+
+                // Recorded as who withdrew the run's pending approvals. Resolved through the same claim
+                // the decision path reads, so the withdrawal reads like the approver rows it sits
+                // beside in the escalation audit rather than like an internal identifier.
+                CancellerApproverName = User.GetApproverNameOrNull(_escalationConfig.CurrentValue.ApproverClaimType)
             },
             cancellationToken).ConfigureAwait(false);
 

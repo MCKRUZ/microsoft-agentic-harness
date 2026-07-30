@@ -154,6 +154,39 @@ public sealed class CancelWorkflowRunHandlerTests
     }
 
     [Fact]
+    public async Task TheWithdrawalIsAttributedToTheCallersApproverIdentity()
+    {
+        // This value lands beside approver names in the escalation audit. The owner id is the same
+        // person under a different, immutable claim, so recording it there produces a row that reads
+        // unlike every other row in the same column — attributable, but not comparable with the
+        // approvers it sits among.
+        var parked = Run(RunStatus.Blocked, Guid.NewGuid());
+        StoreHolds(visible: parked, cancelReturns: parked);
+
+        await BuildSut().Handle(
+            Command() with { CancellerApproverName = "dave@contoso.com" }, CancellationToken.None);
+
+        _escalations.Verify(e => e.CancelEscalationAsync(
+            It.IsAny<Guid>(), It.IsAny<string>(), "dave@contoso.com", It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task WhenNoApproverIdentityResolves_TheWithdrawalIsStillAttributedToSomeone()
+    {
+        // An awkwardly-shaped attribution beats none. A withdrawal recorded against nobody leaves the
+        // audit unable to answer who ended the request, which is the one question it exists for.
+        var parked = Run(RunStatus.Blocked, Guid.NewGuid());
+        StoreHolds(visible: parked, cancelReturns: parked);
+
+        await BuildSut().Handle(
+            Command() with { CancellerApproverName = null }, CancellationToken.None);
+
+        _escalations.Verify(e => e.CancelEscalationAsync(
+            It.IsAny<Guid>(), It.IsAny<string>(), "alice", It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
     public async Task TheRunIsStoppedBeforeItsApprovalIsWithdrawn()
     {
         // Order is a correctness property, not a style choice. Withdrawing first resolves the

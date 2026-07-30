@@ -414,8 +414,14 @@ public sealed class InMemoryRunJobStoreTests
         var workflow = Guid.NewGuid().ToString();
         Admit(sut, Queued("job-1", targetId: workflow), cap: 1);
 
+        var gateEscalation = Guid.NewGuid();
         var claimed = sut.TryBeginRun("job-1", _time.GetUtcNow())!;
-        sut.Update(claimed with { Status = RunStatus.Blocked, ParkedAt = _time.GetUtcNow() });
+        sut.Update(claimed with
+        {
+            Status = RunStatus.Blocked,
+            ParkedAt = _time.GetUtcNow(),
+            AwaitingEscalationIds = [gateEscalation]
+        });
 
         var ceiling = TimeSpan.FromDays(7);
 
@@ -423,13 +429,19 @@ public sealed class InMemoryRunJobStoreTests
 
         _time.Advance(ceiling + TimeSpan.FromMinutes(1));
 
-        sut.ExpireStaleParkedRuns(ceiling).Should().BeEquivalentTo(["job-1"]);
+        var expired = sut.ExpireStaleParkedRuns(ceiling);
 
-        var expired = sut.Get("job-1", "alice", null)!;
-        expired.Status.Should().Be(RunStatus.Failed);
-        expired.IsTerminal.Should().BeTrue();
-        expired.Error.Should().NotBeNullOrWhiteSpace("a caller is owed a reason it can act on");
-        expired.CompletedAt.Should().NotBeNull();
+        // The records as they stood while parked, not their identifiers: giving up on a run has to
+        // release what it was holding, and the caller cannot withdraw approvals it cannot see.
+        expired.Select(run => run.JobId).Should().BeEquivalentTo(["job-1"]);
+        expired[0].AwaitingEscalationIds.Should().Equal([gateEscalation]);
+
+        var stored = sut.Get("job-1", "alice", null)!;
+        stored.Status.Should().Be(RunStatus.Failed);
+        stored.IsTerminal.Should().BeTrue();
+        stored.Error.Should().NotBeNullOrWhiteSpace("a caller is owed a reason it can act on");
+        stored.CompletedAt.Should().NotBeNull();
+        stored.AwaitingEscalationIds.Should().BeEmpty("the run is no longer waiting on anyone");
 
         sut.TryCreate(Queued("job-2", targetId: workflow), maxActiveRunsPerOwner: 1)
             .Should().Be(RunAdmission.Accepted, "expiring the run must release the workflow it held");
