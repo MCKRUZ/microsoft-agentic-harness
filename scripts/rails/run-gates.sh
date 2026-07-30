@@ -148,10 +148,23 @@ SRC_CHANGED=false
 [ -s "$ANCHORS_FILE" ] && SRC_CHANGED=true
 
 CHANGED_FILES="$(git diff --name-only "${BASE_REF}...HEAD" 2>/dev/null || true)"
-# Keep in sync with GATED_RE in .github/workflows/security-review.yml.
-GATED_RE='(^\.github/|/Auth/|/Identity/|/Security/|/SecurityAttributes/|/Migrations/|^infra/)'
+
+# The security gate's applicability is decided by ONE script, shared with
+# .github/workflows/security-review.yml, so the local pre-flight and the remote
+# required check can never disagree. It selects on what the diff CONTAINS, not on
+# folder names alone — the folder-only filter this replaced skipped six consecutive
+# PRs that changed authorization, tenant scoping and capability-envelope code.
+SECURITY_SCOPE_FILE="${TMPDIR_GATES}/security-scope.txt"
+export SECURITY_SCOPE_FILE
+SECURITY_SCOPE_OUT="${TMPDIR_GATES}/security-scope-decision.txt"
+if ! bash .github/scripts/security-gate-scope.sh --base "$BASE_REF" > "$SECURITY_SCOPE_OUT" 2>/dev/null; then
+  echo "run-gates: security-gate-scope.sh could not decide — failing closed." >&2
+  exit 1
+fi
 SECURITY_GATED=false
-echo "$CHANGED_FILES" | grep -Eq "$GATED_RE" && SECURITY_GATED=true
+[ "$(grep '^required=' "$SECURITY_SCOPE_OUT" | cut -d= -f2)" = "true" ] && SECURITY_GATED=true
+SECURITY_REASON="$(grep '^reason=' "$SECURITY_SCOPE_OUT" | cut -d= -f2-)"
+SECURITY_SCOPE_FILE_NATIVE="$(native_path "$SECURITY_SCOPE_FILE")"
 
 DOCS_CHANGED=false
 echo "$CHANGED_FILES" | grep -Eq '^documentation/' && DOCS_CHANGED=true
@@ -170,7 +183,7 @@ applies() {
 reason_for() {
   case "$1" in
     correctness) $SRC_CHANGED && echo "$(grep -c . "$ANCHORS_FILE") changed-line range(s) under src/" || echo "no source under src/ changed" ;;
-    security)    $SECURITY_GATED && echo "gated paths changed" || echo "no gated paths changed (auth/identity/security/migrations/.github/infra)" ;;
+    security)    echo "$SECURITY_REASON" ;;
     grader)      $SRC_CHANGED && echo "source under src/ changed" || echo "no source under src/ changed" ;;
     docs-links)  $DOCS_CHANGED && echo "documentation/ changed" || echo "documentation/ unchanged" ;;
     docs-drift)  ($SRC_CHANGED || $DOCS_CHANGED) && echo "code or docs changed — docs may be stale" || echo "nothing that could stale the docs changed" ;;
@@ -355,7 +368,7 @@ change in this same branch. If you find no drift, say 'no drift' and stop." \
       ;;
     security)
       run_ai_gate "security" "SECURITY_VERDICT" "opus" ".github/security-review-rubric.md" \
-        "Review the changed files listed by \`git diff --name-only ${BASE_REF}...HEAD\`, concentrating on the gated paths (auth, identity, security, migrations, .github, infra) that triggered this gate."
+        "Review the changed files listed by \`git diff --name-only ${BASE_REF}...HEAD\`. The file ${SECURITY_SCOPE_FILE_NATIVE} lists the files whose own changed lines carry a security signal — start there, then widen only if a finding leads you out of that set."
       ;;
   esac
 done
