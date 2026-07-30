@@ -574,6 +574,127 @@ public sealed class InMemoryRunJobStoreTests
     }
 
     [Fact]
+    public void TryCancel_ReturnsWhatTheRunWasDoing_SoItsApprovalsCanBeWithdrawn()
+    {
+        // The previous record, not the updated one. Reading the awaited approvals separately beforehand
+        // is not the same thing: a run can park between that read and the cancel, and the caller would
+        // then withdraw nothing while believing it had.
+        var sut = BuildSut();
+        Admit(sut, Queued());
+        var claimed = sut.TryBeginRun("job-1", _time.GetUtcNow())!;
+        var escalation = Guid.NewGuid();
+        sut.Update(claimed with
+        {
+            Status = RunStatus.Blocked,
+            ParkedAt = _time.GetUtcNow(),
+            AwaitingEscalationIds = [escalation]
+        });
+
+        var previous = sut.TryCancel("job-1", _time.GetUtcNow());
+
+        previous.Should().NotBeNull();
+        previous!.Status.Should().Be(RunStatus.Blocked);
+        previous.AwaitingEscalationIds.Should().Equal([escalation]);
+
+        var now = sut.Get("job-1", "alice", null)!;
+        now.Status.Should().Be(RunStatus.Cancelled);
+        now.IsTerminal.Should().BeTrue();
+        now.CompletedAt.Should().NotBeNull();
+        now.ParkedAt.Should().BeNull("the run is no longer waiting on anyone");
+    }
+
+    [Fact]
+    public void ACancelledRunReleasesTheWorkflowItHeld()
+    {
+        // A cancelled run that kept its workflow locked would leave the caller unable to start the
+        // replacement its cancellation was for — and the run it is waiting on is one it just stopped.
+        var workflow = Guid.NewGuid().ToString();
+        var sut = BuildSut();
+        Admit(sut, Queued(targetId: workflow));
+        var claimed = sut.TryBeginRun("job-1", _time.GetUtcNow())!;
+        sut.Update(claimed with { Status = RunStatus.Blocked, ParkedAt = _time.GetUtcNow() });
+
+        sut.TryCancel("job-1", _time.GetUtcNow()).Should().NotBeNull();
+
+        sut.TryCreate(Queued("job-2", targetId: workflow), maxActiveRunsPerOwner: 1)
+            .Should().Be(RunAdmission.Accepted);
+    }
+
+    [Fact]
+    public void ACancelledRunIsReadableForAFullRetentionWindowFromWhenItWasCancelled()
+    {
+        // Retention runs from the ending, not from admission — the same rule every other outcome
+        // follows. A run parked for longer than the window before being cancelled would otherwise be
+        // reclaimed on the very next sweep, so the caller that cancelled it would poll and be told no
+        // such run exists rather than that its cancellation worked.
+        var ttl = TimeSpan.FromMinutes(5);
+        var sut = BuildSut(ttl: ttl);
+        Admit(sut, Queued());
+        var claimed = sut.TryBeginRun("job-1", _time.GetUtcNow())!;
+        sut.Update(claimed with { Status = RunStatus.Blocked, ParkedAt = _time.GetUtcNow() });
+
+        // Long past the expiry the entry was seeded with at admission.
+        _time.Advance(TimeSpan.FromHours(1));
+        sut.TryCancel("job-1", _time.GetUtcNow()).Should().NotBeNull();
+
+        sut.SweepExpired().Should().NotContain("job-1", "the run was cancelled a moment ago");
+        sut.Get("job-1", "alice", null).Should().NotBeNull();
+
+        _time.Advance(ttl + TimeSpan.FromMinutes(1));
+        sut.SweepExpired().Should().Contain("job-1", "and it is reclaimed once its own window elapses");
+    }
+
+    [Fact]
+    public void TryCancel_RefusesARunningRun_BecauseItsOutcomeBelongsToTheDispatchExecutingIt()
+    {
+        // Writing a terminal state here would be overwritten moments later by the dispatch that holds
+        // the run — so it would read as cancelled and then silently revert to whatever the work did.
+        var sut = BuildSut();
+        Admit(sut, Queued());
+        sut.TryBeginRun("job-1", _time.GetUtcNow());
+
+        sut.TryCancel("job-1", _time.GetUtcNow()).Should().BeNull();
+        sut.Get("job-1", "alice", null)!.Status.Should().Be(RunStatus.Running);
+    }
+
+    [Fact]
+    public void TryCancel_UnderConcurrency_CancelsExactlyOnce()
+    {
+        // Only one caller may believe it cancelled the run, because that caller is the one that then
+        // withdraws the approvals — and withdrawing twice would report a withdrawal to an approver that
+        // had already been made.
+        var sut = BuildSut();
+        Admit(sut, Queued());
+        var claimed = sut.TryBeginRun("job-1", _time.GetUtcNow())!;
+        sut.Update(claimed with { Status = RunStatus.Blocked, ParkedAt = _time.GetUtcNow() });
+
+        var winners = 0;
+        Parallel.For(0, 64, _ =>
+        {
+            if (sut.TryCancel("job-1", _time.GetUtcNow()) is not null)
+                Interlocked.Increment(ref winners);
+        });
+
+        winners.Should().Be(1);
+    }
+
+    [Fact]
+    public void ACancelledRunIsNeverResumed()
+    {
+        // The two transitions have to be mutually exclusive. A verdict arriving on a withdrawn approval
+        // must not put a run the caller stopped back to work.
+        var sut = BuildSut();
+        Admit(sut, Queued());
+        var claimed = sut.TryBeginRun("job-1", _time.GetUtcNow())!;
+        sut.Update(claimed with { Status = RunStatus.Blocked, ParkedAt = _time.GetUtcNow() });
+
+        sut.TryCancel("job-1", _time.GetUtcNow()).Should().NotBeNull();
+
+        sut.TryResume("job-1").Should().BeNull();
+        sut.GetParkedRuns().Should().BeEmpty();
+    }
+
+    [Fact]
     public void TryCreate_WithADuplicateJobId_Throws()
     {
         var sut = BuildSut();

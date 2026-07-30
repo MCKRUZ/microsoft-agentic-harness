@@ -1,3 +1,4 @@
+using Application.AI.Common.CQRS.Workflows.CancelRun;
 using Application.AI.Common.CQRS.Workflows.GetRun;
 using Application.AI.Common.CQRS.Workflows.StartRun;
 using Application.AI.Common.CQRS.Workflows.Submit;
@@ -174,6 +175,58 @@ public sealed class WorkflowsController : ControllerBase
         return result.IsSuccess && result.Value is not null
             ? Ok(WorkflowRunResponse.FromRecord(result.Value))
             : MapFailure(result);
+    }
+
+    /// <summary>Stops a run the caller started, and withdraws any approval it was waiting on.</summary>
+    /// <remarks>
+    /// <para>
+    /// Authorized exactly like reading the run: another caller's run, a job that never existed, and a
+    /// job reached through the wrong workflow's route are one answer. A distinguishable response would
+    /// let a caller discover work it was not given the identifier for — and here it would also let them
+    /// stop it.
+    /// </para>
+    /// <para>
+    /// A run parked on a human gate has that gate withdrawn as part of being cancelled. An approval
+    /// request that outlives its run cannot do anything: answering it would approve work that will
+    /// never happen, and the approver has no way to tell.
+    /// </para>
+    /// <para>
+    /// Answers 200 with <c>stopped: false</c> when the run was already executing. Work in flight can
+    /// only be asked to stop; the caller confirms by reading the run's status as it would for any other
+    /// outcome. Answers 409 for a run that has already finished — there is nothing to cancel, and
+    /// reporting success would suggest this call changed something.
+    /// </para>
+    /// </remarks>
+    /// <param name="workflowId">The workflow the run belongs to.</param>
+    /// <param name="jobId">The run to stop.</param>
+    /// <param name="cancellationToken">Cancels the request.</param>
+    [HttpDelete("{workflowId:guid}/runs/{jobId}")]
+    [ProducesResponseType(typeof(CancelWorkflowRunResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> CancelRun(
+        Guid workflowId, string jobId, CancellationToken cancellationToken)
+    {
+        var result = await _mediator.Send(
+            new CancelWorkflowRunCommand
+            {
+                WorkflowId = workflowId,
+                JobId = jobId,
+                OwnerId = User.GetUserId(),
+                TenantId = User.GetTenantId()
+            },
+            cancellationToken).ConfigureAwait(false);
+
+        if (!result.IsSuccess || result.Value is null)
+            return MapFailure(result);
+
+        return Ok(new CancelWorkflowRunResponse
+        {
+            JobId = jobId,
+            Stopped = result.Value.StoppedImmediately,
+            WithdrawnApprovals = result.Value.WithdrawnApprovals
+        });
     }
 
     /// <summary>Streams a run's progress as Server-Sent-Events until it finishes.</summary>

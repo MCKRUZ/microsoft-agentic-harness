@@ -215,6 +215,40 @@ public sealed class InMemoryRunJobStore : IRunJobStore
     }
 
     /// <inheritdoc />
+    public RunRecord? TryCancel(string jobId, DateTimeOffset cancelledAt)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(jobId);
+
+        if (!_entries.TryGetValue(jobId, out var entry))
+            return null;
+
+        lock (entry)
+        {
+            // Queued and parked only. A running run's status belongs to the dispatch executing it, and
+            // a terminal one has already been answered — cancelling either here would overwrite a fact
+            // with an intention.
+            if (entry.Record.Status is not (RunStatus.Queued or RunStatus.Blocked))
+                return null;
+
+            var previous = entry.Record;
+
+            entry.Record = previous with
+            {
+                Status = RunStatus.Cancelled,
+                CompletedAt = cancelledAt,
+                ParkedAt = null,
+                AwaitingEscalationIds = []
+            };
+
+            // Terminal now, so retention runs from this moment — the same rule every other ending
+            // follows.
+            entry.ExpiresAt = cancelledAt + Ttl;
+
+            return previous;
+        }
+    }
+
+    /// <inheritdoc />
     public IReadOnlyList<RunRecord> GetParkedRuns()
     {
         var parked = new List<RunRecord>();

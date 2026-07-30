@@ -12,6 +12,27 @@ public sealed record StartWorkflowRunResponse
     public required string StatusUrl { get; init; }
 }
 
+/// <summary>What a cancellation achieved, as the caller sees it.</summary>
+/// <remarks>
+/// Says whether the run had actually stopped rather than reporting a flat "cancelled". A run that was
+/// already executing can only be asked to stop, and a caller told otherwise would start a replacement
+/// immediately — against a workflow the first run still holds, which is refused.
+/// </remarks>
+public sealed record CancelWorkflowRunResponse
+{
+    /// <summary>Identifier of the run that was cancelled.</summary>
+    public required string JobId { get; init; }
+
+    /// <summary>
+    /// Whether the run had stopped by the time this was answered. When false it has been signalled and
+    /// will stop; read the run's status to confirm.
+    /// </summary>
+    public required bool Stopped { get; init; }
+
+    /// <summary>How many pending approvals were withdrawn along with the run.</summary>
+    public required int WithdrawnApprovals { get; init; }
+}
+
 /// <summary>The caller-visible view of a run.</summary>
 /// <remarks>
 /// A projection rather than the stored record, deliberately. <see cref="RunRecord"/> carries the

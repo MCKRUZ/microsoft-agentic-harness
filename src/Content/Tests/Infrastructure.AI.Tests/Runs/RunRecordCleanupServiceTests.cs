@@ -53,6 +53,9 @@ public sealed class RunRecordCleanupServiceTests
 
         public RunRecord? TryResume(string jobId) => inner.TryResume(jobId);
 
+        public RunRecord? TryCancel(string jobId, DateTimeOffset cancelledAt) =>
+            inner.TryCancel(jobId, cancelledAt);
+
         /// <summary>The ceilings the service asked the store to apply, in order.</summary>
         public List<TimeSpan> ParkedCeilings { get; } = [];
 

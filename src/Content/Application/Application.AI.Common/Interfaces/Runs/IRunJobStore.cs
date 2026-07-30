@@ -133,6 +133,34 @@ public interface IRunJobStore
     RunRecord? TryResume(string jobId);
 
     /// <summary>
+    /// Atomically cancels a run that has not started executing, or is parked awaiting a decision,
+    /// returning the run <em>as it stood immediately before</em> the transition.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The previous record is returned, not the updated one, because what the caller needs next is
+    /// what the run was doing — specifically which decisions it was parked on, so those can be
+    /// withdrawn. Reading that separately beforehand would not be the same thing: a run can park
+    /// between the read and the cancel, and the caller would then withdraw nothing while believing it
+    /// had.
+    /// </para>
+    /// <para>
+    /// <strong>A run that is executing is deliberately not cancelled here.</strong> Its status is
+    /// owned by the dispatch in flight, which will write a terminal state when the work stops; writing
+    /// one here would be overwritten by it moments later. Stopping executing work is a matter of
+    /// signalling it, which is a different mechanism from storage.
+    /// </para>
+    /// <para>
+    /// Returns <see langword="null"/> when there is no such run, or when it is executing or already
+    /// terminal — the three being distinguishable by the caller from a prior scoped read, which this
+    /// is not a substitute for.
+    /// </para>
+    /// </remarks>
+    /// <param name="jobId">The run to cancel.</param>
+    /// <param name="cancelledAt">Timestamp to record as the completion time.</param>
+    RunRecord? TryCancel(string jobId, DateTimeOffset cancelledAt);
+
+    /// <summary>
     /// Fails runs that have been parked awaiting a decision for longer than
     /// <paramref name="maxParkedDuration"/>, returning the identifiers of those failed.
     /// </summary>
