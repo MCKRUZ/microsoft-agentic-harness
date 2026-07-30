@@ -14,7 +14,7 @@ them live, and how to prove they actually catch things.
 | **build-and-test** | `workflows/ci.yml` | every PR | **Blocks** (hard gate) |
 | **OWASP Agentic Top-10 Gate** | `workflows/ci.yml` | every PR | **Blocks** (hard gate) |
 | **security-review** | `workflows/security-review.yml` | every PR; reviews when the diff contains security-relevant code, touches a gated path, or carries `risk:high` | **Blocks on HIGH** |
-| **correctness-review** | `workflows/correctness-review.yml` | every PR | Advisory comment |
+| **correctness-review** | `workflows/correctness-review.yml` | every PR; reviews when the diff touches `src/**` | **Blocks on a high-confidence defect** |
 | **grader** | `workflows/grader.yml` | every PR | Advisory comment |
 | **docs-drift** | `workflows/docs-drift-check.yml` | push to main | Advisory comment |
 | **Stop gate** | `../.claude/hooks/stop-build-gate.ps1` | agent tries to finish locally | **Blocks** a red build |
@@ -35,10 +35,11 @@ them live, and how to prove they actually catch things.
 > a PR cycle, but the remote rails are the enforcement boundary again. Correctness and doc-drift
 > coverage is no longer on the honour system.
 >
-> **security-review is the only one that is also a *required* check**, so disabling it would wedge
-> every PR on a check that never reports. Its expensive step fires when the diff is actually
-> security-relevant — see `.github/scripts/security-gate-scope.sh`. Expect it on most `src/**` PRs;
-> that is the intended trade, not a misconfiguration.
+> **security-review and correctness-review are both *required* checks**, so disabling either would
+> wedge every PR on a check that never reports. Both run on every PR and decide internally whether
+> the expensive reviewer step is warranted — security-review from the diff's content
+> (`.github/scripts/security-gate-scope.sh`), correctness-review from whether `src/**` changed.
+> Expect both on most source PRs; that is the intended trade, not a misconfiguration.
 
 Branch protection (`rulesets/main-branch-protection.json`) makes the three
 blocking checks mandatory and requires a non-author approval + code-owner review.
@@ -96,12 +97,12 @@ These are deliberate, outward-facing actions. Nothing in this PR performs them.
    ```
    This is the only sanctioned way to change branch protection — edit the JSON,
    re-run the script. Do not hand-edit rules in the GitHub UI.
-4. **(Optional) Promote correctness-review to a required check.** It ships wired
-   and fail-closed but is intentionally **not** in the ruleset, so merging it does
-   not wedge every source PR before steps 1–2 are done. Once the Claude App + key
-   are live and you've watched it run on a few PRs, add `correctness-review` to the
-   `required_status_checks` array in `rulesets/main-branch-protection.json` and
-   re-run the apply script. Until then it advises (its red X does not block).
+4. **~~(Optional) Promote correctness-review to a required check.~~ Done 2026-07-30.**
+   `correctness-review` is in the `required_status_checks` array of
+   `rulesets/main-branch-protection.json` and live on `main`. A `CORRECTNESS_VERDICT: BLOCK`
+   now stops the merge; the audited `accepted-risk:correctness` label is the only override.
+   To reverse it, remove the context from the JSON and re-run the apply script — do not
+   disable the workflow, which would leave the required check permanently unreported.
 
 ## Required status checks
 
@@ -110,8 +111,15 @@ The ruleset requires exactly these check contexts to be green before merge:
 - `build-and-test`
 - `OWASP Agentic Top-10 Gate`
 - `security-review`
+- `correctness-review`
 
 The grader is intentionally **not** required — it advises the human Checker.
+
+Every required check must **report on every PR**, including ones it has nothing to say about.
+That is why none of the four carries a `paths:` trigger filter: a workflow that does not run
+leaves its required context pending forever and the PR cannot be merged at all. Each decides
+internally whether to do expensive work and short-circuits to success otherwise. Never "optimise"
+one of these by adding a path filter to its trigger.
 
 ## Solo-repo accommodation (read this)
 

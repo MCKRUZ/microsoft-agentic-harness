@@ -19,10 +19,15 @@ name: Correctness Review
 # Fail-safe: a source change whose review cannot complete (e.g. missing
 # CLAUDE_CODE_OAUTH_TOKEN before go-live) BLOCKS rather than passes.
 #
-# NOT YET A REQUIRED CHECK: this ships wired and fail-closed, but is intentionally
-# left out of .github/rulesets/main-branch-protection.json so merging it does not
-# wedge every source PR before the Claude GitHub App + CLAUDE_CODE_OAUTH_TOKEN are live.
-# Flipping it on is a documented go-live step — see .github/RAILS.md.
+# REQUIRED CHECK (promoted 2026-07-30, after CLAUDE_CODE_OAUTH_TOKEN went live in
+# PR #212): this context is listed in .github/rulesets/main-branch-protection.json,
+# so a BLOCK verdict now stops the merge rather than merely advising. Two properties
+# make that safe and must be preserved by anyone editing this file:
+#   1. The job runs on EVERY pull_request — no `paths:` filter. A required check that
+#      does not report leaves the PR pending forever, which is why the src/ scoping is
+#      a short-circuit-to-success INSIDE the job, never a trigger-level filter.
+#   2. The only escape hatch is the `accepted-risk:correctness` label, which is
+#      audited on the PR timeline. Do not add a bypass that leaves no record.
 
 on:
   pull_request:
