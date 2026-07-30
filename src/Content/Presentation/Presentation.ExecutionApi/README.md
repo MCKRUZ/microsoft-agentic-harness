@@ -212,12 +212,19 @@ Replace `InMemoryBundleHandleStore`, `InMemoryBundleRunJobStore`, and `InMemoryB
 
 ### Change the wire contract
 
-**This is the canonical list.** Nothing is generated from the controller, so nothing mechanically catches drift -- every one of these describes the contract by hand and must be updated in the same commit:
+**This is the canonical list.** Nothing is generated from the controllers, so nothing mechanically catches drift -- every one of these describes the contract by hand and must be updated in the same commit:
 
-1. `documentation/onboarding/assets/openapi/bundle-api.yaml` -- the OpenAPI spec (routes, schemas, status codes, examples).
+1. `documentation/onboarding/assets/openapi/bundle-api.yaml` -- the OpenAPI spec (routes, schemas, status codes, examples). **The filename is deliberately stale**: it is a published URL that external consumers and chapter 17 both link to, so it outlived the "Bundle API" name. `info.title` is authoritative.
 2. `documentation/onboarding/17-bundle-api.html` -- the consumer guide (endpoint table, error table, config table, SSE frame table, quickstart).
 3. This README -- the route block in *Architecture Context* and the *Configuration* table above.
 4. `CLAUDE.md` -- only if the spec's location or the doc-site page count changes.
+
+The spec covers **all three route families this host serves** -- bundles, workflows, and tool
+discovery -- not just bundles. That was not true until the tool catalog shipped: the workflow routes
+(W3--W6) went in over four PRs without a single spec entry, and the drift was only caught when
+someone went looking. If you add a route here, add it to the spec in the same change. A published
+contract that describes two thirds of the surface is worse than one that admits its gaps, because
+consumers cannot tell which third is missing.
 
 `BundleRunStatus` numeric values are anchored by a `Domain.AI` enum test -- add new states at the end only.
 

@@ -1,9 +1,15 @@
-# Bundle API — OpenAPI description
+# Execution API — OpenAPI description
 #
 # Hand-written from the shipped implementation in
 # src/Content/Presentation/Presentation.ExecutionApi/. This host does NOT serve a generated
 # OpenAPI document at runtime (no Swashbuckle / AddOpenApi registration in Program.cs), so
 # this file is the machine-readable contract.
+#
+# FILENAME NOTE: this file is still called bundle-api.yaml because it is published at a stable
+# URL (<site>/assets/openapi/bundle-api.yaml) that external consumers and chapter 17 both link
+# to. The host outgrew the name when it gained workflows and tool discovery; renaming the file
+# would break every existing link for no contract benefit. The `info.title` below is the
+# authoritative name.
 #
 # This file is one of several hand-maintained descriptions of the same contract. The canonical
 # list of everything that must change together lives in the "Change the wire contract" section
@@ -14,11 +20,29 @@
 openapi: 3.1.0
 
 info:
-  title: Microsoft Agentic Harness — Bundle API
-  version: "1.0.0"
-  summary: Register an externally-authored agent bundle and run it under a per-caller capability grant.
+  title: Microsoft Agentic Harness — Execution API
+  version: "2.0.0"
+  summary: >-
+    Run externally-authored agents, submit and run workflows, and discover the tools a credential
+    may invoke — each under a per-caller capability grant.
   description: |
-    The Bundle API is the harness's HTTP front door for **running agents the host did not write**.
+    The Execution API is the harness's HTTP front door for **automation the host did not write**.
+    It exposes three families of operation, all sharing one authentication scheme, one owner-binding
+    rule, and one capability envelope:
+
+    | Family | Routes | What it is for |
+    |---|---|---|
+    | **Bundles** | `/api/bundles` | Upload an agent the host did not write, then run it |
+    | **Workflows** | `/api/workflows` | Submit a DAG of steps, run it, watch it, cancel it |
+    | **Tools** | `/api/tools` | Discover which tool names *this* credential may invoke |
+
+    Start with **Tools** if you are writing a workflow: a `ToolUse` step names a tool and an
+    operation, and `GET /api/tools` is the authoritative answer to which names this host accepts
+    from you.
+
+    ---
+
+    The Bundle family is the harness's HTTP front door for **running agents the host did not write**.
 
     A caller uploads a *bundle* (a zip containing an `AGENT.md`, optional nested `skills/*/SKILL.md`,
     and optional plugin manifests), receives a short-lived **handle**, and then starts **runs** against
@@ -71,6 +95,12 @@ tags:
     description: Register, delete, and inspect staged agent bundles.
   - name: Runs
     description: Start, poll, and stream bundle runs.
+  - name: Workflows
+    description: Submit workflow definitions and manage their runs.
+  - name: Tools
+    description: >-
+      Read-only discovery of the tools the calling credential may invoke. Distinct from AgentHub's
+      `/api/mcp/tools`, which lists tools published by external MCP servers.
 
 paths:
   /api/bundles:
@@ -359,6 +389,255 @@ paths:
           description: >-
             The caller already holds `MaxConcurrentStreamsPerCaller` open streams. Close one and retry.
 
+  # ---------------------------------------------------------------------------
+  # Tools — read-only discovery
+  # ---------------------------------------------------------------------------
+  /api/tools:
+    get:
+      tags: [Tools]
+      operationId: listTools
+      summary: List the tools this credential may invoke
+      description: |
+        Returns the intersection of what the host registers and what your capability envelope
+        grants. **This is not the host's tool inventory** — two credentials will legitimately see
+        different listings and neither sees the whole.
+
+        An empty list is a successful answer, not an error: the shipped default envelope grants no
+        tools, so a host whose operator has configured no grants for you answers `200` with
+        `{"tools": []}`.
+
+        Tools the host registers but cannot construct are omitted. That is not a failure to report
+        them — a tool that cannot be built cannot be invoked either. In practice this affects
+        `dashboard_control` and the `render_*` tools, which require an interactive client that only
+        the agent hub provides.
+      responses:
+        "200":
+          description: The granted tools, ordered by name.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ToolCatalogResponse" }
+              examples:
+                granted:
+                  summary: A credential granted two tools
+                  value:
+                    tools:
+                      - name: document_search
+                        description: Searches ingested documents.
+                        operations: [search]
+                        riskTier: Low
+                        isReadOnly: true
+                        isConcurrencySafe: true
+                      - name: file_system
+                        description: Sandboxed file operations.
+                        operations: [read, write, list]
+                        riskTier: High
+                        isReadOnly: false
+                        isConcurrencySafe: false
+                nothingGranted:
+                  summary: The fail-closed default — a successful, empty answer
+                  value: { tools: [] }
+        "401": { $ref: "#/components/responses/UnauthorizedProblem" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /api/tools/{name}:
+    get:
+      tags: [Tools]
+      operationId: getTool
+      summary: Describe a single tool this credential may invoke
+      description: |
+        **A tool you are not granted answers `404`, identically to one that does not exist.** This is
+        deliberate and you should not treat the two as distinguishable: a `403` would confirm the
+        tool exists, letting any authenticated caller map the host's inventory one name at a time.
+      parameters:
+        - $ref: "#/components/parameters/ToolName"
+      responses:
+        "200":
+          description: The tool descriptor.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ToolCatalogEntry" }
+        "401": { $ref: "#/components/responses/UnauthorizedProblem" }
+        "404":
+          description: No such tool, **or** the tool exists and you are not granted it.
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  # ---------------------------------------------------------------------------
+  # Workflows — submission and runs
+  # ---------------------------------------------------------------------------
+  /api/workflows:
+    post:
+      tags: [Workflows]
+      operationId: submitWorkflow
+      summary: Submit a workflow definition and receive its identifier
+      description: |
+        Admits a DAG of steps, maps it to an executable plan, and stores it under **your** scope.
+        Submitting stores a workflow and nothing more — running it is a separate call that spends
+        the host's model and tool credentials.
+
+        **Every identifier is minted server-side.** There is no owner field on the wire and none is
+        accepted from the body; ownership comes from your token. Step names you supply are yours to
+        choose and are returned mapped to the identifiers the harness assigned.
+
+        The definition is validated structurally before it is stored — cycles, unreachable steps, and
+        incomplete conditional branches are rejected here rather than at first run.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WorkflowDefinition" }
+            examples:
+              twoStep:
+                summary: A two-step sequential workflow
+                value:
+                  name: draft-and-review
+                  steps:
+                    - name: draft
+                      type: LlmCall
+                      configuration:
+                        type: LlmCall
+                        prompt: Draft a summary of the attached notes.
+                    - name: review
+                      type: LlmCall
+                      configuration:
+                        type: LlmCall
+                        prompt: Review the draft for factual errors.
+                  edges:
+                    - from: draft
+                      to: review
+                      type: ControlFlow
+      responses:
+        "201":
+          description: The workflow was admitted and stored.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SubmitWorkflowResponse" }
+        "400": { $ref: "#/components/responses/ValidationProblem" }
+        "401": { $ref: "#/components/responses/UnauthorizedProblem" }
+        "403": { $ref: "#/components/responses/DisabledProblem" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /api/workflows/{workflowId}/runs:
+    post:
+      tags: [Workflows]
+      operationId: startWorkflowRun
+      summary: Queue a run of a stored workflow
+      description: |
+        Accepts the run and returns immediately with a job id — execution is asynchronous. Poll the
+        returned `statusUrl`, or open the stream endpoint for live progress.
+
+        **Only one live run per workflow.** A second run while one is queued, running, or parked on
+        a human gate is refused with `409`. Two runs of one workflow would share a single plan state
+        machine, so the second would re-execute live steps and adopt the first's outputs.
+
+        The capability envelope is resolved from **the credential that starts the run**, and the run
+        executes under it regardless of what the workflow's steps request.
+      parameters:
+        - $ref: "#/components/parameters/WorkflowId"
+      responses:
+        "202":
+          description: The run was accepted and queued.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StartWorkflowRunResponse" }
+        "400": { $ref: "#/components/responses/ValidationProblem" }
+        "401": { $ref: "#/components/responses/UnauthorizedProblem" }
+        "403": { $ref: "#/components/responses/DisabledProblem" }
+        "404":
+          description: No such workflow, **or** it belongs to another caller.
+        "409":
+          description: >-
+            This workflow already has a live run, or the caller holds the maximum concurrent runs
+            allowed per owner.
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /api/workflows/{workflowId}/runs/{jobId}:
+    get:
+      tags: [Workflows]
+      operationId: getWorkflowRun
+      summary: Poll a run's state
+      parameters:
+        - $ref: "#/components/parameters/WorkflowId"
+        - $ref: "#/components/parameters/RunJobId"
+      responses:
+        "200":
+          description: The run's current state.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WorkflowRunResponse" }
+        "401": { $ref: "#/components/responses/UnauthorizedProblem" }
+        "403": { $ref: "#/components/responses/DisabledProblem" }
+        "404":
+          description: No such run, **or** it belongs to another caller.
+        "429": { $ref: "#/components/responses/RateLimited" }
+    delete:
+      tags: [Workflows]
+      operationId: cancelWorkflowRun
+      summary: Cancel a run, and any approval it is waiting on
+      description: |
+        A run that has not started yet is cancelled outright. A run already executing is **signalled**
+        to stop — the response reports `stopped: false` and you should poll the status endpoint to
+        confirm. A run that has already finished answers `409`.
+
+        If the run is parked on a human gate, its outstanding approval requests are withdrawn too,
+        and the count is reported. The order matters and is a correctness property of the host: the
+        run is stopped *before* its approvals are withdrawn, because withdrawing first would resolve
+        the gate while the run was still parked on it — which is exactly the condition that would
+        wake the run back up.
+      parameters:
+        - $ref: "#/components/parameters/WorkflowId"
+        - $ref: "#/components/parameters/RunJobId"
+      responses:
+        "200":
+          description: The run was cancelled or signalled to stop.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CancelWorkflowRunResponse" }
+        "401": { $ref: "#/components/responses/UnauthorizedProblem" }
+        "403": { $ref: "#/components/responses/DisabledProblem" }
+        "404":
+          description: No such run, **or** it belongs to another caller.
+        "409":
+          description: The run has already reached a terminal state.
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /api/workflows/{workflowId}/runs/{jobId}/stream:
+    get:
+      tags: [Workflows]
+      operationId: streamWorkflowRun
+      summary: Stream a run's progress as server-sent events
+      description: |
+        Opens a `text/event-stream`. The first frame is always a `SNAPSHOT` of the run's state at the
+        moment you connected, so you never have to reconcile "did I miss anything before I attached".
+
+        The stream is bounded by the run, not by your patience: it closes when the run reaches a
+        terminal state (`FINISHED`) or parks on a human gate (`PARKED`). A `PARKED` frame releases
+        your connection without claiming the run ended — the run keeps its job id, and you re-attach
+        after answering the gate.
+
+        Frames are buffered per watcher and the oldest are dropped under pressure; a `GAP` frame
+        reports how many were lost rather than letting you believe you saw everything.
+
+        **Authorization is checked once, when the stream opens.** A token revoked mid-run keeps
+        receiving until the run ends. This is bounded by run duration, and frames carry nothing you
+        could not already read from the run's status endpoint.
+      parameters:
+        - $ref: "#/components/parameters/WorkflowId"
+        - $ref: "#/components/parameters/RunJobId"
+      responses:
+        "200":
+          description: The event stream.
+          content:
+            text/event-stream:
+              schema: { $ref: "#/components/schemas/WorkflowProgressEvent" }
+        "401": { $ref: "#/components/responses/UnauthorizedProblem" }
+        "403": { $ref: "#/components/responses/DisabledProblem" }
+        "404":
+          description: No such run, **or** it belongs to another caller.
+        "503":
+          description: >-
+            The host or this caller is already at its concurrent-stream ceiling
+            (`MaxConcurrentProgressStreams` / `MaxProgressStreamsPerOwner`). Close a stream and retry.
+
 components:
   securitySchemes:
     bearerAuth:
@@ -396,6 +675,27 @@ components:
       required: true
       description: The opaque run job id returned by `startBundleRun`.
       schema: { type: string }
+    WorkflowId:
+      name: workflowId
+      in: path
+      required: true
+      description: The server-minted workflow identifier returned by `submitWorkflow`.
+      schema: { type: string, format: uuid }
+    RunJobId:
+      name: jobId
+      in: path
+      required: true
+      description: The run job id returned by `startWorkflowRun`.
+      schema: { type: string }
+    ToolName:
+      name: name
+      in: path
+      required: true
+      description: >-
+        The tool name, matched case-insensitively. This is the same string used in a workflow
+        `ToolUse` step and in an envelope's `AllowedTools`.
+      schema: { type: string }
+      example: file_system
 
   responses:
     ValidationProblem:
@@ -702,3 +1002,295 @@ components:
             - The run is already being streamed or has already completed.
             - The bundle handle expired before the run could start.
             - The agent run did not complete successfully.
+
+    # -------------------------------------------------------------------------
+    # Tools
+    # -------------------------------------------------------------------------
+    ToolCatalogResponse:
+      type: object
+      description: >-
+        The tools the calling credential may invoke. Not the host's inventory — see the endpoint
+        description.
+      required: [tools]
+      properties:
+        tools:
+          type: array
+          description: Granted tools, ordered by name. Empty is a valid, successful answer.
+          items: { $ref: "#/components/schemas/ToolCatalogEntry" }
+
+    ToolCatalogEntry:
+      type: object
+      required: [name, description, operations, riskTier, isReadOnly, isConcurrencySafe]
+      properties:
+        name:
+          type: string
+          description: >-
+            The tool's name and the identifier used to invoke it. This is the string a workflow
+            `ToolUse` step must supply.
+          examples: [file_system, document_search]
+        description:
+          type: string
+          description: What the tool does. This is the same text the model is shown.
+        operations:
+          type: array
+          description: >-
+            The operations this tool accepts. An invocation naming anything else is rejected by the
+            tool itself.
+          items: { type: string }
+        riskTier:
+          $ref: "#/components/schemas/BlastRadius"
+        isReadOnly:
+          type: boolean
+          description: >-
+            Whether the tool only reads state. Fail-closed — `false` unless the tool declares
+            otherwise, so an unclassified tool is never treated as safer than it is.
+        isConcurrencySafe:
+          type: boolean
+          description: Whether the tool is safe to invoke alongside other calls. Fail-closed, as above.
+
+    BlastRadius:
+      type: string
+      description: >-
+        How much damage one call can do. Sent as a **name**, not an ordinal — an ordinal would
+        silently change meaning if a value were ever inserted into the enum. Treat this as a ceiling
+        on what the host will auto-approve, not a promise that any given call succeeds.
+      enum: [Trivial, Low, Medium, High, Critical]
+
+    # -------------------------------------------------------------------------
+    # Workflows
+    # -------------------------------------------------------------------------
+    WorkflowDefinition:
+      type: object
+      description: |
+        A DAG of steps. Deliberately narrower than the harness's internal plan model: isolation
+        level, retrieval collection, and inline sub-plan definitions are **not** on the wire, because
+        each would let a caller reach past the confinement its envelope establishes.
+      required: [name, steps, edges]
+      properties:
+        name:
+          type: string
+          description: Your name for the workflow. Not an identifier — the id is minted server-side.
+        steps:
+          type: array
+          minItems: 1
+          items: { $ref: "#/components/schemas/WorkflowStep" }
+        edges:
+          type: array
+          description: >-
+            Dependencies between steps, referencing steps by the `name` you gave them. Must form a
+            DAG; cycles are rejected at submission.
+          items: { $ref: "#/components/schemas/WorkflowEdge" }
+        configuration:
+          $ref: "#/components/schemas/WorkflowExecutionSettings"
+
+    WorkflowStep:
+      type: object
+      required: [name, type, configuration]
+      properties:
+        name:
+          type: string
+          description: Your name for the step, unique within the workflow. Edges reference it.
+        type:
+          $ref: "#/components/schemas/StepType"
+        configuration:
+          type: object
+          description: >-
+            Step-type-specific settings, discriminated by its own `type` property which must match
+            the step's `type`. A `ToolUse` configuration names a tool and an operation — use
+            `GET /api/tools` to find valid names for your credential.
+          additionalProperties: true
+        retry:
+          type: object
+          description: Retry policy for this step. Omitted means the host default applies.
+          additionalProperties: true
+        timeout:
+          type: string
+          description: Per-step timeout as an ISO-8601 duration.
+        requiredAutonomyLevel:
+          $ref: "#/components/schemas/AutonomyLevel"
+
+    WorkflowEdge:
+      type: object
+      required: [from, to, type]
+      properties:
+        from: { type: string, description: Source step name. }
+        to: { type: string, description: Target step name. }
+        type: { $ref: "#/components/schemas/EdgeType" }
+        condition:
+          type: string
+          description: >-
+            Only meaningful on `ConditionalTrue` / `ConditionalFalse` edges. Evaluated against a
+            restricted expression grammar shared by admission and execution, so an expression
+            accepted here is the same one that will run.
+
+    WorkflowExecutionSettings:
+      type: object
+      description: Optional execution settings. Host caps apply regardless of what you request.
+      properties:
+        planTimeout:
+          type: string
+          description: Whole-workflow timeout as an ISO-8601 duration.
+        maxParallelSteps:
+          type: integer
+          minimum: 1
+          description: Ceiling on concurrently executing steps within this workflow.
+
+    StepType:
+      type: string
+      description: >-
+        `LlmCall` routes through the full governed agent turn. `ToolUse` and `Retrieval` execute
+        under your capability envelope. `HumanGate` parks the run until someone approves it.
+      enum: [LlmCall, ToolUse, HumanGate, ConditionalBranch, SubPlanInvocation, Retrieval]
+
+    EdgeType:
+      type: string
+      enum: [DataFlow, ControlFlow, ConditionalTrue, ConditionalFalse]
+
+    AutonomyLevel:
+      type: string
+      description: >-
+        Requested autonomy for a step. Enforced as a **ceiling** against your envelope's
+        `AutonomyCeiling` and the host's own gates — it can only tighten, never loosen.
+      enum: [Restricted, Supervised, Autonomous]
+
+    SubmitWorkflowResponse:
+      type: object
+      required: [workflowId, name]
+      properties:
+        workflowId:
+          type: string
+          format: uuid
+          description: The server-minted identifier. Use it to start runs.
+        name:
+          type: string
+          description: The name you supplied, echoed back.
+
+    StartWorkflowRunResponse:
+      type: object
+      required: [jobId, statusUrl]
+      properties:
+        jobId: { type: string, description: Server-minted identifier of the queued run. }
+        statusUrl: { type: string, description: Where to poll for this run's state. }
+
+    WorkflowRunResponse:
+      type: object
+      description: >-
+        A projection of the stored run, not the record itself. The record carries the resolved
+        capability envelope and tenant — the host's authorization state, deliberately never echoed
+        back.
+      required: [jobId, workflowId, status, createdAt]
+      properties:
+        jobId: { type: string }
+        workflowId: { type: string }
+        status: { $ref: "#/components/schemas/RunStatus" }
+        error:
+          type: string
+          nullable: true
+          description: Caller-safe failure summary when the run failed. Never raw exception text.
+        createdAt: { type: string, format: date-time }
+        startedAt: { type: string, format: date-time, nullable: true }
+        completedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: Set only on terminal states. A parked run has no completion time.
+
+    RunStatus:
+      type: string
+      description: |
+        Sent as a name. **`Blocked` is a live state, not a terminal one** — a run parked on a human
+        gate keeps its job id and its hold on the workflow, and resumes on that same id once the gate
+        is answered. Treat only `Succeeded`, `Failed`, and `Cancelled` as final.
+      enum: [Queued, Running, Succeeded, Failed, Cancelled, Blocked]
+
+    CancelWorkflowRunResponse:
+      type: object
+      required: [jobId, stopped, withdrawnApprovals]
+      properties:
+        jobId: { type: string }
+        stopped:
+          type: boolean
+          description: >-
+            Whether the run had actually stopped when this was answered. `false` means it has been
+            signalled and will stop — poll the status endpoint to confirm. A caller told otherwise
+            would immediately start a replacement run, which the one-live-run rule refuses.
+        withdrawnApprovals:
+          type: integer
+          description: How many pending approval requests were withdrawn along with the run.
+
+    WorkflowProgressEvent:
+      oneOf:
+        - $ref: "#/components/schemas/WorkflowSnapshotFrame"
+        - $ref: "#/components/schemas/WorkflowStepFrame"
+        - $ref: "#/components/schemas/WorkflowFinishedFrame"
+        - $ref: "#/components/schemas/WorkflowParkedFrame"
+        - $ref: "#/components/schemas/WorkflowGapFrame"
+      discriminator:
+        propertyName: type
+        mapping:
+          SNAPSHOT: "#/components/schemas/WorkflowSnapshotFrame"
+          STEP: "#/components/schemas/WorkflowStepFrame"
+          FINISHED: "#/components/schemas/WorkflowFinishedFrame"
+          PARKED: "#/components/schemas/WorkflowParkedFrame"
+          GAP: "#/components/schemas/WorkflowGapFrame"
+
+    WorkflowSnapshotFrame:
+      type: object
+      description: Always the first frame — the run's state at the moment you attached.
+      required: [type, jobId, workflowId, status, isTerminal]
+      properties:
+        type: { type: string, const: SNAPSHOT }
+        jobId: { type: string }
+        workflowId: { type: string }
+        status: { $ref: "#/components/schemas/RunStatus" }
+        isTerminal:
+          type: boolean
+          description: >-
+            When true the run was already finished when you attached; no further frames follow.
+
+    WorkflowStepFrame:
+      type: object
+      required: [type, sequence, occurredAt]
+      properties:
+        type: { type: string, const: STEP }
+        sequence:
+          type: integer
+          format: int64
+          description: Monotonic within a run. Use it to detect ordering against a reported GAP.
+        occurredAt: { type: string, format: date-time }
+        stepId: { type: string, nullable: true }
+        stepName: { type: string, nullable: true }
+        status: { type: string, nullable: true }
+
+    WorkflowFinishedFrame:
+      type: object
+      description: Terminal frame. The stream closes after it.
+      required: [type, sequence, occurredAt]
+      properties:
+        type: { type: string, const: FINISHED }
+        sequence: { type: integer, format: int64 }
+        occurredAt: { type: string, format: date-time }
+        status: { $ref: "#/components/schemas/RunStatus" }
+        detail: { type: string, nullable: true }
+
+    WorkflowParkedFrame:
+      type: object
+      description: >-
+        The run parked on a human gate. The stream closes, but **the run has not ended** — it keeps
+        its job id and resumes on it once the gate is answered. Re-attach then.
+      required: [type, sequence, occurredAt]
+      properties:
+        type: { type: string, const: PARKED }
+        sequence: { type: integer, format: int64 }
+        occurredAt: { type: string, format: date-time }
+        detail: { type: string, nullable: true }
+
+    WorkflowGapFrame:
+      type: object
+      description: >-
+        Frames were dropped because this watcher fell behind. Reported rather than hidden, so a slow
+        client never mistakes a truncated stream for a complete one.
+      required: [type, droppedCount]
+      properties:
+        type: { type: string, const: GAP }
+        droppedCount: { type: integer, format: int64 }

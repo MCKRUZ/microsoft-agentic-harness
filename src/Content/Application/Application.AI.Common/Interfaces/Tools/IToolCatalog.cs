@@ -52,7 +52,8 @@ public sealed record ToolDescriptor(
 /// and the envelope's <see cref="CapabilityEnvelope.AllowedTools"/> is a list of names. A tool
 /// registered under a key that differs from its own <c>Name</c> would be advertised by this
 /// catalog under a name that nothing can resolve, and would be filtered against the wrong grant.
-/// The invariant is asserted against the real container by <c>ToolCatalogRegistrationTests</c>
+/// The invariant is asserted against the real container by
+/// <c>ToolsControllerIntegrationTests.EveryCatalogedName_ResolvesToAToolThatAgreesWithIt</c>
 /// rather than left to convention.
 /// </para>
 /// </remarks>

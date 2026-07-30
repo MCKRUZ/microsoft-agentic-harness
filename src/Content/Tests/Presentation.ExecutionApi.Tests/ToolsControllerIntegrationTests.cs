@@ -117,6 +117,53 @@ public sealed class ToolsControllerIntegrationTests
     }
 
     [Fact]
+    public async Task List_UnauthenticatedAgainstAConfiguredHost_Is401()
+    {
+        // Every other test here boots the development host, where anonymous mode authenticates one
+        // synthetic principal — so none of them can tell whether [Authorize] is present at all.
+        // Delete the attribute and they would all still pass. This one boots the host with a real
+        // authentication scheme configured and no credential presented, which is the only
+        // arrangement in which the attribute is load-bearing.
+        //
+        // Environment variables are the only configuration source that both outranks appsettings.json
+        // and is visible to the eager builder.Configuration read inside AddExecutionApiServices;
+        // parallelization is disabled assembly-wide (see AssemblyInfo.cs) so the override cannot leak
+        // into another host boot.
+        var variables = new Dictionary<string, string?>
+        {
+            ["AppConfig__AI__BundleExecution__Auth__TenantId"] = "11111111-1111-1111-1111-111111111111",
+            ["AppConfig__AI__BundleExecution__Auth__ClientId"] = "22222222-2222-2222-2222-222222222222",
+            ["AppConfig__AI__BundleExecution__Auth__AllowAnonymous"] = "false",
+        };
+
+        WebApplicationFactory<Program> factory;
+        foreach (var (key, value) in variables)
+            Environment.SetEnvironmentVariable(key, value);
+
+        try
+        {
+            factory = new WebApplicationFactory<Program>();
+            _ = factory.Server; // Force startup while the overrides are visible.
+        }
+        finally
+        {
+            foreach (var key in variables.Keys)
+                Environment.SetEnvironmentVariable(key, null);
+        }
+
+        using (factory)
+        {
+            using var client = factory.CreateClient();
+
+            var listResponse = await client.GetAsync("/api/tools");
+            var getResponse = await client.GetAsync("/api/tools/file_system");
+
+            listResponse.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+            getResponse.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+        }
+    }
+
+    [Fact]
     public void EveryCatalogedName_ResolvesToAToolThatAgreesWithIt()
     {
         // THE INVARIANT: a tool's Name and its keyed-DI registration key are assumed equal
