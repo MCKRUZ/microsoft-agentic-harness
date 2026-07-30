@@ -2,7 +2,9 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using FluentAssertions;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 using static Presentation.ExecutionApi.Tests.WorkflowRequests;
 
@@ -253,6 +255,111 @@ public sealed class WorkflowsControllerIntegrationTests : IClassFixture<WebAppli
 
         accepted.StatusCode.Should().Be(HttpStatusCode.Created);
         rejected.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    /// <summary>
+    /// A host with <paramref name="variables"/> applied <em>and</em> the header-identity scheme
+    /// mounted, so a test can be a specific caller.
+    /// </summary>
+    /// <remarks>
+    /// Both halves have to happen inside one lock. The environment overrides are only visible during
+    /// the eager configuration read at startup, and <c>WithWebHostBuilder</c> returns a factory that
+    /// has not started yet — so applying them separately would boot the identity-bearing host after the
+    /// variables had already been cleared.
+    /// </remarks>
+    private static WebApplicationFactory<Program> CreateIdentityFactoryWith(Dictionary<string, string?> variables)
+    {
+        lock (EnvironmentLock)
+        {
+            foreach (var (key, value) in variables)
+                Environment.SetEnvironmentVariable(key, value);
+
+            var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+                builder.ConfigureServices(services => services
+                    .AddAuthentication(HeaderIdentityAuthenticationHandler.SchemeName)
+                    .AddScheme<AuthenticationSchemeOptions, HeaderIdentityAuthenticationHandler>(
+                        HeaderIdentityAuthenticationHandler.SchemeName, _ => { })));
+            try
+            {
+                _ = factory.Server; // Force startup while the overrides are visible.
+                return factory;
+            }
+            catch
+            {
+                factory.Dispose();
+                throw;
+            }
+            finally
+            {
+                foreach (var key in variables.Keys)
+                    Environment.SetEnvironmentVariable(key, null);
+            }
+        }
+    }
+
+    /// <summary>A client acting as <c>dave@contoso.com</c>, whose owner id is a different string.</summary>
+    private static HttpClient DaveClient(WebApplicationFactory<Program> factory)
+    {
+        var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Add(HeaderIdentityAuthenticationHandler.UserHeader, "dave-oid");
+        client.DefaultRequestHeaders.Add(HeaderIdentityAuthenticationHandler.ApproverHeader, "dave@contoso.com");
+        return client;
+    }
+
+    [Fact]
+    public async Task Submit_HumanGate_WhenTheHostNamesNoApprovers_IsRefused()
+    {
+        // The shipped default. Nothing in the request is wrong — the gate is well-formed, names a
+        // plausible person, and the caller has a perfectly good identity — but a host that has not said
+        // who may approve things has said that nothing may be approved.
+        using var host = CreateIdentityFactoryWith([]);
+        using var client = DaveClient(host);
+
+        var response = await client.PostAsJsonAsync(
+            "/api/workflows", Definition([GateStep("gate", "alice@contoso.com")]));
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task Submit_HumanGate_NamingAPermittedApprover_IsAccepted()
+    {
+        // The end-to-end proof that the controller actually resolves the submitter's approver identity
+        // from the token and hands it to the validator. Everything else about this rule is unit-tested;
+        // what no unit test can establish is that the wiring exists at all — and its absence would
+        // refuse every gate ever submitted, on a host whose operator had configured a roster.
+        using var host = CreateIdentityFactoryWith(new Dictionary<string, string?>
+        {
+            ["AppConfig__AI__WorkflowSubmission__PermittedApprovers__0"] = "alice@contoso.com"
+        });
+
+        using var client = DaveClient(host);
+
+        var response = await client.PostAsJsonAsync(
+            "/api/workflows", Definition([GateStep("gate", "alice@contoso.com")]));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Created);
+    }
+
+    [Fact]
+    public async Task Submit_HumanGate_NamingItsOwnSubmitter_IsRefused()
+    {
+        // The same host and the same caller as the accepted case above; the only difference is that
+        // the gate names the caller. A gate its author can answer is not an approval, and the identity
+        // being compared comes from the token — which is what this proves, since nothing in the request
+        // body says who is submitting.
+        using var host = CreateIdentityFactoryWith(new Dictionary<string, string?>
+        {
+            ["AppConfig__AI__WorkflowSubmission__PermittedApprovers__0"] = "alice@contoso.com",
+            ["AppConfig__AI__WorkflowSubmission__PermittedApprovers__1"] = "dave@contoso.com"
+        });
+
+        using var client = DaveClient(host);
+
+        var response = await client.PostAsJsonAsync(
+            "/api/workflows", Definition([GateStep("gate", "alice@contoso.com", "dave@contoso.com")]));
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
     }
 
     [Fact]

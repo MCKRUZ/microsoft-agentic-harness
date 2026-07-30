@@ -29,6 +29,20 @@ internal static class WorkflowRequests
         configuration = new { type = "sub_plan", childWorkflowId }
     };
 
+    /// <summary>A human-gate step naming <paramref name="approvers"/>.</summary>
+    internal static object GateStep(string name, params string[] approvers) => new
+    {
+        name,
+        type = "HumanGate",
+        configuration = new
+        {
+            type = "human_gate",
+            escalationMessage = "approve the spend",
+            approvalStrategy = "AnyOf",
+            approvers
+        }
+    };
+
     /// <summary>A workflow definition wrapping <paramref name="steps"/> and optional <paramref name="edges"/>.</summary>
     internal static object Definition(object[] steps, object[]? edges = null, string name = "test-workflow") => new
     {

@@ -26,4 +26,25 @@ public sealed record SubmitWorkflowCommand : IRequest<Result<SubmitWorkflowResul
 {
     /// <summary>The workflow to admit and store.</summary>
     public required WorkflowDefinition Definition { get; init; }
+
+    /// <summary>
+    /// The submitting caller's approver identity, resolved by the transport from its token — never
+    /// from the request body. Null when the host could not establish one.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Present only so a caller cannot author a gate that it may then approve itself, which would make
+    /// the gate ceremonial. It is not ownership: ownership still comes from the ambient scope and has
+    /// no field here. It is a <em>different</em> identity from the owner, resolved through a different,
+    /// operator-chosen claim — comparing an owner id against a roster of sign-in names would silently
+    /// never match, and the self-approval check would pass for everyone.
+    /// </para>
+    /// <para>
+    /// A null value refuses human gates rather than skipping the check. That is the whole reason this
+    /// is safe to carry on a command: a transport that forgets to populate it — or a principal that
+    /// carries no usable claim — loses the ability to submit gates, it does not gain the ability to
+    /// self-approve.
+    /// </para>
+    /// </remarks>
+    public string? SubmitterApproverName { get; init; }
 }

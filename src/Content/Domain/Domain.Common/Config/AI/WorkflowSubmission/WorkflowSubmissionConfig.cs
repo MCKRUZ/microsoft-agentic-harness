@@ -67,7 +67,8 @@ namespace Domain.Common.Config.AI.WorkflowSubmission;
 /// ├── MaxProgressStreamsPerOwner — How many one caller may hold open at once
 /// ├── ProgressBufferSize        — How far behind one watcher may fall before it loses events
 /// ├── MaxParkedRunDuration      — How long a run may wait on an approval before the host gives up
-/// └── ParkedRunResumeInterval  — How often the host checks whether an approval has been answered
+/// ├── ParkedRunResumeInterval  — How often the host checks whether an approval has been answered
+/// └── PermittedApprovers        — Who a submitted human gate may name; empty refuses gates entirely
 /// </code>
 /// </remarks>
 public class WorkflowSubmissionConfig
@@ -323,4 +324,31 @@ public class WorkflowSubmissionConfig
     /// </remarks>
     /// <value>Default: 5 seconds</value>
     public TimeSpan ParkedRunResumeInterval { get; set; } = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// The people a submitted human gate may name as its approvers.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>Empty means no workflow may contain a human gate.</strong> That is the default, and it
+    /// is the honest one: a gate names who decides it, and a name the host does not recognise is a
+    /// gate nobody can ever answer — the workflow reaches it, parks, and waits out the parked-run
+    /// ceiling. Letting an unset list mean "any name is fine" would turn this into a check that exists
+    /// and enforces nothing, which is worse than not having it.
+    /// </para>
+    /// <para>
+    /// Names are matched with <c>ApproverNames.Comparer</c> and must be written in whatever form
+    /// <c>AI.Governance.Escalation.ApproverClaimType</c> selects — object ids if that is set to
+    /// <c>oid</c>, sign-in names if it is left at <c>preferred_username</c>. Authoring them in one form
+    /// while the host reads the other produces gates that validate at submission and can never be
+    /// answered, which is precisely the failure this list exists to prevent.
+    /// </para>
+    /// <para>
+    /// This is an allowlist for <em>authoring</em>, not the authorization that decides a gate. Whether
+    /// a particular caller may answer a particular escalation is settled at decision time against that
+    /// escalation's own roster, from the caller's token.
+    /// </para>
+    /// </remarks>
+    /// <value>Default: empty — human gates are refused until a host names its approvers</value>
+    public List<string> PermittedApprovers { get; set; } = [];
 }

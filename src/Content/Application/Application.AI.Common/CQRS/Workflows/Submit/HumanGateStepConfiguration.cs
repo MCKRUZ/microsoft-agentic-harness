@@ -8,18 +8,23 @@ namespace Application.AI.Common.CQRS.Workflows.Submit;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <strong>Rejected at submission until the answering surface exists.</strong> A workflow containing a
-/// human gate would start, reach the gate, park, and wait indefinitely — because the endpoint that
-/// answers a gate and resumes the parked workflow is not yet built. Accepting such a submission would
-/// hand a caller a workflow that can only ever hang, so the validator refuses it with an explicit
-/// reason rather than storing a trap. The restriction lifts when the answering surface ships; the
-/// contract is defined now so it does not change shape at that point.
+/// <strong>Admitted only when the host can say who may answer it.</strong> Every name in
+/// <see cref="Approvers"/> must appear in <c>AI.WorkflowSubmission.PermittedApprovers</c>, which ships
+/// empty — so a host that has not named its approvers refuses every gate. A gate naming someone the
+/// host does not recognise cannot be answered at all: the workflow would run, reach it, park, and be
+/// failed by the parked-run ceiling however long later. Refusing at submission makes that a 400 the
+/// author can act on rather than a workflow that only ever hangs.
 /// </para>
 /// <para>
-/// <see cref="Approvers"/> names who may decide. Names are matched case-insensitively against the
-/// roster, and a decision is attributed to the identity on the approver's own token — never to a name
-/// supplied in the decision request. A caller cannot nominate itself as approver of its own gate and
-/// then self-approve by asserting an identity in a request body.
+/// <strong>The submitter may not be an approver of its own gate.</strong> A gate its author can answer
+/// is not an approval — the workflow pauses and continues on the say-so of the person who wrote it,
+/// while the audit record shows that a human decided. The submitter's identity is taken from its
+/// token, through the same configured claim the decision path reads, so the comparison is between two
+/// forms of the same name.
+/// </para>
+/// <para>
+/// Names are matched case-insensitively (<c>ApproverNames.Comparer</c>), and a decision is attributed
+/// to the identity on the approver's own token — never to a name supplied in the decision request.
 /// </para>
 /// </remarks>
 public sealed record HumanGateStepConfiguration : WorkflowStepConfiguration

@@ -282,21 +282,15 @@ public sealed class EscalationsController : ControllerBase
     private string? ResolveApproverName()
     {
         var claimType = _config.CurrentValue.ApproverClaimType;
-        var values = ApproverClaimTypes.EquivalentFormsOf(claimType)
-            .SelectMany(form => User.FindAll(form))
-            .Select(c => c.Value)
-            .Where(v => !string.IsNullOrWhiteSpace(v))
-            .Distinct(ApproverNames.Comparer)
-            .ToList();
+        var approverName = User.GetApproverNameOrNull(claimType);
+        if (approverName is not null)
+            return approverName;
 
-        if (values.Count == 1)
-            return values[0];
-
-        // Diagnostic detail (which claim type, how many values) goes to the log only; the HTTP
-        // body stays generic so the response never teaches a caller which claim to forge.
+        // Diagnostic detail (which claim type) goes to the log only; the HTTP body stays generic so
+        // the response never teaches a caller which claim to forge.
         _logger.LogWarning(
-            "Approver identity resolution failed: configured claim '{ApproverClaimType}' (incl. mapped forms) yielded {Count} distinct value(s) on the principal",
-            claimType, values.Count);
+            "Approver identity resolution failed: configured claim '{ApproverClaimType}' (incl. mapped forms) did not yield exactly one distinct value on the principal",
+            claimType);
         return null;
     }
 

@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using Application.Core.Validation;
+using Domain.AI.Escalation;
 
 namespace Presentation.Common.Extensions;
 
@@ -114,5 +115,56 @@ public static class ClaimsPrincipalExtensions
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Returns the caller's approver identity — the name compared against escalation rosters — or
+    /// <c>null</c> when the principal does not carry exactly one usable value for
+    /// <paramref name="approverClaimType"/>.
+    /// </summary>
+    /// <param name="principal">The principal to resolve.</param>
+    /// <param name="approverClaimType">
+    /// The configured claim type, from <c>EscalationConfig.ApproverClaimType</c>. A server-side
+    /// setting, never a request parameter: the approver name must come from the validated token, so a
+    /// caller can never assert an identity the token does not carry.
+    /// </param>
+    /// <remarks>
+    /// <para>
+    /// Distinct from <see cref="GetUserIdOrNull"/> and deliberately so. That answers "who owns this
+    /// record", and is restricted to immutable claims because ownership must not follow a reassignable
+    /// name. This answers "which roster entries is this person", which is a different question with a
+    /// different, operator-chosen claim — rosters are authored with human-readable names by default.
+    /// The two can resolve to different strings for the same person, which is exactly why anything
+    /// comparing a caller to a roster must use this one.
+    /// </para>
+    /// <para>
+    /// Lives here, with the other identity resolution, because three surfaces need it — the escalation
+    /// decision path, the change-proposal review path, and workflow submission's self-approval check —
+    /// and a per-controller copy is how one of them silently drifts back to a case-sensitive or
+    /// unmapped comparison.
+    /// </para>
+    /// <para>
+    /// Resolution searches the union of the claim type's equivalent forms, because production tokens
+    /// carry the JWT inbound-mapped form while dev/test principals carry the short one. Across that
+    /// union, more than one distinct value (per <c>ApproverNames.Comparer</c>) is an ambiguous identity
+    /// and yields <c>null</c> rather than a silent first-pick — someone who can smuggle a second
+    /// instance of the claim must not get to choose which one wins. The same value appearing under both
+    /// forms counts as one.
+    /// </para>
+    /// </remarks>
+    public static string? GetApproverNameOrNull(this ClaimsPrincipal principal, string approverClaimType)
+    {
+        ArgumentNullException.ThrowIfNull(principal);
+        ArgumentException.ThrowIfNullOrWhiteSpace(approverClaimType);
+
+        var values = ApproverClaimTypes.EquivalentFormsOf(approverClaimType)
+            .SelectMany(principal.FindAll)
+            .Select(claim => claim.Value)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(ApproverNames.Comparer)
+            .Take(2)
+            .ToList();
+
+        return values.Count == 1 ? values[0] : null;
     }
 }

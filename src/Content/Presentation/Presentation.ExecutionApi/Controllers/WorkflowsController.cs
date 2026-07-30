@@ -5,6 +5,8 @@ using Application.AI.Common.CQRS.Workflows.Submit;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Runs;
 using Domain.Common;
+using Domain.Common.Config.AI.Governance;
+using Microsoft.Extensions.Options;
 using Presentation.ExecutionApi.DTOs;
 using MediatR;
 using Microsoft.AspNetCore.Authorization;
@@ -56,20 +58,24 @@ public sealed class WorkflowsController : ControllerBase
     private readonly IMediator _mediator;
     private readonly ICapabilityEnvelopeResolver _envelopeResolver;
     private readonly IRunProgressBroker _progressBroker;
+    private readonly IOptionsMonitor<EscalationConfig> _escalationConfig;
 
     /// <summary>Initializes the controller with its MediatR and envelope-resolver dependencies.</summary>
     public WorkflowsController(
         IMediator mediator,
         ICapabilityEnvelopeResolver envelopeResolver,
-        IRunProgressBroker progressBroker)
+        IRunProgressBroker progressBroker,
+        IOptionsMonitor<EscalationConfig> escalationConfig)
     {
         ArgumentNullException.ThrowIfNull(mediator);
         ArgumentNullException.ThrowIfNull(envelopeResolver);
         ArgumentNullException.ThrowIfNull(progressBroker);
+        ArgumentNullException.ThrowIfNull(escalationConfig);
 
         _mediator = mediator;
         _envelopeResolver = envelopeResolver;
         _progressBroker = progressBroker;
+        _escalationConfig = escalationConfig;
     }
 
     /// <summary>
@@ -90,7 +96,18 @@ public sealed class WorkflowsController : ControllerBase
         ArgumentNullException.ThrowIfNull(definition);
 
         var result = await _mediator
-            .Send(new SubmitWorkflowCommand { Definition = definition }, cancellationToken)
+            .Send(
+                new SubmitWorkflowCommand
+                {
+                    Definition = definition,
+
+                    // From the token, through the same resolver and the same configured claim the
+                    // decision path reads — so the name compared against a gate's roster here is the
+                    // same string that would be compared when someone answers it. There is no field
+                    // for this on the wire; a caller cannot nominate anyone, least of all itself.
+                    SubmitterApproverName = User.GetApproverNameOrNull(_escalationConfig.CurrentValue.ApproverClaimType)
+                },
+                cancellationToken)
             .ConfigureAwait(false);
 
         if (!result.IsSuccess || result.Value is null)

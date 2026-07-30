@@ -21,6 +21,15 @@ internal sealed class HeaderIdentityAuthenticationHandler : AuthenticationHandle
     /// <summary>Mints two conflicting <c>oid</c> claims — an authenticated but unresolvable caller.</summary>
     public const string AmbiguousHeader = "X-Test-Ambiguous";
 
+    /// <summary>
+    /// Mints the caller's approver identity, under the claim <c>EscalationConfig.ApproverClaimType</c>
+    /// selects by default. Separate from <see cref="UserHeader"/> on purpose: ownership and roster
+    /// identity are different claims that resolve to different strings for the same person, and a test
+    /// harness that conflated them would hide the mismatch that makes a self-approval check silently
+    /// match nothing.
+    /// </summary>
+    public const string ApproverHeader = "X-Test-Approver";
+
     public HeaderIdentityAuthenticationHandler(
         IOptionsMonitor<AuthenticationSchemeOptions> options,
         ILoggerFactory logger,
@@ -49,6 +58,10 @@ internal sealed class HeaderIdentityAuthenticationHandler : AuthenticationHandle
         var tid = Request.Headers[TenantHeader].ToString();
         if (!string.IsNullOrEmpty(tid))
             claims.Add(new Claim("tid", tid));
+
+        var approver = Request.Headers[ApproverHeader].ToString();
+        if (!string.IsNullOrEmpty(approver))
+            claims.Add(new Claim("preferred_username", approver));
 
         return Task.FromResult(Success(claims));
     }
