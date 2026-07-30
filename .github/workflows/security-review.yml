@@ -1,14 +1,16 @@
 name: Security Review
 
-# The security rail (the-rails.md §3): the security-reviewer agent, path-triggered.
+# The security rail (the-rails.md §3): the security-reviewer agent, triggered by
+# what the diff CONTAINS (see .github/scripts/security-gate-scope.sh), with the
+# original gated-path list kept as a supplement.
 #
 # Design note — why this is a REQUIRED check that runs on EVERY PR:
 # A required status check must report a conclusion on every PR or the merge stays
 # stuck "pending". So this job runs on all PRs but short-circuits to success when
-# no gated path changed. When a gated path IS touched (or the `risk:high` label is
-# present) it runs the security-reviewer and FAILS on a HIGH finding — that failure
-# is what blocks the merge. Add the check name `security-review` to the main-branch
-# ruleset's required checks (already done in main-branch-protection.json).
+# nothing security-relevant changed. When it IS relevant (or the `risk:high` label
+# is present) it runs the security-reviewer and FAILS on a HIGH finding — that
+# failure is what blocks the merge. Add the check name `security-review` to the
+# main-branch ruleset's required checks (already done in main-branch-protection.json).
 #
 # Fail-safe: a gated change whose review cannot complete BLOCKS rather than passes.
 # The reviewer writes a PROVISIONAL block as its first action and only overwrites it
@@ -41,31 +43,29 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Detect gated-path changes
+      - name: Detect security-relevant changes
         id: detect
         env:
           BASE_REF: ${{ github.base_ref }}
           HAS_RISK_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'risk:high') }}
           IS_DRAFT: ${{ github.event.pull_request.draft }}
+          SECURITY_SCOPE_FILE: ${{ runner.temp }}/security-scope.txt
         run: |
           set -euo pipefail
           # Full (non-shallow) fetch of the base so the merge-base exists; a
           # `--depth=1` fetch leaves no common ancestor and breaks the diff.
           git fetch --no-tags origin "$BASE_REF"
-          BASE_SHA="$(git merge-base FETCH_HEAD HEAD)"
-          CHANGED="$(git diff --name-only "$BASE_SHA" HEAD)"
-          echo "Base: $BASE_SHA"
-          echo "Changed files:"; echo "$CHANGED"
 
-          # Gated paths — keep in sync with .github/CODEOWNERS and the rubric.
-          # Every segment is slash-anchored so it matches a directory component
-          # consistently (e.g. /SecurityAttributes/, not a bare substring).
-          GATED_RE='(^\.github/|/Auth/|/Identity/|/Security/|/SecurityAttributes/|/Migrations/|^infra/)'
-          if echo "$CHANGED" | grep -Eq "$GATED_RE"; then
-            GATED=true
-          else
-            GATED=false
-          fi
+          # The decision lives in one script shared with scripts/rails/run-gates.sh —
+          # it selects on what the diff CONTAINS, not only on folder names. The old
+          # folder-only filter skipped six consecutive PRs that changed authorization,
+          # tenant scoping and capability envelopes. See the script's header.
+          # It exits non-zero when it cannot compute a diff, and `set -e` turns that
+          # into a failed required check: unable-to-decide must never mean not-required.
+          bash .github/scripts/security-gate-scope.sh --base FETCH_HEAD --format github > "$RUNNER_TEMP/scope.txt"
+          cat "$RUNNER_TEMP/scope.txt"
+          GATED="$(grep '^required=' "$RUNNER_TEMP/scope.txt" | cut -d= -f2)"
+          echo "Files in scope:"; cat "$SECURITY_SCOPE_FILE" || true
 
           # Drafts are work-in-progress and cannot merge, so defer the expensive
           # (Opus) reviewer until the PR is marked ready — the `ready_for_review`
@@ -80,7 +80,7 @@ jobs:
             echo "Security review REQUIRED (gated=$GATED, risk:high=$HAS_RISK_LABEL)."
           else
             echo "review_required=false" >> "$GITHUB_OUTPUT"
-            echo "No gated paths changed and no risk:high label — security review not required."
+            echo "Nothing security-relevant in the diff and no risk:high label — security review not required."
           fi
 
       # Clear any verdict file that a PR may have COMMITTED into the tree. The
@@ -124,10 +124,11 @@ jobs:
 
             STEP 2 — Review.
             Read the rubric at .github/security-review-rubric.md and follow it exactly.
-            Review the PR diff (base is origin/${{ github.base_ref }}), focusing on the
-            gated files that triggered this run. Budget your turns: prefer a single
-            `git diff` over many per-file reads, and do not re-read a file you have
-            already seen.
+            Review the PR diff (base is origin/${{ github.base_ref }}).
+            ${{ runner.temp }}/security-scope.txt lists the files whose own changed lines
+            carry a security signal — start there, then widen only if a finding leads you
+            out of that set. Budget your turns: prefer a single `git diff` over many
+            per-file reads, and do not re-read a file you have already seen.
 
             STEP 3 — Replace the verdict, and post findings.
             Overwrite ${{ runner.temp }}/security-verdict.txt with your real verdict.
@@ -194,4 +195,4 @@ jobs:
 
       - name: No review required
         if: steps.detect.outputs.review_required != 'true'
-        run: echo "No gated paths changed — security-review check passes trivially."
+        run: echo "Nothing security-relevant changed (no gated path, no security signal in the diff) — security-review check passes trivially."

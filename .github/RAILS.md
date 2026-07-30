@@ -13,7 +13,7 @@ them live, and how to prove they actually catch things.
 | --- | --- | --- | --- |
 | **build-and-test** | `workflows/ci.yml` | every PR | **Blocks** (hard gate) |
 | **OWASP Agentic Top-10 Gate** | `workflows/ci.yml` | every PR | **Blocks** (hard gate) |
-| **security-review** | `workflows/security-review.yml` | every PR; reviews on gated paths / `risk:high` | **Blocks on HIGH** |
+| **security-review** | `workflows/security-review.yml` | every PR; reviews when the diff contains security-relevant code, touches a gated path, or carries `risk:high` | **Blocks on HIGH** |
 | **correctness-review** | `workflows/correctness-review.yml` | ~~every PR~~ — **workflow disabled** | Run locally instead (see below) |
 | **grader** | `workflows/grader.yml` | ~~every PR~~ — **workflow disabled** | Run locally instead (see below) |
 | **docs-drift** | `workflows/docs-drift-check.yml` | ~~push to main~~ — **workflow disabled** | Run locally instead (see below) |
@@ -28,8 +28,12 @@ them live, and how to prove they actually catch things.
 >
 > **security-review stays enabled and required.** It is deliberately the exception: it is a
 > required status check in the ruleset (disabling it would wedge every PR on a check that never
-> reports), and its expensive step only fires when the diff touches a gated path, so it costs
-> little in practice. The honest consequence of the other three being off is that correctness
+> reports), and its expensive step only fires when the diff is actually security-relevant. With
+> the other three rails off it is the only remote review that runs, which is exactly why its
+> trigger was widened from folder names to diff content — see
+> `.github/scripts/security-gate-scope.sh`. Expect it to fire on most `src/**` PRs in this repo
+> and to cost accordingly; that is the intended trade, not a misconfiguration.
+> The honest consequence of the other three being off is that correctness
 > and doc-drift coverage is now on the honour system — nothing verifies a developer ran the
 > local gate. Treat that as a deliberate, reversible trade, not as those gates being retired.
 
@@ -145,9 +149,11 @@ Before trusting these, force each one to fail and confirm it's caught:
   turn. The Stop hook must refuse and hand back the build error.
 - **grader** — open a PR whose description claims something the diff does not do.
   The grader's comment must call out the mismatch.
-- **security-review** — open a throwaway PR touching a gated path (e.g. add a
-  comment in a file under `**/Auth/`) with a planted HIGH issue. The check must
-  go red. Close it unmerged.
+- **security-review** — open a throwaway PR with a planted HIGH issue, either on a
+  gated path (a comment in a file under `**/Auth/`) or on the content signal (any
+  `src/**` change touching `OwnerId`/`[Authorize]`). The check must go red. Close it
+  unmerged. `bash .github/scripts/security-gate-scope.test.sh` verifies the trigger
+  itself — including replaying the six PRs the old folder-only filter missed.
 - **correctness-review** — open a throwaway PR with a planted high-confidence
   defect under `src/` (e.g. an inverted null check or an off-by-one that drops a
   row). The check must go red with `CORRECTNESS_VERDICT: BLOCK`; then apply the
