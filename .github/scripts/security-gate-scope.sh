@@ -67,6 +67,12 @@ done
 
 # Three-dot semantics: compare against the merge-base, so commits that landed on the
 # base branch after this one forked are not attributed to this diff.
+# core.quotePath=false on every invocation: git otherwise emits non-ASCII paths
+# octal-escaped and quoted ("cafÃ©.cs"), and feeding that back as a pathspec
+# matches nothing — a file named Order.cs with an accent would change OwnerId
+# scoping and raise no signal at all.
+git() { command git -c core.quotePath=false "$@"; }
+
 MERGE_BASE="$(git merge-base "$BASE_REF" "$HEAD_REF" 2>/dev/null || true)"
 [ -n "$MERGE_BASE" ] || { echo "security-gate-scope: no merge-base between '$BASE_REF' and '$HEAD_REF'" >&2; exit 2; }
 

@@ -128,6 +128,14 @@ if git worktree add --detach --quiet "$WORKTREE" HEAD 2>/dev/null; then
         "public sealed record ScratchTest { public string? OwnerId { get; init; } }" \
         true content
 
+  # git quotes non-ASCII paths by default, and the quoted form matches nothing when
+  # fed back as a pathspec — so an accented filename used to evade the content scan
+  # entirely. core.quotePath=false closes it.
+  synth "non-ASCII filename still raises its signal" \
+        "src/Content/Domain/Domain.AI/ScratchTést.cs" \
+        "public sealed record ScratchTest { public string? OwnerId { get; init; } }" \
+        true content
+
   synth "TypeScript touching credentials (frontend is scanned too)" \
         "src/Content/Presentation/agent-hub-ui/src/scratchTest.ts" \
         "export const authHeader = (apiKey: string) => ({ Authorization: \`Bearer \${apiKey}\` });" \

@@ -157,8 +157,8 @@ CHANGED_FILES="$(git diff --name-only "${BASE_REF}...HEAD" 2>/dev/null || true)"
 SECURITY_SCOPE_FILE="${TMPDIR_GATES}/security-scope.txt"
 export SECURITY_SCOPE_FILE
 SECURITY_SCOPE_OUT="${TMPDIR_GATES}/security-scope-decision.txt"
-if ! bash .github/scripts/security-gate-scope.sh --base "$BASE_REF" > "$SECURITY_SCOPE_OUT" 2>/dev/null; then
-  echo "run-gates: security-gate-scope.sh could not decide — failing closed." >&2
+if ! bash .github/scripts/security-gate-scope.sh --base "$BASE_REF" > "$SECURITY_SCOPE_OUT"; then
+  echo "run-gates: security-gate-scope.sh could not decide — failing closed (its error is above)." >&2
   exit 1
 fi
 SECURITY_GATED=false
