@@ -1,6 +1,9 @@
+using Application.AI.Common.Interfaces.Runs;
 using Application.Core.CQRS.Evaluation.RunEvalSuite;
+using Domain.AI.Runs;
 using Domain.Common.Config;
 using Infrastructure.AI.Evaluation;
+using Infrastructure.AI.Runs;
 
 namespace Presentation.ExecutionApi.Extensions;
 
@@ -66,6 +69,21 @@ public static class ExecutionApiEvaluationExtensions
         // reload that emptied DatasetRoots in between would have it conclude the host started
         // unconfined. Latching the verdict at composition time is what makes the ratchet real.
         services.AddSingleton(new EvalConfinementLatch(StartedConfined: true));
+
+        // The executor, registered only inside this branch — the one piece that is genuinely
+        // host-specific. A host that has not enabled evaluation has no executor for
+        // RunKind.Evaluation at all, and the dispatcher fails a run whose kind has no executor. That is
+        // the fail-closed order: the endpoints refuse first, and if anything ever queued an eval run
+        // past them, the dispatcher still would not execute it.
+        //
+        // Keyed by RunKind and scoped, exactly as the workflow executor is: the dispatcher creates a
+        // fresh scope per run and resolves the executor inside it.
+        //
+        // The submission store it reads is registered unconditionally with the rest of the run
+        // substrate. It has to be: the eval CQRS handlers are discovered by assembly scanning, so they
+        // exist in every host, and a conditionally-registered dependency would fail ValidateOnBuild
+        // everywhere evaluation is off.
+        services.AddKeyedScoped<IRunKindExecutor, EvalRunKindExecutor>(RunKind.Evaluation);
 
         return services;
     }

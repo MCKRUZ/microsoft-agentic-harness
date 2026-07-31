@@ -133,7 +133,7 @@ public sealed class RunRecordCleanupServiceTests
         _time.Advance(TimeSpan.FromDays(1));
 
         var sut = new RunRecordCleanupService(
-            store, progress, _escalations.Object, monitor,
+            store, [new RunProgressReclaimListener(progress)], _escalations.Object, monitor,
             NullLogger<RunRecordCleanupService>.Instance);
 
         using var cts = new CancellationTokenSource();
@@ -183,7 +183,7 @@ public sealed class RunRecordCleanupServiceTests
         _time.Advance(TimeSpan.FromHours(1));
 
         var sut = new RunRecordCleanupService(
-            store, progress, _escalations.Object, monitor,
+            store, [new RunProgressReclaimListener(progress)], _escalations.Object, monitor,
             NullLogger<RunRecordCleanupService>.Instance);
 
         using var cts = new CancellationTokenSource();
@@ -222,7 +222,7 @@ public sealed class RunRecordCleanupServiceTests
         _time.Advance(TimeSpan.FromHours(1));
 
         var sut = new RunRecordCleanupService(
-            store, progress, _escalations.Object, monitor,
+            store, [new RunProgressReclaimListener(progress)], _escalations.Object, monitor,
             NullLogger<RunRecordCleanupService>.Instance);
 
         using var cts = new CancellationTokenSource();
@@ -235,6 +235,92 @@ public sealed class RunRecordCleanupServiceTests
         await sut.StopAsync(CancellationToken.None);
 
         progress.Forgotten.Should().Contain("finished");
+    }
+
+    [Fact]
+    public async Task EveryHolderOfRunScopedStateIsToldAboutAReclaimedRun()
+    {
+        // The broker is no longer the only thing keyed by a job id — an evaluation run's datasets and
+        // report are too, and future kinds will add more. Telling only the first registered holder
+        // would leak every one after it, silently.
+        var first = new RecordingListener();
+        var second = new RecordingListener();
+
+        await SweepOneFinishedRun([first, second]);
+
+        first.Released.Should().Contain("finished");
+        second.Released.Should().Contain("finished", "a second holder leaks unless it is told too");
+    }
+
+    [Fact]
+    public async Task AHolderThatThrowsDoesNotStopTheOthersBeingTold()
+    {
+        // The records are already gone by this point, so a holder skipped here keeps its entries for
+        // the life of the process with nothing that will ever come back for them. An unrelated
+        // listener's fault must not reintroduce the exact leak this notification exists to prevent.
+        var faulty = new ThrowingListener();
+        var healthy = new RecordingListener();
+
+        await SweepOneFinishedRun([faulty, healthy]);
+
+        healthy.Released.Should().Contain(
+            "finished", "one holder's fault must not strand every holder registered after it");
+    }
+
+    /// <summary>
+    /// Runs one finished, expired run through a real sweep and returns once the listeners have been
+    /// told — the shared arrangement behind the reclaim-notification cases.
+    /// </summary>
+    private async Task SweepOneFinishedRun(IReadOnlyList<IRunReclaimListener> listeners)
+    {
+        _config.AI.WorkflowSubmission.RunRecordTtl = TimeSpan.FromMinutes(5);
+        _config.AI.WorkflowSubmission.RunSweepInterval = TimeSpan.Zero;
+
+        var monitor = new StaticOptionsMonitor<AppConfig>(_config);
+        var store = new CountingStore(new InMemoryRunJobStore(monitor, _time));
+
+        store.TryCreate(Queued("finished"), int.MaxValue).Should().Be(RunAdmission.Accepted);
+        var claimed = store.TryBeginRun("finished", _time.GetUtcNow())!;
+        store.Update(claimed with { Status = RunStatus.Succeeded, CompletedAt = _time.GetUtcNow() });
+
+        _time.Advance(TimeSpan.FromHours(1));
+
+        var sut = new RunRecordCleanupService(
+            store, listeners, _escalations.Object, monitor,
+            NullLogger<RunRecordCleanupService>.Instance);
+
+        using var cts = new CancellationTokenSource();
+        await sut.StartAsync(cts.Token);
+
+        for (var attempt = 0; attempt < 60 && store.Reclaimed == 0; attempt++)
+            await Task.Delay(100);
+
+        await cts.CancelAsync();
+        await sut.StopAsync(CancellationToken.None);
+    }
+
+    /// <summary>Records which runs it was told to release.</summary>
+    private sealed class RecordingListener : IRunReclaimListener
+    {
+        private readonly List<string> _released = [];
+
+        public IReadOnlyList<string> Released
+        {
+            get { lock (_released) return [.. _released]; }
+        }
+
+        public void OnRunsReclaimed(IReadOnlyList<string> jobIds)
+        {
+            lock (_released)
+                _released.AddRange(jobIds);
+        }
+    }
+
+    /// <summary>A holder whose release path is broken, standing in for any listener that faults.</summary>
+    private sealed class ThrowingListener : IRunReclaimListener
+    {
+        public void OnRunsReclaimed(IReadOnlyList<string> jobIds) =>
+            throw new InvalidOperationException("this holder is broken");
     }
 
     /// <summary>Records which runs the sweeper asked the broker to forget.</summary>

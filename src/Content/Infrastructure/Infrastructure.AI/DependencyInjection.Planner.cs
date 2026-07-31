@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces.Attestation;
 using Application.AI.Common.Interfaces.Escalation;
+using Application.AI.Common.Interfaces.Evaluation;
 using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Application.AI.Common.Interfaces.Planner;
 using Application.AI.Common.Interfaces.Runs;
@@ -95,6 +96,26 @@ public static partial class DependencyInjection
         // from a request, so a scoped broker would give each side its own instance and every stream
         // would sit silent while the run reported into nothing.
         services.TryAddSingleton<IRunProgressBroker, InMemoryRunProgressBroker>();
+
+        // Holds what an evaluation run needs beyond the kind-agnostic record. Registered here with the
+        // rest of the substrate rather than in the host that serves evaluation over HTTP, because the
+        // CQRS handlers that depend on it are discovered by assembly scanning and therefore exist in
+        // EVERY host — a conditional registration makes each of those hosts fail ValidateOnBuild.
+        // Being registered is not being reachable: without a RunKind.Evaluation executor no eval run
+        // can execute, and the endpoints refuse unless evaluation is enabled.
+        services.TryAddSingleton<IEvalRunSubmissionStore, InMemoryEvalRunSubmissionStore>();
+
+        // Both holders of run-scoped state are released when a run's record is reclaimed, through the
+        // same seam, rather than by the sweeper naming either of them.
+        //
+        // Registered two different ways for one real reason: the submission store implements
+        // IRunReclaimListener, so it is resolved as itself; the progress broker does not, so a named
+        // adapter supplies the behaviour. TryAddEnumerable needs an implementation type to tell
+        // registrations apart and rejects factory descriptors, which is why the adapter is a type
+        // rather than a lambda.
+        services.TryAddEnumerable(
+            ServiceDescriptor.Singleton<IRunReclaimListener, RunProgressReclaimListener>());
+        services.AddSingleton<IRunReclaimListener>(sp => sp.GetRequiredService<IEvalRunSubmissionStore>());
 
         // Keyed by RunKind, which is what makes a new kind of work a registration rather than a
         // change to the dispatcher. Scoped: the dispatcher creates a fresh scope per run and resolves

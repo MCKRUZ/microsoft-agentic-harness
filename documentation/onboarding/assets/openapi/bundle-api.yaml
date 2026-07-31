@@ -97,6 +97,11 @@ tags:
     description: Start, poll, and stream bundle runs.
   - name: Workflows
     description: Submit workflow definitions and manage their runs.
+  - name: Evals
+    description: >-
+      Run the host's evaluation suites and poll their reports. Off unless
+      `AppConfig:AI:Evaluation:Enabled` is set, and the host refuses to start when it is set without
+      any `DatasetRoots`.
   - name: Tools
     description: >-
       Read-only discovery of the tools the calling credential may invoke. Distinct from AgentHub's
@@ -638,6 +643,142 @@ paths:
             The host or this caller is already at its concurrent-stream ceiling
             (`MaxConcurrentProgressStreams` / `MaxProgressStreamsPerOwner`). Close a stream and retry.
 
+  /api/evals/datasets:
+    get:
+      tags: [Evals]
+      operationId: listEvalDatasets
+      summary: List the dataset names this host will evaluate
+      description: |
+        The datasets are whatever an operator placed at the **top level** of
+        `AppConfig:AI:Evaluation:DatasetRoots`; a name is that file's name without its extension.
+
+        **A host with no roots configured answers an empty list.** It does not fall back to
+        enumerating its working directory - listing is a disclosure, and there is nothing bounded to
+        disclose until an operator says what the bounds are. An empty list is therefore a truthful
+        answer to "what could be run here", not an error.
+
+        Not recursive. A dataset in a subdirectory would need a name that carried structure, and a
+        name with structure is a path with extra steps - which is exactly what this surface avoids.
+      responses:
+        "200":
+          description: The dataset names, in a stable order.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EvalDatasetsResponse" }
+        "401": { $ref: "#/components/responses/UnauthorizedProblem" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /api/evals/runs:
+    post:
+      tags: [Evals]
+      operationId: startEvalRun
+      summary: Queue an evaluation run over named datasets
+      description: |
+        Accepts the run and returns immediately with a job id - execution is asynchronous. A suite is
+        hundreds of governed agent turns at the default ceilings, so the response says the work was
+        taken, not that it finished.
+
+        **Datasets are named, never pathed.** There is no path field on this contract, and that is
+        the security property rather than a convenience: a path would make every request a filesystem
+        reference with one guard between it and an arbitrary read. A name cannot express "outside the
+        roots" at all. The server resolves a name by enumerating the configured roots and matching -
+        never by concatenating the name onto a root.
+
+        The capability envelope is resolved from **the credential that starts the run** and is armed
+        around the whole evaluation. Every case is a governed agent turn that can invoke tools, so
+        without it a caller could reach, through an eval case, tools it is denied directly.
+
+        Unknown dataset names are refused **before** anything is queued, so a bad name costs an
+        immediate `404` rather than a `202` followed by a failure the caller has to poll for.
+
+        Cost is bounded at admission, not interrupted afterwards: `MaxCaseExecutionsPerRun` counts
+        cases **x repeats** and refuses rather than truncating, because quietly evaluating a subset
+        would report a pass rate for a suite that never ran.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/StartEvalRunRequest" }
+      responses:
+        "202":
+          description: The run was accepted and queued.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StartEvalRunResponse" }
+        "400":
+          description: >-
+            The request breached a configured ceiling (`MaxDatasetsPerRun`, `MaxRepeats`,
+            `MaxParallelism`), or the caller already holds the maximum concurrent runs allowed per
+            owner.
+        "401": { $ref: "#/components/responses/UnauthorizedProblem" }
+        "403":
+          description: Evaluation is disabled on this host (`AppConfig:AI:Evaluation:Enabled`).
+        "404":
+          description: >-
+            One of the named datasets is not one this host serves. Unknown and malformed names are
+            deliberately indistinguishable.
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /api/evals/runs/{jobId}:
+    get:
+      tags: [Evals]
+      operationId: getEvalRun
+      summary: Poll an evaluation run, and read its report once finished
+      description: |
+        Returns counts, verdict, duration and cost - **not** per-case results. Those hold every
+        case's input and the agent's full output, which is not something a status poll should carry;
+        use the framework's own reporters for transcripts.
+
+        A run whose submission has already been reclaimed is still readable: the record and the
+        submission are dropped by the same sweep but not atomically, and a caller polling in that
+        window is owed the run's status rather than a failure. `datasets` is empty and `report` is
+        absent in that case.
+      parameters:
+        - $ref: "#/components/parameters/EvalRunJobId"
+      responses:
+        "200":
+          description: The run's current state, and its report if it has produced one.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EvalRunResponse" }
+        "401": { $ref: "#/components/responses/UnauthorizedProblem" }
+        "403":
+          description: Evaluation is disabled on this host.
+        "404":
+          description: >-
+            No such run, **or** it belongs to another caller, **or** it is not an evaluation run.
+            The three are one answer so a caller cannot enumerate work it was not given the id for.
+        "429": { $ref: "#/components/responses/RateLimited" }
+    delete:
+      tags: [Evals]
+      operationId: cancelEvalRun
+      summary: Cancel a queued evaluation run
+      description: |
+        A run that has not started is cancelled outright (`stopped: true`). A run **already
+        executing** answers `200` with `stopped: false` and continues to completion.
+
+        That is weaker than cancelling a workflow, and the difference is real rather than an
+        omission: a workflow in flight can be signalled through the plan cancellation registry,
+        whereas an evaluation is a suite of agent turns with no equivalent. Reporting `stopped: true`
+        would tell a caller the spend had stopped when it had not. What bounds a runaway suite is
+        `MaxCaseExecutionsPerRun`, applied before any case runs.
+      parameters:
+        - $ref: "#/components/parameters/EvalRunJobId"
+      responses:
+        "200":
+          description: The run was cancelled, or reported as already executing.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CancelEvalRunResponse" }
+        "401": { $ref: "#/components/responses/UnauthorizedProblem" }
+        "403":
+          description: Evaluation is disabled on this host.
+        "404":
+          description: No such run, **or** it belongs to another caller, **or** it is not an evaluation run.
+        "409":
+          description: The run has already reached a terminal state.
+        "429": { $ref: "#/components/responses/RateLimited" }
+
 components:
   securitySchemes:
     bearerAuth:
@@ -686,6 +827,12 @@ components:
       in: path
       required: true
       description: The run job id returned by `startWorkflowRun`.
+      schema: { type: string }
+    EvalRunJobId:
+      name: jobId
+      in: path
+      required: true
+      description: The run job id returned by `startEvalRun`.
       schema: { type: string }
     ToolName:
       name: name
@@ -1171,6 +1318,131 @@ components:
       properties:
         jobId: { type: string, description: Server-minted identifier of the queued run. }
         statusUrl: { type: string, description: Where to poll for this run's state. }
+
+    EvalDatasetsResponse:
+      type: object
+      required: [datasets]
+      properties:
+        datasets:
+          type: array
+          items: { type: string }
+          description: Dataset names this host serves. Empty when no roots are configured.
+          example: ["router-accuracy", "safety-refusals"]
+
+    StartEvalRunRequest:
+      type: object
+      description: >-
+        Deliberately narrower than the in-process `EvalRunOptions`. `InvocationOverrides` (a free
+        dictionary flowing into model invocation) and `ForceDeterministic` (local replay) are not on
+        the wire: omitting them means they cannot be sent, which is a stronger statement than
+        validating them away.
+      required: [datasets]
+      properties:
+        datasets:
+          type: array
+          items: { type: string }
+          minItems: 1
+          description: >-
+            Names as `listEvalDatasets` reports them - never file paths. Bounded by
+            `MaxDatasetsPerRun`.
+          example: ["router-accuracy"]
+        repeats:
+          type: integer
+          default: 1
+          description: >-
+            How many times each case is re-invoked, with median-across-repeats aggregation. Bounded
+            by `MaxRepeats`. Multiplies cost linearly.
+        parallelism:
+          type: integer
+          default: 1
+          description: How many cases run at once. Bounded by `MaxParallelism`.
+        tagFilter:
+          type: array
+          items: { type: string }
+          description: When non-empty, only cases carrying one of these tags run.
+        failRateThreshold:
+          type: number
+          format: double
+          default: 0
+          description: >-
+            Fraction of failed cases tolerated before the run's overall verdict is Fail. `0` is
+            strict - any failure fails the run.
+
+    StartEvalRunResponse:
+      type: object
+      required: [jobId, statusUrl]
+      properties:
+        jobId: { type: string, description: Server-minted identifier of the queued run. }
+        statusUrl: { type: string, description: Where to poll for this run's state and report. }
+
+    CancelEvalRunResponse:
+      type: object
+      required: [jobId, stopped]
+      properties:
+        jobId: { type: string }
+        stopped:
+          type: boolean
+          description: >-
+            `false` means the run was already executing and will run to completion - an evaluation in
+            flight cannot be interrupted.
+
+    EvalRunResponse:
+      type: object
+      description: >-
+        A projection of the stored run, not the record itself. The record carries the resolved
+        capability envelope and tenant - the host's authorization state, deliberately never echoed
+        back.
+      required: [jobId, status, datasets, createdAt]
+      properties:
+        jobId: { type: string }
+        status:
+          type: string
+          enum: [Queued, Running, Blocked, Succeeded, Failed, Cancelled]
+          description: >-
+            `Succeeded` means the evaluation **ran**, not that it passed. A failing suite is a
+            succeeded run whose report carries a `Fail` verdict.
+        datasets:
+          type: array
+          items: { type: string }
+          description: The datasets the run was asked to evaluate. Empty once the submission is reclaimed.
+        error:
+          type: string
+          nullable: true
+          description: Caller-safe failure reason. Never raw exception text.
+        createdAt: { type: string, format: date-time }
+        startedAt: { type: string, format: date-time, nullable: true }
+        completedAt: { type: string, format: date-time, nullable: true }
+        report:
+          allOf: [{ $ref: "#/components/schemas/EvalRunSummaryResponse" }]
+          nullable: true
+          description: Absent until the run has produced one.
+
+    EvalRunSummaryResponse:
+      type: object
+      description: >-
+        Counts and a verdict, not the per-case results - those hold every case's input and the
+        agent's full output.
+      required: [runId, verdict, passed, failed, warned, errored, passRate, duration, totalCostUsd, warnings]
+      properties:
+        runId:
+          type: string
+          description: The framework's identifier for the evaluation, as it appears in written reports.
+        verdict: { type: string, enum: [Pass, Warn, Fail] }
+        passed: { type: integer }
+        failed: { type: integer }
+        warned: { type: integer }
+        errored: { type: integer, description: Cases that could not be scored because execution errored. }
+        passRate: { type: number, format: double, description: Passed as a fraction of scored cases. }
+        duration: { type: string, description: ISO-8601 duration. }
+        totalCostUsd:
+          type: number
+          description: >-
+            Cumulative spend across every case, repeat, and metric. Included because it is the number
+            a caller most needs after triggering spend on the host's credentials.
+        warnings:
+          type: array
+          items: { type: string }
+          description: Advisory notes such as cost caveats. Never a failure reason.
 
     WorkflowRunResponse:
       type: object

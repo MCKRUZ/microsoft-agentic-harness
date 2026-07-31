@@ -710,6 +710,29 @@ The agent runs with exactly one tool: file_system.</code></pre>
                                 <td><code>200</code></td>
                                 <td>Cancels the run and withdraws any approval it was waiting on. <code>stopped: false</code> means signalled, not yet stopped. <code>409</code> if already terminal.</td>
                             </tr>
+                            <tr>
+                                <td colspan="3" style="background: rgba(127,127,127,0.08)"><strong>Evals</strong> — run the host's own test suites</td>
+                            </tr>
+                            <tr>
+                                <td><code>GET /api/evals/datasets</code></td>
+                                <td><code>200</code></td>
+                                <td>The names you are allowed to run. Empty list on a host with no dataset roots configured — that is the answer, not an error.</td>
+                            </tr>
+                            <tr>
+                                <td><code>POST /api/evals/runs</code></td>
+                                <td><code>202</code></td>
+                                <td>Body: <code>datasets</code> (names, never paths), optional <code>repeats</code>, <code>parallelism</code>, <code>tagFilter</code>, <code>failRateThreshold</code>. Returns a <code>jobId</code> and a <code>statusUrl</code>. <code>404</code> if a name is not one this host serves.</td>
+                            </tr>
+                            <tr>
+                                <td><code>GET /api/evals/runs/{jobId}</code></td>
+                                <td><code>200</code></td>
+                                <td>Status, plus counts/verdict/duration/cost once finished. Not the per-case transcripts.</td>
+                            </tr>
+                            <tr>
+                                <td><code>DELETE /api/evals/runs/{jobId}</code></td>
+                                <td><code>200</code></td>
+                                <td>Cancels a run that has not started. <code>stopped: false</code> means it was already executing and will finish — an eval in flight cannot be interrupted. <code>409</code> if already terminal.</td>
+                            </tr>
                         </tbody>
                     </table>
 
@@ -832,6 +855,92 @@ curl -sS -H "Authorization: Bearer $TOKEN" \
                         continuously</strong>. A token revoked mid-run keeps receiving until the run ends. The exposure
                         is bounded by the run's duration, and the frames carry nothing you could not already read from
                         the status endpoint — but it is a deliberate trade, not an oversight.
+                    </p>
+
+                    <h2 id="evals">Evals: running the host's own test suites</h2>
+                    <p>
+                        The other three surfaces run <em>your</em> work — your bundle, your workflow, your tool call.
+                        This one runs the host's. An evaluation suite is a file of test cases an operator has put on
+                        the server, and running it asks the harness to answer every case and score itself. You use it
+                        to check that a change to prompts, models, or tools did not make things worse.
+                    </p>
+                    <p>
+                        <strong>It is off unless someone turned it on.</strong> Every endpoint below <code>403</code>s
+                        until <code>AppConfig:AI:Evaluation:Enabled</code> is set, and the host refuses to start if that
+                        is set without at least one dataset root. There is a good reason for the double gate: a suite is
+                        hundreds of model calls billed to the host's own credentials, so it should never be something an
+                        authenticated caller discovers by guessing a URL.
+                    </p>
+
+                    <h3>You name a dataset; you never give a path</h3>
+                    <p>
+                        This is the part worth understanding, because it looks like an inconvenience and is actually the
+                        whole security design. The command underneath takes file paths — which is right for the
+                        command-line runner, where a developer points it at a file on their own machine. Over HTTP that
+                        same shape would mean every request carried a filesystem reference, and the only thing standing
+                        between a caller and reading <code>/etc/shadow</code> would be a check remembering to say no.
+                    </p>
+                    <p>
+                        So the wire contract has no path field at all. You send a <em>name</em>; the server finds the
+                        file by listing the directories an operator configured and matching what is actually there. A
+                        name cannot express &ldquo;outside those directories&rdquo;, so the dangerous request is not
+                        rejected — it cannot be written down. Ask for what is available first:
+                    </p>
+                    <div class="code-block">
+<pre><code>curl -sS -H "Authorization: Bearer $TOKEN" http://localhost:5000/api/evals/datasets
+# { "datasets": ["router-accuracy", "safety-refusals"] }</code></pre>
+                    </div>
+                    <p>
+                        Those names are the files sitting directly in a configured root, without their extensions.
+                        Subdirectories are not searched: a name with a slash in it would be a path again, just wearing a
+                        different hat.
+                    </p>
+
+                    <h3>Start a run, then poll it</h3>
+                    <div class="code-block">
+<pre><code>JOB_ID=$(curl -sS -X POST http://localhost:5000/api/evals/runs \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"datasets":["router-accuracy"],"repeats":3}' | jq -r .jobId)
+
+curl -sS -H "Authorization: Bearer $TOKEN" \
+  http://localhost:5000/api/evals/runs/$JOB_ID</code></pre>
+                    </div>
+                    <p>
+                        The <code>202</code> means the run was accepted, not that it finished — a suite takes as long as
+                        it takes. Once it is done the poll carries a <code>report</code>: how many cases passed, failed,
+                        warned, or errored, the overall verdict, how long it took, and what it cost in dollars.
+                    </p>
+                    <p>
+                        It does <em>not</em> carry the per-case transcripts. Those contain every test input and the
+                        agent's full response, which is a lot of data to put on a status check and more of the agent's
+                        output than any other endpoint here exposes. If you need transcripts, read the report files the
+                        evaluation framework writes on the server.
+                    </p>
+
+                    <div class="callout callout-warning">
+                        <p>
+                            <strong><code>Succeeded</code> does not mean everything passed.</strong> It means the
+                            evaluation <em>ran</em>. A suite where every case failed is still a succeeded run — one
+                            whose report says <code>"verdict": "Fail"</code>. The distinction matters: if the two were
+                            collapsed you could not tell &ldquo;my prompt change broke things&rdquo; from &ldquo;the
+                            host is broken and never answered me&rdquo;.
+                        </p>
+                    </div>
+
+                    <h3>Two limits to know about</h3>
+                    <p>
+                        <strong>Cost is capped before anything runs, not interrupted afterwards.</strong> The host
+                        multiplies the number of cases by your <code>repeats</code> and refuses the whole run if that
+                        exceeds <code>MaxCaseExecutionsPerRun</code>. It refuses rather than quietly running a subset,
+                        because a pass rate for a suite that only half-ran is worse than no answer.
+                    </p>
+                    <p>
+                        <strong>Cancelling only works before the run starts.</strong> <code>DELETE</code> on a queued
+                        run stops it. On a run already executing you get <code>200</code> with
+                        <code>"stopped": false</code>, and it finishes anyway. That is deliberate honesty rather than a
+                        gap: a workflow can be signalled to stop mid-flight, an evaluation cannot, and telling you it
+                        had stopped when the spend was still accruing would be the worse answer. The real protection is
+                        the cost cap above.
                     </p>
 
                     <h2 id="two-ways">Two ways to get the output</h2>
@@ -1049,6 +1158,22 @@ curl -sS -H "Authorization: Bearer $TOKEN" \
                             <tr><td><code>Envelopes</code></td><td>fail-closed</td><td>The per-caller grant table (see above).</td></tr>
                             <tr><td><code>Auth:TenantId</code> / <code>Auth:ClientId</code></td><td>unset</td><td>This API's own Entra audience. Supply both or neither.</td></tr>
                             <tr><td><code>Auth:AllowAnonymous</code></td><td><code>false</code></td><td>Explicit local-development opt-in. Cannot be combined with a configured scheme.</td></tr>
+                        </tbody>
+                    </table>
+
+                    <p>
+                        The eval endpoints read a separate section, <code>AppConfig:AI:Evaluation</code>.
+                    </p>
+                    <table>
+                        <thead><tr><th>Key</th><th>Default</th><th>Purpose</th></tr></thead>
+                        <tbody>
+                            <tr><td><code>Enabled</code></td><td><code>false</code></td><td>Master toggle for <code>/api/evals</code>. Off ⇒ every endpoint <code>403</code>s.</td></tr>
+                            <tr><td><code>DatasetRoots</code></td><td><code>[]</code></td><td>Directories datasets may be read from. Use absolute paths. <strong>Setting <code>Enabled</code> without any root refuses to start.</strong></td></tr>
+                            <tr><td><code>MaxDatasetsPerRun</code></td><td><code>10</code></td><td>Datasets one run may name.</td></tr>
+                            <tr><td><code>MaxCaseExecutionsPerRun</code></td><td><code>500</code></td><td>Cases × repeats — what the run actually costs. Refuses, never truncates.</td></tr>
+                            <tr><td><code>MaxDatasetBytes</code></td><td><code>5242880</code></td><td>Checked before the file is opened, so an oversized dataset is never parsed.</td></tr>
+                            <tr><td><code>MaxRepeats</code></td><td><code>50</code></td><td>Ceiling on <code>repeats</code>.</td></tr>
+                            <tr><td><code>MaxParallelism</code></td><td><code>128</code></td><td>Ceiling on <code>parallelism</code>.</td></tr>
                         </tbody>
                     </table>
 

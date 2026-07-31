@@ -36,6 +36,16 @@ It is a composition root, exactly like `Presentation.AgentHub`: `builder.Service
 │  │  GET    /{name}                  → IToolCatalog.FindGranted (404 both  │ │
 │  │                                    for absent AND ungranted)           │ │
 │  └───────────────────────────────┬────────────────────────────────────────┘ │
+│  ┌───────────────────────────────┴────────────────────────────────────────┐ │
+│  │  EvalsController  [Authorize]  /api/evals    ← off unless Enabled      │ │
+│  │                                                                        │ │
+│  │  GET    /datasets                → IEvalDatasetCatalog.ListNames       │ │
+│  │  POST   /runs                    → StartEvalRunCommand ← envelope bound│ │
+│  │  GET    /runs/{jobId}            → GetEvalRunQuery (status + report)   │ │
+│  │  DELETE /runs/{jobId}            → CancelEvalRunCommand                │ │
+│  │                                                                        │ │
+│  │  Datasets are NAMED, never pathed — see "Evaluation" below             │ │
+│  └───────────────────────────────┬────────────────────────────────────────┘ │
 └──────────────────────────────────┼──────────────────────────────────────────┘
                                    │ MediatR (validation + audit behaviors)
                                    ▼
@@ -119,14 +129,17 @@ Presentation.ExecutionApi/
 ├── Controllers/
 │   ├── BundlesController.cs         The five endpoints; resolves the envelope; maps Result → ProblemDetails
 │   ├── WorkflowsController.cs       Workflow submission, runs, progress stream, cancel
-│   └── ToolsController.cs           Read-only tool discovery, filtered by the caller's envelope
+│   ├── ToolsController.cs           Read-only tool discovery, filtered by the caller's envelope
+│   └── EvalsController.cs            Dataset listing + eval runs; names on the wire, never paths
 ├── DTOs/
 │   ├── BundleApiContracts.cs        Register/Start/Run responses; BundleRunResponse projects the record
 │   ├── WorkflowRunContracts.cs      Run start/cancel/status projections
-│   └── ToolCatalogContracts.cs      Catalog entry + listing; RiskTier travels as a name, not an ordinal
+│   ├── ToolCatalogContracts.cs      Catalog entry + listing; RiskTier travels as a name, not an ordinal
+│   └── EvalRunContracts.cs          Eval request/response; report projects counts + cost, never transcripts
 ├── Extensions/
 │   ├── ExecutionApiServiceCollectionExtensions.cs   Controllers, auth, FormOptions cap, rate limiters
-│   └── ExecutionApiEvaluationExtensions.cs          Opt-in eval framework; throws if enabled without roots
+│   └── ExecutionApiEvaluationExtensions.cs          Opt-in eval framework + RunKind.Evaluation executor;
+│                                                    throws if enabled without roots
 ├── Services/
 │   ├── BundleCallerIdentity.cs      Stable per-caller id (oid → objectidentifier → nameid → sub)
 │   ├── AnonymousAuthenticationHandler.cs
@@ -207,6 +220,49 @@ eval dispatch and record whatever a `reloadOnChange` had done to the config by t
 > place a *hard* link there (no target to resolve, indistinguishable from an ordinary file), or swap a
 > file for a symlink between the check and the open. Confinement bounds which **paths** a caller may
 > name; it cannot bound what a writable directory turns out to contain.
+
+#### The HTTP surface: names, not paths
+
+`RunEvalSuiteCommand` takes dataset **paths**, which is right for the CLI — a developer pointing the
+runner at a file on their own machine. `/api/evals` never exposes that shape. A caller names a
+dataset; `IEvalDatasetCatalog` maps the name to a file by **enumerating** the configured roots and
+matching, never by concatenating the name onto a root. The distinction is the whole design:
+
+- **There is no path field on the wire.** A name cannot express "outside the roots", so the dangerous
+  request is *unrepresentable* rather than rejected. The guard still runs underneath, so a future
+  caller that reintroduced a path would still be confined — the wire shape makes the attack unsayable,
+  the guard makes it ineffective.
+- **A dataset is whatever an operator put at the top level of a root.** Not recursive: a name carrying
+  structure would be a path with extra steps, needing to be split, rejoined and validated. Operators
+  organise by root, not by folder.
+- **No roots ⇒ no catalog.** `GET /datasets` answers empty rather than enumerating the working
+  directory. Listing is a disclosure, and there is nothing bounded to disclose until an operator says
+  what the bounds are.
+- **`Resolve` cannot distinguish "unknown" from "malformed".** Both answer nothing, for the same
+  reason the guard's refusals do not distinguish forbidden from absent.
+
+Runs execute on the **shared run substrate** (`RunKind.Evaluation`), not inline: a suite is hundreds
+of governed agent turns at the default ceilings, so `POST /runs` answers 202 with a job id. Three
+properties are worth knowing:
+
+| Property | Why |
+|----------|-----|
+| The caller's `CapabilityEnvelope` is armed around the evaluation | Every case is a governed agent turn that can invoke tools. Without it, a caller reaches tools it is denied directly by putting them in an eval case |
+| `TargetId` is the run's own job id | Admission refuses a second live run per target — right for a workflow's shared plan state, wrong for evaluations, which share nothing. A per-run target makes the check correctly inert here instead of switching it off where it also governs workflows |
+| The per-owner ceiling is `AI:WorkflowSubmission:MaxConcurrentRunsPerOwner` | The store's counter is cross-kind, and the substrate's other knobs (`RunRecordTtl`, sweep interval) already live in that section. The name reads narrower than what it governs; a second ceiling on the same counter would mean the limit binding a caller depended on which endpoint they last called |
+
+**Cancelling is weaker than on the workflow path, deliberately.** A queued run is cancelled exactly; a
+run already executing answers `200` with `stopped: false`. A workflow in flight can be signalled
+through `IPlanRunCancellationRegistry`; an evaluation is a suite of agent turns with no equivalent, so
+the honest answer is to report that rather than claim an interruption that will not happen. What
+bounds a runaway suite is `MaxCaseExecutionsPerRun`, applied *before* any case runs.
+
+**A run's report lives beside its record, not on it.** `RunRecord` is deliberately kind-agnostic, so
+`IEvalRunSubmissionStore` holds the dataset names and the report, keyed by the same job id and
+reclaimed by the same sweep — through `IRunReclaimListener`, so the sweeper does not grow a dependency
+per run kind. `GET /runs/{jobId}` returns counts, verdict, duration and cost, **not** per-case results:
+those hold every case's input and the agent's full output, which is not something a status poll should
+carry.
 
 ## How to Run
 
@@ -299,6 +355,14 @@ consumers cannot tell which third is missing.
 | `BundleCallerIdentityTests.cs` | Claim-precedence for the stable id |
 | `ToolsControllerIntegrationTests.cs` | Envelope-filtered discovery, 404 for ungranted, 401 against a configured host, and that every catalogued name resolves to a tool agreeing with it |
 | `ExecutionApiEvaluationEnablementTests.cs` | The evaluation opt-in: default leaves the fail-fast runner, enabled-without-roots refuses to boot, blank roots do not satisfy it |
+| `EvalRunsIntegrationTests.cs` | That `/api/evals` is mounted, closed to anonymous callers on every route, and serves nothing while evaluation is disabled -- the default this host ships with |
+
+Evaluation's behaviour once *enabled* -- admission, ownership, reports, cancellation -- is covered in
+`Infrastructure.AI.Evaluation.Tests/Runs/EvalRunHandlerTests.cs` against the real run and submission
+stores, which can drive it without standing up an agent and a model provider. `EvalDatasetCatalogTests`
+covers name resolution against real directories, deliberately: the property under test is that
+resolution happens by *enumerating what is there*, and a faked filesystem would pass just as happily
+against an implementation that concatenated the name onto a root.
 
 ```bash
 dotnet test src/Content/Tests/Presentation.ExecutionApi.Tests
