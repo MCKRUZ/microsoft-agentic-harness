@@ -14,6 +14,7 @@ It is a composition root, exactly like `Presentation.AgentHub`: `builder.Service
 │                                                                              │
 │  Program.cs → GetServices(includeHealthChecksUI: false)                      │
 │             → AddExecutionApiServices(configuration)                            │
+│             → AddExecutionApiEvaluation(configuration)  ← opt-in, fail-closed │
 │             → UseDefaultServiceProvider(ApplyValidationPolicy)  ← all envs   │
 │                                                                              │
 │  Middleware: SecurityHeaders → GlobalException → [HSTS/HTTPS] → Routing      │
@@ -124,7 +125,8 @@ Presentation.ExecutionApi/
 │   ├── WorkflowRunContracts.cs      Run start/cancel/status projections
 │   └── ToolCatalogContracts.cs      Catalog entry + listing; RiskTier travels as a name, not an ordinal
 ├── Extensions/
-│   └── ExecutionApiServiceCollectionExtensions.cs   Controllers, auth, FormOptions cap, rate limiters
+│   ├── ExecutionApiServiceCollectionExtensions.cs   Controllers, auth, FormOptions cap, rate limiters
+│   └── ExecutionApiEvaluationExtensions.cs          Opt-in eval framework; throws if enabled without roots
 ├── Services/
 │   ├── BundleCallerIdentity.cs      Stable per-caller id (oid → objectidentifier → nameid → sub)
 │   ├── AnonymousAuthenticationHandler.cs
@@ -161,6 +163,50 @@ Everything lives under `AppConfig:AI:BundleExecution` (`Domain.Common/Config/AI/
 | `Auth:AllowAnonymous` | `false` | Explicit local-dev opt-in; `Environment=Development` alone does not disable auth |
 
 The shipped `appsettings.json` sets `Enabled: true` with an empty `Auth` block, so it boots only in Development — where the shipped `appsettings.Development.json` opts into anonymous auth. Every other environment fails closed at startup until a real scheme is configured.
+
+### Evaluation (`AppConfig:AI:Evaluation`)
+
+Separate section, separate opt-in. The evaluation framework is **not** wired by `GetServices()` — a
+host that never evaluates should not carry the YAML loader, the metric singletons, the reporters, and
+the harness agent invoker on every cold start. `AddExecutionApiEvaluation` adds them, and runs
+*after* `AddExecutionApiServices` so the real `IEvalRunner` replaces the fail-fast
+`NotConfiguredEvalRunner` by last-write-wins.
+
+| Key | Default | Notes |
+|-----|---------|-------|
+| `Enabled` | `false` | Off ⇒ framework unregistered; any dispatch hits `NotConfiguredEvalRunner` and throws loudly rather than appearing to work |
+| `DatasetRoots` | `[]` | Directories dataset files may be read from. **Empty means unconfined.** Use absolute paths — a relative entry resolves against the working directory, not the content root. Blank entries are dropped |
+| `MaxDatasetBytes` | 5 MiB | Checked before the file is opened, so an oversized dataset is never parsed |
+| `MaxDatasetsPerRun` | 10 | Enforced by the validator |
+| `MaxCaseExecutionsPerRun` | 500 | Cases **× `Repeats`** — what the run actually costs. Counted before tag filtering (over-estimates, so it errs toward refusing); enforced by the handler |
+| `MaxRepeats` | 50 | Was the validator's hard-coded bound |
+| `MaxParallelism` | 128 | Previously enforced **only** by the EvalRunner CLI's argument parsing |
+
+> **`Enabled: true` with no usable `DatasetRoots` throws at startup.** This is deliberate, and it is
+> the whole reason the section exists. Evaluation reads dataset files named by the caller; with no
+> roots configured that is unconfined — correct for the CLI on a developer's own machine, and an
+> arbitrary-file-read probe on a host anyone else can reach. A host that booted anyway would *look*
+> configured while honouring whatever path it was sent. Whitespace-only entries do not count: a gate
+> you can tick with a space is not a gate.
+
+Confinement itself lives in `EvalDatasetPathGuard`, applied by `RunEvalSuiteCommandHandler` rather
+than by each caller — a check every dispatcher must remember to perform is one that will eventually
+be skipped. It canonicalises before comparing (so `..` cannot walk out), resolves symlinks to their
+final target (a link inside a root can point anywhere), and compares against the root **plus a
+separator** (without it, `/data/evals-secret` reads as inside `/data/evals`). Refusals do not
+distinguish *forbidden* from *absent*, or the endpoint becomes a filesystem oracle.
+
+**Confinement ratchets.** Adding a root at runtime tightens immediately; emptying the list refuses
+everything rather than returning to unconfined. That verdict is latched at composition time by
+`AddExecutionApiEvaluation` (as an `EvalConfinementLatch`) rather than derived inside the guard,
+because the guard is a lazy singleton — a latch it computed for itself would first run on the initial
+eval dispatch and record whatever a `reloadOnChange` had done to the config by then.
+
+> **Deployment invariant — a configured root must not be writable by anyone you would not already let
+> read arbitrary files.** This one cannot be enforced in code. Anyone who can write inside a root can
+> place a *hard* link there (no target to resolve, indistinguishable from an ordinary file), or swap a
+> file for a symlink between the check and the open. Confinement bounds which **paths** a caller may
+> name; it cannot bound what a writable directory turns out to contain.
 
 ## How to Run
 
@@ -251,6 +297,8 @@ consumers cannot tell which third is missing.
 | `BundleRunStreamerTests.cs` | Frame sequencing, terminal-frame exclusivity, sink cleanup |
 | `ExecutionApiAuthenticationTests.cs` | The three fail-closed startup guards |
 | `BundleCallerIdentityTests.cs` | Claim-precedence for the stable id |
+| `ToolsControllerIntegrationTests.cs` | Envelope-filtered discovery, 404 for ungranted, 401 against a configured host, and that every catalogued name resolves to a tool agreeing with it |
+| `ExecutionApiEvaluationEnablementTests.cs` | The evaluation opt-in: default leaves the fail-fast runner, enabled-without-roots refuses to boot, blank roots do not satisfy it |
 
 ```bash
 dotnet test src/Content/Tests/Presentation.ExecutionApi.Tests

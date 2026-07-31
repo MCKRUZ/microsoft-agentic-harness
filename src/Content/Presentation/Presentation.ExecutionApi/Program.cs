@@ -14,6 +14,16 @@ builder.Services.GetServices(includeHealthChecksUI: false);
 // and per-path rate limiting.
 builder.Services.AddExecutionApiServices(builder.Configuration);
 
+// Evaluation framework — opt-in, and registered AFTER GetServices so its real IEvalRunner wins over the
+// fail-fast NotConfiguredEvalRunner default (last-write-wins, the documented pattern in
+// Presentation.Common/Extensions/IServiceCollectionExtensions.cs).
+//
+// Fail-closed on the dataset roots. Evaluation reads files named by the caller, and with no roots configured
+// that is unconfined by design — correct for the EvalRunner CLI on a developer's machine, and an
+// arbitrary-file-read probe on a host reachable by anyone else. Refusing to start is the honest response:
+// booting anyway would leave a host that looks configured and reads whatever it is asked for.
+builder.Services.AddExecutionApiEvaluation(builder.Configuration);
+
 // Enforce the harness's boot-time DI validation policy (ValidateScopes + ValidateOnBuild) in ALL environments,
 // single-sourced so hosts cannot drift: it catches captive dependencies and turns a mis-wired handler into a
 // caught-at-startup failure rather than a first-dispatch crash.

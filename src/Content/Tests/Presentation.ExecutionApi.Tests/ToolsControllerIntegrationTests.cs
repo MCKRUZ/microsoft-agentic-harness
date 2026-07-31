@@ -206,13 +206,17 @@ public sealed class ToolsControllerIntegrationTests
     {
         var keys = new List<string>();
 
-        factory.WithWebHostBuilder(builder => builder.ConfigureServices(services =>
+        // WithWebHostBuilder returns a NEW factory owning its own TestServer and host, so it has to be
+        // disposed — the derived one, not the caller's.
+        using var derived = factory.WithWebHostBuilder(builder => builder.ConfigureServices(services =>
             keys.AddRange(services
                 .Where(descriptor => descriptor.IsKeyedService && descriptor.ServiceType == typeof(ITool))
                 .Select(descriptor => descriptor.ServiceKey as string)
                 .Where(key => !string.IsNullOrWhiteSpace(key))
-                .Select(key => key!))))
-            .Services.GetService<IToolCatalog>();
+                .Select(key => key!))));
+
+        // Forces the host to build so ConfigureServices above actually runs.
+        derived.Services.GetService<IToolCatalog>();
 
         return keys;
     }
