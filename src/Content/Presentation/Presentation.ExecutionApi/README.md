@@ -37,7 +37,7 @@ It is a composition root, exactly like `Presentation.AgentHub`: `builder.Service
 │  │                                    for absent AND ungranted)           │ │
 │  └───────────────────────────────┬────────────────────────────────────────┘ │
 │  ┌───────────────────────────────┴────────────────────────────────────────┐ │
-│  │  EvalsController  [Authorize]  /api/evals    ← off unless Enabled      │ │
+│  │  EvalsController  /api/evals    ← role-gated, off unless Enabled       │ │
 │  │                                                                        │ │
 │  │  GET    /datasets                → IEvalDatasetCatalog.ListNames       │ │
 │  │  POST   /runs                    → StartEvalRunCommand ← envelope bound│ │
@@ -241,6 +241,19 @@ matching, never by concatenating the name onto a root. The distinction is the wh
 - **`Resolve` cannot distinguish "unknown" from "malformed".** Both answer nothing, for the same
   reason the guard's refusals do not distinguish forbidden from absent.
 
+**This surface is role-gated, unlike every other route this host serves.** Bundles, workflows and
+tool discovery all run the *caller's own* work under the caller's own grant; this one spends the
+host's model budget on the operator's suites. That is a different kind of authority from holding a
+valid token, so it carries `Harness.Evals.Execute`, following the same `Harness.<area>.<verb>`
+convention as `Harness.Drift.Operate`. One role covers the whole surface rather than a read/execute
+split: the read endpoints only ever answer about the caller's *own* runs, so a reader who cannot
+start one has nothing to read. The anonymous development principal is granted the role so a local
+developer can exercise the surface at all -- that mode is an explicit opt-in that already boots with
+a warning.
+
+The role decides *whether you may evaluate*; ownership still decides *which runs are yours*. Holding
+it does not let a caller read another's run.
+
 Runs execute on the **shared run substrate** (`RunKind.Evaluation`), not inline: a suite is hundreds
 of governed agent turns at the default ceilings, so `POST /runs` answers 202 with a job id. Three
 properties are worth knowing:
@@ -256,6 +269,13 @@ run already executing answers `200` with `stopped: false`. A workflow in flight 
 through `IPlanRunCancellationRegistry`; an evaluation is a suite of agent turns with no equivalent, so
 the honest answer is to report that rather than claim an interruption that will not happen. What
 bounds a runaway suite is `MaxCaseExecutionsPerRun`, applied *before* any case runs.
+
+**A finished run's report is filed in-process.** The executor dispatches `IngestEvalRunCommand`
+itself, which is what a server-side run buys over the CLI -- the CLI produces a report and posts it
+back over HTTP to be ingested, and a run already executing inside the host has no reason to leave the
+process to file its own result. A failed ingest is logged and never fails the run: the evaluation
+ran, the spend is incurred, and marking it failed would invite a retry that pays for the whole suite
+again to fix a bookkeeping problem.
 
 **A run's report lives beside its record, not on it.** `RunRecord` is deliberately kind-agnostic, so
 `IEvalRunSubmissionStore` holds the dataset names and the report, keyed by the same job id and

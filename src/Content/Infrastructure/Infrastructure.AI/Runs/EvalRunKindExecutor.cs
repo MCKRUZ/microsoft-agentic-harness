@@ -1,7 +1,9 @@
+using Application.AI.Common.CQRS.Evaluation.IngestEvalRun;
 using Application.AI.Common.Interfaces.Evaluation;
 using Application.AI.Common.Interfaces.Runs;
 using Application.AI.Common.Services.Governance;
 using Application.Core.CQRS.Evaluation.RunEvalSuite;
+using Domain.AI.Evaluation;
 using Domain.AI.Runs;
 using Domain.Common;
 using MediatR;
@@ -72,23 +74,18 @@ public sealed class EvalRunKindExecutor : IRunKindExecutor
             return Result<RunCompletion>.Fail("The run's evaluation request could not be read.");
         }
 
-        var paths = new List<string>(submission.DatasetNames.Count);
-        foreach (var name in submission.DatasetNames)
+        var resolution = _catalog.Resolve(submission.DatasetNames);
+        if (!resolution.IsComplete)
         {
-            var path = _catalog.Resolve(name);
-            if (path is null)
-            {
-                // The name resolved when the run was accepted and does not now — the file was removed
-                // or a root was reconfigured in between. The caller is told which name, because it is
-                // one they supplied and one they can act on; nothing about the filesystem is disclosed
-                // by naming it back.
-                _logger.LogWarning(
-                    "Run {JobId} names dataset {Dataset}, which no longer resolves.", record.JobId, name);
+            // The name resolved when the run was accepted and does not now — the file was removed or a
+            // root was reconfigured in between. Failing the whole run rather than skipping the dataset:
+            // a suite quietly evaluated without one of its parts reports a pass rate for something that
+            // never ran.
+            _logger.LogWarning(
+                "Run {JobId} names dataset {Dataset}, which no longer resolves.",
+                record.JobId, resolution.MissingName);
 
-                return Result<RunCompletion>.Fail($"Dataset '{name}' is no longer available.");
-            }
-
-            paths.Add(path);
+            return Result<RunCompletion>.Fail($"Dataset '{resolution.MissingName}' is no longer available.");
         }
 
         // The caller's grant is armed for the whole evaluation, exactly as PlanRunExecutor arms it for
@@ -106,7 +103,7 @@ public sealed class EvalRunKindExecutor : IRunKindExecutor
         var outcome = await _mediator.Send(
             new RunEvalSuiteCommand
             {
-                DatasetPaths = paths,
+                DatasetPaths = resolution.Paths,
                 Options = submission.Options
             },
             cancellationToken).ConfigureAwait(false);
@@ -133,6 +130,8 @@ public sealed class EvalRunKindExecutor : IRunKindExecutor
                 record.JobId);
         }
 
+        await IngestAsync(record.JobId, report, cancellationToken).ConfigureAwait(false);
+
         // Succeeded means the suite ran, not that it passed. A run whose cases mostly failed is a
         // completed evaluation with a Fail verdict in its report, and collapsing the two would leave a
         // caller unable to tell a failing suite from a broken host — the first is the answer they asked
@@ -144,5 +143,56 @@ public sealed class EvalRunKindExecutor : IRunKindExecutor
             report.OverallVerdict);
 
         return Result<RunCompletion>.Success(RunCompletion.Succeeded());
+    }
+
+    /// <summary>
+    /// Files the report into the durable eval store the dashboard reads, in-process.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is what a server-side run buys over the CLI: the CLI produces a report and then posts it
+    /// back over HTTP to be ingested, and a run that already executes inside the host has no reason to
+    /// leave the process to file its own result. Without this the report lives only in the submission
+    /// store and disappears with it at <c>RunRecordTtl</c> — an evaluation whose history no dashboard
+    /// ever sees, which is most of the reason to keep evaluations at all.
+    /// </para>
+    /// <para>
+    /// <strong>A failed ingest does not fail the run.</strong> The evaluation ran, the spend is already
+    /// incurred, and the caller can still read the report from its own run. Marking the run failed
+    /// would misreport the work, and would invite a retry that pays for the whole suite again to fix a
+    /// bookkeeping problem. It is logged at warning because a silently unrecorded run is exactly the
+    /// kind of gap that is invisible until someone asks why the dashboard is missing a week.
+    /// </para>
+    /// <para>
+    /// Ingest is idempotent on <c>RunId</c>, so a re-dispatched run cannot double-count.
+    /// </para>
+    /// </remarks>
+    private async Task IngestAsync(string jobId, EvalRunReport report, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var ingested = await _mediator
+                .Send(new IngestEvalRunCommand { Report = report }, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (!ingested.IsSuccess)
+            {
+                _logger.LogWarning(
+                    "Run {JobId} produced report {RunId} but it could not be recorded for the "
+                    + "dashboard: {Errors}",
+                    jobId, report.RunId, string.Join("; ", ingested.Errors));
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            // A host that has not registered the eval store at all reaches here rather than taking the
+            // run down with it. The evaluation still succeeded.
+            _logger.LogWarning(
+                ex, "Run {JobId} produced report {RunId} but ingest threw.", jobId, report.RunId);
+        }
     }
 }

@@ -60,7 +60,7 @@ public sealed class EvalDatasetCatalogTests : IDisposable
     {
         var path = WriteDataset(_root, "alpha.yaml");
 
-        Catalog(_root).Resolve("alpha").Should().Be(path);
+        Catalog(_root).Resolve(["alpha"]).Paths.Should().ContainSingle().Which.Should().Be(path);
     }
 
     [Fact]
@@ -88,7 +88,7 @@ public sealed class EvalDatasetCatalogTests : IDisposable
         // still name a dataset and have it resolve.
         WriteDataset(_root, "alpha.yaml");
 
-        Catalog().Resolve("alpha").Should().BeNull();
+        Catalog().Resolve(["alpha"]).IsComplete.Should().BeFalse();
     }
 
     [Theory]
@@ -106,7 +106,7 @@ public sealed class EvalDatasetCatalogTests : IDisposable
         WriteDataset(_second, "beta.yaml");
         WriteDataset(_root, "alpha.yaml");
 
-        Catalog(_root).Resolve(name).Should().BeNull();
+        Catalog(_root).Resolve([name]).IsComplete.Should().BeFalse();
     }
 
     [Theory]
@@ -120,7 +120,32 @@ public sealed class EvalDatasetCatalogTests : IDisposable
         WriteDataset(_root, "alpha.yaml");
         WriteDataset(Directory.CreateDirectory(Path.Combine(_root, "sub")).FullName, "alpha.yaml");
 
-        Catalog(_root).Resolve(name).Should().BeNull();
+        Catalog(_root).Resolve([name]).IsComplete.Should().BeFalse();
+    }
+
+    [Fact]
+    public void Resolved_paths_come_back_in_the_order_the_names_were_given()
+    {
+        // The paths are handed straight to the eval command, whose report is ordered by dataset. A
+        // resolution that reordered them would silently mislabel which suite produced which result.
+        var alpha = WriteDataset(_root, "alpha.yaml");
+        var zeta = WriteDataset(_root, "zeta.yaml");
+
+        Catalog(_root).Resolve(["zeta", "alpha"]).Paths.Should().ContainInOrder(zeta, alpha);
+    }
+
+    [Fact]
+    public void One_unknown_name_makes_the_whole_set_unresolved()
+    {
+        // All of them or none: a suite quietly evaluated without one of its datasets reports a pass
+        // rate for something that never ran. The caller is told which name so it can act on it.
+        WriteDataset(_root, "alpha.yaml");
+
+        var resolution = Catalog(_root).Resolve(["alpha", "nonexistent"]);
+
+        resolution.IsComplete.Should().BeFalse();
+        resolution.MissingName.Should().Be("nonexistent");
+        resolution.Paths.Should().BeEmpty("a partial answer invites a caller to run part of a suite");
     }
 
     [Fact]
@@ -134,7 +159,7 @@ public sealed class EvalDatasetCatalogTests : IDisposable
         var catalog = Catalog(_root);
 
         catalog.ListNames().Should().BeEmpty();
-        catalog.Resolve("buried").Should().BeNull();
+        catalog.Resolve(["buried"]).IsComplete.Should().BeFalse();
     }
 
     [Fact]
@@ -142,7 +167,7 @@ public sealed class EvalDatasetCatalogTests : IDisposable
     {
         WriteDataset(_root, "alpha.yaml");
 
-        Catalog(_root).Resolve("nonexistent").Should().BeNull();
+        Catalog(_root).Resolve(["nonexistent"]).IsComplete.Should().BeFalse();
     }
 
     [Fact]
@@ -150,7 +175,7 @@ public sealed class EvalDatasetCatalogTests : IDisposable
     {
         WriteDataset(_root, "alpha.yaml");
 
-        Catalog(_root).Resolve("   ").Should().BeNull();
+        Catalog(_root).Resolve(["   "]).IsComplete.Should().BeFalse();
     }
 
     [Fact]
@@ -170,7 +195,7 @@ public sealed class EvalDatasetCatalogTests : IDisposable
         var first = WriteDataset(_root, "alpha.yaml");
         WriteDataset(_second, "alpha.yaml");
 
-        Catalog(_root, _second).Resolve("alpha").Should().Be(first);
+        Catalog(_root, _second).Resolve(["alpha"]).Paths.Should().ContainSingle().Which.Should().Be(first);
     }
 
     [Fact]
@@ -221,7 +246,7 @@ public sealed class EvalDatasetCatalogTests : IDisposable
             Monitor(_root), guard.Object, NullLogger<EvalDatasetCatalog>.Instance);
 
         catalog.ListNames().Should().BeEmpty();
-        catalog.Resolve("alpha").Should().BeNull();
+        catalog.Resolve(["alpha"]).IsComplete.Should().BeFalse();
     }
 
     private EvalDatasetCatalog Catalog(params string[] roots) => new(

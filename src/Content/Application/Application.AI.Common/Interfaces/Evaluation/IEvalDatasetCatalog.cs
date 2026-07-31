@@ -32,13 +32,60 @@ public interface IEvalDatasetCatalog
     /// </returns>
     IReadOnlyList<string> ListNames();
 
-    /// <summary>Resolves one dataset name to the absolute file path it stands for.</summary>
-    /// <param name="name">The dataset name, as it appears in <see cref="ListNames"/>.</param>
-    /// <returns>
-    /// The absolute path, or <see langword="null"/> when the name is not one this host serves —
-    /// including when it is malformed. The two are deliberately indistinguishable, for the same reason
-    /// the path guard's refusals are: telling a caller which of their guesses was a <em>valid</em> name
-    /// that simply does not exist turns the endpoint into an oracle.
-    /// </returns>
-    string? Resolve(string name);
+    /// <summary>
+    /// Resolves a whole set of names to the files they stand for, against one view of the roots.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>The set, not one name at a time.</strong> Resolving is not free: an implementation
+    /// answers by enumerating — this interface requires it — so it walks every configured root and
+    /// confines every file it finds. Asking name by name repeats that walk once per name.
+    /// </para>
+    /// <para>
+    /// It is also the more correct question. Name-at-a-time resolution reads the filesystem at as many
+    /// instants as there are names, so a run could be admitted against a set of files that never
+    /// existed together.
+    /// </para>
+    /// <para>
+    /// <strong>It answers "which one is missing", not just "here is what I found".</strong> Every
+    /// caller needs the same thing — all of them or none, because a suite silently evaluated without
+    /// one of its datasets reports a pass rate for something that never ran. Returning a partial map
+    /// left each caller to rediscover that rule, and both of them wrote the same three lines to do it.
+    /// </para>
+    /// </remarks>
+    /// <param name="names">The names to resolve. Duplicates are permitted.</param>
+    EvalDatasetResolution Resolve(IReadOnlyList<string> names);
+}
+
+/// <summary>
+/// The outcome of resolving a set of dataset names: every file, or the first name that is not one
+/// this host serves.
+/// </summary>
+/// <remarks>
+/// The missing name is carried back so a caller can say which one it was. That is safe to disclose —
+/// it is a name the caller supplied, and it reveals nothing about the filesystem. It says nothing
+/// about <em>why</em>: an unknown name and a malformed one are the same answer, for the same reason
+/// the path guard's refusals do not distinguish forbidden from absent.
+/// </remarks>
+public sealed record EvalDatasetResolution
+{
+    /// <summary>
+    /// The absolute paths, in the order the names were given. Empty unless every name resolved.
+    /// </summary>
+    public IReadOnlyList<string> Paths { get; init; } = [];
+
+    /// <summary>The first name that did not resolve, or <see langword="null"/> when all of them did.</summary>
+    public string? MissingName { get; init; }
+
+    /// <summary>Whether every name resolved.</summary>
+    public bool IsComplete => MissingName is null;
+
+    /// <summary>Every name resolved.</summary>
+    /// <param name="paths">The resolved paths, in the order the names were given.</param>
+    public static EvalDatasetResolution Complete(IReadOnlyList<string> paths) => new() { Paths = paths };
+
+    /// <summary>One name did not resolve, so the set is unusable.</summary>
+    /// <param name="missingName">The name this host does not serve.</param>
+    public static EvalDatasetResolution Missing(string missingName) =>
+        new() { MissingName = missingName };
 }

@@ -865,11 +865,17 @@ curl -sS -H "Authorization: Bearer $TOKEN" \
                         to check that a change to prompts, models, or tools did not make things worse.
                     </p>
                     <p>
-                        <strong>It is off unless someone turned it on.</strong> Every endpoint below <code>403</code>s
-                        until <code>AppConfig:AI:Evaluation:Enabled</code> is set, and the host refuses to start if that
-                        is set without at least one dataset root. There is a good reason for the double gate: a suite is
-                        hundreds of model calls billed to the host's own credentials, so it should never be something an
-                        authenticated caller discovers by guessing a URL.
+                        <strong>It is off unless someone turned it on, and gated on a role.</strong> Every endpoint
+                        below <code>403</code>s until <code>AppConfig:AI:Evaluation:Enabled</code> is set, and the host
+                        refuses to start if that is set without at least one dataset root. On top of that you need the
+                        <code>Harness.Evals.Execute</code> role &mdash; this is the only surface in this chapter that
+                        asks for one. The reason is that every other route runs <em>your</em> work on <em>your</em>
+                        grant, whereas this one spends the host's model budget on the operator's suites. Holding a valid
+                        token is not the same authority as being allowed to do that.
+                    </p>
+                    <p>
+                        The role does not change ownership: it decides whether you may evaluate at all, and you still
+                        only ever see your own runs.
                     </p>
 
                     <h3>You name a dataset; you never give a path</h3>
@@ -911,7 +917,12 @@ curl -sS -H "Authorization: Bearer $TOKEN" \
                         warned, or errored, the overall verdict, how long it took, and what it cost in dollars.
                     </p>
                     <p>
-                        It does <em>not</em> carry the per-case transcripts. Those contain every test input and the
+                        The report is also filed into the host's own evaluation store automatically, so it shows up
+                        in the dashboard without you posting anything back &mdash; that is the main thing running a
+                        suite server-side buys you over running the CLI.
+                    </p>
+                    <p>
+                        The poll does <em>not</em> carry the per-case transcripts. Those contain every test input and the
                         agent's full response, which is a lot of data to put on a status check and more of the agent's
                         output than any other endpoint here exposes. If you need transcripts, read the report files the
                         evaluation framework writes on the server.

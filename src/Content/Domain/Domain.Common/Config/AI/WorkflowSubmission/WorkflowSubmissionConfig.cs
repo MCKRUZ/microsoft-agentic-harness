@@ -210,12 +210,23 @@ public class WorkflowSubmissionConfig
     public TimeSpan RunRecordTtl { get; set; } = TimeSpan.FromHours(1);
 
     /// <summary>
-    /// Maximum number of runs one caller may have queued or executing at once.
+    /// Maximum number of runs one caller may have queued or executing at once, <strong>across every
+    /// kind of run</strong> — not workflows alone.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Distinct from <see cref="MaxStoredWorkflowsPerOwner"/>, which bounds stored definitions: this
     /// bounds work in flight. A caller within the storage quota can otherwise start every workflow it
     /// owns simultaneously, and the per-workflow parallelism ceiling multiplies by that count.
+    /// </para>
+    /// <para>
+    /// <strong>The section name reads narrower than what this governs.</strong> It lives here because
+    /// this is where the shared run substrate was introduced — as does <see cref="RunRecordTtl"/>,
+    /// which the run store also reads — and the store counts every kind a caller has in flight against
+    /// one number. That is deliberate: a second per-kind ceiling applied to the same cross-kind counter
+    /// would mean the limit that bound a caller depended on which endpoint they happened to call last.
+    /// An evaluation run started through <c>/api/evals</c> consumes one of these slots.
+    /// </para>
     /// </remarks>
     /// <value>Default: 10</value>
     public int MaxConcurrentRunsPerOwner { get; set; } = 10;

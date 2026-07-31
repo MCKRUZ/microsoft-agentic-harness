@@ -28,28 +28,44 @@ namespace Presentation.ExecutionApi.Controllers;
 /// to publish.
 /// </para>
 /// <para>
-/// <strong>Authorized exactly like the workflow surface — <c>[Authorize]</c>, no bespoke role.</strong>
-/// Worth stating because the instinct runs the other way: an eval run spends real model budget, so a
-/// dedicated role looks like the cautious choice. It is not, for two reasons. This host has no role
-/// policy infrastructure, so a role nothing issues would make the endpoint unreachable in the anonymous
-/// development mode and in every deployment that had not been told to grant it — a control that is
-/// really an outage. And an evaluation is <em>strictly less</em> powerful than a workflow run, which
-/// sits behind the same plain <c>[Authorize]</c>: a workflow is arbitrary caller-authored steps, an
-/// evaluation is an operator-curated dataset. What actually bounds this surface is that evaluation is
-/// off by default, refuses to start without roots, and caps per-run spend before a case runs.
+/// <strong>Gated on a role, not merely on being authenticated.</strong> Every other route this host
+/// serves runs the caller's <em>own</em> work — its bundle, its workflow, its tool call — under the
+/// caller's own grant. This one spends the host's model budget on the operator's suites, and a
+/// suite is hundreds of governed agent turns. That is a different kind of authority from "you hold a
+/// valid token for this API", so it gets its own claim, following the same
+/// <c>Harness.&lt;area&gt;.&lt;verb&gt;</c> convention as <c>Harness.Drift.Operate</c> and
+/// <c>Harness.Learnings.Read</c>.
+/// </para>
+/// <para>
+/// The role is granted to the synthetic principal in the anonymous development mode, so a local
+/// developer is not locked out of a surface that has no other way to be exercised. That mode is an
+/// explicit opt-in that already boots with a startup warning; it is not a way to reach this in a
+/// deployment.
 /// </para>
 /// <para>
 /// Ownership is never taken from the request. There is no owner field on the wire; the identity the
 /// authenticated principal resolves to is what the run is stamped with and what every later read is
-/// checked against.
+/// checked against. The role decides <em>whether you may evaluate at all</em>; ownership decides
+/// <em>which runs are yours</em>. Holding the role does not let a caller read another's run.
 /// </para>
 /// </remarks>
 [ApiController]
 [Route("api/evals")]
-[Authorize]
+[Authorize(Roles = ExecuteRole)]
 [EnableRateLimiting(ExecutionApiServiceCollectionExtensions.DefaultRateLimitPolicy)]
 public sealed class EvalsController : ControllerBase
 {
+    /// <summary>
+    /// Role required to reach any evaluation endpoint.
+    /// </summary>
+    /// <remarks>
+    /// One role for the whole surface rather than a read/execute split. The read endpoints only ever
+    /// answer about the caller's <em>own</em> runs, so a reader who cannot start one has nothing to
+    /// read — the split would grant access to an empty set. Contrast <c>DriftController</c>, whose
+    /// read surface describes host-wide state and therefore genuinely separates from its operate role.
+    /// </remarks>
+    public const string ExecuteRole = "Harness.Evals.Execute";
+
     private readonly IMediator _mediator;
     private readonly IEvalDatasetCatalog _catalog;
     private readonly ICapabilityEnvelopeResolver _envelopeResolver;

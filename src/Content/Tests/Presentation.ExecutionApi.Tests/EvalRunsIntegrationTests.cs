@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
+using Presentation.ExecutionApi.Controllers;
 using Xunit;
 
 namespace Presentation.ExecutionApi.Tests;
@@ -36,7 +37,8 @@ public sealed class EvalRunsIntegrationTests
                 .AddScheme<AuthenticationSchemeOptions, HeaderIdentityAuthenticationHandler>(
                     HeaderIdentityAuthenticationHandler.SchemeName, _ => { })));
 
-    private static HttpRequestMessage Request(HttpMethod method, string url, object? body, string? oid)
+    private static HttpRequestMessage Request(
+        HttpMethod method, string url, object? body, string? oid, bool withRole = true)
     {
         var request = new HttpRequestMessage(method, url);
         if (body is not null)
@@ -46,6 +48,12 @@ public sealed class EvalRunsIntegrationTests
         {
             request.Headers.Add(HeaderIdentityAuthenticationHandler.UserHeader, oid);
             request.Headers.Add(HeaderIdentityAuthenticationHandler.TenantHeader, "acme");
+
+            if (withRole)
+            {
+                request.Headers.Add(
+                    HeaderIdentityAuthenticationHandler.RolesHeader, EvalsController.ExecuteRole);
+            }
         }
 
         return request;
@@ -115,5 +123,27 @@ public sealed class EvalRunsIntegrationTests
             Request(new HttpMethod(method), url, body: null, oid: null));
 
         response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+    }
+
+    [Theory]
+    [InlineData("GET", "/api/evals/datasets")]
+    [InlineData("POST", "/api/evals/runs")]
+    [InlineData("GET", "/api/evals/runs/some-job")]
+    [InlineData("DELETE", "/api/evals/runs/some-job")]
+    public async Task EveryEvaluationRouteRefusesAnAuthenticatedCallerWithoutTheRole(
+        string method, string url)
+    {
+        // The case the role gate exists for. Every other route this host serves runs the caller's own
+        // work under the caller's own grant; this one spends the host's model budget on the operator's
+        // suites, which is a different kind of authority from holding a valid token. A caller who is
+        // authenticated but not entitled must be refused — 403, not 401: they are who they say, they
+        // just may not do this.
+        using var factory = CreateFactory();
+        using var client = factory.CreateClient();
+
+        var response = await client.SendAsync(
+            Request(new HttpMethod(method), url, body: null, oid: "alice", withRole: false));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
     }
 }

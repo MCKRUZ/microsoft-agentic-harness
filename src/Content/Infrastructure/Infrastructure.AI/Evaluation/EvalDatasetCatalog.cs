@@ -1,9 +1,10 @@
 using Application.AI.Common.Interfaces.Evaluation;
+using Application.Core.CQRS.Evaluation.RunEvalSuite;
 using Domain.Common.Config;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
-namespace Application.Core.CQRS.Evaluation.RunEvalSuite;
+namespace Infrastructure.AI.Evaluation;
 
 /// <summary>
 /// Default <see cref="IEvalDatasetCatalog"/>: the datasets are the files sitting at the top level of
@@ -28,6 +29,12 @@ namespace Application.Core.CQRS.Evaluation.RunEvalSuite;
 /// <strong>No catalog without roots.</strong> An unconfined host — the CLI's shipped default — returns
 /// nothing rather than enumerating whatever directory it happens to be running from. Listing is a
 /// disclosure, and there is no bounded thing to disclose until an operator says what the bounds are.
+/// </para>
+/// <para>
+/// Lives in Infrastructure, not beside the command it serves, because it reads directories:
+/// <c>.claude/rules/clean-architecture.md</c> places anything touching the filesystem here. Its
+/// sibling <c>EvalDatasetPathGuard</c> stays in Application deliberately and is not a precedent — that
+/// one does path-string arithmetic and only ever asks whether a file exists, whereas this enumerates.
 /// </para>
 /// </remarks>
 public sealed class EvalDatasetCatalog : IEvalDatasetCatalog
@@ -62,20 +69,43 @@ public sealed class EvalDatasetCatalog : IEvalDatasetCatalog
     public IReadOnlyList<string> ListNames() => [.. Discover().Keys.OrderBy(n => n, StringComparer.Ordinal)];
 
     /// <inheritdoc />
-    public string? Resolve(string name)
+    public EvalDatasetResolution Resolve(IReadOnlyList<string> names)
     {
-        if (string.IsNullOrWhiteSpace(name))
-            return null;
+        ArgumentNullException.ThrowIfNull(names);
 
-        // A name is an identifier. Anything that could steer resolution — a separator, a drive
-        // qualifier, a relative segment — is refused before it is compared, so a name that looks like
-        // a path never gets as far as being looked up. Enumeration would not honour it anyway; this
-        // just makes the intent explicit rather than incidental.
-        if (name.AsSpan().IndexOfAny('/', '\\', ':') >= 0 || name is "." or "..")
-            return null;
+        if (names.Count == 0)
+            return EvalDatasetResolution.Complete([]);
 
-        return Discover().TryGetValue(name, out var path) ? path : null;
+        // One pass over the roots for the whole set. Discovering per name would re-walk every root and
+        // re-confine every file it holds, once per name — and would read the filesystem at as many
+        // different instants as there are names.
+        var available = Discover();
+        var paths = new List<string>(names.Count);
+
+        foreach (var name in names)
+        {
+            if (!IsWellFormed(name) || !available.TryGetValue(name, out var path))
+                return EvalDatasetResolution.Missing(name);
+
+            paths.Add(path);
+        }
+
+        return EvalDatasetResolution.Complete(paths);
     }
+
+    /// <summary>
+    /// Whether a name is an identifier rather than something that could steer resolution.
+    /// </summary>
+    /// <remarks>
+    /// A separator, a drive qualifier, or a relative segment is refused before the name is compared,
+    /// so a name shaped like a path never gets as far as being looked up. Enumeration would not honour
+    /// one anyway — this makes the intent explicit rather than incidental, and keeps the rule true if
+    /// the lookup is ever reimplemented.
+    /// </remarks>
+    private static bool IsWellFormed(string name) =>
+        !string.IsNullOrWhiteSpace(name)
+        && name.AsSpan().IndexOfAny('/', '\\', ':') < 0
+        && name is not ("." or "..");
 
     /// <summary>
     /// Builds the name-to-path map from what is currently on disk under the configured roots.

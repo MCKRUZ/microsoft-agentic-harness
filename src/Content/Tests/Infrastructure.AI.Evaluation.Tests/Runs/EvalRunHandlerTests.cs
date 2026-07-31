@@ -39,7 +39,7 @@ public sealed class EvalRunHandlerTests
 
     private readonly AppConfig _config = new();
     private readonly FakeTimeProvider _time = new(DateTimeOffset.UnixEpoch);
-    private readonly Mock<IEvalDatasetCatalog> _catalog = new();
+    private readonly FakeCatalog _catalog = new();
     private readonly InMemoryEvalRunSubmissionStore _submissions = new();
     private readonly RecordingQueue _queue = new();
     private readonly IRunJobStore _runs;
@@ -52,7 +52,7 @@ public sealed class EvalRunHandlerTests
 
         _monitor = new StaticMonitor(_config);
         _runs = new InMemoryRunJobStore(_monitor, _time);
-        _catalog.Setup(c => c.Resolve("alpha")).Returns("/data/alpha.yaml");
+        _catalog.Publish("alpha", "/data/alpha.yaml");
 
         // Lets the queue observe whether the submission was already stored when the run was handed to
         // it — the ordering a dispatcher depends on and nothing else would catch.
@@ -291,7 +291,7 @@ public sealed class EvalRunHandlerTests
 
     private Task<Domain.Common.Result<StartEvalRunResult>> Start(IReadOnlyList<string> datasets) =>
         new StartEvalRunCommandHandler(
-                _catalog.Object, _submissions, _runs, _queue, _monitor, _time,
+                _catalog, _submissions, _runs, _queue, _monitor, _time,
                 NullLogger<StartEvalRunCommandHandler>.Instance)
             .Handle(
                 new StartEvalRunCommand
@@ -374,6 +374,37 @@ public sealed class EvalRunHandlerTests
         {
             await Task.CompletedTask;
             yield break;
+        }
+    }
+
+    /// <summary>
+    /// A catalog over an in-memory name-to-path map.
+    /// </summary>
+    /// <remarks>
+    /// Hand-written rather than mocked because <c>Resolve</c> and <c>ResolveAll</c> must agree — a
+    /// mock lets a test stub one and leave the other answering null, which would pass while the real
+    /// pairing was broken.
+    /// </remarks>
+    private sealed class FakeCatalog : IEvalDatasetCatalog
+    {
+        private readonly Dictionary<string, string> _published = new(StringComparer.OrdinalIgnoreCase);
+
+        public void Publish(string name, string path) => _published[name] = path;
+
+        public IReadOnlyList<string> ListNames() => [.. _published.Keys];
+
+        public EvalDatasetResolution Resolve(IReadOnlyList<string> names)
+        {
+            var paths = new List<string>(names.Count);
+            foreach (var name in names)
+            {
+                if (!_published.TryGetValue(name, out var path))
+                    return EvalDatasetResolution.Missing(name);
+
+                paths.Add(path);
+            }
+
+            return EvalDatasetResolution.Complete(paths);
         }
     }
 

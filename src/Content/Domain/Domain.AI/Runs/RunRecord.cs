@@ -33,6 +33,21 @@ public sealed record RunRecord
     /// Identifier of the thing being run, interpreted by the executor for <see cref="Kind"/> — a
     /// stored workflow's id for <see cref="RunKind.Workflow"/>.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>This is also what admission's "one live run per target" rule is keyed on</strong>, which
+    /// exists so two runs cannot share one workflow's plan state machine.
+    /// </para>
+    /// <para>
+    /// <strong>A kind whose work has no shared target sets this to the run's own
+    /// <see cref="JobId"/>.</strong> <see cref="RunKind.Evaluation"/> does: two callers evaluating one
+    /// dataset are independent reads with nothing between them to corrupt. A unique target makes the
+    /// exclusivity rule correctly inert for that kind, rather than switching a rule off where it still
+    /// governs workflows. Do <em>not</em> reach for a constant instead — that would serialize an entire
+    /// kind down to one concurrent run host-wide, which looks like a mysterious queue rather than a
+    /// refusal.
+    /// </para>
+    /// </remarks>
     public required string TargetId { get; init; }
 
     /// <summary>Stable identity of the caller that started the run, and the only one that may read it.</summary>

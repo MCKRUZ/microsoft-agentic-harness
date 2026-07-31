@@ -56,16 +56,14 @@ public sealed class InMemoryEvalRunSubmissionStore : IEvalRunSubmissionStore
         ArgumentException.ThrowIfNullOrEmpty(jobId);
         ArgumentNullException.ThrowIfNull(report);
 
-        // Compare-and-swap rather than read-modify-write. The record is immutable, so the update is a
-        // new instance either way — but a plain overwrite would clobber a concurrent sweep's removal
-        // and resurrect an entry nothing will ever reclaim again.
-        while (_submissions.TryGetValue(jobId, out var existing))
-        {
-            if (_submissions.TryUpdate(jobId, existing with { Report = report }, existing))
-                return true;
-        }
-
-        return false;
+        // Compare-and-swap rather than read-modify-write: a plain overwrite would clobber a concurrent
+        // sweep's removal and resurrect an entry nothing will ever reclaim again.
+        //
+        // Not a retry loop, deliberately. One run produces one report, so this is the only writer to
+        // this key; the only competing write is the sweep's removal, and losing to that means the entry
+        // is gone rather than changed. Retrying would re-add what the sweep just dropped.
+        return _submissions.TryGetValue(jobId, out var existing)
+            && _submissions.TryUpdate(jobId, existing with { Report = report }, existing);
     }
 
     /// <inheritdoc />

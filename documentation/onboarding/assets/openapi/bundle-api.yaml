@@ -99,7 +99,9 @@ tags:
     description: Submit workflow definitions and manage their runs.
   - name: Evals
     description: >-
-      Run the host's evaluation suites and poll their reports. Off unless
+      Run the host's evaluation suites and poll their reports. Requires the
+      `Harness.Evals.Execute` role - unlike every other route here, this one spends the host's model
+      budget on the operator's suites rather than running the caller's own work. Also off unless
       `AppConfig:AI:Evaluation:Enabled` is set, and the host refuses to start when it is set without
       any `DatasetRoots`.
   - name: Tools
@@ -694,6 +696,9 @@ paths:
         Cost is bounded at admission, not interrupted afterwards: `MaxCaseExecutionsPerRun` counts
         cases **x repeats** and refuses rather than truncating, because quietly evaluating a subset
         would report a pass rate for a suite that never ran.
+
+        On completion the report is filed into the host's durable eval store in-process, so the
+        dashboard sees it without the caller posting anything back.
       requestBody:
         required: true
         content:
@@ -712,7 +717,9 @@ paths:
             owner.
         "401": { $ref: "#/components/responses/UnauthorizedProblem" }
         "403":
-          description: Evaluation is disabled on this host (`AppConfig:AI:Evaluation:Enabled`).
+          description: >-
+            The caller lacks the `Harness.Evals.Execute` role, or evaluation is disabled on this host
+            (`AppConfig:AI:Evaluation:Enabled`).
         "404":
           description: >-
             One of the named datasets is not one this host serves. Unknown and malformed names are

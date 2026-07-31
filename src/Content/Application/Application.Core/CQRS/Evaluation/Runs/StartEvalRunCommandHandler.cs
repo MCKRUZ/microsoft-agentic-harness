@@ -80,11 +80,14 @@ public sealed class StartEvalRunCommandHandler
                 + "AppConfig.AI.Evaluation.DatasetRoots, to enable it.");
         }
 
-        foreach (var name in request.DatasetNames)
-        {
-            if (_catalog.Resolve(name) is null)
-                return Result<StartEvalRunResult>.NotFound($"No dataset named '{name}' is available.");
-        }
+        // Resolved before anything is queued, so a bad name costs an immediate answer rather than a
+        // 202 followed by a failure the caller has to poll for — having spent a concurrency slot to
+        // say so. The paths are discarded here: what matters at admission is only that every name
+        // resolves. The executor resolves again when it runs, which is what catches a dataset removed
+        // in between.
+        var resolution = _catalog.Resolve(request.DatasetNames);
+        if (!resolution.IsComplete)
+            return Result<StartEvalRunResult>.NotFound($"No dataset named '{resolution.MissingName}' is available.");
 
         var jobId = Guid.NewGuid().ToString("N");
 
@@ -121,10 +124,29 @@ public sealed class StartEvalRunCommandHandler
         if (admission != RunAdmission.Accepted)
             return Refuse(admission, config.AI.WorkflowSubmission.MaxConcurrentRunsPerOwner);
 
-        // After the record, before the queue. The submission's lifetime is the record's — it is
-        // reclaimed by the same sweep — so storing it first would leave an entry nothing ever collects
-        // whenever admission refuses. Storing it after the queue would be worse: a dispatcher can claim
-        // the run the instant it is enqueued and would find no submission to execute.
+        return await ArmAsync(record, request).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Stores the admitted run's request and hands it to the dispatcher, undoing the admission if
+    /// either step fails.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>Submission first, queue second.</strong> The submission's lifetime is the record's — the
+    /// same sweep reclaims both — so storing it before admission would leave an entry nothing ever
+    /// collects whenever admission refuses. Storing it after the queue would be worse: a dispatcher can
+    /// claim the run the instant it is enqueued, and would find no request to execute.
+    /// </para>
+    /// <para>
+    /// Separate from <see cref="Handle"/> because everything above it decides <em>whether</em> the run
+    /// happens and everything here makes it happen — and because both failure paths share one
+    /// non-obvious obligation, which is easier to state once: a run that is committed but never queued
+    /// is never claimed, never finishes, and (only terminal runs being reclaimed) never released.
+    /// </para>
+    /// </remarks>
+    private async Task<Result<StartEvalRunResult>> ArmAsync(RunRecord record, StartEvalRunCommand request)
+    {
         try
         {
             _submissions.Add(new EvalRunSubmission
@@ -136,18 +158,16 @@ public sealed class StartEvalRunCommandHandler
         }
         catch (InvalidOperationException ex)
         {
-            // Unreachable with a freshly minted job id. Guarded because the alternative is a run that
-            // is committed, never queued, never claimed and — since only terminal runs are reclaimed —
-            // never released, holding one of the caller's slots for the life of the process.
+            // Unreachable with a freshly minted job id, and guarded anyway — the cost of an unguarded
+            // failure is not a lost run but one of the caller's slots held for the life of the process.
             _logger.LogError(ex, "Run {JobId} was admitted but its submission could not be stored.", record.JobId);
             Abandon(record, "The run was accepted but its request could not be stored.");
 
             return Result<StartEvalRunResult>.Fail("The run could not be accepted.");
         }
 
-        // Deliberately NOT the caller's token: past admission the record is committed, and a committed
-        // record that is never queued is never claimed and never reclaimed. A client that hangs up
-        // mid-request is ordinary, so that must not be reachable by hanging up.
+        // Deliberately NOT the caller's token: past admission the record is committed, and a client
+        // that hangs up mid-request is ordinary — stranding a run must not be reachable by hanging up.
         try
         {
             await _queue.EnqueueAsync(record.JobId, CancellationToken.None).ConfigureAwait(false);

@@ -57,11 +57,10 @@ public static class DependencyInjection
 		services.AddSingleton<CQRS.Evaluation.RunEvalSuite.IEvalDatasetPathGuard,
 			CQRS.Evaluation.RunEvalSuite.EvalDatasetPathGuard>();
 
-		// Dataset name catalog — the only way an HTTP caller names a dataset. Registered beside the
-		// guard because it is the other half of the same rule: the guard confines paths, this makes a
-		// path something a caller cannot supply in the first place.
-		services.AddSingleton<Application.AI.Common.Interfaces.Evaluation.IEvalDatasetCatalog,
-			CQRS.Evaluation.RunEvalSuite.EvalDatasetCatalog>();
+		// The dataset name catalog — the other half of the same rule, since the guard confines paths
+		// and the catalog makes a path something a caller cannot supply in the first place — is NOT
+		// registered here. It reads directories, so it lives in Infrastructure.AI and is registered
+		// with the run substrate.
 
 		// Default confinement latch: no host has claimed a startup check. A host that verifies dataset
 		// roots at boot re-registers this as true (last-write-wins), which is what stops a later config

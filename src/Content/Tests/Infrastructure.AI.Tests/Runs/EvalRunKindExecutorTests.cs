@@ -1,3 +1,4 @@
+using Application.AI.Common.CQRS.Evaluation.IngestEvalRun;
 using Application.AI.Common.Evaluation.Models;
 using Application.AI.Common.Interfaces.Evaluation;
 using Application.AI.Common.Services.Governance;
@@ -27,7 +28,7 @@ namespace Infrastructure.AI.Tests.Runs;
 public sealed class EvalRunKindExecutorTests
 {
     private readonly Mock<IMediator> _mediator = new();
-    private readonly Mock<IEvalDatasetCatalog> _catalog = new();
+    private readonly FakeCatalog _catalog = new();
     private readonly InMemoryEvalRunSubmissionStore _submissions = new();
 
     [Fact]
@@ -85,7 +86,6 @@ public sealed class EvalRunKindExecutorTests
         // The name resolved at admission and does not now — a file removed, or a root reconfigured.
         // Skipping it would report a pass rate for a suite that never fully ran.
         Given("alpha", "/data/alpha.yaml");
-        _catalog.Setup(c => c.Resolve("beta")).Returns((string?)null);
 
         var result = await Execute(Record(), "alpha", "beta");
 
@@ -99,7 +99,6 @@ public sealed class EvalRunKindExecutorTests
         // Resolution completes before dispatch, so a partially-resolvable request costs nothing. The
         // opposite order would run the datasets that did resolve and then fail — real spend, no answer.
         Given("alpha", "/data/alpha.yaml");
-        _catalog.Setup(c => c.Resolve("beta")).Returns((string?)null);
 
         await Execute(Record(), "alpha", "beta");
 
@@ -160,13 +159,77 @@ public sealed class EvalRunKindExecutorTests
         result.Errors.Should().ContainSingle().Which.Should().Contain("900 case executions");
     }
 
+    [Fact]
+    public async Task Files_the_report_into_the_durable_store_the_dashboard_reads()
+    {
+        // The point of running an evaluation server-side rather than from the CLI: the CLI produces a
+        // report and posts it back over HTTP to be ingested, and a run executing inside the host has
+        // no reason to leave the process to file its own result. Without this the report lives only in
+        // the submission store and disappears with it at RunRecordTtl.
+        Given("alpha", "/data/alpha.yaml");
+        WhenEvaluated(() => { }, Passing("run-7"));
+
+        EvalRunReport? ingested = null;
+        _mediator
+            .Setup(m => m.Send(It.IsAny<IngestEvalRunCommand>(), It.IsAny<CancellationToken>()))
+            .Callback<object, CancellationToken>((c, _) => ingested = ((IngestEvalRunCommand)c).Report)
+            .ReturnsAsync(Result<IngestEvalRunResult>.Success(Ingested("run-7")));
+
+        await Execute(Record(), "alpha");
+
+        ingested!.RunId.Should().Be("run-7");
+    }
+
+    [Fact]
+    public async Task A_failed_ingest_does_not_fail_the_run()
+    {
+        // The evaluation ran and the spend is already incurred. Reporting the run as failed would
+        // misdescribe the work and would invite a retry that pays for the whole suite again to fix a
+        // bookkeeping problem — and the caller can still read the report from its own run.
+        Given("alpha", "/data/alpha.yaml");
+        WhenEvaluated(() => { }, Passing());
+
+        _mediator
+            .Setup(m => m.Send(It.IsAny<IngestEvalRunCommand>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result<IngestEvalRunResult>.Fail("the eval store is unavailable"));
+
+        var result = await Execute(Record(), "alpha");
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value!.Status.Should().Be(RunStatus.Succeeded);
+    }
+
+    [Fact]
+    public async Task An_ingest_that_throws_does_not_fail_the_run()
+    {
+        // A host that never registered the eval store reaches here. Same reasoning: the evaluation
+        // succeeded, and a bookkeeping fault must not be reported as failed work.
+        Given("alpha", "/data/alpha.yaml");
+        WhenEvaluated(() => { }, Passing());
+
+        _mediator
+            .Setup(m => m.Send(It.IsAny<IngestEvalRunCommand>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("no eval store registered"));
+
+        var result = await Execute(Record(), "alpha");
+
+        result.IsSuccess.Should().BeTrue();
+    }
+
+    private static IngestEvalRunResult Ingested(string runId) => new()
+    {
+        RunId = runId,
+        Inserted = true,
+        ReceivedAtUtc = DateTimeOffset.UnixEpoch
+    };
+
     private EvalRunKindExecutor Sut() => new(
         _mediator.Object,
-        _catalog.Object,
+        _catalog,
         _submissions,
         NullLogger<EvalRunKindExecutor>.Instance);
 
-    private void Given(string name, string path) => _catalog.Setup(c => c.Resolve(name)).Returns(path);
+    private void Given(string name, string path) => _catalog.Publish(name, path);
 
     /// <summary>Answers the evaluation dispatch, running <paramref name="probe"/> while it is in flight.</summary>
     private void WhenEvaluated(Action probe, EvalRunReport report) =>
@@ -185,6 +248,33 @@ public sealed class EvalRunKindExecutorTests
         });
 
         return await Sut().ExecuteAsync(record, CancellationToken.None);
+    }
+
+    /// <summary>
+    /// A catalog over an in-memory name-to-path map. Hand-written rather than mocked so
+    /// <c>Resolve</c> and <c>ResolveAll</c> cannot disagree.
+    /// </summary>
+    private sealed class FakeCatalog : IEvalDatasetCatalog
+    {
+        private readonly Dictionary<string, string> _published = new(StringComparer.OrdinalIgnoreCase);
+
+        public void Publish(string name, string path) => _published[name] = path;
+
+        public IReadOnlyList<string> ListNames() => [.. _published.Keys];
+
+        public EvalDatasetResolution Resolve(IReadOnlyList<string> names)
+        {
+            var paths = new List<string>(names.Count);
+            foreach (var name in names)
+            {
+                if (!_published.TryGetValue(name, out var path))
+                    return EvalDatasetResolution.Missing(name);
+
+                paths.Add(path);
+            }
+
+            return EvalDatasetResolution.Complete(paths);
+        }
     }
 
     private static RunRecord Record(CapabilityEnvelope? envelope = null) => new()

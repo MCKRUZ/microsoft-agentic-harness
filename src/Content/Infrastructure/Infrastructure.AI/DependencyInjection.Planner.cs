@@ -11,6 +11,7 @@ using Domain.AI.Runs;
 using Domain.AI.Sandbox;
 using Domain.Common.Config;
 using Infrastructure.AI.Attestation;
+using Infrastructure.AI.Evaluation;
 using Infrastructure.AI.Persistence;
 using Infrastructure.AI.Planner;
 using Infrastructure.AI.Runs;
@@ -105,17 +106,22 @@ public static partial class DependencyInjection
         // can execute, and the endpoints refuse unless evaluation is enabled.
         services.TryAddSingleton<IEvalRunSubmissionStore, InMemoryEvalRunSubmissionStore>();
 
-        // Both holders of run-scoped state are released when a run's record is reclaimed, through the
-        // same seam, rather than by the sweeper naming either of them.
-        //
-        // Registered two different ways for one real reason: the submission store implements
-        // IRunReclaimListener, so it is resolved as itself; the progress broker does not, so a named
-        // adapter supplies the behaviour. TryAddEnumerable needs an implementation type to tell
-        // registrations apart and rejects factory descriptors, which is why the adapter is a type
-        // rather than a lambda.
+        // The dataset name catalog. In Infrastructure because it reads directories, and registered
+        // here rather than in the host that serves evaluation for the same reason as the store above:
+        // the CQRS handlers that depend on it are found by assembly scanning, so they exist in every
+        // host and a conditional registration would fail ValidateOnBuild in all of them.
+        services.TryAddSingleton<IEvalDatasetCatalog, EvalDatasetCatalog>();
+
+        // Every holder of run-scoped state is released when a run's record is reclaimed, through this
+        // one seam rather than by the sweeper naming each of them. Both go through a named adapter:
+        // TryAddEnumerable distinguishes registrations by implementation type and rejects factory
+        // descriptors, so a lambda would either throw here or, as a plain AddSingleton, register again
+        // on every composition — and the substrate uses TryAdd throughout precisely so composing it
+        // twice is harmless.
         services.TryAddEnumerable(
             ServiceDescriptor.Singleton<IRunReclaimListener, RunProgressReclaimListener>());
-        services.AddSingleton<IRunReclaimListener>(sp => sp.GetRequiredService<IEvalRunSubmissionStore>());
+        services.TryAddEnumerable(
+            ServiceDescriptor.Singleton<IRunReclaimListener, EvalSubmissionReclaimListener>());
 
         // Keyed by RunKind, which is what makes a new kind of work a registration rather than a
         // change to the dispatcher. Scoped: the dispatcher creates a fresh scope per run and resolves
