@@ -28,6 +28,13 @@ It is a composition root, exactly like `Presentation.AgentHub`: `builder.Service
 │  │  GET    /{handle}/runs/{jobId}/stream → BundleRunStreamer (SSE)        │ │
 │  │  DELETE /{handle}                → DeleteBundleCommand                 │ │
 │  └───────────────────────────────┬────────────────────────────────────────┘ │
+│  ┌───────────────────────────────┴────────────────────────────────────────┐ │
+│  │  ToolsController  [Authorize]  /api/tools        ← read-only discovery │ │
+│  │                                                                        │ │
+│  │  GET    /                        → IToolCatalog.ListGranted            │ │
+│  │  GET    /{name}                  → IToolCatalog.FindGranted (404 both  │ │
+│  │                                    for absent AND ungranted)           │ │
+│  └───────────────────────────────┬────────────────────────────────────────┘ │
 └──────────────────────────────────┼──────────────────────────────────────────┘
                                    │ MediatR (validation + audit behaviors)
                                    ▼
@@ -109,9 +116,13 @@ The stream policy is concurrency rather than rate on purpose: a streamed run exe
 Presentation.ExecutionApi/
 ├── Program.cs                       Composition root + middleware pipeline (order is not negotiable)
 ├── Controllers/
-│   └── BundlesController.cs         The five endpoints; resolves the envelope; maps Result → ProblemDetails
+│   ├── BundlesController.cs         The five endpoints; resolves the envelope; maps Result → ProblemDetails
+│   ├── WorkflowsController.cs       Workflow submission, runs, progress stream, cancel
+│   └── ToolsController.cs           Read-only tool discovery, filtered by the caller's envelope
 ├── DTOs/
-│   └── BundleApiContracts.cs        Register/Start/Run responses; BundleRunResponse projects the record
+│   ├── BundleApiContracts.cs        Register/Start/Run responses; BundleRunResponse projects the record
+│   ├── WorkflowRunContracts.cs      Run start/cancel/status projections
+│   └── ToolCatalogContracts.cs      Catalog entry + listing; RiskTier travels as a name, not an ordinal
 ├── Extensions/
 │   └── ExecutionApiServiceCollectionExtensions.cs   Controllers, auth, FormOptions cap, rate limiters
 ├── Services/
@@ -171,6 +182,26 @@ There is no `Properties/launchSettings.json`, so set `ASPNETCORE_URLS` explicitl
 
 Add an entry under `Envelopes:BySubject` keyed on the caller's `sub`/name-identifier claim (**not** `oid`), or under `Envelopes:ByRole` keyed on an app role. Remember that multiple matching roles *intersect*, and that only an `Autonomous` ceiling currently permits tool execution -- `Supervised`/`Restricted` suspend tool use entirely because mid-run approval routing is deferred (documented on `CapabilityEnvelope.AutonomyCeiling`).
 
+### Decide what to put in a caller's `AllowedTools`
+
+`GET /api/tools` answers this from the caller's side, but two things are the operator's job and no
+endpoint can decide them for you.
+
+**Never grant these over HTTP.** `dashboard_control` and the `render_*` tools (`render_chart`,
+`render_image`, `render_form`, `render_table`) exist to drive an interactive client through
+`IClientToolBridge`, which **only AgentHub registers**. Granting them to an HTTP caller is
+meaningless at best: there is no client on the other end to render into. `echo_lookup` and
+`echo_calculate` are demo fixtures — grant them in a smoke test, never in an environment that
+matters.
+
+**Registered is not the same as available.** Those same five tools are registered in *every* host
+because tool registration is shared, but in any host without `IClientToolBridge` they cannot be
+constructed at all. The catalog resolves tools one key at a time precisely so one such tool cannot
+fail the whole listing; it omits them and logs a warning naming the key. If you see that warning,
+it is telling you the truth about the host — not about the catalog. (The underlying sloppiness —
+hosts registering tools whose dependencies they do not provide — predates the catalog and is
+tracked separately; the catalog only made it visible.)
+
 ### Add an endpoint
 
 Put the behavior in a MediatR command/query under `Application.AI.Common/CQRS/Bundles/` with a FluentValidation validator, then add a thin action to `BundlesController`: resolve `ResolveCallerId()`, pass `OwnerId`, and map failures through the existing `MapFailure`. Do not surface raw error text on the general-failure path -- handlers log the detail; the wire gets a generic message.
@@ -181,12 +212,19 @@ Replace `InMemoryBundleHandleStore`, `InMemoryBundleRunJobStore`, and `InMemoryB
 
 ### Change the wire contract
 
-**This is the canonical list.** Nothing is generated from the controller, so nothing mechanically catches drift -- every one of these describes the contract by hand and must be updated in the same commit:
+**This is the canonical list.** Nothing is generated from the controllers, so nothing mechanically catches drift -- every one of these describes the contract by hand and must be updated in the same commit:
 
-1. `documentation/onboarding/assets/openapi/bundle-api.yaml` -- the OpenAPI spec (routes, schemas, status codes, examples).
+1. `documentation/onboarding/assets/openapi/bundle-api.yaml` -- the OpenAPI spec (routes, schemas, status codes, examples). **The filename is deliberately stale**: it is a published URL that external consumers and chapter 17 both link to, so it outlived the "Bundle API" name. `info.title` is authoritative.
 2. `documentation/onboarding/17-bundle-api.html` -- the consumer guide (endpoint table, error table, config table, SSE frame table, quickstart).
 3. This README -- the route block in *Architecture Context* and the *Configuration* table above.
 4. `CLAUDE.md` -- only if the spec's location or the doc-site page count changes.
+
+The spec covers **all three route families this host serves** -- bundles, workflows, and tool
+discovery -- not just bundles. That was not true until the tool catalog shipped: the workflow routes
+(W3--W6) went in over four PRs without a single spec entry, and the drift was only caught when
+someone went looking. If you add a route here, add it to the spec in the same change. A published
+contract that describes two thirds of the surface is worse than one that admits its gaps, because
+consumers cannot tell which third is missing.
 
 `BundleRunStatus` numeric values are anchored by a `Domain.AI` enum test -- add new states at the end only.
 

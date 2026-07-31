@@ -66,7 +66,7 @@ Key architectural concepts from the reference:
 - **Skill Training Loop**: `TrainSkillCommandHandler` chains the 6 stages on the same call stack (no MediatR re-entrance inner-loop); epoch-boundary mechanisms (SlowUpdate, MetaSkillUpdate) are separate CQRS commands dispatched via `IMediator` so they get the standard pipeline (validation, audit, telemetry)
 
 ## Documentation
-- **Developer Onboarding Guide**: `documentation/onboarding/` — 17-page guide for engineers (deployed at `/`). Chapter 17 is the Bundle API integration guide; its OpenAPI spec is `documentation/onboarding/assets/openapi/bundle-api.yaml` (hand-written; to change the contract, follow *Change the wire contract* in `src/Content/Presentation/Presentation.ExecutionApi/README.md`)
+- **Developer Onboarding Guide**: `documentation/onboarding/` — 17-page guide for engineers (deployed at `/`). Chapter 17 is the Execution API integration guide (bundles, workflows, tool discovery); its OpenAPI spec is `documentation/onboarding/assets/openapi/bundle-api.yaml` (filename kept deliberately — it is a published URL) (hand-written; to change the contract, follow *Change the wire contract* in `src/Content/Presentation/Presentation.ExecutionApi/README.md`)
 - **Architecture Guide**: `documentation/architecture/` — Azure infrastructure playbook (deployed at `/architecture/`)
 - **Security Guide**: `documentation/security/` — threat model, governance, sandbox, egress/SSRF, content safety, OWASP Agentic evals (deployed at `/security/`)
 - **Interactive Course**: `documentation/agentic-harness-course/` — Visual course for non-technical audiences (deployed at `/agentic-harness-course/`)

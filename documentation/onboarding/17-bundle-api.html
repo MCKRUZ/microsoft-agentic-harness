@@ -3,7 +3,7 @@
     <head>
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <title>17 · Bundle API — Agentic Harness Developer Guide</title>
+        <title>17 · Execution API — Agentic Harness Developer Guide</title>
         <meta name="description" content="Call the harness over HTTP: upload an agent bundle, run it under a per-caller capability grant, and poll or stream the result." />
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -19,7 +19,7 @@
                     <div class="sidebar-group"><div class="sidebar-group-title">Getting Started</div><a class="sidebar-link" href="index.html"><span class="sidebar-link-num">00</span> Welcome</a><a class="sidebar-link" href="01-get-running.html"><span class="sidebar-link-num">01</span> Get Running in 10 Minutes</a></div>
                     <div class="sidebar-group"><div class="sidebar-group-title">Configuration</div><a class="sidebar-link" href="02-configuration.html"><span class="sidebar-link-num">02</span> Configuration Reference</a></div>
                     <div class="sidebar-group"><div class="sidebar-group-title">Architecture</div><a class="sidebar-link" href="03-big-picture.html"><span class="sidebar-link-num">03</span> The Big Picture</a><a class="sidebar-link" href="04-message-journey.html"><span class="sidebar-link-num">04</span> A Message's Journey</a></div>
-                    <div class="sidebar-group"><div class="sidebar-group-title">Systems</div><a class="sidebar-link" href="05-skills.html"><span class="sidebar-link-num">05</span> Skills System</a><a class="sidebar-link" href="06-tools.html"><span class="sidebar-link-num">06</span> Tools &amp; Keyed DI</a><a class="sidebar-link" href="07-rag.html"><span class="sidebar-link-num">07</span> The RAG Pipeline</a><a class="sidebar-link" href="08-mcp.html"><span class="sidebar-link-num">08</span> MCP Server &amp; Client</a><a class="sidebar-link" href="16-generative-ui.html"><span class="sidebar-link-num">16</span> Generative UI &amp; Widgets</a><a class="sidebar-link" href="17-bundle-api.html"><span class="sidebar-link-num">17</span> Bundle API (HTTP)</a></div>
+                    <div class="sidebar-group"><div class="sidebar-group-title">Systems</div><a class="sidebar-link" href="05-skills.html"><span class="sidebar-link-num">05</span> Skills System</a><a class="sidebar-link" href="06-tools.html"><span class="sidebar-link-num">06</span> Tools &amp; Keyed DI</a><a class="sidebar-link" href="07-rag.html"><span class="sidebar-link-num">07</span> The RAG Pipeline</a><a class="sidebar-link" href="08-mcp.html"><span class="sidebar-link-num">08</span> MCP Server &amp; Client</a><a class="sidebar-link" href="16-generative-ui.html"><span class="sidebar-link-num">16</span> Generative UI &amp; Widgets</a><a class="sidebar-link" href="17-bundle-api.html"><span class="sidebar-link-num">17</span> Execution API (HTTP)</a></div>
                     <div class="sidebar-group"><div class="sidebar-group-title">Patterns</div><a class="sidebar-link" href="09-patterns.html"><span class="sidebar-link-num">09</span> Patterns You'll Use Daily</a><a class="sidebar-link" href="10-observability.html"><span class="sidebar-link-num">10</span> Observability &amp; Safety</a></div>
                     <div class="sidebar-group"><div class="sidebar-group-title">Building</div><a class="sidebar-link" href="11-extending.html"><span class="sidebar-link-num">11</span> Extending the Harness</a></div>
                     <div class="sidebar-group"><div class="sidebar-group-title">Quality</div><a class="sidebar-link" href="13-evaluation.html"><span class="sidebar-link-num">13</span> Evaluation Framework</a><a class="sidebar-link" href="14-skill-training.html"><span class="sidebar-link-num">14</span> Skill Training</a></div>
@@ -37,12 +37,15 @@
             <main id="main" class="content-wrap">
                 <div class="content">
                     <span class="eyebrow">Chapter 17 · Systems</span>
-                    <h1 class="page-title">Bundle API — Calling the Harness over HTTP</h1>
+                    <h1 class="page-title">Execution API — Calling the Harness over HTTP</h1>
                     <p class="page-lead">
-                        The Bundle API lets one system hand the harness a complete agent — as a zip file — and ask it
-                        to run, over ordinary HTTP. Nothing gets deployed, nothing gets installed, and the uploaded
-                        agent never becomes part of the host. This chapter is written for whoever has to
-                        <em>call</em> that API, and it assumes you have never seen this codebase.
+                        The Execution API is how another system drives the harness over ordinary HTTP. It does three
+                        things: it runs an agent you hand it as a zip file (<strong>bundles</strong>), it runs a graph of
+                        steps you define (<strong>workflows</strong>), and it tells you which tools your credential is
+                        actually allowed to invoke (<strong>tools</strong>). Nothing gets deployed and nothing gets
+                        installed. This chapter is written for whoever has to <em>call</em> that API, and it assumes you
+                        have never seen this codebase. Most of it covers bundles, which is the deepest of the three;
+                        workflows and tool discovery have their own sections near the end.
                     </p>
 
                     <h2>Start here: what this actually does</h2>
@@ -666,8 +669,170 @@ The agent runs with exactly one tool: file_system.</code></pre>
                                 <td><code>204</code></td>
                                 <td>Idempotent and non-disclosing — always <code>204</code>.</td>
                             </tr>
+                            <tr>
+                                <td colspan="3" style="background: rgba(127,127,127,0.08)"><strong>Tools</strong> — read-only discovery</td>
+                            </tr>
+                            <tr>
+                                <td><code>GET /api/tools</code></td>
+                                <td><code>200</code></td>
+                                <td>Lists the tools your credential may invoke — the intersection of what the host registers and what your envelope's <code>AllowedTools</code> grants. An empty list is a valid answer, not an error.</td>
+                            </tr>
+                            <tr>
+                                <td><code>GET /api/tools/{name}</code></td>
+                                <td><code>200</code></td>
+                                <td>Describes one granted tool. A tool that doesn't exist and one you aren't granted both answer <code>404</code> — indistinguishably, by design.</td>
+                            </tr>
+                            <tr>
+                                <td colspan="3" style="background: rgba(127,127,127,0.08)"><strong>Workflows</strong> — submit a DAG, then run it</td>
+                            </tr>
+                            <tr>
+                                <td><code>POST /api/workflows</code></td>
+                                <td><code>201</code></td>
+                                <td>Body: <code>name</code>, <code>steps</code>, <code>edges</code>, optional <code>configuration</code>. Every id is minted server-side. Cycles and unreachable steps are rejected here, not at first run.</td>
+                            </tr>
+                            <tr>
+                                <td><code>POST /api/workflows/{id}/runs</code></td>
+                                <td><code>202</code></td>
+                                <td>No body. Returns a <code>jobId</code> and a <code>statusUrl</code>. <code>409</code> if this workflow already has a live run.</td>
+                            </tr>
+                            <tr>
+                                <td><code>GET /api/workflows/{id}/runs/{jobId}</code></td>
+                                <td><code>200</code></td>
+                                <td>A projection — never echoes the envelope or tenant the run holds.</td>
+                            </tr>
+                            <tr>
+                                <td><code>GET …/runs/{jobId}/stream</code></td>
+                                <td><code>200</code></td>
+                                <td><code>text/event-stream</code>. First frame is always a <code>SNAPSHOT</code>. <code>503</code> when the host or you are at the stream ceiling.</td>
+                            </tr>
+                            <tr>
+                                <td><code>DELETE /api/workflows/{id}/runs/{jobId}</code></td>
+                                <td><code>200</code></td>
+                                <td>Cancels the run and withdraws any approval it was waiting on. <code>stopped: false</code> means signalled, not yet stopped. <code>409</code> if already terminal.</td>
+                            </tr>
                         </tbody>
                     </table>
+
+                    <h2 id="tools-discovery">Finding out what you may actually invoke</h2>
+                    <p>
+                        The envelope section above explains that the host decides what you may use. It does not tell you
+                        what the host <em>decided</em>. <code>GET /api/tools</code> answers that directly, and it is the
+                        first call worth making before you write a workflow with a <code>ToolUse</code> step.
+                    </p>
+                    <pre><code>curl -sS -H "Authorization: Bearer $TOKEN" http://localhost:5000/api/tools</code></pre>
+                    <pre><code>{
+  "tools": [
+    {
+      "name": "document_search",
+      "description": "Searches ingested documents.",
+      "operations": ["search"],
+      "riskTier": "Low",
+      "isReadOnly": true,
+      "isConcurrencySafe": true
+    }
+  ]
+}</code></pre>
+                    <p>
+                        The <code>name</code> is the exact string a <code>ToolUse</code> step must supply, and
+                        <code>operations</code> tells you which values that step's operation field will accept — an
+                        invocation naming anything else is rejected by the tool itself.
+                    </p>
+                    <div class="callout callout-info">
+                        <span class="callout-icon">i</span>
+                        <div class="callout-body">
+                            <div class="callout-title">An empty list is an answer, not a failure</div>
+                            <p style="margin: 0">
+                                The shipped default envelope grants nothing, so an operator who has not configured a
+                                grant for your credential leaves you with <code>{"tools": []}</code> and a
+                                <code>200</code>. That is the fail-closed default working as intended. Ask your operator
+                                for an <code>Envelopes</code> entry rather than assuming the host is broken. Equally,
+                                this listing is <em>yours</em> — it is not the host's inventory, and another credential
+                                will legitimately see a different set.
+                            </p>
+                        </div>
+                    </div>
+                    <p>
+                        Two absences you may notice and should not chase. Tools that drive an interactive client —
+                        <code>dashboard_control</code> and the <code>render_*</code> family — cannot be constructed in
+                        this host at all, because there is no client on the other end to render into; they are omitted
+                        rather than advertised as callable. And <code>/api/tools</code> is <em>not</em> the same thing as
+                        the agent hub's <code>/api/mcp/tools</code>: that one lists tools published by external MCP
+                        servers, which additionally require their server to be granted.
+                    </p>
+
+                    <h2 id="workflows">Workflows: running a DAG instead of a conversation</h2>
+                    <p>
+                        A bundle run is a conversation. A <strong>workflow</strong> is a directed graph of steps — model
+                        calls, tool calls, retrieval, conditional branches, and human approval gates — that the harness
+                        executes for you. Use a workflow when the shape of the work is known in advance and you want it
+                        enforced; use a bundle when you want an agent to decide.
+                    </p>
+                    <p>
+                        Submission and execution are separate calls. Submitting stores a definition under your ownership
+                        and costs nothing; running it spends the host's model and tool credentials.
+                    </p>
+                    <pre><code># 1. Submit — the id comes back from the server, you do not choose it
+curl -sS -X POST http://localhost:5000/api/workflows \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{
+        "name": "draft-and-review",
+        "steps": [
+          {"name": "draft",  "type": "LlmCall",
+           "configuration": {"type": "LlmCall", "prompt": "Draft a summary."}},
+          {"name": "review", "type": "LlmCall",
+           "configuration": {"type": "LlmCall", "prompt": "Check it for errors."}}
+        ],
+        "edges": [{"from": "draft", "to": "review", "type": "ControlFlow"}]
+      }'
+
+# 2. Run it — returns 202 and a job id
+curl -sS -X POST http://localhost:5000/api/workflows/$WORKFLOW_ID/runs \
+  -H "Authorization: Bearer $TOKEN"
+
+# 3. Poll, or stream
+curl -sS -H "Authorization: Bearer $TOKEN" \
+  http://localhost:5000/api/workflows/$WORKFLOW_ID/runs/$JOB_ID</code></pre>
+                    <div class="callout callout-warn">
+                        <span class="callout-icon">!</span>
+                        <div class="callout-body">
+                            <div class="callout-title">One live run per workflow, and <code>Blocked</code> counts as live</div>
+                            <p style="margin: 0">
+                                Starting a second run while one is queued, running, <em>or parked on a human gate</em>
+                                returns <code>409</code>. This is not a throttle you should retry past — two runs of one
+                                workflow would share a single execution state machine, so the second would re-execute
+                                the first's live steps and adopt its outputs. Wait for the first to finish, or cancel it.
+                            </p>
+                        </div>
+                    </div>
+                    <p>
+                        That makes <code>status</code> worth reading carefully. Treat only <code>Succeeded</code>,
+                        <code>Failed</code>, and <code>Cancelled</code> as final. <code>Blocked</code> means the run is
+                        parked on a human approval gate: it keeps its job id, keeps its hold on the workflow, and
+                        resumes on that same id once someone answers the gate. A client that treats <code>Blocked</code>
+                        as an ending will give up on a run that was about to continue.
+                    </p>
+                    <h3>Streaming a workflow run</h3>
+                    <p>
+                        <code>GET …/runs/{jobId}/stream</code> opens a <code>text/event-stream</code>. Unlike the bundle
+                        stream, you may attach at any time — the first frame is always a <code>SNAPSHOT</code> of the
+                        run as it stands, so there is no window in which you have to reconcile what you missed.
+                    </p>
+                    <table>
+                        <thead><tr><th>Frame</th><th>Meaning</th></tr></thead>
+                        <tbody>
+                            <tr><td><code>SNAPSHOT</code></td><td>Always first. The run's state when you attached; <code>isTerminal: true</code> means it had already finished and nothing further follows.</td></tr>
+                            <tr><td><code>STEP</code></td><td>A step started or completed. <code>sequence</code> is monotonic within the run.</td></tr>
+                            <tr><td><code>FINISHED</code></td><td>Terminal. The stream closes after it.</td></tr>
+                            <tr><td><code>PARKED</code></td><td>The run hit a human gate. The stream closes but <strong>the run has not ended</strong> — re-attach after the gate is answered.</td></tr>
+                            <tr><td><code>GAP</code></td><td>You fell behind and <code>droppedCount</code> frames were discarded. Reported rather than hidden, so a slow client never mistakes a truncated stream for a complete one.</td></tr>
+                        </tbody>
+                    </table>
+                    <p>
+                        One property to design around: <strong>authorization is checked when the stream opens, not
+                        continuously</strong>. A token revoked mid-run keeps receiving until the run ends. The exposure
+                        is bounded by the run's duration, and the frames carry nothing you could not already read from
+                        the status endpoint — but it is a deliberate trade, not an oversight.
+                    </p>
 
                     <h2 id="two-ways">Two ways to get the output</h2>
                     <h3>Background + poll (the default)</h3>
