@@ -95,12 +95,48 @@ PATH_RE='(^\.github/|^scripts/rails/|/Auth/|/Identity/|/Security/|/SecurityAttri
 # Grouped by the risk each marker stands for. Markers are deliberately specific:
 # a bare `Token` would match every CancellationToken in the codebase and fire on
 # everything, which degrades to the same uselessness as never firing at all.
+#
+# THE LIST IS A VOCABULARY, AND A MISSING WORD IS A MISSING GATE.
+# The first five groups describe authorization, scope isolation, capability,
+# credentials, and reachable surface. They say nothing about the filesystem — so
+# PR #215, which was *entirely* path confinement (canonicalisation, per-segment
+# symlink resolution, a root-prefix comparison, a confinement latch), raised zero
+# signals and the reviewer was skipped. It reported `pass` in five seconds. The
+# code had been reviewed only because a human ran the reviewer by hand.
+#
+# That is the same failure as the folder-only filter above, one category over: the
+# gate did not fire on the changes it exists to review. The last two groups close
+# the two categories this repo actually has code in — filesystem confinement, and
+# code execution / unsafe deserialization.
+#
+# COUNTS ARE PER TRACKED FILE, NOT PER GREP HIT. Measure with `git ls-files`, never
+# a bare recursive grep: bin/ and obj/ inflate some markers more than tenfold (AntiSSRF
+# reads as 1101 hits and 28 tracked files), and build artifacts can never appear in a
+# diff. A marker judged on the inflated number gets rejected for noise it cannot cause.
+#
+# DELIBERATELY EXCLUDED, so nobody "completes" the list later and breaks it:
+#   HttpClient (101 of 3,208 tracked .cs files) and JsonSerializer.Deserialize (57)
+#   are real SSRF and deserialization signals in the abstract, and useless here — they
+#   appear in nearly every connector and DTO, so adding them makes the gate fire on
+#   every PR. A gate that always fires is triaged as noise and is worth no more than
+#   one that never fires.
+#
+#   SSRF is therefore covered by naming the GUARD rather than the mechanism:
+#   EgressPolicy / EgressAllowlist / AntiSSRF / Ssrf. A PR that weakens or bypasses
+#   egress policy is the SSRF change actually worth reviewing, and those types appear
+#   only in code that is about egress control — so the signal stays specific while
+#   every ordinary outbound call stays silent. Both halves are pinned by tests:
+#   touching the policy fires, holding an HttpClient does not.
 # ---------------------------------------------------------------------------
 CONTENT_RE='(\[Authorize|AllowAnonymous|ClaimsPrincipal|RequireClaim|AuthenticationScheme|AuthorizationPolicy|IAuthorizationHandler'          # authn/authz
 CONTENT_RE="${CONTENT_RE}"'|OwnerId|TenantId|KnowledgeScope|VisibleTo|WritableBy'                                                             # scope isolation — this repo's recurring defect class
 CONTENT_RE="${CONTENT_RE}"'|CapabilityEnvelope|AutonomyLevel|AllowedTools|DeniedTools|Sandbox|GovernanceTrace|PermittedApprovers|Approver'    # capability + governance
 CONTENT_RE="${CONTENT_RE}"'|Jwt|Bearer|AccessToken|RefreshToken|SasToken|ApiKey|Password|Secret|Hmac|Sha256|RandomNumberGenerator'            # credentials + crypto
 CONTENT_RE="${CONTENT_RE}"'|\[Http(Get|Post|Put|Delete|Patch)|MapGet\(|MapPost\(|MapDelete\(|UseCors|RateLimit'                               # externally reachable surface
+CONTENT_RE="${CONTENT_RE}"'|GetFullPath|ResolveLinkTarget|LinkTarget|IsPathRooted|GetRelativePath|DirectorySeparatorChar'                     # filesystem path confinement
+CONTENT_RE="${CONTENT_RE}"'|EgressPolicy|EgressAllowlist|AntiSSRF|Ssrf|SSRF'                                                                   # egress control (the SSRF guard, not the mechanism)
+CONTENT_RE="${CONTENT_RE}"'|FromSqlRaw|FromSqlInterpolated|ExecuteSqlRaw|ExecuteSqlInterpolated'                                               # raw SQL — the one escape from EF Core's parameterisation
+CONTENT_RE="${CONTENT_RE}"'|Process\.Start|ProcessStartInfo|ZipArchive|ExtractToDirectory|BinaryFormatter|TypeNameHandling|XmlSerializer'     # code execution + unsafe deserialization
 CONTENT_RE="${CONTENT_RE}"'|Sanitiz|Redact|Scrub)'                                                                                            # output safety
 
 # Prose is excluded from the content scan — a security guide legitimately says
