@@ -214,6 +214,14 @@ public class AIConfig
     /// </summary>
     public WorkflowSubmissionConfig WorkflowSubmission { get; set; } = new();
 
+    /// <summary>
+    /// Server-side evaluation configuration: the directories dataset files may be read from, and the
+    /// ceilings on what a single run may spend. The defaults are unconfined and permissive because
+    /// they preserve the EvalRunner CLI's local workflow; a host that exposes evaluation to any caller
+    /// it does not trust must set <see cref="EvaluationConfig.DatasetRoots"/>.
+    /// </summary>
+    public EvaluationConfig Evaluation { get; set; } = new();
+
     /// <summary>Agent Governance Toolkit configuration.</summary>
     public GovernanceConfig Governance { get; init; } = new();
 

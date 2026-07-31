@@ -4,6 +4,8 @@ using Application.Core.CQRS.Evaluation.RunEvalSuite;
 using Domain.AI.Evaluation;
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
+using Domain.Common.Config;
+using Microsoft.Extensions.Options;
 using Moq;
 using Xunit;
 
@@ -66,12 +68,163 @@ public sealed class RunEvalSuiteCommandHandlerTests : IDisposable
         return mock;
     }
 
+    /// <summary>
+    /// Builds the handler with a real, UNCONFINED path guard — the shipped default, which is what the
+    /// EvalRunner CLI runs under. A stub guard would make these tests blind to the handler actually
+    /// consulting it; confinement itself is covered directly in <c>EvalDatasetPathGuardTests</c>.
+    /// </summary>
     private static RunEvalSuiteCommandHandler MakeSut(
         IEnumerable<IEvalDatasetLoader> loaders,
-        IEvalRunner runner) => new(
+        IEvalRunner runner,
+        AppConfig? config = null) => new(
             loaders,
             runner,
+            new EvalDatasetPathGuard(MonitorFor(config ?? new AppConfig()), new EvalConfinementLatch(false)),
+            MonitorFor(config ?? new AppConfig()),
             NullLogger<RunEvalSuiteCommandHandler>.Instance);
+
+    private static IOptionsMonitor<AppConfig> MonitorFor(AppConfig config)
+    {
+        var monitor = new Mock<IOptionsMonitor<AppConfig>>();
+        monitor.SetupGet(m => m.CurrentValue).Returns(config);
+        return monitor.Object;
+    }
+
+    [Fact]
+    public async Task Refuses_a_run_whose_case_count_exceeds_the_configured_ceiling()
+    {
+        // Every case is a governed agent turn plus its LLM-judge calls, multiplied by Repeats. This is
+        // the last point at which the spend can be refused instead of incurred, so the check has to
+        // happen BEFORE the runner is handed anything - asserting the runner was never invoked is the
+        // part that matters; a test that only checked the returned failure would pass even if the run
+        // had already been paid for.
+        var config = new AppConfig();
+        config.AI.Evaluation.MaxCaseExecutionsPerRun = 1;
+
+        var path1 = CreateFile("a.yaml");
+        var path2 = CreateFile("b.yaml");
+        var loader = Loader([".yaml"]);
+        var runner = new Mock<IEvalRunner>();
+
+        var sut = MakeSut([loader.Object], runner.Object, config);
+
+        var result = await sut.Handle(
+            new RunEvalSuiteCommand { DatasetPaths = [path1, path2] }, CancellationToken.None);
+
+        result.IsSuccess.Should().BeFalse();
+        runner.Verify(
+            r => r.RunAsync(It.IsAny<IReadOnlyList<EvalDataset>>(), It.IsAny<EvalRunOptions>(), It.IsAny<CancellationToken>()),
+            Times.Never,
+            "the ceiling must refuse the run before any model spend");
+    }
+
+    [Fact]
+    public async Task Allows_a_run_at_exactly_the_configured_ceiling()
+    {
+        // Boundary: the ceiling is inclusive. An off-by-one here would refuse a legitimate suite that
+        // an operator had sized deliberately.
+        var config = new AppConfig();
+        config.AI.Evaluation.MaxCaseExecutionsPerRun = 2;
+
+        var path1 = CreateFile("a.yaml");
+        var path2 = CreateFile("b.yaml");
+        var loader = Loader([".yaml"]);
+        var runner = new Mock<IEvalRunner>();
+        runner.Setup(r => r.RunAsync(It.IsAny<IReadOnlyList<EvalDataset>>(), It.IsAny<EvalRunOptions>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(MakeReport());
+
+        var sut = MakeSut([loader.Object], runner.Object, config);
+
+        var result = await sut.Handle(
+            new RunEvalSuiteCommand { DatasetPaths = [path1, path2] }, CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Refuses_an_oversized_dataset_without_parsing_it()
+    {
+        // The execution ceiling can only be applied once cases exist, and producing cases means parsing.
+        // So the size check has to come first, and the loader must never be called — otherwise the parse
+        // cost of an arbitrarily large file is paid in full before anything is refused.
+        var config = new AppConfig();
+        config.AI.Evaluation.MaxDatasetBytes = 32;
+
+        var path = CreateFile("big.yaml", new string('x', 1024));
+        var loader = Loader([".yaml"]);
+        var runner = new Mock<IEvalRunner>();
+
+        var sut = MakeSut([loader.Object], runner.Object, config);
+
+        var result = await sut.Handle(
+            new RunEvalSuiteCommand { DatasetPaths = [path] }, CancellationToken.None);
+
+        result.IsSuccess.Should().BeFalse();
+        loader.Verify(
+            l => l.LoadAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Never,
+            "the size cap exists to avoid the parse, so refusing after parsing would defeat it");
+    }
+
+    [Fact]
+    public async Task Stops_loading_as_soon_as_the_ceiling_is_exceeded()
+    {
+        // Summing at the end would parse every named file before deciding. Bailing on the dataset that
+        // crosses the ceiling is what keeps the refusal cheaper than the run.
+        var config = new AppConfig();
+        config.AI.Evaluation.MaxCaseExecutionsPerRun = 1;
+
+        var path1 = CreateFile("a.yaml");
+        var path2 = CreateFile("b.yaml");
+        var path3 = CreateFile("c.yaml");
+        var loader = Loader([".yaml"]);
+        var runner = new Mock<IEvalRunner>();
+
+        var sut = MakeSut([loader.Object], runner.Object, config);
+
+        var result = await sut.Handle(
+            new RunEvalSuiteCommand { DatasetPaths = [path1, path2, path3] }, CancellationToken.None);
+
+        result.IsSuccess.Should().BeFalse();
+
+        // One case each: the first is at the ceiling, the second crosses it, the third is never reached.
+        loader.Verify(
+            l => l.LoadAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Exactly(2),
+            "loading must stop at the dataset that crosses the ceiling, not continue through the list");
+    }
+
+    [Fact]
+    public async Task Counts_repeats_against_the_ceiling_rather_than_cases_alone()
+    {
+        // The ceiling exists to bound spend, and Repeats multiplies spend: each one re-invokes every
+        // case and its judge. A ceiling counting cases alone would cap nothing, because the same two
+        // cases could be asked for fifty times over and still read as "2".
+        var config = new AppConfig();
+        config.AI.Evaluation.MaxCaseExecutionsPerRun = 5;
+
+        var path1 = CreateFile("a.yaml");
+        var path2 = CreateFile("b.yaml");
+        var loader = Loader([".yaml"]);
+        var runner = new Mock<IEvalRunner>();
+
+        var sut = MakeSut([loader.Object], runner.Object, config);
+
+        // Two cases — comfortably under 5. Four repeats makes it eight executions, which is not.
+        var result = await sut.Handle(
+            new RunEvalSuiteCommand
+            {
+                DatasetPaths = [path1, path2],
+                Options = new EvalRunOptions { Repeats = 4 },
+            },
+            CancellationToken.None);
+
+        result.IsSuccess.Should().BeFalse();
+        runner.Verify(
+            r => r.RunAsync(It.IsAny<IReadOnlyList<EvalDataset>>(), It.IsAny<EvalRunOptions>(), It.IsAny<CancellationToken>()),
+            Times.Never,
+            "repeats must be priced in before the run is handed to the runner");
+    }
 
     [Fact]
     public async Task Loads_each_dataset_via_extension_match_and_passes_to_runner()

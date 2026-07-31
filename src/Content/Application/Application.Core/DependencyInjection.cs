@@ -50,6 +50,19 @@ public static class DependencyInjection
 		// request-scoped IMediator.
 		services.AddScoped<ILearningRecaller, MediatorLearningRecaller>();
 
+		// Evaluation dataset path guard — decides which dataset files a run may read. Registered
+		// unconditionally so the confinement rule is applied by the handler on EVERY dispatch, not
+		// only the ones a caller remembered to route through it. Unconfined until an operator sets
+		// AppConfig:AI:Evaluation:DatasetRoots, which preserves the EvalRunner CLI's local workflow.
+		services.AddSingleton<CQRS.Evaluation.RunEvalSuite.IEvalDatasetPathGuard,
+			CQRS.Evaluation.RunEvalSuite.EvalDatasetPathGuard>();
+
+		// Default confinement latch: no host has claimed a startup check. A host that verifies dataset
+		// roots at boot re-registers this as true (last-write-wins), which is what stops a later config
+		// reload from loosening confinement. Deliberately a constant rather than a configuration read —
+		// see EvalConfinementLatch for why deriving it lazily would defeat the point.
+		services.AddSingleton(new CQRS.Evaluation.RunEvalSuite.EvalConfinementLatch(StartedConfined: false));
+
 		// Autonomy tier rule provider — generates baseline permission rules from agent tier
 		services.AddSingleton<IPermissionRuleProvider, AutonomyTierRuleProvider>();
 
