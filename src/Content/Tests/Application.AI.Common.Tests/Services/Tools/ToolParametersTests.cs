@@ -37,7 +37,23 @@ public sealed class ToolParametersTests
     [Fact]
     public void A_whole_number_becomes_a_long()
     {
-        Parse("""{"depth":2}""")["depth"].Should().Be(2L);
+        // Asserts the TYPE, not the value. `Should().Be(2L)` on an object goes through
+        // FluentAssertions' numeric-equivalence path, which accepts a boxed 2.0d as equal to 2L — so
+        // the obvious version of this test passes against an implementation that boxes every whole
+        // number as a double, which is exactly the regression it is meant to catch. Tools match their
+        // arguments by type, so the type IS the contract here.
+        Parse("""{"depth":2}""")["depth"].Should().BeOfType<long>().Which.Should().Be(2L);
+    }
+
+    [Fact]
+    public void A_whole_number_does_not_arrive_as_a_double()
+    {
+        // Stated the other way round as well, because this is the shape the defect took: a conditional
+        // whose branches are long and double has a natural type of DOUBLE unless one side is cast to
+        // object, so "tidying away" that cast silently converts every integer parameter. Tools such as
+        // DocumentSearchTool.GetOptionalInt accept int/long/string and return null otherwise — the
+        // argument is then dropped with no error and no log, and the tool uses its default.
+        Parse("""{"top_k":3}""")["top_k"].Should().NotBeOfType<double>();
     }
 
     [Fact]

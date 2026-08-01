@@ -77,7 +77,7 @@ public static class ToolParameters
     /// mutable one would let any consumer that downcast its parameter map corrupt the value every
     /// other call receives — a trivial mistake to make, and one whose blast radius is now the external
     /// HTTP surface as well as the agent path.
-    /// </summary>
+    /// </remarks>
     private static readonly IReadOnlyDictionary<string, object?> EmptyParameters =
         System.Collections.ObjectModel.ReadOnlyDictionary<string, object?>.Empty;
 
@@ -101,7 +101,15 @@ public static class ToolParameters
             dict[prop.Name] = prop.Value.ValueKind switch
             {
                 JsonValueKind.String => prop.Value.GetString(),
-                JsonValueKind.Number => prop.Value.TryGetInt64(out var i) ? i : prop.Value.GetDouble(),
+
+                // The (object?) cast is load-bearing and must not be "tidied away". Without it the
+                // conditional has a natural type of double — long converts to double implicitly, so
+                // that is the common type — and every whole number boxes as a double. Tools match
+                // their arguments by type (DocumentSearchTool accepts int/long/string and returns
+                // null for anything else), so the symptom is not an error: the parameter is silently
+                // discarded and the tool quietly uses its default.
+                JsonValueKind.Number => prop.Value.TryGetInt64(out var i) ? (object?)i : prop.Value.GetDouble(),
+
                 JsonValueKind.True => true,
                 JsonValueKind.False => false,
                 JsonValueKind.Null => null,
