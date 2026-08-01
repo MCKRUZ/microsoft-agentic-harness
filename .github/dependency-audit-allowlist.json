@@ -1,0 +1,23 @@
+{
+  "$comment": [
+    "Advisories consciously accepted, checked by .github/scripts/check-dependency-vulnerabilities.mjs.",
+    "Every entry needs a reason that says why the flaw is not reachable in THIS repo, not merely",
+    "that upgrading is inconvenient. Every entry also needs a reviewBy date: the gate fails once it",
+    "passes, so an exception cannot quietly become permanent. The gate also fails on entries that no",
+    "longer match a finding, so a fixed package cannot leave its exception behind."
+  ],
+  "accepted": [
+    {
+      "advisory": "GHSA-qwww-vcr4-c8h2",
+      "package": "react-router",
+      "reason": "RSC-mode CSRF bypass. Neither frontend runs React Router in RSC or framework mode: Presentation.WebUI uses BrowserRouter (declarative) and Presentation.Dashboard uses createBrowserRouter + RouterProvider (data mode), neither project has a react-router.config.* nor depends on @react-router/serve, and no server-side action handling exists for the bypass to reach. The fix is react-router 8.3.0 — a major upgrade across ~27 call sites — which is not justified for a code path that cannot execute. Re-assess if either app adopts framework or RSC mode.",
+      "reviewBy": "2027-02-01"
+    },
+    {
+      "advisory": "GHSA-qwww-vcr4-c8h2",
+      "package": "react-router-dom",
+      "reason": "Same advisory as the react-router entry above; react-router-dom is flagged only because it re-exports the affected package. Identical reasoning and identical review date.",
+      "reviewBy": "2027-02-01"
+    }
+  ]
+}
