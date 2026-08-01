@@ -13,17 +13,14 @@ namespace Infrastructure.AI.Skills;
 /// </summary>
 /// <remarks>
 /// <para>
-/// This registry implements its own filesystem walk (up to <see cref="MaxSearchDepth"/> levels)
-/// rather than delegating to the framework's <c>AgentFileSkillsSource</c>, because that source
-/// promotes only five frontmatter keys (<c>name</c>, <c>description</c>, <c>license</c>,
-/// <c>compatibility</c>, <c>allowed-tools</c>) and <em>silently discards</em> every other
-/// top-level key. The harness-specific fields this registry indexes on — <c>category</c>,
-/// <c>tags</c>, <c>skill_type</c> — are among those dropped. See
-/// <c>docs/plans/skills-refactor-to-framework.md</c> §2d.
+/// Walks the filesystem itself (up to <see cref="MaxSearchDepth"/> levels) rather than using the
+/// framework's <c>AgentFileSkillsSource</c>, which drops the <c>category</c>, <c>tags</c>, and
+/// <c>skill_type</c> keys this registry indexes on — see <see cref="SkillMetadataParser"/>.
 /// </para>
 /// <para>
 /// Runtime skill content disclosure is a separate concern, handled by the framework's
-/// <c>AgentSkillsProvider</c> wired into <c>ChatClientAgentOptions.AIContextProviders</c>.
+/// <see cref="Microsoft.Agents.AI.AgentSkillsProvider"/> wired into
+/// <c>ChatClientAgentOptions.AIContextProviders</c>.
 /// </para>
 /// </remarks>
 public sealed class SkillMetadataRegistry : ISkillMetadataRegistry

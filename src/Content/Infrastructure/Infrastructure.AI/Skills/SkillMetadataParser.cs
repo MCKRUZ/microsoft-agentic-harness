@@ -14,15 +14,13 @@ namespace Infrastructure.AI.Skills;
 /// <c>metadata:</c> escape hatch captures flat string values only, so it cannot represent the
 /// harness's structured <c>tools</c> (list of objects) or <c>egress</c> (nested map) fields.
 /// <para>
-/// This parser therefore owns the harness-specific frontmatter: <c>category</c>, <c>tags</c>,
-/// <c>version</c>, <c>model-override</c>, <c>agent-id</c>, <c>allowed-tools</c>,
-/// <c>prerequisites</c>, <c>completion_tool</c>, <c>skill_type</c>, the nested <c>metadata</c>
-/// block, and <c>egress</c>. See <c>docs/plans/skills-refactor-to-framework.md</c> §2d and §3b.
+/// This parser therefore owns the harness-specific frontmatter; see <c>ParseFromFile</c> below
+/// for the authoritative list. Background: <c>docs/plans/skills-refactor-to-framework.md</c>.
 /// </para>
 /// <para>
 /// It does <em>not</em> parse the structured <c>tools:</c> block that shipped SKILL.md files
-/// declare — <see cref="SkillDefinition.ToolDeclarations"/> is never populated from frontmatter.
-/// See issue #222.
+/// declare — <see cref="SkillDefinition.ToolDeclarations"/> is never populated from frontmatter
+/// (issue #222).
 /// </para>
 /// </remarks>
 public sealed class SkillMetadataParser
