@@ -40,6 +40,20 @@ public sealed class DirectToolInvocationConfigValidator : AbstractValidator<Dire
     /// </remarks>
     public const int MaxOutputCharactersCeiling = int.MaxValue - (64 * 1024);
 
+    /// <summary>
+    /// The longest usable invocation deadline. <see cref="CancellationTokenSource.CancelAfter(TimeSpan)"/>
+    /// refuses a delay beyond <see cref="int.MaxValue"/> milliseconds — roughly 24.85 days.
+    /// </summary>
+    /// <remarks>
+    /// The same failure shape as the output-ceiling bound above, and guarded for the same reason: the
+    /// throw happens inside the invocation, where the generic catch turns it into <c>Faulted</c>, so
+    /// every single call returns <c>500</c> and nothing in the response names the setting. A deadline
+    /// anywhere near this is already absurd for a synchronous HTTP surface — the point is that the
+    /// validator either catches this class of mistake or it does not, and catching one arithmetic
+    /// overflow while leaving its neighbour would be an arbitrary place to stop.
+    /// </remarks>
+    public static readonly TimeSpan MaxInvocationTimeout = TimeSpan.FromMilliseconds(int.MaxValue);
+
     /// <summary>Initializes the rule set. Every quantity is strictly positive.</summary>
     public DirectToolInvocationConfigValidator()
     {
@@ -49,7 +63,9 @@ public sealed class DirectToolInvocationConfigValidator : AbstractValidator<Dire
 
         RuleFor(x => x.InvocationTimeout)
             .GreaterThan(TimeSpan.Zero)
-            .WithMessage("InvocationTimeout must be > 0 — a non-positive deadline cancels every invocation before the tool starts, so the surface answers 504 to everything.");
+            .WithMessage("InvocationTimeout must be > 0 — a non-positive deadline cancels every invocation before the tool starts, so the surface answers 504 to everything.")
+            .LessThanOrEqualTo(MaxInvocationTimeout)
+            .WithMessage($"InvocationTimeout must be <= {MaxInvocationTimeout} — CancellationTokenSource.CancelAfter refuses a longer delay, and the resulting throw turns every invocation into a 500.");
 
         RuleFor(x => x.MaxOutputCharacters)
             .GreaterThan(0)

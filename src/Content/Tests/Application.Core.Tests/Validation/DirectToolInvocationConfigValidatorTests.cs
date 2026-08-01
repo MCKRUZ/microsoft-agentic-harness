@@ -114,6 +114,29 @@ public sealed class DirectToolInvocationConfigValidatorTests
     }
 
     [Fact]
+    public void A_deadline_beyond_what_CancelAfter_accepts_is_refused()
+    {
+        // CancellationTokenSource.CancelAfter refuses a delay past int.MaxValue milliseconds (~24.85
+        // days) and throws inside the invocation, where the generic catch turns it into a 500 — for
+        // every call, with nothing naming the setting. Same shape as the output-ceiling overflow one
+        // rule up, guarded for the same reason.
+        var config = new DirectToolInvocationConfig { InvocationTimeout = TimeSpan.FromDays(30) };
+
+        _sut.Validate(config).IsValid.Should().BeFalse();
+    }
+
+    [Fact]
+    public void A_deadline_at_the_documented_maximum_is_accepted()
+    {
+        var config = new DirectToolInvocationConfig
+        {
+            InvocationTimeout = DirectToolInvocationConfigValidator.MaxInvocationTimeout
+        };
+
+        _sut.Validate(config).IsValid.Should().BeTrue();
+    }
+
+    [Fact]
     public void The_failure_names_the_setting_that_is_wrong()
     {
         // The whole point of failing at startup rather than at request time: the operator is told which
