@@ -63,9 +63,12 @@ public static class ExecutionApiServiceCollectionExtensions
     /// endpoint makes above. It is the right way round: a caller capped at
     /// <see cref="MaxConcurrentInvocationsPerCaller"/> simultaneous invocations cannot exhaust the
     /// thread pool however fast it calls, whereas a request-rate cap cannot bound work that is still
-    /// running when the window rolls. What the swap gives up is protection against high-rate calls to
-    /// a very fast tool; those return their thread immediately, so they cost throughput rather than
-    /// capacity, and the host-wide limits still apply.
+    /// running when the window rolls. What the swap gives up is real and worth stating plainly: this
+    /// action has no request-<em>rate</em> bound at all, and this host configures no
+    /// <c>GlobalLimiter</c> to fall back on. An authorized caller may issue unlimited invocations of a
+    /// fast tool, four at a time. That is the lesser exposure — a fast tool returns its thread
+    /// immediately, so the cost is throughput rather than capacity — but it is not nothing, and
+    /// chaining a fixed window with this concurrency limiter is the obvious follow-up.
     /// </para>
     /// </remarks>
     public const string InvokeRateLimitPolicy = "tools-invoke";

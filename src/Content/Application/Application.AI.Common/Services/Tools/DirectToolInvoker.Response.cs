@@ -28,6 +28,18 @@ public sealed partial class DirectToolInvoker
     /// Sized generously against the longest thing the sanitizers look for — connection strings and
     /// PEM-armoured keys run to a few kilobytes — because the cost of being wrong in one direction is
     /// a few spare kilobytes scanned, and in the other it is an unredacted secret on the wire.
+    /// <para>
+    /// <strong>Known residual, stated rather than papered over.</strong> The pre-cut can bisect a
+    /// secret at <c>ceiling + margin</c>, leaving a prefix the sanitizers cannot match. That prefix
+    /// normally sits beyond the ceiling and is discarded by the final cut — but redaction shrinks text,
+    /// so if net shrinkage across the scanned region exceeds this margin the prefix can migrate below
+    /// the ceiling and be returned. Re-scrubbing the result does not fix it (a partial pattern still
+    /// does not match), and no cheap check distinguishes a migrated prefix from ordinary content, so
+    /// the honest mitigation is the margin being large relative to plausible shrinkage. Removing the
+    /// class entirely means not pre-cutting at all, which costs a full sanitizer pass over an
+    /// arbitrarily large tool result on a remotely-triggered path — the trade this constant exists to
+    /// make. Revisit if a sanitizer is added whose replacements are much shorter than what they match.
+    /// </para>
     /// </remarks>
     private const int ScrubOverlapMargin = 8 * 1024;
 

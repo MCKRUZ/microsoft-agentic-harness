@@ -62,22 +62,21 @@ public sealed class AnonymousAuthenticationHandler : AuthenticationHandler<Authe
                 new Claim("oid", AnonymousUserId),
 
                 // The role-gated surfaces this host serves, granted so a local developer can exercise
-                // them. This mirrors AgentHub's DevAuthHandler and carries the same caveat: a consumer
-                // who copies this handler as the shape of their own authentication inherits a principal
-                // holding EVERY role below, so those gates are never exercised by running the app — only
-                // by the controllers' tests. In a real deployment each role is granted separately, and
-                // this handler is not reachable at all unless Auth:AllowAnonymous was set.
+                // them. Mirrors AgentHub's DevAuthHandler, with the same caveat: a consumer who copies
+                // this handler inherits a principal holding every role listed here, so those gates are
+                // never exercised by running the app — only by the controllers' tests.
                 //
-                // Harness.Tools.Invoke is the one to think hardest about before copying this: it unlocks
-                // execution of arbitrary host tools, not just a read or a scoped run. Reaching that
-                // unauthenticated still takes three separate operator decisions — AllowAnonymous, plus
-                // DirectToolInvocation:Enabled, plus a Envelopes:Default that actually grants tools —
-                // and the deliberate omission of NameIdentifier keeps this principal unaddressable by
-                // Envelopes:BySubject. Note also that CapabilityEnvelopeResolver matches ClaimTypes.Role,
-                // so these role names are addressable in Envelopes:ByRole; do not reuse them there
-                // expecting them to mean something narrower.
+                // Harness.Tools.Invoke is deliberately NOT granted, even though this host serves that
+                // surface. It unlocks execution of arbitrary host tools rather than a read or a scoped
+                // run, and the backstop that contains the roles above does not contain it: the type
+                // remarks note that omitting NameIdentifier keeps this principal unaddressable by
+                // Envelopes:BySubject, but the principal does carry `oid`, so StableId succeeds and the
+                // NoUsableIdentity 401 never fires. What would remain is Envelopes:ByRole — and since
+                // CapabilityEnvelopeResolver matches ClaimTypes.Role, an operator keying a grant on
+                // "Harness.Tools.Invoke" would hand it to this principal without meaning to. The
+                // invocation tests mint their own principal, so granting it here buys nothing and makes
+                // the dev credential the widest one in the host.
                 new Claim(ClaimTypes.Role, Controllers.EvalsController.ExecuteRole),
-                new Claim(ClaimTypes.Role, Controllers.ToolsController.InvokeRole),
             ],
             SchemeName);
         var principal = new ClaimsPrincipal(identity);
