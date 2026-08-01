@@ -549,6 +549,43 @@ public sealed class DirectToolInvokerTests
     }
 
     [Fact]
+    public async Task A_redaction_that_cannot_be_applied_withholds_the_result()
+    {
+        // Fail closed. The gate decided this asset must not be emitted as-is; if its redaction cannot
+        // be applied, falling back to the original defeats the entire control. RedactResult is typed
+        // object? -> object?, and the shipped gate returns structured values unchanged for some
+        // inputs, so a consumer-supplied gate answering with a JsonElement is a realistic way to land
+        // here — and "as string ?? output" would have quietly emitted the unredacted text.
+        _classificationGate = new FakeClassificationGate(ClassificationVerdict.RedactOutput())
+        {
+            RedactionResult = 42
+        };
+        _sanitizer.PassThrough = true;
+        var tool = Tool("alpha", result: ToolResult.Ok("classified"));
+
+        var outcome = await Invoke(Request("alpha"), tool);
+
+        outcome.Status.Should().Be(DirectToolInvocationStatus.Denied);
+        outcome.Output.Should().NotContain("classified");
+    }
+
+    [Fact]
+    public async Task A_failing_tools_error_is_bounded_like_its_output()
+    {
+        // An error string is as capable of being enormous as an output one — a tool echoing a large
+        // input back in its failure message, say. Bounding only the success half would leave the
+        // ceiling trivially bypassable through the path a caller can trigger by sending bad input.
+        _config.MaxOutputCharacters = 50;
+        _sanitizer.PassThrough = true;
+        var tool = Tool("alpha", result: ToolResult.Fail(new string('e', 100_000)));
+
+        var outcome = await Invoke(Request("alpha"), tool);
+
+        outcome.Status.Should().Be(DirectToolInvocationStatus.ToolFailed);
+        outcome.Error!.Length.Should().BeLessThanOrEqualTo(50);
+    }
+
+    [Fact]
     public async Task The_classification_gate_sees_the_invocation_parameters()
     {
         // The gate resolves which asset a call touches, and the asset identity lives in the arguments,
@@ -737,7 +774,10 @@ public sealed class DirectToolInvokerTests
             return verdict;
         }
 
-        public object? RedactResult(string toolName, object? result) => Redacted;
+        /// <summary>When set, the gate answers redaction with a non-string, as a consumer gate may.</summary>
+        public object? RedactionResult { get; set; }
+
+        public object? RedactResult(string toolName, object? result) => RedactionResult ?? Redacted;
     }
 
     private sealed class StaticOptionsMonitor<T>(T value) : IOptionsMonitor<T>
