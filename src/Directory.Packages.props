@@ -130,7 +130,14 @@
     <PackageVersion Include="Microsoft.Extensions.Configuration.AzureAppConfiguration" Version="8.1.0" />
     <PackageVersion Include="Microsoft.Extensions.Configuration.UserSecrets" Version="10.0.9" />
     <PackageVersion Include="Microsoft.AspNetCore.SpaProxy" Version="10.0.0" />
-    <PackageVersion Include="Microsoft.Identity.Web" Version="4.11.0" />
+    <!--
+      4.14.2 (not 4.11.0) because its Microsoft.Identity.Web.TokenCache dependency moved
+      System.Security.Cryptography.Xml from 10.0.7 to the patched 10.0.10. 10.0.0-10.0.9 carry five
+      HIGH advisories (CVE-2026-47302, -47304, -50525, -50527, -50648). Fixing it here rather than
+      pinning the transitive package keeps the graph honest: there is no direct dependency on
+      System.Security.Cryptography.Xml to explain. Do not lower this below 4.14.2.
+    -->
+    <PackageVersion Include="Microsoft.Identity.Web" Version="4.14.2" />
     <PackageVersion Include="OpenTelemetry.Extensions.Hosting" Version="1.15.3" />
     <PackageVersion Include="OpenTelemetry.Instrumentation.AspNetCore" Version="1.15.2" />
     <PackageVersion Include="OpenTelemetry.Instrumentation.Http" Version="1.15.1" />
