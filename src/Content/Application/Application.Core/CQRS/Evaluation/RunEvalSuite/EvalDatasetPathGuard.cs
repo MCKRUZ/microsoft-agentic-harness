@@ -146,30 +146,8 @@ public sealed class EvalDatasetPathGuard : IEvalDatasetPathGuard
         if (walk.Exhausted)
             return EvalDatasetPathDecision.Refuse("Dataset is not available.");
 
-        foreach (var root in roots)
+        foreach (var canonicalRoot in ResolvedRoots(roots))
         {
-            string canonicalRoot;
-            try
-            {
-                // Roots go through the SAME link resolution as the candidate. Comparing a fully-resolved
-                // candidate against a merely-canonicalised root refuses everything whenever the root is
-                // reached through a symlinked directory — macOS `/tmp` (a link to `/private/tmp`) and
-                // plenty of container bind mounts are exactly that. It fails closed, so it is an
-                // availability trap rather than a bypass, but a confinement rule that silently rejects
-                // every legitimate path gets switched off by whoever hits it.
-                var rootWalk = new LinkWalk();
-                canonicalRoot = ResolveSegments(Path.GetFullPath(root), rootWalk);
-
-                // An unresolvable root confines nothing knowable, so drop it rather than compare against
-                // a half-resolved path.
-                if (rootWalk.Exhausted)
-                    continue;
-            }
-            catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
-            {
-                continue;
-            }
-
             if (IsInside(effective, canonicalRoot) && File.Exists(effective))
                 return EvalDatasetPathDecision.Allow(effective);
         }
@@ -189,6 +167,70 @@ public sealed class EvalDatasetPathGuard : IEvalDatasetPathGuard
     /// </remarks>
     private static IReadOnlyList<string> UsableRoots(AppConfig config) =>
         [.. (config.AI.Evaluation.DatasetRoots ?? []).Where(root => !string.IsNullOrWhiteSpace(root))];
+
+    /// <summary>
+    /// The configured roots, fully link-resolved, reusing the previous answer while the roots are
+    /// unchanged.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Roots go through the SAME link resolution as the candidate. Comparing a fully-resolved candidate
+    /// against a merely-canonicalised root refuses everything whenever the root is reached through a
+    /// symlinked directory — macOS <c>/tmp</c> (a link to <c>/private/tmp</c>) and plenty of container
+    /// bind mounts are exactly that. It fails closed, so it is an availability trap rather than a
+    /// bypass, but a confinement rule that silently rejects every legitimate path gets switched off by
+    /// whoever hits it.
+    /// </para>
+    /// <para>
+    /// <strong>Memoized because the roots do not vary with the candidate.</strong> Resolving them
+    /// inside the per-candidate loop repeated the same link walk for every path checked — which was
+    /// tolerable when a check meant one dataset, and is not now that the name catalog confines every
+    /// file in every root on each listing. Only the resolution is reused; the containment comparison
+    /// and the <c>File.Exists</c> still happen per candidate, so nothing about the decision is cached.
+    /// </para>
+    /// <para>
+    /// The cache is keyed on the configured roots themselves, so a configuration reload that changes
+    /// them recomputes rather than serving a stale allowlist — which is the direction that matters:
+    /// a stale <em>wider</em> allowlist would be a bypass.
+    /// </para>
+    /// </remarks>
+    private IReadOnlyList<string> ResolvedRoots(IReadOnlyList<string> roots)
+    {
+        var cached = _resolvedRoots;
+        if (cached is not null && cached.Configured.SequenceEqual(roots, StringComparer.Ordinal))
+            return cached.Resolved;
+
+        var resolved = new List<string>(roots.Count);
+        foreach (var root in roots)
+        {
+            try
+            {
+                var rootWalk = new LinkWalk();
+                var canonicalRoot = ResolveSegments(Path.GetFullPath(root), rootWalk);
+
+                // An unresolvable root confines nothing knowable, so drop it rather than compare
+                // against a half-resolved path.
+                if (!rootWalk.Exhausted)
+                    resolved.Add(canonicalRoot);
+            }
+            catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+            {
+                // A malformed root contributes nothing rather than refusing every path.
+            }
+        }
+
+        // A plain field write, not a lock. Two threads racing here compute the same answer from the
+        // same configuration, so the loser's work is wasted rather than wrong, and a torn read is not
+        // possible for a reference.
+        _resolvedRoots = new RootCache(roots, resolved);
+        return resolved;
+    }
+
+    /// <summary>The last root resolution, held so an unchanged configuration is not re-walked.</summary>
+    private volatile RootCache? _resolvedRoots;
+
+    /// <summary>One resolution of the configured roots, and the configuration it was computed from.</summary>
+    private sealed record RootCache(IReadOnlyList<string> Configured, IReadOnlyList<string> Resolved);
 
     /// <summary>Total symbolic links followed while resolving one path, across every segment.</summary>
     /// <remarks>

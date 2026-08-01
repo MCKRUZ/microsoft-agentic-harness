@@ -11,5 +11,8 @@ namespace Domain.AI.Runs;
 public enum RunKind
 {
     /// <summary>Executes a stored workflow (plan) through the planner.</summary>
-    Workflow = 0
+    Workflow = 0,
+
+    /// <summary>Executes a submitted evaluation suite through the eval runner.</summary>
+    Evaluation = 1
 }

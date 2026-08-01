@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces.Attestation;
 using Application.AI.Common.Interfaces.Escalation;
+using Application.AI.Common.Interfaces.Evaluation;
 using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Application.AI.Common.Interfaces.Planner;
 using Application.AI.Common.Interfaces.Runs;
@@ -10,6 +11,7 @@ using Domain.AI.Runs;
 using Domain.AI.Sandbox;
 using Domain.Common.Config;
 using Infrastructure.AI.Attestation;
+using Infrastructure.AI.Evaluation;
 using Infrastructure.AI.Persistence;
 using Infrastructure.AI.Planner;
 using Infrastructure.AI.Runs;
@@ -95,6 +97,31 @@ public static partial class DependencyInjection
         // from a request, so a scoped broker would give each side its own instance and every stream
         // would sit silent while the run reported into nothing.
         services.TryAddSingleton<IRunProgressBroker, InMemoryRunProgressBroker>();
+
+        // Holds what an evaluation run needs beyond the kind-agnostic record. Registered here with the
+        // rest of the substrate rather than in the host that serves evaluation over HTTP, because the
+        // CQRS handlers that depend on it are discovered by assembly scanning and therefore exist in
+        // EVERY host — a conditional registration makes each of those hosts fail ValidateOnBuild.
+        // Being registered is not being reachable: without a RunKind.Evaluation executor no eval run
+        // can execute, and the endpoints refuse unless evaluation is enabled.
+        services.TryAddSingleton<IEvalRunSubmissionStore, InMemoryEvalRunSubmissionStore>();
+
+        // The dataset name catalog. In Infrastructure because it reads directories, and registered
+        // here rather than in the host that serves evaluation for the same reason as the store above:
+        // the CQRS handlers that depend on it are found by assembly scanning, so they exist in every
+        // host and a conditional registration would fail ValidateOnBuild in all of them.
+        services.TryAddSingleton<IEvalDatasetCatalog, EvalDatasetCatalog>();
+
+        // Every holder of run-scoped state is released when a run's record is reclaimed, through this
+        // one seam rather than by the sweeper naming each of them. Both go through a named adapter:
+        // TryAddEnumerable distinguishes registrations by implementation type and rejects factory
+        // descriptors, so a lambda would either throw here or, as a plain AddSingleton, register again
+        // on every composition — and the substrate uses TryAdd throughout precisely so composing it
+        // twice is harmless.
+        services.TryAddEnumerable(
+            ServiceDescriptor.Singleton<IRunReclaimListener, RunProgressReclaimListener>());
+        services.TryAddEnumerable(
+            ServiceDescriptor.Singleton<IRunReclaimListener, EvalSubmissionReclaimListener>());
 
         // Keyed by RunKind, which is what makes a new kind of work a registration rather than a
         // change to the dispatcher. Scoped: the dispatcher creates a fresh scope per run and resolves

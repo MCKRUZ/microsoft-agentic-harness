@@ -60,6 +60,14 @@ public sealed class AnonymousAuthenticationHandler : AuthenticationHandler<Authe
                 // Stable identity so the knowledge scope is non-null and consistent. NOT NameIdentifier —
                 // see the type remarks: that claim is the capability-envelope subject.
                 new Claim("oid", AnonymousUserId),
+
+                // The role-gated surfaces this host serves, granted so a local developer can exercise
+                // them. This mirrors AgentHub's DevAuthHandler and carries the same caveat: a consumer
+                // who copies this handler as the shape of their own authentication inherits a principal
+                // holding every role, so the gate is never exercised by running the app — only by the
+                // controllers' tests. In a real deployment Harness.Evals.Execute is granted separately,
+                // and this handler is not reachable at all unless Auth:AllowAnonymous was set.
+                new Claim(ClaimTypes.Role, Controllers.EvalsController.ExecuteRole),
             ],
             SchemeName);
         var principal = new ClaimsPrincipal(identity);

@@ -30,6 +30,12 @@ internal sealed class HeaderIdentityAuthenticationHandler : AuthenticationHandle
     /// </summary>
     public const string ApproverHeader = "X-Test-Approver";
 
+    /// <summary>
+    /// Comma-separated roles to grant this request. Absent means the principal holds none, so a
+    /// role-gated endpoint is reached only by a test that asks for it explicitly.
+    /// </summary>
+    public const string RolesHeader = "X-Test-Roles";
+
     public HeaderIdentityAuthenticationHandler(
         IOptionsMonitor<AuthenticationSchemeOptions> options,
         ILoggerFactory logger,
@@ -62,6 +68,17 @@ internal sealed class HeaderIdentityAuthenticationHandler : AuthenticationHandle
         var approver = Request.Headers[ApproverHeader].ToString();
         if (!string.IsNullOrEmpty(approver))
             claims.Add(new Claim("preferred_username", approver));
+
+        // Roles are opt-in per request, never granted by default. A test principal that silently held
+        // every role would make the role-gated surfaces pass their tests while the gate did nothing —
+        // and the point of a gate is the caller who does not get through it.
+        var roles = Request.Headers[RolesHeader].ToString();
+        if (!string.IsNullOrEmpty(roles))
+        {
+            claims.AddRange(roles
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(role => new Claim(ClaimTypes.Role, role)));
+        }
 
         return Task.FromResult(Success(claims));
     }

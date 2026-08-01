@@ -307,6 +307,35 @@ public sealed class EvalDatasetPathGuardTests : IDisposable
     }
 
     [Fact]
+    public void SwappingOneRootForAnother_StopsAdmittingFilesUnderTheOldOne()
+    {
+        // The guard memoizes its link-resolved roots, because resolving them per candidate repeated the
+        // same walk for every file the dataset catalog confines. That cache is keyed on the configured
+        // roots, and this is the case that proves the key works: a cache that ignored a configuration
+        // change would keep honouring a root an operator had REMOVED, which is a widened allowlist
+        // surviving the change meant to narrow it.
+        //
+        // Deliberately one guard instance across both reads. Every other ratchet test builds a fresh
+        // guard, so none of them ever populates the cache before the configuration moves.
+        var config = new AppConfig();
+        config.AI.Evaluation.DatasetRoots = [_root];
+
+        var guard = GuardOver(config, startedConfined: true);
+
+        var underOldRoot = WriteFile(_root, "suite.yaml");
+        guard.Resolve(underOldRoot).IsAllowed.Should().BeTrue("the file is inside the configured root");
+
+        var otherRoot = Directory.CreateDirectory(Path.Combine(_outside, "other-root")).FullName;
+        var underNewRoot = WriteFile(otherRoot, "suite.yaml");
+        config.AI.Evaluation.DatasetRoots = [otherRoot];
+
+        guard.Resolve(underOldRoot).IsAllowed.Should().BeFalse(
+            "the old root was removed, so nothing under it may still be admitted");
+        guard.Resolve(underNewRoot).IsAllowed.Should().BeTrue(
+            "the new root was added, so files under it are admitted without a restart");
+    }
+
+    [Fact]
     public void RootsAlreadyGoneWhenTheGuardIsFirstBuilt_StillRefuse()
     {
         // The case a latch computed inside the constructor would miss entirely. The guard is a lazy

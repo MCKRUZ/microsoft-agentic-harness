@@ -19,9 +19,15 @@ namespace Infrastructure.AI.Runs;
 /// </para>
 /// <para>
 /// Only terminal runs are ever reclaimed — that rule lives in the store, not here, so no scheduling
-/// change can make a run a caller is still polling disappear. The progress broker's bookkeeping is
-/// released for the same runs at the same moment, because it is keyed by the same identifier and
-/// nothing can publish for a reclaimed run.
+/// change can make a run a caller is still polling disappear. Everything else keyed by the same
+/// identifier is released at the same moment, through <see cref="IRunReclaimListener"/>.
+/// </para>
+/// <para>
+/// <strong>Holders are told, not named.</strong> A run's identifier keys progress bookkeeping, and
+/// whatever each <c>RunKind</c> holds beyond the kind-agnostic record. Taking a dependency on each
+/// would make this service grow a constructor parameter per kind of run — and the kind whose author
+/// forgot would leak silently rather than fail to compile. Listening makes releasing a property of
+/// holding.
 /// </para>
 /// </remarks>
 internal sealed class RunRecordCleanupService : BackgroundService
@@ -41,7 +47,7 @@ internal sealed class RunRecordCleanupService : BackgroundService
     private const string SystemActor = "system:parked-run-expiry";
 
     private readonly IRunJobStore _store;
-    private readonly IRunProgressBroker _progress;
+    private readonly IReadOnlyList<IRunReclaimListener> _reclaimListeners;
     private readonly IEscalationService _escalations;
     private readonly IOptionsMonitor<AppConfig> _config;
     private readonly ILogger<RunRecordCleanupService> _logger;
@@ -49,19 +55,19 @@ internal sealed class RunRecordCleanupService : BackgroundService
     /// <summary>Initializes a new <see cref="RunRecordCleanupService"/>.</summary>
     public RunRecordCleanupService(
         IRunJobStore store,
-        IRunProgressBroker progress,
+        IEnumerable<IRunReclaimListener> reclaimListeners,
         IEscalationService escalations,
         IOptionsMonitor<AppConfig> config,
         ILogger<RunRecordCleanupService> logger)
     {
         ArgumentNullException.ThrowIfNull(store);
-        ArgumentNullException.ThrowIfNull(progress);
+        ArgumentNullException.ThrowIfNull(reclaimListeners);
         ArgumentNullException.ThrowIfNull(escalations);
         ArgumentNullException.ThrowIfNull(config);
         ArgumentNullException.ThrowIfNull(logger);
 
         _store = store;
-        _progress = progress;
+        _reclaimListeners = [.. reclaimListeners];
         _escalations = escalations;
         _config = config;
         _logger = logger;
@@ -103,10 +109,9 @@ internal sealed class RunRecordCleanupService : BackgroundService
                 return;
 
             // A run's identifier keys more than its record. Reclaiming one without the other would
-            // trade a bounded leak for an unbounded one — the progress bookkeeping would outlive every
-            // run the host ever streamed.
-            foreach (var jobId in reclaimed)
-                _progress.Forget(jobId);
+            // trade a bounded leak for an unbounded one — progress bookkeeping, and whatever each run
+            // kind holds, would outlive every run the host ever accepted.
+            NotifyReclaimed(reclaimed);
 
             _logger.LogInformation(
                 "Run sweep reclaimed {Count} expired run record(s).", reclaimed.Count);
@@ -116,6 +121,35 @@ internal sealed class RunRecordCleanupService : BackgroundService
             // A failed sweep must not take the service down: the next tick would never come, and the
             // retention window would stop being honoured for the life of the process.
             _logger.LogError(ex, "Run record sweep failed; will retry on the next interval.");
+        }
+    }
+
+    /// <summary>
+    /// Tells every holder of run-scoped state that these runs are gone.
+    /// </summary>
+    /// <remarks>
+    /// Each listener is guarded separately. One that throws must not stop the rest from being told:
+    /// the records are already gone by this point, so a listener skipped here holds its entries for
+    /// the life of the process with nothing that will ever come back for them — which is the
+    /// unbounded leak this call exists to prevent, reintroduced by a fault in an unrelated holder.
+    /// </remarks>
+    private void NotifyReclaimed(IReadOnlyList<string> reclaimed)
+    {
+        foreach (var listener in _reclaimListeners)
+        {
+            try
+            {
+                listener.OnRunsReclaimed(reclaimed);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(
+                    ex,
+                    "{Listener} failed to release state for {Count} reclaimed run(s); its entries for "
+                    + "those runs will not be recovered.",
+                    listener.GetType().Name,
+                    reclaimed.Count);
+            }
         }
     }
 
