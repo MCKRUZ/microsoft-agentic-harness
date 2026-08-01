@@ -10,7 +10,9 @@ namespace Application.AI.Common.Interfaces;
 /// <remarks>
 /// This replaces <c>ISkillLoaderService</c>. Full progressive skill disclosure (Tier 2 body,
 /// Tier 3 resources) is handled by the framework's <c>AgentSkillsProvider</c> AIContextProvider,
-/// which exposes <c>load_skill</c> and <c>read_skill_resource</c> tools to the model.
+/// which exposes <c>load_skill</c>, <c>read_skill_resource</c>, and <c>run_skill_script</c> tools
+/// to the model. This harness supplies a no-op script runner, so <c>run_skill_script</c> is inert
+/// here by design (see <c>AgentExecutionContextFactory</c>).
 /// </remarks>
 public interface ISkillMetadataRegistry
 {

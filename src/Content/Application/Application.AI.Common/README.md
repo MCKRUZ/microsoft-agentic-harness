@@ -124,7 +124,7 @@ if (budget.RemainingTokens < skill.Level2TokenEstimate)
     // Fall back to Tier 1 only, or trigger compaction
 ```
 
-Progressive skill loading itself is delegated to the Agent Framework's `AgentSkillsProvider`, wired in `AgentExecutionContextFactory`. It advertises each skill's name and description in the system prompt and exposes `load_skill` / `read_skill_resource` tools the model calls on demand.
+Progressive skill loading itself is delegated to the Agent Framework's `AgentSkillsProvider`, wired in `AgentExecutionContextFactory`. It advertises each skill's name and description in the system prompt and exposes `load_skill`, `read_skill_resource`, and `run_skill_script` tools the model calls on demand. The harness supplies a no-op script runner, so `run_skill_script` is inert here by design.
 
 > **Known deviation.** `AgentExecutionContextFactory` currently also merges each skill's full `Instructions` body into the static system prompt, so Tier 2 is loaded eagerly rather than on demand, and `ContextBudgetTracker` does not observe content the model pulls through the framework's tools. See `docs/plans/skills-refactor-to-framework.md` §5.
 

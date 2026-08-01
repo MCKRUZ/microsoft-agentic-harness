@@ -23,7 +23,7 @@
 | NEEDS-MCP | Metric fires only when MCP servers are configured and queried |
 | NEEDS-SAFETY | Metric fires only when content safety middleware is enabled + triggered |
 | NEEDS-BUDGET | Metric fires only when BudgetTrackingService observable gauges are registered |
-| NEEDS-CONTEXT | Metric fires only from TieredContextAssembler during skill loading |
+| NEEDS-CONTEXT | Metric fires only during context-budget pressure (long conversations) |
 | DEAD | Metric name defined in conventions but no recording code found |
 
 ---
@@ -107,14 +107,20 @@
 
 | Panel | Prometheus Metric | Code Metric | Recorded By | Status |
 |-------|-------------------|-------------|-------------|--------|
-| Budget Utilization | `agentic_harness_agent_context_budget_utilization_*` | `agent.context.budget_utilization` | `ContextBudgetMetrics` via `TieredContextAssembler` | **NEEDS-CONTEXT** |
+| Budget Utilization | `agentic_harness_agent_context_budget_utilization_*` | `agent.context.budget_utilization` | *(nothing — instrument declared, never recorded)* | **DEAD** |
 | Compaction Events | `agentic_harness_agent_context_compactions_total` | `agent.context.compactions` | `ContextBudgetMetrics` | **NEEDS-CONTEXT** |
-| Skills Loaded Tokens | `agentic_harness_agent_context_skills_loaded_tokens_*` | `agent.context.skills_loaded_tokens` | `ContextBudgetMetrics` via `TieredContextAssembler` | **NEEDS-CONTEXT** |
-| System Prompt Tokens | `agentic_harness_agent_context_system_prompt_tokens_*` | `agent.context.system_prompt_tokens` | `ContextBudgetMetrics` via `TieredContextAssembler` | **LIVE** (partial) |
-| Tools Schema Tokens | `agentic_harness_agent_context_tools_schema_tokens_*` | `agent.context.tools_schema_tokens` | `ContextBudgetMetrics` via `TieredContextAssembler` | **LIVE** (partial) |
-| Source Tokens | `agentic_harness_agent_context_source_tokens_*` | `agent.context.source_tokens` | `ContextSourceMetrics` via `TieredContextAssembler` | **LIVE** (partial) |
+| Skills Loaded Tokens | `agentic_harness_agent_context_skills_loaded_tokens_*` | `agent.context.skills_loaded_tokens` | *(nothing — instrument declared, never recorded)* | **DEAD** |
+| System Prompt Tokens | `agentic_harness_agent_context_system_prompt_tokens_*` | `agent.context.system_prompt_tokens` | `ContextBudgetMetrics` via `AgentExecutionContextFactory:137` | **LIVE** |
+| Tools Schema Tokens | `agentic_harness_agent_context_tools_schema_tokens_*` | `agent.context.tools_schema_tokens` | `ContextBudgetMetrics` via `AgentExecutionContextFactory:148` | **LIVE** (estimated) |
+| Source Tokens | `agentic_harness_agent_context_source_tokens_*` | `agent.context.source_tokens` | `ContextSourceMetrics` via `AgentExecutionContextFactory:139,150` | **LIVE** |
 
-**Verdict: PARTIALLY WORKING.** System prompt tokens, tools schema tokens, and source tokens fire when `TieredContextAssembler.AssembleAsync()` runs during agent creation. Budget utilization and compactions require extended conversations that exceed context limits. Skills loaded tokens requires skills to be configured.
+**Verdict: PARTIALLY WORKING — but not for the reason previously recorded here.**
+
+System prompt tokens, tools schema tokens, and source tokens fire from `AgentExecutionContextFactory` during agent creation. This table previously credited them to `TieredContextAssembler.AssembleAsync()`, a method on a class that no longer exists; anyone tracing a missing metric to that source would have found nothing.
+
+**Budget Utilization and Skills Loaded Tokens have zero production emit sites.** They are declared on `ContextBudgetMetrics` and never recorded — no amount of conversation length or skill configuration will make them appear. They were previously marked NEEDS-CONTEXT, which implies waiting would help. It will not; these need an emitter.
+
+Caveat on Tools Schema Tokens: the value is an estimate, not a measurement — `AgentExecutionContextFactory:145` uses `tools.Count * 50`.
 
 ---
 
