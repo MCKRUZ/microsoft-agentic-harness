@@ -6,20 +6,25 @@ using Domain.Common.Helpers;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
-// Note: FileAgentSkillLoader and FileAgentSkill from Microsoft.Agents.AI are internal types.
-// FileAgentSkillsProvider (public) handles progressive disclosure at runtime via AIContextProviders.
-// This registry does its own filesystem walk for metadata-only discovery.
-
 namespace Infrastructure.AI.Skills;
 
 /// <summary>
 /// Discovers and caches skill metadata by scanning filesystem directories for SKILL.md files.
 /// </summary>
 /// <remarks>
-/// The framework's <c>FileAgentSkillLoader</c> is internal and not accessible directly.
+/// <para>
 /// This registry implements its own filesystem walk (up to <see cref="MaxSearchDepth"/> levels)
-/// mirroring the same pattern. Skill content discovery at runtime is handled by
-/// <c>FileAgentSkillsProvider</c> wired into <c>ChatClientAgentOptions.AIContextProviders</c>.
+/// rather than delegating to the framework's <c>AgentFileSkillsSource</c>, because that source
+/// promotes only five frontmatter keys (<c>name</c>, <c>description</c>, <c>license</c>,
+/// <c>compatibility</c>, <c>allowed-tools</c>) and <em>silently discards</em> every other
+/// top-level key. The harness-specific fields this registry indexes on — <c>category</c>,
+/// <c>tags</c>, <c>skill_type</c> — are among those dropped. See
+/// <c>docs/plans/skills-refactor-to-framework.md</c> §2d.
+/// </para>
+/// <para>
+/// Runtime skill content disclosure is a separate concern, handled by the framework's
+/// <c>AgentSkillsProvider</c> wired into <c>ChatClientAgentOptions.AIContextProviders</c>.
+/// </para>
 /// </remarks>
 public sealed class SkillMetadataRegistry : ISkillMetadataRegistry
 {

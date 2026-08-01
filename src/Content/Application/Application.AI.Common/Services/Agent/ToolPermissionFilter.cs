@@ -10,9 +10,15 @@ namespace Application.AI.Common.Services.Agent;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Register this provider <em>after</em> <see cref="FileAgentSkillsProvider"/> in the
+/// Register this provider <em>after</em> <see cref="AgentSkillsProvider"/> in the
 /// <c>AIContextProviders</c> list so it operates on the fully-built tool set, including any
 /// framework tools surfaced by progressive skill disclosure.
+/// </para>
+/// <para>
+/// This filter is the <em>only</em> runtime enforcement of a skill's allowed-tools constraint.
+/// The framework's own <c>AgentSkillFrontmatter.AllowedTools</c> is written by its parser but never
+/// read by anything in <c>Microsoft.Agents.AI</c> — it is advisory metadata. Removing this provider
+/// removes tool restriction entirely; it does not fall back to a framework equivalent.
 /// </para>
 /// <para>
 /// The allow-list distinguishes two states that a bare empty collection cannot. A <see langword="null"/>

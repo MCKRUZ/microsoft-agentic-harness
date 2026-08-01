@@ -5,11 +5,12 @@ namespace Application.AI.Common.Interfaces;
 /// <summary>
 /// Registry that discovers and caches skill metadata from filesystem SKILL.md files.
 /// Provides metadata-only access (id, name, description, tags, allowed-tools) without
-/// loading full skill content — content is provided at runtime by <c>FileAgentSkillsProvider</c>.
+/// loading full skill content — content is provided at runtime by <c>AgentSkillsProvider</c>.
 /// </summary>
 /// <remarks>
 /// This replaces <c>ISkillLoaderService</c>. Full progressive skill disclosure (Tier 2 body,
-/// Tier 3 resources) is handled by the framework's <c>FileAgentSkillsProvider</c> AIContextProvider.
+/// Tier 3 resources) is handled by the framework's <c>AgentSkillsProvider</c> AIContextProvider,
+/// which exposes <c>load_skill</c> and <c>read_skill_resource</c> tools to the model.
 /// </remarks>
 public interface ISkillMetadataRegistry
 {
