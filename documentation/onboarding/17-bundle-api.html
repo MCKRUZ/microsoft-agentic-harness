@@ -670,7 +670,7 @@ The agent runs with exactly one tool: file_system.</code></pre>
                                 <td>Idempotent and non-disclosing — always <code>204</code>.</td>
                             </tr>
                             <tr>
-                                <td colspan="3" style="background: rgba(127,127,127,0.08)"><strong>Tools</strong> — read-only discovery</td>
+                                <td colspan="3" style="background: rgba(127,127,127,0.08)"><strong>Tools</strong> — discovery, and (opt-in) direct invocation</td>
                             </tr>
                             <tr>
                                 <td><code>GET /api/tools</code></td>
@@ -681,6 +681,11 @@ The agent runs with exactly one tool: file_system.</code></pre>
                                 <td><code>GET /api/tools/{name}</code></td>
                                 <td><code>200</code></td>
                                 <td>Describes one granted tool. A tool that doesn't exist and one you aren't granted both answer <code>404</code> — indistinguishably, by design.</td>
+                            </tr>
+                            <tr>
+                                <td><code>POST /api/tools/{name}/invoke</code></td>
+                                <td><code>200</code></td>
+                                <td>Runs one operation of one tool and returns its result. Body: <code>operation</code>, optional <code>parameters</code>, optional <code>timeoutSeconds</code>. Needs the <code>Harness.Tools.Invoke</code> role <em>and</em> the tool in your envelope. <strong>Off by default</strong> — <code>403</code> until an operator enables it.</td>
                             </tr>
                             <tr>
                                 <td colspan="3" style="background: rgba(127,127,127,0.08)"><strong>Workflows</strong> — submit a DAG, then run it</td>
@@ -751,7 +756,8 @@ The agent runs with exactly one tool: file_system.</code></pre>
       "operations": ["search"],
       "riskTier": "Low",
       "isReadOnly": true,
-      "isConcurrencySafe": true
+      "isConcurrencySafe": true,
+      "isDirectlyInvocable": true
     }
   ]
 }</code></pre>
@@ -781,6 +787,109 @@ The agent runs with exactly one tool: file_system.</code></pre>
                         rather than advertised as callable. And <code>/api/tools</code> is <em>not</em> the same thing as
                         the agent hub's <code>/api/mcp/tools</code>: that one lists tools published by external MCP
                         servers, which additionally require their server to be granted.
+                    </p>
+
+                    <h2 id="tool-invoke">Running a single tool directly</h2>
+                    <p>
+                        Everything else in this chapter hands the host <em>your</em> work &mdash; a bundle, a workflow, a
+                        suite &mdash; and lets an agent decide which tools it needs along the way. This endpoint is the
+                        exception: you name the tool and the operation, and the host runs it. That is genuinely useful
+                        when you want one answer and a whole workflow would be ceremony. It is also the most privileged
+                        thing this API can do, so it is deliberately the hardest to switch on.
+                    </p>
+                    <div class="callout callout-warn">
+                        <span class="callout-icon">!</span>
+                        <div class="callout-body">
+                            <div class="callout-title">Off by default &mdash; and unlike everything else here, it stays off</div>
+                            <p style="margin: 0">
+                                Bundle execution and workflow submission ship <em>enabled</em> in this host, because
+                                serving them is what it is for. Direct invocation ships <strong>disabled</strong>, and
+                                the difference is the point: those surfaces run an agent that chooses its own tools,
+                                whereas this one lets a caller point at host-side code and pull the trigger. An operator
+                                has to set <code>AppConfig:AI:DirectToolInvocation:Enabled</code> deliberately. Until
+                                then every call answers <code>403</code>, including yours with the right role.
+                            </p>
+                        </div>
+                    </div>
+                    <p>Three separate things must all be true before a tool runs:</p>
+                    <ol>
+                        <li>You are authenticated.</li>
+                        <li>You hold the <strong><code>Harness.Tools.Invoke</code></strong> role. Listing tools does
+                            <em>not</em> need it &mdash; seeing what the host could do and making it do it are different
+                            grants, and an operator can hand out the first without the second.</li>
+                        <li>Your envelope's <code>AllowedTools</code> names the tool. This one is checked twice, by two
+                            independent mechanisms.</li>
+                    </ol>
+                    <pre><code>curl -sS -X POST http://localhost:5000/api/tools/file_system/invoke \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"operation": "read", "parameters": {"path": "notes/todo.md"}}'</code></pre>
+                    <pre><code>{
+  "tool": "file_system",
+  "operation": "read",
+  "succeeded": true,
+  "output": "- ship T2",
+  "outputTruncated": false,
+  "durationMs": 12
+}</code></pre>
+                    <h3>The status code and <code>succeeded</code> mean different things</h3>
+                    <p>
+                        This trips people up, so it is worth being blunt about. The HTTP status describes the
+                        <em>invocation</em>; <code>succeeded</code> describes the <em>tool's verdict</em>. A tool that ran
+                        perfectly and decided the answer was no returns <code>200</code> with
+                        <code>"succeeded": false</code>. Every 4xx and 5xx below means the tool never ran at all.
+                    </p>
+                    <ul>
+                        <li><code>400</code> &mdash; the request is malformed, or names an operation the tool does not
+                            declare. The error names the operations it does accept.</li>
+                        <li><code>401</code> &mdash; no credential, <em>or</em> a credential carrying nothing
+                            usable as an identity. Some identity providers emit <code>sub</code> values with
+                            characters the harness cannot use as a permission subject; the remedy is the same
+                            either way, which is to present a different token.</li>
+                        <li><code>403</code> &mdash; you lack the role, <em>or</em> the host has this surface off,
+                            <em>or</em> governance refused an invocation of a tool you genuinely are granted.</li>
+                        <li><code>404</code> &mdash; no such tool, <em>or</em> not granted to you, <em>or</em> not
+                            offered on this surface. Deliberately indistinguishable, for the same reason
+                            <code>GET /api/tools/{name}</code> is.</li>
+                        <li><code>413</code> &mdash; your request body exceeded the host's cap (64&nbsp;KiB by
+                            default), refused before it was read.</li>
+                        <li><code>429</code> &mdash; you already have the maximum number of invocations
+                            <em>executing at once</em> (4 per caller). This endpoint is capped by
+                            concurrency rather than request rate, because an invocation holds a server
+                            thread for its whole duration and a per-minute cap would not stop calls that
+                            are still running when the window rolls. Retry when one of yours finishes.</li>
+                        <li><code>504</code> &mdash; the tool outran its deadline (30&nbsp;s by default) and was
+                            cancelled. That deadline covers the whole invocation, not just the tool: authorization
+                            and the data-classification check happen under it too.</li>
+                    </ul>
+                    <p>
+                        The most confusing <code>403</code> is the third kind. If your envelope's
+                        <code>autonomyCeiling</code> is <code>Supervised</code> or <code>Restricted</code>, tool
+                        execution is suspended entirely &mdash; mid-run approval routing is not built yet, so anything
+                        needing approval is refused rather than queued. Only <code>Autonomous</code> permits invocation
+                        today. That is a property of the envelope, not of this endpoint, and it applies to bundle and
+                        workflow runs identically.
+                    </p>
+                    <h3>Some tools are listed but not invocable here</h3>
+                    <p>
+                        Check <code>isDirectlyInvocable</code> in the catalog before you build against a tool. When it is
+                        <code>false</code> it is <em>not</em> saying you lack permission &mdash; it is saying the tool's
+                        result would be meaningless to you. The <code>render_*</code> family and
+                        <code>dashboard_control</code> return drawing instructions for a browser attached to a live agent
+                        run, and there is no browser on your end of an HTTP call. <code>delegate_task</code> is excluded
+                        for a different reason: it starts whole agent turns, so one apparently-simple synchronous call
+                        would expand into open-ended work that outlives your request. Those tools stay listed because a
+                        <code>ToolUse</code> step in a workflow can still use them perfectly well.
+                    </p>
+                    <h3>What comes back has been through a filter</h3>
+                    <p>
+                        Output is scrubbed by the host's response sanitizers before it reaches you, and so is a failing
+                        tool's error message &mdash; error text is the likeliest place a filesystem path or a connection
+                        string leaks out. Long output is cut at the host's ceiling and <code>outputTruncated</code> is set
+                        to <code>true</code>; <strong>check that field</strong>, because a prefix that does not announce
+                        itself will parse as a complete answer. Output is never <em>compressed</em>: the harness's
+                        compression exists to squeeze results into a model's context window and does it by summarising
+                        and leaving pointers an agent can expand, and you have no way to follow those.
                     </p>
 
                     <h2 id="workflows">Workflows: running a DAG instead of a conversation</h2>

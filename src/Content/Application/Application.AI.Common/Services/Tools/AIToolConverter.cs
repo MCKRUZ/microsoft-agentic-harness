@@ -78,7 +78,7 @@ public sealed class AIToolConverter : IToolConverter
                     return $"Error: Operation '{operation}' is not available. Valid operations: {string.Join(", ", activeOperations)}";
                 }
 
-                var parameters = ParseParameters(parametersJson);
+                var parameters = ToolParameters.FromJson(parametersJson);
                 var result = await tool.ExecuteAsync(operation, parameters, cancellationToken);
                 return result.Success
                     ? result.Output ?? "OK"
@@ -114,60 +114,4 @@ public sealed class AIToolConverter : IToolConverter
             .ToList();
     }
 
-    /// <summary>
-    /// Parses parameters from a <see cref="JsonElement"/> into a string-keyed dictionary.
-    /// Handles three cases the LLM may produce:
-    /// <list type="bullet">
-    ///   <item><description>Object — direct parameter map (most common LLM output)</description></item>
-    ///   <item><description>String — JSON-encoded object, double-decoded</description></item>
-    ///   <item><description>Null / missing — returns empty dictionary</description></item>
-    /// </list>
-    /// </summary>
-    private static IReadOnlyDictionary<string, object?> ParseParameters(JsonElement? parametersJson)
-    {
-        if (parametersJson is not { } element || element.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
-            return new Dictionary<string, object?>();
-
-        // LLM passed a JSON object directly — the common case
-        if (element.ValueKind == JsonValueKind.Object)
-            return FlattenElement(element);
-
-        // LLM passed a JSON string containing a nested JSON object
-        if (element.ValueKind == JsonValueKind.String)
-        {
-            var raw = element.GetString();
-            if (string.IsNullOrWhiteSpace(raw))
-                return new Dictionary<string, object?>();
-
-            try
-            {
-                using var doc = JsonDocument.Parse(raw);
-                return FlattenElement(doc.RootElement);
-            }
-            catch (JsonException)
-            {
-                return new Dictionary<string, object?> { ["raw_input"] = raw };
-            }
-        }
-
-        return new Dictionary<string, object?>();
-    }
-
-    private static Dictionary<string, object?> FlattenElement(JsonElement obj)
-    {
-        var dict = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
-        foreach (var prop in obj.EnumerateObject())
-        {
-            dict[prop.Name] = prop.Value.ValueKind switch
-            {
-                JsonValueKind.String => prop.Value.GetString(),
-                JsonValueKind.Number => prop.Value.TryGetInt64(out var i) ? (object?)i : prop.Value.GetDouble(),
-                JsonValueKind.True => true,
-                JsonValueKind.False => false,
-                JsonValueKind.Null => null,
-                _ => prop.Value.GetRawText()
-            };
-        }
-        return dict;
-    }
 }

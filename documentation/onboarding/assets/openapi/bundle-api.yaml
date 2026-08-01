@@ -434,12 +434,14 @@ paths:
                         riskTier: Low
                         isReadOnly: true
                         isConcurrencySafe: true
+                        isDirectlyInvocable: true
                       - name: file_system
                         description: Sandboxed file operations.
                         operations: [read, write, list]
                         riskTier: High
                         isReadOnly: false
                         isConcurrencySafe: false
+                        isDirectlyInvocable: true
                 nothingGranted:
                   summary: The fail-closed default — a successful, empty answer
                   value: { tools: [] }
@@ -467,6 +469,123 @@ paths:
         "404":
           description: No such tool, **or** the tool exists and you are not granted it.
         "429": { $ref: "#/components/responses/RateLimited" }
+
+  /api/tools/{name}/invoke:
+    post:
+      tags: [Tools]
+      operationId: invokeTool
+      summary: Run one operation of one tool, synchronously
+      description: |
+        Executes a tool in the host and returns its result. **This is the most privileged surface
+        this API exposes** - it runs host-side code on the host's own resources because you asked it
+        to - so it is gated three times, and none of the three substitutes for another:
+
+        1. You must authenticate.
+        2. You must hold the **`Harness.Tools.Invoke`** role. Discovery (`GET /api/tools`) does not
+           require it: listing a tool tells you what the host *could* do, invoking makes it happen,
+           and an operator can hand out the first without the second.
+        3. The tool must be granted by your capability envelope - enforced twice, once by the
+           catalog lookup and again independently by the invocation governor.
+
+        **It is off by default.** A host whose operator has not set
+        `AppConfig:AI:DirectToolInvocation:Enabled` answers `403` to every call, including one from a
+        caller holding the role. Unlike bundle execution and workflow submission, this is *not*
+        enabled in the shipped configuration.
+
+        **Read the status codes carefully - they are not interchangeable.**
+
+        | Status | Meaning |
+        |--------|---------|
+        | `200` + `succeeded: true` | The tool ran and reported success |
+        | `200` + `succeeded: false` | The tool ran and reported failure. It executed; it said no |
+        | `400` | Malformed request - an operation the tool does not declare, or too many parameters |
+        | `403` | Governance refused a tool you *are* granted, **or** the host has this surface off |
+        | `404` | No such tool, **or** not granted to you, **or** not offered on this surface |
+        | `504` | The tool did not finish inside its deadline |
+
+        A common `403` worth recognising: an envelope whose `autonomyCeiling` is `Supervised` or
+        `Restricted` currently suspends tool execution entirely, because mid-run approval routing is
+        deferred. Only `Autonomous` permits invocation today.
+
+        **Output is sanitized and bounded, never compressed.** The harness's tool-output compression
+        summarises results and replaces content with pointers an agent can expand - pointers you
+        cannot follow from out here. You get a truthful prefix with `outputTruncated: true` instead.
+      parameters:
+        - $ref: "#/components/parameters/ToolName"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ToolInvocationRequest" }
+            examples:
+              read:
+                summary: Read a file through the sandboxed file tool
+                value:
+                  operation: read
+                  parameters: { path: "notes/todo.md" }
+              noParameters:
+                summary: An operation that takes no arguments
+                value: { operation: list }
+      responses:
+        "200":
+          description: >-
+            The invocation completed. Check `succeeded` - a tool that ran and reported failure also
+            answers `200`, because the HTTP status describes the invocation, not the tool's verdict.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ToolInvocationResponse" }
+              examples:
+                ok:
+                  summary: The tool succeeded
+                  value:
+                    tool: file_system
+                    operation: read
+                    succeeded: true
+                    output: "- ship T2"
+                    outputTruncated: false
+                    durationMs: 12
+                toolSaidNo:
+                  summary: The tool ran and refused - still a 200
+                  value:
+                    tool: file_system
+                    operation: read
+                    succeeded: false
+                    error: "Path is outside the configured sandbox."
+                    outputTruncated: false
+                    durationMs: 3
+        "400":
+          description: The request is malformed, or names an operation the tool does not declare.
+        "401":
+          description: >-
+            No credential, **or** a credential carrying no identifier usable as a permission subject —
+            no `oid`/`sub`, or one longer than 128 characters or outside `[A-Za-z0-9._:-]` (some
+            identity providers emit base64url `sub` values containing `+` or `/`). Both mean the same
+            thing: present a different token.
+        "403":
+          description: >-
+            You lack `Harness.Tools.Invoke`, or governance refused this invocation, or the host has
+            direct invocation disabled. Deliberately not told apart — which one applied would tell you
+            whether you *would* be permitted if the operator switched the surface on.
+        "404":
+          description: >-
+            No such tool, **or** you are not granted it, **or** it is not offered on this surface
+            (`isDirectlyInvocable: false`). The three are deliberately indistinguishable.
+        "413":
+          description: >-
+            The request body exceeded `AppConfig:AI:DirectToolInvocation:MaxRequestBytes` (64 KiB by
+            default). Enforced by the server before the body is read, so an oversized request costs a
+            length check rather than a parse.
+        "429":
+          description: >-
+            You already have the maximum number of invocations **executing at once** (4 per caller).
+            This endpoint is bounded by concurrency rather than by request rate, because an invocation
+            occupies a server thread for its whole duration — a per-minute cap would not stop calls
+            that are still running when the window rolls. Retry when one of yours finishes.
+        "504":
+          description: >-
+            The invocation did not complete within its deadline and was cancelled. The deadline covers
+            the **whole** invocation — authorization and the data-classification check as well as the
+            tool itself.
 
   # ---------------------------------------------------------------------------
   # Workflows — submission and runs
@@ -1174,7 +1293,9 @@ components:
 
     ToolCatalogEntry:
       type: object
-      required: [name, description, operations, riskTier, isReadOnly, isConcurrencySafe]
+      required:
+        [name, description, operations, riskTier, isReadOnly, isConcurrencySafe,
+         isDirectlyInvocable]
       properties:
         name:
           type: string
@@ -1201,6 +1322,79 @@ components:
         isConcurrencySafe:
           type: boolean
           description: Whether the tool is safe to invoke alongside other calls. Fail-closed, as above.
+        isDirectlyInvocable:
+          type: boolean
+          description: >-
+            Whether `POST /api/tools/{name}/invoke` will run this tool. **`false` does not mean you
+            lack permission** - it means the tool's result is not meaningful outside the process.
+            The `render_*` family and `dashboard_control` return directives for a browser attached to
+            a live agent run, and `delegate_task` expands one call into an open-ended sequence of
+            agent turns. Such a tool is still listed here because it remains fully usable from a
+            workflow `ToolUse` step; invoking it directly answers `404`.
+
+    ToolInvocationRequest:
+      type: object
+      description: >-
+        One shape covers every tool: `ITool` exposes a single invocation signature, so there is no
+        per-tool request type and no contract that changes when the host registers a new tool.
+      required: [operation]
+      properties:
+        operation:
+          type: string
+          description: >-
+            The operation to perform. Must be one the tool declares in its catalog entry; anything
+            else answers `400` with the accepted list.
+          examples: [read, search, list]
+        parameters:
+          type: object
+          additionalProperties: true
+          description: >-
+            The operation's arguments. Omit for operations that take none. Values are converted to
+            CLR types by the same code the agent path uses, so a tool sees identical arguments
+            however it was reached; nested objects and arrays reach the tool as their raw JSON text,
+            because the tool parameter contract is flat.
+        timeoutSeconds:
+          type: integer
+          minimum: 1
+          description: >-
+            An optional **shorter** deadline. Omit for the host's ceiling (30 s by default). A value
+            above the ceiling is **refused with `400`, not clamped** - a caller quietly given less
+            time than they asked for would see a timeout with nothing in the response to explain it.
+
+    ToolInvocationResponse:
+      type: object
+      required: [tool, operation, succeeded, outputTruncated, durationMs]
+      properties:
+        tool:
+          type: string
+          description: The tool this response came from.
+        operation:
+          type: string
+          description: The operation that was run.
+        succeeded:
+          type: boolean
+          description: >-
+            Whether the tool reported success. `false` here is a *completed* invocation of a tool
+            that said no - distinct from every 4xx/5xx status, all of which mean it never ran.
+        output:
+          type: string
+          nullable: true
+          description: The tool's output, sanitized. Null when the tool reported failure.
+        error:
+          type: string
+          nullable: true
+          description: >-
+            The tool's failure message, sanitized on the same path as the output. Null on success.
+            Never raw exception text.
+        outputTruncated:
+          type: boolean
+          description: >-
+            Whether `output` was cut short at the host's ceiling. **Check this.** A caller that
+            cannot tell a complete result from a prefix of one will parse the prefix as complete.
+        durationMs:
+          type: integer
+          format: int64
+          description: How long the invocation took, in milliseconds.
 
     BlastRadius:
       type: string

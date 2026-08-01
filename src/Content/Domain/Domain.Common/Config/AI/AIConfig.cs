@@ -3,6 +3,7 @@ using Domain.Common.Config.AI.AIFoundry;
 using Domain.Common.Config.AI.Audit;
 using Domain.Common.Config.AI.BundleExecution;
 using Domain.Common.Config.AI.ContextManagement;
+using Domain.Common.Config.AI.DirectToolInvocation;
 using Domain.Common.Config.AI.DriftDetection;
 using Domain.Common.Config.AI.GitOps;
 using Domain.Common.Config.AI.Hooks;
@@ -213,6 +214,16 @@ public class AIConfig
     /// executed by the planner against the host's own registered tools and skills.
     /// </summary>
     public WorkflowSubmissionConfig WorkflowSubmission { get; set; } = new();
+
+    /// <summary>
+    /// Direct tool-invocation configuration. Off by default in every host — when enabled, a caller may
+    /// name one of the host's registered tools and an operation and have it executed synchronously,
+    /// confined to the tools their <see cref="Domain.AI.Bundles.CapabilityEnvelope"/> grants. Distinct
+    /// from <see cref="WorkflowSubmission"/>, where an authored DAG decides which tools run: here the
+    /// caller chooses directly, which is why this is the one surface in this family that stays off even
+    /// in the host built to serve it.
+    /// </summary>
+    public DirectToolInvocationConfig DirectToolInvocation { get; set; } = new();
 
     /// <summary>
     /// Server-side evaluation configuration: the directories dataset files may be read from, and the

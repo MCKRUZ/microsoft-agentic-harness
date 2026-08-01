@@ -30,11 +30,13 @@ It is a composition root, exactly like `Presentation.AgentHub`: `builder.Service
 │  │  DELETE /{handle}                → DeleteBundleCommand                 │ │
 │  └───────────────────────────────┬────────────────────────────────────────┘ │
 │  ┌───────────────────────────────┴────────────────────────────────────────┐ │
-│  │  ToolsController  [Authorize]  /api/tools        ← read-only discovery │ │
+│  │  ToolsController  [Authorize]  /api/tools                              │ │
 │  │                                                                        │ │
 │  │  GET    /                        → IToolCatalog.ListGranted            │ │
 │  │  GET    /{name}                  → IToolCatalog.FindGranted (404 both  │ │
 │  │                                    for absent AND ungranted)           │ │
+│  │  POST   /{name}/invoke           → IDirectToolInvoker ← envelope bound │ │
+│  │            [Authorize(Roles=Harness.Tools.Invoke)], off unless Enabled │ │
 │  └───────────────────────────────┬────────────────────────────────────────┘ │
 │  ┌───────────────────────────────┴────────────────────────────────────────┐ │
 │  │  EvalsController  /api/evals    ← role-gated, off unless Enabled       │ │
@@ -177,6 +179,48 @@ Everything lives under `AppConfig:AI:BundleExecution` (`Domain.Common/Config/AI/
 
 The shipped `appsettings.json` sets `Enabled: true` with an empty `Auth` block, so it boots only in Development — where the shipped `appsettings.Development.json` opts into anonymous auth. Every other environment fails closed at startup until a real scheme is configured.
 
+### Direct tool invocation (`AppConfig:AI:DirectToolInvocation`)
+
+Separate section, separate opt-in, and **the one surface in this host that ships off**. Bundle
+execution and workflow submission set `Enabled: true` here because serving them is the host's
+purpose; this one does not, and the asymmetry is the point. Those surfaces run an *agent* that
+decides for itself which tools to use. This one lets a caller name the tool and the operation
+directly, which is a materially larger grant — it should be the result of an operator deciding to
+hand it out, not of adopting a template version in which it happened to be on.
+
+| Key | Default | Notes |
+|-----|---------|-------|
+| `Enabled` | `false` | Off ⇒ `IDirectToolInvoker` refuses (`403`). The gate is in the invoker, not just the controller, so a future in-process caller cannot route around it |
+| `MaxRequestBytes` | 64 KiB | Applied by `ToolInvocationRequestSizeLimitFilter` (a resource filter, so it runs before model binding — the only point at which the limit can still bite) |
+| `InvocationTimeout` | 30 s | Server ceiling over the **whole invocation** — authorization and the classification gate run under it too, not just the tool. A caller may request **less**; requesting more is refused, never clamped |
+| `MaxOutputCharacters` | 256 Ki | Output beyond this is truncated and the response says so (`outputTruncated`) |
+| `MaxParameterCount` | 64 | Bounds the request's *shape*, which the byte ceiling does not |
+
+**Bounded by concurrency, not request rate.** The invoke action carries its own
+`InvokeRateLimitPolicy` — a per-caller `ConcurrencyLimiter` of 4, `QueueLimit = 0` — replacing the
+controller's 60/min fixed window for that action only. Same reasoning as `StreamRateLimitPolicy` one
+function above it: an invocation runs inline on its request thread for up to `InvocationTimeout` and
+does not go through the background dispatcher, so a limiter that counts *starts* cannot bound work
+that is still executing when the window rolls.
+
+All four settings are validated at startup by `DirectToolInvocationConfigValidator` with `ValidateOnStart`.
+Two of them fail in ways a caller cannot diagnose, which is why doc-only "must be positive" was not
+enough: a non-positive `MaxOutputCharacters` slices the output with a negative length, so a
+*successful* tool call surfaces as a `500`; a non-positive `InvocationTimeout` cancels every
+invocation before the tool starts, so the surface answers `504` to everything. Both read as a broken
+host rather than a mistyped limit, so the host refuses to start and names the setting instead.
+
+Three gates apply to every invocation, and none substitutes for another: the caller must
+authenticate; must hold the `Harness.Tools.Invoke` role; and the tool must be in the capability
+envelope their credential resolves to. Arming that envelope is what switches
+`ToolInvocationGovernor` enforcement on, so the third gate is enforced twice — once by the catalog
+lookup and again, independently, by the governor.
+
+Note the ceiling interaction inherited from the envelope: only an `Autonomous` `AutonomyCeiling`
+currently permits tool execution at all. A caller whose envelope grants `file_system` under a
+`Supervised` ceiling is refused with `403`, not `404` — they are granted the tool, and governance
+declined this invocation of it.
+
 ### Evaluation (`AppConfig:AI:Evaluation`)
 
 Separate section, separate opt-in. The evaluation framework is **not** wired by `GetServices()` — a
@@ -316,6 +360,14 @@ meaningless at best: there is no client on the other end to render into. `echo_l
 `echo_calculate` are demo fixtures — grant them in a smoke test, never in an environment that
 matters.
 
+Those same tools — plus `delegate_task` — additionally declare `IsDirectlyInvocable = false`, so
+`POST /{name}/invoke` answers `404` for them even when an envelope grants them. That flag is a
+*transport-suitability* declaration, not an authorization control: it says the tool's result means
+nothing outside the process (a render directive for a browser that is not there) or that one call
+expands into unbounded work (`delegate_task` runs whole agent turns behind what looks like a single
+synchronous call). They remain fully usable from a workflow's `ToolUse` step, which is why the
+catalog still lists them with `isDirectlyInvocable: false` rather than hiding them.
+
 **Registered is not the same as available.** Those same five tools are registered in *every* host
 because tool registration is shared, but in any host without `IClientToolBridge` they cannot be
 constructed at all. The catalog resolves tools one key at a time precisely so one such tool cannot
@@ -376,6 +428,22 @@ consumers cannot tell which third is missing.
 | `ToolsControllerIntegrationTests.cs` | Envelope-filtered discovery, 404 for ungranted, 401 against a configured host, and that every catalogued name resolves to a tool agreeing with it |
 | `ExecutionApiEvaluationEnablementTests.cs` | The evaluation opt-in: default leaves the fail-fast runner, enabled-without-roots refuses to boot, blank roots do not satisfy it |
 | `EvalRunsIntegrationTests.cs` | That `/api/evals` is mounted, closed to anonymous callers on every route, and serves nothing while evaluation is disabled -- the default this host ships with |
+| `ToolInvocationIntegrationTests.cs` | That `POST /api/tools/{name}/invoke` is mounted, refuses anonymous callers and authenticated callers lacking `Harness.Tools.Invoke`, runs nothing while direct invocation is disabled, and that listing does **not** require the invoke role -- the separation is the point |
+
+Direct invocation's behaviour once *enabled* -- envelope arming, governance, the classification gate,
+deadlines, sanitization, truncation -- is covered in
+`Application.AI.Common.Tests/Services/Tools/DirectToolInvokerTests.cs`, driven through a real container
+so the DI scope, the scoped execution context and keyed tool resolution are the production ones. Every
+refusal there asserts against the fake tool's own execution counter rather than only the returned
+status: a test checking the status alone would pass against an invoker that ran the tool and *then*
+decided to refuse, which is the failure actually worth catching.
+
+That file also carries a note about the one property deliberately **not** tested -- that the ambient
+accessors are clear on return. Both are `AsyncLocal<T>`, so a value set inside an awaited async method
+is invisible to the caller whatever the callee did, and the assertion was demonstrated (by mutation, and
+by a standalone probe) to pass against an invoker that cleaned up nothing. It was removed rather than
+kept as false assurance. The identical assertion was removed from `EvalRunKindExecutorTests` for the
+same reason.
 
 Evaluation's behaviour once *enabled* -- admission, ownership, reports, cancellation -- is covered in
 `Infrastructure.AI.Evaluation.Tests/Runs/EvalRunHandlerTests.cs` against the real run and submission

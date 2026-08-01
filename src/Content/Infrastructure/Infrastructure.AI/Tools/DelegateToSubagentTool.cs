@@ -81,6 +81,20 @@ public sealed class DelegateToSubagentTool : ITool
     /// <inheritdoc />
     public bool IsConcurrencySafe => false;
 
+    /// <summary>
+    /// Never directly invocable over HTTP. One call here is not one unit of work — it selects a
+    /// subagent and runs it to completion, so the caller's single synchronous request expands into an
+    /// open-ended sequence of model turns and whatever tools that subagent then reaches for.
+    /// </summary>
+    /// <remarks>
+    /// The direct-invocation surface bounds a call with a wall-clock timeout, and a timeout is the
+    /// wrong instrument for this: it cuts the caller's connection while the delegated work continues
+    /// on the host's credentials, so the spend outlives the request that authorised it and nobody is
+    /// left waiting for the result. Delegation belongs behind a job with a run record — the shape
+    /// Track T reserves for it — not behind a synchronous tool call.
+    /// </remarks>
+    public bool IsDirectlyInvocable => false;
+
     /// <inheritdoc />
     public async Task<ToolResult> ExecuteAsync(
         string operation,

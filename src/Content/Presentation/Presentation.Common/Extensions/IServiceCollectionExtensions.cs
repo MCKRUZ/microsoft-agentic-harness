@@ -7,6 +7,7 @@ using Application.Core.Validation;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
 using Domain.Common.Config.AI.BundleExecution;
+using Domain.Common.Config.AI.DirectToolInvocation;
 using Domain.Common.Config.AI.WorkflowSubmission;
 using Domain.Common.Config.AI.GitOps;
 using Domain.Common.Config.AI.Governance;
@@ -237,6 +238,16 @@ public static class IServiceCollectionExtensions
         services.AddOptions<WorkflowSubmissionConfig>()
             .Bind(configuration.GetSection("AppConfig:AI:WorkflowSubmission"))
             .ValidateFluentValidation<WorkflowSubmissionConfig, WorkflowSubmissionConfigValidator>()
+            .ValidateOnStart();
+
+        // Direct tool-invocation bounds (request size, deadline, output ceiling, parameter count).
+        // Same posture again, and it matters more here than for its siblings: two of these bounds fail
+        // in ways the caller cannot diagnose. A non-positive output ceiling turns a successful tool
+        // call into a 500, and a non-positive deadline answers 504 to everything — both read as a
+        // broken host rather than a mistyped limit.
+        services.AddOptions<DirectToolInvocationConfig>()
+            .Bind(configuration.GetSection("AppConfig:AI:DirectToolInvocation"))
+            .ValidateFluentValidation<DirectToolInvocationConfig, DirectToolInvocationConfigValidator>()
             .ValidateOnStart();
 
         // OTel logs-signal knobs (export toggle, min export level, PII redaction). Rules are
