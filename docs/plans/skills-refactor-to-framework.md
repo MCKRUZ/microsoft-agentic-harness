@@ -264,7 +264,30 @@ Not yet scheduled. Each phase is independently valuable and independently revert
 
 **Risk: medium.** Touches prompt composition. Covered by `AgentExecutionContextFactoryTests.cs` (46 tests), `AgentExecutionContextFactoryPromptComposerTests.cs` (7 tests — one pins the exact legacy instruction string and will need deliberate updating), `SkillInstructionMergerTests.cs` (4 tests).
 
-**Open question blocking this phase:** skills in `Injected` mode may legitimately require eager injection. `SkillMode` semantics must be settled before the change — the fix may need to be mode-aware rather than blanket.
+#### ⚠️ Hard prerequisite: the `load_skill` fallback is conditional
+
+**Verified 2026-08-01.** The framework provider is not always wired, so removing eager injection unconditionally can leave an agent with **no instructions at all, silently**.
+
+- `AgentExecutionContextFactory.cs:422` wires the provider only `if (skillPaths.Count > 0)`.
+- `ResolveSkillPaths` (line 498) skips any skill whose directory is missing: `if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir)) continue;` (line 520), and filters configured roots by `Directory.Exists` (line 508).
+- Therefore in-memory/synthesized skills, and any host whose `AI.Skills.AllPaths` do not resolve under `AppContext.BaseDirectory`, produce an empty path list → **no `AgentSkillsProvider`, no `load_skill` tool**.
+
+In that state the eager merge at line 110 is the *only* thing supplying skill instructions.
+
+**The fix must therefore be conditional on the provider actually being wired for a given skill, or must carry an explicit fallback.** A blanket removal is a silent-failure bug.
+
+Secondary effect to expect: `SkillInstructionsSectionProvider` returns `null` on empty instructions (line 54-55), so the composer-on path degrades quietly to an identity-only prompt rather than erroring — a silent quality regression, not a crash. It also sets `IsRequired = true`, so budget pressure can never drop the section.
+
+#### Resolved: `SkillMode` does **not** gate this
+
+**Verified 2026-08-01 — the previously-open question is closed.** `SkillMode` affects **tool wiring only** and has no bearing on instructions:
+
+- `SkillMode.cs` type-level doc: *"Determines how tools are resolved for a skill."* Both enum values' docs describe tool resolution exclusively. "Injected" means injected **tools**, not injected **instructions** — a naming trap.
+- Exactly **one** production read site: `ToolChainBuilder.cs:54` — `if (skill.Mode == SkillMode.Injected && _mcpToolProvider != null)`. Both branches return `List<AITool>`. `AgentExecutionContextFactory` never reads `Mode` at all.
+- `Mode` is a **get-only computed property** derived from tool fields (`SkillDefinition.cs:270-273`) — no setter, no backing field, not parseable from frontmatter. No shipped SKILL.md sets a mode; `grep '^mode:'` across all 20 returns nothing.
+- `AgentExecutionContextFactoryDualModeTests.cs` (5 tests): all nine assertions are on `context.Tools`. None touches `context.Instructions`.
+
+**Consequence for the fix: make it uniform, not mode-aware.** A mode-aware split would be the first instruction-affecting use of `Mode`, contradicting its own documentation, and because `Mode` is derived it would land backwards — preserving eager injection for all six harness-native skills while stripping it only from declaration-free *plugin* skills. It would also couple prompt size to tool configuration: adding an `allowed-tools:` line to a plugin SKILL.md would silently flip its instructions back into the system prompt.
 
 ### Phase 2 — Extend at the framework seam
 
@@ -310,7 +333,7 @@ Note for that work: the MCP `skill-md` path constructs `new AgentSkillFrontmatte
 
 ## 9. Open questions
 
-1. **`SkillMode` semantics** — does `Injected` mode require eager full-body injection? This gates Phase 1's shape (blanket fix vs. mode-aware fix).
+1. ~~**`SkillMode` semantics** — does `Injected` mode require eager full-body injection?~~ **CLOSED 2026-08-01: no.** Mode is tool-wiring only and is a derived get-only property. The fix must be uniform, not mode-aware. Evidence in §6 Phase 1. Do not re-derive.
 2. **Budget-tracker integration point** — middleware on tool invocation, or a `DelegatingAgentSkillsSource` wrapper? Needs a spike.
 3. **`SkillMetadataParser.Parse(skillName, skillDescription, body, ...)`** (line 81) — a hybrid overload built to accept pre-parsed framework input. It has **no production caller** (tests only). It appears to be the intended seam for exactly this integration; confirm before Phase 2 whether to use or delete it.
 4. **`FrameworkLoaderSpikeTests.cs`** hard-codes `src/Content/Application/Application.Core/Agents/Skills` and only asserts construction succeeds. If kept, it should assert actual provider output.
