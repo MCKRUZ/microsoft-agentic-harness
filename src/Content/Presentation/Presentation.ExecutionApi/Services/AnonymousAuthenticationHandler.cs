@@ -64,9 +64,18 @@ public sealed class AnonymousAuthenticationHandler : AuthenticationHandler<Authe
                 // The role-gated surfaces this host serves, granted so a local developer can exercise
                 // them. This mirrors AgentHub's DevAuthHandler and carries the same caveat: a consumer
                 // who copies this handler as the shape of their own authentication inherits a principal
-                // holding every role, so the gate is never exercised by running the app — only by the
-                // controllers' tests. In a real deployment Harness.Evals.Execute is granted separately,
-                // and this handler is not reachable at all unless Auth:AllowAnonymous was set.
+                // holding EVERY role below, so those gates are never exercised by running the app — only
+                // by the controllers' tests. In a real deployment each role is granted separately, and
+                // this handler is not reachable at all unless Auth:AllowAnonymous was set.
+                //
+                // Harness.Tools.Invoke is the one to think hardest about before copying this: it unlocks
+                // execution of arbitrary host tools, not just a read or a scoped run. Reaching that
+                // unauthenticated still takes three separate operator decisions — AllowAnonymous, plus
+                // DirectToolInvocation:Enabled, plus a Envelopes:Default that actually grants tools —
+                // and the deliberate omission of NameIdentifier keeps this principal unaddressable by
+                // Envelopes:BySubject. Note also that CapabilityEnvelopeResolver matches ClaimTypes.Role,
+                // so these role names are addressable in Envelopes:ByRole; do not reuse them there
+                // expecting them to mean something narrower.
                 new Claim(ClaimTypes.Role, Controllers.EvalsController.ExecuteRole),
                 new Claim(ClaimTypes.Role, Controllers.ToolsController.InvokeRole),
             ],

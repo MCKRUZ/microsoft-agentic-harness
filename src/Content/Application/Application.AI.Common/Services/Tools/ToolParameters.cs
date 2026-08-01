@@ -70,11 +70,16 @@ public static class ToolParameters
 
     /// <summary>
     /// The shared answer for "no parameters". A fresh dictionary per call would allocate on the
-    /// commonest path — several operations take no arguments at all — and the returned type is
-    /// read-only, so one instance is safe to share.
+    /// commonest path, since several operations take no arguments at all.
+    /// </summary>
+    /// <remarks>
+    /// A genuinely immutable instance, not a <c>Dictionary</c> behind a read-only interface. Sharing a
+    /// mutable one would let any consumer that downcast its parameter map corrupt the value every
+    /// other call receives — a trivial mistake to make, and one whose blast radius is now the external
+    /// HTTP surface as well as the agent path.
     /// </summary>
     private static readonly IReadOnlyDictionary<string, object?> EmptyParameters =
-        new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+        System.Collections.ObjectModel.ReadOnlyDictionary<string, object?>.Empty;
 
     private static IReadOnlyDictionary<string, object?> Empty() => EmptyParameters;
 

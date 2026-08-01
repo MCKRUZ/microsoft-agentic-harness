@@ -40,6 +40,47 @@ public static class ExecutionApiServiceCollectionExtensions
     public const string StreamRateLimitPolicy = "bundles-stream";
 
     /// <summary>
+    /// Per-caller <em>concurrency</em> policy for direct tool invocation, for the same reason the stream
+    /// endpoint above has one.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// An invocation runs synchronously on its request thread for up to <c>InvocationTimeout</c>, holding
+    /// a thread, a DI scope, and whatever the tool itself acquired — it does not go through the
+    /// background dispatcher the way a bundle or workflow run does. The controller's fixed-window
+    /// limiter counts <em>starts</em>, so it cannot bound that: a caller can open its whole per-minute
+    /// allowance against a slow tool, still have most of them executing when the window rolls, and be
+    /// admitted for another allowance on top.
+    /// </para>
+    /// <para>
+    /// A concurrency limiter holds each permit for the invocation's lifetime instead, so what is capped
+    /// is work in flight rather than requests begun. <c>QueueLimit = 0</c> refuses a caller's excess
+    /// outright rather than parking it, because a parked request holds a connection to no purpose.
+    /// </para>
+    /// <para>
+    /// <strong>This replaces the controller's fixed window for this action rather than adding to it</strong>
+    /// — only the attribute closest to the endpoint applies — which is the same trade the stream
+    /// endpoint makes above. It is the right way round: a caller capped at
+    /// <see cref="MaxConcurrentInvocationsPerCaller"/> simultaneous invocations cannot exhaust the
+    /// thread pool however fast it calls, whereas a request-rate cap cannot bound work that is still
+    /// running when the window rolls. What the swap gives up is protection against high-rate calls to
+    /// a very fast tool; those return their thread immediately, so they cost throughput rather than
+    /// capacity, and the host-wide limits still apply.
+    /// </para>
+    /// </remarks>
+    public const string InvokeRateLimitPolicy = "tools-invoke";
+
+    /// <summary>
+    /// How many direct tool invocations one caller may have executing at once.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately low. Direct invocation is off by default and expected to serve automation making a
+    /// few targeted calls, not bulk traffic; a caller that genuinely needs breadth should be running a
+    /// workflow, which the dispatcher schedules and bounds host-wide.
+    /// </remarks>
+    private const int MaxConcurrentInvocationsPerCaller = 4;
+
+    /// <summary>
     /// Registers the bundle API's controllers, authentication, authorization, and rate limiters.
     /// </summary>
     /// <param name="services">The service collection.</param>
@@ -107,6 +148,16 @@ public static class ExecutionApiServiceCollectionExtensions
             options.AddPolicy(StreamRateLimitPolicy, httpContext =>
                 RateLimitPartition.GetConcurrencyLimiter(ResolvePartitionKey(httpContext), _ =>
                     new ConcurrencyLimiterOptions { PermitLimit = maxStreams, QueueLimit = 0 }));
+
+            // Concurrency, for the same reason as streams: a direct invocation occupies its request
+            // thread for the whole call, so counting starts does not bound it.
+            options.AddPolicy(InvokeRateLimitPolicy, httpContext =>
+                RateLimitPartition.GetConcurrencyLimiter(ResolvePartitionKey(httpContext), _ =>
+                    new ConcurrencyLimiterOptions
+                    {
+                        PermitLimit = MaxConcurrentInvocationsPerCaller,
+                        QueueLimit = 0
+                    }));
         });
 
         return services;

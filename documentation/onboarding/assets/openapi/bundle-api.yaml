@@ -555,11 +555,17 @@ paths:
                     durationMs: 3
         "400":
           description: The request is malformed, or names an operation the tool does not declare.
-        "401": { $ref: "#/components/responses/UnauthorizedProblem" }
+        "401":
+          description: >-
+            No credential, **or** a credential carrying no identifier usable as a permission subject —
+            no `oid`/`sub`, or one longer than 128 characters or outside `[A-Za-z0-9._:-]` (some
+            identity providers emit base64url `sub` values containing `+` or `/`). Both mean the same
+            thing: present a different token.
         "403":
           description: >-
             You lack `Harness.Tools.Invoke`, or governance refused this invocation, or the host has
-            direct invocation disabled.
+            direct invocation disabled. Deliberately not told apart — which one applied would tell you
+            whether you *would* be permitted if the operator switched the surface on.
         "404":
           description: >-
             No such tool, **or** you are not granted it, **or** it is not offered on this surface
@@ -569,9 +575,17 @@ paths:
             The request body exceeded `AppConfig:AI:DirectToolInvocation:MaxRequestBytes` (64 KiB by
             default). Enforced by the server before the body is read, so an oversized request costs a
             length check rather than a parse.
-        "429": { $ref: "#/components/responses/RateLimited" }
+        "429":
+          description: >-
+            You already have the maximum number of invocations **executing at once** (4 per caller).
+            This endpoint is bounded by concurrency rather than by request rate, because an invocation
+            occupies a server thread for its whole duration — a per-minute cap would not stop calls
+            that are still running when the window rolls. Retry when one of yours finishes.
         "504":
-          description: The tool did not complete within its deadline and was cancelled.
+          description: >-
+            The invocation did not complete within its deadline and was cancelled. The deadline covers
+            the **whole** invocation — authorization and the data-classification check as well as the
+            tool itself.
 
   # ---------------------------------------------------------------------------
   # Workflows — submission and runs

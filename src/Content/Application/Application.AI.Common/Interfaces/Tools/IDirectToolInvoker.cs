@@ -139,11 +139,25 @@ public enum DirectToolInvocationStatus
     /// <summary>The invocation exceeded its deadline and was cancelled.</summary>
     TimedOut = 4,
 
-    /// <summary>The request was malformed: an unknown operation, too many parameters, or an unusable identity.</summary>
+    /// <summary>The request was malformed: an unknown operation, or too many parameters.</summary>
     Invalid = 5,
 
     /// <summary>Direct invocation is not enabled on this host.</summary>
     Disabled = 6,
+
+    /// <summary>
+    /// The caller authenticated, but their identifier cannot serve as a permission subject — too long,
+    /// or carrying characters outside the accepted set (some identity providers emit base64url
+    /// <c>sub</c> values containing <c>+</c> or <c>/</c>).
+    /// </summary>
+    /// <remarks>
+    /// Separate from <see cref="Invalid"/> because the remedy is different and the caller cannot act on
+    /// the wrong one. A malformed request is fixed by changing the request; this is fixed by presenting
+    /// a different token, which is what <c>401</c> tells a caller to do — the same answer an absent
+    /// identity already gets. Reporting it as a <c>400</c> would send them auditing a request body that
+    /// was never the problem.
+    /// </remarks>
+    IdentityUnusable = 8,
 
     /// <summary>The invocation threw. The detail is in the host's logs, never in the response.</summary>
     Faulted = 7

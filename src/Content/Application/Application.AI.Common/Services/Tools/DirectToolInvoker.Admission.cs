@@ -52,7 +52,8 @@ public sealed partial class DirectToolInvoker
                 "Direct invocation rejected: caller identity is unusable as a permission subject (length {Length})",
                 request.OwnerId?.Length ?? 0);
             return Admission.Refuse(
-                DirectToolInvocationStatus.Invalid, "The caller's identity cannot be used as a permission subject.");
+                DirectToolInvocationStatus.IdentityUnusable,
+                "The authenticated principal carries no usable identity.");
         }
 
         // FindGranted answers null for a tool that does not exist AND for one the envelope does not

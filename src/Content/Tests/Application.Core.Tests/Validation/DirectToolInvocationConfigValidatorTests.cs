@@ -90,6 +90,30 @@ public sealed class DirectToolInvocationConfigValidatorTests
     }
 
     [Fact]
+    public void An_output_ceiling_near_int_max_is_refused()
+    {
+        // The realistic way to land here is an operator writing 2147483647 to mean "no limit". The
+        // invoker adds an overlap margin to this value in int arithmetic, so it wraps negative and
+        // every successful tool call becomes a 500 — with nothing in the response naming the setting.
+        var config = new DirectToolInvocationConfig { MaxOutputCharacters = int.MaxValue };
+
+        _sut.Validate(config).IsValid.Should().BeFalse();
+    }
+
+    [Fact]
+    public void An_output_ceiling_at_the_documented_maximum_is_accepted()
+    {
+        // The bound must admit the value it advertises, or the constant is a lie the operator finds
+        // out about at startup.
+        var config = new DirectToolInvocationConfig
+        {
+            MaxOutputCharacters = DirectToolInvocationConfigValidator.MaxOutputCharactersCeiling
+        };
+
+        _sut.Validate(config).IsValid.Should().BeTrue();
+    }
+
+    [Fact]
     public void The_failure_names_the_setting_that_is_wrong()
     {
         // The whole point of failing at startup rather than at request time: the operator is told which

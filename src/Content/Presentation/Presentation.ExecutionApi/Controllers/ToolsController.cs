@@ -169,6 +169,7 @@ public sealed class ToolsController : ControllerBase
     /// </remarks>
     [HttpPost("{name}/invoke")]
     [Authorize(Roles = InvokeRole)]
+    [EnableRateLimiting(ExecutionApiServiceCollectionExtensions.InvokeRateLimitPolicy)]
     [ServiceFilter(typeof(ToolInvocationRequestSizeLimitFilter))]
     [ProducesResponseType(typeof(ToolInvocationResponse), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
@@ -221,6 +222,10 @@ public sealed class ToolsController : ControllerBase
             // Absent, ungranted, and not-offered-here are one answer. Anything that distinguished them
             // would let a caller map the host's inventory one name at a time.
             DirectToolInvocationStatus.NotFound => NotFound(),
+
+            // Same answer as an absent identity, because it is the same problem with the same remedy:
+            // the credential cannot own work here, so the caller needs a different token.
+            DirectToolInvocationStatus.IdentityUnusable => this.NoUsableIdentity(),
 
             DirectToolInvocationStatus.Invalid => Problem(
                 title: "Validation failed", detail: outcome.Error,

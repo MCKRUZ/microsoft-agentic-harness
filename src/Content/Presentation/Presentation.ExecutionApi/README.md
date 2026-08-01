@@ -196,7 +196,14 @@ hand it out, not of adopting a template version in which it happened to be on.
 | `MaxOutputCharacters` | 256 Ki | Output beyond this is truncated and the response says so (`outputTruncated`) |
 | `MaxParameterCount` | 64 | Bounds the request's *shape*, which the byte ceiling does not |
 
-All four are validated at startup by `DirectToolInvocationConfigValidator` with `ValidateOnStart`.
+**Bounded by concurrency, not request rate.** The invoke action carries its own
+`InvokeRateLimitPolicy` — a per-caller `ConcurrencyLimiter` of 4, `QueueLimit = 0` — replacing the
+controller's 60/min fixed window for that action only. Same reasoning as `StreamRateLimitPolicy` one
+function above it: an invocation runs inline on its request thread for up to `InvocationTimeout` and
+does not go through the background dispatcher, so a limiter that counts *starts* cannot bound work
+that is still executing when the window rolls.
+
+All four settings are validated at startup by `DirectToolInvocationConfigValidator` with `ValidateOnStart`.
 Two of them fail in ways a caller cannot diagnose, which is why doc-only "must be positive" was not
 enough: a non-positive `MaxOutputCharacters` slices the output with a negative length, so a
 *successful* tool call surfaces as a `500`; a non-positive `InvocationTimeout` cancels every

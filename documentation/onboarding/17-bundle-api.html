@@ -842,6 +842,10 @@ The agent runs with exactly one tool: file_system.</code></pre>
                     <ul>
                         <li><code>400</code> &mdash; the request is malformed, or names an operation the tool does not
                             declare. The error names the operations it does accept.</li>
+                        <li><code>401</code> &mdash; no credential, <em>or</em> a credential carrying nothing
+                            usable as an identity. Some identity providers emit <code>sub</code> values with
+                            characters the harness cannot use as a permission subject; the remedy is the same
+                            either way, which is to present a different token.</li>
                         <li><code>403</code> &mdash; you lack the role, <em>or</em> the host has this surface off,
                             <em>or</em> governance refused an invocation of a tool you genuinely are granted.</li>
                         <li><code>404</code> &mdash; no such tool, <em>or</em> not granted to you, <em>or</em> not
@@ -849,6 +853,11 @@ The agent runs with exactly one tool: file_system.</code></pre>
                             <code>GET /api/tools/{name}</code> is.</li>
                         <li><code>413</code> &mdash; your request body exceeded the host's cap (64&nbsp;KiB by
                             default), refused before it was read.</li>
+                        <li><code>429</code> &mdash; you already have the maximum number of invocations
+                            <em>executing at once</em> (4 per caller). This endpoint is capped by
+                            concurrency rather than request rate, because an invocation holds a server
+                            thread for its whole duration and a per-minute cap would not stop calls that
+                            are still running when the window rolls. Retry when one of yours finishes.</li>
                         <li><code>504</code> &mdash; the tool outran its deadline (30&nbsp;s by default) and was
                             cancelled. That deadline covers the whole invocation, not just the tool: authorization
                             and the data-classification check happen under it too.</li>

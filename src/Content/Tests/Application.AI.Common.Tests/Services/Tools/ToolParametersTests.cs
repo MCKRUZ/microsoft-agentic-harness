@@ -146,6 +146,28 @@ public sealed class ToolParametersTests
         ToolParameters.FromJson(JsonSerializer.Deserialize<JsonElement>("\"\"")).Should().BeEmpty();
     }
 
+    [Fact]
+    public void The_empty_result_cannot_be_mutated_through_a_cast()
+    {
+        // The no-parameters answer is a single shared instance, so its immutability is load-bearing
+        // rather than cosmetic. A mutable dictionary behind IReadOnlyDictionary would let any consumer
+        // that downcast its parameter map corrupt the value every subsequent call receives — including
+        // calls arriving from the external HTTP surface, which now shares this path with the agent.
+        var empty = ToolParameters.FromJson(null);
+
+        var act = () => ((IDictionary<string, object?>)empty).Add("injected", "value");
+
+        act.Should().Throw<NotSupportedException>();
+    }
+
+    [Fact]
+    public void Two_empty_results_are_the_same_instance()
+    {
+        // Documents the sharing that makes the test above matter. If this ever stops being true the
+        // immutability requirement relaxes — but so does the allocation saving that motivated it.
+        ToolParameters.FromJson(null).Should().BeSameAs(ToolParameters.FromJson(null));
+    }
+
     private static IReadOnlyDictionary<string, object?> Parse(string json) =>
         ToolParameters.FromJson(JsonSerializer.Deserialize<JsonElement>(json));
 }

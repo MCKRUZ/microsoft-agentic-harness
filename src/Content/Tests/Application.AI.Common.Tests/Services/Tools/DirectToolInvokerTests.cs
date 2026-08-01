@@ -187,7 +187,53 @@ public sealed class DirectToolInvokerTests
         // characters the resolver does not accept must be refused, not silently substituted.
         var outcome = await Invoke(Request("alpha", owner: "who am i?"), Tool("alpha"));
 
-        outcome.Status.Should().Be(DirectToolInvocationStatus.Invalid);
+        outcome.Status.Should().Be(DirectToolInvocationStatus.IdentityUnusable);
+    }
+
+    [Fact]
+    public async Task An_unusable_identity_is_not_reported_as_a_malformed_request()
+    {
+        // Separate statuses because the remedies differ and the caller cannot act on the wrong one.
+        // A malformed request is fixed by changing the request; this is fixed by presenting a
+        // different token. Some identity providers emit base64url sub values carrying + or /, so a
+        // caller can land here with a request that is in every other respect perfect.
+        var outcome = await Invoke(Request("alpha", owner: "abc+def/ghi"), Tool("alpha"));
+
+        outcome.Status.Should().NotBe(DirectToolInvocationStatus.Invalid);
+    }
+
+    [Fact]
+    public async Task An_absurd_output_ceiling_does_not_fault_every_successful_call()
+    {
+        // Defence in depth, and reachable exactly here. The config validator refuses a ceiling this
+        // large at startup, but the invoker takes its settings through IOptionsMonitor and should not
+        // depend on a check in another assembly to stay correct: the scan window adds an overlap margin
+        // in int arithmetic, so a wrapping add yields a negative slice length and turns EVERY successful
+        // tool call into a 500. Saturating instead costs one comparison.
+        _config.MaxOutputCharacters = int.MaxValue;
+        _sanitizer.PassThrough = true;
+        var tool = Tool("alpha", result: ToolResult.Ok("fine"));
+
+        var outcome = await Invoke(Request("alpha"), tool);
+
+        outcome.Status.Should().Be(DirectToolInvocationStatus.Succeeded);
+        outcome.Output.Should().Be("fine");
+    }
+
+    [Fact]
+    public async Task Truncated_output_stays_within_the_configured_ceiling()
+    {
+        // The marker counts against the ceiling rather than being added on top of it. A consumer who
+        // set the ceiling to satisfy a downstream size contract would otherwise get a payload just
+        // over the limit — the one thing such a ceiling exists to prevent.
+        _config.MaxOutputCharacters = 40;
+        _sanitizer.PassThrough = true;
+        var tool = Tool("alpha", result: ToolResult.Ok(new string('x', 500)));
+
+        var outcome = await Invoke(Request("alpha"), tool);
+
+        outcome.Output!.Length.Should().BeLessThanOrEqualTo(40);
+        outcome.OutputTruncated.Should().BeTrue();
     }
 
     [Fact]

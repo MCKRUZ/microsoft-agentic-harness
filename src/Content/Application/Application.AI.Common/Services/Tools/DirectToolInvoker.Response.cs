@@ -64,7 +64,13 @@ public sealed partial class DirectToolInvoker
         // The margin is what makes the reorder safe: a secret straddling the ceiling stays inside the
         // scanned region, so it is still redacted rather than sliced in half and emitted. The final cut
         // below removes the margin again.
-        var scanCeiling = ceiling + ScrubOverlapMargin;
+        // Saturating rather than wrapping. The validator bounds MaxOutputCharacters so this cannot
+        // overflow from configuration, but the arithmetic should not depend on a check in another
+        // assembly to stay correct — a negative slice length here turns a successful tool call into a
+        // 500 for every caller.
+        var scanCeiling = ceiling <= int.MaxValue - ScrubOverlapMargin
+            ? ceiling + ScrubOverlapMargin
+            : int.MaxValue;
         var droppedBeforeScrubbing = raw.Length > scanCeiling;
         var output = droppedBeforeScrubbing ? raw[..scanCeiling] : raw;
 
@@ -76,9 +82,21 @@ public sealed partial class DirectToolInvoker
         // Re-checked rather than inferred from the pre-cut: scrubbing changes length in both directions
         // (a placeholder is rarely the width of what it replaced), so whether the ceiling is still
         // exceeded is only knowable now.
+        // The marker counts against the ceiling rather than being added on top of it: a caller that
+        // set the ceiling to satisfy a downstream size contract would otherwise receive a payload
+        // slightly over the limit they asked for, which is the one thing such a ceiling exists to
+        // prevent. Guarded for a ceiling smaller than the marker itself.
         var cutAfterScrubbing = output.Length > ceiling;
         if (cutAfterScrubbing)
-            output = string.Concat(output.AsSpan(0, ceiling), TruncationMarker);
+        {
+            // A ceiling smaller than the marker drops the marker rather than overshooting: the ceiling
+            // is the promise, and appending a 20-character explanation to a 10-character budget would
+            // break the very property this branch exists to keep. The OutputTruncated flag still says
+            // what happened, which is the part a caller must be able to rely on.
+            output = ceiling > TruncationMarker.Length
+                ? string.Concat(output.AsSpan(0, ceiling - TruncationMarker.Length), TruncationMarker)
+                : output[..ceiling];
+        }
 
         // Reported from what was actually dropped, never from what the raw length suggested. A string
         // barely over the ceiling that scrubbing shortened below it lost nothing, and claiming

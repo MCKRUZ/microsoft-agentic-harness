@@ -26,6 +26,20 @@ namespace Application.Core.Validation;
 /// </remarks>
 public sealed class DirectToolInvocationConfigValidator : AbstractValidator<DirectToolInvocationConfig>
 {
+    /// <summary>
+    /// The largest usable output ceiling: <see cref="int.MaxValue"/> less headroom for the overlap
+    /// margin the invoker adds to it while scrubbing.
+    /// </summary>
+    /// <remarks>
+    /// The margin is added in <c>int</c> arithmetic, so a ceiling near <see cref="int.MaxValue"/>
+    /// overflows to a negative slice length and turns every successful tool call into a <c>500</c>.
+    /// An operator writing <c>2147483647</c> to mean "no limit" is the realistic way to land there, and
+    /// a validator whose stated purpose is to name a bad setting at startup should catch it rather than
+    /// let the host boot into that state. A gigabyte of characters is already far past any use for this
+    /// surface, so the bound costs nothing real.
+    /// </remarks>
+    public const int MaxOutputCharactersCeiling = int.MaxValue - (64 * 1024);
+
     /// <summary>Initializes the rule set. Every quantity is strictly positive.</summary>
     public DirectToolInvocationConfigValidator()
     {
@@ -39,7 +53,9 @@ public sealed class DirectToolInvocationConfigValidator : AbstractValidator<Dire
 
         RuleFor(x => x.MaxOutputCharacters)
             .GreaterThan(0)
-            .WithMessage("MaxOutputCharacters must be > 0 — a non-positive ceiling slices the output with a negative length, turning a successful tool call into a 500.");
+            .WithMessage("MaxOutputCharacters must be > 0 — a non-positive ceiling slices the output with a negative length, turning a successful tool call into a 500.")
+            .LessThanOrEqualTo(MaxOutputCharactersCeiling)
+            .WithMessage($"MaxOutputCharacters must be <= {MaxOutputCharactersCeiling} — the invoker adds an overlap margin to it in int arithmetic, and a larger value overflows to a negative length, which turns every successful tool call into a 500. Use a large finite value rather than int.MaxValue to mean 'no limit'.");
 
         RuleFor(x => x.MaxParameterCount)
             .GreaterThan(0)
