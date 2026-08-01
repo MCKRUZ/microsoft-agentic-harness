@@ -32,8 +32,13 @@
  *     is just a permanent hole with a comment attached; this forces a re-decision.
  *   - Any allowlist entry that no longer matches a real finding (stale — delete it).
  *
- * Moderate and low findings are reported but do not fail. Raise MIN_FAIL_SEVERITY when the
- * repo is ready for that.
+ * Moderate and low findings are reported but do not fail. Widen FAIL_SEVERITIES when the repo
+ * is ready for that.
+ *
+ * Both scanners FAIL CLOSED: because neither tool's exit code is trustworthy, each parser
+ * demands positive evidence that the scan really ran, and throws rather than reporting an
+ * unscanned project as clean. A gate that can go quietly green is worse than no gate, because
+ * it is believed.
  */
 
 import { execFileSync } from 'node:child_process';
@@ -109,6 +114,23 @@ function scanNuGet() {
     REPO_ROOT,
   );
 
+  // Fail closed. `runCapturingStdout` deliberately swallows a non-zero exit (the command exits
+  // 0 even WITH high findings, so its exit code proves nothing either way). That same swallow
+  // means a genuine failure — a broken command, or an unreachable NuGet audit source, which
+  // merely warns and lists nothing while still exiting 0 — would parse to zero rows and take
+  // the gate green. So require positive evidence the scan actually evaluated projects: every
+  // project must be reported as either clean or vulnerable.
+  const evaluatedProjects =
+    /has no vulnerable packages given the current sources/i.test(stdout) ||
+    /has the following vulnerable packages/i.test(stdout);
+  if (!evaluatedProjects) {
+    throw new Error(
+      'dotnet list package --vulnerable produced no per-project verdict; the scan did not run. ' +
+        'Refusing to report the solution as clean.\n' +
+        stdout.trim().split(/\r?\n/).slice(-15).join('\n'),
+    );
+  }
+
   const findings = [];
   let currentProject = null;
   let currentPackage = null;
@@ -168,8 +190,22 @@ function scanNpm(relativeDir) {
     throw new Error(`npm audit produced unparseable JSON in ${relativeDir}`);
   }
 
+  // Fail closed. A failing `npm audit` — most commonly EUSAGE, when a PR edits package.json
+  // without regenerating the lock — still prints well-formed JSON, but with an `error` key and
+  // NO `vulnerabilities` key. Defaulting that to {} would report the project as clean and take
+  // the gate green on the exact desync it exists to catch. Demand the real shape instead.
+  if (parsed.error) {
+    const detail = parsed.error.summary ?? parsed.error.code ?? JSON.stringify(parsed.error);
+    throw new Error(`npm audit failed in ${relativeDir}: ${detail}`);
+  }
+  if (!parsed.vulnerabilities || typeof parsed.vulnerabilities !== 'object') {
+    throw new Error(
+      `npm audit returned no vulnerabilities map for ${relativeDir}; refusing to report it as clean.`,
+    );
+  }
+
   const findings = [];
-  for (const [name, entry] of Object.entries(parsed.vulnerabilities ?? {})) {
+  for (const [name, entry] of Object.entries(parsed.vulnerabilities)) {
     const severity = String(entry.severity ?? '').toLowerCase();
 
     // `via` holds either advisory objects or the names of packages that drag the flaw in.
@@ -212,8 +248,16 @@ function loadAllowlist() {
 
 function matches(entry, finding) {
   if (entry.package !== finding.name) return false;
-  // An entry may pin an exact advisory, or cover a package whose finding carries no url.
-  return finding.advisory === null || finding.advisory.includes(entry.advisory);
+
+  // Entries are advisory-scoped by default. A finding with no advisory url (an npm package
+  // flagged only because a dependency of it is vulnerable) can still be accepted, but the
+  // entry must OPT IN via `coversFindingsWithoutAdvisoryUrl`. Inferring that from the missing
+  // url instead would silently widen the exception to any FUTURE advisory in the same package
+  // that happens to arrive without a url — an allowlist that reads as advisory-scoped must
+  // not quietly behave as package-scoped.
+  if (finding.advisory === null) return entry.coversFindingsWithoutAdvisoryUrl === true;
+
+  return finding.advisory.includes(entry.advisory);
 }
 
 function main() {

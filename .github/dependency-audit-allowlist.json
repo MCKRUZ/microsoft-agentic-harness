@@ -17,7 +17,8 @@
       "advisory": "GHSA-qwww-vcr4-c8h2",
       "package": "react-router-dom",
       "reason": "Same advisory as the react-router entry above; react-router-dom is flagged only because it re-exports the affected package. Identical reasoning and identical review date.",
-      "reviewBy": "2027-02-01"
+      "reviewBy": "2027-02-01",
+      "coversFindingsWithoutAdvisoryUrl": true
     }
   ]
 }
