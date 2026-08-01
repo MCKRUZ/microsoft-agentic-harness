@@ -254,9 +254,44 @@ public sealed class EvalDatasetCatalogTests : IDisposable
         new EvalDatasetPathGuard(Monitor(roots), new EvalConfinementLatch(StartedConfined: roots.Length > 0)),
         NullLogger<EvalDatasetCatalog>.Instance);
 
-    private static IOptionsMonitor<AppConfig> Monitor(params string[] roots)
+    [Fact]
+    public void A_disabled_host_publishes_and_resolves_nothing_even_with_roots_configured()
+    {
+        // Turning evaluation off is an operator saying this host does not do this. Leaving the
+        // inventory readable would make that only half true, and leaving names resolvable would leave
+        // a disabled host one bypassed handler check away from running a suite.
+        WriteDataset(_root, "alpha.yaml");
+
+        var catalog = new EvalDatasetCatalog(
+            Monitor(false, _root),
+            new EvalDatasetPathGuard(Monitor(false, _root), new EvalConfinementLatch(StartedConfined: true)),
+            NullLogger<EvalDatasetCatalog>.Instance);
+
+        catalog.ListNames().Should().BeEmpty();
+        catalog.Resolve(["alpha"]).IsComplete.Should().BeFalse();
+    }
+
+    [Fact]
+    public void A_blank_name_never_reports_as_a_complete_resolution()
+    {
+        // EvalDatasetResolution.IsComplete reads a null MissingName as success, so a refusal carrying
+        // a blank name would claim every name resolved while carrying no paths — and a caller would
+        // admit a run over zero datasets. A validator makes this unreachable in production; the type
+        // must not depend on that.
+        WriteDataset(_root, "alpha.yaml");
+
+        var resolution = Catalog(_root).Resolve(["  "]);
+
+        resolution.IsComplete.Should().BeFalse();
+        resolution.MissingName.Should().NotBeNullOrWhiteSpace();
+    }
+
+    private static IOptionsMonitor<AppConfig> Monitor(params string[] roots) => Monitor(true, roots);
+
+    private static IOptionsMonitor<AppConfig> Monitor(bool enabled, params string[] roots)
     {
         var config = new AppConfig();
+        config.AI.Evaluation.Enabled = enabled;
         config.AI.Evaluation.DatasetRoots = [.. roots];
 
         var monitor = new Mock<IOptionsMonitor<AppConfig>>();

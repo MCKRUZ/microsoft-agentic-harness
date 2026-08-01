@@ -120,7 +120,17 @@ public sealed class EvalDatasetCatalog : IEvalDatasetCatalog
     {
         var found = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
-        var roots = _config.CurrentValue.AI.Evaluation.DatasetRoots ?? [];
+        var evaluation = _config.CurrentValue.AI.Evaluation;
+
+        // A host with evaluation switched off publishes nothing and resolves nothing, even if roots
+        // are still configured — turning the feature off is the operator saying this host does not do
+        // this, and leaving the inventory readable would make that only half true. Checked here rather
+        // than at the endpoints because it then also holds for resolution: a disabled host cannot map
+        // a name to a file at all, so no path past the handlers' own checks could run one.
+        if (!evaluation.Enabled)
+            return found;
+
+        var roots = evaluation.DatasetRoots ?? [];
 
         foreach (var root in roots)
         {
@@ -159,10 +169,16 @@ public sealed class EvalDatasetCatalog : IEvalDatasetCatalog
                 {
                     if (!string.Equals(existing, decision.CanonicalPath, StringComparison.Ordinal))
                     {
+                        // Deliberately does not say "in more than one root": the same branch fires for
+                        // two files in ONE root that differ only by extension (suite.yaml /
+                        // suite.json) or by case, since names are matched case-insensitively. Naming
+                        // both files lets an operator see which case they actually hit.
                         _logger.LogWarning(
-                            "Evaluation dataset name {Name} is defined in more than one root; keeping "
-                            + "the first and ignoring {Ignored}.",
+                            "Evaluation dataset name {Name} is claimed by more than one file; keeping "
+                            + "{Kept} and ignoring {Ignored}. Which one wins depends on enumeration "
+                            + "order, so rename one of them.",
                             name,
+                            existing,
                             file);
                     }
 

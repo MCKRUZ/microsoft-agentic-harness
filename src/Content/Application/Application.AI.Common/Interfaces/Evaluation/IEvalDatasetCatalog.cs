@@ -85,7 +85,23 @@ public sealed record EvalDatasetResolution
     public static EvalDatasetResolution Complete(IReadOnlyList<string> paths) => new() { Paths = paths };
 
     /// <summary>One name did not resolve, so the set is unusable.</summary>
+    /// <remarks>
+    /// <para>
+    /// A blank or absent name is substituted rather than stored, because <see cref="IsComplete"/> reads
+    /// a null <see cref="MissingName"/> as success. Constructing this factory with a blank name would
+    /// otherwise produce a resolution that <em>claims</em> every name resolved while carrying no paths
+    /// — and a caller checking <see cref="IsComplete"/> would admit a run over zero datasets.
+    /// </para>
+    /// <para>
+    /// Unreachable today: a validator rejects blank names before any handler resolves them. Guarded
+    /// anyway, because it is a silent success — the one failure mode that produces no error, no log,
+    /// and a caller who believes their suite ran.
+    /// </para>
+    /// </remarks>
     /// <param name="missingName">The name this host does not serve.</param>
-    public static EvalDatasetResolution Missing(string missingName) =>
-        new() { MissingName = missingName };
+    public static EvalDatasetResolution Missing(string? missingName) =>
+        new() { MissingName = string.IsNullOrWhiteSpace(missingName) ? UnnamedDataset : missingName };
+
+    /// <summary>Stands in for a blank name, so a refusal can never be mistaken for a success.</summary>
+    public const string UnnamedDataset = "(unnamed)";
 }
