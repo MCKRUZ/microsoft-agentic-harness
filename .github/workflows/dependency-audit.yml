@@ -1,0 +1,65 @@
+name: Dependency Audit
+
+# Two triggers, and the schedule is the important one.
+#
+# Path filters catch a dependency CHANGE. They cannot catch a newly published advisory
+# against code nobody touched — which is exactly how System.Security.Cryptography.Xml sat
+# vulnerable in this repo. The weekly run is what closes that gap; the path filters just
+# give faster feedback on PRs that move a version.
+on:
+  pull_request:
+    paths:
+      - '**/*.csproj'
+      - 'src/Directory.Packages.props'
+      - 'src/Directory.Build.props'
+      - '**/package.json'
+      - '**/package-lock.json'
+      - '.github/scripts/check-dependency-vulnerabilities.mjs'
+      - '.github/dependency-audit-allowlist.json'
+      - '.github/workflows/dependency-audit.yml'
+  push:
+    branches: [main]
+    paths:
+      - '**/*.csproj'
+      - 'src/Directory.Packages.props'
+      - 'src/Directory.Build.props'
+      - '**/package.json'
+      - '**/package-lock.json'
+      - '.github/scripts/check-dependency-vulnerabilities.mjs'
+      - '.github/dependency-audit-allowlist.json'
+      - '.github/workflows/dependency-audit.yml'
+  schedule:
+    # Mondays at 07:00 UTC. Catches advisories published against unchanged dependencies.
+    - cron: '0 7 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: NuGet and npm advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      # Restore populates the dependency graph that `dotnet list package --vulnerable`
+      # reads. Without it the command reports nothing and the gate passes vacuously.
+      - name: Restore NuGet packages
+        run: dotnet restore src/AgenticHarness.slnx
+
+      # No `npm ci` — `npm audit` resolves the tree from package-lock.json alone, and
+      # installing two frontends would triple this job's runtime for no added signal.
+      # No dependencies to install for the script itself; it uses only the Node stdlib.
+      - name: Check for vulnerable dependencies
+        run: node .github/scripts/check-dependency-vulnerabilities.mjs
