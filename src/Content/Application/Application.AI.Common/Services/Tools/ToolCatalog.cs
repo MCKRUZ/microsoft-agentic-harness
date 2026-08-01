@@ -162,6 +162,7 @@ public sealed class ToolCatalog : IToolCatalog
             tool.Description ?? string.Empty,
             [.. tool.SupportedOperations ?? []],
             new ToolRiskProfile(tool.RiskTier, tool.IsReadOnly),
-            tool.IsConcurrencySafe);
+            tool.IsConcurrencySafe,
+            tool.IsDirectlyInvocable);
     }
 }

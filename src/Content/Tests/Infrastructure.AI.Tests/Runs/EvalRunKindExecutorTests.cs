@@ -48,18 +48,12 @@ public sealed class EvalRunKindExecutorTests
         observed.Should().BeSameAs(envelope);
     }
 
-    [Fact]
-    public async Task Leaves_no_envelope_armed_once_the_run_is_over()
-    {
-        // Ambient state that outlived its run would be inherited by whatever the dispatcher thread does
-        // next — one caller's grant applied to another caller's work.
-        Given("alpha", "/data/alpha.yaml");
-        WhenEvaluated(() => { }, Passing());
-
-        await Execute(Record(), "alpha");
-
-        CapabilityEnvelopeAccessor.Current.Should().BeNull();
-    }
+    // NOTE: an earlier test here asserted that no envelope stayed armed once the run returned. It
+    // could not fail. CapabilityEnvelopeAccessor is an AsyncLocal<T>, so a value published inside an
+    // awaited async method is invisible to the awaiting caller regardless of whether the callee
+    // disposed its scope — the assertion was green against an executor that never cleaned up at all.
+    // Removed rather than left as false assurance; the executor still scopes its envelope with a
+    // `using`, which is the correct mechanism, and the arming test above is the one that has teeth.
 
     [Fact]
     public async Task Resolves_every_named_dataset_to_a_path_through_the_catalog()

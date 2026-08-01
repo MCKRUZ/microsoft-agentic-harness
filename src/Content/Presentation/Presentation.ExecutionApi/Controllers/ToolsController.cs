@@ -1,11 +1,13 @@
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Tools;
+using Application.AI.Common.Services.Tools;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using Presentation.ExecutionApi.DTOs;
 using Presentation.ExecutionApi.Extensions;
+using Presentation.ExecutionApi.Services;
 
 namespace Presentation.ExecutionApi.Controllers;
 
@@ -39,17 +41,43 @@ namespace Presentation.ExecutionApi.Controllers;
 [EnableRateLimiting(ExecutionApiServiceCollectionExtensions.DefaultRateLimitPolicy)]
 public sealed class ToolsController : ControllerBase
 {
+    /// <summary>
+    /// The role a caller must hold to run a tool through <see cref="Invoke"/>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Deliberately narrower than the controller's own <c>[Authorize]</c>, which is all discovery
+    /// requires. Reading the catalog tells a caller what the host could do for them; invoking makes it
+    /// happen, on the host's own credentials and against the host's own resources. Those are different
+    /// grants and an operator should be able to hand out the first without the second — which is only
+    /// possible if they are separate claims.
+    /// </para>
+    /// <para>
+    /// Note the asymmetry with the rest of this host: bundle and workflow runs execute an <em>agent</em>
+    /// that decides for itself which tools to use, and are gated by the envelope alone. Here the caller
+    /// names the tool and the operation directly, so the role sits on top of the envelope rather than
+    /// in place of it.
+    /// </para>
+    /// </remarks>
+    public const string InvokeRole = "Harness.Tools.Invoke";
+
     private readonly IToolCatalog _catalog;
     private readonly ICapabilityEnvelopeResolver _envelopeResolver;
+    private readonly IDirectToolInvoker _invoker;
 
-    /// <summary>Initializes the controller with the catalog and the caller's envelope resolver.</summary>
-    public ToolsController(IToolCatalog catalog, ICapabilityEnvelopeResolver envelopeResolver)
+    /// <summary>Initializes the controller with the catalog, the envelope resolver, and the invoker.</summary>
+    public ToolsController(
+        IToolCatalog catalog,
+        ICapabilityEnvelopeResolver envelopeResolver,
+        IDirectToolInvoker invoker)
     {
         ArgumentNullException.ThrowIfNull(catalog);
         ArgumentNullException.ThrowIfNull(envelopeResolver);
+        ArgumentNullException.ThrowIfNull(invoker);
 
         _catalog = catalog;
         _envelopeResolver = envelopeResolver;
+        _invoker = invoker;
     }
 
     /// <summary>
@@ -99,6 +127,98 @@ public sealed class ToolsController : ControllerBase
             : Ok(ToEntry(descriptor));
     }
 
+    /// <summary>
+    /// Runs one operation of one tool and returns its result.
+    /// </summary>
+    /// <param name="name">The tool to run, matched case-insensitively.</param>
+    /// <param name="request">The operation and its arguments.</param>
+    /// <param name="cancellationToken">Cancelled when the caller disconnects.</param>
+    /// <remarks>
+    /// <para>
+    /// <strong>This executes host-side code on a caller's say-so, which is why it is gated three
+    /// times.</strong> The caller must authenticate; must hold <see cref="InvokeRole"/>; and the tool
+    /// must be granted by the capability envelope their credential resolves to. The first two are
+    /// checked here; the third is enforced inside <see cref="IDirectToolInvoker"/>, both by the catalog
+    /// lookup and independently by the invocation governor — which arming the envelope switches on.
+    /// </para>
+    /// <para>
+    /// <strong>The status codes carry meaning worth honouring.</strong> A tool the caller is not
+    /// granted, one that does not exist, and one not offered on this surface are all <c>404</c>: any
+    /// other answer would let a caller map the host's inventory one name at a time. <c>403</c> means
+    /// governance refused an invocation of a tool the caller <em>is</em> granted — an autonomy ceiling
+    /// or a policy rule — or that the host has direct invocation switched off. <c>200</c> with
+    /// <c>succeeded: false</c> is a tool that ran and said no, which is a different event from any of
+    /// these and must not be conflated with them.
+    /// </para>
+    /// <para>
+    /// <strong>Output is sanitized and bounded, never compressed.</strong> The harness's tool-output
+    /// compression exists to fit results into a model's context window and does it by summarising and
+    /// substituting pointers an agent can expand; a caller on the far side of HTTP cannot expand them,
+    /// so they would receive a reference instead of an answer.
+    /// </para>
+    /// </remarks>
+    [HttpPost("{name}/invoke")]
+    [Authorize(Roles = InvokeRole)]
+    [ProducesResponseType(typeof(ToolInvocationResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status504GatewayTimeout)]
+    public async Task<IActionResult> Invoke(
+        string name,
+        [FromBody] ToolInvocationRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (request is null)
+            return BadRequest(new { error = "A request body is required." });
+
+        // Identity from the token, never the body. A null id means the credential carries nothing
+        // durable to attribute the invocation to, which is a refusal rather than a shared bucket.
+        var ownerId = BundleCallerIdentity.StableId(User);
+        if (string.IsNullOrEmpty(ownerId))
+            return Forbid();
+
+        var outcome = await _invoker.InvokeAsync(
+            new DirectToolInvocationRequest
+            {
+                ToolName = name,
+                Operation = request.Operation ?? string.Empty,
+                Parameters = ToolParameters.FromJson(request.Parameters),
+                OwnerId = ownerId,
+                Envelope = _envelopeResolver.Resolve(User),
+                RequestedTimeout = request.TimeoutSeconds is { } seconds
+                    ? TimeSpan.FromSeconds(seconds)
+                    : null
+            },
+            cancellationToken);
+
+        return outcome.Status switch
+        {
+            DirectToolInvocationStatus.Succeeded or DirectToolInvocationStatus.ToolFailed =>
+                Ok(ToResponse(name, request.Operation ?? string.Empty, outcome)),
+            DirectToolInvocationStatus.NotFound => NotFound(),
+            DirectToolInvocationStatus.Invalid => BadRequest(new { error = outcome.Error }),
+            DirectToolInvocationStatus.Denied or DirectToolInvocationStatus.Disabled => Forbid(),
+            DirectToolInvocationStatus.TimedOut =>
+                StatusCode(StatusCodes.Status504GatewayTimeout, new { error = outcome.Error }),
+            _ => StatusCode(StatusCodes.Status500InternalServerError, new { error = outcome.Error })
+        };
+    }
+
+    private static ToolInvocationResponse ToResponse(
+        string name, string operation, DirectToolInvocationOutcome outcome) =>
+        new()
+        {
+            Tool = name,
+            Operation = operation,
+            Succeeded = outcome.Status == DirectToolInvocationStatus.Succeeded,
+            Output = outcome.Output,
+            Error = outcome.Error,
+            OutputTruncated = outcome.OutputTruncated,
+            DurationMs = (long)outcome.Duration.TotalMilliseconds
+        };
+
     private static ToolCatalogEntry ToEntry(ToolDescriptor descriptor) =>
         new()
         {
@@ -107,6 +227,7 @@ public sealed class ToolsController : ControllerBase
             Operations = descriptor.SupportedOperations,
             RiskTier = descriptor.Risk.Radius,
             IsReadOnly = descriptor.Risk.IsReadOnly,
-            IsConcurrencySafe = descriptor.IsConcurrencySafe
+            IsConcurrencySafe = descriptor.IsConcurrencySafe,
+            IsDirectlyInvocable = descriptor.IsDirectlyInvocable
         };
 }

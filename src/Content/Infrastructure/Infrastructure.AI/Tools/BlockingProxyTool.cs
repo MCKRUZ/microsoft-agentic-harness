@@ -54,6 +54,20 @@ public abstract class BlockingProxyTool : ITool
     // behaviour (two simultaneous navigations would race). AgUiEventWriter additionally serializes
     // frame writes to defend against the framework's own concurrent function invocation.
 
+    /// <summary>
+    /// Never directly invocable over HTTP. Every tool in this hierarchy carries out its effect through
+    /// a browser attached to the <em>current run</em>, so the whole family is excluded here rather than
+    /// tool by tool — the unsuitability is a property of the round trip, not of any one subclass.
+    /// </summary>
+    /// <remarks>
+    /// A direct HTTP caller has no attached client, so the best case is that the tool reports one is
+    /// missing and the caller has spent a request to be told so. The worse case is a host that does
+    /// have a browser attached: the call then succeeds by driving <em>somebody else's</em> live view,
+    /// and returns to the HTTP caller a reference to a widget rendered in a session they are not part
+    /// of. Neither outcome is something a caller could act on, so the surface should not offer it.
+    /// </remarks>
+    public bool IsDirectlyInvocable => false;
+
     /// <summary>Whether a client is currently attached and able to service the round-trip.</summary>
     protected bool IsClientAttached => _bridge.IsClientAttached;
 

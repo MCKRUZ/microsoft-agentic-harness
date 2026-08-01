@@ -62,6 +62,39 @@ public interface ITool
     bool IsConcurrencySafe => false;
 
     /// <summary>
+    /// Whether this tool means anything when a caller invokes it directly over HTTP, rather than an
+    /// agent invoking it mid-turn. Default is true.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>This is a transport-suitability fact, not an authorization control.</strong> What a
+    /// caller may invoke is decided by their <c>CapabilityEnvelope</c> and enforced by
+    /// <c>IToolInvocationGovernor</c>; nothing here widens or narrows that. This answers a different
+    /// question the envelope cannot: whether the tool's result is even coherent once it leaves the
+    /// process. Setting it false removes the tool from the direct-invocation surface only — the tool
+    /// remains fully available to agents, plans, and skills.
+    /// </para>
+    /// <para>
+    /// <strong>Two shapes of tool should set this false.</strong> The first returns a directive rather
+    /// than an answer: the <c>render_*</c> family and <c>dashboard_control</c> emit instructions for a
+    /// connected AG-UI client to act on, so an HTTP caller receives a reference to a widget it has no
+    /// session with. The second turns one call into unbounded work: <c>delegate_task</c> spawns agent
+    /// turns, so a caller sees a synchronous tool call time out while the host keeps spending on
+    /// inference behind it.
+    /// </para>
+    /// <para>
+    /// <strong>Why the default is true rather than fail-closed</strong>, unlike its neighbours above.
+    /// Those two default false because guessing wrong about them causes damage — a tool wrongly assumed
+    /// read-only gets run in parallel and corrupts state. Guessing wrong here costs a caller a
+    /// confusing response, and the envelope still had to name the tool for them to reach it at all.
+    /// Defaulting false would instead mean a consumer's own tools are silently absent from a surface
+    /// they explicitly granted, which is the harder failure to diagnose: nothing is wrong, and nothing
+    /// says why.
+    /// </para>
+    /// </remarks>
+    bool IsDirectlyInvocable => true;
+
+    /// <summary>
     /// The intrinsic blast radius (impact band) of invoking this tool — how much damage
     /// a single call can do. Feeds the graded-autonomy engine: higher tiers may
     /// auto-approve low-radius tools while still requiring human approval for high-radius

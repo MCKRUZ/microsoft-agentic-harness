@@ -454,6 +454,58 @@
                         can never delete a directory out from under a running agent.
                     </p>
 
+                    <h2 id="direct-invocation">Direct tool invocation: the same envelope, a shorter path</h2>
+                    <p>
+                        Everything above concerns an <em>agent</em> the host runs on a caller's behalf, which chooses
+                        its own tools as it works. The same host can also expose
+                        <code>POST /api/tools/{name}/invoke</code>, where the caller names the tool and the operation
+                        and the host simply runs it. It is worth understanding as a distinct surface, because the
+                        authorization story is identical while the threat model is not: there is no agent between the
+                        caller's intent and the tool call, so nothing except the envelope stands between a granted tool
+                        and arbitrary use of it.
+                    </p>
+                    <p>
+                        Three controls apply, and the important design point is that <strong>none of them is a
+                        substitute for the others</strong>:
+                    </p>
+                    <ul>
+                        <li>
+                            <strong>It is disabled by default, in every host</strong>
+                            (<code>AppConfig:AI:DirectToolInvocation:Enabled</code>) — deliberately unlike bundle
+                            execution and workflow submission, which the execution host ships enabled. Turning it on is
+                            an operator decision, never a consequence of adopting a template version. The gate is
+                            enforced inside <code>IDirectToolInvoker</code> rather than only at the controller, so a
+                            future in-process caller cannot route around it.
+                        </li>
+                        <li>
+                            <strong>A dedicated role, <code>Harness.Tools.Invoke</code>.</strong> Discovery
+                            (<code>GET /api/tools</code>) requires only authentication, because listing a tool confers
+                            nothing. Running one is a separate grant, and separating the claims is what lets an operator
+                            issue read-only discovery credentials.
+                        </li>
+                        <li>
+                            <strong>The same capability envelope</strong>, armed around the invocation exactly as it is
+                            around a bundle run. Arming it is what switches <code>ToolInvocationGovernor</code>
+                            enforcement on, so the grant is checked twice — by the catalog lookup, and independently by
+                            the governor's own envelope check.
+                        </li>
+                    </ul>
+                    <p>
+                        Two further properties are worth knowing when you assess this surface. Output and error text are
+                        run through the response sanitizers unconditionally, because a tool's failure message is the
+                        likeliest place a filesystem path or connection string escapes; and tool-output
+                        <em>compression</em> is deliberately not applied, since it substitutes pointers only an
+                        in-process agent can expand. A caller receives a bounded, truncation-flagged prefix instead.
+                    </p>
+                    <p>
+                        Some tools additionally declare <code>IsDirectlyInvocable = false</code> and answer
+                        <code>404</code> here even when granted. Read that as a coherence filter, not a security
+                        boundary: the <code>render_*</code> family and <code>dashboard_control</code> emit directives for
+                        a browser attached to a live run, and <code>delegate_task</code> expands one call into
+                        open-ended agent turns that would outlive the request authorising them. The envelope remains the
+                        control that decides authority.
+                    </p>
+
                     <h2 id="residual-risk">What this layer does not cover</h2>
                     <p>
                         Being explicit about the edges matters more here than anywhere else in this guide, because the

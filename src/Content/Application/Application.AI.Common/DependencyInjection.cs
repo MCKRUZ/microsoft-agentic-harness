@@ -171,6 +171,14 @@ public static class DependencyInjection
             KeyedToolRegistrationKeys(services),
             sp.GetRequiredService<ILogger<Services.Tools.ToolCatalog>>()));
 
+        // Direct tool invocation — the single arming site for running a tool on behalf of an external
+        // caller. Registered unconditionally and passively, like the catalog above: the feature gate is
+        // read per request from AppConfig.AI.DirectToolInvocation (off by default in every host), so the
+        // DI graph does not vary by configuration and ValidateOnBuild checks the same container
+        // everywhere. Singleton because it holds no per-request state — it creates its own scope per
+        // invocation for the scoped governor and execution context.
+        services.AddSingleton<Interfaces.Tools.IDirectToolInvoker, Services.Tools.DirectToolInvoker>();
+
         // Context budget tracking
         services.AddSingleton<IContextBudgetTracker, ContextBudgetTracker>();
 

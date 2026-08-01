@@ -68,6 +68,7 @@ public sealed class AnonymousAuthenticationHandler : AuthenticationHandler<Authe
                 // controllers' tests. In a real deployment Harness.Evals.Execute is granted separately,
                 // and this handler is not reachable at all unless Auth:AllowAnonymous was set.
                 new Claim(ClaimTypes.Role, Controllers.EvalsController.ExecuteRole),
+                new Claim(ClaimTypes.Role, Controllers.ToolsController.InvokeRole),
             ],
             SchemeName);
         var principal = new ClaimsPrincipal(identity);

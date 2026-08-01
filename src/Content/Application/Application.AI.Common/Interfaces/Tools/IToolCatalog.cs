@@ -25,12 +25,20 @@ namespace Application.AI.Common.Interfaces.Tools;
 /// Whether the tool may run alongside other invocations. Callers batching work need this; it is
 /// fail-closed (false) for any tool that does not declare otherwise.
 /// </param>
+/// <param name="IsDirectlyInvocable">
+/// Whether the tool can be invoked directly over HTTP, mirroring <see cref="ITool.IsDirectlyInvocable"/>.
+/// A tool that reports false is still listed and still usable from a workflow's <c>ToolUse</c> step —
+/// which is exactly why it is published rather than filtered out. Omitting it would leave a workflow
+/// author unable to discover a tool they are entitled to use; reporting it as invocable would send a
+/// direct caller into a refusal they had no way to anticipate.
+/// </param>
 public sealed record ToolDescriptor(
     string Name,
     string Description,
     IReadOnlyList<string> SupportedOperations,
     ToolRiskProfile Risk,
-    bool IsConcurrencySafe);
+    bool IsConcurrencySafe,
+    bool IsDirectlyInvocable);
 
 /// <summary>
 /// Enumerates the tools registered in this host, filtered to those a caller's capability envelope

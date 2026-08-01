@@ -253,19 +253,52 @@ public sealed class ToolCatalogTests
         act.Should().Throw<ArgumentNullException>();
     }
 
+    [Fact]
+    public void A_tool_that_is_not_directly_invocable_is_still_listed()
+    {
+        // Deliberately listed rather than filtered out. The render_* family and delegate_task are
+        // unusable over HTTP but perfectly usable from a workflow's ToolUse step, and hiding them
+        // would leave a workflow author unable to discover a tool they are entitled to name.
+        var sut = CreateCatalog(new FakeTool("alpha", isDirectlyInvocable: false));
+
+        sut.ListGranted(Granting("alpha")).Should().ContainSingle();
+    }
+
+    [Fact]
+    public void A_tool_that_is_not_directly_invocable_is_flagged_as_such()
+    {
+        // The other half: listed, but honestly. Reporting it as invocable would send a caller into a
+        // 404 they had no way to anticipate from the catalog they were told to author against.
+        var sut = CreateCatalog(new FakeTool("alpha", isDirectlyInvocable: false));
+
+        sut.FindGranted("alpha", Granting("alpha"))!.IsDirectlyInvocable.Should().BeFalse();
+    }
+
+    [Fact]
+    public void An_ordinary_tool_is_reported_as_directly_invocable()
+    {
+        // The companion assertion — without it, a catalog that reported every tool as non-invocable
+        // would satisfy the test above while making the whole surface unreachable.
+        var sut = CreateCatalog(new FakeTool("alpha"));
+
+        sut.FindGranted("alpha", Granting("alpha"))!.IsDirectlyInvocable.Should().BeTrue();
+    }
+
     private sealed class FakeTool(
         string name,
         string description = "fake tool",
         IReadOnlyList<string>? operations = null,
         BlastRadius risk = BlastRadius.Medium,
         bool isReadOnly = false,
-        bool isConcurrencySafe = false) : ITool
+        bool isConcurrencySafe = false,
+        bool isDirectlyInvocable = true) : ITool
     {
         public string Name => name;
         public string Description => description;
         public IReadOnlyList<string> SupportedOperations => operations ?? [];
         public bool IsReadOnly => isReadOnly;
         public bool IsConcurrencySafe => isConcurrencySafe;
+        public bool IsDirectlyInvocable => isDirectlyInvocable;
         public BlastRadius RiskTier => risk;
 
         public Task<ToolResult> ExecuteAsync(
