@@ -52,6 +52,12 @@ public sealed class ToolCatalog : IToolCatalog
     private readonly IServiceProvider _serviceProvider;
     private readonly ILogger<ToolCatalog> _logger;
     private readonly IReadOnlyList<string> _keys;
+
+    // Name -> registration key, so a single-tool lookup is O(1). Built once because registrations
+    // cannot change after the container is built. FindGranted is now on the direct-invocation request
+    // path, where a linear scan over every registered key (plus a closure allocation) would be paid
+    // per invocation.
+    private readonly Dictionary<string, string> _keysByName;
     private readonly ConcurrentDictionary<string, ToolDescriptor?> _describedByKey = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
@@ -82,6 +88,8 @@ public sealed class ToolCatalog : IToolCatalog
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .OrderBy(static key => key, StringComparer.Ordinal)
         ];
+
+        _keysByName = _keys.ToDictionary(static key => key, static key => key, StringComparer.OrdinalIgnoreCase);
     }
 
     /// <inheritdoc />
@@ -106,10 +114,7 @@ public sealed class ToolCatalog : IToolCatalog
         if (string.IsNullOrWhiteSpace(toolName) || !envelope.GrantsTool(toolName))
             return null;
 
-        var key = _keys.FirstOrDefault(
-            candidate => string.Equals(candidate, toolName, StringComparison.OrdinalIgnoreCase));
-
-        return key is null ? null : Describe(key);
+        return _keysByName.TryGetValue(toolName, out var key) ? Describe(key) : null;
     }
 
     /// <summary>

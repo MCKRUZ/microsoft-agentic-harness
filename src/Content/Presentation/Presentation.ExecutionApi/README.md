@@ -191,10 +191,17 @@ hand it out, not of adopting a template version in which it happened to be on.
 | Key | Default | Notes |
 |-----|---------|-------|
 | `Enabled` | `false` | Off ⇒ `IDirectToolInvoker` refuses (`403`). The gate is in the invoker, not just the controller, so a future in-process caller cannot route around it |
-| `MaxRequestBytes` | 64 KiB | Checked before deserialization |
-| `InvocationTimeout` | 30 s | Server ceiling. A caller may request **less**; requesting more is refused, never clamped |
+| `MaxRequestBytes` | 64 KiB | Applied by `ToolInvocationRequestSizeLimitFilter` (a resource filter, so it runs before model binding — the only point at which the limit can still bite) |
+| `InvocationTimeout` | 30 s | Server ceiling over the **whole invocation** — authorization and the classification gate run under it too, not just the tool. A caller may request **less**; requesting more is refused, never clamped |
 | `MaxOutputCharacters` | 256 Ki | Output beyond this is truncated and the response says so (`outputTruncated`) |
 | `MaxParameterCount` | 64 | Bounds the request's *shape*, which the byte ceiling does not |
+
+All four are validated at startup by `DirectToolInvocationConfigValidator` with `ValidateOnStart`.
+Two of them fail in ways a caller cannot diagnose, which is why doc-only "must be positive" was not
+enough: a non-positive `MaxOutputCharacters` slices the output with a negative length, so a
+*successful* tool call surfaces as a `500`; a non-positive `InvocationTimeout` cancels every
+invocation before the tool starts, so the surface answers `504` to everything. Both read as a broken
+host rather than a mistyped limit, so the host refuses to start and names the setting instead.
 
 Three gates apply to every invocation, and none substitutes for another: the caller must
 authenticate; must hold the `Harness.Tools.Invoke` role; and the tool must be in the capability

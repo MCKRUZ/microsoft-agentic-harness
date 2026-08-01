@@ -62,7 +62,7 @@ public sealed class BundlesController : ControllerBase
 
         var callerId = ResolveCallerId();
         if (callerId is null)
-            return NoUsableIdentity();
+            return this.NoUsableIdentity();
 
         await using var stream = file.OpenReadStream();
         var result = await _mediator
@@ -89,7 +89,7 @@ public sealed class BundlesController : ControllerBase
 
         var callerId = ResolveCallerId();
         if (callerId is null)
-            return NoUsableIdentity();
+            return this.NoUsableIdentity();
 
         // Resolve the per-caller grant at the transport boundary from the authenticated principal.
         var envelope = _envelopeResolver.Resolve(User);
@@ -138,7 +138,7 @@ public sealed class BundlesController : ControllerBase
     {
         var callerId = ResolveCallerId();
         if (callerId is null)
-            return NoUsableIdentity();
+            return this.NoUsableIdentity();
 
         // Owner-scoped pre-flight: the poll query reports an unknown or foreign run as not found, so this both
         // resolves the record and enforces ownership before we commit the response to an event stream.
@@ -177,7 +177,7 @@ public sealed class BundlesController : ControllerBase
     {
         var callerId = ResolveCallerId();
         if (callerId is null)
-            return NoUsableIdentity();
+            return this.NoUsableIdentity();
 
         var result = await _mediator
             .Send(new GetBundleRunQuery { Handle = handle, JobId = jobId, OwnerId = callerId }, cancellationToken)
@@ -197,7 +197,7 @@ public sealed class BundlesController : ControllerBase
     {
         var callerId = ResolveCallerId();
         if (callerId is null)
-            return NoUsableIdentity();
+            return this.NoUsableIdentity();
 
         var result = await _mediator
             .Send(new DeleteBundleCommand { Handle = handle, OwnerId = callerId }, cancellationToken)
@@ -221,12 +221,6 @@ public sealed class BundlesController : ControllerBase
     /// under a shared name.
     /// </remarks>
     private string? ResolveCallerId() => BundleCallerIdentity.StableId(User);
-
-    /// <summary>401 response when the authenticated principal has no usable identity to own resources under.</summary>
-    private IActionResult NoUsableIdentity() => Problem(
-        title: "Unauthorized",
-        detail: "The authenticated principal carries no usable identity.",
-        statusCode: StatusCodes.Status401Unauthorized);
 
     private IActionResult MapFailure(Result result) =>
         this.FailureResponse(result, "Bundle operation failed");

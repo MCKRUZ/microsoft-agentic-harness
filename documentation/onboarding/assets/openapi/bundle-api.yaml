@@ -564,6 +564,11 @@ paths:
           description: >-
             No such tool, **or** you are not granted it, **or** it is not offered on this surface
             (`isDirectlyInvocable: false`). The three are deliberately indistinguishable.
+        "413":
+          description: >-
+            The request body exceeded `AppConfig:AI:DirectToolInvocation:MaxRequestBytes` (64 KiB by
+            default). Enforced by the server before the body is read, so an oversized request costs a
+            length check rather than a parse.
         "429": { $ref: "#/components/responses/RateLimited" }
         "504":
           description: The tool did not complete within its deadline and was cancelled.

@@ -259,6 +259,38 @@ public sealed class DirectToolInvokerTests
     }
 
     [Fact]
+    public async Task A_slow_authorization_hits_the_deadline_too()
+    {
+        // The deadline has to reach the gates, not only the tool. Governance can consult a policy
+        // engine, so a deadline scoped to the tool call alone leaves total request time unbounded by
+        // configuration — the caller waits indefinitely on an invocation that never reached a tool.
+        _config.InvocationTimeout = TimeSpan.FromMilliseconds(50);
+        _governor.Delay = TimeSpan.FromSeconds(20);
+        var tool = Tool("alpha");
+
+        var outcome = await Invoke(Request("alpha"), tool);
+
+        outcome.Status.Should().Be(DirectToolInvocationStatus.TimedOut);
+        tool.Executions.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task A_slow_classification_gate_hits_the_deadline_too()
+    {
+        // Same reasoning, and more likely in practice: resolving an asset's sensitivity can mean a
+        // network round trip or a model call.
+        _config.InvocationTimeout = TimeSpan.FromMilliseconds(50);
+        _classificationGate = new FakeClassificationGate(
+            ClassificationVerdict.Allow(), TimeSpan.FromSeconds(20));
+        var tool = Tool("alpha");
+
+        var outcome = await Invoke(Request("alpha"), tool);
+
+        outcome.Status.Should().Be(DirectToolInvocationStatus.TimedOut);
+        tool.Executions.Should().Be(0);
+    }
+
+    [Fact]
     public async Task A_timeout_is_not_reported_as_a_generic_fault()
     {
         // Distinguishable on purpose: a caller can retry a timeout with a smaller request, whereas a
@@ -365,6 +397,56 @@ public sealed class DirectToolInvokerTests
         var outcome = await Invoke(Request("alpha"), tool);
 
         outcome.OutputTruncated.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Still_scrubs_a_secret_that_straddles_the_truncation_boundary()
+    {
+        // The output is cut before it is scrubbed, for cost: scrubbing 20 MB to return 256 KiB is work
+        // a remote caller can demand at will. The overlap margin is what keeps that safe — a secret
+        // spanning the cut must still be inside the scanned region. Get this wrong and the surface
+        // emits the first half of a key.
+        _config.MaxOutputCharacters = 10;
+        _sanitizer.ScrubTarget = "SECRET";
+        var tool = Tool("alpha", result: ToolResult.Ok(new string('x', 10) + "SECRET" + new string('y', 20)));
+
+        var outcome = await Invoke(Request("alpha"), tool);
+
+        outcome.Output.Should().NotContain("SECRET");
+    }
+
+    [Fact]
+    public async Task Reports_truncation_for_content_dropped_before_scrubbing_even_if_the_rest_fits()
+    {
+        // The case that only the pre-cut can produce, and the reason the flag is not simply "did the
+        // final cut fire". Output far beyond the scan window is discarded before the sanitizer ever
+        // sees it; if scrubbing then shrinks what remains below the ceiling, the final cut does not
+        // fire — and a flag derived from that alone would tell the caller nothing was lost, when in
+        // fact most of the result was. This is also the only test that reaches the pre-cut branch at
+        // all: everything else is small enough to fit inside the overlap margin.
+        _config.MaxOutputCharacters = 10;
+        _sanitizer.ScrubTarget = new string('z', 8197);
+        var tool = Tool("alpha", result: ToolResult.Ok(new string('a', 5) + new string('z', 20_000)));
+
+        var outcome = await Invoke(Request("alpha"), tool);
+
+        outcome.Output!.Length.Should().BeLessThanOrEqualTo(10);
+        outcome.OutputTruncated.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Does_not_claim_truncation_when_scrubbing_left_nothing_dropped()
+    {
+        // A string barely over the ceiling that the sanitizer shortened below it lost nothing. Saying
+        // otherwise sends the caller hunting for content that is all there.
+        _config.MaxOutputCharacters = 100;
+        _sanitizer.ScrubTarget = new string('z', 60);
+        var tool = Tool("alpha", result: ToolResult.Ok(new string('a', 80) + new string('z', 60)));
+
+        var outcome = await Invoke(Request("alpha"), tool);
+
+        outcome.Output!.Length.Should().BeLessThanOrEqualTo(100);
+        outcome.OutputTruncated.Should().BeFalse();
     }
 
     [Fact]
@@ -526,11 +608,15 @@ public sealed class DirectToolInvokerTests
     private sealed class RecordingGovernor(IAgentExecutionContext executionContext, GovernorRecord record)
         : IToolInvocationGovernor
     {
-        public ValueTask<ToolInvocationDecision> AuthorizeAsync(string toolName, CancellationToken cancellationToken)
+        public async ValueTask<ToolInvocationDecision> AuthorizeAsync(
+            string toolName, CancellationToken cancellationToken)
         {
             record.AgentIdWhenAuthorizing = executionContext.AgentId;
-            record.EnvelopeWhenAuthorizing = CapabilityEnvelopeAccessor.Current;
-            return ValueTask.FromResult(record.Decision);
+
+            if (record.Delay > TimeSpan.Zero)
+                await Task.Delay(record.Delay, cancellationToken);
+
+            return record.Decision;
         }
 
         public GovernanceTrace GetTrace() => GovernanceTrace.Empty;
@@ -546,7 +632,9 @@ public sealed class DirectToolInvokerTests
     {
         public ToolInvocationDecision Decision { get; set; } = ToolInvocationDecision.Allow();
         public string? AgentIdWhenAuthorizing { get; set; }
-        public CapabilityEnvelope? EnvelopeWhenAuthorizing { get; set; }
+
+        /// <summary>Makes authorization slow, so the deadline's reach over it is observable.</summary>
+        public TimeSpan Delay { get; set; }
 
         public void Deny(string reason) => Decision = ToolInvocationDecision.Deny(reason);
     }
@@ -559,24 +647,48 @@ public sealed class DirectToolInvokerTests
         /// <summary>When true, returns content unchanged so length-based assertions stay meaningful.</summary>
         public bool PassThrough { get; set; }
 
-        public SanitizationResult Sanitize(string content, string? toolName = null) =>
-            PassThrough
+        /// <summary>
+        /// When set, behaves like a real sanitizer instead of a blunt one: removes just this substring
+        /// and leaves the rest. Needed to observe <em>where</em> scrubbing happened relative to the
+        /// truncation cut, which a sanitizer that replaces everything cannot show.
+        /// </summary>
+        public string? ScrubTarget { get; set; }
+
+        public SanitizationResult Sanitize(string content, string? toolName = null)
+        {
+            if (ScrubTarget is not null)
+            {
+                var cleaned = content.Replace(ScrubTarget, string.Empty, StringComparison.Ordinal);
+                return cleaned == content
+                    ? SanitizationResult.Clean(content)
+                    : SanitizationResult.WithFindings(cleaned, content, []);
+            }
+
+            return PassThrough
                 ? SanitizationResult.Clean(content)
                 : SanitizationResult.WithFindings(Scrubbed, content, []);
+        }
     }
 
-    private sealed class FakeClassificationGate(ClassificationVerdict verdict) : IToolClassificationGate
+    private sealed class FakeClassificationGate(ClassificationVerdict verdict, TimeSpan delay = default)
+        : IToolClassificationGate
     {
         public const string Redacted = "[redacted]";
 
         public IReadOnlyDictionary<string, object?> Observed { get; private set; } =
             new Dictionary<string, object?>();
 
-        public ValueTask<ClassificationVerdict> EvaluateAsync(
+        public async ValueTask<ClassificationVerdict> EvaluateAsync(
             string toolName, IReadOnlyDictionary<string, object?> arguments, CancellationToken cancellationToken)
         {
             Observed = arguments;
-            return ValueTask.FromResult(verdict);
+
+            // The real gate resolves an asset's sensitivity, which can mean a network or model call —
+            // hence the option to be slow.
+            if (delay > TimeSpan.Zero)
+                await Task.Delay(delay, cancellationToken);
+
+            return verdict;
         }
 
         public object? RedactResult(string toolName, object? result) => Redacted;

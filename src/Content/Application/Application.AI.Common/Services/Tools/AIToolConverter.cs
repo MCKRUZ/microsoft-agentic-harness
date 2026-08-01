@@ -78,7 +78,7 @@ public sealed class AIToolConverter : IToolConverter
                     return $"Error: Operation '{operation}' is not available. Valid operations: {string.Join(", ", activeOperations)}";
                 }
 
-                var parameters = ParseParameters(parametersJson);
+                var parameters = ToolParameters.FromJson(parametersJson);
                 var result = await tool.ExecuteAsync(operation, parameters, cancellationToken);
                 return result.Success
                     ? result.Output ?? "OK"
@@ -114,15 +114,4 @@ public sealed class AIToolConverter : IToolConverter
             .ToList();
     }
 
-    /// <summary>
-    /// Parses the model's <c>parametersJson</c> argument into the dictionary the tool accepts.
-    /// </summary>
-    /// <remarks>
-    /// Delegates to <see cref="ToolParameters.FromJson"/>, which the direct-invocation surface also
-    /// uses. A tool must see identical CLR types whichever path reached it — tools match on
-    /// <c>value is string</c> — so the conversion lives in one place rather than being reimplemented
-    /// per caller.
-    /// </remarks>
-    private static IReadOnlyDictionary<string, object?> ParseParameters(JsonElement? parametersJson) =>
-        ToolParameters.FromJson(parametersJson);
 }

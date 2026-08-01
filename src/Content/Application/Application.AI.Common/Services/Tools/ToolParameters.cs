@@ -68,7 +68,15 @@ public static class ToolParameters
         return Empty();
     }
 
-    private static Dictionary<string, object?> Empty() => new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>
+    /// The shared answer for "no parameters". A fresh dictionary per call would allocate on the
+    /// commonest path — several operations take no arguments at all — and the returned type is
+    /// read-only, so one instance is safe to share.
+    /// </summary>
+    private static readonly IReadOnlyDictionary<string, object?> EmptyParameters =
+        new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+
+    private static IReadOnlyDictionary<string, object?> Empty() => EmptyParameters;
 
     /// <summary>
     /// Projects one JSON object into CLR values: strings stay strings, integral numbers become

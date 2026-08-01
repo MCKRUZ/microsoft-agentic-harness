@@ -65,10 +65,14 @@ public static class ExecutionApiServiceCollectionExtensions
         // Stateless — per-request state is local to each call.
         services.AddTransient<BundleRunStreamer>();
 
-        // Applies the configured workflow-submission body cap before the body is read. Registered as a
-        // service (rather than a plain attribute) because the limit is an operator setting read live,
-        // not a compile-time constant.
-        services.AddScoped<WorkflowRequestSizeLimitFilter>();
+        // Apply the configured body caps before the body is read. Registered as services (rather than
+        // plain attributes) because each limit is an operator setting read live, not a compile-time
+        // constant. One subclass per surface: the two caps bound different things — a whole workflow
+        // graph versus one operation's arguments — and share only the mechanism.
+        // Singleton, not scoped: each holds only IOptionsMonitor (itself a singleton) and reads
+        // CurrentValue inside the filter callback, so there is no per-request state to keep.
+        services.AddSingleton<WorkflowRequestSizeLimitFilter>();
+        services.AddSingleton<ToolInvocationRequestSizeLimitFilter>();
 
         // Replaces the NullPlanProgressNotifier that Presentation.Common registers as the host-
         // overridable default, so this host's plan notifications reach the run progress broker instead

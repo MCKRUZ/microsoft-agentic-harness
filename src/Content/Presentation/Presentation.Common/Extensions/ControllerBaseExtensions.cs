@@ -63,4 +63,28 @@ public static class ControllerBaseExtensions
 
         return controller.Problem(title: title, detail: detail, statusCode: statusCode);
     }
+
+    /// <summary>
+    /// The response for an authenticated principal that carries no identifier durable enough to own a
+    /// resource under.
+    /// </summary>
+    /// <param name="controller">The controller producing the response.</param>
+    /// <returns>A <c>401</c> problem response.</returns>
+    /// <remarks>
+    /// <para>
+    /// Shared rather than restated per controller because it is a published contract: callers written
+    /// against this API match on the body, and a reworded copy in one controller would silently split
+    /// the contract for the endpoints that kept the original.
+    /// </para>
+    /// <para>
+    /// <c>401</c> rather than <c>403</c> even though the caller authenticated: the credential itself is
+    /// the problem — it carries no <c>oid</c> or <c>sub</c> — so the fix is a different token, which is
+    /// what <c>401</c> tells a caller to go and get.
+    /// </para>
+    /// </remarks>
+    public static IActionResult NoUsableIdentity(this ControllerBase controller) =>
+        controller.Problem(
+            title: "Unauthorized",
+            detail: "The authenticated principal carries no usable identity.",
+            statusCode: StatusCodes.Status401Unauthorized);
 }

@@ -101,8 +101,17 @@ public sealed record DirectToolInvocationRequest
 }
 
 /// <summary>
-/// How an invocation ended. Each value maps to a distinct answer at the transport boundary.
+/// How an invocation ended.
 /// </summary>
+/// <remarks>
+/// <strong>These are not one-to-one with HTTP statuses, deliberately.</strong>
+/// <see cref="Succeeded"/> and <see cref="ToolFailed"/> both answer <c>200</c> — the status describes
+/// the invocation, and a tool that ran and said no is a completed invocation. <see cref="Denied"/> and
+/// <see cref="Disabled"/> both answer <c>403</c> with no body, because a caller who could tell them
+/// apart would learn whether they <em>would</em> be permitted if the operator switched the surface on.
+/// The distinctions this enum draws are for the host's own logic and logs; the transport collapses
+/// some of them on purpose.
+/// </remarks>
 public enum DirectToolInvocationStatus
 {
     /// <summary>The tool ran and reported success. <see cref="DirectToolInvocationOutcome.Output"/> holds its result.</summary>

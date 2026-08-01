@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
+using Presentation.Common.Extensions;
 using Presentation.ExecutionApi.DTOs;
 using Presentation.ExecutionApi.Extensions;
 using Presentation.ExecutionApi.Services;
@@ -12,9 +13,18 @@ using Presentation.ExecutionApi.Services;
 namespace Presentation.ExecutionApi.Controllers;
 
 /// <summary>
-/// Read-only discovery for the tools the calling credential may invoke in this host.
+/// Discovery for the tools the calling credential may invoke in this host, and — where an operator has
+/// opted in — invocation of one.
 /// </summary>
 /// <remarks>
+/// <para>
+/// <strong>Two surfaces, gated separately and deliberately so.</strong> The <c>GET</c> actions require
+/// only authentication, because listing a tool confers nothing. <see cref="Invoke"/> additionally
+/// requires <see cref="InvokeRole"/> and an operator having enabled
+/// <c>AppConfig:AI:DirectToolInvocation</c>, because it executes host-side code on the host's own
+/// resources at a caller's request. Splitting the claims is what lets an operator issue a credential
+/// that can see the catalog but not act on it.
+/// </para>
 /// <para>
 /// <strong>What this is for.</strong> A workflow's <c>ToolUse</c> step names a tool and an operation,
 /// and until now there was no way for an external author to find out which names this host accepts
@@ -159,6 +169,7 @@ public sealed class ToolsController : ControllerBase
     /// </remarks>
     [HttpPost("{name}/invoke")]
     [Authorize(Roles = InvokeRole)]
+    [ServiceFilter(typeof(ToolInvocationRequestSizeLimitFilter))]
     [ProducesResponseType(typeof(ToolInvocationResponse), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
@@ -171,19 +182,28 @@ public sealed class ToolsController : ControllerBase
         CancellationToken cancellationToken)
     {
         if (request is null)
-            return BadRequest(new { error = "A request body is required." });
+        {
+            return Problem(
+                title: "Validation failed",
+                detail: "A request body is required.",
+                statusCode: StatusCodes.Status400BadRequest);
+        }
 
         // Identity from the token, never the body. A null id means the credential carries nothing
         // durable to attribute the invocation to, which is a refusal rather than a shared bucket.
         var ownerId = BundleCallerIdentity.StableId(User);
         if (string.IsNullOrEmpty(ownerId))
-            return Forbid();
+        {
+            return this.NoUsableIdentity();
+        }
+
+        var operation = request.Operation ?? string.Empty;
 
         var outcome = await _invoker.InvokeAsync(
             new DirectToolInvocationRequest
             {
                 ToolName = name,
-                Operation = request.Operation ?? string.Empty,
+                Operation = operation,
                 Parameters = ToolParameters.FromJson(request.Parameters),
                 OwnerId = ownerId,
                 Envelope = _envelopeResolver.Resolve(User),
@@ -196,13 +216,28 @@ public sealed class ToolsController : ControllerBase
         return outcome.Status switch
         {
             DirectToolInvocationStatus.Succeeded or DirectToolInvocationStatus.ToolFailed =>
-                Ok(ToResponse(name, request.Operation ?? string.Empty, outcome)),
+                Ok(ToResponse(name, operation, outcome)),
+
+            // Absent, ungranted, and not-offered-here are one answer. Anything that distinguished them
+            // would let a caller map the host's inventory one name at a time.
             DirectToolInvocationStatus.NotFound => NotFound(),
-            DirectToolInvocationStatus.Invalid => BadRequest(new { error = outcome.Error }),
+
+            DirectToolInvocationStatus.Invalid => Problem(
+                title: "Validation failed", detail: outcome.Error,
+                statusCode: StatusCodes.Status400BadRequest),
+
+            // Forbid() rather than a Problem body. The two 403 causes — governance refused this
+            // invocation, and the host has the surface switched off — are deliberately not told apart:
+            // a caller learning which one applied learns whether they would be permitted if it were on.
             DirectToolInvocationStatus.Denied or DirectToolInvocationStatus.Disabled => Forbid(),
-            DirectToolInvocationStatus.TimedOut =>
-                StatusCode(StatusCodes.Status504GatewayTimeout, new { error = outcome.Error }),
-            _ => StatusCode(StatusCodes.Status500InternalServerError, new { error = outcome.Error })
+
+            DirectToolInvocationStatus.TimedOut => Problem(
+                title: "Tool timed out", detail: outcome.Error,
+                statusCode: StatusCodes.Status504GatewayTimeout),
+
+            _ => Problem(
+                title: "Tool invocation failed", detail: outcome.Error,
+                statusCode: StatusCodes.Status500InternalServerError)
         };
     }
 

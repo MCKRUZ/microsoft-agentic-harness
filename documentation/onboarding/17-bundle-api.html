@@ -847,8 +847,11 @@ The agent runs with exactly one tool: file_system.</code></pre>
                         <li><code>404</code> &mdash; no such tool, <em>or</em> not granted to you, <em>or</em> not
                             offered on this surface. Deliberately indistinguishable, for the same reason
                             <code>GET /api/tools/{name}</code> is.</li>
+                        <li><code>413</code> &mdash; your request body exceeded the host's cap (64&nbsp;KiB by
+                            default), refused before it was read.</li>
                         <li><code>504</code> &mdash; the tool outran its deadline (30&nbsp;s by default) and was
-                            cancelled.</li>
+                            cancelled. That deadline covers the whole invocation, not just the tool: authorization
+                            and the data-classification check happen under it too.</li>
                     </ul>
                     <p>
                         The most confusing <code>403</code> is the third kind. If your envelope's
