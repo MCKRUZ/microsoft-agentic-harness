@@ -8,11 +8,12 @@ namespace Infrastructure.AI.Skills;
 /// Parses custom frontmatter fields from a raw SKILL.md file path into a <see cref="SkillDefinition"/>.
 /// </summary>
 /// <remarks>
-/// The framework's <c>AgentFileSkillsSource</c> promotes only <c>name</c>, <c>description</c>,
-/// <c>license</c>, <c>compatibility</c>, and <c>allowed-tools</c>, and <em>silently discards</em>
-/// every other top-level frontmatter key — there is no fallback branch and no warning. Its
-/// <c>metadata:</c> escape hatch captures flat string values only, so it cannot represent the
-/// harness's structured <c>tools</c> (list of objects) or <c>egress</c> (nested map) fields.
+/// As of <c>Microsoft.Agents.AI</c> 1.13.0, the framework's <c>AgentFileSkillsSource</c> promotes
+/// only <c>name</c>, <c>description</c>, <c>license</c>, <c>compatibility</c>, and
+/// <c>allowed-tools</c>, and <em>silently discards</em> every other top-level frontmatter key —
+/// there is no fallback branch and no warning. Its <c>metadata:</c> escape hatch captures flat
+/// string values only, so it cannot represent the harness's structured <c>tools</c> (list of
+/// objects) or <c>egress</c> (nested map) fields. Re-check these observations on an SDK bump.
 /// <para>
 /// This parser therefore owns the harness-specific frontmatter; see <c>ParseFromFile</c> below
 /// for the authoritative list. Background: <c>docs/plans/skills-refactor-to-framework.md</c>.
