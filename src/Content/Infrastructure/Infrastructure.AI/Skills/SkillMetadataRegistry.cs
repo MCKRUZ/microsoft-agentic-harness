@@ -6,20 +6,22 @@ using Domain.Common.Helpers;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
-// Note: FileAgentSkillLoader and FileAgentSkill from Microsoft.Agents.AI are internal types.
-// FileAgentSkillsProvider (public) handles progressive disclosure at runtime via AIContextProviders.
-// This registry does its own filesystem walk for metadata-only discovery.
-
 namespace Infrastructure.AI.Skills;
 
 /// <summary>
 /// Discovers and caches skill metadata by scanning filesystem directories for SKILL.md files.
 /// </summary>
 /// <remarks>
-/// The framework's <c>FileAgentSkillLoader</c> is internal and not accessible directly.
-/// This registry implements its own filesystem walk (up to <see cref="MaxSearchDepth"/> levels)
-/// mirroring the same pattern. Skill content discovery at runtime is handled by
-/// <c>FileAgentSkillsProvider</c> wired into <c>ChatClientAgentOptions.AIContextProviders</c>.
+/// <para>
+/// Walks the filesystem itself (up to <see cref="MaxSearchDepth"/> levels) rather than using the
+/// framework's <c>AgentFileSkillsSource</c>, which drops the <c>category</c>, <c>tags</c>, and
+/// <c>skill_type</c> keys this registry indexes on — see <see cref="SkillMetadataParser"/>.
+/// </para>
+/// <para>
+/// Runtime skill content disclosure is a separate concern, handled by the framework's
+/// <see cref="Microsoft.Agents.AI.AgentSkillsProvider"/> wired into
+/// <c>ChatClientAgentOptions.AIContextProviders</c>.
+/// </para>
 /// </remarks>
 public sealed class SkillMetadataRegistry : ISkillMetadataRegistry
 {

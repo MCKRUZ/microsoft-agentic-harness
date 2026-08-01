@@ -384,7 +384,7 @@ skills:
                         <li>Make sure every tool in <code>allowed-tools</code> is registered in DI under that key.</li>
                         <li>(Optionally) reference the skill from an <code>AGENT.md</code> so an orchestrator can route to it.</li>
                     </ol>
-                    <p>You don't need to redeploy or recompile. The skill loader picks it up at next startup. For dev iteration, the <code>SkillChangedEventArgs</code> infrastructure supports hot reload — touching a <code>SKILL.md</code> reloads it without restarting the host.</p>
+                    <p>You don't need to redeploy or recompile. The skill loader picks it up at next startup. There is no hot reload today — the host must be restarted for a changed <code>SKILL.md</code> to take effect.</p>
 
                     <h2>Skill amendments and learnings</h2>
                     <p>

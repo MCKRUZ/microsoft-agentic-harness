@@ -75,7 +75,7 @@ Skills use a three-tier progressive disclosure model:
 
 Skills are declared in `SKILL.md` files — plain Markdown that humans can read and edit without touching code. An orchestrator agent's skill file describes how to decompose tasks. A research agent's describes how to find and analyze information. Drop a new `SKILL.md` into the skills directory and the agent picks it up at runtime.
 
-The `IContextBudgetTracker` watches over all of this, tracking how many tokens are allocated to the system prompt, loaded skills, tool schemas, and conversation history. When budget runs low, the `ITieredContextAssembler` knows to stop loading Tier 2 content and fall back to Index Cards.
+The `IContextBudgetTracker` watches over all of this, tracking how many tokens are allocated to the system prompt, loaded skills, tool schemas, and conversation history. Progressive skill loading itself is handled by the Agent Framework's `AgentSkillsProvider`, which advertises each skill up front and exposes `load_skill` / `read_skill_resource` tools the model calls on demand.
 
 **Multi-Skill Agents.** An agent isn't limited to a single skill. `AgentDefinition.Skills` accepts a list — instructions from all active skills are merged into the system prompt, and their tool declarations are combined with namespace prefixes to avoid collisions. Each skill can define an `AllowedTools` whitelist to restrict which tools it exposes to the agent, keeping the tool surface intentional rather than open-ended.
 
@@ -354,7 +354,7 @@ src/
 │   │   ├── Interfaces/SkillTraining/   IGateEvaluator, IPatchProposer, IPatchAggregator, IEditSelector, ILrScheduler, IRolloutRunner, ISkillTrainingCheckpointStore
 │   │   ├── Services/SkillTraining/     PatchApplier, GateEvaluator, PatchAggregator, TopKEditSelector, schedulers (Cosine/Linear/Constant), InMemoryCheckpointStore, NotConfigured proposer/runner
 │   │   ├── CQRS/SkillTraining/         TrainSkill, GateCandidateSkill, ReflectOnFailures, SlowUpdate, MetaSkillUpdate
-│   │   └── Services/                   ContextBudgetTracker, TieredContextAssembler, AIToolConverter
+│   │   └── Services/                   ContextBudgetTracker, AIToolConverter
 │   └── Application.Core/
 │       ├── Agents/Skills/              SKILL.md files per agent
 │       ├── CQRS/Agents/               ExecuteAgentTurn, RunConversation, RunOrchestratedTask

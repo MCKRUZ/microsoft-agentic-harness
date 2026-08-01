@@ -124,7 +124,9 @@ if (budget.RemainingTokens < skill.Level2TokenEstimate)
     // Fall back to Tier 1 only, or trigger compaction
 ```
 
-The `TieredContextAssembler` works alongside it, deciding which skill tier to load based on remaining budget: Tier 1 always, Tier 2 when budget allows, Tier 3 only during active execution.
+Progressive skill loading itself is delegated to the Agent Framework's `AgentSkillsProvider`, wired in `AgentExecutionContextFactory`. It advertises each skill's name and description in the system prompt and exposes `load_skill`, `read_skill_resource`, and `run_skill_script` tools the model calls on demand. The harness supplies a no-op script runner, so `run_skill_script` is inert here by design.
+
+> **Known deviation.** `AgentExecutionContextFactory` currently also merges each skill's full `Instructions` body into the static system prompt, so Tier 2 is loaded eagerly rather than on demand, and `ContextBudgetTracker` does not observe content the model pulls through the framework's tools. See `docs/plans/skills-refactor-to-framework.md` §5.
 
 ### Tool Conversion (ITool to AITool)
 
@@ -172,7 +174,7 @@ The interface surface defines the contracts that Infrastructure must implement:
 | **Compression** | `ICompressionStrategy`, `IToolOutputCompressor` | Tool output compression with strategy dispatch |
 | **Config** | `IConfigDiscoveryService` | Filesystem config file discovery |
 | **Connectors** | `IConnectorClient`, `IConnectorClientFactory`, `ConnectorToolAdapter` | External service integrations as tools |
-| **Context** | `IContextBudgetTracker`, `ITieredContextAssembler`, `IToolResultStore` | Token budget and progressive skill loading |
+| **Context** | `IContextBudgetTracker`, `IToolResultStore` | Token budget accounting and tool-result storage |
 | **Governance** | `IGovernancePolicyEngine`, `IGovernanceAuditService`, `IMcpSecurityScanner`, `IPromptInjectionScanner` | Policy enforcement and threat detection |
 | **Hooks** | `IHookExecutor`, `IHookRegistry` | Lifecycle event interception |
 | **KnowledgeGraph** | `IKnowledgeGraphStore`, `IKnowledgeMemory`, `IFeedbackStore`, `IProvenanceStamper` | Graph-backed cross-session memory |
@@ -283,8 +285,7 @@ Application.AI.Common/
     │   ├── AgentExecutionContext.cs    # IAgentExecutionContext implementation (scoped)
     │   └── ToolPermissionFilter.cs    # Filters tools by permission rules
     ├── Context/
-    │   ├── ContextBudgetTracker.cs    # Token budget management
-    │   └── TieredContextAssembler.cs  # Progressive skill tier loading
+    │   └── ContextBudgetTracker.cs    # Token budget management
     ├── LlmUsageCapture.cs             # Per-turn token/cost accumulator
     ├── Skills/
     │   └── InMemorySkillCompletionTracker.cs  # In-memory prerequisite completion tracking
@@ -329,8 +330,7 @@ All validators enforce score ranges in [0, 1], `MaxSkillLength = 262_144` on eve
 | `HookBehavior<,>` | Pre/post lifecycle hook dispatch | All requests (checks hook registry) |
 | `IToolInvocationGovernor` | Tool permission + graded-autonomy risk + policy on the live tool path | GovernedAIFunction (agent tool calls) |
 | **Services** | | |
-| `ContextBudgetTracker` | Tracks token allocation per agent | TieredContextAssembler, compaction |
-| `TieredContextAssembler` | Loads skill tiers based on budget | AgentExecutionContextFactory |
+| `ContextBudgetTracker` | Tracks token allocation per agent | AgentExecutionContextFactory, compaction |
 | `AIToolConverter` | Converts ITool → AIFunction | AgentFactory tool wiring |
 | **Interfaces** | | |
 | `IRagOrchestrator` | Full RAG pipeline entry point | DocumentSearchTool, SearchDocumentsHandler |

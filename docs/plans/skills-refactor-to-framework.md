@@ -1,250 +1,339 @@
-# Skills Refactor: Align with Microsoft Agent Framework
+# Skills Subsystem: Alignment with Microsoft Agent Framework
 
-## SDK Reality Check
+**Status:** Plan rewritten 2026-08-01 against verified evidence. **No code has been changed.**
+**Supersedes:** the original version of this file, which was written against `Microsoft.Agents.AI` 1.0.0-rc4 and is now substantially wrong (see §1).
+**Installed SDK:** `Microsoft.Agents.AI` **1.13.0** (`src/Directory.Packages.props:31`).
+**Related:** GitHub issue #219 (MCP-based skill discovery) — see §8.
 
-**Package**: `Microsoft.Agents.AI` 1.0.0-rc4 (already installed)
+---
 
-**Available C# types:**
+## 0. Headline
 
-| Type | Purpose |
-|------|---------|
-| `FileAgentSkill` | Parsed SKILL.md: Frontmatter (name+desc), Body, SourcePath, ResourceNames |
-| `FileAgentSkillLoader` | Directory discovery, YAML parsing, resource scanning, path-traversal protection |
-| `FileAgentSkillsProvider` | `AIContextProvider` — progressive disclosure via `load_skill` / `read_skill_resource` tools |
-| `SkillFrontmatter` | Record: Name + Description |
-| `FileAgentSkillsProviderOptions` | SkillsInstructionPrompt, AllowedResourceExtensions |
+**The original plan's central premise — "replace our skill model and parser with the framework's" — is not viable, and pursuing it would be a net downgrade.** The framework's file parser provably cannot represent our skill manifests, and two capabilities we depend on (runtime tool enforcement, token budgeting) do not exist in the framework at all.
 
-**NOT in C# RC4** (Python-only or unreleased): `AgentClassSkill<T>`, `[AgentSkillResource]`, `[AgentSkillScript]`, `run_skill_script`
+**However, the investigation surfaced a real defect worth fixing:** the harness eagerly injects full skill bodies into the system prompt while *simultaneously* wiring the framework's on-demand loader over the same skills. Progressive disclosure — the harness's own documented headline architecture — is effectively switched off. See §5.
 
-## Current State
+The recommended work is therefore much narrower than the original plan, and it moves in a different direction: **extend the framework at its sanctioned seam rather than replace our layer with it.**
 
-We already use `FileAgentSkillsProvider` at runtime (`AgentExecutionContextFactory:214`). The framework handles agent-facing progressive disclosure correctly. The problem is duplicated supporting infrastructure, not a wrong architecture.
+---
 
-### What's Duplicated (Remove/Replace)
+## 1. What the previous version of this plan got wrong
 
-| Our Code | Framework Equivalent | Action |
-|----------|---------------------|--------|
-| `SkillMetadataParser` | `FileAgentSkillLoader.DiscoverAndLoadSkills()` | Replace: use loader, then enrich |
-| `FileSystemSkillContentProvider` | `FileAgentSkillLoader` (directory scanning + resource reading) | Remove |
-| `CandidateSkillContentProvider` | In-memory `FileAgentSkill` instances | Remove |
-| `ITieredContextAssembler` / `TieredContextAssembler` | `FileAgentSkillsProvider` tool-based disclosure | Remove (conflicts with framework) |
-| `ContextLoading` / `ContextContract` (domain types) | Framework manages disclosure via agent tool calls | Remove |
-| `SkillCacheStatistics` | Unused anywhere | Remove |
+Recorded so it is not re-derived. All verified by whole-tree grep over `src/`.
 
-### What's Custom Value-Add (Keep)
+### 1a. Files it said to delete that no longer exist
 
-| Our Code | Why It Stays |
-|----------|-------------|
-| `ISkillMetadataRegistry` | Framework has no query-by-category/tag/type. WebUI, MCP, orchestrator need this. |
-| `SkillDefinition` (slimmed) | Wraps `FileAgentSkill` + adds: category, tags, skill_type, tool declarations, hierarchy |
-| `IContextBudgetTracker` | Framework has no token accounting or diminishing returns detection |
-| `ToolPermissionFilter` | Framework advertises `allowed-tools` but doesn't enforce at runtime |
-| `SkillAgentOptions` (slimmed) | Deployment override, additional middleware, additional context |
-| `SkillReference` | Agent manifest links to skills — lightweight, no duplication |
-| `SkillChangedEventArgs` | Hot-reload for dev-time iteration |
+Six of the ten deletion targets have **zero references anywhere in `src/`** — they were removed in earlier work:
 
-## Phased Plan
+| Symbol | Reality |
+|---|---|
+| `ISkillContentProvider` | Does not exist |
+| `FileSystemSkillContentProvider` | Does not exist |
+| `CandidateSkillContentProvider` | Does not exist |
+| `SkillCacheStatistics` | Does not exist |
+| `ContextLoading` | Does not exist |
+| `ContextContract` | Does not exist |
+| `SkillReference` | Does not exist |
+| `SkillsContextProviderFactory` | Does not exist |
+| `ITieredContextAssembler` / `TieredContextAssembler` | **No code.** Only stale prose in `src/Content/Application/Application.AI.Common/README.md` (lines 127, 175, 287, 332, 333) |
 
-### Phase 1: Remove Tiered Context Assembly (~1 day, MEDIUM risk)
+**Consequence:** the plan's headline "~875 fewer lines" is unachievable — roughly 485 of those lines were already deleted. That saving is already banked.
 
-**IMPORTANT**: `FileAgentSkillLoader` is `internal` in the 1.0.0-rc4 SDK. We CANNOT use it directly.
-Only `FileAgentSkillsProvider`, `FileAgentSkillsProviderOptions`, `FileAgentSkill`, and `SkillFrontmatter` are public.
-This means `SkillMetadataParser` and `ISkillMetadataRegistry` MUST stay — they serve a purpose the framework can't fulfill.
+### 1b. Its central blocker is obsolete, but for a reason that no longer helps
 
-**Goal**: Remove `ITieredContextAssembler` which conflicts with the framework's tool-based disclosure
-(we're injecting context programmatically AND offering it via tools — potential double-loading).
+The old plan states: *"`FileAgentSkillLoader` is `internal` in the 1.0.0-rc4 SDK. We CANNOT use it directly."*
 
-**Delete:**
-- [ ] `ITieredContextAssembler.cs` (Application.AI.Common/Interfaces/)
-- [ ] `TieredContextAssembler.cs` (Application.AI.Common/Services/Context/)
-- [ ] `ContextLoading.cs` (Domain.AI/Skills/) — if separate file
-- [ ] `ContextContract.cs` (Domain.AI/Skills/) — if separate file
-- [ ] `SkillCacheStatistics.cs` (Domain.AI/Skills/) — unused
+That is no longer true — but the type is gone entirely. In 1.13.0 the framework was **redesigned**, not merely renamed:
 
-**Update:**
-- [ ] `Application.AI.Common/DependencyInjection.cs` — remove `ITieredContextAssembler` registration
-- [ ] `AgentExecutionContextFactory.cs` — remove tiered assembly calls, keep `FileAgentSkillsProvider` wiring
-- [ ] `SkillDefinition.cs` — remove `ContextLoading`/`ContextContract` properties if they exist
-- [ ] `SkillAgentOptions.cs` — remove `LoadResources`/`LoadReferences`/`LoadTemplates` flags
+| rc4 (plan-era) | 1.13.0 (today) |
+|---|---|
+| `FileAgentSkill` | `AgentFileSkill` (public sealed, **internal constructor**) |
+| `FileAgentSkillLoader` (internal) | `AgentFileSkillsSource` (public sealed) |
+| `FileAgentSkillsProvider` | `AgentSkillsProvider` |
+| `SkillFrontmatter` | `AgentSkillFrontmatter` |
+| — | `AgentSkillsSource` (new public extension base) |
+| — | Caching / Deduplicating / Filtering decorators (new) |
+| — | `AgentClassSkill<T>`, `AgentInlineSkill`, skill attributes (new; rc4 had these Python-only) |
 
-**Validation**: `dotnet build && dotnet test` — all existing tests pass
+Every class name in the old plan's code samples and file tables is wrong.
 
-### Phase 2: Slim SkillDefinition to Wrap FileAgentSkill (~0.5 day, LOW risk)
+### 1c. Two claims in the survey of this work that were themselves wrong
 
-**Goal**: `SkillDefinition` becomes a thin wrapper around `FileAgentSkill` + our extensions.
+Flagged because they were nearly acted on:
+
+- **`Domain.AI/Constants/SkillSources.cs` is not orphaned.** It is referenced by `SkillNotFoundException.cs:42` (XML doc `cref`) and belongs to a deliberate `Constants/` family alongside `SafetyCategories.cs` and `McpTransports.cs`. The duplication with `Domain.AI/Skills/SkillSources.cs` is real (§6c) but it is not a stray file to delete unexamined.
+- **The framework provider does not re-emit skill bodies into the system prompt.** `AgentSkillsProvider.BuildSkillsInstructions` emits only `<name>` and `<description>`. The full body arrives only if the model calls `load_skill`. This narrows — but does not eliminate — the double-load (§5).
+
+---
+
+## 2. Verified facts: the 1.13.0 skills API
+
+Read from source at tag `dotnet-1.13.0` in `microsoft/agent-framework`. Namespace is flat `Microsoft.Agents.AI`.
+
+### 2a. The extension seam (this is the important part)
 
 ```csharp
-// Domain.AI/Skills/SkillDefinition.cs — AFTER
-public sealed class SkillDefinition
+public abstract class AgentSkillsSource : IDisposable
 {
-    // Framework backing — the parsed SKILL.md
-    public FileAgentSkill FrameworkSkill { get; }
-
-    // Pass-through to framework
-    public string Name => FrameworkSkill.Frontmatter.Name;
-    public string Description => FrameworkSkill.Frontmatter.Description;
-    public string Instructions => FrameworkSkill.Body;
-    public string SourcePath => FrameworkSkill.SourcePath;
-    public IReadOnlyList<string> ResourceNames => FrameworkSkill.ResourceNames;
-
-    // Our extensions (parsed from extended YAML frontmatter)
-    public string? Category { get; init; }
-    public IReadOnlyList<string> Tags { get; init; } = [];
-    public string? SkillType { get; init; }
-    public IReadOnlyList<string> AllowedTools { get; init; } = [];
-    public IReadOnlyList<ToolDeclaration> ToolDeclarations { get; init; } = [];
-
-    // Hierarchy (our concept)
-    public string? ParentId { get; init; }
-    public IReadOnlyList<SkillDefinition> Children { get; init; } = [];
-
-    // Token estimation (our concept)
-    public int EstimateLevel1Tokens() => /* name + desc */ ;
-    public int EstimateLevel2Tokens() => /* instructions */ ;
+    public abstract Task<IList<AgentSkill>> GetSkillsAsync(
+        AgentSkillsSourceContext context, CancellationToken cancellationToken = default);
+    protected virtual void Dispose(bool disposing) { }
 }
 ```
 
-**Delete:**
-- [ ] `SkillResource.cs` — framework's `ResourceNames` + `ReadSkillResourceAsync` replaces this
-- [ ] `SkillCacheStatistics.cs` — unused
-- [ ] `ContextLoading.cs` — framework manages disclosure
-- [ ] `ContextContract.cs` — framework manages disclosure
+One abstract method. Public, non-sealed, implicit public constructor. Wired in via:
 
-**Update:**
-- [ ] `SkillDefinition.cs` — slim to wrapper pattern above
-- [ ] All consumers of removed properties (grep + fix)
-
-### Phase 3: Remove Tiered Context Assembly (~1 day, MEDIUM risk)
-
-**Goal**: Stop programmatically injecting context in tiers. Let `FileAgentSkillsProvider` handle it via `load_skill` / `read_skill_resource` tools.
-
-**The conflict today**: `ITieredContextAssembler` injects skill context programmatically into the system prompt. But `FileAgentSkillsProvider` ALSO advertises skills and provides `load_skill`/`read_skill_resource` as tools. This means:
-- The agent may get the same content twice (injected + tool-loaded)
-- Token budgets tracked by `IContextBudgetTracker` don't account for tool-loaded content
-- The agent can't decline context that was programmatically injected
-
-**Delete:**
-- [ ] `ITieredContextAssembler.cs` interface
-- [ ] `TieredContextAssembler.cs` implementation
-- [ ] `Application.AI.Common/DependencyInjection.cs` — remove `ITieredContextAssembler` registration
-
-**Update:**
-- [ ] `AgentExecutionContextFactory.MapToAgentContextAsync()` — simplify to:
-  1. Resolve deployment name
-  2. Build tools (MCP + keyed DI)
-  3. Wire `FileAgentSkillsProvider` as context provider (already doing this)
-  4. Wire `ToolPermissionFilter` as context provider
-  5. Attach `IContextBudgetTracker` as monitoring middleware
-  6. ~~Assemble tiered context~~ (removed)
-- [ ] `SkillAgentOptions.cs` — remove `LoadResources`, `LoadReferences`, `LoadTemplates` flags (framework decides)
-
-**Keep `IContextBudgetTracker`** — but change it from "gatekeeping what gets injected" to "monitoring what the agent loads via tools." Hook it into the `load_skill` / `read_skill_resource` tool calls to track token usage.
-
-### Phase 4: Verify & Clean Up Tests (~0.5 day, LOW risk)
-
-- [ ] Update test projects that reference deleted types
-- [ ] Replace `CandidateSkillContentProvider` test patterns with in-memory `FileAgentSkill` construction
-- [ ] Verify `FileAgentSkillsProvider` progressive disclosure works end-to-end (manual + E2E test)
-- [ ] Run full suite: `dotnet test src/AgenticHarness.slnx`
-
-## Post-Refactor Architecture
-
-```
-SKILL.md files on disk
-        │
-        ▼
-┌───────────────────────────────────┐
-│  FileAgentSkillLoader (FRAMEWORK) │ ← Discovers, parses YAML, validates
-│  DiscoverAndLoadSkills(paths)     │   paths, scans resources
-│  ReadSkillResourceAsync()         │
-└───────────────┬───────────────────┘
-                │ Dictionary<string, FileAgentSkill>
-                ▼
-┌───────────────────────────────────┐
-│  SkillMetadataRegistry (OURS)     │ ← Enriches with extended YAML:
-│  EnrichFromBody(FileAgentSkill)   │   category, tags, tools, hierarchy
-│  GetByCategory(), GetByTags()     │ ← Query API for UI/MCP/orchestrator
-│  TryGet(), GetAll()               │
-└───────────────┬───────────────────┘
-                │ SkillDefinition (wraps FileAgentSkill)
-                ▼
-┌───────────────────────────────────┐
-│  AgentExecutionContextFactory     │ ← Resolves deployment, MCP tools
-│  (SIMPLIFIED)                     │   Wires providers below ↓
-└───────────────┬───────────────────┘
-                │
-    ┌───────────┼────────────┐
-    ▼           ▼            ▼
-┌────────┐ ┌─────────┐ ┌──────────────┐
-│FileAgt │ │ToolPerm │ │ContextBudget │
-│Skills  │ │ission   │ │Tracker       │
-│Provider│ │Filter   │ │(monitoring)  │
-│(FRAME- │ │(OURS)   │ │(OURS)        │
-│WORK)   │ │         │ │              │
-│        │ │Enforces │ │Tracks tokens │
-│Provides│ │allowed- │ │loaded via    │
-│load_   │ │tools at │ │tool calls    │
-│skill & │ │runtime  │ │              │
-│read_   │ │         │ │Diminishing   │
-│resource│ │         │ │returns       │
-│tools   │ │         │ │detection     │
-└────────┘ └─────────┘ └──────────────┘
+```csharp
+builder.UseSource(AgentSkillsSource source)                              // shared instance
+builder.UseSource(Func<ILoggerFactory?, AgentSkillsSource> factory)      // per-Build() instance
 ```
 
-## SKILL.md Migration
+`AgentSkillsSourceContext` carries `AIAgent Agent` and `AgentSession? Session`, so per-agent and per-session skill sets are supported.
 
-All existing SKILL.md files stay as-is. The framework parser reads `name` and `description` from frontmatter; our enrichment step reads the rest. No file changes needed.
+**Microsoft's own MCP skills package extends the system through exactly this seam** — an extension method on the builder wrapping an `internal` `AgentSkillsSource` subclass. This is the sanctioned pattern, confirmed by first-party usage.
 
-Extended fields we parse ourselves:
+### 2b. `Build()` pipeline — fixed order, not extensible
 
-| Field | Location | Consumed By |
-|-------|----------|-------------|
-| `category` | YAML frontmatter | `SkillMetadataRegistry.GetByCategory()` |
-| `tags` | YAML frontmatter | `SkillMetadataRegistry.GetByTags()` |
-| `skill_type` | YAML frontmatter | `SkillMetadataRegistry.GetBySkillType()` |
-| `allowed-tools` | YAML frontmatter (spec-standard) | `ToolPermissionFilter` |
-| `tools` | YAML frontmatter | `AgentExecutionContextFactory` (MCP resolution) |
-| `version` | YAML frontmatter | Metadata display |
+```
+Aggregating → Caching → Filtering → Deduplicating → AgentSkillsProvider
+```
 
-## Effort Summary
+Caching sits *inside* Filtering (filter re-runs per request against a cached list). Deduplication is unconditional. There is **no hook to insert a custom decorator into this chain** — you must wrap your own source before handing it to `UseSource`. `DelegatingAgentSkillsSource` is public and abstract if you want to write one.
 
-| Phase | Scope | Files | Effort | Risk |
-|-------|-------|-------|--------|------|
-| 1. Replace parsing | Use `FileAgentSkillLoader`, delete custom parser + content providers | ~8 | 1 day | Low |
-| 2. Slim domain model | `SkillDefinition` wraps `FileAgentSkill`, delete dead types | ~6 | 0.5 day | Low |
-| 3. Remove tiered assembly | Delete `ITieredContextAssembler`, simplify factory | ~5 | 1 day | Medium |
-| 4. Test cleanup | Update test projects, verify E2E | ~10 | 0.5 day | Low |
-| **Total** | | **~29 files** | **3 days** | **Low-Medium** |
+### 2c. What the model actually sees
 
-## What Gets Deleted (Net Code Reduction)
+`AgentSkillsProvider` is an `AIContextProvider`. Per invocation it re-queries the source and returns instructions + three tools:
 
-| File | Lines (approx) |
-|------|---------------|
-| `SkillMetadataParser.cs` | ~150 |
-| `FileSystemSkillContentProvider.cs` | ~80 |
-| `CandidateSkillContentProvider.cs` | ~40 |
-| `ISkillContentProvider.cs` | ~20 |
-| `TieredContextAssembler.cs` | ~200 |
-| `ITieredContextAssembler.cs` | ~30 |
-| `SkillResource.cs` | ~40 |
-| `SkillCacheStatistics.cs` | ~15 |
-| `ContextLoading.cs` | ~60 |
-| `ContextContract.cs` | ~40 |
-| **Total removed** | **~675 lines** |
+| Tool | Behavior |
+|---|---|
+| `load_skill` | Returns the full SKILL.md body for a named skill |
+| `read_skill_resource` | Reads a named resource file |
+| `run_skill_script` | Runs a named script |
 
-Plus ~200 lines simplified in `AgentExecutionContextFactory` and `SkillDefinition`.
+All three are **approval-required by default** (`ApprovalRequiredAIFunction`); three `Disable*Approval` options and two static auto-approval rules exist.
 
-**Net result**: ~875 fewer lines of custom skill infrastructure, framework handles the heavy lifting, our extensions layer cleanly on top.
+The system-prompt block renders, per skill, **only**:
 
-## Open Questions
+```xml
+<skill>
+  <name>...</name>
+  <description>...</description>
+</skill>
+```
 
-1. **Extended frontmatter parsing** — `FileAgentSkillLoader` ignores fields beyond name/description. Do we parse the raw SKILL.md body for our YAML extensions, or read the file separately for just the frontmatter? Recommendation: read the file once at startup to extract extended fields, store in `SkillDefinition`.
-2. **Budget tracker integration** — How do we hook `IContextBudgetTracker` into framework tool calls (`load_skill`, `read_skill_resource`)? Options: (a) middleware on `AIAgent` tool invocation pipeline, (b) custom `FileAgentSkillsProvider` subclass that wraps calls with budget tracking.
-3. **Hot-reload** — `FileAgentSkillLoader` doesn't watch files. Keep our `SkillChangedEventArgs` pattern or add a `FileSystemWatcher` in the registry? Only matters for dev-time.
+`AllowedTools`, `License`, `Compatibility` and `Metadata` are **never rendered**, and there is no hook to change per-skill rendering. A custom `SkillsInstructionPrompt` can only change the surrounding template, not the per-skill shape.
 
-## Prerequisites
+### 2d. Frontmatter parsing — the blocking constraint
 
-- [x] Verify `FileAgentSkillLoader` exists in installed SDK — **confirmed in 1.0.0-rc4**
-- [x] Verify `FileAgentSkillsProvider` exists — **confirmed, already in use**
-- [ ] Spike: confirm `FileAgentSkillLoader.DiscoverAndLoadSkills()` successfully parses our SKILL.md files with extended frontmatter (it should — it only reads name+desc and ignores the rest)
-- [ ] Spike: confirm `ReadSkillResourceAsync` works with our resource directory structure
+`AgentFileSkillsSource` promotes exactly **five** top-level keys: `name`, `description`, `license`, `compatibility`, `allowed-tools`.
+
+**There is no `else` branch. Every other top-level key is matched, assigned to a local, and silently discarded — no warning, no logging.**
+
+Custom data is only captured from an explicit `metadata:` block, and that block is parsed by a flat indented-key/value regex:
+
+- **Flat only** — nested maps and lists are not modelled
+- **String values only** — no type coercion
+- Only the **first** `metadata:` block matches
+
+Two further hard constraints, both `private const` / hard-coded:
+- Skill filename must be `SKILL.md`
+- Directory search depth is 2
+- **Frontmatter `name` must equal the containing directory name** (ordinal), or the skill is rejected
+
+### 2e. Two definitive absences
+
+| Capability | Present in 1.13.0? |
+|---|---|
+| Token / context-budget accounting | **No.** Grepped all 42 files: every `token` hit is `CancellationToken`, a doc placeholder, or an archive byte-budget for zip-bomb defense. No tokenizer, no counting, no truncation. |
+| Runtime `allowed-tools` enforcement | **No.** `AllowedTools` has one declaration and two writes. **Zero reads.** It is never consulted, never rendered, never compared against `AIContext.Tools`. It is decorative metadata. |
+
+The only runtime gate is per-tool human approval on the three skill tools — which gates *the skill tools*, not *which tools a skill may use*.
+
+---
+
+## 3. Verified facts: our subsystem today
+
+### 3a. Where the framework is already used — three call sites only
+
+| Location | What |
+|---|---|
+| `Application.AI.Common/Factories/AgentExecutionContextFactory.cs:35-37` | `NoOpScriptRunner` — returns null. **Skill scripts are disabled by design.** |
+| `AgentExecutionContextFactory.cs:424-428` | `new AgentSkillsProviderBuilder().UseFileScriptRunner(...)`, `.UseFileSkill(path)` per resolved path, `.Build()` — added **first** in the provider list |
+| `Infrastructure.AI/MetaHarness/AgentEvaluationService.cs:32, 233-236` | Second, independent builder for candidate-skill evaluation. Duplicates its own `NoOpScriptRunner`. |
+
+XML docs in four files still name `FileAgentSkillsProvider`, a type that no longer exists.
+
+### 3b. Our real SKILL.md files are incompatible with the framework parser
+
+Verified against shipped files. `skills/research-agent/SKILL.md`:
+
+```yaml
+name: "research-agent"
+description: "..."
+category: "research"          # ← silently dropped by framework parser
+skill_type: "analysis"        # ← silently dropped
+version: "1.2.0"              # ← silently dropped
+tags: ["research", ...]       # ← silently dropped
+allowed-tools: ["file_system"]  # ← read, but as the literal string '["file_system"]'
+tools:                        # ← silently dropped; nested list-of-objects
+  - name: "file_system"
+    operations: ["read", "search", "list"]
+```
+
+`plugins/workspace-skill/skills/workspace/SKILL.md` additionally carries `denied-tools`, `sandbox-required`, and a nested `egress.allowlist`.
+
+**Even the one key the framework reads, it would read wrong** — we write a YAML list, it expects a space-delimited string.
+
+**And the `metadata:` escape hatch cannot hold this data**: `tools` is a list of objects and `egress` is a nested map; the framework's flat string-only parser cannot represent either. This is not "awkward to migrate" — it is **not representable**.
+
+### 3c. The custom surface that is genuinely load-bearing
+
+`SkillDefinition` has 55 members; **23 are read in production**:
+
+`Id, Name, Description, Instructions, Version, Category, SkillType, Tags, AllowedTools, ModelOverride, AgentId, Prerequisites, CompletionTool, BaseDirectory, LoadedAt, Metadata, Tools, ToolDeclarations, Egress, PluginSource, Mode, HasTags, HasPrerequisites`
+
+Consumers that constrain any change:
+
+| Consumer | Constraint |
+|---|---|
+| `Infrastructure.AI.MCPServer/Tools/SkillTools.cs` | **Published MCP wire shape** — `list_skills`, `get_skill`, `find_skills_by_tag`. Widest external contract; tests assert exact camelCase field names. |
+| `Domain.AI/Bundles/EphemeralAgentOverlay.cs:28`, `StagedBundle.cs:52` | Hold `IReadOnlyList<SkillDefinition>` — **serialized bundle-API contract** |
+| `Application.Core/Permissions/PluginPermissionRuleProvider.cs` | Reads `PluginSource`, `AllowedTools`, `ToolDeclarations` for governance |
+| `Infrastructure.AI/Egress/SkillManifestEgressPolicyResolver.cs:115` | Reads `Egress.Allowlist` — network egress policy |
+
+`SkillMetadataParser.cs` is **636 lines** (not the ~150 the old plan claimed) with 41 tests across 5 files. It exists precisely because the framework surfaces only name + description.
+
+---
+
+## 4. Conclusion on the original premise
+
+**Do not migrate the skill model or parser onto the framework's types.** Doing so would:
+
+1. Lose ~12 custom frontmatter fields per skill, silently
+2. Lose runtime tool enforcement (`ToolPermissionFilter` is the only thing enforcing `allowed-tools`; the framework's equivalent field is never read) — **security-relevant**
+3. Lose token budgeting (`IContextBudgetTracker` has no framework equivalent)
+4. Break a published MCP wire contract and a serialized bundle-API contract
+5. Force every SKILL.md to be rewritten, and still fail on the structured fields
+
+**Instead: keep our layer, and extend the framework at `AgentSkillsSource` — the seam Microsoft's own MCP package uses.**
+
+---
+
+## 5. The real defect: progressive disclosure is switched off
+
+**Severity: worth fixing. Confidence: verified in code.**
+
+`CLAUDE.md` documents the harness's headline skills architecture as three-tier progressive disclosure — Tier 1 index card (~100 tokens) always loaded, Tier 2 full instructions on demand, Tier 3 resources only on execution.
+
+The code does not do this.
+
+In `AgentExecutionContextFactory.MapToAgentContextAsync`:
+
+- **Line 110** — `SkillInstructionMerger.Merge(skills, options.AdditionalContext, options.AgentInstructions)` emits `skill.Instructions` **verbatim** into the static system prompt (`SkillInstructionMerger.cs:60-69`).
+- **`skill.Instructions` is the entire SKILL.md body**, minus two named sections — `SkillMetadataParser.ExtractStructuredSections` (line 160-166) sets it to `StripSections(body, "Objectives", "Trace Format")`. It is not a summary.
+- **Lines 424-428** simultaneously hand the same skill directories to `AgentSkillsProviderBuilder`, whose provider advertises each skill and offers `load_skill` — which returns *that same full body* on request.
+
+### Three consequences
+
+1. **Tier 2 is eagerly loaded every turn.** The documented ~100-token index card is not what ships; the full body of every active skill is in the system prompt on every request.
+2. **Duplicate content is reachable.** If the model calls `load_skill` for a skill already baked into its prompt, it receives the body twice.
+3. **Budget reporting is understated.** `IContextBudgetTracker` records the injected half (`AgentExecutionContextFactory.cs:135, 146`) but is blind to anything the model pulls via `load_skill` / `read_skill_resource`. Note also line 145 uses a hardcoded `tools.Count * 50` token estimate.
+
+### Provider ordering is load-bearing
+
+Documented in `BuildMergedAIContextProviders` and must be preserved by any change:
+
+```
+AgentSkillsProvider (428) → ToolPermissionFilter (435) → KnowledgeMemoryContextProvider (449)
+  → LearningsRecallContextProvider (467) → GoverningToolContextProvider (482, LAST so it wraps the final filtered tool set)
+```
+
+---
+
+## 6. Proposed work
+
+Not yet scheduled. Each phase is independently valuable and independently revertible.
+
+### Phase 1 — Restore progressive disclosure (the real fix)
+
+**Goal:** stop eagerly injecting full skill bodies; let the framework provider do the job it is already wired to do.
+
+- Change what `SkillInstructionMerger` contributes for skills the framework provider already covers — the index card (name + description), not the full body. Agent-level instructions and `AdditionalContext` are unaffected.
+- Ensure `IContextBudgetTracker` observes tool-loaded content. Two candidate approaches: middleware on the tool-invocation pipeline, or a `DelegatingAgentSkillsSource` wrapper. **Approach not yet chosen — needs a spike.**
+- Preserve the exact provider ordering in §5.
+
+**Risk: medium.** Touches prompt composition. Covered by `AgentExecutionContextFactoryTests.cs` (46 tests), `AgentExecutionContextFactoryPromptComposerTests.cs` (7 tests — one pins the exact legacy instruction string and will need deliberate updating), `SkillInstructionMergerTests.cs` (4 tests).
+
+#### ⚠️ Hard prerequisite: the `load_skill` fallback is conditional
+
+**Verified 2026-08-01.** The framework provider is not always wired, so removing eager injection unconditionally can leave an agent with **no instructions at all, silently**.
+
+- `AgentExecutionContextFactory.cs:422` wires the provider only `if (skillPaths.Count > 0)`.
+- `ResolveSkillPaths` (line 498) skips any skill whose directory is missing: `if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir)) continue;` (line 520), and filters configured roots by `Directory.Exists` (line 508).
+- Therefore in-memory/synthesized skills, and any host whose `AI.Skills.AllPaths` do not resolve under `AppContext.BaseDirectory`, produce an empty path list → **no `AgentSkillsProvider`, no `load_skill` tool**.
+
+In that state the eager merge at line 110 is the *only* thing supplying skill instructions.
+
+**The fix must therefore be conditional on the provider actually being wired for a given skill, or must carry an explicit fallback.** A blanket removal is a silent-failure bug.
+
+Secondary effect to expect: `SkillInstructionsSectionProvider` returns `null` on empty instructions (line 54-55), so the composer-on path degrades quietly to an identity-only prompt rather than erroring — a silent quality regression, not a crash. It also sets `IsRequired = true`, so budget pressure can never drop the section.
+
+#### Resolved: `SkillMode` does **not** gate this
+
+**Verified 2026-08-01 — the previously-open question is closed.** `SkillMode` affects **tool wiring only** and has no bearing on instructions:
+
+- `SkillMode.cs` type-level doc: *"Determines how tools are resolved for a skill."* Both enum values' docs describe tool resolution exclusively. "Injected" means injected **tools**, not injected **instructions** — a naming trap.
+- Exactly **one** production read site: `ToolChainBuilder.cs:54` — `if (skill.Mode == SkillMode.Injected && _mcpToolProvider != null)`. Both branches return `List<AITool>`. `AgentExecutionContextFactory` never reads `Mode` at all.
+- `Mode` is a **get-only computed property** derived from tool fields (`SkillDefinition.cs:270-273`) — no setter, no backing field, not parseable from frontmatter. No shipped SKILL.md sets a mode; `grep '^mode:'` across all 20 returns nothing.
+- `AgentExecutionContextFactoryDualModeTests.cs` (5 tests): all nine assertions are on `context.Tools`. None touches `context.Instructions`.
+
+**Consequence for the fix: make it uniform, not mode-aware.** A mode-aware split would be the first instruction-affecting use of `Mode`, contradicting its own documentation, and because `Mode` is derived it would land backwards — preserving eager injection for all six harness-native skills while stripping it only from declaration-free *plugin* skills. It would also couple prompt size to tool configuration: adding an `allowed-tools:` line to a plugin SKILL.md would silently flip its instructions back into the system prompt.
+
+### Phase 2 — Extend at the framework seam
+
+**Goal:** replace ad-hoc wiring with a first-class custom source, matching Microsoft's own pattern.
+
+- Implement `HarnessSkillsSource : AgentSkillsSource` returning our `SkillDefinition`-backed skills.
+- Add a builder extension method, mirroring `UseMcpSkills`.
+- Collapse the duplicate `NoOpScriptRunner` in `AgentEvaluationService.cs:32` onto one shared definition.
+
+**Risk: low.** Additive. Note `AgentEvaluationServiceTests.cs:268,293` asserts `AIContextProviders.OfType<AgentSkillsProvider>().Single()`.
+
+### Phase 3 — Cleanup (independent of 1 and 2; safe any time)
+
+- **Delete `SkillChangedEventArgs.cs`** — verified dead: the only references are the type itself and its own test file. Delete both.
+- **Reconcile the two `SkillSources` classes** — `Domain.AI.Constants.SkillSources` (4 constants, `FileSystem` casing) and `Domain.AI.Skills.SkillSources` (5 constants, `Filesystem` casing, adds `Inline`). Neither is used in production code; the exception's doc `cref` points at the `Constants` one while the usage example lives on the `Skills` one. Pick one, update the `cref`, delete the other.
+- **Fix `Application.AI.Common/README.md`** — remove references to `ITieredContextAssembler` and `Services/Context/TieredContextAssembler.cs` (lines 127, 175, 287, 332, 333). Neither exists.
+- **Fix stale XML docs** naming `FileAgentSkillsProvider` in `ISkillMetadataRegistry.cs:8,12`, `ToolPermissionFilter.cs:13`, `SkillMetadataRegistry.cs:10,22`.
+- Consider the ~14 never-read `SkillDefinition` members. **Caveat:** `Objectives`/`TraceFormat` are written by the parser and asserted by `SkillParserExtensionTests.cs`; `Templates`/`References`/`Scripts`/`Assets` are `SkillResource`'s only consumers. Deleting these is a larger decision than it appears.
+
+---
+
+## 7. What we deliberately keep, and why
+
+| Ours | Why the framework cannot replace it |
+|---|---|
+| `SkillMetadataParser` (636 lines) | Framework promotes 5 frontmatter keys and silently drops the rest; its `metadata:` block is flat-string-only and cannot hold `tools` or `egress` |
+| `ISkillMetadataRegistry` | Framework has no query-by-category/tag/type; `AgentSkillsSource` returns a flat list and the provider renders only name + description |
+| `ToolPermissionFilter` | Framework's `AllowedTools` is **never read** — this is the only runtime enforcement. Must stay unsealed (subclassed by `ToolPermissionFilterTests.cs`) |
+| `IContextBudgetTracker` | Framework has zero token accounting |
+| `SkillDefinition` | Backs a published MCP wire shape and a serialized bundle-API contract |
+
+---
+
+## 8. Relationship to issue #219
+
+Issue #219 tracks Microsoft's MCP-based skill discovery (`Microsoft.Agents.AI.Mcp`, currently pre-release and flagged experimental).
+
+**It plugs into the same `AgentSkillsSource` seam as Phase 2** — `UseMcpSkills` is a one-line extension method calling `UseSource(...)`. Completing Phase 2 therefore makes #219 close to a drop-in addition when the package stabilizes.
+
+Note for that work: the MCP `skill-md` path constructs `new AgentSkillFrontmatter(name, description)` with **no metadata at all**, so MCP-sourced skills would arrive with none of our custom fields. Archive-type entries are extracted and passed through `AgentFileSkillsSource`, so they *do* get the `metadata:` block treatment. Any adoption must decide how MCP-sourced skills participate in governance, egress policy, and tool enforcement — they cannot today.
+
+---
+
+## 9. Open questions
+
+1. ~~**`SkillMode` semantics** — does `Injected` mode require eager full-body injection?~~ **CLOSED 2026-08-01: no.** Mode is tool-wiring only and is a derived get-only property. The fix must be uniform, not mode-aware. Evidence in §6 Phase 1. Do not re-derive.
+2. **Budget-tracker integration point** — middleware on tool invocation, or a `DelegatingAgentSkillsSource` wrapper? Needs a spike.
+3. **`SkillMetadataParser.Parse(skillName, skillDescription, body, ...)`** (line 81) — a hybrid overload built to accept pre-parsed framework input. It has **no production caller** (tests only). It appears to be the intended seam for exactly this integration; confirm before Phase 2 whether to use or delete it.
+4. **`FrameworkLoaderSpikeTests.cs`** hard-codes `src/Content/Application/Application.Core/Agents/Skills` and only asserts construction succeeds. If kept, it should assert actual provider output.

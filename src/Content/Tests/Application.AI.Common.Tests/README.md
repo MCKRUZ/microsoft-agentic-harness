@@ -53,7 +53,6 @@ Files mirror the production project structure: `Behaviors/`, `MediatRBehaviors/`
 | `AgentExecutionContextTests` | Context property access | 5 | Unit |
 | `ToolPermissionFilterTests` | Tool filtering by permissions | 4 | Unit |
 | `ContextBudgetTrackerTests` | Budget allocation and tracking | 6 | Unit |
-| `TieredContextAssemblerTests` | 3-tier skill context loading | 5 | Unit |
 | `AIToolConverterTests` | Keyed DI tool to AITool conversion | 4 | Unit |
 | `ToolDescriptionBuilderTests` | Schema-based tool descriptions | 3 | Unit |
 | `ContextBudgetTrackerIntegrationTests` | Budget across multiple operations | 4 | Integration |

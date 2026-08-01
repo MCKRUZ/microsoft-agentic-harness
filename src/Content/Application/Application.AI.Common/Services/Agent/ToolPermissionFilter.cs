@@ -10,9 +10,22 @@ namespace Application.AI.Common.Services.Agent;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Register this provider <em>after</em> <see cref="FileAgentSkillsProvider"/> in the
+/// Register this provider <em>after</em> <see cref="AgentSkillsProvider"/> in the
 /// <c>AIContextProviders</c> list so it operates on the fully-built tool set, including any
 /// framework tools surfaced by progressive skill disclosure.
+/// </para>
+/// <para>
+/// Enforcement is layered, and this filter owns the outermost layer. <c>ToolChainBuilder</c> already
+/// applies the allow-list and the plugin <c>AllowedTools</c>/<c>DeniedTools</c> boundary while the
+/// tool chain is being built. Tools the framework injects <em>after</em> that — those surfaced by
+/// progressive skill disclosure — never pass through the builder, so this provider is their only
+/// enforcement point. Removing it leaves the build-time filtering intact but lets framework-injected
+/// tools through unchecked.
+/// </para>
+/// <para>
+/// Do not expect the framework to cover that gap: as of <c>Microsoft.Agents.AI</c> 1.13.0,
+/// <c>AgentSkillFrontmatter.AllowedTools</c> is written by its parser and read by nothing — it is
+/// advisory metadata, not a control.
 /// </para>
 /// <para>
 /// The allow-list distinguishes two states that a bare empty collection cannot. A <see langword="null"/>
