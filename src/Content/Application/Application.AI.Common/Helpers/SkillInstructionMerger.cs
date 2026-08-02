@@ -41,6 +41,14 @@ public static class SkillInstructionMerger
     /// Optional agent-level instructions (the agent's own system prompt). When present, they lead the
     /// merged text ahead of every skill; ignored when null or whitespace.
     /// </param>
+    /// <param name="disclosedOnDemandSkillIds">
+    /// Ids of skills whose bodies the framework's <c>load_skill</c> tool will supply on request, and which
+    /// are therefore omitted here — the model still sees their name and description in the provider's
+    /// index card. Null or empty means every skill's body is emitted, which is the correct behaviour when
+    /// no skills provider is wired. Take this from the <see cref="DisclosableSkill.SkillId"/>s that
+    /// <see cref="DisclosableSkillFactory.Create"/> returned, and register that same list with the
+    /// provider — supplying an id the provider was not given drops those instructions entirely.
+    /// </param>
     /// <returns>
     /// The merged instruction text, or an empty string when no agent instructions, skill instructions,
     /// or additional context are supplied.
@@ -48,7 +56,8 @@ public static class SkillInstructionMerger
     public static string Merge(
         IReadOnlyList<SkillDefinition> skills,
         string? additionalContext,
-        string? agentInstructions = null)
+        string? agentInstructions = null,
+        IReadOnlySet<string>? disclosedOnDemandSkillIds = null)
     {
         ArgumentNullException.ThrowIfNull(skills);
 
@@ -62,6 +71,13 @@ public static class SkillInstructionMerger
             if (string.IsNullOrEmpty(skill.Instructions))
                 continue;
 
+            // Tier 2 content the model can pull on demand; keeping it here too would ship the same body
+            // twice — once in every prompt, once again if load_skill is called.
+            if (disclosedOnDemandSkillIds?.Contains(skill.Id) == true)
+                continue;
+
+            // Headed by total skill count, not by how many bodies survive the filter above: when an agent
+            // composes several skills the model benefits from the header even if only one body remains.
             if (skills.Count > 1)
                 parts.Add($"## Skill: {skill.Name}\n\n{skill.Instructions}");
             else

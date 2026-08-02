@@ -23,6 +23,27 @@ namespace Application.AI.Common.Services.Agent;
 /// tools through unchecked.
 /// </para>
 /// <para>
+/// <b>This filter overrides <see cref="AIContextProvider.InvokingCoreAsync"/>, not
+/// <c>ProvideAIContextAsync</c>, and that choice is load-bearing.</b> <c>ProvideAIContextAsync</c> is
+/// contractually an <em>additive</em> hook: whatever it returns is merged into the incoming context by
+/// the base implementation, which computes <c>Tools = input.Concat(provided)</c>. A subtractive filter
+/// implemented there removes nothing — every tool it drops is restored from the input, and every tool it
+/// keeps is duplicated. Removal is only possible by overriding the merge itself. Any future refactor that
+/// moves this logic back onto <c>ProvideAIContextAsync</c> silently disables the control while leaving
+/// its unit tests green, so <c>ToolPermissionFilterTests</c> asserts through the public
+/// <see cref="AIContextProvider.InvokingAsync"/> entry point that the runtime actually uses.
+/// </para>
+/// <para>
+/// Two framework tools are exempt from the allow-list — <c>load_skill</c> and
+/// <c>read_skill_resource</c> (see <see cref="SkillDisclosureToolNames"/>). They are the transport for
+/// skill instructions rather than capabilities an agent is granted, and every skill's manifest
+/// allow-list names domain tools only, so filtering them would disable progressive disclosure for
+/// precisely those agents that declare tool restrictions. <c>run_skill_script</c> is deliberately
+/// <em>not</em> exempt: it is the one skill tool that executes something, so it stays subject to the
+/// allow-list. This mirrors the framework's own read-only/all split in
+/// <c>AgentSkillsProvider.ReadOnlyToolsAutoApprovalRule</c>.
+/// </para>
+/// <para>
 /// Do not expect the framework to cover that gap: as of <c>Microsoft.Agents.AI</c> 1.13.0,
 /// <c>AgentSkillFrontmatter.AllowedTools</c> is written by its parser and read by nothing — it is
 /// advisory metadata, not a control.
@@ -69,33 +90,54 @@ public class ToolPermissionFilter : AIContextProvider
     /// </summary>
     public IReadOnlySet<string>? AllowedTools => _allowedTools;
 
+    /// <summary>
+    /// The framework skill tools that carry skill <em>content</em> rather than granting a capability, and
+    /// are therefore never filtered. Both are read-only. <c>run_skill_script</c> is excluded by design —
+    /// see the remarks on <see cref="ToolPermissionFilter"/>.
+    /// </summary>
+    public static readonly IReadOnlySet<string> SkillDisclosureToolNames =
+        new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            AgentSkillsProvider.LoadSkillToolName,
+            AgentSkillsProvider.ReadSkillResourceToolName,
+        };
+
     /// <inheritdoc />
-    protected override ValueTask<AIContext> ProvideAIContextAsync(
+    /// <remarks>
+    /// Overrides the merge rather than <c>ProvideAIContextAsync</c> because this provider <em>removes</em>
+    /// tools, which the additive hook cannot express. See the remarks on <see cref="ToolPermissionFilter"/>.
+    /// </remarks>
+    protected override async ValueTask<AIContext> InvokingCoreAsync(
         InvokingContext context,
         CancellationToken cancellationToken = default)
     {
-        // No restriction — pass context through unchanged. An empty (but non-null) allow-list is NOT
-        // this case: it is an active restriction that denies every tool.
-        if (_allowedTools is null)
-            return ValueTask.FromResult(context.AIContext);
+        // Let the base assemble the full accumulated context first (instructions, message source
+        // stamping, and the tools contributed by every provider ahead of this one), then subtract.
+        var merged = await base.InvokingCoreAsync(context, cancellationToken).ConfigureAwait(false);
 
-        var allTools = context.AIContext.Tools?.ToList();
+        // No restriction — pass the merged context through unchanged. An empty (but non-null) allow-list
+        // is NOT this case: it is an active restriction that denies every tool.
+        var allowed = _allowedTools;
+        if (allowed is null)
+            return merged;
+
+        var allTools = merged.Tools?.ToList();
         if (allTools is null or { Count: 0 })
-            return ValueTask.FromResult(context.AIContext);
+            return merged;
 
         var filtered = allTools
-            .Where(t => _allowedTools.Contains(t.Name))
+            .Where(t => allowed.Contains(t.Name) || SkillDisclosureToolNames.Contains(t.Name))
             .ToList();
 
         // Nothing was removed — avoid allocating a new AIContext
         if (filtered.Count == allTools.Count)
-            return ValueTask.FromResult(context.AIContext);
+            return merged;
 
-        return ValueTask.FromResult(new AIContext
+        return new AIContext
         {
-            Instructions = context.AIContext.Instructions,
-            Messages = context.AIContext.Messages,
+            Instructions = merged.Instructions,
+            Messages = merged.Messages,
             Tools = filtered
-        });
+        };
     }
 }

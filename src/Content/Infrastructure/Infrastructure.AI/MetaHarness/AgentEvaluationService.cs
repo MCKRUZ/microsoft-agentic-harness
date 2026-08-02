@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using Application.AI.Common.Helpers;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.MetaHarness;
 using Application.AI.Common.Interfaces.Traces;
@@ -232,6 +233,7 @@ public sealed class AgentEvaluationService : IEvaluationService
 
         var provider = new AgentSkillsProviderBuilder()
             .UseFileScriptRunner(NoOpScriptRunner)
+            .UseOptions(SkillDisclosureDefaults.Configure)
             .UseFileSkill(skillDirectory)
             .Build();
 

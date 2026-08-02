@@ -16,16 +16,6 @@ namespace Domain.AI.Skills;
 /// </remarks>
 public sealed record SkillAgentOptions
 {
-	#region Skill Loading
-
-	/// <summary>
-	/// Override the skill search paths for this agent creation.
-	/// When null, paths from <c>AppConfig.AI.Skills</c> are used.
-	/// </summary>
-	public IList<string>? SkillPaths { get; init; }
-
-	#endregion
-
 	#region Agent Configuration
 
 	/// <summary>

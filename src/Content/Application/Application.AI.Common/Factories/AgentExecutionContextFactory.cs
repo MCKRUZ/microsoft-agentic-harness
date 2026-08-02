@@ -13,7 +13,6 @@ using Domain.AI.Skills;
 using Domain.AI.Telemetry.Conventions;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
-using Domain.Common.Helpers;
 using Domain.Common.MetaHarness;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
@@ -32,10 +31,6 @@ namespace Application.AI.Common.Factories;
 /// </summary>
 public class AgentExecutionContextFactory
 {
-    private static readonly AgentFileSkillScriptRunner NoOpScriptRunner =
-        (skill, script, arguments, serviceProvider, cancellationToken) =>
-            Task.FromResult<object?>(null);
-
     private readonly ILogger<AgentExecutionContextFactory> _logger;
     private readonly IOptionsMonitor<AppConfig> _appConfig;
     private readonly IServiceProvider _serviceProvider;
@@ -102,12 +97,24 @@ public class AgentExecutionContextFactory
         var deploymentName = ResolveDeploymentName(primarySkill, options);
         var agentName = options.AgentNameOverride ?? ToAgentName(primarySkill.Name);
 
+        // One list drives two decisions that must never disagree: which skills the framework provider is
+        // given, and which skills may therefore omit their body from the static prompt. Because the prompt's
+        // decision is read off the very set that gets registered, the two cannot drift apart.
+        var disclosableSkills = DisclosableSkillFactory.Create(skills, _logger);
+        var disclosedOnDemand = disclosableSkills
+            .Select(s => s.SkillId)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        LogSkillsExcludedFromDisclosure(skills, disclosedOnDemand);
+
         // Static system prompt. The legacy path merges skill instructions + additional context
-        // verbatim (SkillInstructionMerger is the single source of truth for that format). When
+        // verbatim (SkillInstructionMerger is the single source of truth for that format). Bodies the
+        // framework provider will serve through load_skill are omitted — that is Tier 2 content, and the
+        // provider already advertises the Tier 1 name/description index card for them. When
         // PromptComposition is enabled, the authoritative section composer reframes that same skill
         // content with identity + permission-rules sections within a token budget; per-turn dynamic
         // context (session state, memory) stays on the AIContextProvider rail, never baked in here.
-        var instruction = SkillInstructionMerger.Merge(skills, options.AdditionalContext, options.AgentInstructions);
+        var instruction = SkillInstructionMerger.Merge(
+            skills, options.AdditionalContext, options.AgentInstructions, disclosedOnDemand);
         if (_appConfig.CurrentValue.AI?.ContextManagement?.PromptComposition?.Enabled == true)
             instruction = await ComposeStaticSystemPromptAsync(agentName, instruction);
 
@@ -119,7 +126,7 @@ public class AgentExecutionContextFactory
         var mergedToolChain = await _toolChainBuilder.BuildMergedToolsWithSourcesAsync(skills, options, effectiveAllowedTools);
         var tools = mergedToolChain.Tools.ToList();
         var middlewareTypes = ResolveMiddlewareTypes(primarySkill, options);
-        var aiContextProviders = BuildMergedAIContextProviders(skills, options, effectiveAllowedTools);
+        var aiContextProviders = BuildMergedAIContextProviders(skills.Count, effectiveAllowedTools, disclosableSkills);
         var frameworkType = options.FrameworkType
             ?? ResolveFrameworkTypeFromMetadata(primarySkill)
             ?? _appConfig.CurrentValue.AI?.AgentFramework?.ClientType
@@ -404,38 +411,43 @@ public class AgentExecutionContextFactory
     }
 
     /// <summary>
-    /// Unions context providers from all skills. Skill paths are resolved once (from options or config).
+    /// Unions the context providers for this agent over <paramref name="disclosableSkills"/>, which the
+    /// caller built once so this wiring and the prompt's disclosure decision cannot disagree.
     /// The <paramref name="effectiveAllowlist"/> (the skills' combined constraint already capped by any
     /// agent tool ceiling) drives a single <see cref="Services.Agent.ToolPermissionFilter"/>. It is
     /// <see langword="null"/> when no restriction is active (no filter is wired), or a concrete set —
     /// possibly empty, meaning deny-all — when a restriction applies.
     /// </summary>
     private IList<AIContextProvider>? BuildMergedAIContextProviders(
-        IReadOnlyList<SkillDefinition> skills,
-        SkillAgentOptions options,
-        IReadOnlyList<string>? effectiveAllowlist)
+        int skillCount,
+        IReadOnlyList<string>? effectiveAllowlist,
+        IReadOnlyList<DisclosableSkill> disclosableSkills)
     {
         var providers = new List<AIContextProvider>();
 
-        var skillPaths = ResolveSkillPaths(options, skills);
-
-        if (skillPaths.Count > 0)
+        if (disclosableSkills.Count > 0)
         {
-            var builder = new AgentSkillsProviderBuilder()
-                .UseFileScriptRunner(NoOpScriptRunner);
-            foreach (var path in skillPaths)
-                builder.UseFileSkill(path);
-            providers.Add(builder.Build());
+            // Registering the agent's own skills, rather than a directory to search, is what keeps
+            // load_skill from advertising skills this agent was never assigned.
+            providers.Add(new AgentSkillsProviderBuilder()
+                .UseSkills(disclosableSkills.Select(s => s.Skill))
+                .UseOptions(SkillDisclosureDefaults.Configure)
+                .Build());
 
-            _logger.LogDebug("Wired AgentSkillsProvider with {PathCount} path(s)", skillPaths.Count);
+            _logger.LogDebug("Wired AgentSkillsProvider with {SkillCount} skill(s)", disclosableSkills.Count);
         }
 
+        // Placed immediately after the skills provider so it sees the framework's disclosure tools. Note
+        // what this position does and does not guarantee: the framework feeds each provider the previous
+        // one's output, so the filter's removals survive into everything added below. But a provider added
+        // *after* this line whose own contribution introduces a tool would introduce it unfiltered — the
+        // filter has already run. Any future tool-contributing provider belongs above this line.
         if (effectiveAllowlist is not null)
         {
             providers.Add(new Services.Agent.ToolPermissionFilter(effectiveAllowlist));
 
             _logger.LogDebug("Wired ToolPermissionFilter with {Count} allowed tool(s) for {SkillCount} skill(s)",
-                effectiveAllowlist.Count, skills.Count);
+                effectiveAllowlist.Count, skillCount);
         }
 
         // Cross-session memory recall. The provider resolves tenant-aware IKnowledgeMemory per
@@ -488,46 +500,36 @@ public class AgentExecutionContextFactory
     }
 
     /// <summary>
-    /// Resolves the file-skill roots wired into the <c>AgentSkillsProvider</c> for progressive (Tier 2/3)
-    /// disclosure: the configured roots (or the per-call override), augmented with each resolved skill's
-    /// own directory when it is not already reachable under one of those roots. That augmentation is what
-    /// gives an agent-owned nested skill (whose directory lives under its <c>&lt;agentDir&gt;/skills/</c>,
-    /// outside the configured skill roots) the same on-demand access to its scripts and references as a
-    /// shared skill. Global skills, whose directories already sit under a configured root, are untouched.
+    /// Records which skills kept their full body in the static prompt because the framework provider will
+    /// not serve them on demand.
     /// </summary>
-    internal IReadOnlyList<string> ResolveSkillPaths(SkillAgentOptions options, IReadOnlyList<SkillDefinition> skills)
+    /// <remarks>
+    /// Falling back to eager injection is the safe outcome, but it is also invisible — the agent works,
+    /// the prompt is just larger than it should be. Without this line the only symptom of a skill that can
+    /// no longer be registered (a name edited out of kebab-case, a description deleted) is a gradual return
+    /// of the token cost progressive disclosure exists to remove. <see cref="DisclosableSkillFactory"/>
+    /// names a reason for the skills it rejects; it stays silent about ones it never considered, so this
+    /// total is the only signal covering those.
+    /// </remarks>
+    private void LogSkillsExcludedFromDisclosure(
+        IReadOnlyList<SkillDefinition> skills,
+        IReadOnlySet<string> disclosedOnDemand)
     {
-        // Relative config paths are resolved against AppContext.BaseDirectory (the bin folder), matching
-        // SkillMetadataRegistry — the authority on where skills physically live. Resolving against the CWD
-        // instead would leave the base roots pointing nowhere under `dotnet run`, so the dedup below would
-        // fail to recognise that a global skill's directory is already covered and re-add every one.
-        var baseRoots = options.SkillPaths?.Count > 0
-            ? options.SkillPaths.Select(p => Path.IsPathRooted(p) ? p : Path.GetFullPath(p, AppContext.BaseDirectory)).ToList()
-            : _appConfig.CurrentValue.AI?.Skills?.AllPaths
-                .Select(p => Path.IsPathRooted(p) ? p : Path.GetFullPath(p, AppContext.BaseDirectory))
-                .Where(Directory.Exists)
-                .ToList() ?? [];
+        if (!_logger.IsEnabled(LogLevel.Debug))
+            return;
 
-        var paths = new List<string>(baseRoots);
-        var normalizedRoots = baseRoots.Select(PathScope.Normalize).ToList();
+        var eager = skills
+            .Where(s => !string.IsNullOrEmpty(s.Instructions) && !disclosedOnDemand.Contains(s.Id))
+            .Select(s => s.Id)
+            .ToList();
 
-        // Ensure every resolved skill's own directory is reachable for Tier 2/3 disclosure, adding only
-        // those not already covered by a base root (agent-owned nested skills). Global skills, whose
-        // directories sit under a configured root, are skipped so the common case is unchanged.
-        foreach (var skill in skills)
-        {
-            var dir = skill.BaseDirectory;
-            if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir))
-                continue;
+        if (eager.Count == 0)
+            return;
 
-            var normalizedDir = PathScope.Normalize(dir);
-            if (normalizedRoots.Any(root => PathScope.IsSameOrUnderNormalized(normalizedDir, root)))
-                continue;
-            if (!paths.Contains(dir))
-                paths.Add(dir);
-        }
-
-        return paths;
+        _logger.LogDebug(
+            "Skill instructions kept in the static prompt for {Count} skill(s) not registered with the " +
+            "framework skills provider: {SkillIds}",
+            eager.Count, string.Join(", ", eager));
     }
 
     private List<Type>? ResolveMiddlewareTypes(SkillDefinition skill, SkillAgentOptions options)

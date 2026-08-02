@@ -1,6 +1,6 @@
 # Skills Subsystem: Alignment with Microsoft Agent Framework
 
-**Status:** Plan rewritten 2026-08-01 against verified evidence. **No code has been changed.**
+**Status:** Plan rewritten 2026-08-01 against verified evidence. **Phases 1, 2 and 3 are done** as of 2026-08-02, with one carve-out: the budget-tracker integration in Phase 1 did not ship (see below). See §5 for what shipped and the extra defect the work uncovered.
 **Supersedes:** the original version of this file, which was written against `Microsoft.Agents.AI` 1.0.0-rc4 and is now substantially wrong (see §1).
 **Installed SDK:** `Microsoft.Agents.AI` **1.13.0** (`src/Directory.Packages.props:31`).
 **Related:** GitHub issue #219 (MCP-based skill discovery) — see §8.
@@ -219,7 +219,53 @@ Consumers that constrain any change:
 
 ---
 
-## 5. The real defect: progressive disclosure is switched off
+## 5. The real defect: progressive disclosure is switched off — FIXED (budget accounting still open)
+
+> **Resolved 2026-08-02**, except for the budget-tracker item — see the Phase 1 note in §6, which is
+> now *more* wrong than before this change, not less. Fixing the disclosure defect required repairing two
+> further defects found on the way, because all three had to land together: disclosure is worthless if
+> `load_skill` cannot be called, and enabling `load_skill` is unsafe while the control that governs
+> framework-injected tools does nothing.
+>
+> 1. **Eager injection removed, conditionally.** `SkillInstructionMerger.Merge` now takes the set of
+>    skills the framework provider will serve and omits their bodies. Coverage is decided by
+>    `FrameworkSkillCoverage`, and every ambiguity resolves to "keep the body". A skill the provider will
+>    not serve keeps eager injection and is logged at Debug, so the fallback is visible rather than silent.
+>
+>    That predicate **re-reads the SKILL.md frontmatter rather than trusting `SkillDefinition`**, and the
+>    reason is a trap worth recording: `SkillMetadataParser.cs:51-52` defaults a missing `name` to the
+>    *directory name* and a missing `description` to the empty string, so a parsed `SkillDefinition` cannot
+>    distinguish "declared" from "defaulted". The framework requires both to be present and valid in the
+>    file. A directory-name comparison against the parsed `Name` therefore passes *tautologically* for
+>    exactly the malformed manifests the loader rejects — dropping their instructions silently. Field
+>    validity is delegated to the framework's public `AgentSkillFrontmatter.ValidateName` /
+>    `ValidateDescription` (kebab-case charset, 64/1024-char caps) instead of being mirrored here.
+> 2. **`load_skill` was unreachable.** The framework wraps all three skill tools in
+>    `ApprovalRequiredAIFunction` by default; a call then returns `ToolApprovalRequestContent` instead of
+>    invoking the tool, and **no turn-driver in this harness answers that** (grep: zero production
+>    handlers). On-demand disclosure could therefore never have completed. `SkillDisclosureDefaults`
+>    disables the three approval flags at both builder sites.
+> 3. **`ToolPermissionFilter` enforced nothing.** It overrode `ProvideAIContextAsync`, which is
+>    contractually *additive* — `AIContextProvider.InvokingCoreAsync` returns
+>    `input.Tools.Concat(provided.Tools)`, so every tool it "stripped" was merged straight back in. All 12
+>    of its tests passed because each called the protected method directly, bypassing the merge the runtime
+>    always applies. It now overrides `InvokingCoreAsync`, and its tests drive the public `InvokingAsync`.
+>    `load_skill` and `read_skill_resource` are exempt from the allow-list (no skill manifest names them,
+>    so filtering them would disable disclosure for exactly the agents that declare tool restrictions);
+>    `run_skill_script` is **not** exempt.
+>
+> Tests: `FrameworkSkillCoverageTests` (18), `AgentExecutionContextFactoryProgressiveDisclosureTests` (4),
+> rewritten `ToolPermissionFilterTests` (17). Every decision point was mutation-tested — including a
+> mutation that restores the tautological name comparison, which four tests catch.
+>
+> **Two changes here exceed what §6 Phase 1 asked for**, both deliberate. (a) The `ToolPermissionFilter`
+> repair: §7 listed that class under "what we deliberately keep", assuming it worked. (b)
+> `DisableRunSkillScriptApproval` — disclosure needs only the two read-only tools, but because this harness
+> has no approval channel at all, leaving *any* skill tool approval-gated means a model that calls it
+> stalls the turn with an unanswerable request. The script runner is a no-op, so the flag protected
+> nothing; `run_skill_script` remains subject to the allow-list, which is the control that does.
+>
+> The original analysis is kept below because it is the evidence for why the change was made.
 
 **Severity: worth fixing. Confidence: verified in code.**
 
@@ -254,7 +300,13 @@ AgentSkillsProvider (428) → ToolPermissionFilter (435) → KnowledgeMemoryCont
 
 Not yet scheduled. Each phase is independently valuable and independently revertible.
 
-### Phase 1 — Restore progressive disclosure (the real fix)
+### Phase 1 — Restore progressive disclosure (the real fix) — ◐ PARTLY DONE 2026-08-02
+
+See the resolution box in §5. The one item below that did **not** ship is the budget-tracker integration:
+`IContextBudgetTracker` still records only the injected half, so with bodies now arriving via `load_skill`
+the reported system-prompt total is *lower* than the tokens actually spent on a turn where the model loads
+a skill. The numbers moved in the right direction but they are still not the truth. Open question 2 (the
+integration point) remains unanswered — that is the next piece of work in this area.
 
 **Goal:** stop eagerly injecting full skill bodies; let the framework provider do the job it is already wired to do.
 
@@ -264,7 +316,15 @@ Not yet scheduled. Each phase is independently valuable and independently revert
 
 **Risk: medium.** Touches prompt composition. Covered by `AgentExecutionContextFactoryTests.cs` (46 tests), `AgentExecutionContextFactoryPromptComposerTests.cs` (7 tests — one pins the exact legacy instruction string and will need deliberate updating), `SkillInstructionMergerTests.cs` (4 tests).
 
-#### ⚠️ Hard prerequisite: the `load_skill` fallback is conditional
+#### ⚠️ Hard prerequisite: the `load_skill` fallback is conditional — ✅ SATISFIED
+
+**Kept for the reasoning, not the line numbers.** The mechanism below is still the governing constraint,
+but Phase 2 changed how it is met and the code it cites is gone: `ResolveSkillPaths` and the
+`skillPaths.Count > 0` condition no longer exist. The provider is now wired when
+`DisclosableSkillFactory.Create` returns at least one skill, and a skill absent from that list keeps its
+body in the prompt — so the "no instructions at all" state is unreachable by construction rather than by a
+predicate that has to stay correct. The directory-existence concerns below no longer apply at all: an
+in-memory or synthesized skill with no directory is now fully disclosable, because nothing reads its path.
 
 **Verified 2026-08-01.** The framework provider is not always wired, so removing eager injection unconditionally can leave an agent with **no instructions at all, silently**.
 
@@ -289,15 +349,39 @@ Secondary effect to expect: `SkillInstructionsSectionProvider` returns `null` on
 
 **Consequence for the fix: make it uniform, not mode-aware.** A mode-aware split would be the first instruction-affecting use of `Mode`, contradicting its own documentation, and because `Mode` is derived it would land backwards — preserving eager injection for all six harness-native skills while stripping it only from declaration-free *plugin* skills. It would also couple prompt size to tool configuration: adding an `allowed-tools:` line to a plugin SKILL.md would silently flip its instructions back into the system prompt.
 
-### Phase 2 — Extend at the framework seam
+### Phase 2 — Register the agent's own skills — ✅ DONE 2026-08-02
 
-**Goal:** replace ad-hoc wiring with a first-class custom source, matching Microsoft's own pattern.
+**Goal (as planned):** replace ad-hoc wiring with a first-class custom source, matching Microsoft's own pattern.
 
-- Implement `HarnessSkillsSource : AgentSkillsSource` returning our `SkillDefinition`-backed skills.
-- Add a builder extension method, mirroring `UseMcpSkills`.
-- Collapse the duplicate `NoOpScriptRunner` in `AgentEvaluationService.cs:32` onto one shared definition.
+**What actually shipped, and why it is smaller than planned.** The driving defect was *over-disclosure*:
+`UseFileSkill(root)` discovers every `SKILL.md` beneath the configured roots, so `load_skill` advertised
+skills the agent was never assigned. (Harmless only while `load_skill` was unreachable; Phase 1 made it
+reachable.) Fixing that needs explicit registration, not a custom source — the builder's public
+`UseSkills(IEnumerable<AgentSkill>)` already accepts one.
 
-**Risk: low.** Additive. Note `AgentEvaluationServiceTests.cs:268,293` asserts `AIContextProviders.OfType<AgentSkillsProvider>().Single()`.
+- `DisclosableSkillFactory` builds one **`AgentInlineSkill`** per assigned skill from its `SkillDefinition`.
+  `AgentInlineSkill` is public and concrete, so no `AgentSkillsSource` subclass was needed.
+- **`FrameworkSkillCoverage` and `ResolveSkillPaths` are deleted** (with their 22 tests). Coverage is now
+  exact by construction — the registered list *is* the disclosure list — so there is nothing left to
+  predict. `SkillAgentOptions.SkillPaths`, whose only reader was `ResolveSkillPaths`, is deleted with them.
+- **The Application-layer file-I/O breach is narrowed, not closed.** `AgentExecutionContextFactory` no
+  longer touches the file system at all, and `FrameworkSkillCoverage`'s eager per-skill `File.ReadAllText`
+  is gone. What remains is one deferred read in `DisclosableSkillFactory.ReadResourceAsync`, which runs
+  only when the model actually calls `read_skill_resource`. Strictly this still fails the placement rule in
+  `.claude/rules/clean-architecture.md`; moving it behind an Infrastructure interface is the open item.
+- Tier 3 is preserved: each skill's `References`/`Templates`/`Assets` are registered as deferred reads, so
+  the provider advertises them in `<available_resources>` and `read_skill_resource` serves them.
+- Scripts are deliberately **not** registered — harness skill scripts run through the sandboxed tool chain,
+  so `NoOpScriptRunner` is gone from `AgentExecutionContextFactory` rather than shared.
+
+**Deliberately not done:** `AgentEvaluationService.BuildSkillsProviders` still uses `UseFileSkill`. It
+materializes candidate skill files to a temp directory and evaluates them, so file discovery is the point
+there, and the directory holds one candidate's skills — it has no over-disclosure exposure. Its
+`NoOpScriptRunner` therefore stays.
+
+**Why not `AgentSkillFrontmatter`-mirroring:** rejections are decided by *calling* the framework's
+constructor and catching `ArgumentException`, never by restating its rules. Restating them is what produced
+the tautological-comparison bug recorded in §5.
 
 ### Phase 3 — Cleanup (independent of 1 and 2; safe any time)
 
@@ -315,7 +399,7 @@ Secondary effect to expect: `SkillInstructionsSectionProvider` returns `null` on
 |---|---|
 | `SkillMetadataParser` (636 lines) | Framework promotes 5 frontmatter keys and silently drops the rest; its `metadata:` block is flat-string-only and cannot hold `tools` or `egress` |
 | `ISkillMetadataRegistry` | Framework has no query-by-category/tag/type; `AgentSkillsSource` returns a flat list and the provider renders only name + description |
-| `ToolPermissionFilter` | Framework's `AllowedTools` is **never read** — this is the only runtime enforcement. Must stay unsealed (subclassed by `ToolPermissionFilterTests.cs`) |
+| `ToolPermissionFilter` | Framework's `AllowedTools` is **never read** — this is the only runtime enforcement for framework-injected tools. It did not actually enforce anything until 2026-08-02 (§5); it must override `InvokingCoreAsync`, never `ProvideAIContextAsync`. No longer subclassed by its tests, which now drive the public `InvokingAsync`, so nothing depends on it staying unsealed |
 | `IContextBudgetTracker` | Framework has zero token accounting |
 | `SkillDefinition` | Backs a published MCP wire shape and a serialized bundle-API contract |
 
