@@ -1,20 +1,26 @@
 #!/usr/bin/env pwsh
 #
-# save-review-receipt.ps1 — records that a review ran against the current commit, for the
+# save-review-receipt.ps1 — records that a review ran against the current code, for the
 # review gate (review-gate.ps1) to verify before a push/PR.
 #
 # Usage (pipe the review summary on stdin so the receipt is real evidence, not a flag):
-#   "...code-review findings...""  | pwsh -NoProfile -File .claude/hooks/save-review-receipt.ps1 -Kind code-review
-#   "...simplify findings..."       | pwsh -NoProfile -File .claude/hooks/save-review-receipt.ps1 -Kind simplify
+#   "...code-review findings..." | pwsh -NoProfile -File .claude/hooks/save-review-receipt.ps1 -Kind code-review
+#   "...simplify findings..."    | pwsh -NoProfile -File .claude/hooks/save-review-receipt.ps1 -Kind simplify
 #
-# The receipt is written to .claude/.review-receipts/<HEAD-short-sha>.<kind> so it is bound
-# to the exact commit. If you amend or add commits, the SHA changes and the gate re-arms,
-# forcing a fresh review of the final code. Receipts are gitignored (per-clone evidence).
+# The receipt is written to .claude/.review-receipts/<fingerprint>.<kind>, where the
+# fingerprint identifies the reviewable source diff itself (see review-scope.ps1) rather
+# than the commit that happens to contain it. Consequences, both intended:
+#   * Editing source and re-committing changes the fingerprint, so the gate re-arms and
+#     forces a fresh review of the final code — same as before.
+#   * Committing docs, workflows, or anything else non-reviewable leaves the fingerprint
+#     alone, so an existing receipt still applies and no re-review is demanded.
+# Receipts are gitignored (per-clone evidence).
 #
 # Honest scope: the receipt's CONTENT is whatever is piped in; this script binds it to the
-# commit and timestamps it, but it cannot verify the review was done well — that is on the
-# reviewer. Its value is mechanical: the push is blocked until a commit-bound receipt exists,
-# turning "might forget entirely" into "must produce per-commit, inspectable review evidence."
+# reviewed code and timestamps it, but it cannot verify the review was done well — that is
+# on the reviewer, and ultimately on CI, which re-derives its verdict server-side. This
+# script's value is mechanical: the push is blocked until code-bound review evidence
+# exists, turning "might forget entirely" into "must produce inspectable review evidence."
 
 [CmdletBinding()]
 param(
@@ -34,11 +40,25 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
   [Console]::Error.WriteLine('save-review-receipt: git not found.'); exit 1
 }
 
-$sha = (& git rev-parse --short HEAD 2>$null)
-if ($LASTEXITCODE -ne 0 -or -not $sha) {
-  [Console]::Error.WriteLine('save-review-receipt: cannot resolve HEAD.'); exit 1
+# Shared scope + fingerprint logic, so the receipt is named by exactly the rule the gate
+# will later check against.
+. (Join-Path $PSScriptRoot 'review-scope.ps1')
+
+$change = Get-ReviewableChange -Base (Resolve-ReviewBase)
+if (-not $change) {
+  [Console]::Error.WriteLine(
+    'save-review-receipt: no reviewable source changed vs the base, so there is nothing for ' +
+    'the gate to require a receipt for. Nothing written.')
+  exit 0
 }
-$sha = $sha.Trim()
+
+$fingerprint = Get-ReviewFingerprint -Change $change
+if (-not $fingerprint) {
+  [Console]::Error.WriteLine('save-review-receipt: could not compute the review fingerprint.'); exit 1
+}
+
+$sha = (& git rev-parse --short HEAD 2>$null)
+if ($LASTEXITCODE -ne 0 -or -not $sha) { $sha = '(unresolved)' } else { $sha = $sha.Trim() }
 
 $receiptDir = Join-Path $projectDir '.claude/.review-receipts'
 New-Item -ItemType Directory -Force -Path $receiptDir | Out-Null
@@ -46,8 +66,19 @@ New-Item -ItemType Directory -Force -Path $receiptDir | Out-Null
 $summary = [Console]::In.ReadToEnd()
 if (-not $summary) { $summary = "($Kind run; no summary piped)" }
 
-$header = "# $Kind receipt`ncommit: $sha`n`n"
-$path = Join-Path $receiptDir "$sha.$Kind"
+# Record the covered file list in the receipt so a human can audit what the review saw,
+# not just that some review happened.
+$header = @(
+  "# $Kind receipt",
+  "fingerprint: $fingerprint",
+  "recorded-at-commit: $sha",
+  "reviewed-files:"
+  ($change.Paths | ForEach-Object { "  - $_" })
+  ""
+) | Out-String
+
+$path = Join-Path $receiptDir "$fingerprint.$Kind"
 Set-Content -Path $path -Value ($header + $summary) -Encoding UTF8
 
-Write-Output "Saved $Kind receipt for commit $sha at .claude/.review-receipts/$sha.$Kind"
+Write-Output ("Saved $Kind receipt for fingerprint $fingerprint " +
+              "($($change.Paths.Count) reviewable file(s)) at .claude/.review-receipts/$fingerprint.$Kind")

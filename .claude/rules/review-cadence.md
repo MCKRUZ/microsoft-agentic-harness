@@ -12,20 +12,33 @@ Do NOT skip these. Run them even when changes seem straightforward.
 
 This cadence is not an honor system. A `PreToolUse` hook (`.claude/hooks/review-gate.ps1`, wired
 in `.claude/settings.json`) **blocks `git push` and `gh pr create`** when the branch's diff touches
-compilable source (`src/**`) unless `/code-review` **and** `/simplify` have been recorded against the
-exact `HEAD` commit being pushed.
+reviewable source unless `/code-review` **and** `/simplify` have been recorded against the exact
+**code** being pushed.
 
-- **Recording a review:** pipe its summary to the helper, which binds the receipt to the current
-  commit:
+- **Recording a review:** pipe its summary to the helper, which binds the receipt to the reviewed
+  code:
   `"<review summary>" | pwsh -NoProfile -File .claude/hooks/save-review-receipt.ps1 -Kind code-review`
   (and again with `-Kind simplify`). Receipts live in the gitignored `.claude/.review-receipts/`.
-- **Re-arming:** amending or adding commits changes `HEAD`, so the gate demands a fresh review of the
-  final code. Run the reviews on the commit you actually push.
+- **Re-arming is content-based, not commit-based.** Receipts are named after a fingerprint of the
+  reviewable source diff (`.claude/hooks/review-scope.ps1`), so:
+  - changing a single line of source re-arms the gate and forces a fresh review — as before;
+  - committing docs, workflow YAML, or anything else non-reviewable **does not** discard the review.
+    Under the old `HEAD`-SHA binding it did, which cost four review passes on PR #220 alone
+    re-reading byte-identical source.
+- **Reviewable source** is `src/**` with a `.cs .csproj .slnx .props .targets .razor .cshtml .ts
+  .tsx .js .jsx .html` extension. `.tsx` matters: 175 tracked React components live under
+  `src/Content/Presentation/**` and were **not** gated before 2026-08-02. `.json` is excluded on
+  purpose so `package-lock.json` churn cannot force a full C# re-review.
 - **Scope:** docs-, memory-, and config-only pushes pass without receipts.
 - **Coverage boundary:** the hook only fires for pushes made *through Claude Code* — a human pushing
   from their own terminal is not gated (that is the server-side CI check's job). The hook stops the
   *agent* from skipping review.
+- **Trust boundary:** a receipt's content is whatever was piped in, so the gate proves a review was
+  recorded for this code, not that it was done well. The non-forgeable enforcement is CI
+  (`correctness-review`, `security-review`, `grader`, OWASP), which re-derives its verdict server-side.
 - **Emergency bypass:** set `RAILS_SKIP_REVIEW_GATE=1` (auditable; use sparingly).
+- **Tests:** `pwsh -NoProfile -File .claude/hooks/tests/review-scope.tests.ps1` asserts the scoping
+  and re-arm rules against real commits in this repo's history.
 
 ## After a Full Layer is Complete
 Run this additional skill:
