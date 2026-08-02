@@ -33,10 +33,15 @@ namespace Application.AI.Common.Tests.Factories;
 /// the instructions. Asserting the prompt shape alone would not catch that.
 /// </para>
 /// <para>
-/// The skill on disk is deliberately minimal but real. <c>AgentFileSkillsSource</c> rejects any skill
-/// whose frontmatter <c>name</c> does not match its containing directory name (ordinal), so the fixture
-/// writes <c>demo-skill/SKILL.md</c> with a matching name — a mismatch would make the provider silently
-/// yield no skills and turn every assertion below into a vacuous pass.
+/// A fourth assertion belongs to the same mechanism: the provider must advertise the agent's <em>own</em>
+/// skills and nothing else. Registering skills explicitly is what enforces that, and the failure it
+/// prevents is invisible from the prompt alone — a skill the agent was never granted looks identical to
+/// one it was, right up until the model loads it.
+/// </para>
+/// <para>
+/// The skill directories the fixture writes are real but incidental here: the provider is handed skills
+/// directly rather than a directory to search. They exist so the over-disclosure test can prove that a
+/// skill's mere presence on the host no longer makes it loadable.
 /// </para>
 /// </remarks>
 public sealed class AgentExecutionContextFactoryProgressiveDisclosureTests : IDisposable
@@ -49,6 +54,12 @@ public sealed class AgentExecutionContextFactoryProgressiveDisclosureTests : IDi
 
     private const string SkillName = "demo-skill";
     private const string SkillDescription = "A demo skill used to pin progressive disclosure.";
+
+    /// <summary>A valid skill present on the host that this agent is never assigned.</summary>
+    private const string UnassignedSkillName = "other-skill";
+
+    /// <summary>Sentinel that appears only inside the skill's reference file.</summary>
+    private const string ReferenceMarker = "MARKER_TIER3_REFERENCE_ONLY";
 
     private readonly SkillDirectoryFixture _skills = new("progdisc");
     private readonly string _skillsRoot;
@@ -188,5 +199,93 @@ public sealed class AgentExecutionContextFactoryProgressiveDisclosureTests : IDi
             "a skill declaring allowed-tools drives an allow-list that never contains the framework's own " +
             "skill tools, so the filter strips load_skill and progressive disclosure dies for exactly the " +
             "skills that declare tool restrictions");
+    }
+
+    // ── Confinement: only the agent's own skills are reachable ────────────────
+
+    [Fact]
+    public async Task MapToAgentContext_SkillOnHostButNotAssigned_IsNeitherAdvertisedNorLoadable()
+    {
+        // A second, entirely valid skill sitting under the same configured root — the shape that a
+        // directory-scanning provider would happily hand to any agent that asked for it.
+        _skills.CreateSkill(
+            Path.Combine("skills", UnassignedSkillName),
+            "# Other Skill\n\nUNASSIGNED_BODY",
+            "A skill this agent was never granted.");
+
+        var context = await CreateFactory().MapToAgentContextAsync([MakeSkill()], new SkillAgentOptions());
+        var aiContext = await InvokeSkillsProviderAsync(SkillsProviderOf(context));
+        var loadSkill = aiContext.Tools!
+            .OfType<AIFunction>()
+            .Single(t => t.Name == AgentSkillsProvider.LoadSkillToolName);
+
+        // Positive control first. Without it, a provider holding zero skills would satisfy every negative
+        // assertion below and the test would pass while proving nothing.
+        var assigned = await loadSkill.InvokeAsync(new AIFunctionArguments { ["skillName"] = SkillName });
+        assigned?.ToString().Should().Contain(
+            BodyMarker,
+            "the agent's own skill must still load on demand — otherwise this test's negative assertions " +
+            "are vacuous and would pass against a provider that serves nothing at all");
+
+        aiContext.Instructions.Should().NotContain(
+            UnassignedSkillName,
+            "the index card must list only the skills this agent was assigned; advertising a skill it was " +
+            "never granted invites the model to load capability that was deliberately withheld");
+
+        var unassigned = await loadSkill.InvokeAsync(new AIFunctionArguments { ["skillName"] = UnassignedSkillName });
+        unassigned?.ToString().Should().Contain(
+            "not found",
+            "a skill's presence on the host must not make it loadable — assignment is the grant, and the " +
+            "provider is the only thing enforcing it");
+    }
+
+    // ── Tier 3: supporting files are advertised and readable ──────────────────
+
+    [Fact]
+    public async Task MapToAgentContext_SkillWithReference_AdvertisesAndServesItOnDemand()
+    {
+        var referencePath = Path.Combine(_skillDir, "references", "guide.md");
+        Directory.CreateDirectory(Path.GetDirectoryName(referencePath)!);
+        await File.WriteAllTextAsync(referencePath, ReferenceMarker);
+
+        var skill = MakeSkill();
+        skill.References.Add(new SkillResource
+        {
+            FileName = "guide.md",
+            RelativePath = "references/guide.md",
+            FilePath = referencePath,
+            ResourceType = SkillResourceType.Reference
+        });
+
+        var context = await CreateFactory().MapToAgentContextAsync([skill], new SkillAgentOptions());
+        var aiContext = await InvokeSkillsProviderAsync(SkillsProviderOf(context));
+        var tools = aiContext.Tools!.OfType<AIFunction>().ToList();
+
+        var body = await tools
+            .Single(t => t.Name == AgentSkillsProvider.LoadSkillToolName)
+            .InvokeAsync(new AIFunctionArguments { ["skillName"] = SkillName });
+
+        body?.ToString().Should().Contain(
+            "references/guide.md",
+            "a resource the model is never told about is a resource it will never read — the skill body " +
+            "carries the authoritative list");
+
+        // read_skill_resource takes an IServiceProvider parameter and the function factory refuses to bind
+        // it from a null Services — the agent runtime supplies one, so the test must too.
+        var readArguments = new AIFunctionArguments
+        {
+            ["skillName"] = SkillName,
+            ["resourceName"] = "references/guide.md"
+        };
+        readArguments.Services = new ServiceCollection().BuildServiceProvider();
+
+        var resource = await tools
+            .Single(t => t.Name == AgentSkillsProvider.ReadSkillResourceToolName)
+            .InvokeAsync(readArguments);
+
+        resource?.ToString().Should().Contain(
+            ReferenceMarker,
+            "Tier 3 exists so bulk reference material stays out of the prompt until asked for; if the read " +
+            "does not return the file's contents, that material is simply unreachable");
     }
 }

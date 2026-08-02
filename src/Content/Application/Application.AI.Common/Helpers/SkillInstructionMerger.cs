@@ -45,9 +45,9 @@ public static class SkillInstructionMerger
     /// Ids of skills whose bodies the framework's <c>load_skill</c> tool will supply on request, and which
     /// are therefore omitted here — the model still sees their name and description in the provider's
     /// index card. Null or empty means every skill's body is emitted, which is the correct behaviour when
-    /// no skills provider is wired. Compute this with
-    /// <see cref="FrameworkSkillCoverage.SelectDisclosable"/> against the same paths the provider was
-    /// wired with; supplying an id the provider does not actually cover drops those instructions entirely.
+    /// no skills provider is wired. Take this from the <see cref="DisclosableSkill.SkillId"/>s that
+    /// <see cref="DisclosableSkillFactory.Create"/> returned, and register that same list with the
+    /// provider — supplying an id the provider was not given drops those instructions entirely.
     /// </param>
     /// <returns>
     /// The merged instruction text, or an empty string when no agent instructions, skill instructions,

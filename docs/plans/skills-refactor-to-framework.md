@@ -1,6 +1,6 @@
 # Skills Subsystem: Alignment with Microsoft Agent Framework
 
-**Status:** Plan rewritten 2026-08-01 against verified evidence. **Phase 1 and Phase 3 are done; Phase 2 is not started.** See §5 for what shipped and the extra defect the work uncovered.
+**Status:** Plan rewritten 2026-08-01 against verified evidence. **Phases 1, 2 and 3 are done** as of 2026-08-02, with one carve-out: the budget-tracker integration in Phase 1 did not ship (see below). See §5 for what shipped and the extra defect the work uncovered.
 **Supersedes:** the original version of this file, which was written against `Microsoft.Agents.AI` 1.0.0-rc4 and is now substantially wrong (see §1).
 **Installed SDK:** `Microsoft.Agents.AI` **1.13.0** (`src/Directory.Packages.props:31`).
 **Related:** GitHub issue #219 (MCP-based skill discovery) — see §8.
@@ -316,7 +316,15 @@ integration point) remains unanswered — that is the next piece of work in this
 
 **Risk: medium.** Touches prompt composition. Covered by `AgentExecutionContextFactoryTests.cs` (46 tests), `AgentExecutionContextFactoryPromptComposerTests.cs` (7 tests — one pins the exact legacy instruction string and will need deliberate updating), `SkillInstructionMergerTests.cs` (4 tests).
 
-#### ⚠️ Hard prerequisite: the `load_skill` fallback is conditional
+#### ⚠️ Hard prerequisite: the `load_skill` fallback is conditional — ✅ SATISFIED
+
+**Kept for the reasoning, not the line numbers.** The mechanism below is still the governing constraint,
+but Phase 2 changed how it is met and the code it cites is gone: `ResolveSkillPaths` and the
+`skillPaths.Count > 0` condition no longer exist. The provider is now wired when
+`DisclosableSkillFactory.Create` returns at least one skill, and a skill absent from that list keeps its
+body in the prompt — so the "no instructions at all" state is unreachable by construction rather than by a
+predicate that has to stay correct. The directory-existence concerns below no longer apply at all: an
+in-memory or synthesized skill with no directory is now fully disclosable, because nothing reads its path.
 
 **Verified 2026-08-01.** The framework provider is not always wired, so removing eager injection unconditionally can leave an agent with **no instructions at all, silently**.
 
@@ -341,15 +349,39 @@ Secondary effect to expect: `SkillInstructionsSectionProvider` returns `null` on
 
 **Consequence for the fix: make it uniform, not mode-aware.** A mode-aware split would be the first instruction-affecting use of `Mode`, contradicting its own documentation, and because `Mode` is derived it would land backwards — preserving eager injection for all six harness-native skills while stripping it only from declaration-free *plugin* skills. It would also couple prompt size to tool configuration: adding an `allowed-tools:` line to a plugin SKILL.md would silently flip its instructions back into the system prompt.
 
-### Phase 2 — Extend at the framework seam
+### Phase 2 — Register the agent's own skills — ✅ DONE 2026-08-02
 
-**Goal:** replace ad-hoc wiring with a first-class custom source, matching Microsoft's own pattern.
+**Goal (as planned):** replace ad-hoc wiring with a first-class custom source, matching Microsoft's own pattern.
 
-- Implement `HarnessSkillsSource : AgentSkillsSource` returning our `SkillDefinition`-backed skills.
-- Add a builder extension method, mirroring `UseMcpSkills`.
-- Collapse the duplicate `NoOpScriptRunner` in `AgentEvaluationService.cs:32` onto one shared definition.
+**What actually shipped, and why it is smaller than planned.** The driving defect was *over-disclosure*:
+`UseFileSkill(root)` discovers every `SKILL.md` beneath the configured roots, so `load_skill` advertised
+skills the agent was never assigned. (Harmless only while `load_skill` was unreachable; Phase 1 made it
+reachable.) Fixing that needs explicit registration, not a custom source — the builder's public
+`UseSkills(IEnumerable<AgentSkill>)` already accepts one.
 
-**Risk: low.** Additive. Note `AgentEvaluationServiceTests.cs:268,293` asserts `AIContextProviders.OfType<AgentSkillsProvider>().Single()`.
+- `DisclosableSkillFactory` builds one **`AgentInlineSkill`** per assigned skill from its `SkillDefinition`.
+  `AgentInlineSkill` is public and concrete, so no `AgentSkillsSource` subclass was needed.
+- **`FrameworkSkillCoverage` and `ResolveSkillPaths` are deleted** (with their 22 tests). Coverage is now
+  exact by construction — the registered list *is* the disclosure list — so there is nothing left to
+  predict. `SkillAgentOptions.SkillPaths`, whose only reader was `ResolveSkillPaths`, is deleted with them.
+- **The Application-layer file-I/O breach is narrowed, not closed.** `AgentExecutionContextFactory` no
+  longer touches the file system at all, and `FrameworkSkillCoverage`'s eager per-skill `File.ReadAllText`
+  is gone. What remains is one deferred read in `DisclosableSkillFactory.ReadResourceAsync`, which runs
+  only when the model actually calls `read_skill_resource`. Strictly this still fails the placement rule in
+  `.claude/rules/clean-architecture.md`; moving it behind an Infrastructure interface is the open item.
+- Tier 3 is preserved: each skill's `References`/`Templates`/`Assets` are registered as deferred reads, so
+  the provider advertises them in `<available_resources>` and `read_skill_resource` serves them.
+- Scripts are deliberately **not** registered — harness skill scripts run through the sandboxed tool chain,
+  so `NoOpScriptRunner` is gone from `AgentExecutionContextFactory` rather than shared.
+
+**Deliberately not done:** `AgentEvaluationService.BuildSkillsProviders` still uses `UseFileSkill`. It
+materializes candidate skill files to a temp directory and evaluates them, so file discovery is the point
+there, and the directory holds one candidate's skills — it has no over-disclosure exposure. Its
+`NoOpScriptRunner` therefore stays.
+
+**Why not `AgentSkillFrontmatter`-mirroring:** rejections are decided by *calling* the framework's
+constructor and catching `ArgumentException`, never by restating its rules. Restating them is what produced
+the tautological-comparison bug recorded in §5.
 
 ### Phase 3 — Cleanup (independent of 1 and 2; safe any time)
 

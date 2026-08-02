@@ -2,31 +2,28 @@ namespace Application.AI.Common.Tests.Helpers;
 
 /// <summary>
 /// Creates disposable temporary skill directories containing real <c>SKILL.md</c> manifests, for tests
-/// that exercise the framework's file-backed skill loader.
+/// that need skills genuinely present on disk.
 /// </summary>
 /// <remarks>
-/// Shared deliberately rather than duplicated per test class. <see cref="CreateSkill"/> encodes the
-/// loader's acceptance rule — frontmatter <c>name</c> must ordinal-equal the containing directory's name,
-/// and a description is mandatory — and getting that wrong does not fail loudly: the loader silently
-/// yields no skills, and every assertion built on it becomes a vacuous pass. Holding the rule in one place
-/// means an SDK change to it is one edit, not a hunt for every fixture that happened to hard-code it.
+/// <see cref="CreateSkill"/> writes a manifest the framework's file loader would accept — frontmatter
+/// <c>name</c> ordinal-equal to the containing directory's name, description present. That fidelity is what
+/// makes a test asserting such a skill is <em>not</em> reachable meaningful: a manifest the loader would
+/// have rejected anyway proves nothing about whether the harness is confining disclosure correctly.
 /// </remarks>
 public sealed class SkillDirectoryFixture : IDisposable
 {
-    private readonly string _root;
-
     /// <summary>
     /// Creates a fixture rooted at a fresh temporary directory.
     /// </summary>
     /// <param name="label">Short prefix for the temp directory, to make stray folders identifiable.</param>
     public SkillDirectoryFixture(string label)
     {
-        _root = Path.Combine(Path.GetTempPath(), $"{label}-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(_root);
+        Root = Path.Combine(Path.GetTempPath(), $"{label}-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(Root);
     }
 
     /// <summary>The fixture's root directory. Use as a configured skill root.</summary>
-    public string Root => _root;
+    public string Root { get; }
 
     /// <summary>
     /// Creates a skill directory at <paramref name="relativePath"/> whose manifest the framework loader
@@ -37,48 +34,13 @@ public sealed class SkillDirectoryFixture : IDisposable
     /// <param name="description">Frontmatter description. Must be non-empty or the loader rejects the skill.</param>
     public string CreateSkill(string relativePath, string body = "body", string description = "A skill.")
     {
-        var directory = Path.Combine(_root, relativePath);
+        var directory = Path.Combine(Root, relativePath);
         Directory.CreateDirectory(directory);
 
         WriteManifest(
             directory,
             $"name: {Path.GetFileName(directory)}\ndescription: {description}",
             body);
-
-        return directory;
-    }
-
-    /// <summary>
-    /// Creates a skill directory named <paramref name="directoryName"/> whose manifest carries
-    /// <paramref name="frontmatter"/> verbatim, for the malformed-manifest cases.
-    /// </summary>
-    public string CreateSkillWithFrontmatter(string directoryName, string frontmatter, string body = "body")
-    {
-        var directory = Path.Combine(_root, directoryName);
-        Directory.CreateDirectory(directory);
-
-        WriteManifest(directory, frontmatter, body);
-
-        return directory;
-    }
-
-    /// <summary>
-    /// Creates a directory containing a <c>SKILL.md</c> with no frontmatter block at all.
-    /// </summary>
-    public string CreateSkillWithoutFrontmatter(string directoryName, string content = "# Demo\n\nno frontmatter")
-    {
-        var directory = Path.Combine(_root, directoryName);
-        Directory.CreateDirectory(directory);
-        File.WriteAllText(Path.Combine(directory, "SKILL.md"), content);
-
-        return directory;
-    }
-
-    /// <summary>Creates a directory under <see cref="Root"/> with no <c>SKILL.md</c> in it.</summary>
-    public string CreateEmptyDirectory(string relativePath)
-    {
-        var directory = Path.Combine(_root, relativePath);
-        Directory.CreateDirectory(directory);
 
         return directory;
     }
@@ -91,7 +53,7 @@ public sealed class SkillDirectoryFixture : IDisposable
     /// <inheritdoc />
     public void Dispose()
     {
-        if (Directory.Exists(_root))
-            Directory.Delete(_root, recursive: true);
+        if (Directory.Exists(Root))
+            Directory.Delete(Root, recursive: true);
     }
 }
