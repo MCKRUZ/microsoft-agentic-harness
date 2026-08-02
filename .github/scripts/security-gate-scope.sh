@@ -141,19 +141,20 @@ PATH_RE='(^\.github/|^scripts/rails/|^\.claude/(hooks/|settings\.json$)|/Auth/|/
 #   every ordinary outbound call stays silent. Both halves are pinned by tests:
 #   touching the policy fires, holding an HttpClient does not.
 #
-#   ChatMessage (115 tracked files) is excluded for the same reason as HttpClient: it
-#   is ordinary agent plumbing present in nearly every conversation path. AIContext is
-#   in, at 27 — the two words look adjacent and are two orders of magnitude apart in
-#   how often they appear. Count before adding.
+#   ChatMessage (105 tracked .cs files, the same basis as the 101 above) is excluded for
+#   the same reason as HttpClient: it is ordinary agent plumbing present in nearly every
+#   conversation path. AIContext is in, at 27. The two words look equally
+#   security-adjacent and differ four-fold in how often they appear, which is the whole
+#   argument for counting rather than reasoning category-by-category. Count before adding.
 #
 # THE GAP THAT ADDED THE LAST TWO GROUPS
 # --------------------------------------
 # PR #227 moved GoverningToolContextProvider off AIContextProvider's ADDITIVE
 # ProvideAIContextAsync hook onto InvokingCoreAsync. Implemented on the additive hook
 # the provider was inert: the base merge restores everything it dropped and publishes
-# an unwrapped copy of everything it wrapped, so a tool-permission control that reads
-# as enforcing enforced nothing. That is a security control that was dead in production —
-# and this gate scored the PR that fixed it required=false, trigger=none, signals=(none).
+# an unwrapped copy of everything it wrapped. A tool-permission control that reads as
+# enforcing was enforcing nothing: a security control dead in production. This gate
+# scored the PR that fixed it required=false, trigger=none, signals=(none).
 # Replayed against the isolated fix commit alone it still scored zero, so it was not
 # dilution by a large diff; the vocabulary simply had no word for the agent-context
 # surface. CLAUDE.md records this same defect landing four separate times.
@@ -179,6 +180,9 @@ CONTENT_RE="${CONTENT_RE}"'|Process\.Start|ProcessStartInfo|ZipArchive|ExtractTo
 CONTENT_RE="${CONTENT_RE}"'|Sanitiz|Redact|Scrub'                                                                                             # output safety
 # AIContext subsumes AIContextProvider (27 tracked files vs 25) and so also fires on a
 # line that merely builds or returns the context, not only on one naming the base type.
+# ProvideAIContextAsync is therefore redundant for TRIGGERING — but grep -oE reports the
+# leftmost-longest alternative, so listing it makes `signals` name the additive hook by
+# its own name instead of the generic AIContext. Kept for that legibility, not for reach.
 CONTENT_RE="${CONTENT_RE}"'|AIContext|InvokingCoreAsync|ProvideAIContextAsync|GovernedAIFunction|ToolPermissionFilter|ReservedPlanCapability'  # agent context merge + tool governance
 CONTENT_RE="${CONTENT_RE}"'|GetUserIdOrNull|AsyncLocal|AutoApprove|HumanGate|ContentSafety|PromptInjection)'                                   # identity, ambient scope, approval bypass, content safety
 
