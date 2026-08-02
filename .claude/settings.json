@@ -19,7 +19,15 @@
       "Bash(gh pr diff:*)",
       "Bash(gh run list:*)",
       "Bash(gh run view:*)",
-      "Bash(gh api repos/:*)"
+      "Bash(gh pr checks:*)",
+      "Bash(gh issue list:*)",
+      "Bash(gh issue view:*)",
+      "Bash(gh api repos/:*)",
+      "Bash(git rev-parse:*)",
+      "Bash(git ls-files:*)",
+      "Bash(git merge-base:*)",
+      "Bash(dotnet list package:*)",
+      "Bash(ls:*)"
     ],
     "ask": [
       "Bash(git push:*)",
