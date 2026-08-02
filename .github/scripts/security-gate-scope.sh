@@ -85,9 +85,28 @@ CHANGED_FILES="$(git diff --name-only "$MERGE_BASE" "$HEAD_REF")"
 # ---------------------------------------------------------------------------
 # `scripts/rails/` is here because those scripts ARE the gates — a change to
 # run-gates.sh is a change to what gets reviewed, exactly like a change to
-# .github/. It is the only addition to the original list; everything else is
-# preserved verbatim, so this trigger can only widen, never narrow.
-PATH_RE='(^\.github/|^scripts/rails/|/Auth/|/Identity/|/Security/|/SecurityAttributes/|/Migrations/|^infra/)'
+# .github/. Additions only; everything from the original list is preserved
+# verbatim, so this trigger can only widen, never narrow.
+#
+# `.claude/hooks/` is the same argument one directory over, and it was missed.
+# PR #226 rewrote the push gate — review-gate.ps1, review-scope.ps1,
+# save-review-receipt.ps1 and both of their test suites, five files that decide
+# whether ANY review happens at all — and raised no path signal, because the list
+# named the rails but not the hooks. A change to the thing that decides what gets
+# reviewed is the change most worth reviewing.
+#
+# `.claude/settings.json` is listed with them because it is where the hooks are WIRED.
+# Gating the hook scripts while leaving their registration ungated protects the lock
+# and not the door: deleting the PreToolUse entry disables the push gate completely
+# without touching a single gated file. `.json` is excluded from the CONTENT scan by
+# design (package-lock churn), so only this path entry can catch it.
+#
+# `settings.local.json` is matched too, and deliberately has NO test pinning it: it is
+# gitignored, so it can never appear in a diff and a synthetic case cannot stage one.
+# That unreachability is exactly why the alternative is here rather than omitted — the
+# day someone un-ignores it, the gate should already cover it instead of discovering
+# the hole the way it discovered this one.
+PATH_RE='(^\.github/|^scripts/rails/|^\.claude/(hooks/|settings(\.local)?\.json$)|/Auth/|/Identity/|/Security/|/SecurityAttributes/|/Migrations/|^infra/)'
 
 # ---------------------------------------------------------------------------
 # Signal 2 — security-relevant code, by what the changed lines actually contain.
@@ -127,6 +146,33 @@ PATH_RE='(^\.github/|^scripts/rails/|/Auth/|/Identity/|/Security/|/SecurityAttri
 #   only in code that is about egress control — so the signal stays specific while
 #   every ordinary outbound call stays silent. Both halves are pinned by tests:
 #   touching the policy fires, holding an HttpClient does not.
+#
+#   ChatMessage (105 tracked .cs files, the same basis as the 101 above) is excluded for
+#   the same reason as HttpClient: it is ordinary agent plumbing present in nearly every
+#   conversation path. AIContext is in, at 27. The two words look equally
+#   security-adjacent and differ four-fold in how often they appear, which is the whole
+#   argument for counting rather than reasoning category-by-category. Count before adding.
+#
+# THE GAP THAT ADDED THE LAST TWO GROUPS
+# --------------------------------------
+# PR #227 moved GoverningToolContextProvider off AIContextProvider's ADDITIVE
+# ProvideAIContextAsync hook onto InvokingCoreAsync. Implemented on the additive hook
+# the provider was inert: the base merge restores everything it dropped and publishes
+# an unwrapped copy of everything it wrapped. A tool-permission control that reads as
+# enforcing was enforcing nothing: a security control dead in production. This gate
+# scored the PR that fixed it required=false, trigger=none, signals=(none).
+# Replayed against the isolated fix commit alone it still scored zero, so it was not
+# dilution by a large diff; the vocabulary simply had no word for the agent-context
+# surface. CLAUDE.md records this same defect landing four separate times.
+#
+# The gate is now on its third widening of exactly this shape — folder-only missed
+# #203-#210, the content list missed #215's path confinement, and it missed #227's
+# agent context. Each time the fix was a category the list had no word for, so the two
+# groups below name this repo's remaining AI-security surfaces rather than only the one
+# that just bit: ambient scope propagation (AsyncLocal is how knowledge scope reaches
+# child scopes and post-turn background writes), the sanctioned identity resolver
+# (GetUserIdOrNull — CLAUDE.md forbids a second precedence ladder, so a change here is
+# the scope-isolation defect class), approval bypass, and content-safety.
 # ---------------------------------------------------------------------------
 CONTENT_RE='(\[Authorize|AllowAnonymous|ClaimsPrincipal|RequireClaim|AuthenticationScheme|AuthorizationPolicy|IAuthorizationHandler'          # authn/authz
 CONTENT_RE="${CONTENT_RE}"'|OwnerId|TenantId|KnowledgeScope|VisibleTo|WritableBy'                                                             # scope isolation — this repo's recurring defect class
@@ -137,7 +183,14 @@ CONTENT_RE="${CONTENT_RE}"'|GetFullPath|ResolveLinkTarget|LinkTarget|IsPathRoote
 CONTENT_RE="${CONTENT_RE}"'|EgressPolicy|EgressAllowlist|AntiSSRF|Ssrf|SSRF'                                                                   # egress control (the SSRF guard, not the mechanism)
 CONTENT_RE="${CONTENT_RE}"'|FromSqlRaw|FromSqlInterpolated|ExecuteSqlRaw|ExecuteSqlInterpolated'                                               # raw SQL — the one escape from EF Core's parameterisation
 CONTENT_RE="${CONTENT_RE}"'|Process\.Start|ProcessStartInfo|ZipArchive|ExtractToDirectory|BinaryFormatter|TypeNameHandling|XmlSerializer'     # code execution + unsafe deserialization
-CONTENT_RE="${CONTENT_RE}"'|Sanitiz|Redact|Scrub)'                                                                                            # output safety
+CONTENT_RE="${CONTENT_RE}"'|Sanitiz|Redact|Scrub'                                                                                             # output safety
+# AIContext subsumes AIContextProvider (27 tracked files vs 25) and so also fires on a
+# line that merely builds or returns the context, not only on one naming the base type.
+# ProvideAIContextAsync is therefore redundant for TRIGGERING — but grep -oE reports the
+# leftmost-longest alternative, so listing it makes `signals` name the additive hook by
+# its own name instead of the generic AIContext. Kept for that legibility, not for reach.
+CONTENT_RE="${CONTENT_RE}"'|AIContext|InvokingCoreAsync|ProvideAIContextAsync|GovernedAIFunction|ToolPermissionFilter|ReservedPlanCapability'  # agent context merge + tool governance
+CONTENT_RE="${CONTENT_RE}"'|GetUserIdOrNull|AsyncLocal|AutoApprove|HumanGate|ContentSafety|PromptInjection)'                                   # identity, ambient scope, approval bypass, content safety
 
 # Prose is excluded from the content scan — a security guide legitimately says
 # "password" on every page. Everything else that ships or executes is scanned,

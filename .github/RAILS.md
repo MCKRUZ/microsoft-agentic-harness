@@ -166,7 +166,11 @@ Before trusting these, force each one to fail and confirm it's caught:
   gated path (a comment in a file under `**/Auth/`) or on the content signal (any
   `src/**` change touching `OwnerId`/`[Authorize]`). The check must go red. Close it
   unmerged. `bash .github/scripts/security-gate-scope.test.sh` verifies the trigger
-  itself — including replaying the six PRs the old folder-only filter missed.
+  itself, by replaying every PR the gate is known to have missed: the six the
+  folder-only filter skipped (#203–#210), #215's path confinement, #227's dead
+  tool-permission control, and #226's rewrite of the push gate. Each miss was a
+  category the trigger had no word for, so a new miss belongs in that suite before
+  it is fixed.
 - **correctness-review** — open a throwaway PR with a planted high-confidence
   defect under `src/` (e.g. an inverted null check or an off-by-one that drops a
   row). The check must go red with `CORRECTNESS_VERDICT: BLOCK`; then apply the

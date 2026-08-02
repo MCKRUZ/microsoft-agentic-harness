@@ -65,9 +65,17 @@ expect() { # <label> <expected-required> <expected-trigger> <base> <head>
 # A PR's diff is (first parent = main at merge time) .. (second parent = PR head).
 # Using the head's OWN parent instead would diff only the branch's last commit,
 # which silently under-reports every multi-commit PR.
+#
+# The empty-merge guard is load-bearing on a shallow clone, which is what CI checks out.
+# `git rev-parse "^1"` fails — but it ECHOES `^1` back on stdout before it does, and these
+# helpers capture stdout with stderr suppressed. Without the explicit check the caller
+# receives the non-empty string `^1`, its `[ -z ... ]` SKIP guard never engages, and the
+# replay runs against an unresolvable base: the suite goes red for an environment reason
+# rather than a gate defect. That is the failure mode most likely to get a genuine future
+# regression waved through as "that's just the shallow clone again".
 pr_merge() { git log origin/main --merges --format=%H --grep "Merge pull request #$1 " -n 1; }
-pr_base()  { git rev-parse "$(pr_merge "$1")^1" 2>/dev/null; }
-pr_head()  { git rev-parse "$(pr_merge "$1")^2" 2>/dev/null; }
+pr_base()  { local m; m="$(pr_merge "$1")"; [ -n "$m" ] || return 0; git rev-parse "$m^1" 2>/dev/null; }
+pr_head()  { local m; m="$(pr_merge "$1")"; [ -n "$m" ] || return 0; git rev-parse "$m^2" 2>/dev/null; }
 
 echo "REPLAY — PRs the folder-only filter skipped (all must now be reviewed):"
 for pr in 203 205 207 208 209 210; do
@@ -92,6 +100,36 @@ if [ -n "$head" ] && [ -n "$base" ]; then
   expect_scope_contains "#215 names the guard" "$base" "$head" "EvalDatasetPathGuard.cs"
 else
   echo "  SKIP  #215 (merge commit not found in this clone)"
+fi
+
+echo
+# #227 fixed a security control that was DEAD IN PRODUCTION: GoverningToolContextProvider
+# had been implemented on AIContextProvider's additive ProvideAIContextAsync hook, where
+# the base merge restores every tool it drops and publishes an unwrapped copy of every
+# tool it wraps. The gate scored that PR required=false, signals=(none) — and scored the
+# isolated fix commit the same way, so it was not dilution by a large diff. The list had
+# no word for the agent-context surface at all. This is the #215 failure one category
+# over, and it is the case that must never go quiet again.
+echo "REPLAY — the PR the CONTENT filter skipped (agent context / tool governance):"
+head="$(pr_head 227)"; base="$(pr_base 227)"
+if [ -n "$head" ] && [ -n "$base" ]; then
+  expect "#227 (dead tool-permission control, no authz/scope markers)" true content "$base" "$head"
+  expect_scope_contains "#227 names the provider" "$base" "$head" "GoverningToolContextProvider.cs"
+else
+  echo "  SKIP  #227 (merge commit not found in this clone)"
+fi
+
+echo
+# #226 rewrote the push gate itself — five files under .claude/hooks/ that decide whether
+# any review happens at all — and raised no signal, because the path list named
+# scripts/rails/ but not .claude/hooks/. Same reasoning, one directory over.
+echo "REPLAY — the PR the PATH filter skipped (the review gate itself):"
+head="$(pr_head 226)"; base="$(pr_base 226)"
+if [ -n "$head" ] && [ -n "$base" ]; then
+  expect "#226 (rewrote the push gate)" true path "$base" "$head"
+  expect_scope_contains "#226 names the gate script" "$base" "$head" ".claude/hooks/review-gate.ps1"
+else
+  echo "  SKIP  #226 (merge commit not found in this clone)"
 fi
 
 echo
@@ -201,6 +239,47 @@ if git worktree add --detach --quiet "$WORKTREE" HEAD 2>/dev/null; then
         "public sealed record ScratchTest { public string? OwnerId { get; init; } }" \
         true content
 
+  # The agent-context group. A provider that subtracts or rewrites on the additive hook
+  # is silently inert, so a diff that touches either hook must be read by a human.
+  synth "src change overriding the additive context hook" \
+        "src/Content/Domain/Domain.AI/ScratchTest.cs" \
+        "public sealed class ScratchTest { protected override ValueTask<AIContext> ProvideAIContextAsync(InvokingContext c) => default; }" \
+        true content
+
+  synth "src change overriding the context merge" \
+        "src/Content/Domain/Domain.AI/ScratchTest.cs" \
+        "public sealed class ScratchTest { protected override ValueTask<object> InvokingCoreAsync(object c) => default; }" \
+        true content
+
+  synth "src change wrapping a tool in the governance decorator" \
+        "src/Content/Domain/Domain.AI/ScratchTest.cs" \
+        "public sealed class ScratchTest { public object Wrap(object f) => new GovernedAIFunction(f); }" \
+        true content
+
+  # Ambient scope: AsyncLocal is how knowledge scope reaches child scopes and post-turn
+  # background writes, and an unscoped read is world-readable, not empty.
+  synth "src change to ambient scope propagation" \
+        "src/Content/Domain/Domain.AI/ScratchTest.cs" \
+        "public static class ScratchTest { private static readonly System.Threading.AsyncLocal<string> Current = new(); }" \
+        true content
+
+  # The one sanctioned identity resolver. CLAUDE.md forbids a second precedence ladder,
+  # so any change to it or its callers is the scope-isolation defect class.
+  synth "src change to the sanctioned identity resolver" \
+        "src/Content/Domain/Domain.AI/ScratchTest.cs" \
+        "public static class ScratchTest { public static string? Go(object p) => p.GetUserIdOrNull(); }" \
+        true content
+
+  # The noise boundary for the new group, pinned in the must-NOT-fire direction.
+  # ChatMessage is the adjacent word someone will reach for while reasoning
+  # category-by-category: it looks as security-relevant as AIContext and appears in 105
+  # tracked .cs files against AIContext's 27 — the same basis the script's own comment
+  # quotes. Ordinary conversation plumbing is not a signal.
+  synth "ordinary ChatMessage use must NOT fire (too common to be a signal)" \
+        "src/Content/Domain/Domain.AI/ScratchTest.cs" \
+        "public sealed class ScratchTest { public object Make(string t) => new ChatMessage(ChatRole.User, t); }" \
+        false none
+
   synth "TypeScript touching credentials (frontend is scanned too)" \
         "src/Content/Presentation/agent-hub-ui/src/scratchTest.ts" \
         "export const authHeader = (apiKey: string) => ({ Authorization: \`Bearer \${apiKey}\` });" \
@@ -235,6 +314,28 @@ if git worktree add --detach --quiet "$WORKTREE" HEAD 2>/dev/null; then
   RAILS="$(git -C "$WORKTREE" rev-parse HEAD)"
   expect "a change to run-gates.sh is itself gated" true path "$BASE" "$RAILS"
   expect_scope_contains "  scope names the rails script" "$BASE" "$RAILS" "scripts/rails/run-gates.sh"
+  git -C "$WORKTREE" reset -q --hard "$BASE" >/dev/null 2>&1
+
+  # The push-gate hooks ARE the gates, exactly like the rails scripts. A .ps1 carries no
+  # marker of its own, so only the path list can catch it — and it did not, until #226
+  # had already rewritten all five files unreviewed.
+  printf '%s\n' "# scratch" >> "$WORKTREE/.claude/hooks/review-gate.ps1"
+  git -C "$WORKTREE" add -A >/dev/null 2>&1
+  git -C "$WORKTREE" -c user.email=t@t -c user.name=t commit -qm "test: push gate hook" >/dev/null 2>&1
+  HOOKS="$(git -C "$WORKTREE" rev-parse HEAD)"
+  expect "a change to review-gate.ps1 is itself gated" true path "$BASE" "$HOOKS"
+  expect_scope_contains "  scope names the push-gate hook" "$BASE" "$HOOKS" ".claude/hooks/review-gate.ps1"
+  git -C "$WORKTREE" reset -q --hard "$BASE" >/dev/null 2>&1
+
+  # Gating the hook scripts but not their registration protects the lock and not the
+  # door — the PreToolUse entry can be deleted from settings.json alone, disabling the
+  # push gate without touching a gated file. .json is excluded from the content scan,
+  # so the path list is the only thing that can catch this.
+  printf '%s\n' '{"hooks":{}}' > "$WORKTREE/.claude/settings.json"
+  git -C "$WORKTREE" add -A >/dev/null 2>&1
+  git -C "$WORKTREE" -c user.email=t@t -c user.name=t commit -qm "test: unwire the hooks" >/dev/null 2>&1
+  UNWIRE="$(git -C "$WORKTREE" rev-parse HEAD)"
+  expect "unwiring the hooks in settings.json is gated" true path "$BASE" "$UNWIRE"
   git -C "$WORKTREE" reset -q --hard "$BASE" >/dev/null 2>&1
 
   # A scope file must never be empty while the gate says review is required.
