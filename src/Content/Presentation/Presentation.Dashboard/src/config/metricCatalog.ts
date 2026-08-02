@@ -8,9 +8,8 @@ export const metricCatalog: Record<string, MetricCatalogEntry> = {
   cost_today: { id: 'cost_today', title: 'Cost Today', description: 'LLM cost since midnight UTC (provider-reported where available, else estimated)', query: costTotalQuery, chartType: 'stat', unit: 'usd', category: 'overview', refreshIntervalSeconds: 30 },
   cache_hit_rate: { id: 'cache_hit_rate', title: 'Cache Hit Rate', description: 'Prompt cache hit ratio', query: 'agentic_harness_agent_tokens_cache_hit_rate_sum / agentic_harness_agent_tokens_cache_hit_rate_count or vector(0)', chartType: 'gauge', unit: 'percent', category: 'overview', refreshIntervalSeconds: 30 },
   safety_violations: { id: 'safety_violations', title: 'Safety Evaluations', description: 'Content safety evaluations performed', query: 'sum(agentic_harness_agent_safety_evaluations_total) or vector(0)', chartType: 'stat', unit: 'count', category: 'overview', refreshIntervalSeconds: 30 },
-  // Distinct from the budget-category `budget_status` below, which reports a discrete 0/1/2 state.
-  // Both were keyed `budget_status` until 2026-08-02; the later entry won, so this gauge was dead and
-  // the Overview KPI silently rendered the status stat instead.
+  // Keyed by utilization, titled "Budget Status": this is the Overview gauge, distinct from the
+  // budget-category `budget_status` below, which reports a discrete 0/1/2 state from a different query.
   budget_utilization_pct: { id: 'budget_utilization_pct', title: 'Budget Status', description: 'Current budget utilization percentage', query: 'max(agentic_harness_agent_budget_utilization_percent) or vector(0)', chartType: 'gauge', unit: 'percent', category: 'overview', refreshIntervalSeconds: 15 },
 
   // --- Tokens ---

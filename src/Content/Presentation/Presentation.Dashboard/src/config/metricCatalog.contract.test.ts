@@ -38,9 +38,15 @@ describe('metricCatalog contract', () => {
     },
   );
 
-  it('no duplicate metric IDs', () => {
-    const ids = Object.keys(metricCatalog);
-    expect(new Set(ids).size).toBe(ids.length);
+  it('every catalog key matches its entry id', () => {
+    // Replaces a "no duplicate metric IDs" test that could never fail: it called Object.keys() on an
+    // already-parsed literal, where a duplicate key has ALREADY collapsed into one property. It could
+    // not have caught the budget_status collision it appeared to guard. Duplicate literal keys are a
+    // tsc error (TS1117) and nothing else — the runtime guard that IS worth having is key/id drift,
+    // because lookups go through the key while panels and test ids are built from the id.
+    for (const [key, entry] of Object.entries(metricCatalog)) {
+      expect(entry.id).toBe(key);
+    }
   });
 
   it('every entry has all required fields', () => {

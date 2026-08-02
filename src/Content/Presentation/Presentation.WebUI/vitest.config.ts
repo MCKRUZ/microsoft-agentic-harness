@@ -1,4 +1,4 @@
-import { defineConfig, configDefaults } from 'vitest/config'
+import { defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 import path from 'path'
 
@@ -8,10 +8,11 @@ export default defineConfig({
     environment: 'jsdom',
     globals: true,
     setupFiles: ['./src/test/setup.ts'],
-    // e2e/ holds Playwright specs. Vitest's default `include` matches **/*.spec.ts, so without this
-    // it collects them, and they fail immediately on Playwright's `test`/`expect` fixtures — every
-    // `npm test` run reported failures that had nothing to do with the unit suite.
-    exclude: [...configDefaults.exclude, 'e2e/**'],
+    // Scope collection to src/. Vitest's default include is **/*.{test,spec}.*, which also matched the
+    // Playwright specs in e2e/; those fail on sight because Playwright's `test`/`expect` fixtures are
+    // not vitest's, so every `npm test` reported failures unrelated to the unit suite. Mirrors the
+    // sibling Presentation.Dashboard config, which scopes the same way.
+    include: ['src/**/*.{test,spec}.{ts,tsx}'],
     environmentOptions: {
       jsdom: { url: 'http://localhost' },
     },

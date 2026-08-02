@@ -53,7 +53,7 @@ public sealed class AIContextProviderMergeContractTests
     /// <see cref="AIFunction"/> instances, so a mocked <see cref="AITool"/> would skip the wrapping path
     /// entirely and let the duplication defect pass unnoticed.
     /// </summary>
-    private static AITool MakeTool(string name) => AIFunctionFactory.Create(
+    private static AITool MakeFunctionTool(string name) => AIFunctionFactory.Create(
         () => "ok", new AIFunctionFactoryOptions { Name = name, Description = "t" });
 
     private static AIContextProvider.InvokingContext MakeContext(AIContext aiContext) =>
@@ -63,43 +63,38 @@ public sealed class AIContextProviderMergeContractTests
     {
         Instructions = SystemSentinel,
         Messages = new List<ChatMessage> { new(ChatRole.User, UserQuery) },
-        Tools = [MakeTool("alpha"), MakeTool("beta")]
+        Tools = [MakeFunctionTool("alpha"), MakeFunctionTool("beta")]
     };
 
     // ── one factory per subclass, each in its ACTIVE configuration ───────────
 
     /// <summary>
-    /// The subclasses this suite covers. The reflection guard below asserts this list is exhaustive, so
-    /// it is the single place a newly added provider must be registered.
+    /// Every <see cref="AIContextProvider"/> this suite covers, and how to build each one in its active
+    /// configuration. This is the single source of truth: the theory data, the factory lookup, and the
+    /// exhaustiveness guard all read from it, so registering a new provider is one edit rather than
+    /// three that the compiler cannot keep in step.
     /// </summary>
-    private static readonly string[] CoveredProviderNames =
-    [
-        nameof(ToolPermissionFilter),
-        nameof(GoverningToolContextProvider),
-        nameof(KnowledgeMemoryContextProvider),
-        nameof(LearningsRecallContextProvider),
-    ];
+    private static readonly Dictionary<string, Func<AIContextProvider>> Factories = new()
+    {
+        [nameof(ToolPermissionFilter)] = () => new ToolPermissionFilter(["alpha", "beta"]),
+        [nameof(GoverningToolContextProvider)] = () =>
+            new GoverningToolContextProvider(NullLogger<GoverningToolContextProvider>.Instance),
+        [nameof(KnowledgeMemoryContextProvider)] = BuildKnowledgeMemory,
+        [nameof(LearningsRecallContextProvider)] = BuildLearningsRecall,
+    };
 
     public static TheoryData<string> AllProviders
     {
         get
         {
             var data = new TheoryData<string>();
-            foreach (var name in CoveredProviderNames)
+            foreach (var name in Factories.Keys)
                 data.Add(name);
             return data;
         }
     }
 
-    private static AIContextProvider Create(string providerName) => providerName switch
-    {
-        nameof(ToolPermissionFilter) => new ToolPermissionFilter(["alpha", "beta"]),
-        nameof(GoverningToolContextProvider) =>
-            new GoverningToolContextProvider(NullLogger<GoverningToolContextProvider>.Instance),
-        nameof(KnowledgeMemoryContextProvider) => BuildKnowledgeMemory(),
-        nameof(LearningsRecallContextProvider) => BuildLearningsRecall(),
-        _ => throw new ArgumentOutOfRangeException(nameof(providerName), providerName, "No factory registered.")
-    };
+    private static AIContextProvider Create(string providerName) => Factories[providerName]();
 
     private static KnowledgeMemoryContextProvider BuildKnowledgeMemory()
     {
@@ -197,7 +192,7 @@ public sealed class AIContextProviderMergeContractTests
             .OrderBy(n => n, StringComparer.Ordinal)
             .ToList();
 
-        var covered = CoveredProviderNames.OrderBy(n => n, StringComparer.Ordinal).ToList();
+        var covered = Factories.Keys.OrderBy(n => n, StringComparer.Ordinal).ToList();
 
         declared.Should().BeEquivalentTo(covered,
             "every AIContextProvider must be driven through InvokingAsync by this suite");
@@ -219,23 +214,13 @@ public sealed class AIContextProviderMergeContractTests
 
     [Theory]
     [MemberData(nameof(AllProviders))]
-    public async Task Provider_DoesNotDuplicateInputInstructions(string providerName)
+    public async Task Provider_EmitsInputInstructionsExactlyOnce(string providerName)
     {
         var result = await Create(providerName).InvokingAsync(MakeContext(ActiveInput()));
 
-        var occurrences = CountOccurrences(result.Instructions, SystemSentinel);
-        occurrences.Should().BeLessThanOrEqualTo(1,
-            "the base merge already prepends the input instructions, so a provider that returns " +
-            "'input + block' sends the entire system prompt to the model twice");
-    }
-
-    [Theory]
-    [MemberData(nameof(AllProviders))]
-    public async Task Provider_PreservesInputInstructions(string providerName)
-    {
-        // The mirror of the previous test: economy must not be bought by dropping the prompt entirely.
-        var result = await Create(providerName).InvokingAsync(MakeContext(ActiveInput()));
-
+        // Exactly one, which pins both failure directions at once: more than one means the provider
+        // echoed the input that the base merge already prepends, sending the whole system prompt to
+        // the model twice; fewer than one means it dropped the prompt contributed ahead of it.
         CountOccurrences(result.Instructions, SystemSentinel).Should().Be(1);
     }
 
@@ -273,7 +258,7 @@ public sealed class AIContextProviderMergeContractTests
         {
             Instructions = SystemSentinel,
             Messages = new List<ChatMessage> { new(ChatRole.User, UserQuery) },
-            Tools = [MakeTool(reservedName), MakeTool("file_system")]
+            Tools = [MakeFunctionTool(reservedName), MakeFunctionTool("file_system")]
         };
 
         var result = await new GoverningToolContextProvider(

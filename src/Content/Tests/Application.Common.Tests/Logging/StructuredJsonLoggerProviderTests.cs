@@ -70,10 +70,11 @@ public sealed class StructuredJsonLoggerProviderTests : IDisposable
 
         stopwatch.Stop();
 
-        // Each stalled CompleteRun costs the full 2s Join timeout. Allow generous headroom for slow
-        // CI while still failing decisively if the deadlock is reintroduced.
+        // Each stalled call costs the full 2s Join timeout, so reintroducing the deadlock puts this
+        // run at 24s or more. The 18s ceiling sits well clear of that while leaving a slow CI agent
+        // ample headroom over the ~2s this takes when the lock ordering is correct.
         stopwatch.Elapsed.Should().BeLessThan(
-            TimeSpan.FromSeconds(iterations),
+            TimeSpan.FromSeconds(iterations * 1.5),
             "CompleteRun must not block on the drain thread it is holding the lock against");
     }
 

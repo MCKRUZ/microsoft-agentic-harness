@@ -178,18 +178,21 @@ public sealed class StructuredJsonLoggerProvider : ILoggerProvider
         }
 
         thread?.Join(TimeSpan.FromSeconds(2));
+
+        // Dispose the token only after the join: this method owns the drain thread and the token that
+        // stops it, start to finish, so no other method has to reason about their lifetime.
+        lock (_lock)
+        {
+            _cts?.Dispose();
+            _cts = null;
+        }
     }
 
-    /// <summary>
-    /// Disposes the current run's writer and cancellation source. Callers hold <c>_lock</c> and must
-    /// have already stopped the drain thread via <see cref="StopDrainThread"/>.
-    /// </summary>
+    /// <summary>Disposes the current run's output file. Callers hold <c>_lock</c>.</summary>
     private void CloseWriter()
     {
         _writer?.Dispose();
         _writer = null;
-        _cts?.Dispose();
-        _cts = null;
     }
 
     /// <inheritdoc />
