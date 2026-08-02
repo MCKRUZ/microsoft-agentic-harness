@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { metricCatalog, getCatalogByCategory } from './metricCatalog';
 
-const OVERVIEW_IDS = ['tokens_per_minute', 'active_sessions', 'cost_today', 'cache_hit_rate', 'safety_violations', 'budget_status'];
+const OVERVIEW_IDS = ['tokens_per_minute', 'active_sessions', 'cost_today', 'cache_hit_rate', 'safety_violations', 'budget_utilization_pct'];
 const TOKENS_IDS = ['tokens_input_total', 'tokens_output_total', 'tokens_cache_read', 'tokens_cache_write', 'tokens_input_rate', 'tokens_output_rate', 'tokens_by_model', 'tokens_cache_hit_rate_ts'];
 const COST_IDS = ['cost_total', 'cost_rate', 'cost_by_model', 'cost_cache_savings', 'cost_budget_remaining'];
 const SESSIONS_IDS = ['sessions_total', 'sessions_active', 'sessions_turns_avg', 'sessions_duration_avg', 'sessions_active_ts', 'sessions_turns_ts'];

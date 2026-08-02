@@ -29,7 +29,7 @@ export const routeLayouts: Record<string, RouteLayout> = {
       panel('cost_today', 'kpi'),
       panel('cache_hit_rate', 'kpi'),
       panel('safety_violations', 'kpi'),
-      panel('budget_status', 'kpi'),
+      panel('budget_utilization_pct', 'kpi'),
     ],
   },
   tokens: {

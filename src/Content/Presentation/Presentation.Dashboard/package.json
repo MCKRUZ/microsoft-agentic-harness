@@ -3,6 +3,9 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
+  "engines": {
+    "node": ">=20.18.1"
+  },
   "scripts": {
     "dev": "vite --port 5174",
     "dev:all": "concurrently -n \"API,DASH\" -c \"cyan,green\" \"dotnet run --project ../Presentation.AgentHub\" \"vite --port 5174\"",

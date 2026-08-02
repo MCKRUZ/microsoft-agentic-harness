@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Application.Common.Logging;
 using Domain.Common.Config;
 using FluentAssertions;
@@ -34,6 +35,46 @@ public sealed class StructuredJsonLoggerProviderTests : IDisposable
     public void IsRunActive_BeforeStart_ReturnsFalse()
     {
         _provider.IsRunActive.Should().BeFalse();
+    }
+
+    [Fact]
+    public void CompleteRun_UnderLoad_PersistsEveryEntryAndDoesNotStall()
+    {
+        // The drain thread dequeues an entry, then takes _lock to write it. CompleteRun used to Join
+        // that thread WHILE holding _lock, so whenever an entry was in flight the two deadlocked until
+        // the 2-second Join timeout expired — after which the writer was disposed and that entry was
+        // silently dropped. Both symptoms are asserted: nothing lost, and no multi-second stall.
+        //
+        // Repeated because the interleaving is probabilistic; a single run reproduced it only about
+        // one time in three.
+        const int iterations = 12;
+        const int entriesPerRun = 50;
+
+        var stopwatch = Stopwatch.StartNew();
+
+        for (var i = 0; i < iterations; i++)
+        {
+            var runId = $"drain-race-{i}";
+            _provider.StartNewRun(runId);
+
+            var logger = _provider.CreateLogger("DrainRace");
+            for (var n = 0; n < entriesPerRun; n++)
+                logger.LogInformation("entry {Index}", n);
+
+            _provider.CompleteRun();
+
+            var path = Path.Combine(_tempDir, runId, "structured.jsonl");
+            File.ReadAllLines(path).Should().HaveCount(
+                entriesPerRun, "run {0} must persist every entry it accepted", runId);
+        }
+
+        stopwatch.Stop();
+
+        // Each stalled CompleteRun costs the full 2s Join timeout. Allow generous headroom for slow
+        // CI while still failing decisively if the deadlock is reintroduced.
+        stopwatch.Elapsed.Should().BeLessThan(
+            TimeSpan.FromSeconds(iterations),
+            "CompleteRun must not block on the drain thread it is holding the lock against");
     }
 
     [Fact]

@@ -66,8 +66,12 @@ public sealed class TestConversationsController : ControllerBase
 
 		if (!result.Success)
 		{
+			// The failure detail goes to the log, never to the response body. result.Error carries
+			// handler-authored text that can include provider messages, connection strings, or paths;
+			// echoing it would leak internals to the caller. This endpoint is Development-only, but it
+			// is also template code that consumers copy into environments where that gate is removed.
 			_logger.LogError("E2E test conversation failed: {Error}", result.Error);
-			return StatusCode(500, new { error = result.Error });
+			return StatusCode(500, new { error = "The test conversation failed. See server logs for details." });
 		}
 
 		_logger.LogInformation(
