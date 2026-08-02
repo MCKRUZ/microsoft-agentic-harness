@@ -100,7 +100,13 @@ CHANGED_FILES="$(git diff --name-only "$MERGE_BASE" "$HEAD_REF")"
 # and not the door: deleting the PreToolUse entry disables the push gate completely
 # without touching a single gated file. `.json` is excluded from the CONTENT scan by
 # design (package-lock churn), so only this path entry can catch it.
-PATH_RE='(^\.github/|^scripts/rails/|^\.claude/(hooks/|settings\.json$)|/Auth/|/Identity/|/Security/|/SecurityAttributes/|/Migrations/|^infra/)'
+#
+# `settings.local.json` is matched too, and deliberately has NO test pinning it: it is
+# gitignored, so it can never appear in a diff and a synthetic case cannot stage one.
+# That unreachability is exactly why the alternative is here rather than omitted — the
+# day someone un-ignores it, the gate should already cover it instead of discovering
+# the hole the way it discovered this one.
+PATH_RE='(^\.github/|^scripts/rails/|^\.claude/(hooks/|settings(\.local)?\.json$)|/Auth/|/Identity/|/Security/|/SecurityAttributes/|/Migrations/|^infra/)'
 
 # ---------------------------------------------------------------------------
 # Signal 2 — security-relevant code, by what the changed lines actually contain.
