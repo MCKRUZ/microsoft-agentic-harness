@@ -15,6 +15,16 @@ using Xunit;
 
 namespace Application.AI.Common.Tests.Services.Agent;
 
+/// <summary>
+/// Tests the recall logic of <see cref="LearningsRecallContextProvider"/> in isolation.
+/// </summary>
+/// <remarks>
+/// These assert what the provider <em>contributes</em>, which is deliberately only the recalled block —
+/// the framework's additive merge is what combines it with the incoming instructions. That the merge
+/// produces exactly one copy of each is asserted separately in
+/// <see cref="AIContextProviderMergeContractTests"/>, which drives the public
+/// <see cref="AIContextProvider.InvokingAsync"/> entry point.
+/// </remarks>
 public class LearningsRecallContextProviderTests
 {
     private static AIContext ContextWithUserMessage(string text, string? instructions = null) => new()
@@ -88,7 +98,7 @@ public class LearningsRecallContextProviderTests
     }
 
     [Fact]
-    public async Task RecallAndInject_WithRelevantLessons_AppendsThemToInstructions()
+    public async Task RecallBlock_WithRelevantLessons_ReturnsOnlyTheRecalledLessons()
     {
         var recaller = new Mock<ILearningRecaller>();
         recaller.Setup(r => r.RecallAsync("how do I deploy?", 3, 0.3, It.IsAny<CancellationToken>()))
@@ -96,106 +106,102 @@ public class LearningsRecallContextProviderTests
         var sut = Build(recaller.Object);
         var input = ContextWithUserMessage("how do I deploy?", instructions: "You are helpful.");
 
-        var result = await sut.RecallAndInjectAsync(input);
+        var block = await sut.RecallBlockAsync(input);
 
-        result.Should().NotBeSameAs(input);
-        result.Instructions.Should().Contain("You are helpful.");
-        result.Instructions.Should().Contain("Lessons from past work");
-        result.Instructions.Should().Contain("Build from the worktree path, not main root.");
-        result.Instructions.Should().Contain("Verify tests before reporting done.");
-        result.Messages.Should().BeSameAs(input.Messages);
+        block.Should().NotBeNull();
+        block.Should().Contain("Lessons from past work");
+        block.Should().Contain("Build from the worktree path, not main root.");
+        block.Should().Contain("Verify tests before reporting done.");
+        // The incoming prompt must NOT be echoed back: the base merge re-adds it, so returning it here
+        // would send the whole system prompt to the model twice.
+        block.Should().NotContain("You are helpful.");
     }
 
     [Fact]
-    public async Task RecallAndInject_PassesConfiguredMaxResultsAndMinRelevance()
+    public async Task RecallBlock_PassesConfiguredMaxResultsAndMinRelevance()
     {
         var recaller = new Mock<ILearningRecaller>();
         recaller.Setup(r => r.RecallAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<double>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(Array.Empty<WeightedLearning>());
         var sut = Build(recaller.Object, maxResults: 7, minRelevance: 0.55);
 
-        await sut.RecallAndInjectAsync(ContextWithUserMessage("task"));
+        await sut.RecallBlockAsync(ContextWithUserMessage("task"));
 
         recaller.Verify(r => r.RecallAsync("task", 7, 0.55, It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
-    public async Task RecallAndInject_Disabled_ReturnsInputUnchanged()
+    public async Task RecallBlock_Disabled_ContributesNothing()
     {
         var recaller = new Mock<ILearningRecaller>(MockBehavior.Strict);
         var sut = Build(recaller.Object, enabled: false);
-        var input = ContextWithUserMessage("anything");
 
-        var result = await sut.RecallAndInjectAsync(input);
+        var block = await sut.RecallBlockAsync(ContextWithUserMessage("anything"));
 
-        result.Should().BeSameAs(input);
+        block.Should().BeNull();
         recaller.Verify(r => r.RecallAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<double>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
-    public async Task RecallAndInject_NoAmbientScope_ReturnsInputUnchanged()
+    public async Task RecallBlock_NoAmbientScope_ContributesNothing()
     {
         var sut = Build(recaller: null, withScope: false);
-        var input = ContextWithUserMessage("anything");
 
-        var result = await sut.RecallAndInjectAsync(input);
+        var block = await sut.RecallBlockAsync(ContextWithUserMessage("anything"));
 
-        result.Should().BeSameAs(input);
+        block.Should().BeNull();
     }
 
     [Fact]
-    public async Task RecallAndInject_NoUserMessage_ReturnsInputUnchanged()
+    public async Task RecallBlock_NoUserMessage_ContributesNothing()
     {
         var recaller = new Mock<ILearningRecaller>(MockBehavior.Strict);
         var sut = Build(recaller.Object);
         var input = new AIContext { Messages = new List<ChatMessage> { new(ChatRole.System, "system only") } };
 
-        var result = await sut.RecallAndInjectAsync(input);
+        var block = await sut.RecallBlockAsync(input);
 
-        result.Should().BeSameAs(input);
+        block.Should().BeNull();
         recaller.Verify(r => r.RecallAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<double>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
-    public async Task RecallAndInject_NoRelevantLessons_ReturnsInputUnchanged()
+    public async Task RecallBlock_NoRelevantLessons_ContributesNothing()
     {
         var recaller = new Mock<ILearningRecaller>();
         recaller.Setup(r => r.RecallAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<double>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(Array.Empty<WeightedLearning>());
         var sut = Build(recaller.Object);
-        var input = ContextWithUserMessage("anything", instructions: "keep me");
 
-        var result = await sut.RecallAndInjectAsync(input);
+        var block = await sut.RecallBlockAsync(ContextWithUserMessage("anything", instructions: "keep me"));
 
-        result.Should().BeSameAs(input);
+        block.Should().BeNull();
     }
 
     [Fact]
-    public async Task RecallAndInject_RecallerThrows_ReturnsInputUnchanged()
+    public async Task RecallBlock_RecallerThrows_ContributesNothing()
     {
         var recaller = new Mock<ILearningRecaller>();
         recaller.Setup(r => r.RecallAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<double>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new InvalidOperationException("recall down"));
         var sut = Build(recaller.Object);
-        var input = ContextWithUserMessage("anything", instructions: "keep me");
 
-        var result = await sut.RecallAndInjectAsync(input);
+        var block = await sut.RecallBlockAsync(ContextWithUserMessage("anything", instructions: "keep me"));
 
-        result.Should().BeSameAs(input);
+        block.Should().BeNull();
     }
 
     [Fact]
-    public async Task RecallAndInject_NoExistingInstructions_UsesLessonsBlockAlone()
+    public async Task RecallBlock_NoExistingInstructions_StillReturnsOnlyTheBlock()
     {
         var recaller = new Mock<ILearningRecaller>();
         recaller.Setup(r => r.RecallAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<double>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new[] { Lesson("Prefer the worktree build.") });
         var sut = Build(recaller.Object);
-        var input = ContextWithUserMessage("how?"); // no instructions
 
-        var result = await sut.RecallAndInjectAsync(input);
+        var block = await sut.RecallBlockAsync(ContextWithUserMessage("how?")); // no instructions
 
-        result.Instructions.Should().StartWith("## Lessons from past work");
-        result.Instructions.Should().Contain("Prefer the worktree build.");
+        block.Should().StartWith("## Lessons from past work");
+        block.Should().Contain("Prefer the worktree build.");
     }
 }

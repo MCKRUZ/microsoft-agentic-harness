@@ -35,7 +35,7 @@ export default function OverviewPage() {
   const costToday = useMetric('cost_today');
   const cacheHitRate = useMetric('cache_hit_rate');
   const safetyViolations = useMetric('safety_violations');
-  const budgetStatus = useMetric('budget_status');
+  const budgetStatus = useMetric('budget_utilization_pct');
 
   const tokenRate = usePromQuery('rate(agentic_harness_agent_tokens_total_sum[5m]) * 60');
   const costRate = usePromQuery(costRateQuery);

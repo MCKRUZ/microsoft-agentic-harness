@@ -61,9 +61,16 @@ public sealed class StructuredJsonLoggerProvider : ILoggerProvider
     /// <param name="phase">Optional phase name for subdirectory organization.</param>
     public void StartNewRun(string runId, string? phase = null)
     {
+        // Stop the previous run's drain thread BEFORE taking the lock — see StopDrainThread.
+        StopDrainThread();
+
         lock (_lock)
         {
-            CloseCurrentRun();
+            // Drain anything the previous run left queued into the previous run's file. The queue is
+            // shared across runs, so entries left behind here would otherwise be written into the NEXT
+            // run's file and be attributed to the wrong run.
+            FlushPendingMessages();
+            CloseWriter();
 
             var basePath = _config.CurrentValue.LogsBasePath;
             if (string.IsNullOrWhiteSpace(basePath))
@@ -98,10 +105,12 @@ public sealed class StructuredJsonLoggerProvider : ILoggerProvider
     /// </summary>
     public void CompleteRun()
     {
+        StopDrainThread();
+
         lock (_lock)
         {
             FlushPendingMessages();
-            CloseCurrentRun();
+            CloseWriter();
         }
     }
 
@@ -146,14 +155,44 @@ public sealed class StructuredJsonLoggerProvider : ILoggerProvider
         }
     }
 
-    private void CloseCurrentRun()
+    /// <summary>
+    /// Signals the drain thread to stop and waits for it to finish the entry it may already have
+    /// dequeued.
+    /// </summary>
+    /// <remarks>
+    /// <b>Must be called WITHOUT holding <c>_lock</c>.</b> <see cref="ProcessMessageQueue"/> takes an
+    /// entry off the queue and then acquires <c>_lock</c> to write it, so joining that thread while
+    /// holding the lock deadlocks the two until the timeout elapses — and the writer is disposed
+    /// immediately afterwards, silently dropping the in-flight entry. Cancelling the token only
+    /// unblocks the queue wait; a thread that has already dequeued still writes its entry first, which
+    /// is exactly why the join has to happen out here where it can actually make progress.
+    /// </remarks>
+    private void StopDrainThread()
     {
-        _cts?.Cancel();
-        _backgroundThread?.Join(TimeSpan.FromSeconds(2));
+        Thread? thread;
+        lock (_lock)
+        {
+            _cts?.Cancel();
+            thread = _backgroundThread;
+            _backgroundThread = null;
+        }
+
+        thread?.Join(TimeSpan.FromSeconds(2));
+
+        // Dispose the token only after the join: this method owns the drain thread and the token that
+        // stops it, start to finish, so no other method has to reason about their lifetime.
+        lock (_lock)
+        {
+            _cts?.Dispose();
+            _cts = null;
+        }
+    }
+
+    /// <summary>Disposes the current run's output file. Callers hold <c>_lock</c>.</summary>
+    private void CloseWriter()
+    {
         _writer?.Dispose();
         _writer = null;
-        _cts?.Dispose();
-        _cts = null;
     }
 
     /// <inheritdoc />

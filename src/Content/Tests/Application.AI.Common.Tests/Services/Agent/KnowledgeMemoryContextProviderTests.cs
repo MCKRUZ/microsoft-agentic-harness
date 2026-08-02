@@ -15,6 +15,16 @@ using Xunit;
 
 namespace Application.AI.Common.Tests.Services.Agent;
 
+/// <summary>
+/// Tests the recall logic of <see cref="KnowledgeMemoryContextProvider"/> in isolation.
+/// </summary>
+/// <remarks>
+/// These assert what the provider <em>contributes</em>, which is deliberately only the recalled block —
+/// the framework's additive merge is what combines it with the incoming instructions. That the merge
+/// produces exactly one copy of each is asserted separately in
+/// <see cref="AIContextProviderMergeContractTests"/>, which drives the public
+/// <see cref="AIContextProvider.InvokingAsync"/> entry point.
+/// </remarks>
 public class KnowledgeMemoryContextProviderTests
 {
     private static AIContext ContextWithUserMessage(string text, string? instructions = null) => new()
@@ -53,7 +63,7 @@ public class KnowledgeMemoryContextProviderTests
     }
 
     [Fact]
-    public async Task RecallAndInject_WithRelevantFacts_AppendsThemToInstructions()
+    public async Task RecallBlock_WithRelevantFacts_ReturnsOnlyTheRecalledFacts()
     {
         var memory = new Mock<IKnowledgeMemory>();
         memory.Setup(m => m.RecallAsync("what theme do I like?", It.IsAny<int>(), It.IsAny<CancellationToken>()))
@@ -61,96 +71,91 @@ public class KnowledgeMemoryContextProviderTests
         var sut = Build(memory.Object);
         var input = ContextWithUserMessage("what theme do I like?", instructions: "You are helpful.");
 
-        var result = await sut.RecallAndInjectAsync(input);
+        var block = await sut.RecallBlockAsync(input);
 
-        result.Should().NotBeSameAs(input);
-        result.Instructions.Should().Contain("You are helpful.");
-        result.Instructions.Should().Contain("Relevant remembered context");
-        result.Instructions.Should().Contain("The user prefers dark mode.");
-        result.Instructions.Should().Contain("The user is based in NYC.");
-        // Messages/tools are passed through untouched.
-        result.Messages.Should().BeSameAs(input.Messages);
+        block.Should().NotBeNull();
+        block.Should().Contain("Relevant remembered context");
+        block.Should().Contain("The user prefers dark mode.");
+        block.Should().Contain("The user is based in NYC.");
+        // The incoming prompt must NOT be echoed back: the base merge re-adds it, so returning it here
+        // would send the whole system prompt to the model twice.
+        block.Should().NotContain("You are helpful.");
     }
 
     [Fact]
-    public async Task RecallAndInject_Disabled_ReturnsInputUnchanged()
+    public async Task RecallBlock_Disabled_ContributesNothing()
     {
         var memory = new Mock<IKnowledgeMemory>(MockBehavior.Strict);
         var sut = Build(memory.Object, enabled: false);
-        var input = ContextWithUserMessage("anything");
 
-        var result = await sut.RecallAndInjectAsync(input);
+        var block = await sut.RecallBlockAsync(ContextWithUserMessage("anything"));
 
-        result.Should().BeSameAs(input);
+        block.Should().BeNull();
         memory.Verify(m => m.RecallAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
-    public async Task RecallAndInject_NoAmbientScope_ReturnsInputUnchanged()
+    public async Task RecallBlock_NoAmbientScope_ContributesNothing()
     {
         // No request scope established (e.g. background work) → cannot resolve tenant-aware memory.
         var sut = Build(memory: null, withScope: false);
-        var input = ContextWithUserMessage("anything");
 
-        var result = await sut.RecallAndInjectAsync(input);
+        var block = await sut.RecallBlockAsync(ContextWithUserMessage("anything"));
 
-        result.Should().BeSameAs(input);
+        block.Should().BeNull();
     }
 
     [Fact]
-    public async Task RecallAndInject_NoUserMessage_ReturnsInputUnchanged()
+    public async Task RecallBlock_NoUserMessage_ContributesNothing()
     {
         var memory = new Mock<IKnowledgeMemory>(MockBehavior.Strict);
         var sut = Build(memory.Object);
         var input = new AIContext { Messages = new List<ChatMessage> { new(ChatRole.System, "system only") } };
 
-        var result = await sut.RecallAndInjectAsync(input);
+        var block = await sut.RecallBlockAsync(input);
 
-        result.Should().BeSameAs(input);
+        block.Should().BeNull();
         memory.Verify(m => m.RecallAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
-    public async Task RecallAndInject_NoRelevantFacts_ReturnsInputUnchanged()
+    public async Task RecallBlock_NoRelevantFacts_ContributesNothing()
     {
         var memory = new Mock<IKnowledgeMemory>();
         memory.Setup(m => m.RecallAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(Array.Empty<GraphNode>());
         var sut = Build(memory.Object);
-        var input = ContextWithUserMessage("anything", instructions: "keep me");
 
-        var result = await sut.RecallAndInjectAsync(input);
+        var block = await sut.RecallBlockAsync(ContextWithUserMessage("anything", instructions: "keep me"));
 
-        result.Should().BeSameAs(input);
+        block.Should().BeNull();
     }
 
     [Fact]
-    public async Task RecallAndInject_MemoryThrows_ReturnsInputUnchanged()
+    public async Task RecallBlock_MemoryThrows_ContributesNothing()
     {
         // Memory is an enhancement, never a hard dependency: a recall failure must not break the turn.
         var memory = new Mock<IKnowledgeMemory>();
         memory.Setup(m => m.RecallAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new InvalidOperationException("graph down"));
         var sut = Build(memory.Object);
-        var input = ContextWithUserMessage("anything", instructions: "keep me");
 
-        var result = await sut.RecallAndInjectAsync(input);
+        var block = await sut.RecallBlockAsync(ContextWithUserMessage("anything", instructions: "keep me"));
 
-        result.Should().BeSameAs(input);
+        block.Should().BeNull();
     }
 
     [Fact]
-    public async Task RecallAndInject_NoExistingInstructions_UsesFactsBlockAlone()
+    public async Task RecallBlock_NoExistingInstructions_StillReturnsOnlyTheBlock()
     {
         var memory = new Mock<IKnowledgeMemory>();
         memory.Setup(m => m.RecallAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new[] { Fact("Likes terse answers.") });
         var sut = Build(memory.Object);
-        var input = ContextWithUserMessage("style?"); // no instructions
 
-        var result = await sut.RecallAndInjectAsync(input);
+        var block = await sut.RecallBlockAsync(ContextWithUserMessage("style?")); // no instructions
 
-        result.Instructions.Should().StartWith("## Relevant remembered context");
-        result.Instructions.Should().Contain("Likes terse answers.");
+        block.Should().StartWith("## Relevant remembered context");
+        block.Should().Contain("Likes terse answers.");
     }
 }

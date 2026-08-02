@@ -32,6 +32,18 @@ namespace Application.AI.Common.Services.Agent;
 /// drop is the one case where this provider changes which tools exist, and only for names that must never
 /// have been publishable in the first place.
 /// </para>
+/// <para>
+/// <b>This provider overrides <see cref="AIContextProvider.InvokingCoreAsync"/>, not
+/// <c>ProvideAIContextAsync</c>, and that choice is load-bearing.</b> <c>ProvideAIContextAsync</c> is
+/// contractually an <em>additive</em> hook: the base implementation merges whatever it returns into the
+/// incoming context as <c>Tools = input.Concat(provided)</c>. Implemented there, this provider was inert
+/// in both of its jobs — every reserved name it dropped was restored from the input, and every tool it
+/// wrapped was published <em>alongside</em> its own unwrapped original, leaving the model an ungoverned
+/// copy to call. Only overriding the merge can remove or replace a tool. Any future refactor that moves
+/// this logic back onto <c>ProvideAIContextAsync</c> silently disables a security control, so
+/// <c>AIContextProviderMergeContractTests</c> drives every provider in this assembly through the public
+/// <see cref="AIContextProvider.InvokingAsync"/> entry point the runtime actually uses.
+/// </para>
 /// </remarks>
 public sealed class GoverningToolContextProvider : AIContextProvider
 {
@@ -52,22 +64,32 @@ public sealed class GoverningToolContextProvider : AIContextProvider
     }
 
     /// <inheritdoc />
-    protected override ValueTask<AIContext> ProvideAIContextAsync(
+    /// <remarks>
+    /// Overrides the merge rather than <c>ProvideAIContextAsync</c> because this provider both
+    /// <em>removes</em> tools (reserved plan-capability names) and <em>replaces</em> them (governance
+    /// wrapping), neither of which the additive hook can express. See the remarks on
+    /// <see cref="GoverningToolContextProvider"/>.
+    /// </remarks>
+    protected override async ValueTask<AIContext> InvokingCoreAsync(
         InvokingContext context,
         CancellationToken cancellationToken = default)
     {
-        var tools = FilterAndGovern(context.AIContext.Tools, _logger);
+        // Let the base assemble the full accumulated context first — including the tools contributed by
+        // every provider ahead of this one — then filter and wrap what it produced.
+        var merged = await base.InvokingCoreAsync(context, cancellationToken).ConfigureAwait(false);
+
+        var tools = FilterAndGovern(merged.Tools, _logger);
 
         // Nothing was dropped or needed wrapping — avoid allocating a new AIContext.
         if (tools is null)
-            return ValueTask.FromResult(context.AIContext);
+            return merged;
 
-        return ValueTask.FromResult(new AIContext
+        return new AIContext
         {
-            Instructions = context.AIContext.Instructions,
-            Messages = context.AIContext.Messages,
+            Instructions = merged.Instructions,
+            Messages = merged.Messages,
             Tools = tools
-        });
+        };
     }
 
     /// <summary>

@@ -56,28 +56,42 @@ public sealed class LearningsRecallContextProvider : AIContextProvider
     }
 
     /// <inheritdoc />
-    protected override ValueTask<AIContext> ProvideAIContextAsync(
+    /// <remarks>
+    /// Returns <em>only</em> the recalled block, never the incoming instructions or tools. This hook is
+    /// contractually additive — the base implementation merges what it returns into the incoming context
+    /// as <c>Instructions = input + "\n" + provided</c> and <c>Tools = input.Concat(provided)</c> — so
+    /// echoing the input here would send the entire system prompt to the model twice and publish every
+    /// tool twice over. Returning just the new block is what the hook is for.
+    /// </remarks>
+    protected override async ValueTask<AIContext> ProvideAIContextAsync(
         InvokingContext context,
         CancellationToken cancellationToken = default)
-        => RecallAndInjectAsync(context.AIContext, cancellationToken);
+    {
+        var block = await RecallBlockAsync(context.AIContext, cancellationToken).ConfigureAwait(false);
+
+        return block is null ? new AIContext() : new AIContext { Instructions = block };
+    }
 
     /// <summary>
     /// Core recall logic, decoupled from <see cref="InvokingContext"/> for testability. Resolves the
     /// scoped recaller from the current request scope, recalls learnings relevant to the latest user
-    /// message, and returns an <see cref="AIContext"/> with those lessons appended to the instructions.
-    /// Returns <paramref name="inputContext"/> unchanged when recall is disabled, unavailable, or empty.
+    /// message, and formats them as an instructions block to be <em>added</em> to the agent's context.
+    /// Returns <see langword="null"/> when recall is disabled, unavailable, or empty — meaning
+    /// "contribute nothing", which the caller turns into an empty <see cref="AIContext"/>.
     /// </summary>
-    public async ValueTask<AIContext> RecallAndInjectAsync(
+    /// <param name="inputContext">The accumulated context, read for the latest user message only.</param>
+    /// <param name="cancellationToken">Cancels the recall.</param>
+    public async ValueTask<string?> RecallBlockAsync(
         AIContext inputContext,
         CancellationToken cancellationToken = default)
     {
         var config = _appConfig.CurrentValue.AI.LearningsRecall;
         if (!config.Enabled)
-            return inputContext;
+            return null;
 
         var query = ExtractQuery(inputContext);
         if (string.IsNullOrWhiteSpace(query))
-            return inputContext;
+            return null;
 
         IReadOnlyList<WeightedLearning> recalled;
         try
@@ -87,32 +101,22 @@ public sealed class LearningsRecallContextProvider : AIContextProvider
             // than crashing the turn (recall is an enhancement, never a hard dependency).
             var recaller = _ambientScope.Current?.GetService<ILearningRecaller>();
             if (recaller is null)
-                return inputContext;
+                return null;
 
             recalled = await recaller.RecallAsync(query, config.MaxResults, config.MinRelevance, cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "Learning recall failed; proceeding without recalled lessons");
-            return inputContext;
+            return null;
         }
 
         if (recalled.Count == 0)
-            return inputContext;
-
-        var block = FormatRecalledLessons(recalled);
-        var instructions = string.IsNullOrWhiteSpace(inputContext.Instructions)
-            ? block
-            : inputContext.Instructions + "\n\n" + block;
+            return null;
 
         _logger.LogDebug("Injected {Count} recalled lesson(s) into agent context", recalled.Count);
 
-        return new AIContext
-        {
-            Instructions = instructions,
-            Messages = inputContext.Messages,
-            Tools = inputContext.Tools
-        };
+        return FormatRecalledLessons(recalled);
     }
 
     private static string? ExtractQuery(AIContext aiContext)
