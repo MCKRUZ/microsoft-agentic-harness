@@ -65,9 +65,17 @@ expect() { # <label> <expected-required> <expected-trigger> <base> <head>
 # A PR's diff is (first parent = main at merge time) .. (second parent = PR head).
 # Using the head's OWN parent instead would diff only the branch's last commit,
 # which silently under-reports every multi-commit PR.
+#
+# The empty-merge guard is load-bearing on a shallow clone, which is what CI checks out.
+# `git rev-parse "^1"` fails — but it ECHOES `^1` back on stdout before it does, and these
+# helpers capture stdout with stderr suppressed. Without the explicit check the caller
+# receives the non-empty string `^1`, its `[ -z ... ]` SKIP guard never engages, and the
+# replay runs against an unresolvable base: the suite goes red for an environment reason
+# rather than a gate defect. That is the failure mode most likely to get a genuine future
+# regression waved through as "that's just the shallow clone again".
 pr_merge() { git log origin/main --merges --format=%H --grep "Merge pull request #$1 " -n 1; }
-pr_base()  { git rev-parse "$(pr_merge "$1")^1" 2>/dev/null; }
-pr_head()  { git rev-parse "$(pr_merge "$1")^2" 2>/dev/null; }
+pr_base()  { local m; m="$(pr_merge "$1")"; [ -n "$m" ] || return 0; git rev-parse "$m^1" 2>/dev/null; }
+pr_head()  { local m; m="$(pr_merge "$1")"; [ -n "$m" ] || return 0; git rev-parse "$m^2" 2>/dev/null; }
 
 echo "REPLAY — PRs the folder-only filter skipped (all must now be reviewed):"
 for pr in 203 205 207 208 209 210; do
@@ -264,8 +272,9 @@ if git worktree add --detach --quiet "$WORKTREE" HEAD 2>/dev/null; then
 
   # The noise boundary for the new group, pinned in the must-NOT-fire direction.
   # ChatMessage is the adjacent word someone will reach for while reasoning
-  # category-by-category: it looks as security-relevant as AIContext and appears in 115
-  # tracked files against AIContext's 27. Ordinary conversation plumbing is not a signal.
+  # category-by-category: it looks as security-relevant as AIContext and appears in 105
+  # tracked .cs files against AIContext's 27 — the same basis the script's own comment
+  # quotes. Ordinary conversation plumbing is not a signal.
   synth "ordinary ChatMessage use must NOT fire (too common to be a signal)" \
         "src/Content/Domain/Domain.AI/ScratchTest.cs" \
         "public sealed class ScratchTest { public object Make(string t) => new ChatMessage(ChatRole.User, t); }" \
