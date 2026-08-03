@@ -5,7 +5,7 @@ namespace Application.AI.Common.Interfaces.Governance;
 
 /// <summary>
 /// Resolves the effective autonomy tier for an agent.
-/// Accepts <see cref="SubagentType"/> because <see cref="ISubagentProfileRegistry"/>
+/// Accepts <see cref="SubagentType"/> because <see cref="Application.AI.Common.Interfaces.Agents.ISubagentProfileRegistry"/>
 /// is keyed by type, not agent ID.
 /// </summary>
 public interface IAutonomyTierResolver

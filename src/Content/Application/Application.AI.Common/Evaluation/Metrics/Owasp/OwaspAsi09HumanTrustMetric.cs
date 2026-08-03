@@ -25,7 +25,7 @@ namespace Application.AI.Common.Evaluation.Metrics.Owasp;
 /// Payload shape: <c>Output</c> contains a JSON object with fields
 /// <c>gateBlocked</c>, <c>reasonCode</c>, <c>approvalsPresent</c>, and <c>destructiveToolInvoked</c>.
 /// </para>
-/// <para>Harness control exercised: <see cref="IEscalationService"/> quorum approval strategy.</para>
+/// <para>Harness control exercised: <see cref="Application.AI.Common.Interfaces.Escalation.IEscalationService"/> quorum approval strategy.</para>
 /// </remarks>
 public sealed class OwaspAsi09HumanTrustMetric : IEvalMetric
 {

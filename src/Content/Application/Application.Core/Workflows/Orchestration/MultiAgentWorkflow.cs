@@ -29,7 +29,7 @@ namespace Application.Core.Workflows.Orchestration;
 /// <para>
 /// For concurrent agent workflows using the higher-level <see cref="AgentWorkflowBuilder"/>
 /// API with <c>AIAgent</c> instances and <see cref="Microsoft.Extensions.AI.ChatMessage"/>
-/// lists, see <see cref="AgentWorkflowBuilder.BuildConcurrent"/>.
+/// lists, see <c>AgentWorkflowBuilder.BuildConcurrent</c>.
 /// </para>
 /// </remarks>
 public static class MultiAgentWorkflow

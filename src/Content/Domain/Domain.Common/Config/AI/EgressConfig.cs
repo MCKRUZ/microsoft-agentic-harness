@@ -65,7 +65,7 @@ public sealed class EgressConfig
 
 /// <summary>
 /// Configuration shape for a single egress allowlist entry. Mirrored at the
-/// domain layer by <see cref="Domain.AI.Egress.EgressAllowlistEntry"/>; the
+/// domain layer by <c>Domain.AI.Egress.EgressAllowlistEntry</c>; the
 /// infrastructure layer maps config entries onto domain entries at startup.
 /// </summary>
 /// <remarks>

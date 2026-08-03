@@ -17,7 +17,7 @@ namespace Presentation.AgentHub.Services;
 /// per-conversation-id locking (e.g., AsyncKeyedLock) to allow concurrent operations
 /// across different conversations.
 ///
-/// Atomic writes: all writes go to a <c>.tmp</c> file first, then <see cref="File.Move"/> with
+/// Atomic writes: all writes go to a <c>.tmp</c> file first, then <see cref="System.IO.File.Move(string, string, bool)"/> with
 /// <c>overwrite: true</c>. This prevents partial-write corruption if the process exits mid-write.
 ///
 /// Path safety: the constructor resolves <c>ConversationsPath</c> to an absolute path.
@@ -384,7 +384,7 @@ public sealed class FileSystemConversationStore : IConversationStore
     /// <summary>
     /// Writes <paramref name="record"/> atomically (tmp → move). Must be called while the
     /// caller already holds <see cref="_lock"/>.
-    /// Retries <see cref="File.Move"/> up to 3 times on <see cref="UnauthorizedAccessException"/>
+    /// Retries <see cref="System.IO.File.Move(string, string, bool)"/> up to 3 times on <see cref="UnauthorizedAccessException"/>
     /// to tolerate transient file locks from OneDrive, antivirus, or Windows Search.
     /// </summary>
     private static async Task WriteAtomicLockedAsync(string targetPath, ConversationRecord record, CancellationToken ct)

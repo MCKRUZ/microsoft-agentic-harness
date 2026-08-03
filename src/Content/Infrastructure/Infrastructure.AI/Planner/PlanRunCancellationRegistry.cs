@@ -11,7 +11,7 @@ namespace Infrastructure.AI.Planner;
 /// <remarks>
 /// <para>
 /// <b>Locking.</b> The private gate guards the index only. Cancellation and disposal happen outside
-/// it, on a snapshot, because <see cref="CancellationTokenSource.Cancel"/> runs its registered
+/// it, on a snapshot, because <see cref="System.Threading.CancellationTokenSource.Cancel()"/> runs its registered
 /// callbacks synchronously: holding a lock across it would put arbitrary continuation code —
 /// including a run's own release path — under this type's lock. Each
 /// <see cref="PlanRunCancellationRegistration"/> serializes its own cancel-versus-dispose pair

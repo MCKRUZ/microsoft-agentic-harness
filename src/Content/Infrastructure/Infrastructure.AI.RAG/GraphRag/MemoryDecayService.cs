@@ -120,7 +120,7 @@ public sealed class MemoryDecayService : IMemoryDecayService, IDisposable
     /// <remarks>
     /// Iterates all nodes of <c>Type == "Memory"</c> and deletes those whose
     /// <c>Properties["weight"]</c> is strictly below <paramref name="threshold"/>.
-    /// Each deletion cascades: <see cref="IGraphDatabaseBackend.DeleteNodeAsync"/> removes
+    /// Each deletion cascades: <see cref="Application.AI.Common.Interfaces.KnowledgeGraph.IKnowledgeGraphStore.DeleteNodeAsync"/> removes
     /// the graph node, then <see cref="ICrossSessionMemoryStore.ForgetAsync"/> purges the
     /// corresponding in-memory cache and backing store entry.
     /// </remarks>

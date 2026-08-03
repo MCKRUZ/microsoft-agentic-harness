@@ -7,7 +7,7 @@ namespace Domain.Common.Config.Http;
 /// </summary>
 /// <remarks>
 /// Binds to <c>AppConfig:Http:Authorization</c> in appsettings.json.
-/// Used by <see cref="Infrastructure.Common.Middleware.EndpointFilters.HttpAuthEndpointFilter"/>
+/// Used by <c>Infrastructure.Common.Middleware.EndpointFilters.HttpAuthEndpointFilter</c>
 /// to validate API keys on incoming requests.
 /// <para>
 /// <strong>Security:</strong> Store <see cref="AccessKey1"/> and <see cref="AccessKey2"/>

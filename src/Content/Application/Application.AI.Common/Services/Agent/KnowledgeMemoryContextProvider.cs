@@ -76,7 +76,7 @@ public sealed class KnowledgeMemoryContextProvider : AIContextProvider
     }
 
     /// <summary>
-    /// Core recall logic, decoupled from <see cref="InvokingContext"/> for testability. Resolves
+    /// Core recall logic, decoupled from <see cref="AIContextProvider.InvokingContext"/> for testability. Resolves
     /// scoped memory from the current request scope, recalls facts relevant to the latest user
     /// message, and formats them as an instructions block to be <em>added</em> to the agent's context.
     /// Returns <see langword="null"/> when recall is disabled, unavailable, or empty — meaning

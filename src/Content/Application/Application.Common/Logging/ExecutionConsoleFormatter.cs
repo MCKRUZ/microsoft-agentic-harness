@@ -10,7 +10,7 @@ namespace Application.Common.Logging;
 /// and optional context indicators.
 /// </summary>
 /// <remarks>
-/// This formatter reads <see cref="ExecutionScope"/> from the scope stack to produce
+/// This formatter reads <see cref="Domain.Common.Logging.ExecutionScope"/> from the scope stack to produce
 /// output like:
 /// <code>
 /// 14:32:01.123 INFO [planner] Starting step 3

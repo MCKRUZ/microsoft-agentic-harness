@@ -9,7 +9,7 @@ namespace Application.AI.Common.Evaluation.Models;
 /// </summary>
 /// <remarks>
 /// Per-case detail is fetched lazily on drill-in via
-/// <see cref="IEvalRunStore.GetRunDetailAsync"/>.
+/// <see cref="Application.AI.Common.Evaluation.Interfaces.IEvalRunStore.GetRunDetailAsync"/>.
 /// </remarks>
 public sealed record EvalRunSummary
 {

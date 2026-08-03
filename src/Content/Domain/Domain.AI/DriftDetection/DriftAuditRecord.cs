@@ -2,7 +2,7 @@ namespace Domain.AI.DriftDetection;
 
 /// <summary>
 /// Discriminator for <see cref="DriftAuditRecord"/> entries.
-/// Determines how the <see cref="DriftAuditRecord.Data"/> field should be interpreted.
+/// Determines how the <see cref="DriftAuditRecord.Payload"/> field should be interpreted.
 /// </summary>
 public enum DriftAuditRecordType
 {
@@ -31,7 +31,7 @@ public enum DriftAuditRecordType
 /// <summary>
 /// A single audit log entry for a drift detection lifecycle event.
 /// Used by <c>IDriftAuditStore</c> for append-only JSONL persistence.
-/// The <see cref="Data"/> field contains the serialized event data,
+/// The <see cref="Payload"/> field contains the serialized event data,
 /// discriminated by <see cref="RecordType"/>.
 /// </summary>
 public sealed record DriftAuditRecord
@@ -42,7 +42,7 @@ public sealed record DriftAuditRecord
     /// <summary>Correlates to the originating drift event.</summary>
     public required Guid EventId { get; init; }
 
-    /// <summary>Discriminator for deserialization of <see cref="Data"/>.</summary>
+    /// <summary>Discriminator for deserialization of <see cref="Payload"/>.</summary>
     public required DriftAuditRecordType RecordType { get; init; }
 
     /// <summary>

@@ -34,7 +34,7 @@ namespace Infrastructure.AI.Escalation;
 /// startup rehydration free to recover every other escalation.
 /// </para>
 /// <para>
-/// Resolved outcomes are sealed via <see cref="IEscalationOutcomeSealer"/> on write and
+/// Resolved outcomes are sealed via <see cref="Application.AI.Common.Interfaces.Escalation.IGovernanceRecordSealer"/> on write and
 /// verified on read; an outcome whose seal does not verify is withheld, so the reconciler
 /// never re-drives a possibly forged verdict into the compliance audit log.
 /// </para>

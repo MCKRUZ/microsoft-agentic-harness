@@ -15,7 +15,7 @@ namespace Application.AI.Common.Interfaces.RAG;
 ///         deduplication → budget enforcement → text formatting → citation tracking
 ///         (<see cref="ICitationTracker"/>).</item>
 ///   <item>Budget enforcement: Sort by rerank score descending and greedily include chunks
-///         until the <paramref name="maxTokens"/> budget is exhausted. Set
+///         until the <c>maxTokens</c> budget is exhausted. Set
 ///         <see cref="RagAssembledContext.WasTruncated"/> when chunks were dropped.</item>
 ///   <item>Text formatting: Separate chunks with configurable delimiters (e.g.,
 ///         <c>"\n---\n"</c>). Optionally prepend each chunk's <see cref="DocumentChunk.SectionPath"/>

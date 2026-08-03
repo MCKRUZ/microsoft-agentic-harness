@@ -11,7 +11,7 @@ namespace Application.AI.Common.Interfaces.Context;
 /// <remarks>
 /// <para>
 /// Called by
-/// <see cref="CQRS.Agents.ExecuteAgentTurn.ExecuteAgentTurnCommandHandler"/>
+/// <c>Application.Core.CQRS.Agents.ExecuteAgentTurn.ExecuteAgentTurnCommandHandler</c>
 /// after each successful turn, AFTER the assistant message has been recorded.
 /// </para>
 /// <para>

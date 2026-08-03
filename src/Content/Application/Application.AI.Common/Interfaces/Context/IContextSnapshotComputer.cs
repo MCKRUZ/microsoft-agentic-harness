@@ -12,13 +12,13 @@ namespace Application.AI.Common.Interfaces.Context;
 /// <para>
 /// Implementations MUST be pure functions of their inputs (no I/O, no clocks
 /// other than what is passed in). The
-/// <see cref="ICompositionRoot.CQRS.Agents.ExecuteAgentTurn.ExecuteAgentTurnCommandHandler"/>
+/// <c>Application.Core.CQRS.Agents.ExecuteAgentTurn.ExecuteAgentTurnCommandHandler</c>
 /// calls this once per turn after the assistant message has been recorded,
 /// then passes the result to <see cref="IContextSnapshotNotifier"/>.
 /// </para>
 /// <para>
 /// PR 3 v1 derives the breakdown post-hoc from the turn's
-/// <paramref name="inputTokens"/> usage and the post-turn message history,
+/// <c>inputTokens</c> usage and the post-turn message history,
 /// lumping the entire system-prompt area into <see cref="ContextCategory.System"/>.
 /// A follow-up that plumbs <c>SystemPromptSection</c> data through will replace
 /// the implementation without touching this contract.

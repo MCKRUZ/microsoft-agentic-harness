@@ -9,7 +9,7 @@ namespace Application.AI.Common.Evaluation.Models;
 /// <remarks>
 /// <para>
 /// Bind via <c>services.Configure&lt;JudgeOptions&gt;(...)</c>. When unbound, the default
-/// <see cref="IJudgeChatClientProvider"/> falls back to the first available AI provider
+/// <see cref="Application.AI.Common.Evaluation.Interfaces.IJudgeChatClientProvider"/> falls back to the first available AI provider
 /// from <c>IChatClientFactory.GetAvailableProviders()</c> and the supplied
 /// <see cref="Deployment"/> — so a minimal setup only needs to set <see cref="Deployment"/>.
 /// </para>

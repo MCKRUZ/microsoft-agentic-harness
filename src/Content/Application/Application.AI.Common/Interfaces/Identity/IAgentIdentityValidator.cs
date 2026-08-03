@@ -13,7 +13,7 @@ namespace Application.AI.Common.Interfaces.Identity;
 /// <para>
 /// Fail closed: missing policy is treated as deny, not allow. An unregistered tool
 /// key returns <c>false</c>; an identity with <see cref="AgentIdentityKind.Unspecified"/>
-/// returns <c>false</c>. This matches <see cref="IKnowledgeScopeValidator"/>'s
+/// returns <c>false</c>. This matches <see cref="Application.AI.Common.Interfaces.KnowledgeGraph.IKnowledgeScopeValidator"/>'s
 /// behaviour and mirrors the global guidance — security defaults must be the correct
 /// defaults.
 /// </para>

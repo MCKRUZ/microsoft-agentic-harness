@@ -11,7 +11,7 @@ public interface ISqlConnectionFactory
 {
     /// <summary>
     /// Creates a new database connection using the configured provider and connection string.
-    /// The returned connection is NOT opened — the caller must call <see cref="DbConnection.OpenAsync"/>.
+    /// The returned connection is NOT opened — the caller must call <see cref="System.Data.Common.DbConnection.OpenAsync(System.Threading.CancellationToken)"/>.
     /// </summary>
     DbConnection CreateConnection();
 }

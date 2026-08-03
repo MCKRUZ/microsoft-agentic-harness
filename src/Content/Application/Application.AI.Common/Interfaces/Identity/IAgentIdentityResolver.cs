@@ -26,7 +26,7 @@ namespace Application.AI.Common.Interfaces.Identity;
 /// Returns a failure result with the aggregated <c>agent_identity.no_provider_succeeded</c>
 /// error code when every registered provider has been tried and none succeeded.
 /// Caller MUST NOT proceed without an identity when
-/// <see cref="Domain.Common.Config.AI.AppConfig"/>'s identity flag is enabled.
+/// <see cref="Domain.Common.Config.AppConfig"/>'s identity flag is enabled.
 /// </para>
 /// </remarks>
 public interface IAgentIdentityResolver

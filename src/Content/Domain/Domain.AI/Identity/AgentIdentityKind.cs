@@ -9,7 +9,7 @@ namespace Domain.AI.Identity;
 /// <remarks>
 /// The <see cref="Unspecified"/> sentinel is the default. Treating <c>default</c> as a real
 /// kind would let an uninitialised identity pass type checks; the sentinel forces callers
-/// to set a kind explicitly. <see cref="IAgentIdentityValidator"/> rejects identities with
+/// to set a kind explicitly. <c>IAgentIdentityValidator</c> rejects identities with
 /// <see cref="Unspecified"/> as the kind.
 /// </remarks>
 public enum AgentIdentityKind

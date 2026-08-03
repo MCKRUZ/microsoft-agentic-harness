@@ -31,7 +31,7 @@ public static class SqliteValueConverters
 }
 
 /// <summary>
-/// Singleton initializer that runs <see cref="DatabaseFacade.EnsureCreated"/> on its
+/// Singleton initializer that runs <c>DatabaseFacade.EnsureCreated()</c> on its
 /// supplied DbContext factory at construction time. Mirrors the
 /// <c>PromptUsageSchemaInitializer</c> / <c>EvalDashboardSchemaInitializer</c>
 /// pattern with a single generic base so each new SQLite subsystem doesn't

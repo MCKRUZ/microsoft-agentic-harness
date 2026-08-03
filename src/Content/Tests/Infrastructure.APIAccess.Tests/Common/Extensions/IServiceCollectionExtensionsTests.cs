@@ -9,7 +9,7 @@ using Xunit;
 namespace Infrastructure.APIAccess.Tests.Common.Extensions;
 
 /// <summary>
-/// Integration tests for <see cref="IServiceCollectionExtensions"/> covering
+/// Integration tests for <see cref="Infrastructure.APIAccess.Common.Extensions.IServiceCollectionExtensions"/> covering
 /// Kestrel, API versioning, rate limiter, CORS, and Swagger registration.
 /// </summary>
 public sealed class IServiceCollectionExtensionsTests

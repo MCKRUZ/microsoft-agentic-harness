@@ -31,7 +31,7 @@ namespace Domain.Common.Config.AI.RAG;
 /// </para>
 /// <para>
 /// Model routing configuration has moved to <c>AppConfig:AI:ModelRouting</c>
-/// (<see cref="Domain.Common.Config.AI.ModelRoutingConfig"/>).
+/// (<see cref="Domain.Common.Config.AI.Routing.ModelRoutingConfig"/>).
 /// </para>
 /// </remarks>
 public class RagConfig

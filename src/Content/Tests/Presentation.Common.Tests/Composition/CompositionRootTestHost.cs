@@ -9,7 +9,7 @@ namespace Presentation.Common.Tests.Composition;
 /// <summary>
 /// Builds a service provider through the REAL composition root — the same
 /// <c>RegisterConfigSections</c> + <c>BuildGlobalSolutionServices</c> pair that
-/// <see cref="IServiceCollectionExtensions.GetServices"/> chains for every host
+/// <see cref="Presentation.Common.Extensions.IServiceCollectionExtensions.GetServices"/> chains for every host
 /// (AgentHub, ConsoleUI, EvalRunner, FoundryHost) — differing only in that
 /// configuration comes from an in-memory dictionary instead of
 /// <c>AppConfigHelper.LoadAppConfig()</c>'s appsettings.json files.

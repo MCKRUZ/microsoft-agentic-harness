@@ -17,11 +17,11 @@ namespace Domain.Common.Workflow;
 ///     - no_go
 ///
 ///   decision_rules:
-///     - condition: "score >= 85 AND critical_issues == 0 AND high_issues <= 2"
+///     - condition: "score >= 85 AND critical_issues == 0 AND high_issues &lt;= 2"
 ///       outcome: go
-///     - condition: "score >= 70 AND score < 85 AND critical_issues <= 1"
+///     - condition: "score >= 70 AND score &lt; 85 AND critical_issues &lt;= 1"
 ///       outcome: conditional_go
-///     - condition: "score < 70 OR critical_issues > 1"
+///     - condition: "score &lt; 70 OR critical_issues > 1"
 ///       outcome: no_go
 ///
 ///   metadata_outputs:

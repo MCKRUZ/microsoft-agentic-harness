@@ -3,7 +3,7 @@ namespace Application.AI.Common.Interfaces.Changes;
 /// <summary>
 /// The outcome of an <see cref="IChangeApplier"/>'s attempt to apply a proposal's
 /// diff to its target. Returned to the <c>MergeGate</c>; <see cref="Success"/>
-/// drives the proposal to <c>Merged</c>, <see cref="Failure"/> drives it to
+/// drives the proposal to <c>Merged</c>, <see cref="Failed"/> drives it to
 /// <c>Rejected</c> with the failure reason captured.
 /// </summary>
 /// <remarks>

@@ -79,7 +79,7 @@ public sealed class EnvironmentAutonomyConfig
 {
     /// <summary>
     /// Per-blast-radius rules for this environment. Each row maps a
-    /// <see cref="Domain.AI.Changes.BlastRadius"/> name
+    /// <c>Domain.AI.Changes.BlastRadius</c> name
     /// (<c>"Trivial"</c>, <c>"Low"</c>, <c>"Medium"</c>, <c>"High"</c>, <c>"Critical"</c>)
     /// to a decision name (<c>"AutoApprove"</c>, <c>"RequiresApproval"</c>, <c>"Forbidden"</c>).
     /// Missing rows fall back to tier defaults.

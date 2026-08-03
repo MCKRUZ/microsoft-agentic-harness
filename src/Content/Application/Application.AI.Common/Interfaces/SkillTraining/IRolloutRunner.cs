@@ -15,7 +15,7 @@ namespace Application.AI.Common.Interfaces.SkillTraining;
 /// and tests inject deterministic stubs.
 /// </para>
 /// <para>
-/// Implementations are expected to honor <paramref name="batchSize"/> bounds at the call
+/// Implementations are expected to honor <c>batchSize</c> bounds at the call
 /// site (e.g. via <c>SemaphoreSlim</c>) — the runner returns once all items in the
 /// batch have been scored.
 /// </para>

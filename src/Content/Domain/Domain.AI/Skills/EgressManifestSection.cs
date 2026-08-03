@@ -4,7 +4,7 @@ namespace Domain.AI.Skills;
 /// YAML-shape mirror of <see cref="EgressManifest"/> produced by the SKILL.md
 /// frontmatter parser. Holds the raw deserialized shape — mutable lists,
 /// nullable fields, no invariants enforced — so the parser can populate it
-/// incrementally before <see cref="EgressManifestSectionMapper.Map"/> projects
+/// incrementally before <c>EgressManifestSectionMapper.Map</c> projects
 /// it onto the immutable domain record.
 /// </summary>
 /// <remarks>

@@ -18,7 +18,7 @@ namespace Infrastructure.AI.Config;
 ///   <item><c>CLAUDE.md</c> — Project scope</item>
 ///   <item><c>CLAUDE.local.md</c> — Local scope (not checked in)</item>
 /// </list>
-/// Files closer to <paramref name="startDirectory"/> receive lower priority values
+/// Files closer to <c>startDirectory</c> receive lower priority values
 /// (higher effective priority). <c>@include</c> directives are resolved inline and
 /// circular references are prevented via path tracking.
 /// </remarks>

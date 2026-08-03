@@ -17,7 +17,7 @@ using Xunit;
 namespace Presentation.Common.Tests.Extensions;
 
 /// <summary>
-/// Integration tests for <see cref="IServiceCollectionExtensions"/> covering
+/// Integration tests for <see cref="Presentation.Common.Extensions.IServiceCollectionExtensions"/> covering
 /// config section registration, cache configuration, and auth dependency wiring.
 /// </summary>
 public sealed class IServiceCollectionExtensionsTests

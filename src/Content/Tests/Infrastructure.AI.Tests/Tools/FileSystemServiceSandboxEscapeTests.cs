@@ -16,7 +16,8 @@ namespace Infrastructure.AI.Tests.Tools;
 /// enumerated path against the allowlist. A junction at <c>workspace\notes</c> pointing at
 /// <c>C:\Users\victim\.ssh</c> is not protected, so the walk descended into it, and every file it
 /// then yielded carried a literal <c>workspace\notes\...</c> path that satisfied a
-/// workspace-rooted allowlist — after which <see cref="File.ReadLinesAsync(string)"/> followed the
+/// workspace-rooted allowlist — after which
+/// <see cref="System.IO.File.ReadLinesAsync(string, System.Threading.CancellationToken)"/> followed the
 /// link and put the contents in the search results.
 /// </para>
 /// <para>

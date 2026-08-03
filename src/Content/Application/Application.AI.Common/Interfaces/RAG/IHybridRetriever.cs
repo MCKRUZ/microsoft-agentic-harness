@@ -15,7 +15,7 @@ namespace Application.AI.Common.Interfaces.RAG;
 ///         concurrently via <c>Task.WhenAll</c> for optimal latency.</item>
 ///   <item>Apply RRF formula: <c>score = sum(1 / (k + rank_i))</c> where <c>k</c> is typically
 ///         60 (configurable via <c>AppConfig:AI:Rag:RrfK</c>).</item>
-///   <item>Request more candidates from each store than <paramref name="topK"/> (typically 2-3x)
+///   <item>Request more candidates from each store than <c>topK</c> (typically 2-3x)
 ///         to ensure sufficient overlap for meaningful fusion.</item>
 ///   <item>Populate both <see cref="RetrievalResult.DenseScore"/> and
 ///         <see cref="RetrievalResult.SparseScore"/> on each fused result for observability.</item>

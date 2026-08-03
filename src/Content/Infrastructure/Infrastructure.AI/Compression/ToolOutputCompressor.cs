@@ -11,7 +11,7 @@ namespace Infrastructure.AI.Compression;
 /// strategies with fallback to FreeText and hard truncation as last resort.
 /// </summary>
 /// <remarks>
-/// When the <paramref name="category"/> passed to <see cref="CompressAsync"/> is null,
+/// When the <c>category</c> passed to <see cref="CompressAsync"/> is null,
 /// the compressor calls <see cref="ContentTypeDetector.Detect"/> to infer the category
 /// from the output content. This keeps the Application layer free of Infrastructure dependencies.
 /// </remarks>

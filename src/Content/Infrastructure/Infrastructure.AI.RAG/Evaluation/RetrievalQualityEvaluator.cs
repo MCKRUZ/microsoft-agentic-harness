@@ -14,7 +14,7 @@ namespace Infrastructure.AI.RAG.Evaluation;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Metrics are evaluated in parallel via <see cref="Task.WhenAll"/> for lower
+/// Metrics are evaluated in parallel via <see cref="System.Threading.Tasks.Task.WhenAll(System.Collections.Generic.IEnumerable{System.Threading.Tasks.Task})"/> for lower
 /// latency. Context recall is only computed when ground-truth is provided;
 /// otherwise it is set to <c>-1.0</c> as a sentinel.
 /// </para>

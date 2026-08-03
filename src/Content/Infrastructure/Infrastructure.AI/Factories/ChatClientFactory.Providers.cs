@@ -113,7 +113,7 @@ public sealed partial class ChatClientFactory
     /// <summary>
     /// Resolves a persistent agent by ID, extracts its model, and returns an Azure OpenAI
     /// <see cref="IChatClient"/> for that model. The agent's instructions and tools are
-    /// applied by the <see cref="AgentFactory"/> pipeline, not by the chat client.
+    /// applied by the <see cref="Application.AI.Common.Factories.AgentFactory"/> pipeline, not by the chat client.
     /// </summary>
     private async Task<IChatClient> GetPersistentAgentChatClientAsync(string agentId, CancellationToken cancellationToken)
     {

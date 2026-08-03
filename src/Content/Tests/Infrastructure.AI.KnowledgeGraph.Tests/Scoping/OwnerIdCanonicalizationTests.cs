@@ -170,7 +170,7 @@ public sealed class OwnerIdCanonicalizationTests
 
     /// <summary>
     /// Gate guard (LOW): an absent dataset owner is never an authorizable dataset, even for a caller
-    /// whose own UserId is also absent — <see cref="ScopeIdentity.AreSame"/> would otherwise treat two
+    /// whose own UserId is also absent — <see cref="Domain.AI.KnowledgeGraph.Scoping.ScopeIdentity.AreSame"/> would otherwise treat two
     /// absent ids as equal and authorize access the old OrdinalIgnoreCase gate denied.
     /// </summary>
     [Theory]

@@ -8,7 +8,7 @@ using Xunit;
 namespace Infrastructure.APIAccess.Tests.Common.Extensions;
 
 /// <summary>
-/// Tests for <see cref="IEndpointConventionBuilderExtensions.AddFilters"/>
+/// Tests for <see cref="Infrastructure.APIAccess.Common.Extensions.IEndpointConventionBuilderExtensions.AddFilters"/>
 /// covering null, empty, single, and multiple filter scenarios.
 /// </summary>
 public sealed class IEndpointConventionBuilderExtensionsTests

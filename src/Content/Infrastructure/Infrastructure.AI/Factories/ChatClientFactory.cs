@@ -25,7 +25,7 @@ namespace Infrastructure.AI.Factories;
 /// delegates conversation execution to the underlying Azure OpenAI chat client using the
 /// agent's model deployment. This approach works because AI Foundry persistent agents run
 /// on Azure OpenAI under the hood — the agent's instructions and tools are configured via
-/// the <see cref="AgentExecutionContext"/> pipeline rather than server-side state.
+/// the <see cref="Domain.AI.Agents.AgentExecutionContext"/> pipeline rather than server-side state.
 /// </para>
 /// <para>
 /// The <see cref="PersistentAgentsAdministrationClient"/> dependency is optional — it is only

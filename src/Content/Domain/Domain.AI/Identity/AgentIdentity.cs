@@ -21,7 +21,7 @@ namespace Domain.AI.Identity;
 /// <para>
 /// Records throughout the harness validate at boundaries (Application-layer FluentValidation),
 /// not in constructors. This record accepts any non-null <see cref="Id"/> and any
-/// <see cref="AgentIdentityKind"/>; <see cref="IAgentIdentityValidator"/> enforces the
+/// <see cref="AgentIdentityKind"/>; <c>IAgentIdentityValidator</c> enforces the
 /// real invariants (no <see cref="AgentIdentityKind.Unspecified"/>, kind-specific required
 /// fields, etc.).
 /// </para>

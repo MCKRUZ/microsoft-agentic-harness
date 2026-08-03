@@ -19,7 +19,7 @@ namespace Infrastructure.AI.Tests.Iac;
 /// Unit tests for <see cref="IacChangeProposalValidator"/>. Each scenario builds a
 /// service provider with (or without) a keyed <see cref="IIacGenerator"/> and a
 /// proposal whose target is (or is not) an <see cref="IacDeploymentTarget"/>, then
-/// asserts the resulting <see cref="GateResult"/>.
+/// asserts the resulting <see cref="Domain.AI.Changes.GateResult"/>.
 /// </summary>
 public sealed class IacChangeProposalValidatorTests
 {

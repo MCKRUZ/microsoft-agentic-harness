@@ -10,7 +10,7 @@ namespace Infrastructure.AI.Embeddings;
 /// generate embeddings.
 /// </summary>
 /// <remarks>
-/// This appears when the configured chat <see cref="AIAgentFrameworkClientType"/>
+/// This appears when the configured chat <see cref="Domain.Common.Config.AI.AIAgentFrameworkClientType"/>
 /// has no embeddings API (e.g. <c>Anthropic</c>, <c>AzureAIInference</c>,
 /// <c>Echo</c>) and <c>AppConfig:AI:Embedding</c> is left unset. Configure that
 /// section with a provider that exposes embeddings to enable RAG.

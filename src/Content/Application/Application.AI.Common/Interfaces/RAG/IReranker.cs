@@ -21,7 +21,7 @@ namespace Application.AI.Common.Interfaces.RAG;
 ///         Used when reranking is disabled or for benchmarking.</item>
 ///   <item>Reranking is expensive — only process the top N results from retrieval
 ///         (configured via <c>AppConfig:AI:Rag:RerankCandidates</c>, typically 20-50).</item>
-///   <item>Return exactly <paramref name="topK"/> results (or fewer if input is smaller),
+///   <item>Return exactly <c>topK</c> results (or fewer if input is smaller),
 ///         sorted by descending rerank score.</item>
 /// </list>
 /// </remarks>

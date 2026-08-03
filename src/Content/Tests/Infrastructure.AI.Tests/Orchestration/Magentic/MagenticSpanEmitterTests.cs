@@ -12,7 +12,7 @@ namespace Infrastructure.AI.Tests.Orchestration.Magentic;
 
 /// <summary>
 /// PR-6 acceptance tests for the Magentic span tree. Drives the
-/// <see cref="MagenticEventSubscriber"/> with synthetic events and verifies the
+/// <see cref="Infrastructure.AI.Orchestration.Magentic.MagenticEventSubscriber"/> with synthetic events and verifies the
 /// resulting <see cref="System.Diagnostics.Activity"/> stream matches
 /// <c>documentation/architecture/magentic-spans.md</c>.
 /// </summary>
