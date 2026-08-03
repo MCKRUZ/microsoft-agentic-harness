@@ -3,6 +3,7 @@ using Domain.Common.Config.AI.AIFoundry;
 using Domain.Common.Config.AI.Audit;
 using Domain.Common.Config.AI.BundleExecution;
 using Domain.Common.Config.AI.ContextManagement;
+using Domain.Common.Config.AI.Conversations;
 using Domain.Common.Config.AI.DirectToolInvocation;
 using Domain.Common.Config.AI.DriftDetection;
 using Domain.Common.Config.AI.GitOps;
@@ -43,6 +44,7 @@ namespace Domain.Common.Config.AI;
 /// ├── McpServers        — Client-side MCP server registry (external servers to connect to)
 /// ├── A2A               — Agent-to-Agent protocol configuration
 /// ├── ContextManagement — Compaction, tool result storage, and budget tracking
+/// ├── Conversations     — Durable conversation transcripts shared across hosts
 /// ├── Permissions       — Permission system for tool and file access approvals
 /// ├── Hooks             — Lifecycle hook execution configuration
 /// ├── Orchestration     — Subagent management and streaming execution
@@ -104,6 +106,12 @@ public class AIConfig
     /// storage, and budget tracking.
     /// </summary>
     public ContextManagementConfig ContextManagement { get; set; } = new();
+
+    /// <summary>
+    /// Gets or sets the durable conversation transcript configuration. Shared infrastructure:
+    /// every host that reads or writes conversation history binds this same section.
+    /// </summary>
+    public ConversationsConfig Conversations { get; set; } = new();
 
     /// <summary>
     /// Gets or sets the permission system configuration controlling tool and file

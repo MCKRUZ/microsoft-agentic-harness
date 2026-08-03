@@ -365,9 +365,10 @@ public static class DependencyInjection
         // registered after this call, since TryAdd only sets if not already present.
         services.TryAddSingleton<IMcpPromptProvider, NullMcpPromptProvider>();
 
-        // Singleton: FileSystemConversationStore owns a SemaphoreSlim for thread-safety;
-        // a scoped/transient registration would create multiple semaphore instances.
-        services.AddSingleton<IConversationStore, FileSystemConversationStore>();
+        // IConversationStore is registered by Infrastructure.AI's AddInfrastructureAIDependencies,
+        // not here:
+        // the transcript store is shared infrastructure that the Execution API host reads too, so a
+        // registration owned by this host would be unreachable from the other one.
 
         // Singleton: ConversationLockRegistry must outlive hub instances (hubs are transient).
         services.AddSingleton<ConversationLockRegistry>();

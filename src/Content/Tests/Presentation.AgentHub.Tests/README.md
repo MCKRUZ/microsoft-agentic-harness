@@ -18,7 +18,7 @@ Unit and integration tests for the **Presentation.AgentHub** layer — ASP.NET C
 | `AgUiRunHandlerTests` | AG-UI SSE streaming orchestration |
 | `AgentTelemetryHubTests` | SignalR telemetry hub message dispatch |
 | `AgentsControllerTests` | Agent listing and metadata API endpoints |
-| `FileSystemConversationStoreTests` | Conversation persistence CRUD |
+| _(conversation persistence)_ | Moved to `Infrastructure.AI.Tests/Conversations/` with the store itself |
 | `CoreSetupTests` | Host startup and DI container validation |
 
 ## Running Tests

@@ -1,4 +1,4 @@
-namespace Presentation.AgentHub.DTOs;
+namespace Application.AI.Common.Models.Conversations;
 
 /// <summary>
 /// Per-conversation agent settings persisted on the <see cref="ConversationRecord"/>.

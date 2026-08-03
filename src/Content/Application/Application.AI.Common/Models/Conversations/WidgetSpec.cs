@@ -1,6 +1,6 @@
 using System.Text.Json;
 
-namespace Presentation.AgentHub.DTOs;
+namespace Application.AI.Common.Models.Conversations;
 
 /// <summary>
 /// A generative-UI widget the agent rendered inline during a turn (an image, form, or table),

@@ -1,4 +1,4 @@
-namespace Presentation.AgentHub.DTOs;
+namespace Application.AI.Common.Models.Conversations;
 
 /// <summary>
 /// Full conversation state persisted to disk. UserId is the object ID (OID claim)

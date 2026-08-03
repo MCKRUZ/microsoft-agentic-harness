@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.SignalR;
+using Application.AI.Common.Models.Conversations;
 using Presentation.AgentHub.DTOs;
 using Presentation.Common.Extensions;
 using Presentation.AgentHub.Interfaces;

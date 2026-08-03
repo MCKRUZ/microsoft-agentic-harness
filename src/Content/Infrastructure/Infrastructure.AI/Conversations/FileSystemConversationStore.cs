@@ -1,12 +1,12 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Application.AI.Common.Interfaces.AI;
+using Application.AI.Common.Models.Conversations;
+using Domain.Common.Config.AI.Conversations;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using Presentation.AgentHub.Interfaces;
-using Presentation.AgentHub.Config;
-using Presentation.AgentHub.DTOs;
 
-namespace Presentation.AgentHub.Services;
+namespace Infrastructure.AI.Conversations;
 
 /// <summary>
 /// File-system-backed conversation store. Each <see cref="ConversationRecord"/> is stored as a
@@ -16,6 +16,13 @@ namespace Presentation.AgentHub.Services;
 /// intentionally simple for POC scale. A production implementation should use
 /// per-conversation-id locking (e.g., AsyncKeyedLock) to allow concurrent operations
 /// across different conversations.
+///
+/// <para>
+/// <strong>Single-process only.</strong> That semaphore is in-process, so it serializes nothing
+/// between hosts. Two processes sharing one <c>ConversationsPath</c> can interleave writes to the
+/// shared <c>.tmp</c> staging file and move a torn record into place. This store is therefore fit
+/// for one host at a time — see <see cref="Domain.Common.Config.AI.Conversations.ConversationsConfig.ConversationsPath"/>.
+/// </para>
 ///
 /// Atomic writes: all writes go to a <c>.tmp</c> file first, then <see cref="System.IO.File.Move(string, string, bool)"/> with
 /// <c>overwrite: true</c>. This prevents partial-write corruption if the process exits mid-write.
@@ -37,11 +44,11 @@ public sealed class FileSystemConversationStore : IConversationStore
     private readonly ILogger<FileSystemConversationStore> _logger;
 
     /// <summary>
-    /// Initialises the store, resolving <see cref="AgentHubConfig.ConversationsPath"/> to an
+    /// Initialises the store, resolving <see cref="ConversationsConfig.ConversationsPath"/> to an
     /// absolute path and creating the directory if it does not yet exist.
     /// </summary>
     public FileSystemConversationStore(
-        IOptions<AgentHubConfig> config,
+        IOptions<ConversationsConfig> config,
         ILogger<FileSystemConversationStore> logger)
     {
         _basePath = Path.GetFullPath(config.Value.ConversationsPath);

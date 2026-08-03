@@ -68,7 +68,9 @@ Presentation.Common → Infrastructure.* → Application.* → Domain.*
 | `Error` | `{ message }` | Turn failure (sanitized, no internals) |
 | `HistoryTruncated` | `{ conversationId, keepCount }` | Context window compaction occurred |
 
-**Concurrency safety:** `ConversationLockRegistry` (singleton) provides one `SemaphoreSlim` per conversation. Concurrent `SendMessage` calls are serialized to prevent token stream interleaving or conversation record corruption.
+**Concurrency safety:** `ConversationLockRegistry` (singleton) provides one `SemaphoreSlim` per conversation. Concurrent `SendMessage` calls are serialized to prevent token stream interleaving or conversation record corruption. This registry is **in-process**, so it serializes turns within this host only — see issue #235 for the cross-host lease that supersedes it.
+
+**Transcript persistence:** this host does not own the conversation store. `IConversationStore` lives in `Application.AI.Common/Interfaces/AI/`, its DTOs in `Application.AI.Common/Models/Conversations/`, and `FileSystemConversationStore` in `Infrastructure.AI/Conversations/`, registered by `AddInfrastructureAIDependencies`. It moved out of this project because the Execution API needs the same transcripts and peer Presentation projects cannot reference each other. Configuration is `AppConfig:AI:Conversations:ConversationsPath` (formerly `AppConfig:AgentHub:ConversationsPath`).
 
 ### AG-UI Protocol (SSE Streaming)
 
@@ -128,7 +130,6 @@ Presentation.AgentHub/
 ├── Hubs/
 │   └── AgentTelemetryHub.cs          SignalR hub (conversation + telemetry)
 ├── Services/
-│   ├── FileSystemConversationStore.cs JSON-file conversation persistence
 │   ├── ConversationLockRegistry.cs   Per-conversation SemaphoreSlim
 │   ├── PrometheusQueryService.cs     PromQL HTTP proxy
 │   ├── DemoMetricsService.cs         Synthetic metrics for development
@@ -155,10 +156,10 @@ Presentation.AgentHub/
   "AppConfig": {
     "AI": {
       "AgentFramework": { "DefaultDeployment": "gpt-4o", "ClientType": "AzureOpenAI" },
+      "Conversations": { "ConversationsPath": "./conversations" },
       "Governance": { "Enabled": true, "PolicyPaths": ["Policies/default-policy.yaml"] }
     },
     "AgentHub": {
-      "ConversationsPath": "./conversations",
       "DefaultAgentName": "",
       "MaxHistoryMessages": 20,
       "Cors": { "AllowedOrigins": ["http://localhost:5173", "http://localhost:5174"] }
@@ -256,7 +257,6 @@ dotnet test src/AgenticHarness.slnx --filter "FullyQualifiedName~Presentation.Ag
 - Hub method authorization and ownership enforcement
 - SignalR connection lifecycle (connect, reconnect, disconnect)
 - AG-UI SSE event serialization
-- Conversation store CRUD operations
 - Rate limiter enforcement (MCP tool invoke)
 - Dev auth bypass (only active in Development + Auth:Disabled)
 - Span exporter routing (conversation-scoped vs global)

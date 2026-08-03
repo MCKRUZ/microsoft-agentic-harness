@@ -1,3 +1,4 @@
+using Application.AI.Common.Models.Conversations;
 using Presentation.AgentHub.DTOs;
 
 namespace Presentation.AgentHub.Interfaces;

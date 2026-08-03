@@ -1,11 +1,11 @@
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 using Microsoft.Extensions.Options;
-using Presentation.AgentHub.Config;
-using Presentation.AgentHub.DTOs;
-using Presentation.AgentHub.Services;
+using Application.AI.Common.Models.Conversations;
+using Domain.Common.Config.AI.Conversations;
+using Infrastructure.AI.Conversations;
 
-namespace Presentation.AgentHub.Tests.ConversationStore;
+namespace Infrastructure.AI.Tests.Conversations;
 
 /// <summary>Unit tests for <see cref="FileSystemConversationStore"/> using a temp directory fixture.</summary>
 public sealed class FileSystemConversationStoreTests : IDisposable
@@ -18,12 +18,7 @@ public sealed class FileSystemConversationStoreTests : IDisposable
         _tempDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
         Directory.CreateDirectory(_tempDir);
 
-        var config = Options.Create(new AgentHubConfig
-        {
-            ConversationsPath = _tempDir,
-            DefaultAgentName = "test-agent",
-            MaxHistoryMessages = 20,
-        });
+        var config = Options.Create(new ConversationsConfig { ConversationsPath = _tempDir });
 
         _store = new FileSystemConversationStore(config, NullLogger<FileSystemConversationStore>.Instance);
     }

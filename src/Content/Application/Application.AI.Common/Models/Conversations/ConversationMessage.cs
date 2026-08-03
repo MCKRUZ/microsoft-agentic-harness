@@ -1,4 +1,4 @@
-namespace Presentation.AgentHub.DTOs;
+namespace Application.AI.Common.Models.Conversations;
 
 /// <summary>A single message in a conversation. Role determines rendering behavior in the UI.</summary>
 /// <remarks>

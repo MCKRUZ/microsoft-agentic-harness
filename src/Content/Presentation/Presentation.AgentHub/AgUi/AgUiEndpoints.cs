@@ -1,5 +1,5 @@
 using Presentation.Common.Extensions;
-using Presentation.AgentHub.Interfaces;
+using Application.AI.Common.Interfaces.AI;
 
 namespace Presentation.AgentHub.AgUi;
 

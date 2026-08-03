@@ -7,11 +7,13 @@ using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Presentation.AgentHub.Controllers;
-using Presentation.AgentHub.Interfaces;
 using Presentation.AgentHub.DTOs;
+using Presentation.AgentHub.Interfaces;
 using System.Net;
 using System.Net.Http.Json;
 using Xunit;
+using Application.AI.Common.Interfaces.AI;
+using Application.AI.Common.Models.Conversations;
 
 namespace Presentation.AgentHub.Tests.Controllers;
 

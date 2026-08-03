@@ -1,12 +1,12 @@
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
-using Presentation.AgentHub.Config;
-using Presentation.AgentHub.DTOs;
-using Presentation.AgentHub.Services;
+using Application.AI.Common.Models.Conversations;
+using Domain.Common.Config.AI.Conversations;
+using Infrastructure.AI.Conversations;
 using Xunit;
 
-namespace Presentation.AgentHub.Tests.ConversationStore;
+namespace Infrastructure.AI.Tests.Conversations;
 
 public sealed class FileSystemConversationStoreAdditionalTests : IDisposable
 {
@@ -18,12 +18,7 @@ public sealed class FileSystemConversationStoreAdditionalTests : IDisposable
         _tempDir = Path.Combine(Path.GetTempPath(), $"convstore-{Guid.NewGuid():N}");
         Directory.CreateDirectory(_tempDir);
 
-        var config = Options.Create(new AgentHubConfig
-        {
-            ConversationsPath = _tempDir,
-            DefaultAgentName = "test-agent",
-            MaxHistoryMessages = 20,
-        });
+        var config = Options.Create(new ConversationsConfig { ConversationsPath = _tempDir });
 
         _store = new FileSystemConversationStore(config, NullLogger<FileSystemConversationStore>.Instance);
     }

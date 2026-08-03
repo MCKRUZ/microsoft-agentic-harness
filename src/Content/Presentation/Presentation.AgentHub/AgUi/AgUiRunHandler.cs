@@ -9,9 +9,8 @@ using MediatR;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using Presentation.AgentHub.DTOs;
+using Application.AI.Common.Models.Conversations;
 using Presentation.AgentHub.Hubs;
-using Presentation.AgentHub.Interfaces;
 using Presentation.Common.Extensions;
 
 namespace Presentation.AgentHub.AgUi;

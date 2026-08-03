@@ -1,6 +1,6 @@
-using Presentation.AgentHub.DTOs;
+using Application.AI.Common.Models.Conversations;
 
-namespace Presentation.AgentHub.Interfaces;
+namespace Application.AI.Common.Interfaces.AI;
 
 /// <summary>
 /// Persistent store for conversation records. Thread-safe for concurrent access.
