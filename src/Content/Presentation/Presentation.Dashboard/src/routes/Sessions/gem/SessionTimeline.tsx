@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams } from 'react-router';
 import { cn } from '@/lib/utils';
 import { ContextBar } from '@/components/context/ContextBar';
 import { CategorySwatch } from '@/components/context/CategorySwatch';

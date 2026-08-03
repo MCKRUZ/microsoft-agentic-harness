@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
 import { fetchSessionDetail } from '@/api/sessions';
 import { useSessionSnapshots } from '@/stores/sessionSnapshotsStore';

@@ -1,4 +1,4 @@
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams } from 'react-router';
 import type { ToolExecutionRecord } from '@/api/types';
 import { StatusBadge } from './StatusBadge';
 import { formatTokens } from './format';

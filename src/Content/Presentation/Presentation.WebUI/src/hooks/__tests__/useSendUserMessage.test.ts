@@ -18,7 +18,7 @@ vi.mock('@/hooks/useAgentHub', () => ({
 }));
 
 const navigate = vi.fn();
-vi.mock('react-router-dom', () => ({
+vi.mock('react-router', () => ({
   useNavigate: () => navigate,
 }));
 

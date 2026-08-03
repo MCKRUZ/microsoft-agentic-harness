@@ -1,6 +1,6 @@
 import { MsalProvider } from '@azure/msal-react';
 import { QueryClientProvider } from '@tanstack/react-query';
-import { RouterProvider } from 'react-router-dom';
+import { RouterProvider } from 'react-router/dom';
 import { msalInstance } from '@/auth/authConfig';
 import { setMsalInstance } from '@/api/client';
 import { queryClient } from './queryClient';

@@ -1,5 +1,5 @@
 import { AuthenticatedTemplate, UnauthenticatedTemplate, useMsal } from '@azure/msal-react';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router';
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { ChatView } from '@/views/ChatView';
 import { AgentsView } from '@/views/AgentsView';

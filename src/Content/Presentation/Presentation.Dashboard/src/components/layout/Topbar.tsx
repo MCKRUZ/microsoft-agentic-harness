@@ -5,7 +5,7 @@ import { useTelemetryStore } from '@/stores/telemetryStore';
 import { useTimeRangeStore } from '@/stores/timeRangeStore';
 import { useChatStore } from '@/stores/chatStore';
 import { useQueryClient } from '@tanstack/react-query';
-import { useLocation } from 'react-router-dom';
+import { useLocation } from 'react-router';
 
 const breadcrumbMap: Record<string, string> = {
   '/pulse': 'Pulse',

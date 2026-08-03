@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { ContextBar } from '@/components/context/ContextBar';
 import { ContextLegend } from '@/components/context/ContextLegend';
 import { ScrubStrip, type ScrubTurn } from '@/components/context/ScrubStrip';

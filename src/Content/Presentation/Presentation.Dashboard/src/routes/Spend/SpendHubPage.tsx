@@ -1,4 +1,4 @@
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import { PageHeader } from '@/components/primitives/PageHeader';
 import { PanelGrid } from '@/components/panels/PanelGrid';
 import { Coins, DollarSign, Wallet } from 'lucide-react';
