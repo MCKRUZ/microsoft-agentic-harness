@@ -1,3 +1,16 @@
+/* eslint-disable react-refresh/only-export-components --
+ * This module's only export is `router`, but it declares 20 lazy() component bindings, so the
+ * rule fires once per binding — 20 of the repo's errors from one file.
+ *
+ * The rule protects Fast Refresh, which cannot apply to a route table anyway: changing the
+ * route graph remounts the tree, and react-router recreates the browser router wholesale. The
+ * suggested remedy (move the lazy() consts to their own module) would add a file whose sole
+ * purpose is to satisfy a rule that has no effect here, and it would separate each route's
+ * import from the path it serves — the one place a reader wants them together.
+ *
+ * Scoped to this file only. If a real component is ever added and exported here, move it out
+ * rather than widening the disable.
+ */
 import { lazy, Suspense } from 'react';
 import { createBrowserRouter, Navigate } from 'react-router-dom';
 

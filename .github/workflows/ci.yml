@@ -80,10 +80,9 @@ jobs:
   # strength of local runs alone. This job is the first leg — tests only, and blocking from
   # the day it lands because both suites are already green.
   #
-  # Lint is deliberately still absent: it is red (44 errors across the two projects), and a
-  # step that runs without failing the build is not a gate — this repo has already paid for
-  # that lesson twice in the security gate. It arrives in its own PR, blocking on arrival,
-  # once those errors are fixed.
+  # All three legs are now here and all three block: tests (#229), typecheck (#230), lint.
+  # Each arrived only once it was green, because a step that runs without failing the build is
+  # not a gate — this repo has already paid for that lesson twice in the security gate.
   #
   # No `paths:` filter, on purpose. A job that only sometimes runs is the same trap one
   # level up, and these two suites finish in well under the .NET job's five minutes, so
@@ -130,8 +129,16 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      # Runs even when the typecheck fails, so one CI run reports both signals instead of
-      # hiding the test result behind the first red step.
+      # `--max-warnings 0` is deliberately NOT set. Both projects carry warnings that are
+      # advisory by design — React Compiler's "incompatible library" note on react-hook-form's
+      # watch(), and two exhaustive-deps hints — and failing on them would either force a
+      # suppression or block on someone else's library. Errors block; warnings inform.
+      - name: Lint
+        if: '!cancelled()'
+        run: npm run lint
+
+      # Runs even when an earlier check fails, so one CI run reports every signal instead of
+      # hiding the rest behind the first red step.
       - name: Tests
         if: '!cancelled()'
         run: npm run test

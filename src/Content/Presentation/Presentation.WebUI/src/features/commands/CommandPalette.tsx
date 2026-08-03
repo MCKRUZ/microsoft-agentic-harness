@@ -11,7 +11,6 @@ export interface CommandItem {
 }
 
 interface CommandPaletteProps {
-  open: boolean;
   onClose: () => void;
   commands: CommandItem[];
 }
@@ -25,34 +24,38 @@ function matches(item: CommandItem, query: string): boolean {
   return (item.keywords ?? []).some((k) => k.toLowerCase().includes(q));
 }
 
-export function CommandPalette({ open, onClose, commands }: CommandPaletteProps) {
+// Rendered only while open (DashboardLayout mounts it conditionally), so there is no `open`
+// prop and no reset effect: mounting IS the reset. The previous form stayed mounted and
+// cleared its own query/highlight from an effect, which is state adjustment inside an effect
+// and cost an extra render pass on every open.
+export function CommandPalette({ onClose, commands }: CommandPaletteProps) {
   const [query, setQuery] = useState('');
   const [activeIndex, setActiveIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLUListElement>(null);
 
+  // Focus is a genuine post-commit DOM effect, not state adjustment. rAF defers to after the
+  // dialog is painted, which is what makes the caret land reliably on first open.
   useEffect(() => {
-    if (!open) return;
-    setQuery('');
-    setActiveIndex(0);
     requestAnimationFrame(() => { inputRef.current?.focus(); });
-  }, [open]);
+  }, []);
 
   const filtered = useMemo(
     () => commands.filter((c) => matches(c, query)),
     [commands, query],
   );
 
-  useEffect(() => {
-    if (activeIndex >= filtered.length) setActiveIndex(0);
-  }, [filtered, activeIndex]);
+  // Clamped during render rather than corrected by an effect. The effect form committed one
+  // render in which activeIndex pointed past the end of `filtered` — so for a frame the
+  // highlighted row was simply absent, and Enter in that frame resolved against an
+  // out-of-range index. Deriving makes the out-of-range state unrepresentable instead of
+  // merely short-lived.
+  const activeIdx = activeIndex >= filtered.length ? 0 : activeIndex;
 
   useEffect(() => {
-    const el = listRef.current?.children[activeIndex] as HTMLElement | undefined;
+    const el = listRef.current?.children[activeIdx] as HTMLElement | undefined;
     el?.scrollIntoView({ block: 'nearest' });
-  }, [activeIndex]);
-
-  if (!open) return null;
+  }, [activeIdx]);
 
   const runItem = (item: CommandItem): void => {
     item.run();
@@ -68,7 +71,8 @@ export function CommandPalette({ open, onClose, commands }: CommandPaletteProps)
       setActiveIndex((i) => (filtered.length === 0 ? 0 : (i - 1 + filtered.length) % filtered.length));
     } else if (e.key === 'Enter') {
       e.preventDefault();
-      if (filtered[activeIndex]) runItem(filtered[activeIndex]);
+      const item = filtered[activeIdx];
+      if (item) runItem(item);
     } else if (e.key === 'Escape') {
       e.preventDefault();
       onClose();
@@ -119,7 +123,7 @@ export function CommandPalette({ open, onClose, commands }: CommandPaletteProps)
                 </div>
                 {items.map((item) => {
                   flatIndex += 1;
-                  const isActive = flatIndex === activeIndex;
+                  const isActive = flatIndex === activeIdx;
                   const myIndex = flatIndex;
                   return (
                     <li

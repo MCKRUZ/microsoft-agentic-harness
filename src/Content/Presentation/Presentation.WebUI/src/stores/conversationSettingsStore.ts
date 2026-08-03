@@ -27,7 +27,12 @@ export const useConversationSettingsStore = create<ConversationSettingsState>((s
   },
   clear: (conversationId) => {
     set((state) => {
-      const { [conversationId]: _removed, ...rest } = state.byConversationId;
+      // Copy-then-delete rather than a rest-destructure with a discarded binding: the
+      // `{ [k]: _removed, ...rest }` form only compiles by naming a variable it never uses.
+      // `rest` is a fresh object either way, so the store's state is still replaced, never
+      // mutated in place.
+      const rest = { ...state.byConversationId };
+      delete rest[conversationId];
       return { byConversationId: rest };
     });
   },

@@ -1,3 +1,19 @@
+/* eslint-disable react-refresh/only-export-components --
+ * `AgentHubProvider` (component) and `useAgentHub` (hook) stay in one module deliberately.
+ *
+ * The rule's remedy is to move the hook to its own file. Four test files bind
+ * `vi.mock('@/hooks/useAgentHub', ...)` to this exact module path and substitute the provider,
+ * the hook, or both; splitting would leave each mock intercepting only half of a pair that the
+ * component under test still uses together, so the real provider would open a live SignalR
+ * connection inside the suite. That is a rewrite of four mock factories.
+ *
+ * What it would buy is Fast Refresh on a module that owns a websocket. Hot-swapping it tears
+ * down and re-establishes the hub connection, so the reload this rule prevents is the
+ * behaviour you actually want here.
+ *
+ * Cost is four fragile test rewrites, benefit is negative. Scoped to this file.
+ * Contrast ThemeProvider, where the same split was clean and was done.
+ */
 import { useContext, createContext, useRef, useState, useEffect, type ReactNode } from 'react';
 import { useMsal } from '@azure/msal-react';
 import type { HubConnection } from '@microsoft/signalr';

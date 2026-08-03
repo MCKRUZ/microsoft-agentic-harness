@@ -1,4 +1,4 @@
-import { test, expect, type Request } from '@playwright/test';
+import { test, expect } from '@playwright/test';
 
 /**
  * Catches 404s on known API routes that the frontend attempts to call.

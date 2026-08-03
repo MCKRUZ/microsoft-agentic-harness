@@ -1,7 +1,7 @@
 import { Moon, Sun, Monitor, Command } from 'lucide-react';
 import { useMsal } from '@azure/msal-react';
 import { useTheme } from '@/hooks/useTheme';
-import type { ThemePreference } from '@/components/theme/ThemeProvider';
+import type { ThemePreference } from '@/components/theme/themeContext';
 import { IS_AUTH_DISABLED } from '@/lib/devAuth';
 import { useAgentHub, type ConnectionState } from '@/hooks/useAgentHub';
 import { cn } from '@/lib/utils';

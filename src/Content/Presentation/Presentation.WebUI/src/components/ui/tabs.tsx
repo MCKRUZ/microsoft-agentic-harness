@@ -79,4 +79,5 @@ function TabsContent({ className, ...props }: TabsPrimitive.Panel.Props) {
   )
 }
 
-export { Tabs, TabsList, TabsTrigger, TabsContent, tabsListVariants }
+// Not exporting tabsListVariants — see the note in button.tsx.
+export { Tabs, TabsList, TabsTrigger, TabsContent }

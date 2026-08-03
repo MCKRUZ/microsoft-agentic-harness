@@ -6,7 +6,11 @@ import tseslint from 'typescript-eslint'
 import { defineConfig, globalIgnores } from 'eslint/config'
 
 export default defineConfig([
-  globalIgnores(['dist']),
+  // `coverage` holds the v8/istanbul HTML report, including vendored scripts
+  // (prettify.js, sorter.js, block-navigation.js) that are generated output, not source.
+  // Linting them produced findings nobody can act on and that regenerate on every
+  // `test:coverage` run. `dist` is excluded for the same reason.
+  globalIgnores(['dist', 'coverage']),
   {
     files: ['**/*.{ts,tsx}'],
     extends: [
