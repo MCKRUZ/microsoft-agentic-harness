@@ -1,4 +1,4 @@
-namespace Presentation.AgentHub.DTOs;
+namespace Application.AI.Common.Models.Conversations;
 
 /// <summary>
 /// Running totals for session-level telemetry. Persisted on the <see cref="ConversationRecord"/>

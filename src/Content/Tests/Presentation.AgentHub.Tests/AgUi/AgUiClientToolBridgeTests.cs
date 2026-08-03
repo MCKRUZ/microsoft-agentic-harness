@@ -7,6 +7,8 @@ using Presentation.AgentHub.Config;
 using Presentation.AgentHub.DTOs;
 using Presentation.AgentHub.Interfaces;
 using Xunit;
+using Application.AI.Common.Interfaces.AI;
+using Application.AI.Common.Models.Conversations;
 
 namespace Presentation.AgentHub.Tests.AgUi;
 

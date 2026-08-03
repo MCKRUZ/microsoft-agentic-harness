@@ -9,6 +9,7 @@ using Presentation.AgentHub.Tests.Controllers;
 using System.Net;
 using System.Net.Http.Json;
 using Xunit;
+using Application.AI.Common.Interfaces.AI;
 
 namespace Presentation.AgentHub.Tests.AgUi;
 

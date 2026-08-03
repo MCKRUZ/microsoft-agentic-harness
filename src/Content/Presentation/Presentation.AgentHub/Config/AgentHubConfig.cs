@@ -6,9 +6,6 @@ namespace Presentation.AgentHub.Config;
 /// </summary>
 public sealed record AgentHubConfig
 {
-    /// <summary>File system path where conversation records are persisted.</summary>
-    public string ConversationsPath { get; init; } = "./conversations";
-
     /// <summary>Name of the default agent used when no agent is specified.</summary>
     public string DefaultAgentName { get; init; } = string.Empty;
 

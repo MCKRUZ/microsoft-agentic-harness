@@ -11,6 +11,7 @@ using Presentation.AgentHub.Interfaces;
 using System.Net;
 using System.Net.Http.Json;
 using Xunit;
+using Application.AI.Common.Interfaces.AI;
 
 namespace Presentation.AgentHub.Tests.Controllers;
 

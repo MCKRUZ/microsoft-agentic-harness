@@ -13,6 +13,9 @@ using OpenTelemetry.Metrics;
 using Presentation.AgentHub.Interfaces;
 using Presentation.AgentHub.Config;
 using Presentation.AgentHub.Services;
+using Application.AI.Common.Interfaces.AI;
+using Domain.Common.Config.AI.Conversations;
+using Infrastructure.AI.Conversations;
 
 namespace Presentation.AgentHub.Tests;
 
@@ -105,12 +108,7 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
             Directory.CreateDirectory(TempConversationsPath);
             services.AddSingleton<IConversationStore>(
                 new FileSystemConversationStore(
-                    Options.Create(new AgentHubConfig
-                    {
-                        ConversationsPath = TempConversationsPath,
-                        DefaultAgentName = "test-agent",
-                        MaxHistoryMessages = 20,
-                    }),
+                    Options.Create(new ConversationsConfig { ConversationsPath = TempConversationsPath }),
                     NullLogger<FileSystemConversationStore>.Instance));
 
             // Replace IMediator with a mock so hub tests can stub AgentTurnResult

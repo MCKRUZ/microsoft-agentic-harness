@@ -10,6 +10,7 @@ using MediatR;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
+using Application.AI.Common.Models.Conversations;
 using Presentation.AgentHub.Config;
 using Presentation.AgentHub.DTOs;
 using Presentation.AgentHub.Hubs;

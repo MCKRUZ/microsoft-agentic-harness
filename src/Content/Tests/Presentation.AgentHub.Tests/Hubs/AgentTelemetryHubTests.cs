@@ -14,6 +14,8 @@ using Presentation.AgentHub.Interfaces;
 using Presentation.AgentHub.DTOs;
 using System.Collections.Concurrent;
 using Xunit;
+using Application.AI.Common.Interfaces.AI;
+using Application.AI.Common.Models.Conversations;
 
 namespace Presentation.AgentHub.Tests.Hubs;
 

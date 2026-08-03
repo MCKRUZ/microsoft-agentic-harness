@@ -1,12 +1,12 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Application.AI.Common.Interfaces.AI;
+using Application.AI.Common.Models.Conversations;
+using Domain.Common.Config.AI.Conversations;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using Presentation.AgentHub.Interfaces;
-using Presentation.AgentHub.Config;
-using Presentation.AgentHub.DTOs;
 
-namespace Presentation.AgentHub.Services;
+namespace Infrastructure.AI.Conversations;
 
 /// <summary>
 /// File-system-backed conversation store. Each <see cref="ConversationRecord"/> is stored as a
@@ -37,11 +37,11 @@ public sealed class FileSystemConversationStore : IConversationStore
     private readonly ILogger<FileSystemConversationStore> _logger;
 
     /// <summary>
-    /// Initialises the store, resolving <see cref="AgentHubConfig.ConversationsPath"/> to an
+    /// Initialises the store, resolving <see cref="ConversationsConfig.ConversationsPath"/> to an
     /// absolute path and creating the directory if it does not yet exist.
     /// </summary>
     public FileSystemConversationStore(
-        IOptions<AgentHubConfig> config,
+        IOptions<ConversationsConfig> config,
         ILogger<FileSystemConversationStore> logger)
     {
         _basePath = Path.GetFullPath(config.Value.ConversationsPath);

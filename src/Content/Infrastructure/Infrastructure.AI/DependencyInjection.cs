@@ -368,6 +368,10 @@ public static partial class DependencyInjection
 
         RegisterAuditChainVerification(services, appConfig);
 
+        // --- Conversation transcripts (shared by every host that runs a conversation) ---
+
+        RegisterConversationStore(services);
+
         // --- Planner and sandbox ---
 
         RegisterPlannerDbContext(services, appConfig);

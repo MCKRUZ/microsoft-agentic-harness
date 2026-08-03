@@ -1,4 +1,5 @@
 using Presentation.Common.Extensions;
+using Application.AI.Common.Interfaces.AI;
 using Presentation.AgentHub.Interfaces;
 
 namespace Presentation.AgentHub.AgUi;
