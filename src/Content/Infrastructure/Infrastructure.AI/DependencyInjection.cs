@@ -370,7 +370,7 @@ public static partial class DependencyInjection
 
         // --- Conversation transcripts (shared by every host that runs a conversation) ---
 
-        RegisterConversationStore(services);
+        RegisterConversationStore(services, appConfig);
 
         // --- Planner and sandbox ---
 

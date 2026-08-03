@@ -6,7 +6,6 @@ using Application.AI.Common.Interfaces.AI;
 using Application.AI.Common.Models.Conversations;
 using Presentation.AgentHub.Config;
 using Presentation.Common.Extensions;
-using Presentation.AgentHub.Interfaces;
 using Presentation.AgentHub.DTOs;
 
 namespace Presentation.AgentHub.Controllers;

@@ -1,6 +1,5 @@
 using Application.AI.Common.Interfaces.AI;
 using Domain.Common.Config;
-using Domain.Common.Config.AI.Conversations;
 using Infrastructure.AI.Conversations;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -22,17 +21,18 @@ public static partial class DependencyInjection
     /// <para>
     /// <strong>Singleton is load-bearing.</strong> <see cref="FileSystemConversationStore"/> serialises
     /// all of its file I/O behind one <see cref="SemaphoreSlim"/>; a scoped or transient registration
-    /// would hand out several stores with several semaphores and lose that serialisation.
+    /// would hand out several stores with several semaphores and lose that serialisation. Registering
+    /// by type keeps construction lazy, so a host that never resolves the store never touches the disk.
     /// </para>
     /// </remarks>
-    private static void RegisterConversationStore(IServiceCollection services)
+    private static void RegisterConversationStore(IServiceCollection services, AppConfig appConfig)
     {
-        // Project the shared AppConfig section onto the narrow options type the store depends on, so
-        // the store's dependency surface is the two settings it reads rather than the whole config
-        // tree. Same shape as the PlannerOptions projection below.
-        services.AddOptions<ConversationsConfig>()
-            .Configure<IOptionsMonitor<AppConfig>>((opts, app) =>
-                opts.ConversationsPath = app.CurrentValue.AI.Conversations.ConversationsPath);
+        // Hand the config section straight through rather than copying its properties across. The
+        // source and target are the same type, so a property-by-property projection would only add a
+        // place to forget: a setting added to ConversationsConfig later would silently keep its
+        // default with every test still green. Same idiom as the ModelRouting/KnowledgeBridge
+        // registrations in DependencyInjection.cs.
+        services.AddSingleton(Options.Create(appConfig.AI.Conversations));
 
         services.AddSingleton<IConversationStore, FileSystemConversationStore>();
     }

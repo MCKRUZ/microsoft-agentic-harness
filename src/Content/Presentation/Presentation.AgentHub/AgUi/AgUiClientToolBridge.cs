@@ -5,8 +5,6 @@ using Microsoft.Extensions.Options;
 using Application.AI.Common.Interfaces.AI;
 using Application.AI.Common.Models.Conversations;
 using Presentation.AgentHub.Config;
-using Presentation.AgentHub.DTOs;
-using Presentation.AgentHub.Interfaces;
 
 namespace Presentation.AgentHub.AgUi;
 

@@ -10,8 +10,6 @@ using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Moq;
 using Presentation.AgentHub.Hubs;
-using Presentation.AgentHub.Interfaces;
-using Presentation.AgentHub.DTOs;
 using System.Collections.Concurrent;
 using Xunit;
 using Application.AI.Common.Interfaces.AI;

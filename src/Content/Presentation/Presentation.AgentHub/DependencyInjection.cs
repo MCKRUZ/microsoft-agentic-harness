@@ -365,7 +365,8 @@ public static class DependencyInjection
         // registered after this call, since TryAdd only sets if not already present.
         services.TryAddSingleton<IMcpPromptProvider, NullMcpPromptProvider>();
 
-        // IConversationStore is registered by Infrastructure.AI (AddConversationStore), not here:
+        // IConversationStore is registered by Infrastructure.AI's AddInfrastructureAIDependencies,
+        // not here:
         // the transcript store is shared infrastructure that the Execution API host reads too, so a
         // registration owned by this host would be unreachable from the other one.
 

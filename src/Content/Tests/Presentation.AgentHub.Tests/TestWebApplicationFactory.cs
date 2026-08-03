@@ -6,16 +6,8 @@ using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
-using Microsoft.Extensions.Logging.Abstractions;
-using Microsoft.Extensions.Options;
 using Moq;
 using OpenTelemetry.Metrics;
-using Presentation.AgentHub.Interfaces;
-using Presentation.AgentHub.Config;
-using Presentation.AgentHub.Services;
-using Application.AI.Common.Interfaces.AI;
-using Domain.Common.Config.AI.Conversations;
-using Infrastructure.AI.Conversations;
 
 namespace Presentation.AgentHub.Tests;
 
@@ -102,14 +94,10 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
                 .AddScheme<AuthenticationSchemeOptions, TestJwtBearerHandler>(
                     TestJwtBearerHandler.SchemeName, _ => { });
 
-            // Route conversation storage to an isolated temp directory.
-            // The last AddSingleton registration wins, replacing DependencyInjection.cs's
-            // registration of FileSystemConversationStore with the appsettings path.
-            Directory.CreateDirectory(TempConversationsPath);
-            services.AddSingleton<IConversationStore>(
-                new FileSystemConversationStore(
-                    Options.Create(new ConversationsConfig { ConversationsPath = TempConversationsPath }),
-                    NullLogger<FileSystemConversationStore>.Instance));
+            // Route conversation storage to an isolated temp directory. The last AddSingleton wins,
+            // replacing Infrastructure.AI's registration of the store at the configured path. The
+            // helper creates the directory, so there is no CreateDirectory call to keep in step here.
+            services.AddSingleton(TestConversationStore.ForDirectory(TempConversationsPath));
 
             // Replace IMediator with a mock so hub tests can stub AgentTurnResult
             // without invoking the real MediatR pipeline or AI services.

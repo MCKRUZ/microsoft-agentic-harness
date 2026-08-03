@@ -6,15 +6,7 @@ using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
-using Microsoft.Extensions.Logging.Abstractions;
-using Microsoft.Extensions.Options;
-using Domain.Common.Config.AI.Conversations;
-using Infrastructure.AI.Conversations;
-using Presentation.AgentHub.Config;
-using Presentation.AgentHub.Interfaces;
-using Presentation.AgentHub.Services;
 using Presentation.AgentHub.Tests.Fakes;
-using Application.AI.Common.Interfaces.AI;
 
 namespace Presentation.AgentHub.Tests;
 
@@ -56,11 +48,7 @@ public class IntegrationTestFactory : WebApplicationFactory<Program>
                 .AddScheme<AuthenticationSchemeOptions, TestAuthHandler>(
                     TestAuthHandler.SchemeName, _ => { });
 
-            Directory.CreateDirectory(TempConversationsPath);
-            services.AddSingleton<IConversationStore>(
-                new FileSystemConversationStore(
-                    Options.Create(new ConversationsConfig { ConversationsPath = TempConversationsPath }),
-                    NullLogger<FileSystemConversationStore>.Instance));
+            services.AddSingleton(TestConversationStore.ForDirectory(TempConversationsPath));
 
             // Replace AI services with fakes — keeps real MediatR pipeline
             services.RemoveAll<IChatClientFactory>();

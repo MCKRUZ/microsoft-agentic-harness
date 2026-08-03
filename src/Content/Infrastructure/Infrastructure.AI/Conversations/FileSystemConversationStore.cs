@@ -17,6 +17,13 @@ namespace Infrastructure.AI.Conversations;
 /// per-conversation-id locking (e.g., AsyncKeyedLock) to allow concurrent operations
 /// across different conversations.
 ///
+/// <para>
+/// <strong>Single-process only.</strong> That semaphore is in-process, so it serializes nothing
+/// between hosts. Two processes sharing one <c>ConversationsPath</c> can interleave writes to the
+/// shared <c>.tmp</c> staging file and move a torn record into place. This store is therefore fit
+/// for one host at a time — see <see cref="Domain.Common.Config.AI.Conversations.ConversationsConfig.ConversationsPath"/>.
+/// </para>
+///
 /// Atomic writes: all writes go to a <c>.tmp</c> file first, then <see cref="System.IO.File.Move(string, string, bool)"/> with
 /// <c>overwrite: true</c>. This prevents partial-write corruption if the process exits mid-write.
 ///

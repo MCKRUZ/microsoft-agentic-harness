@@ -41,14 +41,17 @@ public sealed class ConversationStoreCompositionTests : IDisposable
     /// <inheritdoc />
     public void Dispose()
     {
+        // Only the fixture's own directory. A regressed binding leaves a stray "./conversations" in
+        // the shared test working directory, but reaching out to delete that would race the other
+        // classes in this folder that xUnit runs in parallel — a worse problem than the litter.
         if (Directory.Exists(_conversationsDir))
             Directory.Delete(_conversationsDir, recursive: true);
     }
 
     [Fact]
-    public void CompositionRoot_ResolvesConversationStore_ForEveryHost()
+    public async Task CompositionRoot_ResolvesConversationStore_ForEveryHost()
     {
-        using var provider = CompositionRootTestHost.BuildProvider(Settings());
+        await using var provider = CompositionRootTestHost.BuildProvider(Settings());
 
         var store = provider.GetService<IConversationStore>();
 
@@ -58,9 +61,9 @@ public sealed class ConversationStoreCompositionTests : IDisposable
     }
 
     [Fact]
-    public void CompositionRoot_RegistersConversationStore_AsSingleton()
+    public async Task CompositionRoot_RegistersConversationStore_AsSingleton()
     {
-        using var provider = CompositionRootTestHost.BuildProvider(Settings());
+        await using var provider = CompositionRootTestHost.BuildProvider(Settings());
 
         var first = provider.GetRequiredService<IConversationStore>();
         var second = provider.GetRequiredService<IConversationStore>();
@@ -72,11 +75,11 @@ public sealed class ConversationStoreCompositionTests : IDisposable
     }
 
     [Fact]
-    public void CompositionRoot_BindsConversationsPath_FromTheSharedAiSection()
+    public async Task CompositionRoot_BindsConversationsPath_FromTheSharedAiSection()
     {
         Directory.Exists(_conversationsDir).Should().BeFalse("the fixture must start from nothing");
 
-        using var provider = CompositionRootTestHost.BuildProvider(Settings());
+        await using var provider = CompositionRootTestHost.BuildProvider(Settings());
         _ = provider.GetRequiredService<IConversationStore>();
 
         // The store resolves its base path and creates the directory during construction, so the

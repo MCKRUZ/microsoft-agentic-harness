@@ -12,9 +12,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using Presentation.AgentHub.AgUi;
-using Presentation.AgentHub.DTOs;
 using Presentation.AgentHub.Hubs;
-using Presentation.AgentHub.Interfaces;
 using Xunit;
 using Application.AI.Common.Models.Conversations;
 
