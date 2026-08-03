@@ -50,7 +50,14 @@ export function CommandPalette({ onClose, commands }: CommandPaletteProps) {
   // highlighted row was simply absent, and Enter in that frame resolved against an
   // out-of-range index. Deriving makes the out-of-range state unrepresentable instead of
   // merely short-lived.
-  const activeIdx = activeIndex >= filtered.length ? 0 : activeIndex;
+  //
+  // The arrow-key updaters below clamp through the SAME function before stepping. Clamping
+  // only the painted value while letting the updaters step from raw state is a half-applied
+  // fix: if `filtered` shrinks without going through onChange — the commands prop resolving
+  // with fewer entries is the live path — the highlight shows row 0 while the next ArrowDown
+  // moves to (staleIndex + 1), landing somewhere the user never selected.
+  const clamp = (i: number): number => (i >= filtered.length ? 0 : i);
+  const activeIdx = clamp(activeIndex);
 
   useEffect(() => {
     const el = listRef.current?.children[activeIdx] as HTMLElement | undefined;
@@ -65,10 +72,10 @@ export function CommandPalette({ onClose, commands }: CommandPaletteProps) {
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>): void => {
     if (e.key === 'ArrowDown') {
       e.preventDefault();
-      setActiveIndex((i) => (filtered.length === 0 ? 0 : (i + 1) % filtered.length));
+      setActiveIndex((i) => (filtered.length === 0 ? 0 : (clamp(i) + 1) % filtered.length));
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
-      setActiveIndex((i) => (filtered.length === 0 ? 0 : (i - 1 + filtered.length) % filtered.length));
+      setActiveIndex((i) => (filtered.length === 0 ? 0 : (clamp(i) - 1 + filtered.length) % filtered.length));
     } else if (e.key === 'Enter') {
       e.preventDefault();
       const item = filtered[activeIdx];
