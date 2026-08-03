@@ -53,9 +53,11 @@ function detectTrigger(value: string, caret: number): TriggerState | null {
   for (let i = caret - 1; i >= 0; i--) {
     const ch = value[i];
     // `caret` is supplied by the DOM and can sit past the end of `value` between a
-    // programmatic value change and the corresponding selection update, so an in-range
-    // loop index is not a guarantee that the character exists.
-    if (ch === undefined) break;
+    // programmatic value change and the corresponding selection update, so an in-range loop
+    // index is not a guarantee that the character exists. `continue`, not `break`: skipping
+    // the out-of-range slots and scanning on into the valid prefix is what the old
+    // unguarded code did, whereas aborting would stop detecting the trigger entirely.
+    if (ch === undefined) continue;
     if (ch === '@' || ch === '/') {
       const prev = i === 0 ? ' ' : (value[i - 1] ?? ' ');
       if (!/\s/.test(prev) && i !== 0) return null;

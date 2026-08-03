@@ -28,5 +28,16 @@
     }
   },
   "include": ["src"],
-  "exclude": ["src/test", "src/__tests__", "src/**/__tests__"]
+  // Mirrors tsconfig.test.json's include, which is the invariant that keeps every file under
+  // src claimed by exactly one project. The colocated *.test.* patterns are listed even
+  // though this project has no colocated tests today: without them the FIRST colocated
+  // Foo.test.tsx would land in BOTH projects and fail here on describe/toBeInTheDocument.
+  // Dashboard needs them for its 52 existing colocated tests; here they are pre-emptive.
+  "exclude": [
+    "src/test",
+    "src/__tests__",
+    "src/**/__tests__",
+    "src/**/*.test.ts",
+    "src/**/*.test.tsx"
+  ]
 }
