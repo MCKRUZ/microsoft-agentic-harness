@@ -1,4 +1,4 @@
-import { useParams, Link } from 'react-router-dom';
+import { useParams, Link } from 'react-router';
 import { useEvalRunDetail } from '@/hooks/useEvalRunDetail';
 import { PageHeader } from '@/components/primitives/PageHeader';
 import { LoadingSkeleton } from '@/components/panels/LoadingSkeleton';

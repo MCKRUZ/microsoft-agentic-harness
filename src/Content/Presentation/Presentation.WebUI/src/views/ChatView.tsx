@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams } from 'react-router';
 import { ChevronsLeft, ChevronsRight } from 'lucide-react';
 import { ChatPanel } from '@/features/chat/ChatPanel';
 import { ConversationSidebar } from '@/features/conversations/ConversationSidebar';

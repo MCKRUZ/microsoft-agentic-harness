@@ -12,7 +12,7 @@
  * rather than widening the disable.
  */
 import { lazy, Suspense } from 'react';
-import { createBrowserRouter, Navigate } from 'react-router-dom';
+import { createBrowserRouter, Navigate } from 'react-router';
 
 const DashboardShell = lazy(() => import('@/components/layout/DashboardShell'));
 const PulsePage = lazy(() => import('@/routes/Pulse/PulsePage'));

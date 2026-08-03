@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import { MessageCircle, Plus, Trash2, Search } from 'lucide-react';
 import { useConversationsQuery } from './useConversationsQuery';
 import { useDeleteConversation } from './useDeleteConversation';

@@ -1,4 +1,4 @@
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import { useEvalRuns } from '@/hooks/useEvalRuns';
 import { useEvalRunLive } from '@/hooks/useEvalRunLive';
 import { PageHeader } from '@/components/primitives/PageHeader';

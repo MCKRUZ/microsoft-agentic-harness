@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Outlet, useNavigate, useLocation } from 'react-router-dom';
+import { Outlet, useNavigate, useLocation } from 'react-router';
 import { Header } from './Header';
 import { AiProviderBanner } from './AiProviderBanner';
 import { SidebarSwitcher } from './SidebarSwitcher';
