@@ -74,6 +74,59 @@ jobs:
           name: coverage
           path: coverage/
 
+  # Until this job existed, NOTHING in CI ran npm: not a build, not a test, not a lint.
+  # The two frontends carry 527 passing tests (Dashboard 385 in 52 files, WebUI 142 in 26)
+  # that no pipeline had ever executed, and 175 tracked .tsx files that reached main on the
+  # strength of local runs alone. This job is the first leg — tests only, and blocking from
+  # the day it lands because both suites are already green.
+  #
+  # Typecheck and lint are deliberately NOT here yet. Both are currently red (39 production
+  # type errors across the two projects, 44 lint errors), and a step that runs without
+  # failing the build is not a gate — this repo has already paid for that lesson twice in
+  # the security gate. They arrive in their own PRs, each blocking on arrival, once the
+  # errors they would report are fixed.
+  #
+  # No `paths:` filter, on purpose. A job that only sometimes runs is the same trap one
+  # level up, and these two suites finish in well under the .NET job's five minutes, so
+  # they cost no wall-clock — they run alongside it, not after it.
+  frontend-tests:
+    name: frontend tests (${{ matrix.project }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    strategy:
+      # Report both frontends on every run. With fail-fast, a Dashboard failure would
+      # cancel the WebUI job and hide whether that one was broken too, turning two
+      # independent signals into one.
+      fail-fast: false
+      matrix:
+        project: [ Presentation.Dashboard, Presentation.WebUI ]
+
+    defaults:
+      run:
+        working-directory: src/Content/Presentation/${{ matrix.project }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          # Matches dependency-audit.yml. Both package.json files require >=20.18.1.
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: src/Content/Presentation/${{ matrix.project }}/package-lock.json
+
+      # `npm ci` rather than `npm install`: it installs exactly the tracked lockfile and
+      # fails if package.json and package-lock.json disagree, so a hand-edited dependency
+      # cannot pass CI while resolving to something else on a developer's machine.
+      - name: Install
+        run: npm ci
+
+      - name: Tests
+        run: npm run test
+
   owasp-agentic-gate:
     name: OWASP Agentic Top-10 Gate
     runs-on: ubuntu-latest
