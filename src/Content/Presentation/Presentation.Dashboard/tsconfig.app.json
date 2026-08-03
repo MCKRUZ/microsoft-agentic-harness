@@ -4,6 +4,10 @@
     "target": "es2023",
     "lib": ["ES2023", "DOM", "DOM.Iterable"],
     "module": "esnext",
+    // Deliberately NOT carrying @testing-library/jest-dom or vitest/globals. This is the
+    // shipped-code project: if test globals were visible here, production source could call
+    // describe() or expect(...).toBeInTheDocument() and typecheck clean. Tests get those
+    // types from tsconfig.test.json instead.
     "types": ["vite/client"],
     "skipLibCheck": true,
 
@@ -28,5 +32,16 @@
     }
   },
   "include": ["src"],
-  "exclude": ["src/test", "src/__tests__", "src/**/__tests__"]
+  // This project's tests are COLOCATED (52 files as src/**/*.test.tsx), not gathered under
+  // a test directory, so excluding folders alone would leave every one of them in the
+  // shipped-code program — which is how 218 phantom jest-dom errors were being reported
+  // against files this project should not have been checking in the first place.
+  // tsconfig.test.json picks up exactly what is excluded here.
+  "exclude": [
+    "src/test",
+    "src/__tests__",
+    "src/**/__tests__",
+    "src/**/*.test.ts",
+    "src/**/*.test.tsx"
+  ]
 }

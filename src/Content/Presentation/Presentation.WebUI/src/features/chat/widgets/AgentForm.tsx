@@ -14,7 +14,11 @@ function initialValues(spec: FormSpec): FormValues {
   return values;
 }
 
-function isBlank(field: FormFieldSpec, value: FieldValue): boolean {
+// `value` is widened to include undefined because that is what a lookup into FormValues
+// actually yields — the spec is agent-supplied and re-validated at render time, so a field
+// whose name is absent from the values map is a reachable state, not an impossible one. The
+// `?? ''` below was already written for it; only the signature disagreed.
+function isBlank(field: FormFieldSpec, value: FieldValue | undefined): boolean {
   return field.type === 'checkbox' ? value !== true : String(value ?? '').trim() === '';
 }
 
@@ -27,7 +31,7 @@ function Field({
   disabled,
 }: {
   field: FormFieldSpec;
-  value: FieldValue;
+  value: FieldValue | undefined;
   onChange: (name: string, value: FieldValue) => void;
   disabled: boolean;
 }) {
@@ -61,13 +65,13 @@ function Field({
   switch (field.type) {
     case 'textarea':
       control = (
-        <Textarea id={id} name={field.name} value={String(value)} rows={3} disabled={disabled}
+        <Textarea id={id} name={field.name} value={String(value ?? '')} rows={3} disabled={disabled}
           onChange={(e) => { onChange(field.name, e.target.value); }} />
       );
       break;
     case 'select':
       control = (
-        <select id={id} name={field.name} value={String(value)} disabled={disabled}
+        <select id={id} name={field.name} value={String(value ?? '')} disabled={disabled}
           onChange={(e) => { onChange(field.name, e.target.value); }}
           className="flex h-9 w-full rounded-md border border-border bg-background px-3 py-1 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50">
           <option value="" disabled>Select…</option>
@@ -79,7 +83,7 @@ function Field({
       // text, number, and date all render a single-line Input; the input type follows the field
       // (only text/number/date reach here — checkbox/textarea/select are handled above).
       control = (
-        <Input id={id} name={field.name} type={field.type} value={String(value)} disabled={disabled}
+        <Input id={id} name={field.name} type={field.type} value={String(value ?? '')} disabled={disabled}
           onChange={(e) => { onChange(field.name, e.target.value); }} />
       );
   }

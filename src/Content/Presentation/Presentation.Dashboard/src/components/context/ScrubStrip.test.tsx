@@ -55,9 +55,11 @@ describe('ScrubStrip', () => {
   });
 
   it('does not render sparkline when only one turn exists', () => {
+    // turns is the 4-element literal declared above, so index 0 is present by
+    // construction — the non-null assertion states that rather than guessing at it.
     render(
       <ScrubStrip
-        turns={[turns[0]]}
+        turns={[turns[0]!]}
         activeIndex={-1}
         onScrub={() => {}}
         showSparkline

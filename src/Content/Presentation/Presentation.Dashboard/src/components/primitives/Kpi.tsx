@@ -1,14 +1,19 @@
 import { cn } from '@/lib/utils';
-import { Sparkline } from '@/components/charts/Sparkline';
 
+// `sparkData?: number[]` and `sparkColor?: string` used to live here, rendering
+// <Sparkline data={sparkData} .../>. Sparkline takes `dataPoints: MetricDataPoint[]`, not
+// `data`, so the required prop arrived undefined and the component threw on
+// `dataPoints.map(...)`. No caller ever passed sparkData, which is the only reason it never
+// crashed in production — and also why the typecheck that would have caught it was a no-op.
+// Removed rather than repaired: MetricDataPoint requires a timestamp, so adapting number[]
+// would mean fabricating one. Callers that want a sparkline use <Sparkline> directly, as
+// SloBoard.tsx already does.
 interface KpiProps {
   label: string;
   value: string | number;
   unit?: string;
   delta?: number;
   deltaGood?: 'up' | 'down';
-  sparkData?: number[];
-  sparkColor?: string;
   narrative?: string;
   className?: string;
 }
@@ -17,7 +22,7 @@ function formatDelta(n: number): string {
   return (n >= 0 ? '+' : '') + (n * 100).toFixed(1) + '%';
 }
 
-export function Kpi({ label, value, unit, delta, deltaGood, sparkData, sparkColor, narrative, className }: KpiProps) {
+export function Kpi({ label, value, unit, delta, deltaGood, narrative, className }: KpiProps) {
   const isPositive = deltaGood === 'up' ? (delta ?? 0) > 0 : (delta ?? 0) < 0;
   const deltaColor = delta === undefined || delta === 0
     ? 'text-otel-text-mute'
@@ -41,9 +46,6 @@ export function Kpi({ label, value, unit, delta, deltaGood, sparkData, sparkColo
         </span>
         {unit && <span className="text-[11px] text-otel-text-mute mb-0.5">{unit}</span>}
       </div>
-      {sparkData && (
-        <Sparkline data={sparkData} color={sparkColor ?? 'var(--otel-accent)'} height={28} />
-      )}
       {narrative && (
         <div className="text-[11px] text-otel-text-dim leading-snug">{narrative}</div>
       )}

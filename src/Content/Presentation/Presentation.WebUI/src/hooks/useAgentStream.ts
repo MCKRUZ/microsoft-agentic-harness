@@ -1,5 +1,16 @@
 import { useMsal } from '@azure/msal-react';
-import type { Subscription } from 'rxjs';
+/**
+ * `@ag-ui/client` bundles its own copy of rxjs (7.8.1) beside the app's (7.8.2), so the
+ * Subscription its observable hands back is a nominally different type from the one `rxjs`
+ * exports, despite being structurally identical. Importing the type from either package
+ * makes one of the two assignments fail.
+ *
+ * `unsubscribe()` is the only member this module ever touches, so describing exactly that is
+ * both accurate and immune to which copy the observable came from. Deduping the two rxjs
+ * versions is the real cleanup, but it is a dependency change and does not belong in a
+ * typecheck PR.
+ */
+type ActiveSubscription = { unsubscribe(): void };
 import { EventType } from '@ag-ui/core';
 import type { BaseEvent, TextMessageContentEvent, TextMessageStartEvent, RunErrorEvent } from '@ag-ui/core';
 import { createAuthenticatedAgUiAgent, postToolResult } from '@/lib/agUiClient';
@@ -77,7 +88,7 @@ async function finishToolCall(threadId: string, callId: string, pending: Pending
 // conversation switch) must be able to cancel the run that another consumer (the send hook) started;
 // with per-instance refs those were separate objects, so a cross-consumer abort() was a silent no-op
 // and the previous conversation's tokens kept streaming into the newly selected transcript.
-let activeSubscription: Subscription | null = null;
+let activeSubscription: ActiveSubscription | null = null;
 const activePendingCalls = new Map<string, PendingCall>();
 
 /**

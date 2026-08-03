@@ -1,0 +1,32 @@
+{
+  // Tests are typechecked as their OWN project, separate from tsconfig.app.json, so that
+  // vitest's globals and jest-dom's matchers exist here and NOWHERE ELSE. Registering them
+  // in the app project instead would let shipped code call describe() or
+  // expect(...).toBeInTheDocument() and still typecheck clean — the compiler would stop
+  // being able to tell test code from production code.
+  //
+  // Production files still enter this program as imports of the tests, which is correct:
+  // they must be checked against the same source the tests exercise. The separation that
+  // matters runs the other way — nothing here leaks back into the app project.
+  "extends": "./tsconfig.app.json",
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.test.tsbuildinfo",
+    // An explicit `types` array REPLACES the inherited one rather than extending it, so
+    // vite/client has to be repeated here or `import.meta.env` breaks in every test.
+    "types": ["vite/client", "@testing-library/jest-dom", "vitest/globals"]
+  },
+  // Complementary to tsconfig.app.json's exclude list. The two must stay that way: a
+  // pattern dropped from both leaves those files checked by NEITHER project, which is
+  // precisely the hole this repo just found in `tsc --noEmit` against a `files: []` root.
+  // `extends` INHERITS tsconfig.app.json's exclude list, and exclude beats include — so
+  // without this override the test project resolved to ZERO input files and tsc reported
+  // TS18003 instead of checking anything. This override is what makes the two projects
+  // complementary rather than one of them silently empty.
+  "exclude": ["node_modules"],
+  "include": [
+    "src/**/*.test.ts",
+    "src/**/*.test.tsx",
+    "src/test/**/*",
+    "src/**/__tests__/**/*"
+  ]
+}

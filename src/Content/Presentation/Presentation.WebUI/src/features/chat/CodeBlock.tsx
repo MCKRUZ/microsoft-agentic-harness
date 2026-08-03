@@ -70,12 +70,15 @@ function extractLanguage(node: ReactNode): string | null {
   if (!isValidElement<{ className?: string; children?: ReactNode }>(node)) return null;
   const className = node.props.className ?? '';
   const match = className.match(/language-(\w+)/);
-  if (match) return match[1];
+  // A successful match does not prove the capture group is populated as far as the type
+  // system is concerned — match[1] is string | undefined, and this function contracts to
+  // string | null.
+  if (match) return match[1] ?? null;
   // Check children (react-markdown wraps code in pre > code)
   if (isValidElement<{ className?: string }>(node.props.children)) {
     const childClass = node.props.children.props.className ?? '';
     const childMatch = childClass.match(/language-(\w+)/);
-    if (childMatch) return childMatch[1];
+    if (childMatch) return childMatch[1] ?? null;
   }
   return null;
 }

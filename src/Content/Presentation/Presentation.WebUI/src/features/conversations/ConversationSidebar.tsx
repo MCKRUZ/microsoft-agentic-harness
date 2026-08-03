@@ -77,8 +77,11 @@ export function ConversationSidebar({ onSelect }: ConversationSidebarProps) {
     if (id === activeId) {
       clearMessages();
       const remaining = conversations?.filter((c) => c.id !== id) ?? [];
-      if (remaining.length > 0) {
-        const next = remaining[0];
+      // Test `next` itself rather than remaining.length: a length check does not narrow an
+      // index access, and this is the same condition expressed against the value actually
+      // dereferenced on the following lines.
+      const next = remaining[0];
+      if (next) {
         if (next.agentName !== selectedAgent) setSelectedAgent(next.agentName);
         navigate(`/chat/${next.id}`);
       } else {

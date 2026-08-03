@@ -52,8 +52,12 @@ function composeMessage(message: string, attachment: Attachment | null): string 
 function detectTrigger(value: string, caret: number): TriggerState | null {
   for (let i = caret - 1; i >= 0; i--) {
     const ch = value[i];
+    // `caret` is supplied by the DOM and can sit past the end of `value` between a
+    // programmatic value change and the corresponding selection update, so an in-range
+    // loop index is not a guarantee that the character exists.
+    if (ch === undefined) break;
     if (ch === '@' || ch === '/') {
-      const prev = i === 0 ? ' ' : value[i - 1];
+      const prev = i === 0 ? ' ' : (value[i - 1] ?? ' ');
       if (!/\s/.test(prev) && i !== 0) return null;
       return { char: ch, start: i, filter: value.slice(i + 1, caret) };
     }
@@ -232,7 +236,11 @@ export function ChatInput({ disabled = false }: ChatInputProps) {
       }
       if (e.key === 'Enter' || e.key === 'Tab') {
         e.preventDefault();
-        applyMention(filteredItems[pickerIndex]);
+        // pickerIndex is clamped by the arrow-key handlers, but filteredItems is recomputed
+        // from the live filter text — so a keystroke that empties the list between render
+        // and keydown leaves the index pointing past the end.
+        const picked = filteredItems[pickerIndex];
+        if (picked) applyMention(picked);
         return;
       }
       if (e.key === 'Escape') {

@@ -1,8 +1,21 @@
 {
+  // This file already existed and was never wired in: nothing referenced it from
+  // tsconfig.json, so `tsc -b` never built it and `tsc --noEmit` against the references-only
+  // root built nothing at all. All 26 test files under src/test and src/**/__tests__ were
+  // therefore checked by no project whatsoever. Adding the root reference is what makes it
+  // real; the additions below are what make it correct once it runs.
   "extends": "./tsconfig.app.json",
   "compilerOptions": {
-    "types": ["vite/client", "vitest/globals"]
+    // Build mode needs a distinct build-info path per project, or two projects race on one
+    // file and `tsc -b` reports stale/incorrect up-to-date results.
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.test.tsbuildinfo",
+    // @testing-library/jest-dom was missing. An explicit `types` array REPLACES the
+    // inherited one, so vite/client has to be repeated or `import.meta.env` breaks in
+    // every test.
+    "types": ["vite/client", "vitest/globals", "@testing-library/jest-dom"]
   },
-  "include": ["src/test", "src/**/__tests__"],
-  "exclude": []
+  // Complementary to tsconfig.app.json's exclude list — between them every file under src
+  // must be claimed by exactly one project, or it goes unchecked exactly as these did.
+  "include": ["src/test", "src/**/__tests__", "src/**/*.test.ts", "src/**/*.test.tsx"],
+  "exclude": ["node_modules"]
 }

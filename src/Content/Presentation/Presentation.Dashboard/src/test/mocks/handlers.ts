@@ -219,6 +219,10 @@ const mockSessionDetail: SessionDetail = {
       role: 'user',
       source: null,
       contentPreview: 'Help me refactor the authentication module',
+      // Null, not omitted: SessionMessageRecord documents contentFull as null in list
+      // responses (only the per-message deep-link endpoint fills it). These fixtures had
+      // dropped the field entirely, so the mocks were a shape the real API never returns.
+      contentFull: null,
       model: null,
       inputTokens: 150,
       outputTokens: 0,
@@ -236,6 +240,7 @@ const mockSessionDetail: SessionDetail = {
       role: 'assistant',
       source: 'CodeAssistant',
       contentPreview: 'I\'ll analyze the current authentication module and suggest improvements...',
+      contentFull: null,
       model: 'claude-3-opus',
       inputTokens: 5000,
       outputTokens: 2000,
@@ -258,6 +263,11 @@ const mockSessionDetail: SessionDetail = {
       status: 'success',
       errorType: null,
       resultSize: 4096,
+      // callId/args/stdout are documented as detail-endpoint-only on ToolExecutionRecord,
+      // so null is what a list response actually carries. They were missing outright here.
+      callId: null,
+      args: null,
+      stdout: null,
       createdAt: new Date(Date.now() - 3500000).toISOString(),
     },
     {
@@ -270,6 +280,9 @@ const mockSessionDetail: SessionDetail = {
       status: 'success',
       errorType: null,
       resultSize: 2048,
+      callId: null,
+      args: null,
+      stdout: null,
       createdAt: new Date(Date.now() - 3490000).toISOString(),
     },
   ],

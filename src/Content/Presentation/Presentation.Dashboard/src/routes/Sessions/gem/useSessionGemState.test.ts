@@ -118,7 +118,7 @@ describe('useSessionGemState — drawer', () => {
         messages: [
           {
             id: 'm-0', sessionId: 's', turnIndex: 0, role: 'user',
-            source: null, contentPreview: 'Hello', model: null,
+            source: null, contentPreview: 'Hello', contentFull: null, model: null,
             inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheWrite: 0,
             costUsd: 0, cacheHitPct: 0, toolNames: null,
             createdAt: new Date().toISOString(),

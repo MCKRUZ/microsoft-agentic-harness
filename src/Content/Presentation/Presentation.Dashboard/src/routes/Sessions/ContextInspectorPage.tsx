@@ -60,11 +60,14 @@ export default function ContextInspectorPage() {
   // Maintain a parallel { item, turnIndex } map so each row knows which
   // snapshot it came from — same trick ContentsPanel uses.
   const rowsByCategory = useMemo(() => {
-    const result: Record<CategoryKey, { item: LoadedItem; turnIndex: number }[]> =
-      Object.fromEntries(CATEGORY_ORDER.map((k) => [k, []])) as Record<
-        CategoryKey,
-        { item: LoadedItem; turnIndex: number }[]
-      >;
+    // The empty arrays have to be typed at the point they are created. Left bare, they infer
+    // as never[], and Object.fromEntries then yields { [k: string]: never[] } — a type with
+    // no overlap with the target, which is why the assertion was rejected outright rather
+    // than merely being unsound.
+    type CategoryRows = { item: LoadedItem; turnIndex: number }[];
+    const result = Object.fromEntries(
+      CATEGORY_ORDER.map((k) => [k, [] as CategoryRows]),
+    ) as Record<CategoryKey, CategoryRows>;
     for (const snap of snapshots) {
       for (const item of snap.loaded) {
         result[item.cat].push({ item, turnIndex: snap.turnIndex });

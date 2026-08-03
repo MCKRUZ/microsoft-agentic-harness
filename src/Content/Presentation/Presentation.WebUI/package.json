@@ -9,7 +9,8 @@
   "scripts": {
     "dev": "vite",
     "dev:all": "concurrently -n \"API,UI\" -c \"cyan,magenta\" \"dotnet run --project ../Presentation.AgentHub\" \"vite\"",
-    "build": "tsc --noEmit && vite build",
+    "build": "tsc -b && vite build",
+    "typecheck": "tsc -b",
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "vitest run",

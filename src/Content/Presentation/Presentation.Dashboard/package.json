@@ -9,7 +9,8 @@
   "scripts": {
     "dev": "vite --port 5174",
     "dev:all": "concurrently -n \"API,DASH\" -c \"cyan,green\" \"dotnet run --project ../Presentation.AgentHub\" \"vite --port 5174\"",
-    "build": "tsc --noEmit && vite build",
+    "build": "tsc -b && vite build",
+    "typecheck": "tsc -b",
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "vitest run",

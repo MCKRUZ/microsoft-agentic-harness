@@ -1,8 +1,12 @@
 {
+  // Solution-style root: owns no sources, exists only to point `tsc -b` at the real
+  // projects. Plain `tsc --noEmit` does NOT follow references, which is why the old build
+  // step compiled this file's zero inputs, exited 0, and left every source file unchecked.
   "files": [],
   "references": [
     { "path": "./tsconfig.app.json" },
-    { "path": "./tsconfig.node.json" }
+    { "path": "./tsconfig.node.json" },
+    { "path": "./tsconfig.test.json" }
   ],
   "compilerOptions": {
     "paths": {

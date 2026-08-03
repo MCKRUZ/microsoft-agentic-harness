@@ -17,7 +17,8 @@ describe('parseFormArgs', () => {
     expect(result.value.submitLabel).toBe('Go');
     expect(result.value.fields).toHaveLength(2);
     expect(result.value.fields[0]).toMatchObject({ name: 'email', type: 'text', required: true });
-    expect(result.value.fields[1].options).toEqual(['red', 'blue']);
+    // toHaveLength(2) directly above pins both indices as present.
+    expect(result.value.fields[1]!.options).toEqual(['red', 'blue']);
   });
 
   it('rejects a spec with no fields', () => {
@@ -52,7 +53,7 @@ describe('parseFormArgs', () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.value.fields).toHaveLength(1);
-      expect(result.value.fields[0].type).toBe('text');
+      expect(result.value.fields[0]!.type).toBe('text');
     }
   });
 });
