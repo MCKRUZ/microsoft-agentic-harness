@@ -8,7 +8,7 @@ namespace Infrastructure.AI.Tests.Escalation.Support;
 /// <summary>
 /// Shared test doubles for the durable governance-state store: an
 /// <see cref="IOptionsMonitor{TOptions}"/> over a configurable <see cref="AppConfig"/>, and a
-/// deterministic <see cref="IEscalationOutcomeSealer"/> that needs no HMAC key material.
+/// deterministic <see cref="Application.AI.Common.Interfaces.Escalation.IGovernanceRecordSealer"/> that needs no HMAC key material.
 /// </summary>
 internal static class GovernanceStateTestConfig
 {

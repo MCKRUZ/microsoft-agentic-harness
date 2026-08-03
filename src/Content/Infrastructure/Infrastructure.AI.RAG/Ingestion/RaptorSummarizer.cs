@@ -11,7 +11,7 @@ namespace Infrastructure.AI.RAG.Ingestion;
 /// <summary>
 /// RAPTOR (Recursive Abstractive Processing for Tree-Organized Retrieval) summarizer.
 /// Clusters chunks into sequential groups of 5-10, summarizes each cluster with an
-/// economy-tier LLM, and recurses until <paramref name="maxDepth"/> is reached or
+/// economy-tier LLM, and recurses until <c>maxDepth</c> is reached or
 /// a single cluster remains. Uses sequential grouping (not k-means) as a template
 /// simplification — production deployments should upgrade to GMM clustering on embeddings.
 /// </summary>

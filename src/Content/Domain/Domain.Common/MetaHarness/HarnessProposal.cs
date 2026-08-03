@@ -1,7 +1,7 @@
 namespace Domain.Common.MetaHarness;
 
 /// <summary>
-/// Immutable output from <see cref="Application.AI.Common.Interfaces.MetaHarness.IHarnessProposer"/>
+/// Immutable output from <c>Application.AI.Common.Interfaces.MetaHarness.IHarnessProposer</c>
 /// representing a set of proposed harness changes derived from trace analysis.
 /// </summary>
 public sealed record HarnessProposal

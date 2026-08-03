@@ -6,7 +6,7 @@ namespace Domain.AI.Tests.Identity;
 
 /// <summary>
 /// Tests for <see cref="CredentialContext"/> record — captures the per-kind credential
-/// metadata (issuer, audience, scopes) needed by an <see cref="IAgentCredentialProvider"/>
+/// metadata (issuer, audience, scopes) needed by an <c>IAgentCredentialProvider</c>
 /// to acquire a token without baking environment-specific URLs into providers themselves.
 /// </summary>
 public sealed class CredentialContextTests

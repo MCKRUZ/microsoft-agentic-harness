@@ -4,7 +4,7 @@ namespace Application.AI.Common.Prompts.Interfaces;
 
 /// <summary>
 /// Request-scoped accumulator for prompts resolved during a MediatR request's lifetime.
-/// Handlers for <see cref="MediatR.IConsumesPrompts"/> requests <see cref="Track"/> each
+/// Handlers for <see cref="Application.AI.Common.Interfaces.MediatR.IConsumesPrompts"/> requests <see cref="Track"/> each
 /// resolved descriptor + context here; the
 /// <see cref="Application.AI.Common.MediatRBehaviors.PromptUsageTrackingBehavior{TRequest,TResponse}"/>
 /// drains the accumulator after the handler completes and forwards every entry to

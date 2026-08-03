@@ -2,7 +2,7 @@ namespace Application.AI.Common.Interfaces.MediatR;
 
 /// <summary>
 /// Marker interface for MediatR requests that resolve and use one or more prompts
-/// from <see cref="Prompts.Interfaces.IPromptRegistry"/> during their execution.
+/// from <see cref="Application.AI.Common.Prompts.Interfaces.IPromptRegistry"/> during their execution.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -11,8 +11,8 @@ namespace Application.AI.Common.Interfaces.MediatR;
 /// <see cref="IConsumesPrompts"/> pass through the behavior without any prompt-usage recording.
 /// </para>
 /// <para>
-/// Handlers for marker-bearing requests should not call <see cref="Prompts.Interfaces.IPromptUsageRecorder"/>
-/// directly — they call <see cref="Prompts.Interfaces.IPromptUsageBag.Track"/> instead, and the
+/// Handlers for marker-bearing requests should not call <see cref="Application.AI.Common.Prompts.Interfaces.IPromptUsageRecorder"/>
+/// directly — they call <see cref="Application.AI.Common.Prompts.Interfaces.IPromptUsageBag.Track"/> instead, and the
 /// behavior drains the bag and records each entry after the handler completes (including on
 /// partial failure). This avoids double-recording when a service intermediate (e.g.
 /// <c>ConversationFactExtractor</c>) also records — services that own their own recording

@@ -20,7 +20,7 @@ namespace Infrastructure.AI.MCP.Resources;
 /// <see cref="InvalidOperationException"/>. Auth checks still run regardless of the flag.
 /// </para>
 /// <para>
-/// Security: every path is fully resolved with <see cref="Path.GetFullPath"/> before containment
+/// Security: every path is fully resolved with <see cref="System.IO.Path.GetFullPath(string)"/> before containment
 /// checks. The containment check uses a trailing-separator suffix to prevent
 /// <c>/traces/run-1</c> falsely matching <c>/traces/run-10</c>.
 /// On non-Windows, symlinks pointing outside the run directory are rejected.

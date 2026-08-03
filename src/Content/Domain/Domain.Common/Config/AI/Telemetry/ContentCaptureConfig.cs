@@ -16,7 +16,7 @@ namespace Domain.Common.Config.AI.Telemetry;
 /// <para>
 /// When <see cref="Enabled"/> is true the harness ALSO requires the
 /// <c>OTEL_SEMCONV_STABILITY_OPT_IN</c> environment variable to be pinned to
-/// <see cref="Domain.AI.Telemetry.Conventions.GenAiSemconvRegistry.SemconvStabilityOptInValue"/>;
+/// <c>Domain.AI.Telemetry.Conventions.GenAiSemconvRegistry.SemconvStabilityOptInValue</c>;
 /// the registered startup validator fails the host boot when the variable is
 /// unset or wrong.
 /// </para>
@@ -80,7 +80,7 @@ public sealed class ContentCaptureConfig
     public bool CaptureMagenticPlanReviewFeedback { get; set; }
 
     /// <summary>
-    /// Names of <see cref="Domain.AI.Telemetry.Redaction.RedactionCategory"/>
+    /// Names of <c>Domain.AI.Telemetry.Redaction.RedactionCategory</c>
     /// values the redaction filter should apply before emission. Unknown
     /// names are ignored (with a startup log warning). Default: all categories
     /// from the enum, so a consumer that flips <see cref="Enabled"/> on

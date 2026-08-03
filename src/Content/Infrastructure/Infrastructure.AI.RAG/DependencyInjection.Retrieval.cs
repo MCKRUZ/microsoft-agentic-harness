@@ -224,7 +224,7 @@ public static partial class DependencyInjection
     /// Registers SQL database retrieval services: template store, safe executor,
     /// template matcher, text-to-SQL generator, and the <see cref="IRetrievalSource"/>
     /// adapter keyed as "sql_database". Only registered when
-    /// <see cref="SqlDatabaseConfig.Enabled"/> is <c>true</c>.
+    /// <see cref="Domain.Common.Config.AI.RAG.SqlDatabaseConfig.Enabled"/> is <c>true</c>.
     /// <para>
     /// <see cref="SafeSqlQueryExecutor"/> requires an <see cref="ISqlConnectionFactory"/>
     /// registered in DI by the consuming application (Infrastructure.Common provides a default

@@ -36,7 +36,7 @@ public static class AgentContextExtensions
     /// </summary>
     /// <remarks>
     /// Returns <see cref="ExecutionScope"/> (not raw key-value pairs) so that
-    /// <see cref="ExecutionScopeProvider"/> and formatters can recognize the scope.
+    /// <see cref="Application.Common.Logging.ExecutionScopeProvider"/> and formatters can recognize the scope.
     /// Maps agent concepts to generic execution fields.
     /// </remarks>
     public static ExecutionScope? ToExecutionScope(this IAgentExecutionContext context) =>

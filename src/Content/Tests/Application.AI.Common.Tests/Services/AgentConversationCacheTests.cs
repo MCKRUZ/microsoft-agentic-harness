@@ -26,7 +26,7 @@ namespace Application.AI.Common.Tests.Services;
 /// </summary>
 /// <remarks>
 /// Regression coverage for the prerequisite-scope bug: a skill declaring <c>prerequisites</c>
-/// crashed on every conversation turn because <see cref="AgentFactory.ResolvePrerequisiteScope"/>
+/// crashed on every conversation turn because <c>AgentFactory.ResolvePrerequisiteScope</c>
 /// requires a conversation id under <see cref="AgentFactory.ConversationIdPropertyKey"/> in the
 /// execution context, and nothing on the live path supplied it. The cache holds the
 /// <c>conversationId</c> and is the only component positioned to flow it into

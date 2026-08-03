@@ -15,7 +15,7 @@ namespace Domain.AI.KnowledgeGraph.Models;
 /// segments are stored raw.
 /// </para>
 /// <para>
-/// Each segment cross-links to the <see cref="WorkEpisode"/> captured on the same turn via
+/// Each segment cross-links to the <see cref="Domain.AI.WorkMemory.WorkEpisode"/> captured on the same turn via
 /// <see cref="EpisodeId"/>, and both records share the <see cref="ConversationId"/> +
 /// <see cref="TurnNumber"/> pair as a provenance key. The two schemas stay distinct (merging is lossy both
 /// ways) but are mutually reachable: work-memory synthesis can walk to the raw grounding, and harmonic
@@ -24,7 +24,7 @@ namespace Domain.AI.KnowledgeGraph.Models;
 /// <para>
 /// Tenant/owner isolation is enforced by the underlying graph store (the compliance-aware / tenant-isolating
 /// decorator chain stamps tenant on write and filters on read); the segment itself carries no tenant field,
-/// mirroring <see cref="WorkEpisode"/>.
+/// mirroring <see cref="Domain.AI.WorkMemory.WorkEpisode"/>.
 /// </para>
 /// </remarks>
 public sealed record EpisodicSegment
@@ -33,7 +33,7 @@ public sealed record EpisodicSegment
     public required Guid SegmentId { get; init; }
 
     /// <summary>
-    /// The <see cref="WorkEpisode.EpisodeId"/> of the work episode captured on the same turn — a best-effort
+    /// The <see cref="Domain.AI.WorkMemory.WorkEpisode.EpisodeId"/> of the work episode captured on the same turn — a best-effort
     /// convenience link that lets harmonic recall reach the turn's outcome signal without merging the two
     /// schemas. <see langword="null"/> when work memory is disabled (no episode was persisted for this turn):
     /// the authoritative, always-present correlation is the <see cref="ConversationId"/> +

@@ -14,7 +14,7 @@ internal sealed partial class TextToSqlGenerator(IChatClient chatClient)
     private static partial Regex MutationPattern();
 
     /// <summary>
-    /// Generates a SELECT SQL query from a natural language <paramref name="query"/> and
+    /// Generates a SELECT SQL query from a natural language <c>query</c> and
     /// <paramref name="databaseSchema"/>. Returns <see langword="null"/> if the LLM produces
     /// a mutation statement or an empty response.
     /// </summary>

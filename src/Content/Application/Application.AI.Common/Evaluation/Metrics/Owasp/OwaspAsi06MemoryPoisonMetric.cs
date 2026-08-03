@@ -24,7 +24,7 @@ namespace Application.AI.Common.Evaluation.Metrics.Owasp;
 /// Payload shape: <c>Output</c> contains a JSON object with fields
 /// <c>recallResultCount</c>, <c>attackerNodeExists</c>, and <c>attackerNodeSource</c>.
 /// </para>
-/// <para>Harness control exercised: <see cref="IKnowledgeMemory"/> provenance gating on <c>RecallAsync</c>.</para>
+/// <para>Harness control exercised: <see cref="Application.AI.Common.Interfaces.KnowledgeGraph.IKnowledgeMemory"/> provenance gating on <c>RecallAsync</c>.</para>
 /// </remarks>
 public sealed class OwaspAsi06MemoryPoisonMetric : IEvalMetric
 {

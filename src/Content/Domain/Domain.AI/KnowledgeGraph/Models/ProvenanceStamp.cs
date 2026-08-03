@@ -50,7 +50,7 @@ public record ProvenanceStamp
 
     /// <summary>
     /// Identifier of the user or system that last modified this entity/relationship.
-    /// Populated from <see cref="IKnowledgeScope"/> during graph construction.
+    /// Populated from <c>IKnowledgeScope</c> during graph construction.
     /// </summary>
     public string? LastModifiedBy { get; init; }
 }

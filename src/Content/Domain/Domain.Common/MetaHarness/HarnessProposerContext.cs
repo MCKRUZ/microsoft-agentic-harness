@@ -1,7 +1,7 @@
 namespace Domain.Common.MetaHarness;
 
 /// <summary>
-/// Immutable input context passed to <see cref="Application.AI.Common.Interfaces.MetaHarness.IHarnessProposer"/>
+/// Immutable input context passed to <c>Application.AI.Common.Interfaces.MetaHarness.IHarnessProposer</c>
 /// for a single propose step within an optimization run.
 /// </summary>
 public sealed record HarnessProposerContext

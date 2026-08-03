@@ -105,7 +105,7 @@ public static class IApplicationBuilderExtensions
     }
 
     /// <summary>
-    /// Configures a global error handler using <see cref="ExceptionHandlerExtensions.UseExceptionHandler"/>
+    /// Configures a global error handler using <see cref="Microsoft.AspNetCore.Builder.ExceptionHandlerExtensions.UseExceptionHandler(Microsoft.AspNetCore.Builder.IApplicationBuilder, System.Action{Microsoft.AspNetCore.Builder.IApplicationBuilder})"/>
     /// that catches all unhandled exceptions and returns structured JSON error responses.
     /// </summary>
     /// <param name="app">The application builder.</param>

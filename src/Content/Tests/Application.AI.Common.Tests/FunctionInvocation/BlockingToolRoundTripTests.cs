@@ -15,7 +15,7 @@ namespace Application.AI.Common.Tests.FunctionInvocation;
 /// middleware's tolerance for a tool that parks on a <see cref="TaskCompletionSource{TResult}"/>, these
 /// tests fail loudly before the whole feature silently regresses.
 ///
-/// The existing <see cref="Infrastructure.AI.Tests.Pipeline.MeAiPipelineCompatibilityTests"/> proves the
+/// The existing <c>Infrastructure.AI.Tests.Pipeline.MeAiPipelineCompatibilityTests</c> proves the
 /// basic tool round-trip (UseFunctionInvocation invokes a registered tool, then the model produces a
 /// final answer). These tests add the missing property: the middleware tolerates a tool that does NOT
 /// return promptly but instead blocks until completed by a separate caller, and that cancellation of a

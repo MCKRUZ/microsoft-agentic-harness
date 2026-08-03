@@ -35,7 +35,7 @@ namespace Infrastructure.Observability.Exporters;
 /// Trace sampling is not performed here. Tail-based sampling is a Collector-tier
 /// concern (see the observability architecture guide): the SDK exports every span
 /// and the OpenTelemetry Collector's <c>tail_sampling</c> processor decides what to
-/// keep. A prior in-app tail sampler was removed because a <see cref="BaseProcessor{T}.OnEnd"/>
+/// keep. A prior in-app tail sampler was removed because a <see cref="OpenTelemetry.BaseProcessor{T}.OnEnd"/>
 /// no-op cannot prevent the OTLP/Azure Monitor exporters from having already enqueued
 /// every span.
 /// </para>

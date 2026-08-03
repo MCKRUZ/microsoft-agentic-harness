@@ -24,7 +24,7 @@ namespace Application.AI.Common.Evaluation.Metrics.Owasp;
 /// Payload shape: <c>Output</c> contains a JSON object with fields
 /// <c>spawnDenied</c>, <c>reason</c>, and <c>childProcessCount</c>.
 /// </para>
-/// <para>Harness control exercised: <see cref="ICapabilityEnforcer"/> closed-by-default fork capability check.</para>
+/// <para>Harness control exercised: <see cref="Application.AI.Common.Interfaces.Sandbox.ICapabilityEnforcer"/> closed-by-default fork capability check.</para>
 /// </remarks>
 public sealed class OwaspAsi10RogueAgentMetric : IEvalMetric
 {

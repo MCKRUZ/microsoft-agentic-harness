@@ -7,6 +7,26 @@
 		<DefineConstants>$(DefineConstants);DEBUG;TRACE</DefineConstants>
 	</PropertyGroup>
 
+	<!--
+		XML documentation is generated solution-wide so the compiler resolves every
+		<see cref="..."/>. A cref is the one documentation claim the compiler can verify
+		for free and with no false positives: it either binds to a real symbol or it does
+		not. With this off, doc references rot silently - which is how a cref to a type
+		deleted by an SDK redesign survived in this repo until it was found by hand.
+
+		The cref and malformed-XML diagnostics are errors, not warnings, so a broken
+		reference cannot reach main. The three suppressed below are volume this repo has
+		not paid down yet; they are tracked in a follow-up rather than fixed here, so that
+		enabling the guard does not turn every build into a wall of noise.
+	-->
+	<PropertyGroup>
+		<GenerateDocumentationFile>true</GenerateDocumentationFile>
+		<WarningsAsErrors>$(WarningsAsErrors);CS0419;CS1570;CS1572;CS1574;CS1580;CS1584;CS1734</WarningsAsErrors>
+		<NoWarn>$(NoWarn);CS1591</NoWarn><!-- missing XML comment on a public member -->
+		<NoWarn>$(NoWarn);CS1573</NoWarn><!-- parameter has no matching <param> tag -->
+		<NoWarn>$(NoWarn);CS1587</NoWarn><!-- XML comment not on a valid language element -->
+	</PropertyGroup>
+
 	<PropertyGroup>
 		<TargetFramework>net10.0</TargetFramework>
 		<TreatWarningsAsErrors>false</TreatWarningsAsErrors>

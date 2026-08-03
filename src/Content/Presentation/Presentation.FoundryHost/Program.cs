@@ -23,7 +23,7 @@ namespace Presentation.FoundryHost;
 /// </para>
 /// <para>
 /// The host reuses the same composition root every other host uses
-/// (<see cref="IServiceCollectionExtensions.GetServices"/>), builds the harness agent through
+/// (<see cref="Presentation.Common.Extensions.IServiceCollectionExtensions.GetServices"/>), builds the harness agent through
 /// <see cref="IAgentFactory"/> exactly as the desktop app and Agent Hub do, then hands that agent to
 /// the Foundry hosting library. There is <b>no</b> new agent-type concept: which agent this
 /// deployment exposes is selected by id (env var <c>FOUNDRY_AGENT_ID</c>, default <c>default</c>),

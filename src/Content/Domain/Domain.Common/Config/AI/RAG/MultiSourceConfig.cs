@@ -29,7 +29,7 @@ public sealed class MultiSourceConfig
     public double CostPerMillionOutputTokens { get; set; } = 10.00;
 
     /// <summary>
-    /// Maps each <see cref="Domain.AI.Routing.Enums.TaskComplexity"/> tier to the source names that should be queried.
+    /// Maps each <c>Domain.AI.Routing.Enums.TaskComplexity</c> tier to the source names that should be queried.
     /// Filtered at runtime by <see cref="EnabledSources"/> — a source must appear in both lists.
     /// </summary>
     public Dictionary<string, List<string>> SourcesByComplexity { get; set; } = new()

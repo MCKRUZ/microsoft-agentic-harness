@@ -17,7 +17,7 @@ namespace Application.AI.Common.Interfaces.RAG;
 ///         normalized to [0, 1] in the returned <see cref="RetrievalResult.DenseScore"/>.</item>
 ///   <item>Collection names enable multi-tenant or multi-corpus isolation within a single
 ///         backend deployment. When null, use the default collection from configuration.</item>
-///   <item>Delete operations remove all chunks for a given <paramref name="documentId"/>,
+///   <item>Delete operations remove all chunks for a given <c>documentId</c>,
 ///         enabling clean re-ingestion workflows.</item>
 ///   <item>Implementations must handle connection pooling and dispose patterns appropriate
 ///         to the backend SDK.</item>

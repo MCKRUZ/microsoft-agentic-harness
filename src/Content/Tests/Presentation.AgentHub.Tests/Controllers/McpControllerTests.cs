@@ -18,7 +18,7 @@ using Xunit;
 namespace Presentation.AgentHub.Tests.Controllers;
 
 /// <summary>
-/// Integration tests for <see cref="McpController"/> HTTP endpoints.
+/// Integration tests for <see cref="Presentation.AgentHub.Controllers.McpController"/> HTTP endpoints.
 /// Covers tool listing, tool invocation, error handling, audit logging,
 /// and the 32 KB request size limit.
 /// </summary>
@@ -270,7 +270,7 @@ public sealed class McpControllerTests : IClassFixture<TestWebApplicationFactory
 
     /// <summary>
     /// Concrete <see cref="AIFunction"/> subclass used as a test double.
-    /// Implements only the members required by <see cref="McpController"/>.
+    /// Implements only the members required by <see cref="Presentation.AgentHub.Controllers.McpController"/>.
     /// </summary>
     private sealed class FakeAIFunction : AIFunction
     {

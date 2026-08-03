@@ -5,7 +5,7 @@ namespace Application.AI.Common.Services.Agent;
 
 /// <summary>
 /// Scoped ambient context carrying the identity of the currently executing agent.
-/// Set once per request by <see cref="AgentContextPropagationBehavior{TRequest, TResponse}"/>
+/// Set once per request by <see cref="Application.AI.Common.MediatRBehaviors.AgentContextPropagationBehavior{TRequest, TResponse}"/>
 /// and consumed by downstream behaviors, handlers, and services.
 /// </summary>
 /// <remarks>

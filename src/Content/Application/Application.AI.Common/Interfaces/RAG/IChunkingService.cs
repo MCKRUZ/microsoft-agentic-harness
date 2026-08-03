@@ -11,7 +11,7 @@ namespace Application.AI.Common.Interfaces.RAG;
 /// <remarks>
 /// <para><strong>Implementation guidance:</strong></para>
 /// <list type="bullet">
-///   <item><c>"structure_aware"</c> (default): Uses <paramref name="structure"/> to split at
+///   <item><c>"structure_aware"</c> (default): Uses <c>structure</c> to split at
 ///         heading boundaries, respecting the document's natural organization. Preferred for
 ///         structured documents (specs, docs, reports).</item>
 ///   <item><c>"semantic"</c>: Uses embedding similarity between sentences to detect topic

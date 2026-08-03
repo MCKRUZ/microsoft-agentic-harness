@@ -143,7 +143,7 @@ public static class IServiceCollectionExtensions
     /// Configures Swagger/OpenAPI generation with XML documentation and optional security scheme.
     /// </summary>
     /// <param name="services">The service collection to configure.</param>
-    /// <param name="appConfig">Application configuration containing Swagger settings.</param>
+    /// <param name="httpConfig">HTTP configuration containing Swagger settings.</param>
     /// <returns>The service collection for chaining.</returns>
     /// <remarks>
     /// Only configures Swagger when <c>OpenApiEnabled</c> is true in configuration.
@@ -247,7 +247,7 @@ public static class IServiceCollectionExtensions
     /// Configures CORS policies for default, config-driven, AI Copilot, and MCP Server scenarios.
     /// </summary>
     /// <param name="services">The service collection to configure.</param>
-    /// <param name="appConfig">Application configuration containing allowed origins.</param>
+    /// <param name="httpConfig">HTTP configuration containing allowed origins.</param>
     /// <returns>The service collection for chaining.</returns>
     public static IServiceCollection AddCustomCorsPolicy(this IServiceCollection services, HttpConfig httpConfig)
     {
@@ -461,7 +461,7 @@ public static class IServiceCollectionExtensions
     }
 
     /// <summary>
-    /// Adds a typed HTTP client with configuration from <see cref="AppConfig"/>
+    /// Adds a typed HTTP client with configuration from <see cref="Domain.Common.Config.AppConfig"/>
     /// using <see cref="ApiEndpointResolverService"/> for endpoint resolution.
     /// </summary>
     /// <typeparam name="TClient">The HTTP client interface type.</typeparam>
@@ -469,7 +469,7 @@ public static class IServiceCollectionExtensions
     /// <typeparam name="TClientOptions">The client configuration type.</typeparam>
     /// <param name="services">The service collection to configure.</param>
     /// <param name="configurationSectionName">
-    /// The configuration path for the client settings in <see cref="AppConfig"/>.
+    /// The configuration path for the client settings in <see cref="Domain.Common.Config.AppConfig"/>.
     /// </param>
     /// <returns>The service collection for chaining.</returns>
     /// <remarks>

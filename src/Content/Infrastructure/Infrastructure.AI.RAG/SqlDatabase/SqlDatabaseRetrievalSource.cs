@@ -13,7 +13,7 @@ namespace Infrastructure.AI.RAG.SqlDatabase;
 
 /// <summary>
 /// Two-tier SQL retrieval source: tries template matching first, falls back to LLM text-to-SQL
-/// if <see cref="SqlDatabaseConfig.AllowLlmFallback"/> is enabled.
+/// if <see cref="Domain.Common.Config.AI.RAG.SqlDatabaseConfig.AllowLlmFallback"/> is enabled.
 /// Registered as keyed DI with key "sql_database".
 /// </summary>
 internal sealed class SqlDatabaseRetrievalSource(

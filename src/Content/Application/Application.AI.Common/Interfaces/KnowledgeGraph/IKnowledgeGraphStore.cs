@@ -27,7 +27,7 @@ namespace Application.AI.Common.Interfaces.KnowledgeGraph;
 ///   <item>Edge deduplication is by <see cref="GraphEdge.Id"/>. Duplicate edges are
 ///         silently ignored.</item>
 ///   <item>Graph traversal (<see cref="GetNeighborsAsync"/>) must respect
-///         <paramref name="maxDepth"/> to prevent unbounded expansion.</item>
+///         <c>maxDepth</c> to prevent unbounded expansion.</item>
 /// </list>
 /// </para>
 /// </remarks>

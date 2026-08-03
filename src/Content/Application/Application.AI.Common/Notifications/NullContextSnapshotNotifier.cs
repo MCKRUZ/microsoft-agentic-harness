@@ -9,7 +9,7 @@ namespace Application.AI.Common.Notifications;
 /// </summary>
 /// <remarks>
 /// Registered as the always-on default in the standard composition root so
-/// <see cref="CQRS.Agents.ExecuteAgentTurn.ExecuteAgentTurnCommandHandler"/>
+/// <c>Application.Core.CQRS.Agents.ExecuteAgentTurn.ExecuteAgentTurnCommandHandler</c>
 /// can resolve its dependency unconditionally. The AgentHub host overrides
 /// with a SignalR-backed implementation that also persists to the
 /// observability store. Mirrors <see cref="Evaluation.Notifications.NullEvalRunNotifier"/>.

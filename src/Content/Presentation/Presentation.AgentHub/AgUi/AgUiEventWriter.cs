@@ -24,7 +24,7 @@ public interface IAgUiEventWriter
 /// </summary>
 /// <remarks>
 /// <para>
-/// Serialization uses <see cref="typeof(AgUiEvent)"/> as the declared type rather
+/// Serialization uses <c>typeof(AgUiEvent)</c> as the declared type rather
 /// than the runtime concrete type. This is required so that
 /// <see cref="System.Text.Json.Serialization.JsonPolymorphicAttribute"/> emits the
 /// <c>type</c> discriminator field on every frame. Serializing by runtime type

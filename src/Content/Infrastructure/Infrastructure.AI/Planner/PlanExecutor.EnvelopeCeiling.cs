@@ -33,7 +33,7 @@ namespace Infrastructure.AI.Planner;
 /// plan-authored recovery data on a security denial — the exact coupling this path exists to break.
 /// </para>
 /// <para>
-/// With no ambient envelope (every direct in-process <see cref="IPlanExecutor"/> caller) no ceiling
+/// With no ambient envelope (every direct in-process <see cref="Application.AI.Common.Interfaces.Planner.IPlanExecutor"/> caller) no ceiling
 /// applies and this partial contributes nothing to execution.
 /// </para>
 /// </remarks>

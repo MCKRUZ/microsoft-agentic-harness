@@ -344,7 +344,7 @@ public static class GenAiSemconvRegistry
     /// stability.
     /// </summary>
     /// <remarks>
-    /// The <see cref="Infrastructure"/>'s content-capture startup validator
+    /// The <c>Infrastructure</c>'s content-capture startup validator
     /// reads this env var and refuses to boot when content-capture is on but
     /// the variable is unset or wrong.
     /// </remarks>

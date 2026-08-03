@@ -11,7 +11,7 @@ namespace Presentation.Common.Tests.Hosting;
 
 /// <summary>
 /// Regression tests for the <see cref="IHostEnvironment"/> registration in
-/// <see cref="IServiceCollectionExtensions.BuildGlobalSolutionServices"/>.
+/// <see cref="Presentation.Common.Extensions.IServiceCollectionExtensions.BuildGlobalSolutionServices"/>.
 /// </summary>
 /// <remarks>
 /// Reproduces GitHub issues #19 and #64: console-style hosts (ConsoleUI, EvalRunner,

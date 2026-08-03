@@ -17,7 +17,7 @@ namespace Application.AI.Common.Interfaces;
 /// Application layer compiles against only <c>Microsoft.Extensions.*</c> abstractions.
 /// </para>
 /// <para>
-/// The harness middleware pipeline is injected via the <paramref name="clientFactory"/> hook so the
+/// The harness middleware pipeline is injected via the <c>clientFactory</c> hook so the
 /// Foundry-hosted inference path retains OpenTelemetry, function invocation, observability,
 /// prerequisite gating, and distributed caching exactly as the other providers do.
 /// </para>

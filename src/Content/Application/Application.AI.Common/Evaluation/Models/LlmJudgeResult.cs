@@ -7,7 +7,7 @@ namespace Application.AI.Common.Evaluation.Models;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <see cref="Verdict"/> distinguishes a successful score (<see cref="Outcomes.LlmJudgeOutcome.Parsed"/>)
+/// <see cref="Domain.AI.Evaluation.Verdict"/> distinguishes a successful score (<see cref="Outcomes.LlmJudgeOutcome.Parsed"/>)
 /// from a soft failure (<see cref="Outcomes.LlmJudgeOutcome.Malformed"/> after retry,
 /// or <see cref="Outcomes.LlmJudgeOutcome.InvocationFailed"/> on infra error). Callers
 /// translate the outcome to the appropriate <c>Verdict</c> in their <c>MetricScore</c>.

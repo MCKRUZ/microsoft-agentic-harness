@@ -14,7 +14,7 @@ namespace Application.AI.Common.Interfaces.RAG;
 ///   <item>Register as <c>Transient</c> — each assembly operation gets a fresh tracker
 ///         instance. Do not share across concurrent assemblies.</item>
 ///   <item>Track is called by the assembler as it appends each chunk's text to the output
-///         buffer. The <paramref name="assembledOffset"/> and <paramref name="length"/>
+///         buffer. The <c>assembledOffset</c> and <c>length</c>
 ///         describe the span within the assembled string.</item>
 ///   <item><see cref="GetCitations"/> should return spans sorted by offset ascending
 ///         so consumers can walk citations in document order.</item>

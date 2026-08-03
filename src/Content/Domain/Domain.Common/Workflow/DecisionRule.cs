@@ -29,8 +29,8 @@ public class DecisionRule
     /// <list type="bullet">
     ///   <item><code>"score >= 85"</code></item>
     ///   <item><code>"score >= 85 AND critical_issues == 0"</code></item>
-    ///   <item><code>"score >= 70 AND score < 85"</code></item>
-    ///   <item><code>"(score >= 85 OR (score >= 70 AND critical_issues == 0)) AND high_issues <= 2"</code></item>
+    ///   <item><code>"score >= 70 AND score &lt; 85"</code></item>
+    ///   <item><code>"(score >= 85 OR (score >= 70 AND critical_issues == 0)) AND high_issues &lt;= 2"</code></item>
     /// </list>
     /// </summary>
     public string Condition { get; set; } = string.Empty;

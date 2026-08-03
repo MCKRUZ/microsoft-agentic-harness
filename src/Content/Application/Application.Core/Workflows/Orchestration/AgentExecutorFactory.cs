@@ -12,7 +12,7 @@ namespace Application.Core.Workflows.Orchestration;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Uses <see cref="ExecutorBindingExtensions.BindAsExecutor{TInput, TOutput}"/> to create
+/// Uses <c>ExecutorBindingExtensions.BindAsExecutor&lt;TInput, TOutput&gt;</c> to create
 /// function-based executors rather than requiring a class per agent. This keeps the workflow
 /// graph construction lightweight: one factory call per agent step.
 /// </para>

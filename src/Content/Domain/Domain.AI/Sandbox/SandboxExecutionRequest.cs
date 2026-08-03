@@ -32,7 +32,7 @@ public sealed record SandboxExecutionRequest
     /// <summary>
     /// Command-line arguments as a single string. Deprecated — use <see cref="ArgumentList"/>
     /// to avoid shell metacharacter injection. This property is no longer consumed by
-    /// <see cref="ProcessSandboxExecutor"/> and will be removed in a future version.
+    /// <c>ProcessSandboxExecutor</c> and will be removed in a future version.
     /// </summary>
     [Obsolete("Use ArgumentList to avoid command injection. This property is no longer consumed.", error: true)]
     public string? Arguments { get; init; }

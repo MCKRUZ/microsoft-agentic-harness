@@ -18,7 +18,7 @@ namespace Application.AI.Common.Interfaces.RAG;
 ///   <item>Use <see cref="IQueryClassifier"/> to determine the retrieval strategy, then
 ///         dispatch to the appropriate retriever (<see cref="IHybridRetriever"/>,
 ///         <see cref="IVectorStore"/>-only, or <see cref="IGraphRagService"/>).</item>
-///   <item>The <paramref name="strategyOverride"/> parameter bypasses classification,
+///   <item>The <c>strategyOverride</c> parameter bypasses classification,
 ///         allowing callers to force a specific strategy for testing or specialized workflows.</item>
 ///   <item>Wrap the entire pipeline in an OpenTelemetry activity span with stage-level
 ///         child spans for end-to-end latency visibility.</item>

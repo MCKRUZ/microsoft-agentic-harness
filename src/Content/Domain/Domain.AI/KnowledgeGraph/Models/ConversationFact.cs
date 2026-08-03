@@ -3,7 +3,7 @@ namespace Domain.AI.KnowledgeGraph.Models;
 
 /// <summary>
 /// A fact extracted from a conversation turn by the knowledge bridge.
-/// Persisted to the knowledge graph via <see cref="Application.AI.Common.Interfaces.KnowledgeGraph.IKnowledgeMemory.RememberAsync"/>.
+/// Persisted to the knowledge graph via <c>IKnowledgeMemory.RememberAsync</c>.
 /// </summary>
 public sealed record ConversationFact
 {

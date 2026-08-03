@@ -48,7 +48,7 @@ public interface IAgentExecutionContext
     /// <summary>
     /// Stamps the agent's workload identity onto the execution context. Called once
     /// per agent instance during agent construction (by <c>AgentFactory</c>) after the
-    /// <see cref="IAgentIdentityResolver"/> resolves the identity from the credential
+    /// <see cref="Application.AI.Common.Interfaces.Identity.IAgentIdentityResolver"/> resolves the identity from the credential
     /// hierarchy.
     /// </summary>
     /// <remarks>

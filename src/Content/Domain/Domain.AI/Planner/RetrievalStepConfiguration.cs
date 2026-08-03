@@ -33,9 +33,9 @@ public sealed record RetrievalStepConfiguration : StepConfiguration
     public string? CollectionName { get; init; }
 
     /// <summary>
-    /// When <c>true</c>, uses <see cref="IMultiSourceOrchestrator"/> to fan out across
+    /// When <c>true</c>, uses <c>IMultiSourceOrchestrator</c> to fan out across
     /// vector, graph, and web sources in parallel. When <c>false</c>, uses the standard
-    /// <see cref="IRagOrchestrator"/> single-pipeline path.
+    /// <c>IRagOrchestrator</c> single-pipeline path.
     /// </summary>
     public bool UseMultiSource { get; init; } = false;
 }

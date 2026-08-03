@@ -12,7 +12,7 @@ namespace Application.AI.Common.Interfaces.RAG;
 ///   <item>Each parser implementation should target a single document format family.</item>
 ///   <item>Return clean Markdown with heading hierarchy preserved — downstream
 ///         <see cref="IStructureExtractor"/> relies on <c># / ## / ###</c> headings.</item>
-///   <item>Resolve relative URIs (images, links) against <paramref name="documentUri"/>
+///   <item>Resolve relative URIs (images, links) against <c>documentUri</c>
 ///         so extracted content is self-contained.</item>
 ///   <item>Throw <c>NotSupportedException</c> if the URI's extension is not in
 ///         <see cref="SupportedExtensions"/>.</item>
