@@ -80,17 +80,16 @@ jobs:
   # strength of local runs alone. This job is the first leg — tests only, and blocking from
   # the day it lands because both suites are already green.
   #
-  # Typecheck and lint are deliberately NOT here yet. Both are currently red (39 production
-  # type errors across the two projects, 44 lint errors), and a step that runs without
-  # failing the build is not a gate — this repo has already paid for that lesson twice in
-  # the security gate. They arrive in their own PRs, each blocking on arrival, once the
-  # errors they would report are fixed.
+  # Lint is deliberately still absent: it is red (44 errors across the two projects), and a
+  # step that runs without failing the build is not a gate — this repo has already paid for
+  # that lesson twice in the security gate. It arrives in its own PR, blocking on arrival,
+  # once those errors are fixed.
   #
   # No `paths:` filter, on purpose. A job that only sometimes runs is the same trap one
   # level up, and these two suites finish in well under the .NET job's five minutes, so
   # they cost no wall-clock — they run alongside it, not after it.
   frontend-tests:
-    name: frontend tests (${{ matrix.project }})
+    name: frontend (${{ matrix.project }})
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -124,7 +123,17 @@ jobs:
       - name: Install
         run: npm ci
 
+      # `tsc -b`, not `tsc --noEmit`. The root tsconfig is `files: []` plus project
+      # references, and plain --noEmit does not follow references — so the old build step
+      # compiled zero files and exited 0 while every source file went unchecked. Build mode
+      # walks the app, node and test projects.
+      - name: Typecheck
+        run: npm run typecheck
+
+      # Runs even when the typecheck fails, so one CI run reports both signals instead of
+      # hiding the test result behind the first red step.
       - name: Tests
+        if: '!cancelled()'
         run: npm run test
 
   owasp-agentic-gate:

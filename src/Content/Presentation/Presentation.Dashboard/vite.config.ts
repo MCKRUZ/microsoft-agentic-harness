@@ -1,4 +1,7 @@
-import { defineConfig } from 'vite'
+// `vitest/config`, not `vite` — this file carries an inline `test:` block, and vite's own
+// defineConfig has no such property. Vitest re-exports defineConfig with the config type
+// widened to include it. The mismatch was invisible while the typecheck was a no-op.
+import { defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import path from 'path'

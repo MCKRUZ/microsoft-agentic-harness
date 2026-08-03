@@ -19,20 +19,22 @@ function ToolCallCard({ toolCall }: { toolCall: ToolCallSummary }) {
   return (
     <Collapsible>
       <div className="rounded-lg border border-border/50 bg-card/50 overflow-hidden mt-2">
-        <CollapsibleTrigger asChild>
-          <button
-            type="button"
-            className="flex items-center gap-2 w-full px-3 py-2 text-left text-xs hover:bg-muted/50 transition-colors"
-          >
-            <ChevronDown
-              size={12}
-              className="text-muted-foreground transition-transform [[data-state=closed]_&]:rotate-[-90deg]"
-            />
-            <span className="font-mono font-medium text-foreground/90">{toolCall.toolName}</span>
-            <Badge variant={statusVariant} className="ml-auto text-[10px] px-1.5 py-0">
-              {statusText}
-            </Badge>
-          </button>
+        {/*
+          `asChild` is Radix's API, not Base UI's — this trigger is built on
+          @base-ui/react/collapsible, whose Trigger renders its own <button> and composes via
+          a `render` prop instead. The old markup therefore put a <button> inside a <button>,
+          which is invalid HTML, and spread an unknown `asChild` attribute onto the DOM.
+          Dropping the inner element and styling the Trigger directly is the Base UI form.
+        */}
+        <CollapsibleTrigger className="flex items-center gap-2 w-full px-3 py-2 text-left text-xs hover:bg-muted/50 transition-colors">
+          <ChevronDown
+            size={12}
+            className="text-muted-foreground transition-transform [[data-state=closed]_&]:rotate-[-90deg]"
+          />
+          <span className="font-mono font-medium text-foreground/90">{toolCall.toolName}</span>
+          <Badge variant={statusVariant} className="ml-auto text-[10px] px-1.5 py-0">
+            {statusText}
+          </Badge>
         </CollapsibleTrigger>
         <CollapsibleContent>
           <div className="border-t border-border/50 px-3 py-2 space-y-2">

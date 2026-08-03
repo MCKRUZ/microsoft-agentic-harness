@@ -15,9 +15,11 @@ const tabs = [
 ];
 
 function latestValue(series: MetricSeries): number {
-  const pts = series.dataPoints;
-  if (pts.length === 0) return 0;
-  return parseFloat(pts[pts.length - 1].value) || 0;
+  // Checking `length === 0` does not narrow `pts[i]` — under noUncheckedIndexedAccess every
+  // index access is `T | undefined` regardless of what was proven about the length. Binding
+  // the element and testing IT is what actually narrows, and it covers the empty case too.
+  const last = series.dataPoints[series.dataPoints.length - 1];
+  return last ? parseFloat(last.value) || 0 : 0;
 }
 
 function fmt(n: number): string {
@@ -181,7 +183,12 @@ function AgentsTab() {
     );
   }
 
-  const agentNames = [...new Set(sessionSeries.map((s) => s.labels['agent_name']))].filter(Boolean).sort();
+  // A bare `.filter(Boolean)` drops the empties at runtime but does NOT narrow the type —
+  // the array stays (string | undefined)[] and every downstream use of a name has to be
+  // re-guarded. The predicate form tells the compiler what the filter already does.
+  const agentNames = [...new Set(sessionSeries.map((s) => s.labels['agent_name']))]
+    .filter((n): n is string => Boolean(n))
+    .sort();
 
   const findByAgent = (list: MetricSeries[], name: string) =>
     list.find((s) => s.labels['agent_name'] === name);
@@ -282,7 +289,10 @@ function ToolsTab() {
     );
   }
 
-  const toolNames = [...new Set(callSeries.map((s) => s.labels['tool_name']))].filter(Boolean).sort();
+  // Same predicate-filter reason as agentNames above.
+  const toolNames = [...new Set(callSeries.map((s) => s.labels['tool_name']))]
+    .filter((n): n is string => Boolean(n))
+    .sort();
 
   const findByTool = (list: MetricSeries[], name: string) =>
     list.find((s) => s.labels['tool_name'] === name);

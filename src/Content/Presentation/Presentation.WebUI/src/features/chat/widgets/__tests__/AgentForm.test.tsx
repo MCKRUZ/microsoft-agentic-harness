@@ -50,7 +50,9 @@ describe('AgentForm', () => {
     await user.click(screen.getByRole('button', { name: 'Send it' }));
 
     expect(send).toHaveBeenCalledTimes(1);
-    const message = send.mock.calls[0][0];
+    // toHaveBeenCalledTimes(1) on the line above establishes that calls[0] exists; the
+    // assertion states that for the compiler, which does not read expectations.
+    const message = send.mock.calls[0]![0];
     expect(message).toContain('- Email: a@b.com');
     expect(message).toContain('- Newsletter: Yes');
 

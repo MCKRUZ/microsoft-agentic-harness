@@ -30,6 +30,7 @@ function msg(
     role,
     source: null,
     contentPreview,
+    contentFull: null,
     model: null,
     inputTokens: 0,
     outputTokens: 0,

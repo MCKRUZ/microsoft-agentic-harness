@@ -29,7 +29,11 @@ export function DashboardLayout() {
     // (agent removed/renamed between sessions) — otherwise a stale stored id would strand the user on
     // an invalid agent whose turns fail.
     const isValid = selectedAgent !== null && agents.some((a) => a.id === selectedAgent);
-    if (!isValid) setSelectedAgent(agents[0].id);
+    // Bind the first agent rather than indexing inline: with an empty roster there is
+    // nothing to fall back to, and reading .id off agents[0] would throw instead of simply
+    // leaving the selection unset until agents arrive.
+    const first = agents[0];
+    if (!isValid && first) setSelectedAgent(first.id);
   }, [selectedAgent, agentsQuery.data, setSelectedAgent]);
 
   useEffect(() => {

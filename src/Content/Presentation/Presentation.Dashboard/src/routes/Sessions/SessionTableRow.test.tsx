@@ -1,7 +1,10 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { SessionTableRow } from './SessionTableRow';
-import type { SessionRecord, CategoryBreakdown } from '@/api/types';
+// CategoryBreakdown lives in @/lib/categories; api/types imports it but does not re-export
+// it, so this was importing a name that module never published.
+import type { SessionRecord } from '@/api/types';
+import type { CategoryBreakdown } from '@/lib/categories';
 
 function session(overrides: Partial<SessionRecord> = {}): SessionRecord {
   return {

@@ -41,7 +41,10 @@ export function completeStreamingMarkdown(content: string): string {
     if (match === null) continue;
 
     const run = match[1];
-    const marker = run[0]; // ` or ~
+    if (run === undefined) continue;
+    // charAt, not run[0]: indexing yields string | undefined under noUncheckedIndexedAccess,
+    // while the fence pattern's capture group already guarantees at least one character.
+    const marker = run.charAt(0); // ` or ~
     if (open === null) {
       open = { marker, length: run.length };
     } else if (marker === open.marker && run.length >= open.length) {

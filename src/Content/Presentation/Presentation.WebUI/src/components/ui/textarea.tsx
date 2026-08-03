@@ -1,6 +1,12 @@
-import type { TextareaHTMLAttributes } from 'react';
+import type { Ref, TextareaHTMLAttributes } from 'react';
 
-type TextareaProps = TextareaHTMLAttributes<HTMLTextAreaElement>;
+// React 19 delivers `ref` to a function component as an ordinary prop, and the spread below
+// forwards it to the DOM node — which is why ChatInput's mention insertion has always
+// worked at runtime. TextareaHTMLAttributes does not declare `ref`, so only the TYPE was
+// wrong, and nothing was typechecking this file to say so.
+type TextareaProps = TextareaHTMLAttributes<HTMLTextAreaElement> & {
+  ref?: Ref<HTMLTextAreaElement>;
+};
 
 export function Textarea({ className = '', ...props }: TextareaProps) {
   return (

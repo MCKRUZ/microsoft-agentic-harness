@@ -4,7 +4,7 @@ import type { HubConnection } from '@microsoft/signalr';
 import { buildHubConnection } from '@/lib/signalrClient';
 import { loginRequest } from '@/lib/authConfig';
 import { IS_AUTH_DISABLED } from '@/lib/devAuth';
-import { useChatStore, type ChatMessage } from '@/stores/chatStore';
+import { useChatStore } from '@/stores/chatStore';
 
 export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
 

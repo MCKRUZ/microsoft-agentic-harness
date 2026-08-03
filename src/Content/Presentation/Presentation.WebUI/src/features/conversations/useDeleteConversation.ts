@@ -4,7 +4,10 @@ import { CONVERSATIONS_QUERY_KEY, type ConversationSummary } from './useConversa
 
 export function useDeleteConversation() {
   const queryClient = useQueryClient();
-  return useMutation<void, Error, string>({
+  // The fourth generic is TContext. Left off, it defaults to unknown and onError's `context`
+  // arrives as {} — so the optimistic-update rollback below read a property the type did not
+  // have. Naming it is what makes the rollback typecheck against what onMutate returns.
+  return useMutation<void, Error, string, { previous: ConversationSummary[] | undefined }>({
     mutationFn: async (id: string) => {
       await apiClient.delete(`/api/conversations/${id}`);
     },

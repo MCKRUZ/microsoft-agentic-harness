@@ -1,8 +1,14 @@
 {
+  // `files: []` plus references is the solution-style root: it owns no sources itself and
+  // exists only to point `tsc -b` at the real projects. That is also why the previous
+  // `tsc --noEmit` build step was a silent no-op — plain --noEmit does NOT follow
+  // references, so it compiled this file's zero inputs and exited 0 while 166 source files
+  // went unchecked. Build mode (`tsc -b`, wired in package.json) is what walks the list.
   "files": [],
   "references": [
     { "path": "./tsconfig.app.json" },
-    { "path": "./tsconfig.node.json" }
+    { "path": "./tsconfig.node.json" },
+    { "path": "./tsconfig.test.json" }
   ],
   "compilerOptions": {
     "paths": {

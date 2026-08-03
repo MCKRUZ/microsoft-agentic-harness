@@ -44,12 +44,6 @@ vi.mock('../loadConversationHistory', () => ({
 
 const ACTIVE_ID = 'abcd1234-0000-0000-0000-000000000000';
 
-function getSubmitButton(): HTMLButtonElement {
-  const btn = document.querySelector('button[type="submit"]');
-  if (!btn) throw new Error('Submit button not found');
-  return btn as HTMLButtonElement;
-}
-
 function renderPanel() {
   return renderWithProviders(<ChatPanel />);
 }

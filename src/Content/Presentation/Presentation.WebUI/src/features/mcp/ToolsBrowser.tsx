@@ -2,7 +2,6 @@ import { useState, useMemo } from 'react';
 import { Wrench, Search, ChevronRight } from 'lucide-react';
 import { useToolsQuery, type McpTool } from './useMcpQuery';
 import { ToolInvoker } from './ToolInvoker';
-import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { JsonViewer } from '@/components/ui/json-viewer';
