@@ -1,19 +1,13 @@
-import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
+import {
+  ThemeContext,
+  THEME_STORAGE_KEY,
+  type ResolvedTheme,
+  type ThemePreference,
+} from './themeContext';
 
-export type ThemePreference = 'light' | 'dark' | 'system';
-export type ResolvedTheme = 'light' | 'dark';
-
-interface ThemeContextValue {
-  theme: ResolvedTheme;
-  preference: ThemePreference;
-  resolvedTheme: ResolvedTheme;
-  setTheme: (pref: ThemePreference) => void;
-  toggleTheme: () => void;
-}
-
-export const ThemeContext = createContext<ThemeContextValue | undefined>(undefined);
-
-const STORAGE_KEY = 'theme';
+// Component-only module on purpose: the context, its types and the useTheme hook live in
+// ./themeContext so Fast Refresh can hot-swap this provider instead of forcing a full reload.
 
 function getSystemTheme(): ResolvedTheme {
   if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return 'light';
@@ -22,7 +16,7 @@ function getSystemTheme(): ResolvedTheme {
 
 function getInitialPreference(): ThemePreference {
   if (typeof localStorage === 'undefined') return 'system';
-  const stored = localStorage.getItem(STORAGE_KEY);
+  const stored = localStorage.getItem(THEME_STORAGE_KEY);
   if (stored === 'light' || stored === 'dark' || stored === 'system') return stored;
   return 'system';
 }
@@ -49,7 +43,7 @@ export function ThemeProvider({ children }: ThemeProviderProps) {
 
   useEffect(() => {
     document.documentElement.dataset['theme'] = resolvedTheme;
-    localStorage.setItem(STORAGE_KEY, preference);
+    localStorage.setItem(THEME_STORAGE_KEY, preference);
   }, [resolvedTheme, preference]);
 
   const setTheme = (pref: ThemePreference): void => { setPreference(pref); };
@@ -62,12 +56,4 @@ export function ThemeProvider({ children }: ThemeProviderProps) {
       {children}
     </ThemeContext.Provider>
   );
-}
-
-export function useTheme(): ThemeContextValue {
-  const context = useContext(ThemeContext);
-  if (!context) {
-    throw new Error('useTheme must be used within a ThemeProvider');
-  }
-  return context;
 }

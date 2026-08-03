@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import type { SessionRecord } from '@/api/types';
 import type { AgentRollup } from '@/lib/agentRoster';
 
@@ -30,24 +30,28 @@ export function useSessionsFilter({
 }: UseSessionsFilterOptions): SessionsFilterState {
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
 
-  // Auto-clear the selection when the roster identity transitions and the
-  // previously-selected id is no longer in it. This covers the cold-load
-  // race where the fallback roster (id = agentName) gets clicked, then the
-  // registry resolves and ids switch to canonical 'agent-xxx' values — the
-  // old id would otherwise produce a silent empty list with no active tile.
-  useEffect(() => {
-    if (selectedAgentId === null) return;
-    const exists = roster.some((a) => a.id === selectedAgentId);
-    if (!exists) setSelectedAgentId(null);
-  }, [selectedAgentId, roster]);
+  // Handles the cold-load race where the fallback roster (id = agentName) gets clicked, then
+  // the registry resolves and ids switch to canonical 'agent-xxx' values — the stale id would
+  // otherwise produce a silent empty list with no active tile.
+  //
+  // DERIVED during render rather than corrected by an effect. The effect form set state from
+  // inside useEffect, which costs a second render pass and, in between, paints exactly the
+  // silent-empty-list state it exists to prevent. Deriving means the roster and the selection
+  // can never disagree in a committed render, so the flash cannot occur at all.
+  //
+  // The raw id stays in state deliberately: a roster that briefly empties during a refetch
+  // then returns restores the user's selection instead of silently discarding it.
+  const effectiveAgentId =
+    selectedAgentId !== null && roster.some((a) => a.id === selectedAgentId)
+      ? selectedAgentId
+      : null;
 
   const filteredSessions = useMemo(() => {
     // null id → no filter; full list passes through.
-    if (selectedAgentId === null) return sessions;
-    const selected = roster.find((a) => a.id === selectedAgentId) ?? null;
-    // Selection points at an id the roster doesn't know — return empty so
-    // the user sees the empty state. The useEffect above will clear the
-    // selection on the next paint.
+    if (effectiveAgentId === null) return sessions;
+    const selected = roster.find((a) => a.id === effectiveAgentId) ?? null;
+    // Unreachable now that effectiveAgentId is only non-null when the roster contains it,
+    // but kept as a total branch rather than a non-null assertion.
     if (selected === null) return [];
     // Sessions may carry the agent's display name ("Default Agent") OR its
     // slug/id ("default") depending on which code path persisted them.
@@ -59,17 +63,19 @@ export function useSessionsFilter({
       const k = normalizeKey(s.agentName);
       return k === nameKey || k === idKey;
     });
-  }, [sessions, selectedAgentId, roster]);
+  }, [sessions, effectiveAgentId, roster]);
 
   const selectAgent = useCallback((id: string | null) => {
     setSelectedAgentId(id);
   }, []);
 
+  // The EFFECTIVE id is what callers see, so the highlighted rail tile and the rows in the
+  // table are always describing the same selection.
   return {
-    selectedAgentId,
+    selectedAgentId: effectiveAgentId,
     selectAgent,
     filteredSessions,
-    isFiltered: selectedAgentId !== null,
+    isFiltered: effectiveAgentId !== null,
   };
 }
 

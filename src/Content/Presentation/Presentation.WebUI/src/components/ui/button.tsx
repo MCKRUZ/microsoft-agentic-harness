@@ -55,4 +55,8 @@ function Button({
   )
 }
 
-export { Button, buttonVariants }
+// `buttonVariants` is intentionally NOT exported: nothing in the app imported it, and a
+// non-component export here is what breaks Fast Refresh for the whole module. If a consumer
+// of this template needs it, move the cva() call to a sibling `button-variants.ts` and export
+// it from there — that is shadcn's own guidance and keeps this file component-only.
+export { Button }

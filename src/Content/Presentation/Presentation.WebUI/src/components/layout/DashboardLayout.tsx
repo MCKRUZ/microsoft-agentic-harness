@@ -134,11 +134,18 @@ export function DashboardLayout() {
         <SidebarSwitcher />
         <Outlet />
       </div>
-      <CommandPalette
-        open={paletteOpen}
-        onClose={() => { setPaletteOpen(false); }}
-        commands={commands}
-      />
+      {/*
+        Mounted only while open. The palette used to stay mounted and reset its own query and
+        highlight from a useEffect keyed on `open` — state adjustment from inside an effect,
+        which costs an extra render pass on every open. Mount/unmount gives the same reset for
+        free, because fresh state is what mounting means.
+      */}
+      {paletteOpen && (
+        <CommandPalette
+          onClose={() => { setPaletteOpen(false); }}
+          commands={commands}
+        />
+      )}
     </div>
   );
 }

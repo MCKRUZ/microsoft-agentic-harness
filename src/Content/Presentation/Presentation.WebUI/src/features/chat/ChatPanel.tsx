@@ -175,7 +175,18 @@ export function ChatPanel() {
   // handler intercepts (so nothing clears the previous conversation's messages first). An
   // optimistic/in-flight transcript that DOES belong to this id (a freshly minted id that was just
   // sent, or a turn mid-stream) is preserved rather than clobbered by a reload.
+  /* eslint-disable react-hooks/set-state-in-effect -- see the note at the top of the effect */
   useEffect(() => {
+    // The rule is right in general: setting state synchronously in an effect costs a second
+    // render pass. It is suppressed here rather than refactored because this effect is the
+    // conversation-load ORCHESTRATOR, not a state adjustment — the readiness flag gates the
+    // transcript render against navigation, an in-flight send, and a mid-stream turn at once,
+    // so it cannot be derived from props during render.
+    //
+    // This is also the code path behind the phantom-chat defects fixed in #174-#176. The
+    // cost of the extra render pass is one frame; the cost of getting a restructure wrong
+    // here is a class of bug this repo has already paid to fix twice. Deliberate trade, not
+    // an oversight. Revisit with the ChatPanel tests as the guard, in a PR of its own.
     if (!activeConversationId) {
       // Blank composer (`/chat` with no id) — ready immediately, nothing to load.
       setConversationReady(true);
@@ -217,6 +228,7 @@ export function ChatPanel() {
       });
     return () => { cancelled = true; };
   }, [activeConversationId, setChatConversationId]);
+  /* eslint-enable react-hooks/set-state-in-effect -- scope ends with the load orchestrator */
 
   if (!selectedAgent) {
     return (

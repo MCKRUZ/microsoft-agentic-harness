@@ -49,4 +49,5 @@ function Badge({
   })
 }
 
-export { Badge, badgeVariants }
+// Not exporting badgeVariants — see the note in button.tsx.
+export { Badge }
