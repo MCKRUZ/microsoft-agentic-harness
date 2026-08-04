@@ -51,6 +51,25 @@ public sealed class ConversationEntity
     /// <summary>Serialized <c>TelemetryAccumulator</c>, or null before the first turn completes.</summary>
     public string? TelemetryJson { get; set; }
 
+    /// <summary>
+    /// Token identifying whoever currently holds this conversation's turn lease, or null when no
+    /// turn is running. Written only by <c>SqliteConversationTurnLease</c>.
+    /// </summary>
+    /// <remarks>
+    /// Opaque, and unique per acquisition rather than per host: renewal and release both match on it,
+    /// so a host that lost its lease and legitimately re-took it must not be able to renew the
+    /// abandoned one. Its shape (machine, process, GUID) exists to make a stuck lease readable in the
+    /// database; nothing parses it.
+    /// </remarks>
+    public string? LeaseOwner { get; set; }
+
+    /// <summary>
+    /// When the current lease stops being valid, or null when no turn is running. A lease at or past
+    /// this instant is claimable by anyone, which is what keeps a host that died mid-turn from
+    /// blocking the conversation permanently.
+    /// </summary>
+    public DateTimeOffset? LeaseExpiresAt { get; set; }
+
     /// <summary>Messages belonging to this conversation, in append order by ordinal.</summary>
     public ICollection<ConversationMessageEntity> Messages { get; set; } = [];
 }

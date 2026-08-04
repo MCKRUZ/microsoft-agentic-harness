@@ -46,6 +46,14 @@ public sealed class ConversationDbContext : DbContext
         conversation.Property(e => e.CreatedAt).HasConversion(SqliteValueConverters.DateTimeOffsetAsUtcTicks);
         conversation.Property(e => e.UpdatedAt).HasConversion(SqliteValueConverters.DateTimeOffsetAsUtcTicks);
 
+        conversation.Property(e => e.LeaseOwner).HasMaxLength(200);
+
+        // Same UTC-ticks conversion as the other timestamps, and load-bearing for more than sorting
+        // here: claiming a lease compares this column against the current instant inside the WHERE
+        // clause, and EF's default DateTimeOffset storage is a text+offset tuple that does not
+        // compare as an instant.
+        conversation.Property(e => e.LeaseExpiresAt).HasConversion(SqliteValueConverters.DateTimeOffsetAsUtcTicks);
+
         // Serves ListAsync, the only query that filters by anything other than the primary key.
         // Ordered by recency because that is how every caller presents a conversation list.
         conversation.HasIndex(e => new { e.UserId, e.UpdatedAt })

@@ -154,8 +154,13 @@ public sealed class EfCoreConversationStore : IConversationStore
         // isolation does not hold a write lock from this read, so two creates racing on the same
         // caller-supplied id could both see it absent. What prevents a crossed boundary in that race
         // is that the loser's write blocks and fails rather than interleaving — not this read. The
-        // file-backed store closes the window properly, with one lock spanning check and write; the
-        // conditional-UPDATE claim arriving with the turn lease is the durable fix here.
+        // file-backed store closes the window properly, with one lock spanning check and write.
+        //
+        // The turn lease does NOT close it, despite what an earlier note here said. A lease is taken
+        // on a conversation that already exists — it claims the row — so there is nothing for it to
+        // hold while a conversation is being created. Closing this properly means an IMMEDIATE
+        // transaction, which takes the write lock at BEGIN rather than at first write; that is a
+        // change to how every write in this store contends, so it is its own piece of work.
         await ThrowIfOwnedByAnotherAsync(context, id, userId, ct);
 
         // The cascade takes the messages with it.

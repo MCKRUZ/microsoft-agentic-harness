@@ -68,7 +68,9 @@ Presentation.Common → Infrastructure.* → Application.* → Domain.*
 | `Error` | `{ message }` | Turn failure (sanitized, no internals) |
 | `HistoryTruncated` | `{ conversationId, keepCount }` | Context window compaction occurred |
 
-**Concurrency safety:** `ConversationLockRegistry` (singleton) provides one `SemaphoreSlim` per conversation. Concurrent `SendMessage` calls are serialized to prevent token stream interleaving or conversation record corruption. This registry is **in-process**, so it serializes turns within this host only — see issue #235 for the cross-host lease that supersedes it.
+**Concurrency safety:** `IConversationTurnLease` serializes turns on one conversation, so concurrent `SendMessage` calls cannot interleave token streams or corrupt the transcript. A second turn *waits* for the one in flight rather than being rejected. Which implementation is live follows the transcript provider (see below): the `Sqlite` provider gets `SqliteConversationTurnLease`, which holds the lease as two columns on the conversation row and therefore serializes turns **across hosts**; the `FileSystem` provider gets `InProcessConversationTurnLease`, which reaches only this process — matching a store that is itself single-process. This replaces `ConversationLockRegistry`, which was in-process only and so said nothing to the Execution API.
+
+A durable lease expires (`AppConfig:AI:Conversations:TurnLease:ExpirySeconds`, default 60) so a host that dies mid-turn does not block its conversation forever, and the holder renews it every third of that while the turn runs. If a lease is nonetheless taken — a stalled host, a suspended container — the losing turn is **cancelled** rather than allowed to finish writing, and the client is told the conversation was continued elsewhere.
 
 **Transcript persistence:** this host does not own the conversation store. `IConversationStore` lives in `Application.AI.Common/Interfaces/AI/`, its DTOs in `Application.AI.Common/Models/Conversations/`, and both implementations in `Infrastructure.AI/Conversations/`, registered by `AddInfrastructureAIDependencies`. It moved out of this project because the Execution API needs the same transcripts and peer Presentation projects cannot reference each other.
 
@@ -155,7 +157,6 @@ Presentation.AgentHub/
 ├── Hubs/
 │   └── AgentTelemetryHub.cs          SignalR hub (conversation + telemetry)
 ├── Services/
-│   ├── ConversationLockRegistry.cs   Per-conversation SemaphoreSlim
 │   ├── PrometheusQueryService.cs     PromQL HTTP proxy
 │   ├── DemoMetricsService.cs         Synthetic metrics for development
 │   ├── SessionIdleCleanupService.cs  Auto-complete idle sessions
@@ -245,7 +246,7 @@ dotnet run --project src/Content/Presentation/Presentation.AgentHub
 
 1. Add the method to `AgentTelemetryHub` with `[Authorize]`
 2. Call `ValidateOwnershipAsync()` for conversation-scoped methods
-3. Acquire the conversation lock via `ConversationLockRegistry`
+3. Lease the conversation's turn via `IConversationTurnLease`, and run the turn under a token linked to the handle's `LeaseLost` (see *Concurrency safety* above) — `ConversationOrchestrator.WithTurnLeaseAsync` already does both
 4. Emit server events via `Clients.Caller.SendAsync("EventName", payload)`
 
 ### Adding a New AG-UI Event Type

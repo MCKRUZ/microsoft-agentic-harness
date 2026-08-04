@@ -5,6 +5,7 @@ using Application.Common.Exceptions.ExceptionTypes;
 using Application.Core.CQRS.Agents.ExecuteAgentTurn;
 using Domain.AI.Budget;
 using FluentAssertions;
+using Infrastructure.AI.Conversations;
 using MediatR;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -32,7 +33,10 @@ public class ConversationOrchestratorTests
     private readonly Mock<IObservabilityStore> _obsStore = new();
     private readonly Mock<IConnectionTracker> _connectionTracker = new();
     private readonly Mock<IConversationBudgetTracker> _budget = new();
-    private readonly ConversationLockRegistry _lockRegistry = new();
+    // The real in-process lease rather than a mock: a mocked lease would hand back a null handle and
+    // every test here would then be exercising a turn that never took one. Replaced per-test where a
+    // lost lease has to be simulated, which the in-process one never does.
+    private IConversationTurnLease _turnLease = new InProcessConversationTurnLease();
     private readonly AgentHubConfig _config = new() { MaxHistoryMessages = 20 };
 
     public ConversationOrchestratorTests()
@@ -48,7 +52,7 @@ public class ConversationOrchestratorTests
         return new(
             _mediator.Object,
             _store.Object,
-            _lockRegistry,
+            _turnLease,
             _healthTracker.Object,
             _obsStore.Object,
             _connectionTracker.Object,
@@ -188,6 +192,76 @@ public class ConversationOrchestratorTests
         chunks.Should().Equal("Hello ", "from agent");
         // A successful turn folds its usage into the conversation-lifetime budget.
         _budget.Verify(b => b.RecordUsage("c1", It.IsAny<int>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task SendMessage_LeaseLostMidTurn_StopsTheTurnAndSaysWhy()
+    {
+        // A durable lease expires, so a host that stalls long enough can have its lease taken while
+        // its turn is still running. Unless that loss is linked into the token driving the turn, this
+        // host carries on writing to a transcript another host is now writing to. Reported distinctly
+        // from a client disconnect: both arrive as a cancellation, and only one of them is routine.
+        var lease = new ControllableTurnLease();
+        _turnLease = lease;
+
+        var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
+        _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<ConversationMessage>());
+        _obsStore.Setup(s => s.StartSessionAsync("c1", "agent", null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Guid.NewGuid());
+
+        _mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
+            .Returns<object, CancellationToken>((_, ct) =>
+            {
+                // Another host takes the lease mid-dispatch. The turn's token is the linked one, so
+                // it is cancelled here — which is how a real dispatch would observe the loss.
+                lease.Steal();
+                ct.IsCancellationRequested.Should().BeTrue(
+                    "the lease's LeaseLost token must be linked into the token the turn runs under");
+                throw new OperationCanceledException(ct);
+            });
+
+        var orchestrator = CreateOrchestrator();
+
+        var act = () => orchestrator.SendMessageAsync(
+            "conn1", "c1", Guid.NewGuid(), "Hello", "user1", null, CancellationToken.None);
+
+        (await act.Should().ThrowAsync<InvalidOperationException>())
+            .WithMessage("This conversation was continued elsewhere*");
+        lease.Released.Should().BeTrue("the lease must be released even when the turn ends this way");
+    }
+
+    [Fact]
+    public async Task SendMessage_ClientDisconnects_StaysACancellationRatherThanALostLease()
+    {
+        // The control for the test above. A disconnect cancels the caller's own token, and must keep
+        // surfacing as a cancellation — a handler that reported "continued elsewhere" for any
+        // cancellation would look correct in the stolen case while lying in the ordinary one.
+        var lease = new ControllableTurnLease();
+        _turnLease = lease;
+
+        var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
+        _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<ConversationMessage>());
+        _obsStore.Setup(s => s.StartSessionAsync("c1", "agent", null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Guid.NewGuid());
+
+        using var caller = new CancellationTokenSource();
+        _mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
+            .Returns<object, CancellationToken>((_, ct) =>
+            {
+                caller.Cancel();
+                throw new OperationCanceledException(ct);
+            });
+
+        var orchestrator = CreateOrchestrator();
+
+        var act = () => orchestrator.SendMessageAsync(
+            "conn1", "c1", Guid.NewGuid(), "Hello", "user1", null, caller.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
     }
 
     [Fact]

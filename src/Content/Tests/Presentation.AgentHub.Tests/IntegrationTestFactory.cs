@@ -48,7 +48,7 @@ public class IntegrationTestFactory : WebApplicationFactory<Program>
                 .AddScheme<AuthenticationSchemeOptions, TestAuthHandler>(
                     TestAuthHandler.SchemeName, _ => { });
 
-            services.AddSingleton(TestConversationStore.ForDirectory(TempConversationsPath));
+            TestConversationStore.UseIsolatedDirectory(services, TempConversationsPath);
 
             // Replace AI services with fakes — keeps real MediatR pipeline
             services.RemoveAll<IChatClientFactory>();

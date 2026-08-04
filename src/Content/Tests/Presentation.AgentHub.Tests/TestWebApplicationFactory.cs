@@ -97,7 +97,7 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
             // Route conversation storage to an isolated temp directory. The last AddSingleton wins,
             // replacing Infrastructure.AI's registration of the store at the configured path. The
             // helper creates the directory, so there is no CreateDirectory call to keep in step here.
-            services.AddSingleton(TestConversationStore.ForDirectory(TempConversationsPath));
+            TestConversationStore.UseIsolatedDirectory(services, TempConversationsPath);
 
             // Replace IMediator with a mock so hub tests can stub AgentTurnResult
             // without invoking the real MediatR pipeline or AI services.

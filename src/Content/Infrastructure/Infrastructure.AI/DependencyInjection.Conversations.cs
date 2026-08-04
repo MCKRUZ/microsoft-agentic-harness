@@ -51,11 +51,27 @@ public static partial class DependencyInjection
         if (appConfig.AI.Conversations.Provider == ConversationStoreProvider.FileSystem)
         {
             services.AddSingleton<IConversationStore, FileSystemConversationStore>();
+
+            // Matched to the store on purpose. The file-backed store is safe in one process, so a
+            // lease that reaches only that far loses nothing; a durable lease paired with it would
+            // serialise turns the store cannot survive anyway.
+            services.AddSingleton<IConversationTurnLease, InProcessConversationTurnLease>();
             return;
         }
 
         RegisterConversationDbContext(services, appConfig.AI.Conversations);
         services.AddSingleton<IConversationStore, EfCoreConversationStore>();
+
+        // Checked here as well as in the constructor, and the duplication is the point: this
+        // registration runs at startup, whereas the constructor runs whenever the singleton is first
+        // resolved — which, for a lease, is the first turn somebody tries to take. A misconfigured
+        // expiry should stop the host coming up, not surface as a failed conversation later.
+        SqliteConversationTurnLease.Validate(
+            appConfig.AI.Conversations.TurnLease, nameof(appConfig));
+
+        // Singleton for the same reason the store is: the lease's state is the conversation row, and
+        // an instance holds only configuration, so nothing is gained by a shorter lifetime.
+        services.AddSingleton<IConversationTurnLease, SqliteConversationTurnLease>();
     }
 
     /// <summary>
