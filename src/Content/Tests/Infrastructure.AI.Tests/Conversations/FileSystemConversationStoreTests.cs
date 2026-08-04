@@ -73,6 +73,29 @@ public sealed class FileSystemConversationStoreTests : ConversationStoreContract
         File.Exists(filePath).Should().BeFalse();
     }
 
+    [Theory]
+    [InlineData("{ this is not json")]
+    [InlineData("")]
+    [InlineData("null")]
+    public async Task DeleteAsync_RecordTooCorruptToNameAnOwner_StillDeletesIt(string corrupt)
+    {
+        // Ownership is read from the file here, so a file that cannot be read has no owner to check.
+        // It must still be deletable: refusing would leave it stuck in the directory with no way to
+        // remove it through the API, and would protect nothing — writing that file needed directory
+        // access, and anyone with that can delete it without asking this store.
+        //
+        // The cases matter. Deserialize returns null only for the literal `null`; truncated and empty
+        // content throw instead, which is the shape corruption actually takes.
+        var record = await _store.CreateAsync("agent", Owner);
+        var path = Path.Combine(_tempDir, $"{record.Id}.json");
+        await File.WriteAllTextAsync(path, corrupt);
+
+        var deleted = await _store.DeleteAsync(record.Id, Owner);
+
+        deleted.Should().BeTrue();
+        File.Exists(path).Should().BeFalse();
+    }
+
     [Fact]
     public async Task ConversationIdEscapingTheBasePath_ThrowsArgumentException()
     {

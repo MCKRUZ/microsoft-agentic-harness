@@ -252,12 +252,30 @@ public sealed class FileSystemConversationStore : IConversationStore
             // has to read the record to learn who owns it. Both reads happen under the same lock, so
             // nothing can change hands in between; that is the property SQLite gets from the statement.
             var json = await File.ReadAllTextAsync(path, ct);
-            var existing = JsonSerializer.Deserialize<ConversationRecord>(json, ConversationJson.Options);
 
             // A record too corrupt to name an owner is deleted, as it was before ownership moved here.
             // Refusing instead would make it permanently undeletable through the API, and would buy
             // nothing: corrupting the file first requires write access to the directory, and anyone
             // holding that can delete it outright without asking this store.
+            //
+            // The catch is what makes that true rather than merely intended. Deserialize returns null
+            // only for the JSON literal `null`; the corruption that actually happens — truncated or
+            // malformed text — throws, and an uncaught throw here produces exactly the undeletable
+            // record this paragraph rules out. ListAsync already treats a bad file as an expected
+            // condition, so the store agrees elsewhere that these occur.
+            ConversationRecord? existing;
+            try
+            {
+                existing = JsonSerializer.Deserialize<ConversationRecord>(json, ConversationJson.Options);
+            }
+            catch (JsonException ex)
+            {
+                _logger.LogWarning(ex,
+                    "Conversation {ConversationId} could not be deserialized; deleting it unverified.",
+                    conversationId);
+                existing = null;
+            }
+
             if (existing is not null)
                 RequireOwner(conversationId, callerId, existing.UserId);
 
