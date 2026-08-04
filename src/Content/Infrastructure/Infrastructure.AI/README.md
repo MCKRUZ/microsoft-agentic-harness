@@ -292,6 +292,7 @@ Infrastructure.AI/
 ├── Conversations/
 │   ├── EfCoreConversationStore.cs      Default transcript store — one row per message
 │   ├── FileSystemConversationStore.cs  JSON-per-conversation; single-process dev only
+│   ├── ConversationOwnership.cs        The ownership rules both stores answer to
 │   └── ConversationJson.cs             Serializer settings both stores persist with
 ├── Persistence/
 │   ├── PlannerDbContext.cs             EF Core context for plan entities

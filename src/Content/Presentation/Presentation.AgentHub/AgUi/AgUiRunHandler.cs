@@ -3,6 +3,7 @@ using System.Security.Claims;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.AI;
 using Application.AI.Common.OpenTelemetry.Metrics;
+using Application.Common.Exceptions.ExceptionTypes;
 using Application.Core.CQRS.Agents.ExecuteAgentTurn;
 using Domain.AI.Telemetry.Conventions;
 using MediatR;
@@ -89,10 +90,22 @@ public sealed class AgUiRunHandler
         ConversationRecord? record;
         try
         {
-            record = await _conversationStore.GetAsync(input.ThreadId, ct);
+            record = await _conversationStore.GetAsync(input.ThreadId, callerId, ct);
         }
         catch (OperationCanceledException)
         {
+            return;
+        }
+        // Ahead of the general handler on purpose. This stream reports failures as events rather than
+        // status codes, so an ownership refusal caught by the catch-all below would reach the client
+        // as "an error occurred" — turning a decision the harness made deliberately into what looks
+        // like a fault. The store has already logged the caller, thread, and real owner.
+        catch (ConversationAccessDeniedException)
+        {
+            _logger.LogWarning(
+                "AG-UI run {RunId}: caller {CallerId} refused access to conversation {ThreadId}.",
+                input.RunId, callerId, input.ThreadId);
+            await writer.WriteAsync(new RunErrorEvent("Access denied."), ct);
             return;
         }
         catch (Exception ex)
@@ -106,15 +119,6 @@ public sealed class AgUiRunHandler
         {
             _logger.LogWarning("AG-UI run {RunId}: conversation {ThreadId} not found.", input.RunId, input.ThreadId);
             await writer.WriteAsync(new RunErrorEvent("Conversation not found."), ct);
-            return;
-        }
-
-        if (record.UserId != callerId)
-        {
-            _logger.LogWarning(
-                "AG-UI run {RunId}: user {CallerId} attempted to access conversation {ThreadId} owned by {OwnerId}.",
-                input.RunId, callerId, input.ThreadId, record.UserId);
-            await writer.WriteAsync(new RunErrorEvent("Access denied."), ct);
             return;
         }
 
@@ -141,7 +145,7 @@ public sealed class AgUiRunHandler
                 input.ThreadId, record.AgentName, model: null, ct);
 
             await _conversationStore.UpdateTelemetryAsync(
-                input.ThreadId, observabilitySessionId, TelemetryAccumulator.Zero, ct);
+                input.ThreadId, callerId, observabilitySessionId, TelemetryAccumulator.Zero, ct);
         }
 
         Activity.Current?.AddBaggage(UserConventions.UserId, callerId);
@@ -152,6 +156,7 @@ public sealed class AgUiRunHandler
         {
             _writerAccessor.Writer = writer;
             _writerAccessor.ThreadId = input.ThreadId;
+            _writerAccessor.CallerId = callerId;
             await ExecuteRunAsync(input, writer, record, userMessage, callerId, observabilitySessionId, ct);
         }
         catch (OperationCanceledException)
@@ -167,6 +172,7 @@ public sealed class AgUiRunHandler
         {
             _writerAccessor.Writer = null;
             _writerAccessor.ThreadId = null;
+            _writerAccessor.CallerId = null;
             semaphore.Release();
         }
     }
@@ -195,12 +201,12 @@ public sealed class AgUiRunHandler
             MessageRole.User,
             userMessageText,
             DateTimeOffset.UtcNow);
-        await _conversationStore.AppendMessageAsync(input.ThreadId, userMsg, ct);
+        await _conversationStore.AppendMessageAsync(input.ThreadId, callerId, userMsg, ct);
 
         // Load truncated history for dispatch (mirrors hub's MaxHistoryMessages).
         // Use a reasonable default — the hub reads this from config; we use 50 here
         // since AgUiRunHandler is not wired to AgentHubConfig directly.
-        var history = await _conversationStore.GetHistoryForDispatch(input.ThreadId, 50, ct) ?? [];
+        var history = await _conversationStore.GetHistoryForDispatch(input.ThreadId, callerId, 50, ct) ?? [];
         var turnNumber = record.Messages.Count + 1;
 
         // Conversation-lifetime budget gate: decline gracefully (no LLM dispatch) when the
@@ -208,7 +214,7 @@ public sealed class AgUiRunHandler
         // normal assistant turn rather than a RunErrorEvent. No-op when the budget is disabled.
         if (_conversationBudget.GetStatus(input.ThreadId).IsExhausted)
         {
-            await EmitBudgetExhaustedAsync(writer, input, record.AgentName, ct);
+            await EmitBudgetExhaustedAsync(writer, input, record.AgentName, callerId, ct);
             return;
         }
 
@@ -294,7 +300,7 @@ public sealed class AgUiRunHandler
                 result.Model, ct);
 
             await _conversationStore.UpdateTelemetryAsync(
-                input.ThreadId, observabilitySessionId, updatedTelemetry, ct);
+                input.ThreadId, callerId, observabilitySessionId, updatedTelemetry, ct);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -323,7 +329,7 @@ public sealed class AgUiRunHandler
             MessageRole.Assistant,
             response,
             DateTimeOffset.UtcNow);
-        await _conversationStore.AppendMessageAsync(input.ThreadId, assistantMsg, ct);
+        await _conversationStore.AppendMessageAsync(input.ThreadId, callerId, assistantMsg, ct);
 
         await writer.WriteAsync(new RunFinishedEvent(input.ThreadId, input.RunId), ct);
     }
@@ -334,7 +340,7 @@ public sealed class AgUiRunHandler
     /// <c>RunFinished</c>. No LLM is dispatched.
     /// </summary>
     private async Task EmitBudgetExhaustedAsync(
-        IAgUiEventWriter writer, RunAgentInput input, string agentName, CancellationToken ct)
+        IAgUiEventWriter writer, RunAgentInput input, string agentName, string callerId, CancellationToken ct)
     {
         var message = Services.ConversationBudgetNotice.Message;
 
@@ -352,7 +358,7 @@ public sealed class AgUiRunHandler
 
         var assistantMsg = new ConversationMessage(
             assistantId, MessageRole.Assistant, message, DateTimeOffset.UtcNow);
-        await _conversationStore.AppendMessageAsync(input.ThreadId, assistantMsg, ct);
+        await _conversationStore.AppendMessageAsync(input.ThreadId, callerId, assistantMsg, ct);
 
         await writer.WriteAsync(new RunFinishedEvent(input.ThreadId, input.RunId), ct);
     }

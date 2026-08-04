@@ -49,6 +49,12 @@ public sealed class GlobalExceptionMiddleware
         [typeof(BadRequestException)] = (StatusCodes.Status400BadRequest, "The request was invalid."),
         [typeof(UnauthorizedAccessException)] = (StatusCodes.Status401Unauthorized, "Access denied."),
         [typeof(ForbiddenAccessException)] = (StatusCodes.Status403Forbidden, "Forbidden."),
+
+        // Needs its own entry despite deriving from UnauthorizedAccessException: this map is keyed on
+        // the exact runtime type, so a derived exception matches nothing and would fall through to a
+        // 500. It is deliberately 403 rather than the base type's 401 — the caller is authenticated,
+        // and telling them to authenticate again would send them round a loop that cannot succeed.
+        [typeof(ConversationAccessDeniedException)] = (StatusCodes.Status403Forbidden, "Forbidden."),
         [typeof(EntityNotFoundException)] = (StatusCodes.Status404NotFound, "The requested resource was not found."),
         [typeof(DatabaseInteractionException)] = (StatusCodes.Status422UnprocessableEntity, "A data processing error occurred."),
     };

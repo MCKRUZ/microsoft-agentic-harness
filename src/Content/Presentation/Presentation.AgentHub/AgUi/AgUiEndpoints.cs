@@ -85,12 +85,11 @@ public static class AgUiEndpoints
         if (callerId is null)
             return Results.Unauthorized();
 
-        var record = await conversationStore.GetAsync(input.ThreadId, ct);
+        // Ownership is the store's to enforce; a refusal arrives as ConversationAccessDeniedException
+        // and is mapped to 403 centrally, so there is no owner comparison to keep in step here.
+        var record = await conversationStore.GetAsync(input.ThreadId, callerId, ct);
         if (record is null)
             return Results.NotFound(new { error = "Conversation not found." });
-
-        if (record.UserId != callerId)
-            return Results.Forbid();
 
         // false ⇒ no call with this id is pending for this thread (already completed, timed out, never
         // existed, or registered under a different conversation).

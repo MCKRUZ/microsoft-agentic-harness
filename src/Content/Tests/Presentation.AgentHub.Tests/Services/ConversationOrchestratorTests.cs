@@ -1,6 +1,7 @@
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.AI;
 using Application.AI.Common.Services;
+using Application.Common.Exceptions.ExceptionTypes;
 using Application.Core.CQRS.Agents.ExecuteAgentTurn;
 using Domain.AI.Budget;
 using FluentAssertions;
@@ -63,11 +64,11 @@ public class ConversationOrchestratorTests
     public async Task StartConversation_NewConversation_CreatesRecord()
     {
         var expected = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
-        _store.Setup(s => s.GetAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+        _store.Setup(s => s.GetAsync(It.IsAny<string>(), "user1", It.IsAny<CancellationToken>()))
             .ReturnsAsync((ConversationRecord?)null);
         _store.Setup(s => s.CreateAsync("agent", "user1", null, It.IsAny<CancellationToken>()))
             .ReturnsAsync(expected);
-        _store.Setup(s => s.GetHistoryForDispatch("c1", 20, It.IsAny<CancellationToken>()))
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<ConversationMessage>());
 
         var orchestrator = CreateOrchestrator();
@@ -81,8 +82,8 @@ public class ConversationOrchestratorTests
     public async Task StartConversation_ExistingConversation_ReturnsExistingRecord()
     {
         var existing = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
-        _store.Setup(s => s.GetAsync("c1", It.IsAny<CancellationToken>())).ReturnsAsync(existing);
-        _store.Setup(s => s.GetHistoryForDispatch("c1", 20, It.IsAny<CancellationToken>()))
+        _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(existing);
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<ConversationMessage>());
 
         var orchestrator = CreateOrchestrator();
@@ -95,13 +96,20 @@ public class ConversationOrchestratorTests
     [Fact]
     public async Task StartConversation_WrongOwner_ThrowsUnauthorizedAccessException()
     {
-        var other = new ConversationRecord("c1", "agent", "other-user", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
-        _store.Setup(s => s.GetAsync("c1", It.IsAny<CancellationToken>())).ReturnsAsync(other);
+        // Keyed on the attacker, because the store is the thing that decides now: it is asked as the
+        // caller who actually made the request, and refuses. What the orchestrator still owes is that
+        // it asks with the real caller and lets the refusal out — not that it re-derives the rule.
+        _store.Setup(s => s.GetAsync("c1", "attacker", It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new ConversationAccessDeniedException());
 
         var orchestrator = CreateOrchestrator();
         var act = () => orchestrator.StartConversationAsync("conn1", "agent", "c1", "attacker", CancellationToken.None);
 
         await act.Should().ThrowAsync<UnauthorizedAccessException>();
+        _store.Verify(
+            s => s.CreateAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Never,
+            "a refused start must not fall through to creating a fresh conversation under that id");
     }
 
     // ── SetSettings ──────────────────────────────────────────────────────
@@ -110,8 +118,8 @@ public class ConversationOrchestratorTests
     public async Task SetSettings_ValidOwner_UpdatesSettings()
     {
         var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
-        _store.Setup(s => s.GetAsync("c1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
-        _store.Setup(s => s.UpdateSettingsAsync("c1", It.IsAny<ConversationSettings>(), It.IsAny<CancellationToken>()))
+        _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
+        _store.Setup(s => s.UpdateSettingsAsync("c1", "user1", It.IsAny<ConversationSettings>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(record);
 
         var orchestrator = CreateOrchestrator();
@@ -119,13 +127,13 @@ public class ConversationOrchestratorTests
 
         await orchestrator.SetSettingsAsync("c1", settings, "user1", CancellationToken.None);
 
-        _store.Verify(s => s.UpdateSettingsAsync("c1", settings, It.IsAny<CancellationToken>()), Times.Once);
+        _store.Verify(s => s.UpdateSettingsAsync("c1", "user1", settings, It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
     public async Task SetSettings_NotFound_ThrowsInvalidOperationException()
     {
-        _store.Setup(s => s.GetAsync("missing", It.IsAny<CancellationToken>()))
+        _store.Setup(s => s.GetAsync("missing", "user1", It.IsAny<CancellationToken>()))
             .ReturnsAsync((ConversationRecord?)null);
 
         var orchestrator = CreateOrchestrator();
@@ -140,8 +148,8 @@ public class ConversationOrchestratorTests
     public async Task SendMessage_Success_ReturnsTurnOutcomeWithResponse()
     {
         var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
-        _store.Setup(s => s.GetAsync("c1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
-        _store.Setup(s => s.GetHistoryForDispatch("c1", 20, It.IsAny<CancellationToken>()))
+        _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<ConversationMessage>());
 
         _obsStore.Setup(s => s.StartSessionAsync("c1", "agent", null, It.IsAny<CancellationToken>()))
@@ -186,8 +194,8 @@ public class ConversationOrchestratorTests
     public async Task SendMessage_ConversationBudgetExhausted_DeclinesGracefullyWithoutDispatch()
     {
         var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
-        _store.Setup(s => s.GetAsync("c1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
-        _store.Setup(s => s.GetHistoryForDispatch("c1", 20, It.IsAny<CancellationToken>()))
+        _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<ConversationMessage>());
         _obsStore.Setup(s => s.StartSessionAsync("c1", "agent", null, It.IsAny<CancellationToken>()))
             .ReturnsAsync(Guid.NewGuid());
@@ -212,8 +220,8 @@ public class ConversationOrchestratorTests
     public async Task SendMessage_MediatorThrows_ReturnsFailedOutcome()
     {
         var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
-        _store.Setup(s => s.GetAsync("c1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
-        _store.Setup(s => s.GetHistoryForDispatch("c1", 20, It.IsAny<CancellationToken>()))
+        _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<ConversationMessage>());
 
         _obsStore.Setup(s => s.StartSessionAsync("c1", "agent", null, It.IsAny<CancellationToken>()))
@@ -236,8 +244,8 @@ public class ConversationOrchestratorTests
     public async Task SendMessage_MediatorThrows_AppendsSyntheticErrorMessage()
     {
         var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
-        _store.Setup(s => s.GetAsync("c1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
-        _store.Setup(s => s.GetHistoryForDispatch("c1", 20, It.IsAny<CancellationToken>()))
+        _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<ConversationMessage>());
 
         _obsStore.Setup(s => s.StartSessionAsync("c1", "agent", null, It.IsAny<CancellationToken>()))
@@ -250,7 +258,7 @@ public class ConversationOrchestratorTests
 
         await orchestrator.SendMessageAsync("conn1", "c1", Guid.NewGuid(), "Hello", "user1", null, CancellationToken.None);
 
-        _store.Verify(s => s.AppendMessageAsync("c1",
+        _store.Verify(s => s.AppendMessageAsync("c1", "user1",
             It.Is<ConversationMessage>(m => m.Role == MessageRole.Assistant && m.Content.Contains("[Error]")),
             It.IsAny<CancellationToken>()), Times.Once);
     }
@@ -259,8 +267,8 @@ public class ConversationOrchestratorTests
     public async Task SendMessage_AgentReturnsFailure_ReturnsFailedOutcome()
     {
         var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
-        _store.Setup(s => s.GetAsync("c1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
-        _store.Setup(s => s.GetHistoryForDispatch("c1", 20, It.IsAny<CancellationToken>()))
+        _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<ConversationMessage>());
 
         _obsStore.Setup(s => s.StartSessionAsync("c1", "agent", null, It.IsAny<CancellationToken>()))
@@ -290,8 +298,8 @@ public class ConversationOrchestratorTests
         const string actionable =
             "Anthropic client is not configured. Set AppConfig:AI:AgentFramework:Endpoint and ApiKey.";
         var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
-        _store.Setup(s => s.GetAsync("c1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
-        _store.Setup(s => s.GetHistoryForDispatch("c1", 20, It.IsAny<CancellationToken>()))
+        _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<ConversationMessage>());
         _obsStore.Setup(s => s.StartSessionAsync("c1", "agent", null, It.IsAny<CancellationToken>()))
             .ReturnsAsync(Guid.NewGuid());
@@ -320,8 +328,8 @@ public class ConversationOrchestratorTests
         const string actionable =
             "Anthropic client is not configured. Set AppConfig:AI:AgentFramework:Endpoint and ApiKey.";
         var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
-        _store.Setup(s => s.GetAsync("c1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
-        _store.Setup(s => s.GetHistoryForDispatch("c1", 20, It.IsAny<CancellationToken>()))
+        _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<ConversationMessage>());
         _obsStore.Setup(s => s.StartSessionAsync("c1", "agent", null, It.IsAny<CancellationToken>()))
             .ReturnsAsync(Guid.NewGuid());
@@ -347,14 +355,18 @@ public class ConversationOrchestratorTests
     [Fact]
     public async Task SendMessage_WrongOwner_ThrowsUnauthorizedAccessException()
     {
-        var record = new ConversationRecord("c1", "agent", "other-user", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
-        _store.Setup(s => s.GetAsync("c1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
+        _store.Setup(s => s.GetAsync("c1", "attacker", It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new ConversationAccessDeniedException());
 
         var orchestrator = CreateOrchestrator();
         var act = () => orchestrator.SendMessageAsync(
             "conn1", "c1", Guid.NewGuid(), "Hello", "attacker", null, CancellationToken.None);
 
         await act.Should().ThrowAsync<UnauthorizedAccessException>();
+        _store.Verify(
+            s => s.AppendMessageAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<ConversationMessage>(), It.IsAny<CancellationToken>()),
+            Times.Never,
+            "a refused turn must not leave the attacker's message in someone else's transcript");
     }
 
     // ── RetryFromMessage ─────────────────────────────────────────────────
@@ -365,10 +377,10 @@ public class ConversationOrchestratorTests
         var userMsg = new ConversationMessage(Guid.NewGuid(), MessageRole.User, "Original", DateTimeOffset.UtcNow);
         var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow,
             [userMsg]);
-        _store.Setup(s => s.GetAsync("c1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
-        _store.Setup(s => s.TruncateFromMessageAsync("c1", It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+        _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
+        _store.Setup(s => s.TruncateFromMessageAsync("c1", "user1", It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, [userMsg]));
-        _store.Setup(s => s.GetHistoryForDispatch("c1", 20, It.IsAny<CancellationToken>()))
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<ConversationMessage> { userMsg });
 
         _obsStore.Setup(s => s.StartSessionAsync("c1", "agent", null, It.IsAny<CancellationToken>()))
@@ -389,8 +401,8 @@ public class ConversationOrchestratorTests
     public async Task RetryFromMessage_NoUserMessage_ThrowsInvalidOperationException()
     {
         var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
-        _store.Setup(s => s.GetAsync("c1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
-        _store.Setup(s => s.TruncateFromMessageAsync("c1", It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+        _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
+        _store.Setup(s => s.TruncateFromMessageAsync("c1", "user1", It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []));
 
         var orchestrator = CreateOrchestrator();
@@ -406,10 +418,10 @@ public class ConversationOrchestratorTests
     public async Task EditAndResubmit_Success_ReturnsOutcomeWithKeepCount()
     {
         var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
-        _store.Setup(s => s.GetAsync("c1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
-        _store.Setup(s => s.TruncateFromMessageAsync("c1", It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+        _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
+        _store.Setup(s => s.TruncateFromMessageAsync("c1", "user1", It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []));
-        _store.Setup(s => s.GetHistoryForDispatch("c1", 20, It.IsAny<CancellationToken>()))
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<ConversationMessage>());
 
         _obsStore.Setup(s => s.StartSessionAsync("c1", "agent", null, It.IsAny<CancellationToken>()))
@@ -432,7 +444,7 @@ public class ConversationOrchestratorTests
     public async Task ValidateAccess_ValidOwner_Succeeds()
     {
         var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
-        _store.Setup(s => s.GetAsync("c1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
+        _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
 
         var orchestrator = CreateOrchestrator();
         await orchestrator.ValidateAccessAsync("c1", "user1", CancellationToken.None);
@@ -441,7 +453,7 @@ public class ConversationOrchestratorTests
     [Fact]
     public async Task ValidateAccess_NotFound_ThrowsInvalidOperationException()
     {
-        _store.Setup(s => s.GetAsync("missing", It.IsAny<CancellationToken>()))
+        _store.Setup(s => s.GetAsync("missing", "user1", It.IsAny<CancellationToken>()))
             .ReturnsAsync((ConversationRecord?)null);
 
         var orchestrator = CreateOrchestrator();
@@ -453,8 +465,8 @@ public class ConversationOrchestratorTests
     [Fact]
     public async Task ValidateAccess_WrongOwner_ThrowsUnauthorizedAccessException()
     {
-        var record = new ConversationRecord("c1", "agent", "other", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
-        _store.Setup(s => s.GetAsync("c1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
+        _store.Setup(s => s.GetAsync("c1", "attacker", It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new ConversationAccessDeniedException());
 
         var orchestrator = CreateOrchestrator();
         var act = () => orchestrator.ValidateAccessAsync("c1", "attacker", CancellationToken.None);
@@ -508,8 +520,8 @@ public class ConversationOrchestratorTests
     public async Task SendMessage_FirstTurn_StartsObservabilitySession()
     {
         var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
-        _store.Setup(s => s.GetAsync("c1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
-        _store.Setup(s => s.GetHistoryForDispatch("c1", 20, It.IsAny<CancellationToken>()))
+        _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<ConversationMessage>());
 
         var sessionId = Guid.NewGuid();
@@ -535,8 +547,8 @@ public class ConversationOrchestratorTests
     public async Task SendMessage_ClientDisconnectMidTurn_AbortsWithoutRecordingError()
     {
         var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
-        _store.Setup(s => s.GetAsync("c1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
-        _store.Setup(s => s.GetHistoryForDispatch("c1", 20, It.IsAny<CancellationToken>()))
+        _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<ConversationMessage>());
         _obsStore.Setup(s => s.StartSessionAsync("c1", "agent", null, It.IsAny<CancellationToken>()))
             .ReturnsAsync(Guid.NewGuid());
@@ -562,7 +574,7 @@ public class ConversationOrchestratorTests
         // A disconnect is routine cancellation — abort, don't classify as an agent error.
         await act.Should().ThrowAsync<OperationCanceledException>();
         _healthTracker.Verify(h => h.RecordError(It.IsAny<string>()), Times.Never);
-        _store.Verify(s => s.AppendMessageAsync("c1",
+        _store.Verify(s => s.AppendMessageAsync("c1", "user1",
             It.Is<ConversationMessage>(m => m.Content.Contains("[Error]")),
             It.IsAny<CancellationToken>()), Times.Never);
     }
@@ -574,8 +586,8 @@ public class ConversationOrchestratorTests
         // agent failure (ErrorKind.Internal) that happens to coincide with the connection
         // dropping must still be recorded — not silently reclassified as a disconnect.
         var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
-        _store.Setup(s => s.GetAsync("c1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
-        _store.Setup(s => s.GetHistoryForDispatch("c1", 20, It.IsAny<CancellationToken>()))
+        _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<ConversationMessage>());
         _obsStore.Setup(s => s.StartSessionAsync("c1", "agent", null, It.IsAny<CancellationToken>()))
             .ReturnsAsync(Guid.NewGuid());
@@ -604,8 +616,8 @@ public class ConversationOrchestratorTests
     public async Task SendMessage_ClientDisconnect_OceFromDispatch_RethrowsWithoutRecordingError()
     {
         var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
-        _store.Setup(s => s.GetAsync("c1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
-        _store.Setup(s => s.GetHistoryForDispatch("c1", 20, It.IsAny<CancellationToken>()))
+        _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<ConversationMessage>());
         _obsStore.Setup(s => s.StartSessionAsync("c1", "agent", null, It.IsAny<CancellationToken>()))
             .ReturnsAsync(Guid.NewGuid());
@@ -633,8 +645,8 @@ public class ConversationOrchestratorTests
         // token uncancelled — so it must still be treated as a genuine agent error,
         // unlike a client disconnect.
         var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
-        _store.Setup(s => s.GetAsync("c1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
-        _store.Setup(s => s.GetHistoryForDispatch("c1", 20, It.IsAny<CancellationToken>()))
+        _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<ConversationMessage>());
         _obsStore.Setup(s => s.StartSessionAsync("c1", "agent", null, It.IsAny<CancellationToken>()))
             .ReturnsAsync(Guid.NewGuid());
@@ -654,8 +666,8 @@ public class ConversationOrchestratorTests
     public async Task SendMessage_ForwardsHandlerDeltasVerbatim_WithoutRechunking()
     {
         var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
-        _store.Setup(s => s.GetAsync("c1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
-        _store.Setup(s => s.GetHistoryForDispatch("c1", 20, It.IsAny<CancellationToken>()))
+        _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<ConversationMessage>());
 
         _obsStore.Setup(s => s.StartSessionAsync("c1", "agent", null, It.IsAny<CancellationToken>()))

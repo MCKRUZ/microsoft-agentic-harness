@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.AI;
+using Application.Common.Exceptions.ExceptionTypes;
 using Application.Core.CQRS.Agents.ExecuteAgentTurn;
 using Domain.AI.Budget;
 using FluentAssertions;
@@ -102,11 +103,11 @@ public sealed class AgUiRunHandlerTests
     {
         var mediator = new Mock<IMediator>();
         var store = new Mock<IConversationStore>();
-        store.Setup(s => s.GetAsync(threadId, It.IsAny<CancellationToken>()))
+        store.Setup(s => s.GetAsync(threadId, userId, It.IsAny<CancellationToken>()))
              .ReturnsAsync(MakeRecord(threadId, userId));
-        store.Setup(s => s.GetHistoryForDispatch(threadId, It.IsAny<int>(), It.IsAny<CancellationToken>()))
+        store.Setup(s => s.GetHistoryForDispatch(threadId, userId, It.IsAny<int>(), It.IsAny<CancellationToken>()))
              .ReturnsAsync([]);
-        store.Setup(s => s.AppendMessageAsync(threadId, It.IsAny<ConversationMessage>(), It.IsAny<CancellationToken>()))
+        store.Setup(s => s.AppendMessageAsync(threadId, userId, It.IsAny<ConversationMessage>(), It.IsAny<CancellationToken>()))
              .Returns(Task.CompletedTask);
         mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(failure);
@@ -189,7 +190,7 @@ public sealed class AgUiRunHandlerTests
     {
         var mediator = new Mock<IMediator>();
         var store = new Mock<IConversationStore>();
-        store.Setup(s => s.GetAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+        store.Setup(s => s.GetAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
              .ReturnsAsync((ConversationRecord?)null);
 
         var handler = BuildHandler(mediator, store);
@@ -224,11 +225,14 @@ public sealed class AgUiRunHandlerTests
 
         var mediator = new Mock<IMediator>();
         var store = new Mock<IConversationStore>();
-        store.Setup(s => s.GetAsync(threadId, It.IsAny<CancellationToken>()))
+        // Keyed on `sub` as the caller, which is the assertion: the handler has to resolve a sub-only
+        // token to that id and hand it to the store. If it resolved to anything else these setups
+        // would not match and the run would fail on a null record instead of succeeding.
+        store.Setup(s => s.GetAsync(threadId, sub, It.IsAny<CancellationToken>()))
              .ReturnsAsync(MakeRecord(threadId, sub));
-        store.Setup(s => s.GetHistoryForDispatch(threadId, It.IsAny<int>(), It.IsAny<CancellationToken>()))
+        store.Setup(s => s.GetHistoryForDispatch(threadId, sub, It.IsAny<int>(), It.IsAny<CancellationToken>()))
              .ReturnsAsync([]);
-        store.Setup(s => s.AppendMessageAsync(threadId, It.IsAny<ConversationMessage>(), It.IsAny<CancellationToken>()))
+        store.Setup(s => s.AppendMessageAsync(threadId, sub, It.IsAny<ConversationMessage>(), It.IsAny<CancellationToken>()))
              .Returns(Task.CompletedTask);
         mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(MakeSuccessResult("Hello."));
@@ -255,8 +259,12 @@ public sealed class AgUiRunHandlerTests
 
         var mediator = new Mock<IMediator>();
         var store = new Mock<IConversationStore>();
-        store.Setup(s => s.GetAsync(threadId, It.IsAny<CancellationToken>()))
-             .ReturnsAsync(MakeRecord(threadId, "the-real-owner"));
+        // The store refuses, because ownership is now its decision rather than the handler's. Stubbed
+        // to throw exactly what the real implementations throw: what this test proves is that the
+        // handler turns that refusal into a RunError and dispatches nothing — not that it re-derives
+        // the ownership rule itself, which it deliberately no longer does.
+        store.Setup(s => s.GetAsync(threadId, "someone-else", It.IsAny<CancellationToken>()))
+             .ThrowsAsync(new ConversationAccessDeniedException());
 
         var handler = BuildHandler(mediator, store);
 
@@ -276,9 +284,10 @@ public sealed class AgUiRunHandlerTests
     {
         var mediator = new Mock<IMediator>();
         var store = new Mock<IConversationStore>();
-        var record = MakeRecord("conv-1", "owner-user");
-        store.Setup(s => s.GetAsync("conv-1", It.IsAny<CancellationToken>()))
-             .ReturnsAsync(record);
+        // Refused by the store, which is where ownership now lives. See the sub-only intruder test
+        // above for why this is stubbed as a throw rather than as a record the handler must reject.
+        store.Setup(s => s.GetAsync("conv-1", "different-user", It.IsAny<CancellationToken>()))
+             .ThrowsAsync(new ConversationAccessDeniedException());
 
         var handler = BuildHandler(mediator, store);
         var input = MakeInput("conv-1", "hello");
@@ -304,9 +313,9 @@ public sealed class AgUiRunHandlerTests
 
         var mediator = new Mock<IMediator>();
         var store = new Mock<IConversationStore>();
-        store.Setup(s => s.GetAsync(threadId, It.IsAny<CancellationToken>()))
+        store.Setup(s => s.GetAsync(threadId, userId, It.IsAny<CancellationToken>()))
              .ReturnsAsync(MakeRecord(threadId, userId));
-        store.Setup(s => s.GetHistoryForDispatch(threadId, It.IsAny<int>(), It.IsAny<CancellationToken>()))
+        store.Setup(s => s.GetHistoryForDispatch(threadId, userId, It.IsAny<int>(), It.IsAny<CancellationToken>()))
              .ReturnsAsync(new List<ConversationMessage>());
 
         var budget = new Mock<IConversationBudgetTracker>();
@@ -406,11 +415,11 @@ public sealed class AgUiRunHandlerTests
         var store = new Mock<IConversationStore>();
         var record = MakeRecord(threadId, userId);
 
-        store.Setup(s => s.GetAsync(threadId, It.IsAny<CancellationToken>()))
+        store.Setup(s => s.GetAsync(threadId, userId, It.IsAny<CancellationToken>()))
              .ReturnsAsync(record);
-        store.Setup(s => s.GetHistoryForDispatch(threadId, It.IsAny<int>(), It.IsAny<CancellationToken>()))
+        store.Setup(s => s.GetHistoryForDispatch(threadId, userId, It.IsAny<int>(), It.IsAny<CancellationToken>()))
              .ReturnsAsync([]);
-        store.Setup(s => s.AppendMessageAsync(threadId, It.IsAny<ConversationMessage>(), It.IsAny<CancellationToken>()))
+        store.Setup(s => s.AppendMessageAsync(threadId, userId, It.IsAny<ConversationMessage>(), It.IsAny<CancellationToken>()))
              .Returns(Task.CompletedTask);
 
         mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
@@ -461,11 +470,11 @@ public sealed class AgUiRunHandlerTests
 
         // Conversation persistence: user msg + assistant msg both appended
         store.Verify(s => s.AppendMessageAsync(
-            threadId,
+            threadId, userId,
             It.Is<ConversationMessage>(m => m.Role == MessageRole.User),
             It.IsAny<CancellationToken>()), Times.Once);
         store.Verify(s => s.AppendMessageAsync(
-            threadId,
+            threadId, userId,
             It.Is<ConversationMessage>(m => m.Role == MessageRole.Assistant),
             It.IsAny<CancellationToken>()), Times.Once);
     }
@@ -481,12 +490,12 @@ public sealed class AgUiRunHandlerTests
         var store = new Mock<IConversationStore>();
         var appended = new List<ConversationMessage>();
 
-        store.Setup(s => s.GetAsync(threadId, It.IsAny<CancellationToken>()))
+        store.Setup(s => s.GetAsync(threadId, userId, It.IsAny<CancellationToken>()))
              .ReturnsAsync(MakeRecord(threadId, userId));
-        store.Setup(s => s.GetHistoryForDispatch(threadId, It.IsAny<int>(), It.IsAny<CancellationToken>()))
+        store.Setup(s => s.GetHistoryForDispatch(threadId, userId, It.IsAny<int>(), It.IsAny<CancellationToken>()))
              .ReturnsAsync([]);
-        store.Setup(s => s.AppendMessageAsync(threadId, It.IsAny<ConversationMessage>(), It.IsAny<CancellationToken>()))
-             .Callback<string, ConversationMessage, CancellationToken>((_, m, _) => appended.Add(m))
+        store.Setup(s => s.AppendMessageAsync(threadId, userId, It.IsAny<ConversationMessage>(), It.IsAny<CancellationToken>()))
+             .Callback<string, string, ConversationMessage, CancellationToken>((_, _, m, _) => appended.Add(m))
              .Returns(Task.CompletedTask);
         mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(MakeSuccessResult("reply"));
@@ -511,12 +520,12 @@ public sealed class AgUiRunHandlerTests
         var store = new Mock<IConversationStore>();
         var appended = new List<ConversationMessage>();
 
-        store.Setup(s => s.GetAsync(threadId, It.IsAny<CancellationToken>()))
+        store.Setup(s => s.GetAsync(threadId, userId, It.IsAny<CancellationToken>()))
              .ReturnsAsync(MakeRecord(threadId, userId));
-        store.Setup(s => s.GetHistoryForDispatch(threadId, It.IsAny<int>(), It.IsAny<CancellationToken>()))
+        store.Setup(s => s.GetHistoryForDispatch(threadId, userId, It.IsAny<int>(), It.IsAny<CancellationToken>()))
              .ReturnsAsync([]);
-        store.Setup(s => s.AppendMessageAsync(threadId, It.IsAny<ConversationMessage>(), It.IsAny<CancellationToken>()))
-             .Callback<string, ConversationMessage, CancellationToken>((_, m, _) => appended.Add(m))
+        store.Setup(s => s.AppendMessageAsync(threadId, userId, It.IsAny<ConversationMessage>(), It.IsAny<CancellationToken>()))
+             .Callback<string, string, ConversationMessage, CancellationToken>((_, _, m, _) => appended.Add(m))
              .Returns(Task.CompletedTask);
         mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(MakeSuccessResult("reply"));
@@ -541,12 +550,12 @@ public sealed class AgUiRunHandlerTests
         var store = new Mock<IConversationStore>();
         var appended = new List<ConversationMessage>();
 
-        store.Setup(s => s.GetAsync(threadId, It.IsAny<CancellationToken>()))
+        store.Setup(s => s.GetAsync(threadId, userId, It.IsAny<CancellationToken>()))
              .ReturnsAsync(MakeRecord(threadId, userId));
-        store.Setup(s => s.GetHistoryForDispatch(threadId, It.IsAny<int>(), It.IsAny<CancellationToken>()))
+        store.Setup(s => s.GetHistoryForDispatch(threadId, userId, It.IsAny<int>(), It.IsAny<CancellationToken>()))
              .ReturnsAsync([]);
-        store.Setup(s => s.AppendMessageAsync(threadId, It.IsAny<ConversationMessage>(), It.IsAny<CancellationToken>()))
-             .Callback<string, ConversationMessage, CancellationToken>((_, m, _) => appended.Add(m))
+        store.Setup(s => s.AppendMessageAsync(threadId, userId, It.IsAny<ConversationMessage>(), It.IsAny<CancellationToken>()))
+             .Callback<string, string, ConversationMessage, CancellationToken>((_, _, m, _) => appended.Add(m))
              .Returns(Task.CompletedTask);
         mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(MakeSuccessResult("assistant reply"));
@@ -575,11 +584,11 @@ public sealed class AgUiRunHandlerTests
         var store = new Mock<IConversationStore>();
         var record = MakeRecord(threadId, userId);
 
-        store.Setup(s => s.GetAsync(threadId, It.IsAny<CancellationToken>()))
+        store.Setup(s => s.GetAsync(threadId, userId, It.IsAny<CancellationToken>()))
              .ReturnsAsync(record);
-        store.Setup(s => s.GetHistoryForDispatch(threadId, It.IsAny<int>(), It.IsAny<CancellationToken>()))
+        store.Setup(s => s.GetHistoryForDispatch(threadId, userId, It.IsAny<int>(), It.IsAny<CancellationToken>()))
              .ReturnsAsync([]);
-        store.Setup(s => s.AppendMessageAsync(threadId, It.IsAny<ConversationMessage>(), It.IsAny<CancellationToken>()))
+        store.Setup(s => s.AppendMessageAsync(threadId, userId, It.IsAny<ConversationMessage>(), It.IsAny<CancellationToken>()))
              .Returns(Task.CompletedTask);
 
         mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
@@ -614,7 +623,7 @@ public sealed class AgUiRunHandlerTests
         var mediator = new Mock<IMediator>();
         var store = new Mock<IConversationStore>();
         var record = MakeRecord(threadId, userId);
-        store.Setup(s => s.GetAsync(threadId, It.IsAny<CancellationToken>()))
+        store.Setup(s => s.GetAsync(threadId, userId, It.IsAny<CancellationToken>()))
              .ReturnsAsync(record);
 
         var handler = BuildHandler(mediator, store);
@@ -650,13 +659,13 @@ public sealed class AgUiRunHandlerTests
         var sessionId = Guid.NewGuid();
 
         var record = MakeRecord(threadId, userId);
-        store.Setup(s => s.GetAsync(threadId, It.IsAny<CancellationToken>()))
+        store.Setup(s => s.GetAsync(threadId, userId, It.IsAny<CancellationToken>()))
              .ReturnsAsync(record);
-        store.Setup(s => s.GetHistoryForDispatch(threadId, It.IsAny<int>(), It.IsAny<CancellationToken>()))
+        store.Setup(s => s.GetHistoryForDispatch(threadId, userId, It.IsAny<int>(), It.IsAny<CancellationToken>()))
              .ReturnsAsync([]);
-        store.Setup(s => s.AppendMessageAsync(threadId, It.IsAny<ConversationMessage>(), It.IsAny<CancellationToken>()))
+        store.Setup(s => s.AppendMessageAsync(threadId, userId, It.IsAny<ConversationMessage>(), It.IsAny<CancellationToken>()))
              .Returns(Task.CompletedTask);
-        store.Setup(s => s.UpdateTelemetryAsync(threadId, It.IsAny<Guid>(), It.IsAny<TelemetryAccumulator>(), It.IsAny<CancellationToken>()))
+        store.Setup(s => s.UpdateTelemetryAsync(threadId, userId, It.IsAny<Guid>(), It.IsAny<TelemetryAccumulator>(), It.IsAny<CancellationToken>()))
              .ReturnsAsync(record);
 
         observability.Setup(o => o.StartSessionAsync(threadId, "test-agent", null, It.IsAny<CancellationToken>()))
@@ -690,7 +699,7 @@ public sealed class AgUiRunHandlerTests
 
         // Telemetry was persisted to conversation store (twice: once for Zero on session start, once after turn)
         store.Verify(s => s.UpdateTelemetryAsync(
-            threadId, sessionId,
+            threadId, userId, sessionId,
             It.IsAny<TelemetryAccumulator>(),
             It.IsAny<CancellationToken>()), Times.Exactly(2));
     }
@@ -714,13 +723,13 @@ public sealed class AgUiRunHandlerTests
              new ConversationMessage(Guid.NewGuid(), MessageRole.Assistant, "first reply", DateTimeOffset.UtcNow)],
             "first msg", null, sessionId, existingTelemetry);
 
-        store.Setup(s => s.GetAsync(threadId, It.IsAny<CancellationToken>()))
+        store.Setup(s => s.GetAsync(threadId, userId, It.IsAny<CancellationToken>()))
              .ReturnsAsync(record);
-        store.Setup(s => s.GetHistoryForDispatch(threadId, It.IsAny<int>(), It.IsAny<CancellationToken>()))
+        store.Setup(s => s.GetHistoryForDispatch(threadId, userId, It.IsAny<int>(), It.IsAny<CancellationToken>()))
              .ReturnsAsync(record.Messages);
-        store.Setup(s => s.AppendMessageAsync(threadId, It.IsAny<ConversationMessage>(), It.IsAny<CancellationToken>()))
+        store.Setup(s => s.AppendMessageAsync(threadId, userId, It.IsAny<ConversationMessage>(), It.IsAny<CancellationToken>()))
              .Returns(Task.CompletedTask);
-        store.Setup(s => s.UpdateTelemetryAsync(threadId, sessionId, It.IsAny<TelemetryAccumulator>(), It.IsAny<CancellationToken>()))
+        store.Setup(s => s.UpdateTelemetryAsync(threadId, userId, sessionId, It.IsAny<TelemetryAccumulator>(), It.IsAny<CancellationToken>()))
              .ReturnsAsync(record);
 
         mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
@@ -752,7 +761,7 @@ public sealed class AgUiRunHandlerTests
 
         // Telemetry persisted once (only after turn, no session start)
         store.Verify(s => s.UpdateTelemetryAsync(
-            threadId, sessionId,
+            threadId, userId, sessionId,
             It.Is<TelemetryAccumulator>(t => t.TurnCount == 2 && t.ToolCallCount == 1),
             It.IsAny<CancellationToken>()), Times.Once);
     }

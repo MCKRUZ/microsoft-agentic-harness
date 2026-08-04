@@ -64,7 +64,7 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
     public async Task<(ConversationRecord Record, IReadOnlyList<ConversationMessage> History)> StartConversationAsync(
         string sessionKey, string agentName, string? conversationId, string callerId, CancellationToken ct)
     {
-        var existing = await ValidateOwnershipAsync(conversationId, callerId, ct);
+        var existing = await LoadOwnedConversationAsync(conversationId, callerId, ct);
 
         ConversationRecord record;
         if (existing is null)
@@ -83,7 +83,7 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
         }
 
         var history = await _conversationStore.GetHistoryForDispatch(
-            record.Id, _config.MaxHistoryMessages, ct) ?? [];
+            record.Id, callerId, _config.MaxHistoryMessages, ct) ?? [];
 
         return (record, history);
     }
@@ -92,10 +92,9 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
     public async Task SetSettingsAsync(
         string conversationId, ConversationSettings settings, string callerId, CancellationToken ct)
     {
-        _ = await ValidateOwnershipAsync(conversationId, callerId, ct)
-            ?? throw new InvalidOperationException("Conversation not found.");
-
-        var updated = await _conversationStore.UpdateSettingsAsync(conversationId, settings, ct)
+        // No ownership pre-read: the update refuses a conversation the caller does not own, and
+        // answers null for one that does not exist — the two outcomes the pre-read used to produce.
+        var updated = await _conversationStore.UpdateSettingsAsync(conversationId, callerId, settings, ct)
             ?? throw new InvalidOperationException("Conversation not found.");
 
         _logger.LogInformation(
@@ -111,7 +110,7 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
         string sessionKey, string conversationId, Guid userMessageId, string message, string callerId,
         Func<string, CancellationToken, Task>? onChunk, CancellationToken ct)
     {
-        var record = await ValidateOwnershipAsync(conversationId, callerId, ct)
+        var record = await LoadOwnedConversationAsync(conversationId, callerId, ct)
             ?? throw new InvalidOperationException("Conversation not found.");
 
         var semaphore = _lockRegistry.GetOrCreate(conversationId);
@@ -121,7 +120,7 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
             var userMsg = new ConversationMessage(
                 userMessageId == Guid.Empty ? Guid.NewGuid() : userMessageId,
                 MessageRole.User, message, DateTimeOffset.UtcNow);
-            await _conversationStore.AppendMessageAsync(conversationId, userMsg, ct);
+            await _conversationStore.AppendMessageAsync(conversationId, callerId, userMsg, ct);
 
             return await DispatchTurnAsync(sessionKey, conversationId, record.AgentName, message, callerId, onChunk, ct);
         }
@@ -136,14 +135,14 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
         string sessionKey, string conversationId, Guid assistantMessageId, string callerId,
         Func<string, CancellationToken, Task>? onChunk, CancellationToken ct)
     {
-        var record = await ValidateOwnershipAsync(conversationId, callerId, ct)
+        var record = await LoadOwnedConversationAsync(conversationId, callerId, ct)
             ?? throw new InvalidOperationException("Conversation not found.");
 
         var semaphore = _lockRegistry.GetOrCreate(conversationId);
         await semaphore.WaitAsync(ct);
         try
         {
-            var truncated = await _conversationStore.TruncateFromMessageAsync(conversationId, assistantMessageId, ct)
+            var truncated = await _conversationStore.TruncateFromMessageAsync(conversationId, callerId, assistantMessageId, ct)
                 ?? throw new InvalidOperationException("Conversation not found.");
 
             var last = truncated.Messages.LastOrDefault();
@@ -167,20 +166,20 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
         string newContent, string callerId,
         Func<string, CancellationToken, Task>? onChunk, CancellationToken ct)
     {
-        var record = await ValidateOwnershipAsync(conversationId, callerId, ct)
+        var record = await LoadOwnedConversationAsync(conversationId, callerId, ct)
             ?? throw new InvalidOperationException("Conversation not found.");
 
         var semaphore = _lockRegistry.GetOrCreate(conversationId);
         await semaphore.WaitAsync(ct);
         try
         {
-            var truncated = await _conversationStore.TruncateFromMessageAsync(conversationId, userMessageId, ct)
+            var truncated = await _conversationStore.TruncateFromMessageAsync(conversationId, callerId, userMessageId, ct)
                 ?? throw new InvalidOperationException("Conversation not found.");
 
             var newUserMsg = new ConversationMessage(
                 newUserMessageId == Guid.Empty ? Guid.NewGuid() : newUserMessageId,
                 MessageRole.User, newContent, DateTimeOffset.UtcNow);
-            await _conversationStore.AppendMessageAsync(conversationId, newUserMsg, ct);
+            await _conversationStore.AppendMessageAsync(conversationId, callerId, newUserMsg, ct);
 
             var outcome = await DispatchTurnAsync(
                 sessionKey, conversationId, record.AgentName, newContent, callerId, onChunk, ct);
@@ -196,7 +195,7 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
     /// <inheritdoc />
     public async Task ValidateAccessAsync(string conversationId, string callerId, CancellationToken ct)
     {
-        var record = await ValidateOwnershipAsync(conversationId, callerId, ct);
+        var record = await LoadOwnedConversationAsync(conversationId, callerId, ct);
         if (record is null)
             throw new InvalidOperationException("Conversation not found.");
     }
@@ -246,16 +245,16 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
         await EnsureSessionTrackedAsync(sessionKey, conversationId, agentName, callerId, ct);
 
         var history = await _conversationStore.GetHistoryForDispatch(
-            conversationId, _config.MaxHistoryMessages, ct) ?? [];
+            conversationId, callerId, _config.MaxHistoryMessages, ct) ?? [];
 
-        var updatedRecord = await _conversationStore.GetAsync(conversationId, ct);
+        var updatedRecord = await _conversationStore.GetAsync(conversationId, callerId, ct);
         var turnNumber = updatedRecord?.Messages.Count ?? 0;
 
         // Conversation-lifetime budget gate: if prior turns already exhausted the cumulative token
         // ceiling, decline this turn gracefully (no LLM dispatch, no cost) with an explanatory
         // assistant message rather than throwing or surfacing an error to the client.
         if (_conversationBudget.GetStatus(conversationId).IsExhausted)
-            return await BuildBudgetExhaustedOutcomeAsync(conversationId, agentName, turnNumber, ct);
+            return await BuildBudgetExhaustedOutcomeAsync(conversationId, callerId, agentName, turnNumber, ct);
 
         var obsSessionId = _connectionTracker.Get(sessionKey)?.ObservabilitySessionId ?? Guid.Empty;
 
@@ -298,7 +297,7 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
         {
             _healthTracker.RecordError(agentName);
             var kind = ex is AiProviderNotConfiguredException ? AgentTurnErrorKind.Configuration : AgentTurnErrorKind.Internal;
-            return await HandleTurnErrorAsync(conversationId, ex, kind, ct);
+            return await HandleTurnErrorAsync(conversationId, callerId, ex, kind, ct);
         }
         finally
         {
@@ -320,7 +319,7 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
             }
 
             _healthTracker.RecordError(agentName);
-            return await HandleTurnErrorAsync(conversationId,
+            return await HandleTurnErrorAsync(conversationId, callerId,
                 new InvalidOperationException(result.Error ?? "Agent returned a failure result."),
                 result.ErrorKind, ct);
         }
@@ -346,9 +345,9 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
         var assistantMessageId = Guid.NewGuid();
         var assistantMsg = new ConversationMessage(
             assistantMessageId, MessageRole.Assistant, result.Response, DateTimeOffset.UtcNow);
-        await _conversationStore.AppendMessageAsync(conversationId, assistantMsg, ct);
+        await _conversationStore.AppendMessageAsync(conversationId, callerId, assistantMsg, ct);
 
-        var finalRecord = await _conversationStore.GetAsync(conversationId, ct);
+        var finalRecord = await _conversationStore.GetAsync(conversationId, callerId, ct);
         var finalTurnNumber = finalRecord?.Messages.Count ?? turnNumber + 1;
 
         return new TurnOutcome
@@ -426,7 +425,7 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
     }
 
     private async Task<TurnOutcome> HandleTurnErrorAsync(
-        string conversationId, Exception ex, AgentTurnErrorKind errorKind, CancellationToken ct)
+        string conversationId, string callerId, Exception ex, AgentTurnErrorKind errorKind, CancellationToken ct)
     {
         _logger.LogError(ex, "Agent turn failed for conversation {ConversationId}.", conversationId);
 
@@ -446,7 +445,7 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
                 MessageRole.Assistant,
                 "[Error] The agent encountered an error.",
                 DateTimeOffset.UtcNow);
-            await _conversationStore.AppendMessageAsync(conversationId, errorMsg, ct);
+            await _conversationStore.AppendMessageAsync(conversationId, callerId, errorMsg, ct);
         }
         catch (Exception storeEx)
         {
@@ -467,7 +466,7 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
     /// surface it (e.g. disable further input) without treating it as an error. No LLM is dispatched.
     /// </summary>
     private async Task<TurnOutcome> BuildBudgetExhaustedOutcomeAsync(
-        string conversationId, string agentName, int turnNumber, CancellationToken ct)
+        string conversationId, string callerId, string agentName, int turnNumber, CancellationToken ct)
     {
         var message = ConversationBudgetNotice.Message;
 
@@ -479,9 +478,9 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
         var assistantMessageId = Guid.NewGuid();
         var assistantMsg = new ConversationMessage(
             assistantMessageId, MessageRole.Assistant, message, DateTimeOffset.UtcNow);
-        await _conversationStore.AppendMessageAsync(conversationId, assistantMsg, ct);
+        await _conversationStore.AppendMessageAsync(conversationId, callerId, assistantMsg, ct);
 
-        var finalRecord = await _conversationStore.GetAsync(conversationId, ct);
+        var finalRecord = await _conversationStore.GetAsync(conversationId, callerId, ct);
         var finalTurnNumber = finalRecord?.Messages.Count ?? turnNumber + 1;
 
         return new TurnOutcome
@@ -495,29 +494,19 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
     }
 
     /// <summary>
-    /// Returns the conversation record if it exists, or null if it doesn't.
-    /// Throws <see cref="UnauthorizedAccessException"/> if the record exists but belongs to a different user.
+    /// Loads a conversation the caller owns, or <c>null</c> when there is no id to load — the
+    /// "starting fresh" case, which only <see cref="StartConversationAsync"/> has.
     /// </summary>
-    private async Task<ConversationRecord?> ValidateOwnershipAsync(
-        string? conversationId, string callerId, CancellationToken ct)
-    {
-        if (string.IsNullOrWhiteSpace(conversationId))
-            return null;
-
-        var record = await _conversationStore.GetAsync(conversationId, ct);
-        if (record is null)
-            return null;
-
-        if (record.UserId != callerId)
-        {
-            _logger.LogWarning(
-                "User {CallerId} attempted to access conversation {ConversationId} owned by {OwnerId}.",
-                callerId, conversationId, record.UserId);
-            throw new UnauthorizedAccessException("Access denied.");
-        }
-
-        return record;
-    }
+    /// <remarks>
+    /// This used to compare <c>record.UserId</c> against the caller and throw. That check now lives
+    /// in <see cref="IConversationStore"/>, where every entry point gets it rather than only the ones
+    /// that remembered to ask — so all that is left here is the absent-id shortcut.
+    /// </remarks>
+    private Task<ConversationRecord?> LoadOwnedConversationAsync(
+        string? conversationId, string callerId, CancellationToken ct) =>
+        string.IsNullOrWhiteSpace(conversationId)
+            ? Task.FromResult<ConversationRecord?>(null)
+            : _conversationStore.GetAsync(conversationId, callerId, ct);
 
     private static IReadOnlyList<ChatMessage> ToMeaiHistory(IReadOnlyList<ConversationMessage> messages) =>
         messages.Select(m => new ChatMessage(ToChatRole(m.Role), m.Content)).ToList();

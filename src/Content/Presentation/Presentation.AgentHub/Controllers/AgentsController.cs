@@ -81,43 +81,28 @@ public sealed class AgentsController : ControllerBase
     }
 
     /// <summary>Returns a single conversation. 404 if not found. 403 if not owned by caller.</summary>
+    /// <remarks>
+    /// The 403 comes from the store refusing the read, mapped by <c>GlobalExceptionMiddleware</c>.
+    /// The owner comparison and its audit log used to sit here, in one of six copies across the host.
+    /// </remarks>
     [HttpGet("conversations/{id}")]
     public async Task<IActionResult> GetConversation(string id, CancellationToken ct)
     {
-        var record = await _store.GetAsync(id, ct);
-        if (record is null)
-            return NotFound();
-
-        var callerId = User.GetUserId();
-        if (record.UserId != callerId)
-        {
-            // Log both caller and owner IDs — intentional audit trail for IDOR attempts.
-            _logger.LogWarning("User {UserId} attempted to access conversation {ConversationId} owned by {OwnerId}.",
-                callerId, id, record.UserId);
-            return Forbid();
-        }
-        return Ok(record);
+        var record = await _store.GetAsync(id, User.GetUserId(), ct);
+        return record is null ? NotFound() : Ok(record);
     }
 
     /// <summary>Deletes a conversation. 403 if not owned by caller. 204 on success.</summary>
+    /// <remarks>
+    /// One store call rather than read-then-delete: the previous shape checked the owner and deleted
+    /// as two separate operations, so a conversation could in principle change between them. The
+    /// 404 is preserved by the store reporting whether it deleted anything.
+    /// </remarks>
     [HttpDelete("conversations/{id}")]
     public async Task<IActionResult> DeleteConversation(string id, CancellationToken ct)
     {
-        var record = await _store.GetAsync(id, ct);
-        if (record is null)
-            return NotFound();
-
-        var callerId = User.GetUserId();
-        if (record.UserId != callerId)
-        {
-            // Log both caller and owner IDs — intentional audit trail for IDOR attempts.
-            _logger.LogWarning("User {UserId} attempted to delete conversation {ConversationId} owned by {OwnerId}.",
-                callerId, id, record.UserId);
-            return Forbid();
-        }
-
-        await _store.DeleteAsync(id, ct);
-        return NoContent();
+        var deleted = await _store.DeleteAsync(id, User.GetUserId(), ct);
+        return deleted ? NoContent() : NotFound();
     }
 
     /// <summary>

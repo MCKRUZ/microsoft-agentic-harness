@@ -67,6 +67,12 @@ public sealed class AgUiClientToolBridge : IClientToolBridge
         var threadId = _writerAccessor.ThreadId
             ?? throw new InvalidOperationException(
                 "The active AG-UI run has no thread id; a client round-trip tool cannot be used here.");
+        // Refusing rather than writing unattributed. A widget persisted with no identity would have to
+        // be exempted from the conversation store's ownership check, and an exemption reachable from
+        // tool code is a wider hole than the one being closed.
+        var callerId = _writerAccessor.CallerId
+            ?? throw new InvalidOperationException(
+                "The active AG-UI run has no caller identity; a client round-trip tool cannot be used here.");
 
         var callId = Guid.NewGuid().ToString("N");
         var timeout = TimeSpan.FromSeconds(Math.Max(1, _config.CurrentValue.ClientToolTimeoutSeconds));
@@ -88,7 +94,7 @@ public sealed class AgUiClientToolBridge : IClientToolBridge
         // final assistant-text append, so the widget lands in the right position. A persistence failure
         // must not break the turn, so it is logged and swallowed.
         if (_widgetCatalog.IsWidget(toolName))
-            await PersistWidgetAsync(threadId, toolName, argumentsJson, cancellationToken).ConfigureAwait(false);
+            await PersistWidgetAsync(threadId, callerId, toolName, argumentsJson, cancellationToken).ConfigureAwait(false);
 
         return result;
     }
@@ -99,7 +105,7 @@ public sealed class AgUiClientToolBridge : IClientToolBridge
     /// best-effort and must never fail the turn.
     /// </summary>
     private async Task PersistWidgetAsync(
-        string threadId, string toolName, string? argumentsJson, CancellationToken cancellationToken)
+        string threadId, string callerId, string toolName, string? argumentsJson, CancellationToken cancellationToken)
     {
         try
         {
@@ -107,7 +113,7 @@ public sealed class AgUiClientToolBridge : IClientToolBridge
             var widget = new WidgetSpec(toolName, doc.RootElement.Clone());
             var message = new ConversationMessage(
                 Guid.NewGuid(), MessageRole.Assistant, string.Empty, DateTimeOffset.UtcNow, Widget: widget);
-            await _conversationStore.AppendMessageAsync(threadId, message, cancellationToken).ConfigureAwait(false);
+            await _conversationStore.AppendMessageAsync(threadId, callerId, message, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
