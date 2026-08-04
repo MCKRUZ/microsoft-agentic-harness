@@ -70,7 +70,20 @@ Presentation.Common → Infrastructure.* → Application.* → Domain.*
 
 **Concurrency safety:** `ConversationLockRegistry` (singleton) provides one `SemaphoreSlim` per conversation. Concurrent `SendMessage` calls are serialized to prevent token stream interleaving or conversation record corruption. This registry is **in-process**, so it serializes turns within this host only — see issue #235 for the cross-host lease that supersedes it.
 
-**Transcript persistence:** this host does not own the conversation store. `IConversationStore` lives in `Application.AI.Common/Interfaces/AI/`, its DTOs in `Application.AI.Common/Models/Conversations/`, and `FileSystemConversationStore` in `Infrastructure.AI/Conversations/`, registered by `AddInfrastructureAIDependencies`. It moved out of this project because the Execution API needs the same transcripts and peer Presentation projects cannot reference each other. Configuration is `AppConfig:AI:Conversations:ConversationsPath` (formerly `AppConfig:AgentHub:ConversationsPath`).
+**Transcript persistence:** this host does not own the conversation store. `IConversationStore` lives in `Application.AI.Common/Interfaces/AI/`, its DTOs in `Application.AI.Common/Models/Conversations/`, and both implementations in `Infrastructure.AI/Conversations/`, registered by `AddInfrastructureAIDependencies`. It moved out of this project because the Execution API needs the same transcripts and peer Presentation projects cannot reference each other.
+
+Two providers, selected by `AppConfig:AI:Conversations:Provider`:
+
+| Provider | Implementation | Fit |
+|----------|----------------|-----|
+| `Sqlite` (default) | `EfCoreConversationStore` over `ConversationDbContext` | Any number of hosts on one machine. One row per message, so appending is an `INSERT`; SQLite's file locking serializes writers across processes and WAL mode keeps readers unblocked. Database at `AppConfig:AI:Conversations:DatabasePath`. |
+| `FileSystem` | `FileSystemConversationStore` | Single-process development only. Its write lock is one in-process `SemaphoreSlim`, and every write stages through the same `.tmp` path, so two hosts sharing a directory can move a torn record into place. Directory at `AppConfig:AI:Conversations:ConversationsPath`. |
+
+Neither guarantee crosses a machine boundary. A horizontally scaled deployment needs a server-backed implementation behind the same interface.
+
+**Upgrading from a file-backed deployment.** The default changed to `Sqlite`, and there is no migration between the two — a host that already has JSON transcripts and takes this change will start from an empty conversation list, with the old files untouched on disk. Set `AppConfig:AI:Conversations:Provider` to `FileSystem` to keep reading them. No migrator ships because the two schemas are not equivalent (the file store has no message ordinals) and a lossy automatic conversion of an audit record is worse than an explicit choice.
+
+**Sharing transcripts between hosts.** `DatabasePath` is relative to each host's own output directory by default, so the AgentHub and the Execution API get *separate* databases unless both are pointed at the same absolute path. Two hosts that mean to continue each other's conversations must configure that explicitly.
 
 ### AG-UI Protocol (SSE Streaming)
 
@@ -156,7 +169,7 @@ Presentation.AgentHub/
   "AppConfig": {
     "AI": {
       "AgentFramework": { "DefaultDeployment": "gpt-4o", "ClientType": "AzureOpenAI" },
-      "Conversations": { "ConversationsPath": "./conversations" },
+      "Conversations": { "Provider": "Sqlite", "DatabasePath": "data/conversations.db" },
       "Governance": { "Enabled": true, "PolicyPaths": ["Policies/default-policy.yaml"] }
     },
     "AgentHub": {

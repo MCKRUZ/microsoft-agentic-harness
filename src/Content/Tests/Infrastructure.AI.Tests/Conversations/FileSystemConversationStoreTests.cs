@@ -1,28 +1,40 @@
-using Microsoft.Extensions.Logging.Abstractions;
-using Xunit;
-using Microsoft.Extensions.Options;
-using Application.AI.Common.Models.Conversations;
+using Application.AI.Common.Interfaces.AI;
 using Domain.Common.Config.AI.Conversations;
+using FluentAssertions;
 using Infrastructure.AI.Conversations;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
+using Microsoft.Extensions.Time.Testing;
+using Xunit;
 
 namespace Infrastructure.AI.Tests.Conversations;
 
-/// <summary>Unit tests for <see cref="FileSystemConversationStore"/> using a temp directory fixture.</summary>
-public sealed class FileSystemConversationStoreTests : IDisposable
+/// <summary>
+/// <see cref="FileSystemConversationStore"/> against the shared
+/// <see cref="ConversationStoreContractTests"/>, plus the few behaviours that only make sense for a
+/// store whose records are files.
+/// </summary>
+public sealed class FileSystemConversationStoreTests : ConversationStoreContractTests, IDisposable
 {
     private readonly string _tempDir;
     private readonly FileSystemConversationStore _store;
 
+    /// <summary>Creates an isolated conversations directory and the store that writes into it.</summary>
     public FileSystemConversationStoreTests()
     {
-        _tempDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
+        _tempDir = Path.Combine(Path.GetTempPath(), $"convstore-{Guid.NewGuid():N}");
         Directory.CreateDirectory(_tempDir);
 
-        var config = Options.Create(new ConversationsConfig { ConversationsPath = _tempDir });
-
-        _store = new FileSystemConversationStore(config, NullLogger<FileSystemConversationStore>.Instance);
+        _store = new FileSystemConversationStore(
+            Options.Create(new ConversationsConfig { ConversationsPath = _tempDir }),
+            Clock,
+            NullLogger<FileSystemConversationStore>.Instance);
     }
 
+    /// <inheritdoc />
+    protected override IConversationStore Store => _store;
+
+    /// <inheritdoc />
     public void Dispose()
     {
         if (Directory.Exists(_tempDir))
@@ -34,50 +46,20 @@ public sealed class FileSystemConversationStoreTests : IDisposable
     {
         var record = await _store.CreateAsync("agent", "user1");
 
-        var expectedPath = Path.Combine(_tempDir, $"{record.Id}.json");
-        Assert.True(File.Exists(expectedPath));
+        File.Exists(Path.Combine(_tempDir, $"{record.Id}.json")).Should().BeTrue();
     }
 
     [Fact]
-    public async Task GetAsync_ReturnsNullForUnknownConversationId()
+    public async Task AppendMessageAsync_LeavesNoStagingFileBehind()
     {
-        var result = await _store.GetAsync(Guid.NewGuid().ToString());
-
-        Assert.Null(result);
-    }
-
-    [Fact]
-    public async Task GetAsync_DeserializesConversationRecordCorrectly()
-    {
-        var created = await _store.CreateAsync("my-agent", "user-abc");
-
-        var retrieved = await _store.GetAsync(created.Id);
-
-        Assert.NotNull(retrieved);
-        Assert.Equal(created.Id, retrieved.Id);
-        Assert.Equal("my-agent", retrieved.AgentName);
-        Assert.Equal("user-abc", retrieved.UserId);
-        Assert.Empty(retrieved.Messages);
-    }
-
-    [Fact]
-    public async Task AppendMessageAsync_UpdatesFileAtomically()
-    {
+        // Writes stage through a .tmp path and are moved into place. A .tmp left behind means the
+        // move did not happen, and the record on disk is the pre-append one.
         var record = await _store.CreateAsync("agent", "user1");
-        var message = new ConversationMessage(Guid.NewGuid(), MessageRole.User, "hello", DateTimeOffset.UtcNow);
 
-        await _store.AppendMessageAsync(record.Id, message);
+        await _store.AppendMessageAsync(record.Id, UserMessage("hello"));
 
-        var filePath = Path.Combine(_tempDir, $"{record.Id}.json");
-        var tmpFiles = Directory.GetFiles(_tempDir, "*.tmp");
-
-        Assert.True(File.Exists(filePath));
-        Assert.Empty(tmpFiles);
-
-        var updated = await _store.GetAsync(record.Id);
-        Assert.NotNull(updated);
-        Assert.Single(updated.Messages);
-        Assert.Equal("hello", updated.Messages[0].Content);
+        Directory.GetFiles(_tempDir, "*.tmp").Should().BeEmpty();
+        File.Exists(Path.Combine(_tempDir, $"{record.Id}.json")).Should().BeTrue();
     }
 
     [Fact]
@@ -85,87 +67,49 @@ public sealed class FileSystemConversationStoreTests : IDisposable
     {
         var record = await _store.CreateAsync("agent", "user1");
         var filePath = Path.Combine(_tempDir, $"{record.Id}.json");
-        Assert.True(File.Exists(filePath));
 
         await _store.DeleteAsync(record.Id);
 
-        Assert.False(File.Exists(filePath));
+        File.Exists(filePath).Should().BeFalse();
     }
 
     [Fact]
-    public async Task ListAsync_ReturnsOnlyConversationsBelongingToGivenUserId()
+    public async Task ConversationIdEscapingTheBasePath_ThrowsArgumentException()
     {
-        await _store.CreateAsync("agent", "user-a");
-        await _store.CreateAsync("agent", "user-a");
-        await _store.CreateAsync("agent", "user-b");
-
-        var userAConversations = await _store.ListAsync("user-a");
-        var userBConversations = await _store.ListAsync("user-b");
-
-        Assert.Equal(2, userAConversations.Count);
-        Assert.Single(userBConversations);
-        Assert.All(userAConversations, c => Assert.Equal("user-a", c.UserId));
-        Assert.All(userBConversations, c => Assert.Equal("user-b", c.UserId));
+        // The conversation id becomes a file name, so an id is an untrusted path segment.
+        await Assert.ThrowsAsync<ArgumentException>(() => _store.GetAsync("../evil"));
+        await Assert.ThrowsAsync<ArgumentException>(() => _store.DeleteAsync("../../etc/passwd"));
     }
 
     [Fact]
-    public async Task ConcurrentAppendMessageAsync_OnSameConversationId_DoesNotCorruptFile()
+    public async Task GetAsync_RecordWrittenBeforeMessageIdsExisted_BackfillsThemOnRead()
     {
-        const int messageCount = 20;
+        // Records written by an earlier version have no message ids at all, which deserialize as
+        // Guid.Empty. They are backfilled and rewritten on read, so retry/edit still has something
+        // to reference. The SQLite store has no such history and normalises on write instead, which
+        // is why this lives here rather than in the contract.
         var record = await _store.CreateAsync("agent", "user1");
+        var path = Path.Combine(_tempDir, $"{record.Id}.json");
+        await File.WriteAllTextAsync(path, LegacyRecordJson(record.Id));
 
-        var tasks = Enumerable.Range(0, messageCount)
-            .Select(i => _store.AppendMessageAsync(
-                record.Id,
-                new ConversationMessage(Guid.NewGuid(), MessageRole.User, $"message-{i}", DateTimeOffset.UtcNow)));
+        var loaded = await _store.GetAsync(record.Id);
 
-        await Task.WhenAll(tasks);
-
-        var updated = await _store.GetAsync(record.Id);
-        Assert.NotNull(updated);
-        Assert.Equal(messageCount, updated.Messages.Count);
+        loaded!.Messages.Should().ContainSingle().Which.Id.Should().NotBe(Guid.Empty);
+        (await _store.GetAsync(record.Id))!.Messages[0].Id
+            .Should().Be(loaded.Messages[0].Id, "the backfilled id must have been persisted");
     }
 
-    [Fact]
-    public async Task PathWithTraversalCharacters_ThrowsArgumentException()
-    {
-        await Assert.ThrowsAsync<ArgumentException>(() =>
-            _store.GetAsync("../evil"));
-
-        await Assert.ThrowsAsync<ArgumentException>(() =>
-            _store.DeleteAsync("../../etc/passwd"));
-    }
-
-    [Fact]
-    public async Task GetHistoryForDispatch_ReturnsAtMostMaxMessages()
-    {
-        var record = await _store.CreateAsync("agent", "user1");
-
-        for (var i = 0; i < 15; i++)
-            await _store.AppendMessageAsync(record.Id,
-                new ConversationMessage(Guid.NewGuid(), MessageRole.User, $"msg-{i}", DateTimeOffset.UtcNow));
-
-        var history = await _store.GetHistoryForDispatch(record.Id, maxMessages: 5);
-
-        Assert.NotNull(history);
-        Assert.Equal(5, history.Count);
-    }
-
-    [Fact]
-    public async Task GetHistoryForDispatch_ReturnsLastNMessages_NotFirstN()
-    {
-        var record = await _store.CreateAsync("agent", "user1");
-
-        for (var i = 0; i < 30; i++)
-            await _store.AppendMessageAsync(record.Id,
-                new ConversationMessage(Guid.NewGuid(), MessageRole.User, $"msg-{i}", DateTimeOffset.UtcNow));
-
-        var history = await _store.GetHistoryForDispatch(record.Id, maxMessages: 10);
-
-        Assert.NotNull(history);
-        Assert.Equal(10, history.Count);
-        // The last 10 messages should be msg-20 through msg-29
-        Assert.Equal("msg-20", history[0].Content);
-        Assert.Equal("msg-29", history[9].Content);
-    }
+    private static string LegacyRecordJson(string conversationId) =>
+        $$"""
+        {
+          "id": "{{conversationId}}",
+          "agentName": "agent",
+          "userId": "user1",
+          "createdAt": "2026-01-01T00:00:00+00:00",
+          "updatedAt": "2026-01-01T00:00:00+00:00",
+          "messages": [
+            { "role": "User", "content": "legacy", "timestamp": "2026-01-01T00:00:00+00:00" }
+          ]
+        }
+        """;
 }

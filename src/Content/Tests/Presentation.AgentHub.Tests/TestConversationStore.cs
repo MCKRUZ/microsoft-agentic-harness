@@ -23,5 +23,9 @@ internal static class TestConversationStore
     internal static IConversationStore ForDirectory(string path) =>
         new FileSystemConversationStore(
             Options.Create(new ConversationsConfig { ConversationsPath = path }),
+            // Real time on purpose: these factories serve behavioural hub and controller tests that
+            // assert on transcripts, not on timestamps, and a frozen clock would make every message
+            // in a conversation share one instant.
+            TimeProvider.System,
             NullLogger<FileSystemConversationStore>.Instance);
 }
