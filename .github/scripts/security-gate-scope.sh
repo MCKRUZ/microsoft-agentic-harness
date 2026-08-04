@@ -190,7 +190,32 @@ CONTENT_RE="${CONTENT_RE}"'|Sanitiz|Redact|Scrub'                               
 # leftmost-longest alternative, so listing it makes `signals` name the additive hook by
 # its own name instead of the generic AIContext. Kept for that legibility, not for reach.
 CONTENT_RE="${CONTENT_RE}"'|AIContext|InvokingCoreAsync|ProvideAIContextAsync|GovernedAIFunction|ToolPermissionFilter|ReservedPlanCapability'  # agent context merge + tool governance
-CONTENT_RE="${CONTENT_RE}"'|GetUserIdOrNull|AsyncLocal|AutoApprove|HumanGate|ContentSafety|PromptInjection)'                                   # identity, ambient scope, approval bypass, content safety
+CONTENT_RE="${CONTENT_RE}"'|GetUserIdOrNull|AsyncLocal|AutoApprove|HumanGate|ContentSafety|PromptInjection'                                    # identity, ambient scope, approval bypass, content safety
+# THE FIFTH MISS — conversation ownership had no word at all.
+# PR #239 made the conversation store SQLite-backed and default: required=false,
+# trigger=none, signals=(none), skipped in 7 seconds. PR #240 then moved the
+# ownership check INTO that store, making it the single enforcement point for
+# "is this conversation yours?" — and it fired only on AsyncLocal, ClaimsPrincipal
+# and OwnerId, i.e. on incidental plumbing, not on the authorization change. A pass
+# earned by coincidence is not coverage; replay both before touching this group.
+#
+# `callerId` is the marker rather than `UserId`, and the difference is measured, not
+# reasoned: UserId is 95 of 3,249 tracked .cs files — the same band as the
+# permanently-excluded ChatMessage (105) and HttpClient (101) — because it labels
+# every DTO, log line and telemetry record in the repo. `callerId` is 50, and appears
+# only where caller identity is THREADED, which is exactly the authorization surface.
+# It also catches a check being deleted: removing an argument puts callerId on a `-`
+# line, and the scan reads removed lines too.
+#
+# The other three name the enforcement machinery, per the #227 lesson that a control
+# can be rewritten, moved, or disabled without any line of the diff mentioning what it
+# protects: ConversationOwnership (the shared rules), ConversationAccessDenied (the
+# refusal), IConversationStore (26 files — the interface that now owes the guarantee;
+# CLAUDE.md forbids re-implementing the check at a call site).
+#
+# Noise cost is measured across the last 25 merges: exactly ONE newly fires — #239,
+# the one it wrongly skipped. Zero collateral on the other 24.
+CONTENT_RE="${CONTENT_RE}"'|callerId|CallerId|ConversationOwnership|ConversationAccessDenied|IConversationStore)'                              # conversation ownership — sole enforcement point since #240
 
 # Prose is excluded from the content scan — a security guide legitimately says
 # "password" on every page. Everything else that ships or executes is scanned,

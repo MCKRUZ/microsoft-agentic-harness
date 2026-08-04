@@ -46,6 +46,29 @@ expect_scope_nonempty() { # <label> <base> <head>
   fi
 }
 
+# Asserts WHICH marker carried the decision, not merely that one did.
+#
+# It exists because `required=true` is a weak assertion: a PR can pass the gate on a
+# marker that has nothing to do with what the PR is about, and then the case is a test
+# that cannot fail. PR #240 was exactly that — the ownership lift fired on AsyncLocal,
+# ClaimsPrincipal and OwnerId, and both of its assertions survived deleting the entire
+# ownership vocabulary. Pin the reason, not just the verdict.
+expect_signal() { # <label> <base> <head> <marker>
+  local label="$1" base="$2" head="$3" want="$4"
+  local got
+  # `decide` flattens the key=value lines into one space-separated string, so this
+  # cannot anchor on a line start. `signals` is safe to read as a single space-free
+  # field — its value is the comma-joined marker list — whereas `reason` is prose and
+  # would need the opposite treatment.
+  got="$(decide "$base" "$head" | grep -oE 'signals=[^ ]*' | cut -d= -f2)"
+  case ",$got," in
+    *",$want,"*)
+      printf '  PASS  %-58s signals name %s\n' "$label" "$want"; PASS=$((PASS+1)) ;;
+    *)
+      printf '  FAIL  %-58s signals=%s, want %s among them\n' "$label" "$got" "$want"; FAIL=$((FAIL+1)) ;;
+  esac
+}
+
 expect() { # <label> <expected-required> <expected-trigger> <base> <head>
   local label="$1" want_req="$2" want_trig="$3" base="$4" head="$5"
   local out req trig
@@ -130,6 +153,38 @@ if [ -n "$head" ] && [ -n "$base" ]; then
   expect_scope_contains "#226 names the gate script" "$base" "$head" ".claude/hooks/review-gate.ps1"
 else
   echo "  SKIP  #226 (merge commit not found in this clone)"
+fi
+
+echo
+# #239 made the conversation store SQLite-backed and the registered default. The gate
+# scored it required=false, trigger=none, signals=(none) and skipped in 7 seconds — the
+# store holds every user's transcript, and the vocabulary had no word for it.
+#
+# The control matters more than the skip. #240 then moved the ownership check INTO that
+# store, making it the sole enforcement point for "is this conversation yours?", and it
+# fired on AsyncLocal, ClaimsPrincipal and OwnerId — incidental plumbing, not one marker
+# naming the authorization change. So #240 is asserted here too: it must keep firing, and
+# it must fire because the diff says `callerId`, not by coincidence.
+echo "REPLAY — the PRs the CONTENT filter skipped or caught by accident (conversation ownership):"
+head="$(pr_head 239)"; base="$(pr_base 239)"
+if [ -n "$head" ] && [ -n "$base" ]; then
+  expect "#239 (conversation store made durable, no authz markers)" true content "$base" "$head"
+  expect_signal "#239 fires on the store contract" "$base" "$head" "IConversationStore"
+  expect_scope_contains "#239 names the store" "$base" "$head" "EfCoreConversationStore.cs"
+else
+  echo "  SKIP  #239 (merge commit not found in this clone)"
+fi
+
+head="$(pr_head 240)"; base="$(pr_base 240)"
+if [ -n "$head" ] && [ -n "$base" ]; then
+  expect "#240 (ownership moved into the store)" true content "$base" "$head"
+  # required=true alone is not the assertion here — #240 was ALREADY true before this
+  # group existed, on AsyncLocal/ClaimsPrincipal/OwnerId. What must hold is that the
+  # gate now fires because the diff threads caller identity.
+  expect_signal "#240 fires on caller identity, not on plumbing" "$base" "$head" "callerId"
+  expect_scope_contains "#240 names the shared ownership rules" "$base" "$head" "ConversationOwnership.cs"
+else
+  echo "  SKIP  #240 (merge commit not found in this clone)"
 fi
 
 echo
@@ -278,6 +333,35 @@ if git worktree add --detach --quiet "$WORKTREE" HEAD 2>/dev/null; then
   synth "ordinary ChatMessage use must NOT fire (too common to be a signal)" \
         "src/Content/Domain/Domain.AI/ScratchTest.cs" \
         "public sealed class ScratchTest { public object Make(string t) => new ChatMessage(ChatRole.User, t); }" \
+        false none
+
+  # Conversation ownership. Since #240 the store is the single place that answers
+  # "is this conversation yours?", so threading caller identity IS the authorization
+  # surface — and deleting a check puts callerId on a removed line, which the scan reads.
+  synth "src change threading caller identity" \
+        "src/Content/Domain/Domain.AI/ScratchTest.cs" \
+        "public static class ScratchTest { public static bool Go(string callerId) => callerId.Length > 0; }" \
+        true content
+
+  synth "src change to the shared ownership rules" \
+        "src/Content/Domain/Domain.AI/ScratchTest.cs" \
+        "public static class ScratchTest { public static void Go(string c) => ConversationOwnership.RequireCallerId(c); }" \
+        true content
+
+  synth "src change to the conversation store contract" \
+        "src/Content/Domain/Domain.AI/ScratchTest.cs" \
+        "public sealed class ScratchTest { public ScratchTest(IConversationStore s) { } }" \
+        true content
+
+  # The noise boundary for the ownership group, pinned in the must-NOT-fire direction.
+  # UserId is the word the issue originally proposed and the one someone will reach for
+  # next: it reads as the ownership field, and it is — but it also labels every DTO, log
+  # line and telemetry record, at 95 of 3,249 tracked .cs files. That is the same band as
+  # ChatMessage (105) and HttpClient (101), both permanently excluded. callerId covers the
+  # same surface at 50 because it appears only where identity is threaded. Do not add UserId.
+  synth "a bare UserId property must NOT fire (too common to be a signal)" \
+        "src/Content/Domain/Domain.AI/ScratchTest.cs" \
+        "public sealed record ScratchTest { public string? UserId { get; init; } }" \
         false none
 
   synth "TypeScript touching credentials (frontend is scanned too)" \
