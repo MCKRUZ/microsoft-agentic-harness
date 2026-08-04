@@ -4,6 +4,7 @@ using Infrastructure.AI.Conversations;
 using Infrastructure.AI.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Time.Testing;
 using Xunit;
 
 namespace Infrastructure.AI.Tests.Conversations;
@@ -129,11 +130,9 @@ public sealed class EfCoreConversationStoreTests : ConversationStoreContractTest
     [Fact]
     public void Database_IsInWalMode()
     {
-        // WAL is what lets one host read a transcript while another appends to it; under the default
-        // rollback journal a writer locks the whole database and the other host waits out its busy
-        // timeout. EF Core's SQLite creator sets this itself — an explicit PRAGMA here was written,
-        // measured to be redundant, and removed. Asserted anyway: the multi-host claim rests on it,
-        // and a provider change could withdraw it without any other test noticing.
+        // EF Core's SQLite creator sets this itself — an explicit PRAGMA was written, measured to be
+        // redundant, and removed. Asserted anyway because a provider change could withdraw it
+        // without any other test noticing; RegisterConversationDbContext explains what rests on it.
         using var context = _contextFactory.CreateDbContext();
 
         var connection = context.Database.GetDbConnection();
@@ -148,7 +147,7 @@ public sealed class EfCoreConversationStoreTests : ConversationStoreContractTest
     private EfCoreConversationStore BuildStore() =>
         new(
             _contextFactory,
-            TimeProvider.System,
+            Clock,
             NullLogger<EfCoreConversationStore>.Instance,
             new SchemaInitializer<ConversationDbContext>(_contextFactory));
 

@@ -42,16 +42,17 @@ public static partial class DependencyInjection
         // registrations in DependencyInjection.cs.
         services.AddSingleton(Options.Create(appConfig.AI.Conversations));
 
+        // Both stores stamp CreatedAt/UpdatedAt from this, so a host that supplies its own clock is
+        // obeyed whichever provider is live. Keeps Infrastructure.AI standalone-safe: composed hosts
+        // already register TimeProvider.System through the planner registration and
+        // Application.Common, and TryAdd lets whichever ran first win rather than fighting over it.
+        services.TryAddSingleton(TimeProvider.System);
+
         if (appConfig.AI.Conversations.Provider == ConversationStoreProvider.FileSystem)
         {
             services.AddSingleton<IConversationStore, FileSystemConversationStore>();
             return;
         }
-
-        // Keeps Infrastructure.AI standalone-safe. Composed hosts already register
-        // TimeProvider.System through the planner registration and Application.Common; TryAdd lets
-        // whichever ran first win rather than fighting over it.
-        services.TryAddSingleton(TimeProvider.System);
 
         RegisterConversationDbContext(services, appConfig.AI.Conversations);
         services.AddSingleton<IConversationStore, EfCoreConversationStore>();
@@ -89,7 +90,22 @@ public static partial class DependencyInjection
     private static void RegisterConversationDbContext(IServiceCollection services, ConversationsConfig config)
     {
         var databasePath = Path.Combine(AppContext.BaseDirectory, config.DatabasePath);
-        Directory.CreateDirectory(Path.GetDirectoryName(databasePath)!);
+
+        // Deliberately NOT containment-checked the way GovernanceStatePaths checks the
+        // governance-state database. That one holds approval verdicts and must stay inside the
+        // application directory; this one is meant to be shareable, and two hosts continuing each
+        // other's conversations can only do that through a path outside either host's own output
+        // directory. Constraining it here would forbid the arrangement the provider exists for.
+        var directory = Path.GetDirectoryName(databasePath);
+        if (string.IsNullOrEmpty(directory))
+        {
+            throw new ArgumentException(
+                "AppConfig:AI:Conversations:DatabasePath must name a file in a directory, not a "
+                + "filesystem root.",
+                nameof(config));
+        }
+
+        Directory.CreateDirectory(directory);
 
         services.AddDbContextFactory<ConversationDbContext>(options => options
             .UseSqlite($"DataSource={databasePath}"));

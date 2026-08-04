@@ -8,6 +8,19 @@ namespace Application.AI.Common.Interfaces.AI;
 /// for checking <see cref="ConversationRecord.UserId"/> against the authenticated user
 /// before returning records to clients.
 /// </summary>
+/// <remarks>
+/// <para>
+/// Conversation ids are caller-supplied, and an implementation may impose its own constraints on
+/// them — the file-backed store makes each id a file name and rejects any that escapes its base
+/// directory, while the SQLite store bounds their length. Callers should treat an id as an opaque
+/// token they generated, not as arbitrary text, and must not rely on a particular rejection.
+/// </para>
+/// <para>
+/// <c>CreateAsync</c> with an id that already exists <strong>replaces</strong> that conversation,
+/// transcript included. Every caller in the harness reaches it only after a read returned nothing,
+/// so this is defined behaviour rather than a path anything takes.
+/// </para>
+/// </remarks>
 public interface IConversationStore
 {
     /// <summary>Returns the conversation with the given ID, or <c>null</c> if it does not exist.</summary>
@@ -37,6 +50,14 @@ public interface IConversationStore
     /// or <c>null</c> if the conversation does not exist.
     /// Called by the hub before dispatching to the agent to prevent unbounded token growth.
     /// </summary>
+    /// <param name="conversationId">The conversation to read.</param>
+    /// <param name="maxMessages">
+    /// The most messages to return. Zero or negative returns none — never everything. Stated here
+    /// because the natural SQL translation of a window is <c>LIMIT</c>, and SQLite reads a negative
+    /// <c>LIMIT</c> as no limit at all: an implementation that passes the value straight through
+    /// answers a request for no history with the whole transcript, unbounded.
+    /// </param>
+    /// <param name="ct">Cancellation token.</param>
     Task<IReadOnlyList<ConversationMessage>?> GetHistoryForDispatch(
         string conversationId,
         int maxMessages,

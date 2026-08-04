@@ -1,3 +1,5 @@
+using Application.AI.Common.Models.Conversations;
+
 namespace Infrastructure.AI.Persistence.Entities;
 
 /// <summary>
@@ -33,8 +35,11 @@ public sealed class ConversationMessageEntity
     /// </summary>
     public Guid MessageId { get; set; }
 
-    /// <summary>Serialized <c>MessageRole</c>, stored as its name for schema resilience.</summary>
-    public required string Role { get; set; }
+    /// <summary>
+    /// Who sent the message. Persisted as the enum's name rather than its number, so inserting a
+    /// value in the middle of <c>MessageRole</c> later cannot silently re-label existing rows.
+    /// </summary>
+    public MessageRole Role { get; set; }
 
     /// <summary>Message text. Empty for a message that carries only a widget.</summary>
     public required string Content { get; set; }

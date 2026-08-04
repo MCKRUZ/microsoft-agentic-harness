@@ -2,6 +2,7 @@ using System.Text.Json;
 using Application.AI.Common.Interfaces.AI;
 using Application.AI.Common.Models.Conversations;
 using FluentAssertions;
+using Microsoft.Extensions.Time.Testing;
 using Xunit;
 
 namespace Infrastructure.AI.Tests.Conversations;
@@ -27,6 +28,49 @@ public abstract class ConversationStoreContractTests
 {
     /// <summary>The implementation under test. Derived fixtures build and own it.</summary>
     protected abstract IConversationStore Store { get; }
+
+    /// <summary>The instant <see cref="Clock"/> is pinned to before a test advances it.</summary>
+    protected static readonly DateTimeOffset FixedNow = new(2026, 5, 15, 12, 0, 0, TimeSpan.Zero);
+
+    /// <summary>
+    /// The clock every store under test must be built with, so timestamp behaviour can be asserted
+    /// rather than raced against the wall clock.
+    /// </summary>
+    /// <remarks>
+    /// Owned here rather than left abstract for the fixtures to supply. An abstract member lets a
+    /// fixture hand back a clock that is not the one it passed to its store — which compiles, reads
+    /// correctly, and makes the timestamp tests assert nothing. Base initializers run before the
+    /// derived constructor body, so a fixture can pass this straight into the store it builds.
+    /// </remarks>
+    protected FakeTimeProvider Clock { get; } = new(FixedNow);
+
+    // -- Timestamps --
+
+    [Fact]
+    public async Task CreateAsync_StampsTimesFromTheInjectedClock()
+    {
+        // Both implementations must answer to the host's clock, not to DateTimeOffset.UtcNow. A
+        // store that reads the wall clock directly still passes every other test in this suite,
+        // which is exactly why this one exists.
+        var record = await Store.CreateAsync("agent", "user1");
+
+        record.CreatedAt.Should().Be(FixedNow);
+        record.UpdatedAt.Should().Be(FixedNow);
+        (await Store.GetAsync(record.Id))!.CreatedAt.Should().Be(FixedNow);
+    }
+
+    [Fact]
+    public async Task AppendMessage_AdvancesUpdatedAtButNotCreatedAt()
+    {
+        var record = await Store.CreateAsync("agent", "user1");
+        Clock.Advance(TimeSpan.FromMinutes(5));
+
+        await Store.AppendMessageAsync(record.Id, UserMessage("hello"));
+
+        var updated = (await Store.GetAsync(record.Id))!;
+        updated.CreatedAt.Should().Be(FixedNow, "creation time is history, not state");
+        updated.UpdatedAt.Should().Be(FixedNow.AddMinutes(5));
+    }
 
     // -- CreateAsync / GetAsync --
 
@@ -501,6 +545,23 @@ public abstract class ConversationStoreContractTests
         history!.Select(m => m.Content).Should().Equal(
             Enumerable.Range(20, 10).Select(i => $"msg-{i}"),
             "dispatch needs the most recent turns, oldest first — the window is a tail, not a head");
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public async Task GetHistoryForDispatch_NonPositiveMax_ReturnsNoMessages(int maxMessages)
+    {
+        // A window of "no messages" must not mean "every message". SQLite reads a negative LIMIT as
+        // no limit at all, so a store that passes the value straight through would hand the model
+        // the entire transcript — the opposite of what the caller asked for, and unbounded.
+        var record = await Store.CreateAsync("agent", "user1");
+        for (var i = 0; i < 5; i++)
+            await Store.AppendMessageAsync(record.Id, UserMessage($"msg-{i}"));
+
+        var history = await Store.GetHistoryForDispatch(record.Id, maxMessages);
+
+        history.Should().BeEmpty();
     }
 
     [Fact]

@@ -4,6 +4,7 @@ using FluentAssertions;
 using Infrastructure.AI.Conversations;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using Microsoft.Extensions.Time.Testing;
 using Xunit;
 
 namespace Infrastructure.AI.Tests.Conversations;
@@ -26,6 +27,7 @@ public sealed class FileSystemConversationStoreTests : ConversationStoreContract
 
         _store = new FileSystemConversationStore(
             Options.Create(new ConversationsConfig { ConversationsPath = _tempDir }),
+            Clock,
             NullLogger<FileSystemConversationStore>.Instance);
     }
 

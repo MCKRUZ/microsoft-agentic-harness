@@ -32,21 +32,31 @@ namespace Infrastructure.AI.Conversations;
 /// </summary>
 public sealed class FileSystemConversationStore : IConversationStore
 {
-    private static readonly JsonSerializerOptions _jsonOptions = ConversationJson.Options;
-
     private readonly string _basePath;
     private readonly SemaphoreSlim _lock = new(1, 1);
+    private readonly TimeProvider _timeProvider;
     private readonly ILogger<FileSystemConversationStore> _logger;
 
     /// <summary>
     /// Initialises the store, resolving <see cref="ConversationsConfig.ConversationsPath"/> to an
     /// absolute path and creating the directory if it does not yet exist.
     /// </summary>
+    /// <param name="config">Supplies the conversations directory.</param>
+    /// <param name="timeProvider">
+    /// Clock for <c>CreatedAt</c>/<c>UpdatedAt</c> stamps. Injected rather than read from
+    /// <see cref="DateTimeOffset.UtcNow"/> so that both implementations of
+    /// <see cref="IConversationStore"/> answer to the same clock — a host that supplies its own
+    /// would otherwise get deterministic timestamps from one provider and wall-clock from the other,
+    /// a divergence nothing in the contract suite could see.
+    /// </param>
+    /// <param name="logger">Diagnostic logger.</param>
     public FileSystemConversationStore(
         IOptions<ConversationsConfig> config,
+        TimeProvider timeProvider,
         ILogger<FileSystemConversationStore> logger)
     {
         _basePath = Path.GetFullPath(config.Value.ConversationsPath);
+        _timeProvider = timeProvider;
         _logger = logger;
         Directory.CreateDirectory(_basePath);
     }
@@ -63,7 +73,7 @@ public sealed class FileSystemConversationStore : IConversationStore
                 return null;
 
             var json = await File.ReadAllTextAsync(path, ct);
-            var record = JsonSerializer.Deserialize<ConversationRecord>(json, _jsonOptions);
+            var record = JsonSerializer.Deserialize<ConversationRecord>(json, ConversationJson.Options);
             if (record is null) return null;
 
             // Migrate legacy records whose messages predate the Id column by backfilling
@@ -97,7 +107,7 @@ public sealed class FileSystemConversationStore : IConversationStore
                 try
                 {
                     var json = await File.ReadAllTextAsync(file, ct);
-                    var record = JsonSerializer.Deserialize<ConversationRecord>(json, _jsonOptions);
+                    var record = JsonSerializer.Deserialize<ConversationRecord>(json, ConversationJson.Options);
                     if (record is null || record.UserId != userId)
                         continue;
                     var migrated = MigrateMissingIds(record);
@@ -129,7 +139,7 @@ public sealed class FileSystemConversationStore : IConversationStore
     public async Task<ConversationRecord> CreateAsync(string agentName, string userId, string? conversationId = null, CancellationToken ct = default)
     {
         var id = !string.IsNullOrWhiteSpace(conversationId) ? conversationId : Guid.NewGuid().ToString();
-        var now = DateTimeOffset.UtcNow;
+        var now = _timeProvider.GetUtcNow();
         var record = new ConversationRecord(
             Id: id,
             AgentName: agentName,
@@ -157,7 +167,7 @@ public sealed class FileSystemConversationStore : IConversationStore
                 throw new InvalidOperationException($"Conversation '{conversationId}' does not exist.");
 
             var json = await File.ReadAllTextAsync(path, ct);
-            var existing = JsonSerializer.Deserialize<ConversationRecord>(json, _jsonOptions)
+            var existing = JsonSerializer.Deserialize<ConversationRecord>(json, ConversationJson.Options)
                 ?? throw new InvalidOperationException($"Conversation '{conversationId}' could not be deserialized.");
 
             var derivedTitle = existing.Title
@@ -168,7 +178,7 @@ public sealed class FileSystemConversationStore : IConversationStore
             var updated = existing with
             {
                 Messages = [..existing.Messages, message],
-                UpdatedAt = DateTimeOffset.UtcNow,
+                UpdatedAt = _timeProvider.GetUtcNow(),
                 Title = derivedTitle,
             };
 
@@ -212,7 +222,7 @@ public sealed class FileSystemConversationStore : IConversationStore
                 return null;
 
             var json = await File.ReadAllTextAsync(path, ct);
-            var existing = JsonSerializer.Deserialize<ConversationRecord>(json, _jsonOptions);
+            var existing = JsonSerializer.Deserialize<ConversationRecord>(json, ConversationJson.Options);
             if (existing is null) return null;
 
             var idx = IndexOfMessage(existing.Messages, messageId);
@@ -221,7 +231,7 @@ public sealed class FileSystemConversationStore : IConversationStore
             var truncated = existing with
             {
                 Messages = [..existing.Messages.Take(idx)],
-                UpdatedAt = DateTimeOffset.UtcNow,
+                UpdatedAt = _timeProvider.GetUtcNow(),
             };
 
             await WriteAtomicLockedAsync(path, truncated, ct);
@@ -248,13 +258,13 @@ public sealed class FileSystemConversationStore : IConversationStore
                 return null;
 
             var json = await File.ReadAllTextAsync(path, ct);
-            var existing = JsonSerializer.Deserialize<ConversationRecord>(json, _jsonOptions);
+            var existing = JsonSerializer.Deserialize<ConversationRecord>(json, ConversationJson.Options);
             if (existing is null) return null;
 
             var updated = existing with
             {
                 Settings = settings,
-                UpdatedAt = DateTimeOffset.UtcNow,
+                UpdatedAt = _timeProvider.GetUtcNow(),
             };
 
             await WriteAtomicLockedAsync(path, updated, ct);
@@ -282,14 +292,14 @@ public sealed class FileSystemConversationStore : IConversationStore
                 return null;
 
             var json = await File.ReadAllTextAsync(path, ct);
-            var existing = JsonSerializer.Deserialize<ConversationRecord>(json, _jsonOptions);
+            var existing = JsonSerializer.Deserialize<ConversationRecord>(json, ConversationJson.Options);
             if (existing is null) return null;
 
             var updated = existing with
             {
                 ObservabilitySessionId = observabilitySessionId,
                 Telemetry = telemetry,
-                UpdatedAt = DateTimeOffset.UtcNow,
+                UpdatedAt = _timeProvider.GetUtcNow(),
             };
 
             await WriteAtomicLockedAsync(path, updated, ct);
@@ -392,7 +402,7 @@ public sealed class FileSystemConversationStore : IConversationStore
     private static async Task WriteAtomicLockedAsync(string targetPath, ConversationRecord record, CancellationToken ct)
     {
         var tmpPath = targetPath + ".tmp";
-        var json = JsonSerializer.Serialize(record, _jsonOptions);
+        var json = JsonSerializer.Serialize(record, ConversationJson.Options);
         await File.WriteAllTextAsync(tmpPath, json, ct);
 
         for (var attempt = 0; ; attempt++)

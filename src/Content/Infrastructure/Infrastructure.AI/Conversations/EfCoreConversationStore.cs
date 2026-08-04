@@ -82,7 +82,7 @@ public sealed class EfCoreConversationStore : IConversationStore
             return null;
 
         var messages = await LoadMessagesAsync(context, conversationId, ct);
-        return Map(entity, messages);
+        return ConversationEntityMapper.ToRecord(entity, messages);
     }
 
     /// <inheritdoc/>
@@ -103,18 +103,18 @@ public sealed class EfCoreConversationStore : IConversationStore
         // conversation. ListAsync is a "show me my conversations" call, so the N+1 shape would be
         // paid on a user's first page load.
         var ids = entities.Select(e => e.Id).ToList();
+
+        // A lookup rather than a dictionary: an id with no messages yields an empty sequence
+        // instead of a miss, so a conversation created but never spoken in needs no special case.
         var messagesByConversation = (await context.ConversationMessages
                 .AsNoTracking()
                 .Where(m => ids.Contains(m.ConversationId))
                 .OrderBy(m => m.Ordinal)
                 .ToListAsync(ct))
-            .GroupBy(m => m.ConversationId)
-            .ToDictionary(g => g.Key, g => g.Select(MapMessage).ToList());
+            .ToLookup(m => m.ConversationId, ConversationEntityMapper.ToMessage);
 
         return entities
-            .Select(e => Map(
-                e,
-                messagesByConversation.TryGetValue(e.Id, out var messages) ? messages : []))
+            .Select(e => ConversationEntityMapper.ToRecord(e, messagesByConversation[e.Id].ToList()))
             .ToList();
     }
 
@@ -191,7 +191,7 @@ public sealed class EfCoreConversationStore : IConversationStore
         if (touched == 0)
             throw new InvalidOperationException($"Conversation '{conversationId}' does not exist.");
 
-        context.ConversationMessages.Add(ToEntity(conversationId, message));
+        context.ConversationMessages.Add(ConversationEntityMapper.ToEntity(conversationId, message));
 
         await context.SaveChangesAsync(ct);
         await transaction.CommitAsync(ct);
@@ -215,7 +215,6 @@ public sealed class EfCoreConversationStore : IConversationStore
         CancellationToken ct = default)
     {
         await using var context = await _contextFactory.CreateDbContextAsync(ct);
-        await using var transaction = await context.Database.BeginTransactionAsync(ct);
 
         var entity = await context.Conversations
             .AsNoTracking()
@@ -231,8 +230,11 @@ public sealed class EfCoreConversationStore : IConversationStore
 
         // Unknown message id: the record is returned untouched, matching the file-backed store.
         if (cutoff is null)
-            return Map(entity, await LoadMessagesAsync(context, conversationId, ct));
+            return ConversationEntityMapper.ToRecord(entity, await LoadMessagesAsync(context, conversationId, ct));
 
+        // Opened only now that there is something to write, so no reader has to work out whether an
+        // early return left a transaction hanging: above this line there is no transaction to leave.
+        await using var transaction = await context.Database.BeginTransactionAsync(ct);
         var now = _timeProvider.GetUtcNow();
 
         await context.ConversationMessages
@@ -246,7 +248,9 @@ public sealed class EfCoreConversationStore : IConversationStore
         var remaining = await LoadMessagesAsync(context, conversationId, ct);
         await transaction.CommitAsync(ct);
 
-        return Map(entity, remaining) with { UpdatedAt = now };
+        // The header was read AsNoTracking before the UPDATE ran, so it still carries the old
+        // UpdatedAt. Patching it beats re-reading a row whose new value is already in hand.
+        return ConversationEntityMapper.ToRecord(entity, remaining) with { UpdatedAt = now };
     }
 
     /// <inheritdoc/>
@@ -312,15 +316,20 @@ public sealed class EfCoreConversationStore : IConversationStore
         //
         // The take-then-reverse is what keeps this bounded: the database returns at most maxMessages
         // rows instead of the whole transcript, which is the point of dispatching from a window.
+        //
+        // The clamp is load-bearing, not defensive tidying. EF translates Take to LIMIT, and SQLite
+        // reads a negative LIMIT as no limit at all — so passing the value through would answer a
+        // request for no messages with the entire transcript, unbounded, straight into the model's
+        // context. The file-backed store returns nothing for the same input.
         var tail = await context.ConversationMessages
             .AsNoTracking()
             .Where(m => m.ConversationId == conversationId && m.Content != "")
             .OrderByDescending(m => m.Ordinal)
-            .Take(maxMessages)
+            .Take(Math.Max(0, maxMessages))
             .ToListAsync(ct);
 
         tail.Reverse();
-        return tail.Select(MapMessage).ToList();
+        return tail.Select(ConversationEntityMapper.ToMessage).ToList();
     }
 
     // -------------------------------------------------------------------------
@@ -357,7 +366,7 @@ public sealed class EfCoreConversationStore : IConversationStore
         if (entity is null)
             return null;
 
-        return Map(entity, await LoadMessagesAsync(context, conversationId, ct));
+        return ConversationEntityMapper.ToRecord(entity, await LoadMessagesAsync(context, conversationId, ct));
     }
 
     private static async Task<List<ConversationMessage>> LoadMessagesAsync(
@@ -371,50 +380,6 @@ public sealed class EfCoreConversationStore : IConversationStore
             .OrderBy(m => m.Ordinal)
             .ToListAsync(ct);
 
-        return rows.Select(MapMessage).ToList();
+        return rows.Select(ConversationEntityMapper.ToMessage).ToList();
     }
-
-    private static ConversationRecord Map(ConversationEntity entity, IReadOnlyList<ConversationMessage> messages) =>
-        new(
-            Id: entity.Id,
-            AgentName: entity.AgentName,
-            UserId: entity.UserId,
-            CreatedAt: entity.CreatedAt,
-            UpdatedAt: entity.UpdatedAt,
-            Messages: messages,
-            Title: entity.Title,
-            Settings: Deserialize<ConversationSettings>(entity.SettingsJson),
-            ObservabilitySessionId: entity.ObservabilitySessionId,
-            Telemetry: Deserialize<TelemetryAccumulator>(entity.TelemetryJson));
-
-    private static ConversationMessage MapMessage(ConversationMessageEntity entity) =>
-        new(
-            Id: entity.MessageId,
-            Role: Enum.Parse<MessageRole>(entity.Role),
-            Content: entity.Content,
-            Timestamp: entity.Timestamp,
-            ToolCalls: Deserialize<List<ToolCallRecord>>(entity.ToolCallsJson),
-            Widget: Deserialize<WidgetSpec>(entity.WidgetJson));
-
-    private static ConversationMessageEntity ToEntity(string conversationId, ConversationMessage message) =>
-        new()
-        {
-            ConversationId = conversationId,
-            // An empty id is normalised on the way in rather than backfilled on the way out, which
-            // is how the file-backed store had to handle records written before the column existed.
-            // Either way a caller that supplied none reads back a real, stable id.
-            MessageId = message.Id == Guid.Empty ? Guid.NewGuid() : message.Id,
-            Role = message.Role.ToString(),
-            Content = message.Content,
-            Timestamp = message.Timestamp,
-            ToolCallsJson = message.ToolCalls is null
-                ? null
-                : JsonSerializer.Serialize(message.ToolCalls, ConversationJson.Options),
-            WidgetJson = message.Widget is null
-                ? null
-                : JsonSerializer.Serialize(message.Widget, ConversationJson.Options),
-        };
-
-    private static T? Deserialize<T>(string? json) where T : class =>
-        string.IsNullOrEmpty(json) ? null : JsonSerializer.Deserialize<T>(json, ConversationJson.Options);
 }

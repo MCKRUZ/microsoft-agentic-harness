@@ -81,6 +81,10 @@ Two providers, selected by `AppConfig:AI:Conversations:Provider`:
 
 Neither guarantee crosses a machine boundary. A horizontally scaled deployment needs a server-backed implementation behind the same interface.
 
+**Upgrading from a file-backed deployment.** The default changed to `Sqlite`, and there is no migration between the two — a host that already has JSON transcripts and takes this change will start from an empty conversation list, with the old files untouched on disk. Set `AppConfig:AI:Conversations:Provider` to `FileSystem` to keep reading them. No migrator ships because the two schemas are not equivalent (the file store has no message ordinals) and a lossy automatic conversion of an audit record is worse than an explicit choice.
+
+**Sharing transcripts between hosts.** `DatabasePath` is relative to each host's own output directory by default, so the AgentHub and the Execution API get *separate* databases unless both are pointed at the same absolute path. Two hosts that mean to continue each other's conversations must configure that explicitly.
+
 ### AG-UI Protocol (SSE Streaming)
 
 `POST /ag-ui/run` implements the AG-UI standard for agent streaming via Server-Sent Events. The `AgUiRunHandler` orchestrates the run lifecycle: receives the run request, dispatches to the agent pipeline, and writes `TEXT_MESSAGE_START`, `TEXT_MESSAGE_CONTENT`, `TEXT_MESSAGE_END`, `RUN_ERROR`, and `RUN_FINISHED` events to the SSE stream.

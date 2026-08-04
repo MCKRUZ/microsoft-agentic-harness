@@ -56,7 +56,12 @@ public sealed class ConversationDbContext : DbContext
         message.HasKey(e => e.Ordinal);
         message.Property(e => e.Ordinal).ValueGeneratedOnAdd();
         message.Property(e => e.ConversationId).IsRequired().HasMaxLength(200);
-        message.Property(e => e.Role).IsRequired().HasMaxLength(32);
+        // Stored as the enum name. Declared once here rather than converted by hand on each side of
+        // the mapping, so the column and the CLR property cannot drift apart.
+        message.Property(e => e.Role)
+            .HasConversion<string>()
+            .IsRequired()
+            .HasMaxLength(32);
         message.Property(e => e.Content).IsRequired();
         message.Property(e => e.Timestamp).HasConversion(SqliteValueConverters.DateTimeOffsetAsUtcTicks);
 
