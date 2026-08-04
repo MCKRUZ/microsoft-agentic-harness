@@ -34,6 +34,12 @@ public sealed class ConversationsConfig
     public string DatabasePath { get; set; } = "data/conversations.db";
 
     /// <summary>
+    /// Timings for the durable turn lease that serialises turns on one conversation across hosts.
+    /// Read only by the <see cref="ConversationStoreProvider.Sqlite"/> provider.
+    /// </summary>
+    public ConversationTurnLeaseConfig TurnLease { get; set; } = new();
+
+    /// <summary>
     /// File system path where conversation records are persisted by the
     /// <see cref="ConversationStoreProvider.FileSystem"/> provider. Ignored by the SQLite provider.
     /// </summary>

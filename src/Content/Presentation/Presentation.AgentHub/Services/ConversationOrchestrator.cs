@@ -27,7 +27,7 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
 {
     private readonly IMediator _mediator;
     private readonly IConversationStore _conversationStore;
-    private readonly ConversationLockRegistry _lockRegistry;
+    private readonly IConversationTurnLease _turnLease;
     private readonly ISessionHealthTracker _healthTracker;
     private readonly IObservabilityStore _observabilityStore;
     private readonly IConnectionTracker _connectionTracker;
@@ -39,7 +39,7 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
     public ConversationOrchestrator(
         IMediator mediator,
         IConversationStore conversationStore,
-        ConversationLockRegistry lockRegistry,
+        IConversationTurnLease turnLease,
         ISessionHealthTracker healthTracker,
         IObservabilityStore observabilityStore,
         IConnectionTracker connectionTracker,
@@ -50,7 +50,7 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
     {
         _mediator = mediator;
         _conversationStore = conversationStore;
-        _lockRegistry = lockRegistry;
+        _turnLease = turnLease;
         _healthTracker = healthTracker;
         _observabilityStore = observabilityStore;
         _connectionTracker = connectionTracker;
@@ -118,21 +118,16 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
         var record = await _conversationStore.GetAsync(conversationId, callerId, ct)
             ?? throw new InvalidOperationException("Conversation not found.");
 
-        var semaphore = _lockRegistry.GetOrCreate(conversationId);
-        await semaphore.WaitAsync(ct);
-        try
+        return await WithTurnLeaseAsync(conversationId, async turnCt =>
         {
             var userMsg = new ConversationMessage(
                 userMessageId == Guid.Empty ? Guid.NewGuid() : userMessageId,
                 MessageRole.User, message, DateTimeOffset.UtcNow);
-            await _conversationStore.AppendMessageAsync(conversationId, callerId, userMsg, ct);
+            await _conversationStore.AppendMessageAsync(conversationId, callerId, userMsg, turnCt);
 
-            return await DispatchTurnAsync(sessionKey, conversationId, record.AgentName, message, callerId, onChunk, ct);
-        }
-        finally
-        {
-            semaphore.Release();
-        }
+            return await DispatchTurnAsync(
+                sessionKey, conversationId, record.AgentName, message, callerId, onChunk, turnCt);
+        }, ct);
     }
 
     /// <inheritdoc />
@@ -143,11 +138,10 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
         var record = await _conversationStore.GetAsync(conversationId, callerId, ct)
             ?? throw new InvalidOperationException("Conversation not found.");
 
-        var semaphore = _lockRegistry.GetOrCreate(conversationId);
-        await semaphore.WaitAsync(ct);
-        try
+        return await WithTurnLeaseAsync(conversationId, async turnCt =>
         {
-            var truncated = await _conversationStore.TruncateFromMessageAsync(conversationId, callerId, assistantMessageId, ct)
+            var truncated = await _conversationStore.TruncateFromMessageAsync(
+                    conversationId, callerId, assistantMessageId, turnCt)
                 ?? throw new InvalidOperationException("Conversation not found.");
 
             var last = truncated.Messages.LastOrDefault();
@@ -155,14 +149,10 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
                 throw new InvalidOperationException("Cannot retry: no preceding user message found.");
 
             var outcome = await DispatchTurnAsync(
-                sessionKey, conversationId, record.AgentName, last.Content, callerId, onChunk, ct);
+                sessionKey, conversationId, record.AgentName, last.Content, callerId, onChunk, turnCt);
 
             return outcome with { HistoryKeepCount = truncated.Messages.Count };
-        }
-        finally
-        {
-            semaphore.Release();
-        }
+        }, ct);
     }
 
     /// <inheritdoc />
@@ -174,27 +164,22 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
         var record = await _conversationStore.GetAsync(conversationId, callerId, ct)
             ?? throw new InvalidOperationException("Conversation not found.");
 
-        var semaphore = _lockRegistry.GetOrCreate(conversationId);
-        await semaphore.WaitAsync(ct);
-        try
+        return await WithTurnLeaseAsync(conversationId, async turnCt =>
         {
-            var truncated = await _conversationStore.TruncateFromMessageAsync(conversationId, callerId, userMessageId, ct)
+            var truncated = await _conversationStore.TruncateFromMessageAsync(
+                    conversationId, callerId, userMessageId, turnCt)
                 ?? throw new InvalidOperationException("Conversation not found.");
 
             var newUserMsg = new ConversationMessage(
                 newUserMessageId == Guid.Empty ? Guid.NewGuid() : newUserMessageId,
                 MessageRole.User, newContent, DateTimeOffset.UtcNow);
-            await _conversationStore.AppendMessageAsync(conversationId, callerId, newUserMsg, ct);
+            await _conversationStore.AppendMessageAsync(conversationId, callerId, newUserMsg, turnCt);
 
             var outcome = await DispatchTurnAsync(
-                sessionKey, conversationId, record.AgentName, newContent, callerId, onChunk, ct);
+                sessionKey, conversationId, record.AgentName, newContent, callerId, onChunk, turnCt);
 
             return outcome with { HistoryKeepCount = truncated.Messages.Count };
-        }
-        finally
-        {
-            semaphore.Release();
-        }
+        }, ct);
     }
 
     /// <inheritdoc />
@@ -236,6 +221,56 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
     // -------------------------------------------------------------------------
     // Private helpers
     // -------------------------------------------------------------------------
+
+    /// <summary>
+    /// Runs <paramref name="turn"/> holding this conversation's turn lease, and hands it a token that
+    /// is cancelled if the lease is lost as well as when the caller cancels.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// All three turn-producing operations do exactly this, so the acquire/link/release shape lives
+    /// here rather than three times — it is the part where a mistake is invisible until two turns
+    /// have already interleaved.
+    /// </para>
+    /// <para>
+    /// <strong>What it deliberately does not do is re-read the conversation.</strong> Everything a
+    /// turn reads from the record is already read under the lease, inside
+    /// <see cref="DispatchTurnAsync"/>, and it has to be read there rather than here: retry and edit
+    /// truncate and append <em>after</em> the lease is taken, so a record read at this point would
+    /// carry a message count the turn has since changed. The one value taken from the pre-lease read
+    /// is <c>AgentName</c>, which no operation on <see cref="IConversationStore"/> can change. If one
+    /// ever can, this becomes a stale read and the agent name must move to the late one too.
+    /// </para>
+    /// <para>
+    /// The lost-lease translation is the reason this cannot simply pass the linked token along and
+    /// stop there. <see cref="DispatchTurnAsync"/> reads a cancelled token as a client disconnect and
+    /// says so in the log; without this, a lease taken by another host would be recorded as the user
+    /// closing their browser. The filter checks the caller's token too, so a real disconnect that
+    /// happens to race the loss is still reported as a disconnect.
+    /// </para>
+    /// </remarks>
+    private async Task<TurnOutcome> WithTurnLeaseAsync(
+        string conversationId,
+        Func<CancellationToken, Task<TurnOutcome>> turn,
+        CancellationToken ct)
+    {
+        await using var lease = await _turnLease.AcquireAsync(conversationId, ct);
+        using var turnCts = CancellationTokenSource.CreateLinkedTokenSource(ct, lease.LeaseLost);
+
+        try
+        {
+            return await turn(turnCts.Token);
+        }
+        catch (OperationCanceledException)
+            when (lease.LeaseLost.IsCancellationRequested && !ct.IsCancellationRequested)
+        {
+            _logger.LogWarning(
+                "Turn on conversation {ConversationId} stopped: another host took its lease.",
+                conversationId);
+
+            throw new InvalidOperationException(ConversationLeaseNotice.Message);
+        }
+    }
 
     private async Task<TurnOutcome> DispatchTurnAsync(
         string sessionKey, string conversationId, string agentName, string userMessage,

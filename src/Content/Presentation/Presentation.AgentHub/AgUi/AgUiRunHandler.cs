@@ -11,13 +11,12 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Application.AI.Common.Models.Conversations;
-using Presentation.AgentHub.Hubs;
 using Presentation.Common.Extensions;
 
 namespace Presentation.AgentHub.AgUi;
 
 /// <summary>
-/// Orchestrates a single AG-UI run: validates ownership, acquires the conversation lock,
+/// Orchestrates a single AG-UI run: validates ownership, leases the conversation's turn,
 /// dispatches to the agent pipeline via MediatR, and emits AG-UI SSE events.
 /// </summary>
 /// <remarks>
@@ -31,7 +30,7 @@ public sealed class AgUiRunHandler
     private readonly IMediator _mediator;
     private readonly IConversationStore _conversationStore;
     private readonly IObservabilityStore _observabilityStore;
-    private readonly ConversationLockRegistry _lockRegistry;
+    private readonly IConversationTurnLease _turnLease;
     private readonly IAgUiEventWriterAccessor _writerAccessor;
     private readonly IConversationBudgetTracker _conversationBudget;
     private readonly IHostEnvironment _environment;
@@ -44,7 +43,7 @@ public sealed class AgUiRunHandler
         IMediator mediator,
         IConversationStore conversationStore,
         IObservabilityStore observabilityStore,
-        ConversationLockRegistry lockRegistry,
+        IConversationTurnLease turnLease,
         IAgUiEventWriterAccessor writerAccessor,
         IConversationBudgetTracker conversationBudget,
         IHostEnvironment environment,
@@ -53,7 +52,7 @@ public sealed class AgUiRunHandler
         _mediator = mediator;
         _conversationStore = conversationStore;
         _observabilityStore = observabilityStore;
-        _lockRegistry = lockRegistry;
+        _turnLease = turnLease;
         _writerAccessor = writerAccessor;
         _conversationBudget = conversationBudget;
         _environment = environment;
@@ -149,18 +148,100 @@ public sealed class AgUiRunHandler
 
         Activity.Current?.AddBaggage(UserConventions.UserId, callerId);
 
-        var semaphore = _lockRegistry.GetOrCreate(input.ThreadId);
-        await semaphore.WaitAsync(ct);
+        IConversationTurnLeaseHandle lease;
         try
         {
-            _writerAccessor.Writer = writer;
-            _writerAccessor.ThreadId = input.ThreadId;
-            _writerAccessor.CallerId = callerId;
-            await ExecuteRunAsync(input, writer, record, userMessage, callerId, observabilitySessionId, ct);
+            // Blocks while another turn on this conversation is in flight — here or in another host.
+            lease = await _turnLease.AcquireAsync(input.ThreadId, ct);
         }
         catch (OperationCanceledException)
         {
-            // Client disconnected — no event to emit.
+            // Client disconnected while queued behind the turn ahead of it — no event to emit.
+            return;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "AG-UI run {RunId}: could not lease a turn on conversation {ThreadId}.",
+                input.RunId, input.ThreadId);
+            await TryWriteErrorAsync(writer, "The conversation is not available right now.", ct);
+            return;
+        }
+
+        await using (lease)
+        {
+            await RunLeasedTurnAsync(input, writer, lease, userMessage, callerId, observabilitySessionId, ct);
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Private helpers
+    // -------------------------------------------------------------------------
+
+    /// <summary>
+    /// Runs the turn while <paramref name="lease"/> is held: binds the turn to a token that a lost
+    /// lease cancels, re-reads the conversation now that the turn is exclusive, dispatches, and
+    /// reports each way the turn can end.
+    /// </summary>
+    /// <remarks>
+    /// Separate from <see cref="HandleRunAsync"/> because the two answer different questions — that
+    /// one decides whether a turn may run at all, this one runs it — and because putting the leased
+    /// section in its own method makes the extent of the lease something the reader can see rather
+    /// than have to trace.
+    /// </remarks>
+    private async Task RunLeasedTurnAsync(
+        RunAgentInput input,
+        IAgUiEventWriter writer,
+        IConversationTurnLeaseHandle lease,
+        AgUiMessage userMessage,
+        string callerId,
+        Guid observabilitySessionId,
+        CancellationToken ct)
+    {
+        // Losing the lease mid-turn has to stop the turn. Another host now holds it, so anything
+        // written from here on is the second half of exactly the concurrent turn the lease exists
+        // to prevent.
+        using var turnCts = CancellationTokenSource.CreateLinkedTokenSource(ct, lease.LeaseLost);
+
+        try
+        {
+            // Re-read now that the turn is exclusive. The record loaded before the lease, and
+            // everything read from it — the message count this turn is numbered by, the settings the
+            // model is called with — could have been changed by the turn this one just waited behind.
+            // That was already true of the semaphore this replaces, but the turn ahead can now belong
+            // to another host, so "nothing happened in between" is no longer a safe reading. The
+            // SignalR path already re-reads inside its lock.
+            var leased = await _conversationStore.GetAsync(input.ThreadId, callerId, turnCts.Token);
+
+            if (leased is null)
+            {
+                _logger.LogWarning(
+                    "AG-UI run {RunId}: conversation {ThreadId} was deleted while this turn queued.",
+                    input.RunId, input.ThreadId);
+                await writer.WriteAsync(new RunErrorEvent("Conversation not found."), ct);
+                return;
+            }
+
+            _writerAccessor.Writer = writer;
+            _writerAccessor.ThreadId = input.ThreadId;
+            _writerAccessor.CallerId = callerId;
+            await ExecuteRunAsync(
+                input, writer, leased, userMessage, callerId, observabilitySessionId, turnCts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            // A cancelled turn is routine when the client disconnected, and is not routine when the
+            // lease was taken — telling them apart is the difference between a silent control and one
+            // whose effects can be seen. Both halves of the test matter: when the client has also
+            // disconnected, the disconnect is the honest explanation, and there is no longer a stream
+            // for the explanation to reach anyway. Same rule as
+            // ConversationOrchestrator.WithTurnLeaseAsync, deliberately.
+            if (lease.LeaseLost.IsCancellationRequested && !ct.IsCancellationRequested)
+            {
+                _logger.LogWarning(
+                    "AG-UI run {RunId}: turn stopped because the lease on conversation {ThreadId} was lost.",
+                    input.RunId, input.ThreadId);
+                await TryWriteErrorAsync(writer, Services.ConversationLeaseNotice.Message, ct);
+            }
         }
         catch (Exception ex)
         {
@@ -172,13 +253,8 @@ public sealed class AgUiRunHandler
             _writerAccessor.Writer = null;
             _writerAccessor.ThreadId = null;
             _writerAccessor.CallerId = null;
-            semaphore.Release();
         }
     }
-
-    // -------------------------------------------------------------------------
-    // Private helpers
-    // -------------------------------------------------------------------------
 
     private async Task ExecuteRunAsync(
         RunAgentInput input,

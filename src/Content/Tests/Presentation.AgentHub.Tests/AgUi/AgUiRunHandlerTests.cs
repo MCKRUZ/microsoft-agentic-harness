@@ -7,13 +7,14 @@ using Application.Common.Exceptions.ExceptionTypes;
 using Application.Core.CQRS.Agents.ExecuteAgentTurn;
 using Domain.AI.Budget;
 using FluentAssertions;
+using Infrastructure.AI.Conversations;
 using MediatR;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using Presentation.AgentHub.AgUi;
-using Presentation.AgentHub.Hubs;
 using Xunit;
 using Application.AI.Common.Models.Conversations;
 
@@ -114,6 +115,207 @@ public sealed class AgUiRunHandlerTests
         return (mediator, store);
     }
 
+    [Fact]
+    public async Task HandleRunAsync_ConversationChangedWhileQueued_DispatchesAgainstTheRereadRecord()
+    {
+        // The record is loaded before the turn lease is taken, so by the time this turn is exclusive
+        // the turn it waited behind — possibly in another host — may already have appended to the
+        // transcript. Dispatching from the pre-lease snapshot numbers this turn as though that never
+        // happened, and calls the model with settings that have since been replaced.
+        const string threadId = "conv-reread";
+        const string userId = "user-1";
+
+        var stale = MakeRecord(threadId, userId);
+        var fresh = stale with
+        {
+            Messages =
+            [
+                new ConversationMessage(Guid.NewGuid(), MessageRole.User, "earlier", DateTimeOffset.UtcNow),
+                new ConversationMessage(Guid.NewGuid(), MessageRole.Assistant, "answered", DateTimeOffset.UtcNow),
+            ],
+        };
+
+        var mediator = new Mock<IMediator>();
+        var store = new Mock<IConversationStore>();
+
+        // First read is the one before the lease; every read after it sees the newer transcript.
+        store.SetupSequence(s => s.GetAsync(threadId, userId, It.IsAny<CancellationToken>()))
+             .ReturnsAsync(stale)
+             .ReturnsAsync(fresh);
+        store.Setup(s => s.GetHistoryForDispatch(threadId, userId, It.IsAny<int>(), It.IsAny<CancellationToken>()))
+             .ReturnsAsync([]);
+        store.Setup(s => s.AppendMessageAsync(threadId, userId, It.IsAny<ConversationMessage>(), It.IsAny<CancellationToken>()))
+             .Returns(Task.CompletedTask);
+
+        ExecuteAgentTurnCommand? dispatched = null;
+        mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
+                .Callback<object, CancellationToken>((c, _) => dispatched = (ExecuteAgentTurnCommand)c)
+                .ReturnsAsync(MakeSuccessResult("ok"));
+
+        var handler = BuildHandler(mediator, store);
+
+        using var ms = new MemoryStream();
+        await handler.HandleRunAsync(MakeInput(threadId, "Hi"), new AgUiEventWriter(ms), MakeUser(userId));
+
+        dispatched.Should().NotBeNull();
+        dispatched!.TurnNumber.Should().Be(fresh.Messages.Count + 1,
+            "the turn must be numbered from the transcript as it stands once the lease is held, not "
+            + "from the snapshot taken before waiting for it");
+    }
+
+    [Fact]
+    public async Task HandleRunAsync_LeaseLostMidTurn_StopsTheTurnAndSaysWhy()
+    {
+        // The lease's expiry means a stalled host can have its lease taken while its turn is still
+        // running. If that is not linked into the turn's token, the losing host keeps writing to a
+        // transcript another host is now writing to — the concurrent turn the lease exists to
+        // prevent, reintroduced by the mechanism meant to stop it. Reported distinctly from a client
+        // disconnect, because both arrive as a cancellation and only one of them is routine.
+        const string threadId = "conv-stolen";
+        const string userId = "user-1";
+
+        var logger = new CapturingLogger<AgUiRunHandler>();
+        var lease = new ControllableTurnLease();
+        var mediator = new Mock<IMediator>();
+        var store = new Mock<IConversationStore>();
+
+        store.Setup(s => s.GetAsync(threadId, userId, It.IsAny<CancellationToken>()))
+             .ReturnsAsync(MakeRecord(threadId, userId));
+        store.Setup(s => s.GetHistoryForDispatch(threadId, userId, It.IsAny<int>(), It.IsAny<CancellationToken>()))
+             .ReturnsAsync([]);
+        store.Setup(s => s.AppendMessageAsync(threadId, userId, It.IsAny<ConversationMessage>(), It.IsAny<CancellationToken>()))
+             .Returns(Task.CompletedTask);
+
+        // Another host takes the lease while the model call is in flight. The turn aborts only if the
+        // token it was handed is the linked one — stealing the lease and throwing unconditionally
+        // would prove the error message and nothing about the wiring that produces it.
+        mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
+                .Returns<object, CancellationToken>((_, dispatchToken) =>
+                {
+                    lease.Steal();
+                    dispatchToken.ThrowIfCancellationRequested();
+                    return Task.FromResult(MakeSuccessResult("the turn was never stopped"));
+                });
+
+        var handler = BuildHandler(mediator, store, turnLease: lease, logger: logger);
+
+        using var ms = new MemoryStream();
+        await handler.HandleRunAsync(MakeInput(threadId, "Hi"), new AgUiEventWriter(ms), MakeUser(userId));
+
+        RunErrorMessage(ParseSseFrames(ms))
+            .Should().Be("This conversation was continued elsewhere; the turn was stopped.");
+        logger.Logged(LogLevel.Warning, "was lost").Should().BeTrue(
+            "the other half of this rule is that an ordinary disconnect must NOT log this");
+        lease.Released.Should().BeTrue("the lease must be released even when the turn ends this way");
+    }
+
+    [Fact]
+    public async Task HandleRunAsync_ClientDisconnectsAsTheLeaseIsLost_ReportsTheDisconnect()
+    {
+        // Both can be true at once, and then the disconnect is the honest explanation.
+        //
+        // Asserted on the log rather than on the stream, because the stream cannot tell the two
+        // apart: the client is gone, so the "continued elsewhere" event is written to an already
+        // cancelled token, fails, and is swallowed either way. Checking the frames here would pass
+        // with the rule wrong — measured, not assumed. What survives a disconnect is the log line an
+        // operator later reads, and reporting a lost lease there for an ordinary disconnect sends
+        // them looking for a second host that was never involved.
+        const string threadId = "conv-both";
+        const string userId = "user-1";
+
+        var logger = new CapturingLogger<AgUiRunHandler>();
+        var lease = new ControllableTurnLease();
+        var mediator = new Mock<IMediator>();
+        var store = new Mock<IConversationStore>();
+
+        store.Setup(s => s.GetAsync(threadId, userId, It.IsAny<CancellationToken>()))
+             .ReturnsAsync(MakeRecord(threadId, userId));
+        store.Setup(s => s.GetHistoryForDispatch(threadId, userId, It.IsAny<int>(), It.IsAny<CancellationToken>()))
+             .ReturnsAsync([]);
+        store.Setup(s => s.AppendMessageAsync(threadId, userId, It.IsAny<ConversationMessage>(), It.IsAny<CancellationToken>()))
+             .Returns(Task.CompletedTask);
+
+        using var caller = new CancellationTokenSource();
+        mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
+                .Returns<object, CancellationToken>((_, dispatchToken) =>
+                {
+                    lease.Steal();
+                    caller.Cancel();
+                    dispatchToken.ThrowIfCancellationRequested();
+                    return Task.FromResult(MakeSuccessResult("the turn was never stopped"));
+                });
+
+        var handler = BuildHandler(mediator, store, turnLease: lease, logger: logger);
+
+        using var ms = new MemoryStream();
+        await handler.HandleRunAsync(
+            MakeInput(threadId, "Hi"), new AgUiEventWriter(ms), MakeUser(userId), caller.Token);
+
+        logger.Logged(LogLevel.Warning, "was lost").Should().BeFalse(
+            "the client disconnected, which explains the cancellation without invoking a second host");
+        ParseSseFrames(ms).Select(EventType).Should().NotContain(AgUiEventType.RunError);
+        lease.Released.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task HandleRunAsync_ClientDisconnects_EndsQuietlyRatherThanReportingALostLease()
+    {
+        // The control for the test above. A disconnect and a stolen lease both surface as a
+        // cancellation, so a handler that reported "continued elsewhere" for either would look
+        // correct in the stolen case while lying in the ordinary one.
+        const string threadId = "conv-disconnect";
+        const string userId = "user-1";
+
+        var lease = new ControllableTurnLease();
+        var mediator = new Mock<IMediator>();
+        var store = new Mock<IConversationStore>();
+
+        store.Setup(s => s.GetAsync(threadId, userId, It.IsAny<CancellationToken>()))
+             .ReturnsAsync(MakeRecord(threadId, userId));
+        store.Setup(s => s.GetHistoryForDispatch(threadId, userId, It.IsAny<int>(), It.IsAny<CancellationToken>()))
+             .ReturnsAsync([]);
+        store.Setup(s => s.AppendMessageAsync(threadId, userId, It.IsAny<ConversationMessage>(), It.IsAny<CancellationToken>()))
+             .Returns(Task.CompletedTask);
+
+        // Cancelled, but the lease was never lost.
+        mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
+                .ThrowsAsync(new OperationCanceledException());
+
+        var handler = BuildHandler(mediator, store, turnLease: lease);
+
+        using var ms = new MemoryStream();
+        await handler.HandleRunAsync(MakeInput(threadId, "Hi"), new AgUiEventWriter(ms), MakeUser(userId));
+
+        ParseSseFrames(ms).Select(EventType).Should().NotContain(AgUiEventType.RunError);
+        lease.Released.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task HandleRunAsync_ConversationDeletedWhileQueued_ReportsNotFoundInsteadOfDispatching()
+    {
+        // The conversation existed when this run started and was gone by the time it held the lease.
+        // Dispatching anyway spends a model call on a transcript that no longer exists and then fails
+        // on the append, reported as an unexpected error rather than as what actually happened.
+        const string threadId = "conv-deleted";
+        const string userId = "user-1";
+
+        var mediator = new Mock<IMediator>();
+        var store = new Mock<IConversationStore>();
+
+        store.SetupSequence(s => s.GetAsync(threadId, userId, It.IsAny<CancellationToken>()))
+             .ReturnsAsync(MakeRecord(threadId, userId))
+             .ReturnsAsync((ConversationRecord?)null);
+
+        var handler = BuildHandler(mediator, store);
+
+        using var ms = new MemoryStream();
+        await handler.HandleRunAsync(MakeInput(threadId, "Hi"), new AgUiEventWriter(ms), MakeUser(userId));
+
+        RunErrorMessage(ParseSseFrames(ms)).Should().Be("Conversation not found.");
+        mediator.Verify(
+            m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
     private static string RunErrorMessage(IEnumerable<JsonDocument> frames) =>
         frames.First(f => EventType(f) == AgUiEventType.RunError)
               .RootElement.GetProperty("message").GetString()!;
@@ -150,7 +352,9 @@ public sealed class AgUiRunHandlerTests
         Mock<IConversationStore> store,
         Mock<IObservabilityStore>? observability = null,
         string environmentName = "Development",
-        Mock<IConversationBudgetTracker>? budget = null)
+        Mock<IConversationBudgetTracker>? budget = null,
+        IConversationTurnLease? turnLease = null,
+        ILogger<AgUiRunHandler>? logger = null)
     {
         if (observability is null)
         {
@@ -174,11 +378,13 @@ public sealed class AgUiRunHandlerTests
             mediator.Object,
             store.Object,
             observability.Object,
-            new ConversationLockRegistry(),
+            // The real in-process lease by default, not a mock: a mocked one returns a null handle,
+            // and every test below would then run a turn that never leased anything.
+            turnLease ?? new InProcessConversationTurnLease(),
             new AgUiEventWriterAccessor(),
             budget.Object,
             environment.Object,
-            NullLogger<AgUiRunHandler>.Instance);
+            logger ?? NullLogger<AgUiRunHandler>.Instance);
     }
 
     // -------------------------------------------------------------------------

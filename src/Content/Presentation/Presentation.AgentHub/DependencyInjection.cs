@@ -370,8 +370,10 @@ public static class DependencyInjection
         // the transcript store is shared infrastructure that the Execution API host reads too, so a
         // registration owned by this host would be unreachable from the other one.
 
-        // Singleton: ConversationLockRegistry must outlive hub instances (hubs are transient).
-        services.AddSingleton<ConversationLockRegistry>();
+        // IConversationTurnLease is registered alongside the store, for the same reason: turns on one
+        // conversation must be serialised against every host that can run them, not just this one.
+        // The per-conversation semaphore registry that used to live here could only ever see its own
+        // process.
 
         // Singleton: ConnectionTracker replaces the static ConcurrentDictionary on the hub.
         services.AddSingleton<IConnectionTracker, ConnectionTracker>();

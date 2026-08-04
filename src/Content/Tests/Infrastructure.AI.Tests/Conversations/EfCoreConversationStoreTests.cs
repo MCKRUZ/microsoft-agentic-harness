@@ -150,19 +150,4 @@ public sealed class EfCoreConversationStoreTests : ConversationStoreContractTest
             Clock,
             NullLogger<EfCoreConversationStore>.Instance,
             new SchemaInitializer<ConversationDbContext>(_contextFactory));
-
-    /// <summary>
-    /// Hands out contexts over one on-disk database, with pooling disabled so the file is not still
-    /// held by a pooled connection when the fixture deletes it.
-    /// </summary>
-    private sealed class TestConversationDbContextFactory(string databasePath)
-        : IDbContextFactory<ConversationDbContext>
-    {
-        private readonly DbContextOptions<ConversationDbContext> _options =
-            new DbContextOptionsBuilder<ConversationDbContext>()
-                .UseSqlite($"DataSource={databasePath};Pooling=False")
-                .Options;
-
-        public ConversationDbContext CreateDbContext() => new(_options);
-    }
 }

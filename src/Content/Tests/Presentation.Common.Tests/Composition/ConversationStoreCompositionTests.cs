@@ -121,6 +121,36 @@ public sealed class ConversationStoreCompositionTests : IDisposable
             + "out of AppConfig:AgentHub when the store became shared infrastructure");
     }
 
+    [Theory]
+    [InlineData(null, typeof(EfCoreConversationStore), typeof(SqliteConversationTurnLease))]
+    [InlineData("FileSystem", typeof(FileSystemConversationStore), typeof(InProcessConversationTurnLease))]
+    public async Task CompositionRoot_TurnLease_AlwaysMatchesTheSelectedStore(
+        string? provider, Type expectedStore, Type expectedLease)
+    {
+        // This also covers "the lease resolves at all", which matters for the same reason the store
+        // does: two hosts can now run turns on one conversation, so what stops them running at the
+        // same time has to be reachable from both, not registered by whichever host thought of it.
+        //
+        // The pairing is load-bearing, not tidiness. The durable lease finds a conversation by
+        // reading the same database the durable store writes to, so a host that mixes the two — the
+        // file-backed store with the durable lease — has a lease looking for conversations in a
+        // database nothing writes to, and refuses every turn. Two AgentHub test factories did exactly
+        // that for one test run while this lease was being built.
+        var settings = new Dictionary<string, string?>
+        {
+            ["AppConfig:AI:Conversations:DatabasePath"] = Path.Combine(_workingDir, "conversations.db"),
+            ["AppConfig:AI:Conversations:ConversationsPath"] = _workingDir,
+        };
+
+        if (provider is not null)
+            settings["AppConfig:AI:Conversations:Provider"] = provider;
+
+        await using var built = CompositionRootTestHost.BuildProvider(settings);
+
+        built.GetRequiredService<IConversationStore>().Should().BeOfType(expectedStore);
+        built.GetRequiredService<IConversationTurnLease>().Should().BeOfType(expectedLease);
+    }
+
     private Dictionary<string, string?> SqliteSettings() => new()
     {
         ["AppConfig:AI:Conversations:DatabasePath"] = Path.Combine(_workingDir, "conversations.db"),
