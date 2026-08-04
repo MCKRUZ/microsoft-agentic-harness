@@ -16,6 +16,17 @@ public interface IAgUiEventWriterAccessor
     /// can only be completed by a caller who owns that same thread.
     /// </summary>
     string? ThreadId { get; set; }
+
+    /// <summary>
+    /// Gets or sets the identity of the caller who started the active run. Null when no run is active.
+    /// </summary>
+    /// <remarks>
+    /// Travels beside <see cref="ThreadId"/> because anything writing to the thread now has to say who
+    /// it is writing as. A tool invoked mid-run is several frames below the HTTP request and has no
+    /// <c>ClaimsPrincipal</c> of its own; without this it would have to either invent an identity or
+    /// be exempted from the ownership check, and an exemption is the hole the check exists to close.
+    /// </remarks>
+    string? CallerId { get; set; }
 }
 
 /// <summary>
@@ -25,6 +36,7 @@ public sealed class AgUiEventWriterAccessor : IAgUiEventWriterAccessor
 {
     private static readonly AsyncLocal<IAgUiEventWriter?> _current = new();
     private static readonly AsyncLocal<string?> _threadId = new();
+    private static readonly AsyncLocal<string?> _callerId = new();
 
     /// <inheritdoc />
     public IAgUiEventWriter? Writer
@@ -38,5 +50,12 @@ public sealed class AgUiEventWriterAccessor : IAgUiEventWriterAccessor
     {
         get => _threadId.Value;
         set => _threadId.Value = value;
+    }
+
+    /// <inheritdoc />
+    public string? CallerId
+    {
+        get => _callerId.Value;
+        set => _callerId.Value = value;
     }
 }

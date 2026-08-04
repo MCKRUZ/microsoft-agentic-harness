@@ -54,16 +54,16 @@ public sealed class EfCoreConversationStoreTests : ConversationStoreContractTest
         // the file with the other's message missing.
         const int perStore = 15;
         var second = BuildStore();
-        var record = await _store.CreateAsync("agent", "user1");
+        var record = await _store.CreateAsync("agent", Owner);
 
         var fromFirst = Enumerable.Range(0, perStore)
-            .Select(i => _store.AppendMessageAsync(record.Id, UserMessage($"a-{i}")));
+            .Select(i => _store.AppendMessageAsync(record.Id, Owner, UserMessage($"a-{i}")));
         var fromSecond = Enumerable.Range(0, perStore)
-            .Select(i => second.AppendMessageAsync(record.Id, UserMessage($"b-{i}")));
+            .Select(i => second.AppendMessageAsync(record.Id, Owner, UserMessage($"b-{i}")));
 
         await Task.WhenAll(fromFirst.Concat(fromSecond));
 
-        var messages = (await _store.GetAsync(record.Id))!.Messages;
+        var messages = (await _store.GetAsync(record.Id, Owner))!.Messages;
         messages.Should().HaveCount(perStore * 2);
         messages.Select(m => m.Content).Should().OnlyHaveUniqueItems();
     }
@@ -73,12 +73,12 @@ public sealed class EfCoreConversationStoreTests : ConversationStoreContractTest
     {
         // Durability across instances, which is what lets a second host continue a conversation the
         // first one started. Nothing is cached in the writer for the reader to be served from.
-        var record = await _store.CreateAsync("agent", "user1");
-        await _store.AppendMessageAsync(record.Id, UserMessage("written by the first store"));
+        var record = await _store.CreateAsync("agent", Owner);
+        await _store.AppendMessageAsync(record.Id, Owner, UserMessage("written by the first store"));
 
         var reader = BuildStore();
 
-        var loaded = await reader.GetAsync(record.Id);
+        var loaded = await reader.GetAsync(record.Id, Owner);
         loaded!.Messages.Should().ContainSingle().Which.Content.Should().Be("written by the first store");
     }
 
@@ -87,10 +87,10 @@ public sealed class EfCoreConversationStoreTests : ConversationStoreContractTest
     {
         // Through the interface a deleted conversation is simply gone; only a look at the tables
         // shows whether its messages went with it or were left orphaned.
-        var record = await _store.CreateAsync("agent", "user1");
-        await _store.AppendMessageAsync(record.Id, UserMessage("hello"));
+        var record = await _store.CreateAsync("agent", Owner);
+        await _store.AppendMessageAsync(record.Id, Owner, UserMessage("hello"));
 
-        await _store.DeleteAsync(record.Id);
+        await _store.DeleteAsync(record.Id, Owner);
 
         await using var context = _contextFactory.CreateDbContext();
         (await context.ConversationMessages.CountAsync(m => m.ConversationId == record.Id))
@@ -102,8 +102,8 @@ public sealed class EfCoreConversationStoreTests : ConversationStoreContractTest
     {
         // The property that makes concurrent appends safe: an append adds a row and leaves the
         // existing rows — including their ordinals — untouched.
-        var record = await _store.CreateAsync("agent", "user1");
-        await _store.AppendMessageAsync(record.Id, UserMessage("first"));
+        var record = await _store.CreateAsync("agent", Owner);
+        await _store.AppendMessageAsync(record.Id, Owner, UserMessage("first"));
 
         await using (var before = _contextFactory.CreateDbContext())
         {
@@ -112,7 +112,7 @@ public sealed class EfCoreConversationStoreTests : ConversationStoreContractTest
                 .Select(m => m.Ordinal)
                 .SingleAsync();
 
-            await _store.AppendMessageAsync(record.Id, UserMessage("second"));
+            await _store.AppendMessageAsync(record.Id, Owner, UserMessage("second"));
 
             await using var after = _contextFactory.CreateDbContext();
             var ordinals = await after.ConversationMessages

@@ -72,6 +72,18 @@ Presentation.Common → Infrastructure.* → Application.* → Domain.*
 
 **Transcript persistence:** this host does not own the conversation store. `IConversationStore` lives in `Application.AI.Common/Interfaces/AI/`, its DTOs in `Application.AI.Common/Models/Conversations/`, and both implementations in `Infrastructure.AI/Conversations/`, registered by `AddInfrastructureAIDependencies`. It moved out of this project because the Execution API needs the same transcripts and peer Presentation projects cannot reference each other.
 
+**Ownership is enforced by the store, not by this host.** Every `IConversationStore` operation that
+names a single conversation takes the caller's id and refuses a record owned by anyone else, throwing
+`ConversationAccessDeniedException` (a `UnauthorizedAccessException`, so the hub's existing handling is
+unchanged; `GlobalExceptionMiddleware` maps it to `403`). Nothing here compares `record.UserId` any
+more — that comparison used to be hand-written in six places across four files with three different
+failure shapes, and the Execution API was about to become a seventh entry point without one. A blank
+caller id is rejected outright rather than treated as unscoped.
+
+A consequence worth knowing when writing tests: a **mocked** store enforces nothing, so a test that
+proves an intruder is refused has to stub the refusal explicitly. See the intruder tests in
+`AgUiRunHandlerTests` and `ConversationOrchestratorTests` for the shape.
+
 Two providers, selected by `AppConfig:AI:Conversations:Provider`:
 
 | Provider | Implementation | Fit |

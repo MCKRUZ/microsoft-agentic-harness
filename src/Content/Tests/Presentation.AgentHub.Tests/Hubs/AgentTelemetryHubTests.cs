@@ -267,7 +267,7 @@ public sealed class AgentTelemetryHubTests : IClassFixture<TestWebApplicationFac
         {
             await connection.InvokeAsync("StartConversation", "test-agent", conversationId);
 
-            var record = await _store.GetAsync(conversationId);
+            var record = await _store.GetAsync(conversationId, "test-user");
             record.Should().NotBeNull();
             record!.UserId.Should().Be("test-user");
             record.AgentName.Should().Be("test-agent");
@@ -289,7 +289,7 @@ public sealed class AgentTelemetryHubTests : IClassFixture<TestWebApplicationFac
         var conversationId = Guid.NewGuid().ToString();
         var record = await _store.CreateAsync("test-agent", "test-user", conversationId: conversationId);
         for (var i = 0; i < 25; i++)
-            await _store.AppendMessageAsync(record.Id,
+            await _store.AppendMessageAsync(record.Id, "test-user",
                 new ConversationMessage(Guid.NewGuid(), MessageRole.User, $"msg-{i}", DateTimeOffset.UtcNow));
 
         var connection = CreateConnection("test-user");
@@ -406,7 +406,7 @@ public sealed class AgentTelemetryHubTests : IClassFixture<TestWebApplicationFac
             await connection.InvokeAsync("SendMessage", conversationId, Guid.NewGuid(), "Trigger error");
             await errorTcs.Task.WaitAsync(TimeSpan.FromSeconds(15));
 
-            var record = await _store.GetAsync(conversationId);
+            var record = await _store.GetAsync(conversationId, "test-user");
             record.Should().NotBeNull();
             record!.Messages.Should().Contain(m =>
                 m.Role == MessageRole.Assistant && m.Content.Contains("[Error]"),

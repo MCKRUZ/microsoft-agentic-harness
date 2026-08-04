@@ -123,29 +123,30 @@ This is a production template that enterprise consumers will clone. Corners cut 
 - Persisting projected gate scores across checkpoint reloads — round-trip float→text→float can flip Accept/Reject by 1 ULP; orchestrator should re-project on each call via `IGateEvaluator.SelectGateScore`
 - Forgetting the `NotConfiguredPatchProposer` / `NotConfiguredRolloutRunner` defaults — these throw on first use; a consumer that invokes `TrainSkillCommand` without registering real impls gets an `InvalidOperationException` at runtime, not a silent no-op
 - **Implementing a subtractive or rewriting `AIContextProvider` on `ProvideAIContextAsync`.** That hook is contractually **additive**: the base merge computes `Tools = input.Concat(provided)` and `Instructions = input + provided`. A provider that filters, wraps, or replaces anything there is silently inert — every item it drops is restored from the input, and every item it keeps is published twice. To subtract or rewrite, override `InvokingCoreAsync`, call `base` first, then transform the result. A provider that only *adds* must return **just its own contribution**, never the input echoed back. This landed four separate times (`ToolPermissionFilter`, `GoverningToolContextProvider` — a security control that was dead — plus both recall providers). All four had green unit tests because those tests called the protected hook directly; **any test of an `AIContextProvider` must drive the public `InvokingAsync`**, which is what `AIContextProviderMergeContractTests` does for every provider in `Application.AI.Common`.
+- **Re-implementing the conversation ownership check at a call site.** `IConversationStore` enforces it: every operation naming one conversation takes a `callerId` and throws `ConversationAccessDeniedException` for a record owned by anyone else. It did not always, and the comparison `record.UserId != callerId` ended up hand-written in **six** places across four files with three different failure shapes. Pass the authenticated caller through and let the store refuse. Two consequences: a **blank** `callerId` is an `ArgumentException`, never a wildcard; and a **mocked** store enforces nothing, so any test proving an intruder is refused must stub the throw explicitly (see `AgUiRunHandlerTests`, `ConversationOrchestratorTests`) — otherwise it passes while asserting nothing.
 - **Treating "no knowledge scope" as a safe default — it is not, it means GLOBAL.** `PlannerScopeFilter.VisibleTo` and `TenantIsolatedGraphStore` read a null owner as a world-readable record, so any path where identity resolution yields nothing silently publishes data. This defect has landed three separate times (host never mounted `KnowledgeScopeMiddleware`; the scope resolver rejected a token shape ownership accepted; an ambiguous claim resolved to null). The invariant: an **authenticated** request must either establish a scope or be **rejected** — never proceed unscoped. Only genuinely unauthenticated callers may run unscoped. Resolve identity solely through `ClaimsPrincipalExtensions.GetUserIdOrNull()`; never add a second precedence ladder.
 
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **microsoft-agentic-harness** (37816 symbols, 86770 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **microsoft-agentic-harness** (38313 symbols, 103124 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
-> If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
+> Index stale? Run `node .gitnexus/run.cjs analyze` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? `npx gitnexus analyze` (npm 11 crash → `npm i -g gitnexus`; #1939).
 
 ## Always Do
 
-- **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run `gitnexus_impact({target: "symbolName", direction: "upstream"})` and report the blast radius (direct callers, affected processes, risk level) to the user.
-- **MUST run `gitnexus_detect_changes()` before committing** to verify your changes only affect expected symbols and execution flows.
+- **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run `impact({target: "symbolName", direction: "upstream"})` and report the blast radius (direct callers, affected processes, risk level) to the user.
+- **MUST run `detect_changes()` before committing** to verify your changes only affect expected symbols and execution flows. For regression review, compare against the default branch: `detect_changes({scope: "compare", base_ref: "main"})`.
 - **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
-- When exploring unfamiliar code, use `gitnexus_query({query: "concept"})` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
-- When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use `gitnexus_context({name: "symbolName"})`.
+- When exploring unfamiliar code, use `query({query: "concept"})` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
+- When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use `context({name: "symbolName"})`.
 
 ## Never Do
 
-- NEVER edit a function, class, or method without first running `gitnexus_impact` on it.
+- NEVER edit a function, class, or method without first running `impact` on it.
 - NEVER ignore HIGH or CRITICAL risk warnings from impact analysis.
-- NEVER rename symbols with find-and-replace — use `gitnexus_rename` which understands the call graph.
-- NEVER commit changes without running `gitnexus_detect_changes()` to check affected scope.
+- NEVER rename symbols with find-and-replace — use `rename` which understands the call graph.
+- NEVER commit changes without running `detect_changes()` to check affected scope.
 
 ## Resources
 

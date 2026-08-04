@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Application.AI.Common.Interfaces.AI;
+using Application.AI.Common.Services;
 using Application.AI.Common.Models.Conversations;
 using Infrastructure.AI.Persistence;
 using Infrastructure.AI.Persistence.Entities;
@@ -34,10 +35,12 @@ namespace Infrastructure.AI.Conversations;
 /// read-modify-write invites. The row count the statement returns doubles as the existence check.
 /// </para>
 /// <para>
-/// <strong>Ownership is not enforced here.</strong> This store is CRUD, exactly as the file-backed
-/// one is: it will return any conversation whose id a caller knows. Checking
-/// <see cref="ConversationRecord.UserId"/> against the authenticated caller is the caller's job, as
-/// <see cref="IConversationStore"/> documents.
+/// <strong>Ownership is part of the statement, not a step before it.</strong> Every mutation carries
+/// <c>UserId == callerId</c> in its <c>WHERE</c> clause, so the check and the write are one atomic
+/// operation against the database. Checking first and writing second — what each caller used to do —
+/// leaves a window in which the row can change between the two, and it costs an extra round trip on
+/// the success path. Here the cost is inverted: nothing extra is read unless the statement matched
+/// no rows, and only then is a probe issued to tell "no such conversation" apart from "not yours".
 /// </para>
 /// </remarks>
 public sealed class EfCoreConversationStore : IConversationStore
@@ -71,8 +74,10 @@ public sealed class EfCoreConversationStore : IConversationStore
     }
 
     /// <inheritdoc/>
-    public async Task<ConversationRecord?> GetAsync(string conversationId, CancellationToken ct = default)
+    public async Task<ConversationRecord?> GetAsync(string conversationId, string callerId, CancellationToken ct = default)
     {
+        ConversationOwnership.RequireCallerId(callerId);
+
         await using var context = await _contextFactory.CreateDbContextAsync(ct);
 
         var entity = await context.Conversations
@@ -82,6 +87,11 @@ public sealed class EfCoreConversationStore : IConversationStore
         if (entity is null)
             return null;
 
+        // A read has to load the row before it can compare owners, so unlike the mutations there is
+        // nothing to fold into a WHERE clause here — filtering by owner would only lose the
+        // information needed to answer "forbidden" rather than "not found".
+        RequireOwner(conversationId, callerId, entity.UserId);
+
         var messages = await LoadMessagesAsync(context, conversationId, ct);
         return ConversationEntityMapper.ToRecord(entity, messages);
     }
@@ -89,6 +99,8 @@ public sealed class EfCoreConversationStore : IConversationStore
     /// <inheritdoc/>
     public async Task<IReadOnlyList<ConversationRecord>> ListAsync(string userId, CancellationToken ct = default)
     {
+        ConversationOwnership.RequireCallerId(userId);
+
         await using var context = await _contextFactory.CreateDbContextAsync(ct);
 
         var entities = await context.Conversations
@@ -126,6 +138,8 @@ public sealed class EfCoreConversationStore : IConversationStore
         string? conversationId = null,
         CancellationToken ct = default)
     {
+        ConversationOwnership.RequireCallerId(userId);
+
         var id = !string.IsNullOrWhiteSpace(conversationId) ? conversationId : Guid.NewGuid().ToString();
         var now = _timeProvider.GetUtcNow();
 
@@ -133,9 +147,18 @@ public sealed class EfCoreConversationStore : IConversationStore
         await using var transaction = await context.Database.BeginTransactionAsync(ct);
 
         // Replace semantics, matching the file-backed store, where writing the record's file
-        // overwrites whatever was there. Both callers reach CreateAsync only after a Get returned
-        // nothing, so this path is unreachable in the harness today; it is defined rather than left
-        // to diverge between the two implementations. The cascade takes the messages with it.
+        // overwrites whatever was there — which makes this the one create path capable of destroying
+        // a transcript, and so the one that must not cross an ownership boundary.
+        //
+        // Read inside the transaction, but note what that does and does not buy: SQLite's default
+        // isolation does not hold a write lock from this read, so two creates racing on the same
+        // caller-supplied id could both see it absent. What prevents a crossed boundary in that race
+        // is that the loser's write blocks and fails rather than interleaving — not this read. The
+        // file-backed store closes the window properly, with one lock spanning check and write; the
+        // conditional-UPDATE claim arriving with the turn lease is the durable fix here.
+        await ThrowIfOwnedByAnotherAsync(context, id, userId, ct);
+
+        // The cascade takes the messages with it.
         await context.Conversations
             .Where(c => c.Id == id)
             .ExecuteDeleteAsync(ct);
@@ -166,9 +189,12 @@ public sealed class EfCoreConversationStore : IConversationStore
     /// <inheritdoc/>
     public async Task AppendMessageAsync(
         string conversationId,
+        string callerId,
         ConversationMessage message,
         CancellationToken ct = default)
     {
+        ConversationOwnership.RequireCallerId(callerId);
+
         var now = _timeProvider.GetUtcNow();
 
         // A title is derived from the first user message only. Passing null for every other case
@@ -182,15 +208,20 @@ public sealed class EfCoreConversationStore : IConversationStore
         await using var transaction = await context.Database.BeginTransactionAsync(ct);
 
         var touched = await context.Conversations
-            .Where(c => c.Id == conversationId)
+            .Where(c => c.Id == conversationId && c.UserId == callerId)
             .ExecuteUpdateAsync(
                 s => s
                     .SetProperty(c => c.UpdatedAt, now)
                     .SetProperty(c => c.Title, c => c.Title ?? candidateTitle),
                 ct);
 
+        // Zero rows means either no such conversation or one belonging to someone else, and the
+        // caller is owed different answers for those. Only now is it worth a second query to find out.
         if (touched == 0)
+        {
+            await ThrowIfOwnedByAnotherAsync(context, conversationId, callerId, ct);
             throw new InvalidOperationException($"Conversation '{conversationId}' does not exist.");
+        }
 
         context.ConversationMessages.Add(ConversationEntityMapper.ToEntity(conversationId, message));
 
@@ -228,22 +259,38 @@ public sealed class EfCoreConversationStore : IConversationStore
     private const int SqliteConstraintUnique = 2067;
 
     /// <inheritdoc/>
-    public async Task DeleteAsync(string conversationId, CancellationToken ct = default)
+    public async Task<bool> DeleteAsync(string conversationId, string callerId, CancellationToken ct = default)
     {
+        ConversationOwnership.RequireCallerId(callerId);
+
         await using var context = await _contextFactory.CreateDbContextAsync(ct);
 
-        // Messages go with it through the cascade configured on the foreign key.
-        await context.Conversations
-            .Where(c => c.Id == conversationId)
+        // Messages go with it through the cascade configured on the foreign key. Owner in the WHERE
+        // clause makes this a single statement: the read-check-then-delete it replaces could delete a
+        // conversation that changed hands between the two.
+        var deleted = await context.Conversations
+            .Where(c => c.Id == conversationId && c.UserId == callerId)
             .ExecuteDeleteAsync(ct);
+
+        // Deleting nothing is a no-op for an absent conversation, but a refusal for someone else's.
+        if (deleted == 0)
+        {
+            await ThrowIfOwnedByAnotherAsync(context, conversationId, callerId, ct);
+            return false;
+        }
+
+        return true;
     }
 
     /// <inheritdoc/>
     public async Task<ConversationRecord?> TruncateFromMessageAsync(
         string conversationId,
+        string callerId,
         Guid messageId,
         CancellationToken ct = default)
     {
+        ConversationOwnership.RequireCallerId(callerId);
+
         await using var context = await _contextFactory.CreateDbContextAsync(ct);
 
         var entity = await context.Conversations
@@ -252,6 +299,8 @@ public sealed class EfCoreConversationStore : IConversationStore
 
         if (entity is null)
             return null;
+
+        RequireOwner(conversationId, callerId, entity.UserId);
 
         var cutoff = await context.ConversationMessages
             .Where(m => m.ConversationId == conversationId && m.MessageId == messageId)
@@ -286,15 +335,19 @@ public sealed class EfCoreConversationStore : IConversationStore
     /// <inheritdoc/>
     public async Task<ConversationRecord?> UpdateSettingsAsync(
         string conversationId,
+        string callerId,
         ConversationSettings settings,
         CancellationToken ct = default)
     {
+        ConversationOwnership.RequireCallerId(callerId);
+
         var json = JsonSerializer.Serialize(settings, ConversationJson.Options);
         var now = _timeProvider.GetUtcNow();
         return await UpdateHeaderAsync(
             conversationId,
+            callerId,
             context => context.Conversations
-                .Where(c => c.Id == conversationId)
+                .Where(c => c.Id == conversationId && c.UserId == callerId)
                 .ExecuteUpdateAsync(
                     s => s
                         .SetProperty(c => c.SettingsJson, json)
@@ -306,16 +359,20 @@ public sealed class EfCoreConversationStore : IConversationStore
     /// <inheritdoc/>
     public async Task<ConversationRecord?> UpdateTelemetryAsync(
         string conversationId,
+        string callerId,
         Guid observabilitySessionId,
         TelemetryAccumulator telemetry,
         CancellationToken ct = default)
     {
+        ConversationOwnership.RequireCallerId(callerId);
+
         var json = JsonSerializer.Serialize(telemetry, ConversationJson.Options);
         var now = _timeProvider.GetUtcNow();
         return await UpdateHeaderAsync(
             conversationId,
+            callerId,
             context => context.Conversations
-                .Where(c => c.Id == conversationId)
+                .Where(c => c.Id == conversationId && c.UserId == callerId)
                 .ExecuteUpdateAsync(
                     s => s
                         .SetProperty(c => c.ObservabilitySessionId, observabilitySessionId)
@@ -328,16 +385,22 @@ public sealed class EfCoreConversationStore : IConversationStore
     /// <inheritdoc/>
     public async Task<IReadOnlyList<ConversationMessage>?> GetHistoryForDispatch(
         string conversationId,
+        string callerId,
         int maxMessages,
         CancellationToken ct = default)
     {
+        ConversationOwnership.RequireCallerId(callerId);
+
         await using var context = await _contextFactory.CreateDbContextAsync(ct);
 
-        var exists = await context.Conversations
-            .AnyAsync(c => c.Id == conversationId, ct);
+        // Reading the owner rather than asking whether the row exists: the same single query now
+        // answers both questions, so enforcing ownership here costs nothing on the dispatch path.
+        var owner = await LoadOwnerAsync(context, conversationId, ct);
 
-        if (!exists)
+        if (owner is null)
             return null;
+
+        RequireOwner(conversationId, callerId, owner);
 
         // Empty-content messages are excluded before the window is applied: an inline-widget message
         // carries its payload in the widget spec, not in text, so it is not model-relevant. Filtering
@@ -378,6 +441,7 @@ public sealed class EfCoreConversationStore : IConversationStore
     /// </remarks>
     private async Task<ConversationRecord?> UpdateHeaderAsync(
         string conversationId,
+        string callerId,
         Func<ConversationDbContext, Task<int>> update,
         CancellationToken ct)
     {
@@ -386,7 +450,10 @@ public sealed class EfCoreConversationStore : IConversationStore
         var touched = await update(context);
 
         if (touched == 0)
+        {
+            await ThrowIfOwnedByAnotherAsync(context, conversationId, callerId, ct);
             return null;
+        }
 
         var entity = await context.Conversations
             .AsNoTracking()
@@ -398,6 +465,53 @@ public sealed class EfCoreConversationStore : IConversationStore
 
         return ConversationEntityMapper.ToRecord(entity, await LoadMessagesAsync(context, conversationId, ct));
     }
+
+    /// <summary>
+    /// Throws when <paramref name="conversationId"/> names a conversation owned by someone other than
+    /// <paramref name="callerId"/>; returns quietly when it names nothing at all.
+    /// </summary>
+    /// <remarks>
+    /// Called only after an owner-filtered statement matched zero rows, which is why the extra query
+    /// is affordable — it runs on the failure path, never on a successful read or write. Returning
+    /// quietly when the row is genuinely absent leaves each caller free to say what absence means for
+    /// it: a no-op for a delete, a <c>null</c> for an update, an exception for an append.
+    /// </remarks>
+    private async Task ThrowIfOwnedByAnotherAsync(
+        ConversationDbContext context,
+        string conversationId,
+        string callerId,
+        CancellationToken ct)
+    {
+        var owner = await LoadOwnerAsync(context, conversationId, ct);
+
+        // A row that is present and ours, having matched nothing a moment ago, means it changed
+        // underneath this operation. Absent is the honest answer: it is no longer what was written to.
+        if (owner is not null)
+            RequireOwner(conversationId, callerId, owner);
+    }
+
+    /// <summary>
+    /// Returns the owner of <paramref name="conversationId"/>, or <c>null</c> if no such conversation
+    /// exists.
+    /// </summary>
+    /// <remarks>
+    /// One projection rather than three near-identical ones, so the question "who owns this?" is
+    /// asked the same way everywhere it is asked — and so a change to how ownership is stored has one
+    /// place to land rather than three that must be spotted.
+    /// </remarks>
+    private static Task<string?> LoadOwnerAsync(
+        ConversationDbContext context,
+        string conversationId,
+        CancellationToken ct) =>
+        context.Conversations
+            .AsNoTracking()
+            .Where(c => c.Id == conversationId)
+            .Select(c => c.UserId)
+            .FirstOrDefaultAsync(ct);
+
+    /// <summary>Applies the shared ownership rule. See <see cref="ConversationOwnership"/>.</summary>
+    private void RequireOwner(string conversationId, string callerId, string ownerId) =>
+        ConversationOwnership.RequireOwner(_logger, conversationId, callerId, ownerId);
 
     private static async Task<List<ConversationMessage>> LoadMessagesAsync(
         ConversationDbContext context,

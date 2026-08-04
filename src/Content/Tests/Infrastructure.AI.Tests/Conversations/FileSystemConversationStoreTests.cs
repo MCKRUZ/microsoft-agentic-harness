@@ -44,7 +44,7 @@ public sealed class FileSystemConversationStoreTests : ConversationStoreContract
     [Fact]
     public async Task CreateAsync_WritesJsonFileAtExpectedPath()
     {
-        var record = await _store.CreateAsync("agent", "user1");
+        var record = await _store.CreateAsync("agent", Owner);
 
         File.Exists(Path.Combine(_tempDir, $"{record.Id}.json")).Should().BeTrue();
     }
@@ -54,9 +54,9 @@ public sealed class FileSystemConversationStoreTests : ConversationStoreContract
     {
         // Writes stage through a .tmp path and are moved into place. A .tmp left behind means the
         // move did not happen, and the record on disk is the pre-append one.
-        var record = await _store.CreateAsync("agent", "user1");
+        var record = await _store.CreateAsync("agent", Owner);
 
-        await _store.AppendMessageAsync(record.Id, UserMessage("hello"));
+        await _store.AppendMessageAsync(record.Id, Owner, UserMessage("hello"));
 
         Directory.GetFiles(_tempDir, "*.tmp").Should().BeEmpty();
         File.Exists(Path.Combine(_tempDir, $"{record.Id}.json")).Should().BeTrue();
@@ -65,20 +65,43 @@ public sealed class FileSystemConversationStoreTests : ConversationStoreContract
     [Fact]
     public async Task DeleteAsync_RemovesTheFile()
     {
-        var record = await _store.CreateAsync("agent", "user1");
+        var record = await _store.CreateAsync("agent", Owner);
         var filePath = Path.Combine(_tempDir, $"{record.Id}.json");
 
-        await _store.DeleteAsync(record.Id);
+        await _store.DeleteAsync(record.Id, Owner);
 
         File.Exists(filePath).Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData("{ this is not json")]
+    [InlineData("")]
+    [InlineData("null")]
+    public async Task DeleteAsync_RecordTooCorruptToNameAnOwner_StillDeletesIt(string corrupt)
+    {
+        // Ownership is read from the file here, so a file that cannot be read has no owner to check.
+        // It must still be deletable: refusing would leave it stuck in the directory with no way to
+        // remove it through the API, and would protect nothing — writing that file needed directory
+        // access, and anyone with that can delete it without asking this store.
+        //
+        // The cases matter. Deserialize returns null only for the literal `null`; truncated and empty
+        // content throw instead, which is the shape corruption actually takes.
+        var record = await _store.CreateAsync("agent", Owner);
+        var path = Path.Combine(_tempDir, $"{record.Id}.json");
+        await File.WriteAllTextAsync(path, corrupt);
+
+        var deleted = await _store.DeleteAsync(record.Id, Owner);
+
+        deleted.Should().BeTrue();
+        File.Exists(path).Should().BeFalse();
     }
 
     [Fact]
     public async Task ConversationIdEscapingTheBasePath_ThrowsArgumentException()
     {
         // The conversation id becomes a file name, so an id is an untrusted path segment.
-        await Assert.ThrowsAsync<ArgumentException>(() => _store.GetAsync("../evil"));
-        await Assert.ThrowsAsync<ArgumentException>(() => _store.DeleteAsync("../../etc/passwd"));
+        await Assert.ThrowsAsync<ArgumentException>(() => _store.GetAsync("../evil", Owner));
+        await Assert.ThrowsAsync<ArgumentException>(() => _store.DeleteAsync("../../etc/passwd", Owner));
     }
 
     [Fact]
@@ -88,14 +111,14 @@ public sealed class FileSystemConversationStoreTests : ConversationStoreContract
         // Guid.Empty. They are backfilled and rewritten on read, so retry/edit still has something
         // to reference. The SQLite store has no such history and normalises on write instead, which
         // is why this lives here rather than in the contract.
-        var record = await _store.CreateAsync("agent", "user1");
+        var record = await _store.CreateAsync("agent", Owner);
         var path = Path.Combine(_tempDir, $"{record.Id}.json");
         await File.WriteAllTextAsync(path, LegacyRecordJson(record.Id));
 
-        var loaded = await _store.GetAsync(record.Id);
+        var loaded = await _store.GetAsync(record.Id, Owner);
 
         loaded!.Messages.Should().ContainSingle().Which.Id.Should().NotBe(Guid.Empty);
-        (await _store.GetAsync(record.Id))!.Messages[0].Id
+        (await _store.GetAsync(record.Id, Owner))!.Messages[0].Id
             .Should().Be(loaded.Messages[0].Id, "the backfilled id must have been persisted");
     }
 

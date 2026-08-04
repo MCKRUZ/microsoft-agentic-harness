@@ -195,7 +195,7 @@ public sealed class AgentsControllerTests : IClassFixture<TestWebApplicationFact
 
         response.StatusCode.Should().Be(HttpStatusCode.NoContent);
 
-        var deleted = await _store.GetAsync(conv.Id);
+        var deleted = await _store.GetAsync(conv.Id, owner);
         deleted.Should().BeNull("the conversation must be removed from the store after deletion");
     }
 }

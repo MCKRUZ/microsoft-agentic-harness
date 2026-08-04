@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Application.AI.Common.Interfaces.AI;
+using Application.AI.Common.Services;
 using Application.AI.Common.Models.Conversations;
 using Domain.Common.Config.AI.Conversations;
 using Microsoft.Extensions.Logging;
@@ -62,8 +63,10 @@ public sealed class FileSystemConversationStore : IConversationStore
     }
 
     /// <inheritdoc/>
-    public async Task<ConversationRecord?> GetAsync(string conversationId, CancellationToken ct = default)
+    public async Task<ConversationRecord?> GetAsync(string conversationId, string callerId, CancellationToken ct = default)
     {
+        ConversationOwnership.RequireCallerId(callerId);
+
         var path = ResolveAndValidatePath(conversationId);
 
         await _lock.WaitAsync(ct);
@@ -75,6 +78,8 @@ public sealed class FileSystemConversationStore : IConversationStore
             var json = await File.ReadAllTextAsync(path, ct);
             var record = JsonSerializer.Deserialize<ConversationRecord>(json, ConversationJson.Options);
             if (record is null) return null;
+
+            RequireOwner(conversationId, callerId, record.UserId);
 
             // Migrate legacy records whose messages predate the Id column by backfilling
             // a Guid per message and persisting the result. Subsequent loads will skip this path.
@@ -95,6 +100,8 @@ public sealed class FileSystemConversationStore : IConversationStore
     /// <inheritdoc/>
     public async Task<IReadOnlyList<ConversationRecord>> ListAsync(string userId, CancellationToken ct = default)
     {
+        ConversationOwnership.RequireCallerId(userId);
+
         await _lock.WaitAsync(ct);
         try
         {
@@ -138,6 +145,8 @@ public sealed class FileSystemConversationStore : IConversationStore
     /// <inheritdoc/>
     public async Task<ConversationRecord> CreateAsync(string agentName, string userId, string? conversationId = null, CancellationToken ct = default)
     {
+        ConversationOwnership.RequireCallerId(userId);
+
         var id = !string.IsNullOrWhiteSpace(conversationId) ? conversationId : Guid.NewGuid().ToString();
         var now = _timeProvider.GetUtcNow();
         var record = new ConversationRecord(
@@ -149,15 +158,39 @@ public sealed class FileSystemConversationStore : IConversationStore
             Messages: []);
 
         var path = ResolveAndValidatePath(id);
-        await WriteAtomicAsync(path, record, ct);
+
+        // The ownership check and the write share one lock acquisition on purpose. Writing the
+        // record's file overwrites whatever was there, so a caller naming an existing id replaces
+        // that conversation outright — the one create path that can destroy a transcript. Checking
+        // under a separate acquisition would leave a window in which the conversation being replaced
+        // is not the one whose owner was approved.
+        await _lock.WaitAsync(ct);
+        try
+        {
+            if (File.Exists(path))
+            {
+                var existingJson = await File.ReadAllTextAsync(path, ct);
+                var existing = JsonSerializer.Deserialize<ConversationRecord>(existingJson, ConversationJson.Options);
+                if (existing is not null)
+                    RequireOwner(id, userId, existing.UserId);
+            }
+
+            await WriteAtomicLockedAsync(path, record, ct);
+        }
+        finally
+        {
+            _lock.Release();
+        }
 
         _logger.LogDebug("Created conversation {ConversationId} for user {UserId}.", id, userId);
         return record;
     }
 
     /// <inheritdoc/>
-    public async Task AppendMessageAsync(string conversationId, ConversationMessage message, CancellationToken ct = default)
+    public async Task AppendMessageAsync(string conversationId, string callerId, ConversationMessage message, CancellationToken ct = default)
     {
+        ConversationOwnership.RequireCallerId(callerId);
+
         var path = ResolveAndValidatePath(conversationId);
 
         await _lock.WaitAsync(ct);
@@ -169,6 +202,8 @@ public sealed class FileSystemConversationStore : IConversationStore
             var json = await File.ReadAllTextAsync(path, ct);
             var existing = JsonSerializer.Deserialize<ConversationRecord>(json, ConversationJson.Options)
                 ?? throw new InvalidOperationException($"Conversation '{conversationId}' could not be deserialized.");
+
+            RequireOwner(conversationId, callerId, existing.UserId);
 
             // Message ids are client-supplied, so a replayed or double-submitted turn arrives with an
             // id the conversation already holds. Rejected rather than appended: a transcript with two
@@ -201,15 +236,51 @@ public sealed class FileSystemConversationStore : IConversationStore
     }
 
     /// <inheritdoc/>
-    public async Task DeleteAsync(string conversationId, CancellationToken ct = default)
+    public async Task<bool> DeleteAsync(string conversationId, string callerId, CancellationToken ct = default)
     {
+        ConversationOwnership.RequireCallerId(callerId);
+
         var path = ResolveAndValidatePath(conversationId);
 
         await _lock.WaitAsync(ct);
         try
         {
-            if (File.Exists(path))
-                File.Delete(path);
+            if (!File.Exists(path))
+                return false;
+
+            // Unlike the SQLite store, which puts the owner in the DELETE's WHERE clause, this one
+            // has to read the record to learn who owns it. Both reads happen under the same lock, so
+            // nothing can change hands in between; that is the property SQLite gets from the statement.
+            var json = await File.ReadAllTextAsync(path, ct);
+
+            // A record too corrupt to name an owner is deleted, as it was before ownership moved here.
+            // Refusing instead would make it permanently undeletable through the API, and would buy
+            // nothing: corrupting the file first requires write access to the directory, and anyone
+            // holding that can delete it outright without asking this store.
+            //
+            // The catch is what makes that true rather than merely intended. Deserialize returns null
+            // only for the JSON literal `null`; the corruption that actually happens — truncated or
+            // malformed text — throws, and an uncaught throw here produces exactly the undeletable
+            // record this paragraph rules out. ListAsync already treats a bad file as an expected
+            // condition, so the store agrees elsewhere that these occur.
+            ConversationRecord? existing;
+            try
+            {
+                existing = JsonSerializer.Deserialize<ConversationRecord>(json, ConversationJson.Options);
+            }
+            catch (JsonException ex)
+            {
+                _logger.LogWarning(ex,
+                    "Conversation {ConversationId} could not be deserialized; deleting it unverified.",
+                    conversationId);
+                existing = null;
+            }
+
+            if (existing is not null)
+                RequireOwner(conversationId, callerId, existing.UserId);
+
+            File.Delete(path);
+            return true;
         }
         finally
         {
@@ -220,9 +291,12 @@ public sealed class FileSystemConversationStore : IConversationStore
     /// <inheritdoc/>
     public async Task<ConversationRecord?> TruncateFromMessageAsync(
         string conversationId,
+        string callerId,
         Guid messageId,
         CancellationToken ct = default)
     {
+        ConversationOwnership.RequireCallerId(callerId);
+
         var path = ResolveAndValidatePath(conversationId);
 
         await _lock.WaitAsync(ct);
@@ -234,6 +308,8 @@ public sealed class FileSystemConversationStore : IConversationStore
             var json = await File.ReadAllTextAsync(path, ct);
             var existing = JsonSerializer.Deserialize<ConversationRecord>(json, ConversationJson.Options);
             if (existing is null) return null;
+
+            RequireOwner(conversationId, callerId, existing.UserId);
 
             var idx = IndexOfMessage(existing.Messages, messageId);
             if (idx < 0) return existing;
@@ -256,9 +332,12 @@ public sealed class FileSystemConversationStore : IConversationStore
     /// <inheritdoc/>
     public async Task<ConversationRecord?> UpdateSettingsAsync(
         string conversationId,
+        string callerId,
         ConversationSettings settings,
         CancellationToken ct = default)
     {
+        ConversationOwnership.RequireCallerId(callerId);
+
         var path = ResolveAndValidatePath(conversationId);
 
         await _lock.WaitAsync(ct);
@@ -270,6 +349,8 @@ public sealed class FileSystemConversationStore : IConversationStore
             var json = await File.ReadAllTextAsync(path, ct);
             var existing = JsonSerializer.Deserialize<ConversationRecord>(json, ConversationJson.Options);
             if (existing is null) return null;
+
+            RequireOwner(conversationId, callerId, existing.UserId);
 
             var updated = existing with
             {
@@ -289,10 +370,13 @@ public sealed class FileSystemConversationStore : IConversationStore
     /// <inheritdoc/>
     public async Task<ConversationRecord?> UpdateTelemetryAsync(
         string conversationId,
+        string callerId,
         Guid observabilitySessionId,
         TelemetryAccumulator telemetry,
         CancellationToken ct = default)
     {
+        ConversationOwnership.RequireCallerId(callerId);
+
         var path = ResolveAndValidatePath(conversationId);
 
         await _lock.WaitAsync(ct);
@@ -304,6 +388,8 @@ public sealed class FileSystemConversationStore : IConversationStore
             var json = await File.ReadAllTextAsync(path, ct);
             var existing = JsonSerializer.Deserialize<ConversationRecord>(json, ConversationJson.Options);
             if (existing is null) return null;
+
+            RequireOwner(conversationId, callerId, existing.UserId);
 
             var updated = existing with
             {
@@ -324,10 +410,12 @@ public sealed class FileSystemConversationStore : IConversationStore
     /// <inheritdoc/>
     public async Task<IReadOnlyList<ConversationMessage>?> GetHistoryForDispatch(
         string conversationId,
+        string callerId,
         int maxMessages,
         CancellationToken ct = default)
     {
-        var record = await GetAsync(conversationId, ct);
+        // Ownership is enforced by the read itself — no separate check to keep in step with GetAsync's.
+        var record = await GetAsync(conversationId, callerId, ct);
         if (record is null)
             return null;
 
@@ -386,22 +474,9 @@ public sealed class FileSystemConversationStore : IConversationStore
         return fullPath;
     }
 
-    /// <summary>
-    /// Writes <paramref name="record"/> atomically (tmp → move) while holding <see cref="_lock"/>.
-    /// Call this only from <see cref="CreateAsync"/> where the lock is not yet held.
-    /// </summary>
-    private async Task WriteAtomicAsync(string targetPath, ConversationRecord record, CancellationToken ct)
-    {
-        await _lock.WaitAsync(ct);
-        try
-        {
-            await WriteAtomicLockedAsync(targetPath, record, ct);
-        }
-        finally
-        {
-            _lock.Release();
-        }
-    }
+    /// <summary>Applies the shared ownership rule. See <see cref="ConversationOwnership"/>.</summary>
+    private void RequireOwner(string conversationId, string callerId, string ownerId) =>
+        ConversationOwnership.RequireOwner(_logger, conversationId, callerId, ownerId);
 
     /// <summary>
     /// Writes <paramref name="record"/> atomically (tmp → move). Must be called while the
@@ -422,6 +497,9 @@ public sealed class FileSystemConversationStore : IConversationStore
                 File.Move(tmpPath, targetPath, overwrite: true);
                 return;
             }
+            // Only File.Move sits inside this try. That boundary is load-bearing now that an
+            // ownership refusal is also an UnauthorizedAccessException: widening the try to cover an
+            // ownership check would retry a denial three times and then rethrow it as a file error.
             catch (UnauthorizedAccessException) when (attempt < 2)
             {
                 await Task.Delay(50 * (attempt + 1), ct);

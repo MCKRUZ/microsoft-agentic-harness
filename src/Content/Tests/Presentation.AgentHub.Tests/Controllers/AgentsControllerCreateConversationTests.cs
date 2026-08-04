@@ -68,7 +68,7 @@ public sealed class AgentsControllerCreateConversationTests : IClassFixture<Test
         body!.AgentName.Should().Be("dashboard-agent");
         body.ThreadId.Should().NotBeNullOrWhiteSpace();
 
-        var stored = await _store.GetAsync(body.ThreadId);
+        var stored = await _store.GetAsync(body.ThreadId, userId);
         stored.Should().NotBeNull();
         stored!.UserId.Should().Be(userId, "the conversation must be owned by the caller");
         stored.AgentName.Should().Be("dashboard-agent");

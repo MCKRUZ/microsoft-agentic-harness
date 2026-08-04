@@ -37,7 +37,7 @@ public sealed class AgUiClientToolBridgeTests
     public async Task InvokeAsync_EmitsToolCallSequence_BlocksUntilCompleted_ThenReturnsResult()
     {
         var writer = new CapturingEventWriter();
-        var accessor = new AgUiEventWriterAccessor { Writer = writer, ThreadId = "thread-1" };
+        var accessor = new AgUiEventWriterAccessor { Writer = writer, ThreadId = "thread-1", CallerId = "user-1" };
         var registry = new PendingToolCallRegistry();
         var bridge = Bridge(accessor, registry);
 
@@ -87,7 +87,10 @@ public sealed class AgUiClientToolBridgeTests
     [Fact]
     public async Task InvokeAsync_WidgetTool_PersistsWidgetMessage()
     {
-        var accessor = new AgUiEventWriterAccessor { Writer = new CapturingEventWriter(), ThreadId = "thread-w" };
+        var accessor = new AgUiEventWriterAccessor
+        {
+            Writer = new CapturingEventWriter(), ThreadId = "thread-w", CallerId = "user-w",
+        };
         var registry = new PendingToolCallRegistry();
         var store = new RecordingConversationStore();
         var bridge = Bridge(accessor, registry, store);
@@ -105,8 +108,11 @@ public sealed class AgUiClientToolBridgeTests
         await invokeTask.WaitAsync(TimeSpan.FromSeconds(5));
 
         store.Appended.Should().HaveCount(1);
-        var (conversationId, message) = store.Appended[0];
+        var (conversationId, callerId, message) = store.Appended[0];
         conversationId.Should().Be("thread-w");
+        callerId.Should().Be("user-w",
+            "the widget is written as the caller who started the run, not unattributed — the store " +
+            "refuses a write it cannot attribute, so an omitted identity would be a runtime failure");
         message.Role.Should().Be(MessageRole.Assistant);
         message.Content.Should().BeEmpty("the widget message renders as the widget only, matching the live message");
         message.Widget.Should().NotBeNull();
@@ -117,7 +123,7 @@ public sealed class AgUiClientToolBridgeTests
     [Fact]
     public async Task InvokeAsync_WidgetTool_TimesOut_DoesNotPersist()
     {
-        var accessor = new AgUiEventWriterAccessor { Writer = new CapturingEventWriter(), ThreadId = "thread-t" };
+        var accessor = new AgUiEventWriterAccessor { Writer = new CapturingEventWriter(), ThreadId = "thread-t", CallerId = "user-t" };
         var registry = new PendingToolCallRegistry();
         var store = new RecordingConversationStore();
         var bridge = Bridge(accessor, registry, store, timeoutSeconds: 1);
@@ -133,7 +139,7 @@ public sealed class AgUiClientToolBridgeTests
     [Fact]
     public async Task InvokeAsync_NonWidgetTool_DoesNotPersist()
     {
-        var accessor = new AgUiEventWriterAccessor { Writer = new CapturingEventWriter(), ThreadId = "thread-n" };
+        var accessor = new AgUiEventWriterAccessor { Writer = new CapturingEventWriter(), ThreadId = "thread-n", CallerId = "user-n" };
         var registry = new PendingToolCallRegistry();
         var store = new RecordingConversationStore();
         var bridge = Bridge(accessor, registry, store);
@@ -171,30 +177,36 @@ public sealed class AgUiClientToolBridgeTests
     /// <summary>An <see cref="IConversationStore"/> that records appended messages; other members are unused.</summary>
     private sealed class RecordingConversationStore : IConversationStore
     {
-        private readonly List<(string ConversationId, ConversationMessage Message)> _appended = [];
-        public IReadOnlyList<(string ConversationId, ConversationMessage Message)> Appended => _appended;
+        private readonly List<(string ConversationId, string CallerId, ConversationMessage Message)> _appended = [];
 
-        public Task AppendMessageAsync(string conversationId, ConversationMessage message, CancellationToken ct = default)
+        /// <summary>
+        /// What was appended, including the caller each append was attributed to — the bridge runs
+        /// several frames below the request, so which identity reaches the store is the thing worth
+        /// recording here.
+        /// </summary>
+        public IReadOnlyList<(string ConversationId, string CallerId, ConversationMessage Message)> Appended => _appended;
+
+        public Task AppendMessageAsync(string conversationId, string callerId, ConversationMessage message, CancellationToken ct = default)
         {
-            _appended.Add((conversationId, message));
+            _appended.Add((conversationId, callerId, message));
             return Task.CompletedTask;
         }
 
-        public Task<ConversationRecord?> GetAsync(string conversationId, CancellationToken ct = default) =>
+        public Task<ConversationRecord?> GetAsync(string conversationId, string callerId, CancellationToken ct = default) =>
             throw new NotSupportedException();
         public Task<IReadOnlyList<ConversationRecord>> ListAsync(string userId, CancellationToken ct = default) =>
             throw new NotSupportedException();
         public Task<ConversationRecord> CreateAsync(string agentName, string userId, string? conversationId = null, CancellationToken ct = default) =>
             throw new NotSupportedException();
-        public Task DeleteAsync(string conversationId, CancellationToken ct = default) =>
+        public Task<bool> DeleteAsync(string conversationId, string callerId, CancellationToken ct = default) =>
             throw new NotSupportedException();
-        public Task<IReadOnlyList<ConversationMessage>?> GetHistoryForDispatch(string conversationId, int maxMessages, CancellationToken ct = default) =>
+        public Task<IReadOnlyList<ConversationMessage>?> GetHistoryForDispatch(string conversationId, string callerId, int maxMessages, CancellationToken ct = default) =>
             throw new NotSupportedException();
-        public Task<ConversationRecord?> TruncateFromMessageAsync(string conversationId, Guid messageId, CancellationToken ct = default) =>
+        public Task<ConversationRecord?> TruncateFromMessageAsync(string conversationId, string callerId, Guid messageId, CancellationToken ct = default) =>
             throw new NotSupportedException();
-        public Task<ConversationRecord?> UpdateSettingsAsync(string conversationId, ConversationSettings settings, CancellationToken ct = default) =>
+        public Task<ConversationRecord?> UpdateSettingsAsync(string conversationId, string callerId, ConversationSettings settings, CancellationToken ct = default) =>
             throw new NotSupportedException();
-        public Task<ConversationRecord?> UpdateTelemetryAsync(string conversationId, Guid observabilitySessionId, TelemetryAccumulator telemetry, CancellationToken ct = default) =>
+        public Task<ConversationRecord?> UpdateTelemetryAsync(string conversationId, string callerId, Guid observabilitySessionId, TelemetryAccumulator telemetry, CancellationToken ct = default) =>
             throw new NotSupportedException();
     }
 }
