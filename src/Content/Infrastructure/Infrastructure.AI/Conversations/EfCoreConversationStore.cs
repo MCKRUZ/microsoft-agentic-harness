@@ -215,11 +215,17 @@ public sealed class EfCoreConversationStore : IConversationStore
     /// True when <paramref name="ex"/> is the unique-index violation on
     /// <c>(ConversationId, MessageId)</c> rather than any other write failure.
     /// </summary>
+    /// <remarks>
+    /// Matched on the <em>extended</em> result code. The primary code, <c>SQLITE_CONSTRAINT</c> (19),
+    /// covers every constraint there is — a NOT NULL or foreign-key violation raises it too, and
+    /// would then be reported to the caller as a duplicate message id: a misleading diagnosis of a
+    /// failure that has nothing to do with one.
+    /// </remarks>
     private static bool IsDuplicateMessageId(DbUpdateException ex) =>
-        ex.InnerException is SqliteException { SqliteErrorCode: SqliteUniqueConstraintErrorCode };
+        ex.InnerException is SqliteException { SqliteExtendedErrorCode: SqliteConstraintUnique };
 
-    /// <summary>SQLite's <c>SQLITE_CONSTRAINT</c> result code.</summary>
-    private const int SqliteUniqueConstraintErrorCode = 19;
+    /// <summary>SQLite's <c>SQLITE_CONSTRAINT_UNIQUE</c> extended result code.</summary>
+    private const int SqliteConstraintUnique = 2067;
 
     /// <inheritdoc/>
     public async Task DeleteAsync(string conversationId, CancellationToken ct = default)
