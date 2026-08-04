@@ -3,6 +3,7 @@ using Application.AI.Common.Interfaces.AI;
 using Application.AI.Common.Models.Conversations;
 using Infrastructure.AI.Persistence;
 using Infrastructure.AI.Persistence.Entities;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 
@@ -193,9 +194,32 @@ public sealed class EfCoreConversationStore : IConversationStore
 
         context.ConversationMessages.Add(ConversationEntityMapper.ToEntity(conversationId, message));
 
-        await context.SaveChangesAsync(ct);
+        try
+        {
+            await context.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateException ex) when (IsDuplicateMessageId(ex))
+        {
+            // Message ids are client-supplied, so a replayed or double-submitted turn arrives with an
+            // id the conversation already holds. The unique index has to reject it — truncation
+            // resolves an id to a cut point, and two rows sharing one id makes that cut arbitrary —
+            // but the caller is owed a defined failure rather than whatever the provider threw.
+            throw new InvalidOperationException(
+                $"Message '{message.Id}' already exists in conversation '{conversationId}'.", ex);
+        }
+
         await transaction.CommitAsync(ct);
     }
+
+    /// <summary>
+    /// True when <paramref name="ex"/> is the unique-index violation on
+    /// <c>(ConversationId, MessageId)</c> rather than any other write failure.
+    /// </summary>
+    private static bool IsDuplicateMessageId(DbUpdateException ex) =>
+        ex.InnerException is SqliteException { SqliteErrorCode: SqliteUniqueConstraintErrorCode };
+
+    /// <summary>SQLite's <c>SQLITE_CONSTRAINT</c> result code.</summary>
+    private const int SqliteUniqueConstraintErrorCode = 19;
 
     /// <inheritdoc/>
     public async Task DeleteAsync(string conversationId, CancellationToken ct = default)

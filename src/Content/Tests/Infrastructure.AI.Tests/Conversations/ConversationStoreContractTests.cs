@@ -215,6 +215,39 @@ public abstract class ConversationStoreContractTests
     }
 
     [Fact]
+    public async Task AppendMessage_DuplicateMessageId_ThrowsAndLeavesTheTranscriptIntact()
+    {
+        // Message ids come from the client, so a double-submitted or replayed turn arrives carrying
+        // an id already in the transcript. Both stores must refuse it the same way: two rows sharing
+        // one id make a retry's cut point arbitrary, because truncation resolves an id to one match.
+        // Refusing must also be a defined failure, not whichever exception the storage engine threw.
+        var record = await Store.CreateAsync("agent", "user1");
+        var message = UserMessage("first submit");
+        await Store.AppendMessageAsync(record.Id, message);
+
+        var act = () => Store.AppendMessageAsync(record.Id, message);
+
+        await act.Should().ThrowAsync<InvalidOperationException>();
+        (await Store.GetAsync(record.Id))!.Messages.Should().ContainSingle(
+            "a rejected append must not half-apply");
+    }
+
+    [Fact]
+    public async Task AppendMessage_SameIdInADifferentConversation_IsAllowed()
+    {
+        // The id only has to be unique within one conversation. Rejecting it globally would make two
+        // unrelated transcripts able to collide.
+        var first = await Store.CreateAsync("agent", "user1");
+        var second = await Store.CreateAsync("agent", "user1");
+        var message = UserMessage("same id, different conversation");
+
+        await Store.AppendMessageAsync(first.Id, message);
+        var act = () => Store.AppendMessageAsync(second.Id, message);
+
+        await act.Should().NotThrowAsync();
+    }
+
+    [Fact]
     public async Task AppendMessage_WithEmptyMessageId_ReadsBackAStableNonEmptyId()
     {
         // Clients may append without supplying an id. Whichever store is live, the message has to

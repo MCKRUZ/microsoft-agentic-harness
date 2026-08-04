@@ -170,6 +170,16 @@ public sealed class FileSystemConversationStore : IConversationStore
             var existing = JsonSerializer.Deserialize<ConversationRecord>(json, ConversationJson.Options)
                 ?? throw new InvalidOperationException($"Conversation '{conversationId}' could not be deserialized.");
 
+            // Message ids are client-supplied, so a replayed or double-submitted turn arrives with an
+            // id the conversation already holds. Rejected rather than appended: a transcript with two
+            // rows sharing one id makes a retry's cut point arbitrary, since truncation resolves an id
+            // to the first match. The SQLite store gets the same rejection from a unique index.
+            if (message.Id != Guid.Empty && existing.Messages.Any(m => m.Id == message.Id))
+            {
+                throw new InvalidOperationException(
+                    $"Message '{message.Id}' already exists in conversation '{conversationId}'.");
+            }
+
             var derivedTitle = existing.Title
                 ?? (message.Role == MessageRole.User
                     ? ConversationRecordTitleDerivation.Derive(message.Content)

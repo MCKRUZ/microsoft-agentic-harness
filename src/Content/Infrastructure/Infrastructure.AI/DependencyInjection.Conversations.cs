@@ -89,6 +89,17 @@ public static partial class DependencyInjection
     /// </remarks>
     private static void RegisterConversationDbContext(IServiceCollection services, ConversationsConfig config)
     {
+        // Checked before combining. A blank value combines to the base directory itself, whose parent
+        // is a perfectly good directory name — so the root guard below would pass it through and
+        // SQLite would be handed a directory as its DataSource, failing at first use instead of here.
+        if (string.IsNullOrWhiteSpace(config.DatabasePath))
+        {
+            throw new ArgumentException(
+                "AppConfig:AI:Conversations:DatabasePath must be set when the Sqlite provider is "
+                + "selected.",
+                nameof(config));
+        }
+
         var databasePath = Path.Combine(AppContext.BaseDirectory, config.DatabasePath);
 
         // Deliberately NOT containment-checked the way GovernanceStatePaths checks the

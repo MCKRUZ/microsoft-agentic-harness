@@ -12,8 +12,9 @@ namespace Application.AI.Common.Interfaces.AI;
 /// <para>
 /// Conversation ids are caller-supplied, and an implementation may impose its own constraints on
 /// them — the file-backed store makes each id a file name and rejects any that escapes its base
-/// directory, while the SQLite store bounds their length. Callers should treat an id as an opaque
-/// token they generated, not as arbitrary text, and must not rely on a particular rejection.
+/// directory, whereas the SQLite store accepts whatever it is given (its declared column length is
+/// not enforced by SQLite). Callers should treat an id as an opaque token they generated, not as
+/// arbitrary text, and must not rely on a particular rejection.
 /// </para>
 /// <para>
 /// <c>CreateAsync</c> with an id that already exists <strong>replaces</strong> that conversation,
@@ -40,6 +41,18 @@ public interface IConversationStore
     Task<ConversationRecord> CreateAsync(string agentName, string userId, string? conversationId = null, CancellationToken ct = default);
 
     /// <summary>Appends <paramref name="message"/> to an existing conversation record.</summary>
+    /// <param name="conversationId">The conversation to append to.</param>
+    /// <param name="message">
+    /// The message. Its id must not already be present in this conversation — ids are client-supplied,
+    /// and a replayed submit would otherwise leave two rows sharing one id, which makes a later
+    /// truncation's cut point arbitrary. The same id in a <em>different</em> conversation is fine.
+    /// An empty id is assigned one.
+    /// </param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <exception cref="InvalidOperationException">
+    /// The conversation does not exist, or it already holds a message with this id. Nothing is
+    /// written in either case.
+    /// </exception>
     Task AppendMessageAsync(string conversationId, ConversationMessage message, CancellationToken ct = default);
 
     /// <summary>Permanently deletes a conversation record.</summary>
