@@ -1,6 +1,6 @@
 using System.Text.Json;
 using Application.AI.Common.Interfaces.AI;
-using Application.Common.Exceptions.ExceptionTypes;
+using Application.AI.Common.Services;
 using Application.AI.Common.Models.Conversations;
 using Infrastructure.AI.Persistence;
 using Infrastructure.AI.Persistence.Entities;
@@ -90,8 +90,7 @@ public sealed class EfCoreConversationStore : IConversationStore
         // A read has to load the row before it can compare owners, so unlike the mutations there is
         // nothing to fold into a WHERE clause here — filtering by owner would only lose the
         // information needed to answer "forbidden" rather than "not found".
-        if (entity.UserId != callerId)
-            throw Denied(conversationId, callerId, entity.UserId);
+        RequireOwner(conversationId, callerId, entity.UserId);
 
         var messages = await LoadMessagesAsync(context, conversationId, ct);
         return ConversationEntityMapper.ToRecord(entity, messages);
@@ -149,16 +148,15 @@ public sealed class EfCoreConversationStore : IConversationStore
 
         // Replace semantics, matching the file-backed store, where writing the record's file
         // overwrites whatever was there — which makes this the one create path capable of destroying
-        // a transcript, and so the one that must not cross an ownership boundary. Inside the
-        // transaction, so the owner that was checked is the owner that gets replaced.
-        var existingOwner = await context.Conversations
-            .AsNoTracking()
-            .Where(c => c.Id == id)
-            .Select(c => c.UserId)
-            .FirstOrDefaultAsync(ct);
-
-        if (existingOwner is not null && existingOwner != userId)
-            throw Denied(id, userId, existingOwner);
+        // a transcript, and so the one that must not cross an ownership boundary.
+        //
+        // Read inside the transaction, but note what that does and does not buy: SQLite's default
+        // isolation does not hold a write lock from this read, so two creates racing on the same
+        // caller-supplied id could both see it absent. What prevents a crossed boundary in that race
+        // is that the loser's write blocks and fails rather than interleaving — not this read. The
+        // file-backed store closes the window properly, with one lock spanning check and write; the
+        // conditional-UPDATE claim arriving with the turn lease is the durable fix here.
+        await ThrowIfOwnedByAnotherAsync(context, id, userId, ct);
 
         // The cascade takes the messages with it.
         await context.Conversations
@@ -302,8 +300,7 @@ public sealed class EfCoreConversationStore : IConversationStore
         if (entity is null)
             return null;
 
-        if (entity.UserId != callerId)
-            throw Denied(conversationId, callerId, entity.UserId);
+        RequireOwner(conversationId, callerId, entity.UserId);
 
         var cutoff = await context.ConversationMessages
             .Where(m => m.ConversationId == conversationId && m.MessageId == messageId)
@@ -396,19 +393,14 @@ public sealed class EfCoreConversationStore : IConversationStore
 
         await using var context = await _contextFactory.CreateDbContextAsync(ct);
 
-        // Selecting the owner rather than asking whether the row exists: the same single query now
+        // Reading the owner rather than asking whether the row exists: the same single query now
         // answers both questions, so enforcing ownership here costs nothing on the dispatch path.
-        var owner = await context.Conversations
-            .AsNoTracking()
-            .Where(c => c.Id == conversationId)
-            .Select(c => c.UserId)
-            .FirstOrDefaultAsync(ct);
+        var owner = await LoadOwnerAsync(context, conversationId, ct);
 
         if (owner is null)
             return null;
 
-        if (owner != callerId)
-            throw Denied(conversationId, callerId, owner);
+        RequireOwner(conversationId, callerId, owner);
 
         // Empty-content messages are excluded before the window is applied: an inline-widget message
         // carries its payload in the widget spec, not in text, so it is not model-relevant. Filtering
@@ -490,21 +482,36 @@ public sealed class EfCoreConversationStore : IConversationStore
         string callerId,
         CancellationToken ct)
     {
-        var owner = await context.Conversations
+        var owner = await LoadOwnerAsync(context, conversationId, ct);
+
+        // A row that is present and ours, having matched nothing a moment ago, means it changed
+        // underneath this operation. Absent is the honest answer: it is no longer what was written to.
+        if (owner is not null)
+            RequireOwner(conversationId, callerId, owner);
+    }
+
+    /// <summary>
+    /// Returns the owner of <paramref name="conversationId"/>, or <c>null</c> if no such conversation
+    /// exists.
+    /// </summary>
+    /// <remarks>
+    /// One projection rather than three near-identical ones, so the question "who owns this?" is
+    /// asked the same way everywhere it is asked — and so a change to how ownership is stored has one
+    /// place to land rather than three that must be spotted.
+    /// </remarks>
+    private static Task<string?> LoadOwnerAsync(
+        ConversationDbContext context,
+        string conversationId,
+        CancellationToken ct) =>
+        context.Conversations
             .AsNoTracking()
             .Where(c => c.Id == conversationId)
             .Select(c => c.UserId)
             .FirstOrDefaultAsync(ct);
 
-        // A row that is present and ours, having matched nothing a moment ago, means it changed
-        // underneath this operation. Absent is the honest answer: it is no longer what was written to.
-        if (owner is not null && owner != callerId)
-            throw Denied(conversationId, callerId, owner);
-    }
-
-    /// <summary>Logs the attempt and builds the refusal. See <see cref="ConversationOwnership"/>.</summary>
-    private ConversationAccessDeniedException Denied(string conversationId, string callerId, string ownerId) =>
-        ConversationOwnership.Denied(_logger, conversationId, callerId, ownerId);
+    /// <summary>Applies the shared ownership rule. See <see cref="ConversationOwnership"/>.</summary>
+    private void RequireOwner(string conversationId, string callerId, string ownerId) =>
+        ConversationOwnership.RequireOwner(_logger, conversationId, callerId, ownerId);
 
     private static async Task<List<ConversationMessage>> LoadMessagesAsync(
         ConversationDbContext context,

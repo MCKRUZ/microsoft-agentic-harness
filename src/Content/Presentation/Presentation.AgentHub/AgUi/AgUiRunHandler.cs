@@ -102,9 +102,8 @@ public sealed class AgUiRunHandler
         // like a fault. The store has already logged the caller, thread, and real owner.
         catch (ConversationAccessDeniedException)
         {
-            _logger.LogWarning(
-                "AG-UI run {RunId}: caller {CallerId} refused access to conversation {ThreadId}.",
-                input.RunId, callerId, input.ThreadId);
+            // Not logged again here: the store already recorded the caller, the conversation, and its
+            // real owner. A second line adds no fact and doubles every refusal in the audit trail.
             await writer.WriteAsync(new RunErrorEvent("Access denied."), ct);
             return;
         }

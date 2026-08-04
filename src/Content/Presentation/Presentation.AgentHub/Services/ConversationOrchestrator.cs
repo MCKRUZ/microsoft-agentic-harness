@@ -64,7 +64,12 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
     public async Task<(ConversationRecord Record, IReadOnlyList<ConversationMessage> History)> StartConversationAsync(
         string sessionKey, string agentName, string? conversationId, string callerId, CancellationToken ct)
     {
-        var existing = await LoadOwnedConversationAsync(conversationId, callerId, ct);
+        // The only entry point that may arrive without an id — "start me a fresh conversation". Every
+        // other one takes a non-null id and reads through the store directly, which is where the
+        // ownership refusal now comes from.
+        var existing = string.IsNullOrWhiteSpace(conversationId)
+            ? null
+            : await _conversationStore.GetAsync(conversationId, callerId, ct);
 
         ConversationRecord record;
         if (existing is null)
@@ -110,7 +115,7 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
         string sessionKey, string conversationId, Guid userMessageId, string message, string callerId,
         Func<string, CancellationToken, Task>? onChunk, CancellationToken ct)
     {
-        var record = await LoadOwnedConversationAsync(conversationId, callerId, ct)
+        var record = await _conversationStore.GetAsync(conversationId, callerId, ct)
             ?? throw new InvalidOperationException("Conversation not found.");
 
         var semaphore = _lockRegistry.GetOrCreate(conversationId);
@@ -135,7 +140,7 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
         string sessionKey, string conversationId, Guid assistantMessageId, string callerId,
         Func<string, CancellationToken, Task>? onChunk, CancellationToken ct)
     {
-        var record = await LoadOwnedConversationAsync(conversationId, callerId, ct)
+        var record = await _conversationStore.GetAsync(conversationId, callerId, ct)
             ?? throw new InvalidOperationException("Conversation not found.");
 
         var semaphore = _lockRegistry.GetOrCreate(conversationId);
@@ -166,7 +171,7 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
         string newContent, string callerId,
         Func<string, CancellationToken, Task>? onChunk, CancellationToken ct)
     {
-        var record = await LoadOwnedConversationAsync(conversationId, callerId, ct)
+        var record = await _conversationStore.GetAsync(conversationId, callerId, ct)
             ?? throw new InvalidOperationException("Conversation not found.");
 
         var semaphore = _lockRegistry.GetOrCreate(conversationId);
@@ -195,7 +200,7 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
     /// <inheritdoc />
     public async Task ValidateAccessAsync(string conversationId, string callerId, CancellationToken ct)
     {
-        var record = await LoadOwnedConversationAsync(conversationId, callerId, ct);
+        var record = await _conversationStore.GetAsync(conversationId, callerId, ct);
         if (record is null)
             throw new InvalidOperationException("Conversation not found.");
     }
@@ -492,21 +497,6 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
             BudgetExhausted = true,
         };
     }
-
-    /// <summary>
-    /// Loads a conversation the caller owns, or <c>null</c> when there is no id to load — the
-    /// "starting fresh" case, which only <see cref="StartConversationAsync"/> has.
-    /// </summary>
-    /// <remarks>
-    /// This used to compare <c>record.UserId</c> against the caller and throw. That check now lives
-    /// in <see cref="IConversationStore"/>, where every entry point gets it rather than only the ones
-    /// that remembered to ask — so all that is left here is the absent-id shortcut.
-    /// </remarks>
-    private Task<ConversationRecord?> LoadOwnedConversationAsync(
-        string? conversationId, string callerId, CancellationToken ct) =>
-        string.IsNullOrWhiteSpace(conversationId)
-            ? Task.FromResult<ConversationRecord?>(null)
-            : _conversationStore.GetAsync(conversationId, callerId, ct);
 
     private static IReadOnlyList<ChatMessage> ToMeaiHistory(IReadOnlyList<ConversationMessage> messages) =>
         messages.Select(m => new ChatMessage(ToChatRole(m.Role), m.Content)).ToList();

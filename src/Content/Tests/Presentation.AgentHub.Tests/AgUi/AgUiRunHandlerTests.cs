@@ -273,7 +273,10 @@ public sealed class AgUiRunHandlerTests
             MakeInput(threadId, "Hi"), new AgUiEventWriter(ms), MakeSubOnlyUser("someone-else"));
 
         var frames = ParseSseFrames(ms);
-        frames.Should().Contain(f => EventType(f) == AgUiEventType.RunError);
+        // The message, not merely the presence of an error. This stream reports refusals and faults
+        // through the same event, so asserting only "a RunError happened" would still pass if the
+        // refusal fell through to the generic handler and reached the client as "an error occurred".
+        RunErrorMessage(frames).Should().Be("Access denied.");
         frames.Should().NotContain(f => EventType(f) == AgUiEventType.RunFinished);
         mediator.Verify(
             m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()), Times.Never);
@@ -299,7 +302,8 @@ public sealed class AgUiRunHandlerTests
         await handler.HandleRunAsync(input, writer, intruder);
 
         var frames = ParseSseFrames(ms);
-        frames.Should().Contain(f => EventType(f) == AgUiEventType.RunError);
+        RunErrorMessage(frames).Should().Be("Access denied.",
+            "a refusal must reach the client as a refusal, not as a generic failure");
         frames.Should().NotContain(f => EventType(f) == AgUiEventType.RunFinished);
 
         mediator.Verify(m => m.Send(It.IsAny<IRequest<AgentTurnResult>>(), It.IsAny<CancellationToken>()), Times.Never);

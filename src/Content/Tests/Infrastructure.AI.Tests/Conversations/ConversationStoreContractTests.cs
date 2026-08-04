@@ -183,20 +183,30 @@ public abstract class ConversationStoreContractTests
         // be an error at the boundary, never a value that flows on and widens access.
         var record = await Store.CreateAsync("agent", Owner);
 
-        await Assert.ThrowsAsync<ArgumentException>(() => Store.GetAsync(record.Id, blank));
-        await Assert.ThrowsAsync<ArgumentException>(() => Store.ListAsync(blank));
-        await Assert.ThrowsAsync<ArgumentException>(() => Store.CreateAsync("agent", blank));
-        await Assert.ThrowsAsync<ArgumentException>(
-            () => Store.AppendMessageAsync(record.Id, blank, UserMessage("x")));
-        await Assert.ThrowsAsync<ArgumentException>(() => Store.DeleteAsync(record.Id, blank));
-        await Assert.ThrowsAsync<ArgumentException>(
-            () => Store.TruncateFromMessageAsync(record.Id, blank, Guid.NewGuid()));
-        await Assert.ThrowsAsync<ArgumentException>(
-            () => Store.UpdateSettingsAsync(record.Id, blank, new ConversationSettings(null, null, null)));
-        await Assert.ThrowsAsync<ArgumentException>(
-            () => Store.UpdateTelemetryAsync(record.Id, blank, Guid.NewGuid(), TelemetryAccumulator.Zero));
-        await Assert.ThrowsAsync<ArgumentException>(
-            () => Store.GetHistoryForDispatch(record.Id, blank, 10));
+        // Named rather than a bare run of assertions: every operation has to hold the line, and when
+        // one does not the failure should say which. "Some call in here threw the wrong thing" is a
+        // poor message for the test guarding the codebase's most repeated security defect.
+        (string Name, Func<Task> Invoke)[] operations =
+        [
+            ("GetAsync", () => Store.GetAsync(record.Id, blank)),
+            ("ListAsync", () => Store.ListAsync(blank)),
+            ("CreateAsync", () => Store.CreateAsync("agent", blank)),
+            ("AppendMessageAsync", () => Store.AppendMessageAsync(record.Id, blank, UserMessage("x"))),
+            ("DeleteAsync", () => Store.DeleteAsync(record.Id, blank)),
+            ("TruncateFromMessageAsync", () => Store.TruncateFromMessageAsync(record.Id, blank, Guid.NewGuid())),
+            ("UpdateSettingsAsync",
+                () => Store.UpdateSettingsAsync(record.Id, blank, new ConversationSettings(null, null, null))),
+            ("UpdateTelemetryAsync",
+                () => Store.UpdateTelemetryAsync(record.Id, blank, Guid.NewGuid(), TelemetryAccumulator.Zero)),
+            ("GetHistoryForDispatch", () => Store.GetHistoryForDispatch(record.Id, blank, 10)),
+        ];
+
+        foreach (var (name, invoke) in operations)
+        {
+            var act = () => invoke();
+            await act.Should().ThrowAsync<ArgumentException>(
+                "{0} must reject a blank caller id rather than treat it as unscoped", name);
+        }
     }
 
     // -- Timestamps --

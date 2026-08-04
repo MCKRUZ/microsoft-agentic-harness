@@ -21,27 +21,16 @@ namespace Application.Common.Exceptions.ExceptionTypes;
 /// </remarks>
 public sealed class ConversationAccessDeniedException : UnauthorizedAccessException
 {
-    /// <summary>Creates the exception with the default caller-facing message.</summary>
+    /// <summary>Creates the refusal.</summary>
+    /// <remarks>
+    /// No message overload, deliberately. A refusal has exactly one thing it may say, because
+    /// anything more specific — naming the owner, confirming the conversation exists, explaining
+    /// which check failed — answers the question the caller was refused. Leaving the message
+    /// unconfigurable makes that a property of the type rather than a rule each throw site has to
+    /// keep.
+    /// </remarks>
     public ConversationAccessDeniedException()
         : base("Access denied.")
-    {
-    }
-
-    /// <summary>Creates the exception with a specific caller-facing message.</summary>
-    /// <param name="message">
-    /// The message shown to the caller. Must not name the owner or otherwise confirm what the
-    /// conversation is — that would answer the question the caller was refused.
-    /// </param>
-    public ConversationAccessDeniedException(string message)
-        : base(message)
-    {
-    }
-
-    /// <summary>Creates the exception wrapping an underlying cause.</summary>
-    /// <param name="message">The message shown to the caller.</param>
-    /// <param name="innerException">The underlying cause.</param>
-    public ConversationAccessDeniedException(string message, Exception innerException)
-        : base(message, innerException)
     {
     }
 }

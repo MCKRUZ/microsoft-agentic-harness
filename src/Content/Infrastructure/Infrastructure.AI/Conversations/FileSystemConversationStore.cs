@@ -1,6 +1,6 @@
 using System.Text.Json;
 using Application.AI.Common.Interfaces.AI;
-using Application.Common.Exceptions.ExceptionTypes;
+using Application.AI.Common.Services;
 using Application.AI.Common.Models.Conversations;
 using Domain.Common.Config.AI.Conversations;
 using Microsoft.Extensions.Logging;
@@ -79,8 +79,7 @@ public sealed class FileSystemConversationStore : IConversationStore
             var record = JsonSerializer.Deserialize<ConversationRecord>(json, ConversationJson.Options);
             if (record is null) return null;
 
-            if (record.UserId != callerId)
-                throw Denied(conversationId, callerId, record.UserId);
+            RequireOwner(conversationId, callerId, record.UserId);
 
             // Migrate legacy records whose messages predate the Id column by backfilling
             // a Guid per message and persisting the result. Subsequent loads will skip this path.
@@ -172,8 +171,8 @@ public sealed class FileSystemConversationStore : IConversationStore
             {
                 var existingJson = await File.ReadAllTextAsync(path, ct);
                 var existing = JsonSerializer.Deserialize<ConversationRecord>(existingJson, ConversationJson.Options);
-                if (existing is not null && existing.UserId != userId)
-                    throw Denied(id, userId, existing.UserId);
+                if (existing is not null)
+                    RequireOwner(id, userId, existing.UserId);
             }
 
             await WriteAtomicLockedAsync(path, record, ct);
@@ -204,8 +203,7 @@ public sealed class FileSystemConversationStore : IConversationStore
             var existing = JsonSerializer.Deserialize<ConversationRecord>(json, ConversationJson.Options)
                 ?? throw new InvalidOperationException($"Conversation '{conversationId}' could not be deserialized.");
 
-            if (existing.UserId != callerId)
-                throw Denied(conversationId, callerId, existing.UserId);
+            RequireOwner(conversationId, callerId, existing.UserId);
 
             // Message ids are client-supplied, so a replayed or double-submitted turn arrives with an
             // id the conversation already holds. Rejected rather than appended: a transcript with two
@@ -256,18 +254,12 @@ public sealed class FileSystemConversationStore : IConversationStore
             var json = await File.ReadAllTextAsync(path, ct);
             var existing = JsonSerializer.Deserialize<ConversationRecord>(json, ConversationJson.Options);
 
-            // An unreadable record cannot prove ownership, and deleting it would let a caller destroy
-            // whatever it is by corrupting it first. Left in place for an operator to deal with.
-            if (existing is null)
-            {
-                _logger.LogWarning(
-                    "Conversation {ConversationId} could not be deserialized; refusing to delete it unverified.",
-                    conversationId);
-                return false;
-            }
-
-            if (existing.UserId != callerId)
-                throw Denied(conversationId, callerId, existing.UserId);
+            // A record too corrupt to name an owner is deleted, as it was before ownership moved here.
+            // Refusing instead would make it permanently undeletable through the API, and would buy
+            // nothing: corrupting the file first requires write access to the directory, and anyone
+            // holding that can delete it outright without asking this store.
+            if (existing is not null)
+                RequireOwner(conversationId, callerId, existing.UserId);
 
             File.Delete(path);
             return true;
@@ -299,8 +291,7 @@ public sealed class FileSystemConversationStore : IConversationStore
             var existing = JsonSerializer.Deserialize<ConversationRecord>(json, ConversationJson.Options);
             if (existing is null) return null;
 
-            if (existing.UserId != callerId)
-                throw Denied(conversationId, callerId, existing.UserId);
+            RequireOwner(conversationId, callerId, existing.UserId);
 
             var idx = IndexOfMessage(existing.Messages, messageId);
             if (idx < 0) return existing;
@@ -341,8 +332,7 @@ public sealed class FileSystemConversationStore : IConversationStore
             var existing = JsonSerializer.Deserialize<ConversationRecord>(json, ConversationJson.Options);
             if (existing is null) return null;
 
-            if (existing.UserId != callerId)
-                throw Denied(conversationId, callerId, existing.UserId);
+            RequireOwner(conversationId, callerId, existing.UserId);
 
             var updated = existing with
             {
@@ -381,8 +371,7 @@ public sealed class FileSystemConversationStore : IConversationStore
             var existing = JsonSerializer.Deserialize<ConversationRecord>(json, ConversationJson.Options);
             if (existing is null) return null;
 
-            if (existing.UserId != callerId)
-                throw Denied(conversationId, callerId, existing.UserId);
+            RequireOwner(conversationId, callerId, existing.UserId);
 
             var updated = existing with
             {
@@ -467,9 +456,9 @@ public sealed class FileSystemConversationStore : IConversationStore
         return fullPath;
     }
 
-    /// <summary>Logs the attempt and builds the refusal. See <see cref="ConversationOwnership"/>.</summary>
-    private ConversationAccessDeniedException Denied(string conversationId, string callerId, string ownerId) =>
-        ConversationOwnership.Denied(_logger, conversationId, callerId, ownerId);
+    /// <summary>Applies the shared ownership rule. See <see cref="ConversationOwnership"/>.</summary>
+    private void RequireOwner(string conversationId, string callerId, string ownerId) =>
+        ConversationOwnership.RequireOwner(_logger, conversationId, callerId, ownerId);
 
     /// <summary>
     /// Writes <paramref name="record"/> atomically (tmp → move). Must be called while the

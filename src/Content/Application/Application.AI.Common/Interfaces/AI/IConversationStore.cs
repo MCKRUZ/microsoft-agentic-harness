@@ -22,6 +22,15 @@ namespace Application.AI.Common.Interfaces.AI;
 /// rather than a value that flows onward and widens access.
 /// </para>
 /// <para>
+/// <strong>A refusal throws rather than returning a <c>Result</c>,</strong> which is a deliberate
+/// departure from the house rule that expected failures — auth among them — are returned. Two
+/// reasons: this is a persistence port, not a CQRS command, and the callers it replaces already
+/// threw <see cref="UnauthorizedAccessException"/>, so returning instead would have left every
+/// transport translating a new shape while the old one still arrived from elsewhere. The cost is
+/// that a caller can forget to handle it; the mitigation is that forgetting fails closed, as an
+/// unhandled refusal, rather than open.
+/// </para>
+/// <para>
 /// The two failure modes stay distinguishable, because the HTTP surface distinguishes them: a
 /// conversation that does not exist reads as <c>null</c> (or a no-op), whereas one that exists but
 /// belongs to another user throws <see cref="UnauthorizedAccessException"/>. Callers that must not
@@ -49,6 +58,14 @@ public interface IConversationStore
     /// Returns all conversations owned by <paramref name="userId"/>.
     /// O(n) in the number of stored conversations — acceptable for POC scale.
     /// </summary>
+    /// <param name="userId">The caller, which is also the owner filter. Must be non-blank.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <remarks>
+    /// This is the one operation whose identity argument was always a scope rather than a check —
+    /// it lists what belongs to that user and nothing else. It is still rejected when blank, because
+    /// "list the conversations belonging to nobody in particular" has no safe reading.
+    /// </remarks>
+    /// <exception cref="ArgumentException"><paramref name="userId"/> is blank.</exception>
     Task<IReadOnlyList<ConversationRecord>> ListAsync(string userId, CancellationToken ct = default);
 
     /// <summary>
