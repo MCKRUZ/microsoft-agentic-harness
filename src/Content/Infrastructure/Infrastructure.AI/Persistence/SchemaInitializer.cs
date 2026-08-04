@@ -4,10 +4,10 @@ namespace Infrastructure.AI.Persistence;
 
 /// <summary>
 /// Singleton initializer that brings a SQLite subsystem's database up to date at construction time:
-/// it creates the database when absent, then adds any columns the model has gained since an existing
-/// one was created. Mirrors the <c>PromptUsageSchemaInitializer</c> /
-/// <c>EvalDashboardSchemaInitializer</c> pattern with a single generic base so each new SQLite
-/// subsystem doesn't re-implement the same few lines.
+/// it creates the database when absent, then adds any columns and indexes the model has gained since
+/// an existing one was created. One generic base serves every SQLite subsystem here — prompt usage,
+/// the eval dashboard, the planner, governance state and conversations — so none of them
+/// re-implements the same few lines.
 /// </summary>
 /// <typeparam name="TContext">The concrete DbContext type to initialize.</typeparam>
 /// <remarks>
@@ -41,13 +41,6 @@ public class SchemaInitializer<TContext> where TContext : DbContext
         ArgumentNullException.ThrowIfNull(contextFactory);
         using var context = contextFactory.CreateDbContext();
         context.Database.EnsureCreated();
-        AddedColumns = SqliteAdditiveSchemaReconciler.Reconcile(context);
+        SqliteAdditiveSchemaReconciler.Reconcile(context);
     }
-
-    /// <summary>
-    /// Columns added to bring an existing database up to the current model, qualified as
-    /// <c>table.column</c>. Empty when the database was created fresh or already matched.
-    /// Exposed for diagnostics and tests; not part of the initialization contract.
-    /// </summary>
-    public IReadOnlyList<string> AddedColumns { get; }
 }

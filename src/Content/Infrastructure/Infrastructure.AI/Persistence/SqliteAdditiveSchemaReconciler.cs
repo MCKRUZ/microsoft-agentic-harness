@@ -27,10 +27,9 @@ namespace Infrastructure.AI.Persistence;
 /// </para>
 /// <para>
 /// <strong>Non-nullable columns.</strong> SQLite refuses <c>ADD COLUMN … NOT NULL</c> without a
-/// default, and rightly so — existing rows would have no value. A literal default is supplied for
-/// the types where one is unambiguous (zero for numerics, empty for text/blob). A non-nullable
-/// column of any other type throws rather than guessing, because a wrong default is data a consumer
-/// cannot tell from real data.
+/// default, and rightly so — existing rows would have no value. The zero value of the column's
+/// type affinity is supplied: zero for numerics, empty for text and blob. Every SQLite type resolves
+/// to one of five affinities, so there is no "unknown type" case to fail on.
 /// </para>
 /// </remarks>
 public static class SqliteAdditiveSchemaReconciler
@@ -41,17 +40,19 @@ public static class SqliteAdditiveSchemaReconciler
     /// on one that <c>EnsureCreated</c> has just built from scratch.
     /// </summary>
     /// <param name="context">The context whose model and database should be reconciled.</param>
-    /// <returns>
-    /// The column names added, qualified as <c>table.column</c>; empty when none were. Indexes are
-    /// not reported: <c>CREATE INDEX IF NOT EXISTS</c> does not say whether it did anything, and
-    /// asking afterwards would not distinguish an index this call made from one already there.
-    /// </returns>
-    /// <exception cref="NotSupportedException">
-    /// A missing column is non-nullable and has no unambiguous default for its storage type.
-    /// </exception>
-    public static IReadOnlyList<string> Reconcile(DbContext context)
+    public static void Reconcile(DbContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
+
+        // Everything below is SQLite-specific — pragma_table_info, the affinity defaults, ALTER TABLE
+        // ADD COLUMN's exact syntax. Both hand-rolled predecessors carried this same guard, and
+        // dropping it would matter more than it looks: on a provider with no relational connection
+        // (InMemory, used widely in consumer tests) GetDbConnection throws, and this runs inside a
+        // constructor resolved at DI composition — so a consumer swapping the provider would lose
+        // host startup rather than schema evolution. A non-SQLite database has nothing to reconcile
+        // anyway: whatever created it built it from the current model.
+        if (!context.Database.IsSqlite())
+            return;
 
         var connection = context.Database.GetDbConnection();
         var openedHere = connection.State != System.Data.ConnectionState.Open;
@@ -60,8 +61,6 @@ public static class SqliteAdditiveSchemaReconciler
 
         try
         {
-            var added = new List<string>();
-
             foreach (var table in ModelTables(context))
             {
                 var existing = ExistingColumns(connection, table.Name);
@@ -77,7 +76,6 @@ public static class SqliteAdditiveSchemaReconciler
                         continue;
 
                     AddColumn(connection, table.Name, column);
-                    added.Add($"{table.Name}.{column.Name}");
                 }
 
                 // After the columns, because an index over a just-added column cannot be created
@@ -85,8 +83,6 @@ public static class SqliteAdditiveSchemaReconciler
                 foreach (var index in table.Indexes)
                     CreateIndexIfMissing(connection, table.Name, index);
             }
-
-            return added;
         }
         finally
         {
@@ -99,10 +95,9 @@ public static class SqliteAdditiveSchemaReconciler
     /// Projects the model into tables and their columns, collapsing entity types that share a table
     /// so a shared table is examined once with the union of its columns.
     /// </summary>
-    private static IEnumerable<TableSpec> ModelTables(DbContext context)
+    private static List<TableSpec> ModelTables(DbContext context)
     {
-        var columnsByTable = new Dictionary<string, Dictionary<string, ColumnSpec>>(StringComparer.OrdinalIgnoreCase);
-        var indexesByTable = new Dictionary<string, Dictionary<string, IndexSpec>>(StringComparer.OrdinalIgnoreCase);
+        var byTable = new Dictionary<string, TableAccumulator>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var entityType in context.Model.GetEntityTypes())
         {
@@ -114,48 +109,52 @@ public static class SqliteAdditiveSchemaReconciler
 
             var identifier = StoreObjectIdentifier.Table(tableName, entityType.GetSchema());
 
-            if (!columnsByTable.TryGetValue(tableName, out var columns))
+            if (!byTable.TryGetValue(tableName, out var table))
             {
-                columns = new Dictionary<string, ColumnSpec>(StringComparer.OrdinalIgnoreCase);
-                columnsByTable[tableName] = columns;
-                indexesByTable[tableName] = new Dictionary<string, IndexSpec>(StringComparer.OrdinalIgnoreCase);
+                table = new TableAccumulator();
+                byTable[tableName] = table;
             }
-
-            var indexes = indexesByTable[tableName];
 
             foreach (var property in entityType.GetProperties())
             {
                 var columnName = property.GetColumnName(identifier);
-                if (string.IsNullOrEmpty(columnName) || columns.ContainsKey(columnName))
+                if (string.IsNullOrEmpty(columnName) || table.Columns.ContainsKey(columnName))
                     continue;
 
-                columns[columnName] = new ColumnSpec(
+                // The store-object overloads, not the parameterless ones. They differ exactly where a
+                // table is shared: under TPH a derived type's non-nullable property MUST be nullable
+                // in the store, because rows of the sibling types have no value for it.
+                // `property.IsNullable` reports the CLR-side answer, so reconciliation would emit
+                // NOT NULL where EnsureCreated emits nullable — a reconciled database that differs
+                // from a freshly created one. No model here shares a table today; a consumer's will.
+                table.Columns[columnName] = new ColumnSpec(
                     columnName,
-                    property.GetColumnType(),
-                    property.IsNullable);
+                    property.GetColumnType(identifier),
+                    property.IsColumnNullable(identifier));
             }
 
             foreach (var index in entityType.GetIndexes())
             {
                 var indexName = index.GetDatabaseName(identifier);
-                if (string.IsNullOrEmpty(indexName) || indexes.ContainsKey(indexName))
+                if (string.IsNullOrEmpty(indexName) || table.Indexes.ContainsKey(indexName))
                     continue;
 
+                // A non-null database name means the index IS mapped to this store object, so every
+                // one of its properties has a column here — no arity guard is reachable.
                 var indexColumns = index.Properties
-                    .Select(p => p.GetColumnName(identifier))
-                    .Where(c => !string.IsNullOrEmpty(c))
-                    .Select(c => c!)
+                    .Select(p => p.GetColumnName(identifier)!)
                     .ToList();
 
-                if (indexColumns.Count != index.Properties.Count)
-                    continue;
-
-                indexes[indexName] = new IndexSpec(indexName, indexColumns, index.IsUnique);
+                table.Indexes[indexName] = new IndexSpec(indexName, indexColumns, index.IsUnique);
             }
         }
 
-        foreach (var (name, columns) in columnsByTable)
-            yield return new TableSpec(name, columns.Values.ToList(), indexesByTable[name].Values.ToList());
+        return byTable
+            .Select(entry => new TableSpec(
+                entry.Key,
+                entry.Value.Columns.Values.ToList(),
+                entry.Value.Indexes.Values.ToList()))
+            .ToList();
     }
 
     /// <summary>Reads the column names SQLite currently has for a table; empty when it has no such table.</summary>
@@ -181,9 +180,12 @@ public static class SqliteAdditiveSchemaReconciler
     {
         using var command = connection.CreateCommand();
 
-        // Identifiers cannot be parameterised in DDL. Both come from the compiled EF model — type
-        // names and property/column names the application itself declares — never from user input,
-        // and they are quoted so an identifier needing escaping still round-trips.
+        // Identifiers cannot be parameterised in DDL. All three interpolated values come from the
+        // compiled EF model — table and column names the application declares, and a store type EF
+        // derives or the model states outright — never from configuration or user input. The two
+        // identifiers are quoted so one needing escaping still round-trips; the store type is
+        // deliberately NOT quoted, because it is a type declaration rather than an identifier and
+        // quoting it would produce a column typed `"TEXT"` instead of TEXT.
         command.CommandText =
             $"ALTER TABLE {Quote(table)} ADD COLUMN {Quote(column.Name)} {column.StoreType}{NullabilityClause(column)};";
 
@@ -199,34 +201,56 @@ public static class SqliteAdditiveSchemaReconciler
     }
 
     /// <summary>
-    /// The literal used to backfill existing rows for a non-nullable added column. Derived from
-    /// SQLite's type affinity rules, which are prefix-based rather than an exact name match.
+    /// The literal used to backfill existing rows for a non-nullable added column: the zero value of
+    /// the column's SQLite type affinity.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The five branches are SQLite's own affinity determination (datatype documentation, §3.1), kept
+    /// in its documented order and labelled, because the rules are overlapping substring matches whose
+    /// order is the tie-break — <c>FLOATING POINT</c> gets INTEGER affinity, not REAL, because it
+    /// contains <c>INT</c> inside "POINT" and the INT rule is first.
+    /// </para>
+    /// <para>
+    /// Only two of those branches change <em>this</em> function's answer, though: INTEGER, REAL and
+    /// NUMERIC all zero to <c>0</c>, so the order matters here solely for TEXT and BLOB. The full
+    /// shape is kept anyway — it is what makes the mapping checkable against the specification, and
+    /// it is where a per-affinity default would go if one is ever needed. Do not reorder it to read
+    /// better; it would stop matching the spec it is derived from.
+    /// </para>
+    /// <para>
+    /// Rule 5 is a <em>fallback</em>, not a keyword match: a type name matching nothing above is
+    /// NUMERIC, which is why an unrecognised type is not an error. An earlier draft threw for anything
+    /// unmatched, which made ordinary declared types like <c>DATETIME</c> and <c>BOOLEAN</c> — neither
+    /// of which contains any keyword above — fail host startup.
+    /// </para>
+    /// </remarks>
     private static string DefaultLiteralFor(ColumnSpec column)
     {
         var type = column.StoreType.ToUpperInvariant();
 
+        // Rule 1 — INTEGER.
         if (type.Contains("INT", StringComparison.Ordinal))
             return "0";
 
-        if (type.Contains("REAL", StringComparison.Ordinal) ||
-            type.Contains("FLOA", StringComparison.Ordinal) ||
-            type.Contains("DOUB", StringComparison.Ordinal) ||
-            type.Contains("NUMERIC", StringComparison.Ordinal) ||
-            type.Contains("DECIMAL", StringComparison.Ordinal))
-            return "0";
-
+        // Rule 2 — TEXT.
         if (type.Contains("CHAR", StringComparison.Ordinal) ||
             type.Contains("CLOB", StringComparison.Ordinal) ||
             type.Contains("TEXT", StringComparison.Ordinal))
             return "''";
 
-        if (type.Contains("BLOB", StringComparison.Ordinal))
+        // Rule 3 — BLOB, which is also where a column declared with no type at all lands.
+        if (type.Length == 0 || type.Contains("BLOB", StringComparison.Ordinal))
             return "x''";
 
-        throw new NotSupportedException(
-            $"Cannot add non-nullable column '{column.Name}' of type '{column.StoreType}': no unambiguous " +
-            "default exists for existing rows. Make the property nullable, or add the column with a real migration.");
+        // Rule 4 — REAL.
+        if (type.Contains("REAL", StringComparison.Ordinal) ||
+            type.Contains("FLOA", StringComparison.Ordinal) ||
+            type.Contains("DOUB", StringComparison.Ordinal))
+            return "0";
+
+        // Rule 5 — NUMERIC, the fallback for everything else.
+        return "0";
     }
 
     /// <summary>
@@ -234,10 +258,20 @@ public static class SqliteAdditiveSchemaReconciler
     /// so an index already present — under this name, however it was originally made — is left alone.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// A <em>unique</em> index over data that already violates it will throw here. That is deliberate:
     /// the alternative is a uniqueness constraint the model advertises and the database does not
     /// enforce, which is the silently-inert-control failure this repo keeps paying for. Failing at
     /// startup names the problem while the data is still there to fix.
+    /// </para>
+    /// <para>
+    /// Worth knowing before adding one: this runs for every SQLite subsystem, including the three that
+    /// never asked for schema evolution, and it runs inside a constructor resolved at DI composition —
+    /// so the throw costs host startup and arrives wrapped in a DI resolution failure. Nothing can hit
+    /// it today (every unique index here shipped with its own table, so no existing database lacks
+    /// one). Adding a unique index to a table that already has rows is the case that would, and it
+    /// wants a real migration that de-duplicates first.
+    /// </para>
     /// </remarks>
     private static void CreateIndexIfMissing(DbConnection connection, string table, IndexSpec index)
     {
@@ -254,6 +288,14 @@ public static class SqliteAdditiveSchemaReconciler
     /// <summary>Quotes an identifier for SQLite, escaping any embedded double quote.</summary>
     private static string Quote(string identifier) =>
         $"\"{identifier.Replace("\"", "\"\"", StringComparison.Ordinal)}\"";
+
+    /// <summary>Mutable while a table's entity types are being folded together; see <see cref="TableSpec"/>.</summary>
+    private sealed class TableAccumulator
+    {
+        public Dictionary<string, ColumnSpec> Columns { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+        public Dictionary<string, IndexSpec> Indexes { get; } = new(StringComparer.OrdinalIgnoreCase);
+    }
 
     private readonly record struct ColumnSpec(string Name, string StoreType, bool IsNullable);
 

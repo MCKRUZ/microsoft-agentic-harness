@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Infrastructure.AI.Persistence;
+using Infrastructure.AI.Tests.Support;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Xunit;
@@ -50,7 +51,7 @@ public sealed class SchemaInitializerAddedColumnTests : IDisposable
     {
         CreateDatabaseWithTheNarrowModel();
 
-        _ = new SchemaInitializer<WideContext>(new Factory<WideContext>(OptionsFor<WideContext>()));
+        _ = new SchemaInitializer<WideContext>(new TestDbContextFactory<WideContext>(OptionsFor<WideContext>()));
 
         ColumnsOfWidgets().Should().Contain("Note");
 
@@ -71,12 +72,50 @@ public sealed class SchemaInitializerAddedColumnTests : IDisposable
     {
         CreateDatabaseWithTheNarrowModel();
 
-        _ = new SchemaInitializer<CounterContext>(new Factory<CounterContext>(OptionsFor<CounterContext>()));
+        _ = new SchemaInitializer<CounterContext>(new TestDbContextFactory<CounterContext>(OptionsFor<CounterContext>()));
 
         using var context = new CounterContext(OptionsFor<CounterContext>());
         context.Widgets.Single().Count.Should().Be(
             0,
             "a row written before the column existed must read as the type's zero, not fail to load");
+    }
+
+    /// <summary>
+    /// A non-nullable column whose declared type matches none of SQLite's affinity keywords must
+    /// still reconcile. <c>DATETIME</c> contains no INT, CHAR, CLOB, TEXT, BLOB, REAL, FLOA or DOUB,
+    /// so it falls to affinity rule 5 (NUMERIC) — and an earlier draft treated "matched nothing" as
+    /// an unknown type and threw. That throw ran inside a DI-resolved constructor, so a consumer who
+    /// declared an ordinary <c>DATETIME</c> or <c>BOOLEAN</c> column would have lost host startup
+    /// rather than a query.
+    /// </summary>
+    [Fact]
+    public void SchemaInitializer_AddedColumnHasNoAffinityKeyword_ReconcilesInsteadOfThrowing()
+    {
+        CreateDatabaseWithTheNarrowModel();
+
+        var act = () => new SchemaInitializer<StampedContext>(
+            new TestDbContextFactory<StampedContext>(OptionsFor<StampedContext>()));
+
+        act.Should().NotThrow();
+        ColumnsOfWidgets().Should().Contain("Stamped");
+    }
+
+    /// <summary>
+    /// Reconciliation is SQLite-specific and must stand down for any other provider rather than
+    /// throw. This runs inside a constructor resolved at DI composition, and a provider with no
+    /// relational connection — InMemory, which consumer test suites use widely — throws from
+    /// <c>GetDbConnection</c>. Losing this guard costs host startup, not schema evolution.
+    /// </summary>
+    [Fact]
+    public void SchemaInitializer_NonRelationalProvider_StandsDownInsteadOfThrowing()
+    {
+        var options = new DbContextOptionsBuilder<WideContext>()
+            .UseInMemoryDatabase($"schema-init-{Guid.NewGuid():N}")
+            .Options;
+
+        var act = () => new SchemaInitializer<WideContext>(new TestDbContextFactory<WideContext>(options));
+
+        act.Should().NotThrow();
     }
 
     /// <summary>
@@ -90,7 +129,7 @@ public sealed class SchemaInitializerAddedColumnTests : IDisposable
         CreateDatabaseWithTheNarrowModel();
 
         var act = () => new SchemaInitializer<TwoTableContext>(
-            new Factory<TwoTableContext>(OptionsFor<TwoTableContext>()));
+            new TestDbContextFactory<TwoTableContext>(OptionsFor<TwoTableContext>()));
 
         act.Should().NotThrow();
         ColumnsOfWidgets().Should().Contain("Note", "the table that IS present must still be reconciled");
@@ -112,15 +151,7 @@ public sealed class SchemaInitializerAddedColumnTests : IDisposable
     {
         using var connection = new SqliteConnection($"DataSource={_databasePath};Pooling=False");
         connection.Open();
-        using var command = connection.CreateCommand();
-        command.CommandText = "SELECT name FROM pragma_table_info('widgets');";
-
-        var names = new List<string>();
-        using var reader = command.ExecuteReader();
-        while (reader.Read())
-            names.Add(reader.GetString(0));
-
-        return names;
+        return SqliteSchemaProbe.ColumnsAsync(connection, "widgets").GetAwaiter().GetResult();
     }
 
     private DbContextOptions<T> OptionsFor<T>() where T : DbContext =>
@@ -133,12 +164,6 @@ public sealed class SchemaInitializerAddedColumnTests : IDisposable
         SqliteConnection.ClearAllPools();
         if (File.Exists(_databasePath))
             File.Delete(_databasePath);
-    }
-
-    private sealed class Factory<T>(DbContextOptions<T> options) : IDbContextFactory<T>
-        where T : DbContext
-    {
-        public T CreateDbContext() => (T)Activator.CreateInstance(typeof(T), options)!;
     }
 
     private sealed class NarrowWidget
@@ -167,6 +192,14 @@ public sealed class SchemaInitializerAddedColumnTests : IDisposable
         public required string Id { get; set; }
     }
 
+    private sealed class StampedWidget
+    {
+        public required string Id { get; set; }
+
+        /// <summary>Non-nullable, and declared as a type matching no SQLite affinity keyword.</summary>
+        public DateTime Stamped { get; set; }
+    }
+
     private sealed class NarrowContext(DbContextOptions<NarrowContext> options) : DbContext(options)
     {
         public DbSet<NarrowWidget> Widgets => Set<NarrowWidget>();
@@ -181,6 +214,22 @@ public sealed class SchemaInitializerAddedColumnTests : IDisposable
 
         protected override void OnModelCreating(ModelBuilder modelBuilder) =>
             modelBuilder.Entity<CounterWidget>().ToTable("widgets").HasKey(e => e.Id);
+    }
+
+    private sealed class StampedContext(DbContextOptions<StampedContext> options) : DbContext(options)
+    {
+        public DbSet<StampedWidget> Widgets => Set<StampedWidget>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            var widget = modelBuilder.Entity<StampedWidget>();
+            widget.ToTable("widgets").HasKey(e => e.Id);
+
+            // Stated outright rather than left to the provider: EF's SQLite provider would map
+            // DateTime to TEXT, which DOES carry an affinity keyword and would not exercise the
+            // fallback this test exists for.
+            widget.Property(e => e.Stamped).HasColumnType("DATETIME");
+        }
     }
 
     /// <summary>A model whose second table has no counterpart in the existing database.</summary>

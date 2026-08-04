@@ -3,6 +3,7 @@ using Domain.AI.Planner;
 using FluentAssertions;
 using Infrastructure.AI.Persistence;
 using Infrastructure.AI.Planner;
+using Infrastructure.AI.Tests.Support;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -27,7 +28,7 @@ public sealed class PlannerSchemaInitializerTests : IDisposable
 {
     private readonly SqliteConnection _connection;
     private readonly DbContextOptions<PlannerDbContext> _options;
-    private readonly TestDbContextFactory _factory;
+    private readonly TestDbContextFactory<PlannerDbContext> _factory;
 
     public PlannerSchemaInitializerTests()
     {
@@ -37,7 +38,7 @@ public sealed class PlannerSchemaInitializerTests : IDisposable
         _options = new DbContextOptionsBuilder<PlannerDbContext>()
             .UseSqlite(_connection)
             .Options;
-        _factory = new TestDbContextFactory(_options);
+        _factory = new TestDbContextFactory<PlannerDbContext>(_options);
     }
 
     public void Dispose() => _connection.Dispose();
@@ -105,7 +106,7 @@ public sealed class PlannerSchemaInitializerTests : IDisposable
         _ = new SchemaInitializer<PlannerDbContext>(_factory);
         var second = () => new SchemaInitializer<PlannerDbContext>(_factory);
 
-        second.Should().NotThrow("the PRAGMA guard and IF NOT EXISTS make re-runs no-ops");
+        second.Should().NotThrow("a column already present is skipped and the index uses IF NOT EXISTS");
     }
 
     [Fact]
@@ -130,29 +131,11 @@ public sealed class PlannerSchemaInitializerTests : IDisposable
         await ctx.Database.ExecuteSqlRawAsync("ALTER TABLE \"PlanGraphs\" DROP COLUMN \"TenantId\";");
     }
 
-    private async Task<List<string>> ReadPlanGraphIndexNamesAsync()
-    {
-        var indexes = new List<string>();
-        await using var command = _connection.CreateCommand();
-        // Single quotes are load-bearing: the argument to a table-valued pragma is a STRING, and
-        // "PlanGraphs" is parsed as an identifier — SQLite rejects it with "no such column".
-        command.CommandText = "SELECT name FROM pragma_index_list('PlanGraphs');";
-        await using var reader = await command.ExecuteReaderAsync();
-        while (await reader.ReadAsync())
-            indexes.Add(reader.GetString(0));
-        return indexes;
-    }
+    private Task<List<string>> ReadPlanGraphIndexNamesAsync() =>
+        SqliteSchemaProbe.IndexNamesAsync(_connection, "PlanGraphs");
 
-    private async Task<List<string>> ReadPlanGraphColumnsAsync()
-    {
-        var columns = new List<string>();
-        await using var command = _connection.CreateCommand();
-        command.CommandText = "PRAGMA table_info(\"PlanGraphs\");";
-        await using var reader = await command.ExecuteReaderAsync();
-        while (await reader.ReadAsync())
-            columns.Add(reader.GetString(1));
-        return columns;
-    }
+    private Task<List<string>> ReadPlanGraphColumnsAsync() =>
+        SqliteSchemaProbe.ColumnsAsync(_connection, "PlanGraphs");
 
     private static PlanGraph CreateTestGraph()
     {
@@ -182,11 +165,5 @@ public sealed class PlannerSchemaInitializerTests : IDisposable
                 PlanTimeout = TimeSpan.FromMinutes(10),
             },
         };
-    }
-
-    private sealed class TestDbContextFactory(DbContextOptions<PlannerDbContext> options)
-        : IDbContextFactory<PlannerDbContext>
-    {
-        public PlannerDbContext CreateDbContext() => new(options);
     }
 }
