@@ -50,7 +50,7 @@ public sealed class EfCoreChangeProposalStoreTests : IDisposable
         var factory = new TestContextFactory(_options);
         return new EfCoreChangeProposalStore(
             factory,
-            new GovernanceStateSchemaInitializer(factory),
+            new SchemaInitializer<GovernanceStateDbContext>(factory),
             _sealer,
             GovernanceStateTestConfig.Monitor(maxPayloadBytes: maxPayloadBytes),
             NullLogger<EfCoreChangeProposalStore>.Instance);

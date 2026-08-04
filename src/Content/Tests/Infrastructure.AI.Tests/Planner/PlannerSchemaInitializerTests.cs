@@ -12,10 +12,17 @@ using Xunit;
 namespace Infrastructure.AI.Tests.Planner;
 
 /// <summary>
-/// Tests for <see cref="PlannerSchemaInitializer"/>: schema evolution on a pre-existing
-/// (legacy) planner database that lacks the ownership columns — the case EnsureCreated
+/// Tests <see cref="SchemaInitializer{TContext}"/> against the planner's schema: evolution of a
+/// pre-existing (legacy) planner database that lacks the ownership columns — the case EnsureCreated
 /// alone can never fix because it no-ops on existing databases.
 /// </summary>
+/// <remarks>
+/// These assertions predate the generic reconciler: they were written for a hand-rolled
+/// <c>PlannerSchemaInitializer</c> that added <c>OwnerId</c>/<c>TenantId</c> and their composite
+/// index with literal DDL. That subclass is gone, and the assertions are deliberately unchanged —
+/// they are the evidence that the model-driven reconciler delivers exactly what the hand-written
+/// version did on the one schema whose evolution was already proven.
+/// </remarks>
 public sealed class PlannerSchemaInitializerTests : IDisposable
 {
     private readonly SqliteConnection _connection;
@@ -40,7 +47,7 @@ public sealed class PlannerSchemaInitializerTests : IDisposable
     {
         await CreateLegacySchemaAsync();
 
-        _ = new PlannerSchemaInitializer(_factory);
+        _ = new SchemaInitializer<PlannerDbContext>(_factory);
 
         var columns = await ReadPlanGraphColumnsAsync();
         columns.Should().Contain("OwnerId", "the initializer must evolve pre-existing databases in place")
@@ -57,7 +64,7 @@ public sealed class PlannerSchemaInitializerTests : IDisposable
             NullLogger<EfCorePlanStateStore>.Instance,
             new FakeTimeProvider(new DateTimeOffset(2026, 7, 27, 12, 0, 0, TimeSpan.Zero)),
             new NullKnowledgeScope(),
-            new PlannerSchemaInitializer(_factory));
+            new SchemaInitializer<PlannerDbContext>(_factory));
 
         var graph = CreateTestGraph();
         var saved = await store.SavePlanAsync(graph, CancellationToken.None);
@@ -70,13 +77,33 @@ public sealed class PlannerSchemaInitializerTests : IDisposable
         loaded.Value.Should().NotBeNull();
     }
 
+    /// <summary>
+    /// The legacy setup drops the composite scope index along with the columns, and the hand-rolled
+    /// initializer restored it with literal <c>CREATE INDEX IF NOT EXISTS</c> DDL. Nothing asserted
+    /// that until now: every column assertion passed while the index stayed missing, which would have
+    /// left scope-filtered queries correct but unindexed — a silent performance cliff rather than a
+    /// visible failure.
+    /// </summary>
+    [Fact]
+    public async Task Initialize_LegacyDatabaseWithoutOwnershipColumns_RestoresTheScopeIndex()
+    {
+        await CreateLegacySchemaAsync();
+
+        _ = new SchemaInitializer<PlannerDbContext>(_factory);
+
+        var indexes = await ReadPlanGraphIndexNamesAsync();
+        indexes.Should().Contain(
+            "IX_PlanGraphs_TenantId_OwnerId",
+            "an index over a just-added column is exactly what reconciliation must restore");
+    }
+
     [Fact]
     public async Task Initialize_RunTwice_IsIdempotent()
     {
         await CreateLegacySchemaAsync();
 
-        _ = new PlannerSchemaInitializer(_factory);
-        var second = () => new PlannerSchemaInitializer(_factory);
+        _ = new SchemaInitializer<PlannerDbContext>(_factory);
+        var second = () => new SchemaInitializer<PlannerDbContext>(_factory);
 
         second.Should().NotThrow("the PRAGMA guard and IF NOT EXISTS make re-runs no-ops");
     }
@@ -84,7 +111,7 @@ public sealed class PlannerSchemaInitializerTests : IDisposable
     [Fact]
     public void Initialize_FreshDatabase_CreatesFullSchemaIncludingOwnership()
     {
-        _ = new PlannerSchemaInitializer(_factory);
+        _ = new SchemaInitializer<PlannerDbContext>(_factory);
 
         var columns = ReadPlanGraphColumnsAsync().GetAwaiter().GetResult();
         columns.Should().Contain("OwnerId").And.Contain("TenantId");
@@ -101,6 +128,19 @@ public sealed class PlannerSchemaInitializerTests : IDisposable
         await ctx.Database.ExecuteSqlRawAsync("DROP INDEX \"IX_PlanGraphs_TenantId_OwnerId\";");
         await ctx.Database.ExecuteSqlRawAsync("ALTER TABLE \"PlanGraphs\" DROP COLUMN \"OwnerId\";");
         await ctx.Database.ExecuteSqlRawAsync("ALTER TABLE \"PlanGraphs\" DROP COLUMN \"TenantId\";");
+    }
+
+    private async Task<List<string>> ReadPlanGraphIndexNamesAsync()
+    {
+        var indexes = new List<string>();
+        await using var command = _connection.CreateCommand();
+        // Single quotes are load-bearing: the argument to a table-valued pragma is a STRING, and
+        // "PlanGraphs" is parsed as an identifier — SQLite rejects it with "no such column".
+        command.CommandText = "SELECT name FROM pragma_index_list('PlanGraphs');";
+        await using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+            indexes.Add(reader.GetString(0));
+        return indexes;
     }
 
     private async Task<List<string>> ReadPlanGraphColumnsAsync()

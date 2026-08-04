@@ -82,7 +82,7 @@ public sealed class DurableEscalationHardeningTests : IDisposable
 		var factory = new TestContextFactory(_dbOptions);
 		return new EfCoreEscalationStateStore(
 			factory,
-			new GovernanceStateSchemaInitializer(factory),
+			new SchemaInitializer<GovernanceStateDbContext>(factory),
 			_sealer,
 			GovernanceStateTestConfig.Monitor(),
 			NullLogger<EfCoreEscalationStateStore>.Instance);

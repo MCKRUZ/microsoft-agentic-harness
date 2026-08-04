@@ -49,7 +49,7 @@ public sealed class EfCoreEscalationStateStoreTests : IDisposable
         var factory = new TestContextFactory(_options);
         return new EfCoreEscalationStateStore(
             factory,
-            new GovernanceStateSchemaInitializer(factory),
+            new SchemaInitializer<GovernanceStateDbContext>(factory),
             _sealer,
             GovernanceStateTestConfig.Monitor(maxPayloadBytes: maxPayloadBytes),
             NullLogger<EfCoreEscalationStateStore>.Instance);

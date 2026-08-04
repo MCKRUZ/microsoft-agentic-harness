@@ -58,7 +58,7 @@ public sealed class GovernanceSealReplayTests : IDisposable
         var factory = new TestContextFactory(_options);
         return new EfCoreEscalationStateStore(
             factory,
-            new GovernanceStateSchemaInitializer(factory),
+            new SchemaInitializer<GovernanceStateDbContext>(factory),
             _sealer,
             GovernanceStateTestConfig.Monitor(),
             NullLogger<EfCoreEscalationStateStore>.Instance);
@@ -69,7 +69,7 @@ public sealed class GovernanceSealReplayTests : IDisposable
         var factory = new TestContextFactory(_options);
         return new EfCoreChangeProposalStore(
             factory,
-            new GovernanceStateSchemaInitializer(factory),
+            new SchemaInitializer<GovernanceStateDbContext>(factory),
             _sealer,
             GovernanceStateTestConfig.Monitor(),
             NullLogger<EfCoreChangeProposalStore>.Instance);

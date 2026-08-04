@@ -43,7 +43,7 @@ public sealed class GovernanceStatePruner : IGovernanceStatePruner
     /// <param name="logger">Structured logger.</param>
     public GovernanceStatePruner(
         IDbContextFactory<GovernanceStateDbContext> contextFactory,
-        GovernanceStateSchemaInitializer schemaInitializer,
+        SchemaInitializer<GovernanceStateDbContext> schemaInitializer,
         ILogger<GovernanceStatePruner> logger)
     {
         ArgumentNullException.ThrowIfNull(contextFactory);
