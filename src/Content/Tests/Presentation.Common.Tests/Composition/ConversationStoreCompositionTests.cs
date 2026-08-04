@@ -1,14 +1,16 @@
 using Application.AI.Common.Interfaces.AI;
 using FluentAssertions;
+using Infrastructure.AI.Conversations;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
 namespace Presentation.Common.Tests.Composition;
 
 /// <summary>
-/// Wiring integration tests for the conversation transcript store (issue #235, PR 1): through the
-/// REAL composition root, <see cref="IConversationStore"/> must resolve for <em>every</em> host, not
-/// just the one that used to own its registration.
+/// Wiring integration tests for the conversation transcript store (issue #235): through the REAL
+/// composition root, <see cref="IConversationStore"/> must resolve for <em>every</em> host, and the
+/// implementation behind it must be the one configuration asks for.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -29,29 +31,36 @@ namespace Presentation.Common.Tests.Composition;
 /// </remarks>
 public sealed class ConversationStoreCompositionTests : IDisposable
 {
-    private readonly string _conversationsDir;
+    private readonly string _workingDir;
 
-    /// <summary>Creates the isolated conversations directory this fixture points the store at.</summary>
+    /// <summary>Creates the isolated directory this fixture points both providers at.</summary>
     public ConversationStoreCompositionTests()
     {
-        _conversationsDir = Path.Combine(
+        _workingDir = Path.Combine(
             Path.GetTempPath(), "composition-conversations-" + Guid.NewGuid().ToString("N"));
     }
 
     /// <inheritdoc />
     public void Dispose()
     {
+        // Disposing the provider closes the store's connections but returns them to Microsoft.Data
+        // .Sqlite's pool, which keeps the file handle open — the database file is then undeletable.
+        // Production wants that pooling, so the fixture drains it instead of turning it off. Idle
+        // pooled connections are all this closes; connections another test class holds open are
+        // untouched.
+        SqliteConnection.ClearAllPools();
+
         // Only the fixture's own directory. A regressed binding leaves a stray "./conversations" in
         // the shared test working directory, but reaching out to delete that would race the other
         // classes in this folder that xUnit runs in parallel — a worse problem than the litter.
-        if (Directory.Exists(_conversationsDir))
-            Directory.Delete(_conversationsDir, recursive: true);
+        if (Directory.Exists(_workingDir))
+            Directory.Delete(_workingDir, recursive: true);
     }
 
     [Fact]
     public async Task CompositionRoot_ResolvesConversationStore_ForEveryHost()
     {
-        await using var provider = CompositionRootTestHost.BuildProvider(Settings());
+        await using var provider = CompositionRootTestHost.BuildProvider(SqliteSettings());
 
         var store = provider.GetService<IConversationStore>();
 
@@ -63,36 +72,57 @@ public sealed class ConversationStoreCompositionTests : IDisposable
     [Fact]
     public async Task CompositionRoot_RegistersConversationStore_AsSingleton()
     {
-        await using var provider = CompositionRootTestHost.BuildProvider(Settings());
+        await using var provider = CompositionRootTestHost.BuildProvider(SqliteSettings());
 
         var first = provider.GetRequiredService<IConversationStore>();
         var second = provider.GetRequiredService<IConversationStore>();
 
         first.Should().BeSameAs(second,
-            "FileSystemConversationStore serialises all of its file I/O behind one SemaphoreSlim; a "
-            + "scoped or transient registration would hand out several stores with several semaphores "
-            + "and silently lose that serialisation");
+            "the file-backed provider serialises all of its I/O behind one SemaphoreSlim, so a scoped "
+            + "or transient registration would hand out several stores with several semaphores and "
+            + "silently lose that serialisation; the lifetime must not depend on which provider is live");
     }
 
     [Fact]
-    public async Task CompositionRoot_BindsConversationsPath_FromTheSharedAiSection()
+    public async Task CompositionRoot_DefaultProvider_IsTheSqliteStore()
     {
-        Directory.Exists(_conversationsDir).Should().BeFalse("the fixture must start from nothing");
+        // The default is the whole point of the switch: a consumer who configures nothing gets the
+        // implementation that is safe for more than one host, not the one that is not.
+        await using var provider = CompositionRootTestHost.BuildProvider(new Dictionary<string, string?>
+        {
+            ["AppConfig:AI:Conversations:DatabasePath"] = Path.Combine(_workingDir, "conversations.db"),
+        });
 
-        await using var provider = CompositionRootTestHost.BuildProvider(Settings());
-        _ = provider.GetRequiredService<IConversationStore>();
+        provider.GetRequiredService<IConversationStore>()
+            .Should().BeOfType<EfCoreConversationStore>();
+    }
 
-        // The store resolves its base path and creates the directory during construction, so the
-        // directory appearing here is proof the configured path reached it. Binding the wrong
-        // section would silently fall back to the "./conversations" default and leave this absent —
-        // which, for a transcript store, means every conversation quietly lands somewhere else.
-        Directory.Exists(_conversationsDir).Should().BeTrue(
+    [Fact]
+    public async Task CompositionRoot_FileSystemProvider_IsSelectedByConfigAndBindsItsPath()
+    {
+        Directory.Exists(_workingDir).Should().BeFalse("the fixture must start from nothing");
+
+        await using var provider = CompositionRootTestHost.BuildProvider(new Dictionary<string, string?>
+        {
+            ["AppConfig:AI:Conversations:Provider"] = "FileSystem",
+            ["AppConfig:AI:Conversations:ConversationsPath"] = _workingDir,
+        });
+
+        provider.GetRequiredService<IConversationStore>()
+            .Should().BeOfType<FileSystemConversationStore>();
+
+        // The file-backed store resolves its base path and creates the directory during
+        // construction, so the directory appearing here is proof the configured path reached it.
+        // Binding the wrong section would silently fall back to the "./conversations" default and
+        // leave this absent — which, for a transcript store, means every conversation quietly lands
+        // somewhere else.
+        Directory.Exists(_workingDir).Should().BeTrue(
             "AppConfig:AI:Conversations:ConversationsPath must reach the store; this setting moved "
             + "out of AppConfig:AgentHub when the store became shared infrastructure");
     }
 
-    private Dictionary<string, string?> Settings() => new()
+    private Dictionary<string, string?> SqliteSettings() => new()
     {
-        ["AppConfig:AI:Conversations:ConversationsPath"] = _conversationsDir,
+        ["AppConfig:AI:Conversations:DatabasePath"] = Path.Combine(_workingDir, "conversations.db"),
     };
 }

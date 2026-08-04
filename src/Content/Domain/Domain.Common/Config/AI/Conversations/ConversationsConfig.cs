@@ -13,7 +13,29 @@ namespace Domain.Common.Config.AI.Conversations;
 public sealed class ConversationsConfig
 {
     /// <summary>
-    /// File system path where conversation records are persisted by the file-backed store.
+    /// Which implementation backs <c>IConversationStore</c>. Defaults to
+    /// <see cref="ConversationStoreProvider.Sqlite"/>.
+    /// </summary>
+    /// <remarks>
+    /// Only the settings belonging to the selected provider are read; the other provider's settings
+    /// are inert rather than invalid, so switching back and forth needs no other edit.
+    /// </remarks>
+    public ConversationStoreProvider Provider { get; set; } = ConversationStoreProvider.Sqlite;
+
+    /// <summary>
+    /// SQLite database file path for the <see cref="ConversationStoreProvider.Sqlite"/> provider,
+    /// relative to <c>AppContext.BaseDirectory</c>. Ignored by the file-backed provider.
+    /// </summary>
+    /// <remarks>
+    /// Two hosts <em>may</em> share this path — that is the point of the SQLite provider. A relative
+    /// path resolves against each host's own output directory, so sharing one database between the
+    /// AgentHub and the Execution API takes a deliberate absolute path.
+    /// </remarks>
+    public string DatabasePath { get; set; } = "data/conversations.db";
+
+    /// <summary>
+    /// File system path where conversation records are persisted by the
+    /// <see cref="ConversationStoreProvider.FileSystem"/> provider. Ignored by the SQLite provider.
     /// </summary>
     /// <remarks>
     /// Relative paths resolve against each host's own working directory, so by default two hosts do

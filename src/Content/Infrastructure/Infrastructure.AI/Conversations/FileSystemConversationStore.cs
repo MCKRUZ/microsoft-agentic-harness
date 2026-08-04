@@ -1,5 +1,4 @@
 using System.Text.Json;
-using System.Text.Json.Serialization;
 using Application.AI.Common.Interfaces.AI;
 using Application.AI.Common.Models.Conversations;
 using Domain.Common.Config.AI.Conversations;
@@ -33,11 +32,7 @@ namespace Infrastructure.AI.Conversations;
 /// </summary>
 public sealed class FileSystemConversationStore : IConversationStore
 {
-    private static readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web)
-    {
-        Converters = { new JsonStringEnumConverter() },
-        WriteIndented = false,
-    };
+    private static readonly JsonSerializerOptions _jsonOptions = ConversationJson.Options;
 
     private readonly string _basePath;
     private readonly SemaphoreSlim _lock = new(1, 1);

@@ -289,12 +289,20 @@ Infrastructure.AI/
 │   ├── MarkdownCheckpointDecorator.cs
 │   └── Checkpoints/            JsonCheckpointStateManager
 ├── Attestation/                HmacAttestationService, EfCoreAttestationStore, key options
+├── Conversations/
+│   ├── EfCoreConversationStore.cs      Default transcript store — one row per message
+│   ├── FileSystemConversationStore.cs  JSON-per-conversation; single-process dev only
+│   └── ConversationJson.cs             Serializer settings both stores persist with
 ├── Persistence/
 │   ├── PlannerDbContext.cs             EF Core context for plan entities
+│   ├── ConversationDbContext.cs        EF Core context for conversations + messages
 │   ├── SqliteVersionInterceptor.cs     Auto-increment version for optimistic concurrency
-│   ├── Configurations/                 EF entity type configurations (5 files)
+│   ├── Configurations/                 EF entity type configurations (5 files, planner only —
+│   │                                    PlannerDbContext scans the assembly for these, so a
+│   │                                    class here lands in the planner's model too)
 │   └── Entities/                       PlanGraphEntity, PlanStepEntity, PlanEdgeEntity,
-│                                        StepExecutionStateEntity, PlanExecutionLogEntity
+│                                        StepExecutionStateEntity, PlanExecutionLogEntity,
+│                                        ConversationEntity, ConversationMessageEntity
 ├── Planner/
 │   ├── PlanExecutor.cs                 Entry points, orchestration loop
 │   ├── PlanExecutor.Scheduling.cs      DAG scheduling, ready-queue, bounded concurrency
