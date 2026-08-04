@@ -42,15 +42,15 @@ public static partial class DependencyInjection
             .AddInterceptors(new SqliteVersionInterceptor()));
         services.AddScoped(sp => sp.GetRequiredService<IDbContextFactory<PlannerDbContext>>().CreateDbContext());
 
-        // Ensure the schema is created before the first store operation. Idempotent.
-        // Same lifecycle as the PromptUsage and EvalDashboard persistence registrations,
-        // but through the planner-specific subclass: base EnsureCreated (no-op on existing
-        // databases) plus PRAGMA-guarded DDL that adds the OwnerId/TenantId columns to a
-        // pre-existing PlanGraphs table. EfCorePlanStateStore demands the initializer as a
-        // plain constructor dependency (visible to ValidateOnBuild), so resolving
-        // IPlanStateStore forces schema-create exactly once — closing the "no such table"
-        // hole the first SavePlanAsync would otherwise hit.
-        services.AddSingleton<SchemaInitializer<PlannerDbContext>, PlannerSchemaInitializer>();
+        // Ensure the schema is created before the first store operation. Idempotent, and the same
+        // lifecycle as every other SQLite persistence registration here. The planner used to need a
+        // subclass to add its OwnerId/TenantId columns to a pre-existing PlanGraphs table; the base
+        // initializer now reconciles added columns and indexes for every subsystem from the model
+        // itself, so the hand-rolled copy is gone rather than kept alongside it.
+        // EfCorePlanStateStore demands the initializer as a plain constructor dependency (visible to
+        // ValidateOnBuild), so resolving IPlanStateStore forces schema-create exactly once — closing
+        // the "no such table" hole the first SavePlanAsync would otherwise hit.
+        services.AddSingleton<SchemaInitializer<PlannerDbContext>>();
     }
 
     /// <summary>

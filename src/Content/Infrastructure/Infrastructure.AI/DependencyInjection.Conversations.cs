@@ -68,10 +68,10 @@ public static partial class DependencyInjection
     /// <c>ValidateOnBuild</c>.
     /// </para>
     /// <para>
-    /// The plain <see cref="SchemaInitializer{TContext}"/> is enough here — unlike the planner, whose
-    /// subclass exists to add columns to databases created before those columns shipped. These
-    /// tables are new in this change, so no consumer has an earlier version of them to evolve, and
-    /// <c>EnsureCreated</c> builds them whole.
+    /// <see cref="SchemaInitializer{TContext}"/> both creates these tables and reconciles a database
+    /// that predates a later column or index. That second step is not idle here: these tables shipped
+    /// one release ago, so a consumer already has a <c>conversations.db</c> built from the original
+    /// model, and <c>EnsureCreated</c> alone would never give it anything added since.
     /// </para>
     /// <para>
     /// It also leaves the database in write-ahead-log mode, which is what lets one host read a

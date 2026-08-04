@@ -57,7 +57,7 @@ public sealed class KnowledgeScopeOwnershipEndToEndTests : IDisposable
             NullLogger<EfCorePlanStateStore>.Instance,
             new FakeTimeProvider(new DateTimeOffset(2026, 7, 28, 12, 0, 0, TimeSpan.Zero)),
             _accessor,
-            new PlannerSchemaInitializer(_factory));
+            new SchemaInitializer<PlannerDbContext>(_factory));
     }
 
     public void Dispose() => _connection.Dispose();

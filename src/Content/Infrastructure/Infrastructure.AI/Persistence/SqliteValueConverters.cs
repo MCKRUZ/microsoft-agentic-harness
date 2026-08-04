@@ -29,30 +29,3 @@ public static class SqliteValueConverters
             v => v.UtcTicks,
             v => new DateTimeOffset(v, TimeSpan.Zero));
 }
-
-/// <summary>
-/// Singleton initializer that runs <c>DatabaseFacade.EnsureCreated()</c> on its
-/// supplied DbContext factory at construction time. Mirrors the
-/// <c>PromptUsageSchemaInitializer</c> / <c>EvalDashboardSchemaInitializer</c>
-/// pattern with a single generic base so each new SQLite subsystem doesn't
-/// re-implement the same five lines.
-/// </summary>
-/// <typeparam name="TContext">The concrete DbContext type to initialize.</typeparam>
-/// <remarks>
-/// Resolved once at composition time (typically through a captive factory inside an
-/// <c>AddSingleton</c> registration) so the first writer never races a missing-table
-/// error. EnsureCreated is idempotent — calling it on an already-created database
-/// is a no-op.
-/// </remarks>
-public class SchemaInitializer<TContext> where TContext : DbContext
-{
-    /// <summary>
-    /// Initializes a new instance and ensures the underlying database exists.
-    /// </summary>
-    public SchemaInitializer(IDbContextFactory<TContext> contextFactory)
-    {
-        ArgumentNullException.ThrowIfNull(contextFactory);
-        using var context = contextFactory.CreateDbContext();
-        context.Database.EnsureCreated();
-    }
-}

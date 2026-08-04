@@ -55,7 +55,7 @@ public sealed class EfCoreChangeProposalStore : IChangeProposalStore
     /// <param name="logger">Structured logger.</param>
     public EfCoreChangeProposalStore(
         IDbContextFactory<GovernanceStateDbContext> contextFactory,
-        GovernanceStateSchemaInitializer schemaInitializer,
+        SchemaInitializer<GovernanceStateDbContext> schemaInitializer,
         IGovernanceRecordSealer sealer,
         IOptionsMonitor<AppConfig> config,
         ILogger<EfCoreChangeProposalStore> logger)

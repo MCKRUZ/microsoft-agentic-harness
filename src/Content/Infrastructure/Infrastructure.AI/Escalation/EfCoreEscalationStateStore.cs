@@ -59,7 +59,7 @@ public sealed class EfCoreEscalationStateStore : IEscalationStateStore
     /// <param name="logger">Structured logger.</param>
     public EfCoreEscalationStateStore(
         IDbContextFactory<GovernanceStateDbContext> contextFactory,
-        GovernanceStateSchemaInitializer schemaInitializer,
+        SchemaInitializer<GovernanceStateDbContext> schemaInitializer,
         IGovernanceRecordSealer sealer,
         IOptionsMonitor<AppConfig> config,
         ILogger<EfCoreEscalationStateStore> logger)

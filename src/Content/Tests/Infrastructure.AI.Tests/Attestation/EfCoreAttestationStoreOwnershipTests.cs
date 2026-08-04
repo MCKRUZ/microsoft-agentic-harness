@@ -44,7 +44,7 @@ public sealed class EfCoreAttestationStoreOwnershipTests : IDisposable
             NullLogger<EfCorePlanStateStore>.Instance,
             new FakeTimeProvider(new DateTimeOffset(2026, 7, 27, 12, 0, 0, TimeSpan.Zero)),
             _scope,
-            new PlannerSchemaInitializer(_factory));
+            new SchemaInitializer<PlannerDbContext>(_factory));
 
         _attestationStore = new EfCoreAttestationStore(
             _factory,

@@ -29,7 +29,7 @@ public static partial class DependencyInjection
     /// <c>GovernanceDurableStateConfig</c>).
     /// </para>
     /// <para>
-    /// The EF-backed stores demand <see cref="GovernanceStateSchemaInitializer"/> as a plain
+    /// The EF-backed stores demand <see cref="SchemaInitializer{TContext}"/> as a plain
     /// constructor dependency (ValidateOnBuild-visible), and are only constructed when their
     /// toggle selects them — which is what defers schema creation until a consumer opts in.
     /// The database path is normalized and containment-checked at registration; its directory
@@ -51,12 +51,13 @@ public static partial class DependencyInjection
             options.UseSqlite(connectionString);
         });
 
-        // Derived initializer (not the base EnsureCreated-only one) so a future column addition
-        // reaches pre-existing databases instead of silently no-opping. Resolved lazily by the
-        // stores' constructors; EnsureCreated and the PRAGMA-guarded DDL are both idempotent.
-        services.AddSingleton<GovernanceStateSchemaInitializer>();
-        services.AddSingleton<SchemaInitializer<GovernanceStateDbContext>>(
-            sp => sp.GetRequiredService<GovernanceStateSchemaInitializer>());
+        // One registration, because there is now one type. This used to be a pair — a derived
+        // GovernanceStateSchemaInitializer plus an alias mapping the base type onto it — so that a
+        // future column addition reached pre-existing databases instead of silently no-opping. The
+        // base initializer reconciles added columns and indexes from the model itself, so the
+        // subclass is gone and the alias with it. Resolved lazily by the stores' constructors;
+        // create and reconcile are both idempotent.
+        services.AddSingleton<SchemaInitializer<GovernanceStateDbContext>>();
 
         // TimeProvider is registered by Application.Common in composed hosts; TryAdd keeps
         // Infrastructure.AI standalone-safe without overriding a host's own clock.
