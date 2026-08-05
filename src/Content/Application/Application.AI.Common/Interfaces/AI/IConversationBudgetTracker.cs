@@ -39,19 +39,19 @@ public interface IConversationBudgetTracker
     /// Adds a completed turn's token usage to the key's running total, creating the entry
     /// (seeded from configuration) on first use.
     /// </summary>
-    /// <param name="conversationId">The opaque budget key the usage belongs to.</param>
+    /// <param name="budgetKey">The opaque budget key the usage belongs to.</param>
     /// <param name="tokensUsed">Input+output tokens consumed by the turn. Non-negative; zero is a no-op.</param>
     /// <param name="cancellationToken">Cancels the accrual.</param>
-    Task RecordUsageAsync(string conversationId, int tokensUsed, CancellationToken cancellationToken = default);
+    Task RecordUsageAsync(string budgetKey, int tokensUsed, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Returns the key's current budget status. When no budget is configured, or the key has no recorded
     /// usage yet, returns a status whose <see cref="ConversationBudgetStatus.IsExhausted"/> reflects the
     /// configured ceiling (disabled ceilings never report exhausted).
     /// </summary>
-    /// <param name="conversationId">The opaque budget key to query.</param>
+    /// <param name="budgetKey">The opaque budget key to query.</param>
     /// <param name="cancellationToken">Cancels the read.</param>
-    Task<ConversationBudgetStatus> GetStatusAsync(string conversationId, CancellationToken cancellationToken = default);
+    Task<ConversationBudgetStatus> GetStatusAsync(string budgetKey, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Drops the key's tracked usage, freeing its entry.
@@ -62,7 +62,7 @@ public interface IConversationBudgetTracker
     /// another run or another host. Releasing a key that is still live erases the accumulated total and
     /// silently resets the ceiling. Safe to call for an unknown key.
     /// </remarks>
-    /// <param name="conversationId">The opaque budget key to release.</param>
+    /// <param name="budgetKey">The opaque budget key to release.</param>
     /// <param name="cancellationToken">Cancels the release.</param>
-    Task ReleaseAsync(string conversationId, CancellationToken cancellationToken = default);
+    Task ReleaseAsync(string budgetKey, CancellationToken cancellationToken = default);
 }

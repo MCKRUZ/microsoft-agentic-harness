@@ -67,9 +67,9 @@ public sealed class InProcessConversationBudgetTracker : IConversationBudgetTrac
     private int ConfiguredBudget => _options.CurrentValue.AI.AgentFramework.ConversationTokenBudget;
 
     /// <inheritdoc />
-    public Task RecordUsageAsync(string conversationId, int tokensUsed, CancellationToken cancellationToken = default)
+    public Task RecordUsageAsync(string budgetKey, int tokensUsed, CancellationToken cancellationToken = default)
     {
-        ArgumentException.ThrowIfNullOrEmpty(conversationId);
+        ArgumentException.ThrowIfNullOrEmpty(budgetKey);
         ArgumentOutOfRangeException.ThrowIfNegative(tokensUsed);
 
         // Disabled or no-op: store nothing so the default (unbounded) deployment never allocates.
@@ -79,7 +79,7 @@ public sealed class InProcessConversationBudgetTracker : IConversationBudgetTrac
         var now = _timeProvider.GetUtcNow().UtcTicks;
         // Stamp the access time at creation so a brand-new entry is never rank-0 (oldest) for a
         // concurrent eviction running before this thread updates the timestamp.
-        var entry = _entries.GetOrAdd(conversationId, _ => new Entry { LastAccessTicks = now });
+        var entry = _entries.GetOrAdd(budgetKey, _ => new Entry { LastAccessTicks = now });
         entry.Add(tokensUsed);
         entry.LastAccessTicks = now;
 
@@ -88,15 +88,15 @@ public sealed class InProcessConversationBudgetTracker : IConversationBudgetTrac
     }
 
     /// <inheritdoc />
-    public Task<ConversationBudgetStatus> GetStatusAsync(string conversationId, CancellationToken cancellationToken = default)
+    public Task<ConversationBudgetStatus> GetStatusAsync(string budgetKey, CancellationToken cancellationToken = default)
     {
-        ArgumentException.ThrowIfNullOrEmpty(conversationId);
+        ArgumentException.ThrowIfNullOrEmpty(budgetKey);
 
         var budget = ConfiguredBudget;
         if (budget <= 0)
             return Task.FromResult(ConversationBudgetStatus.Disabled);
 
-        if (!_entries.TryGetValue(conversationId, out var entry))
+        if (!_entries.TryGetValue(budgetKey, out var entry))
             return Task.FromResult(new ConversationBudgetStatus(true, budget, 0));
 
         entry.LastAccessTicks = _timeProvider.GetUtcNow().UtcTicks;
@@ -104,10 +104,10 @@ public sealed class InProcessConversationBudgetTracker : IConversationBudgetTrac
     }
 
     /// <inheritdoc />
-    public Task ReleaseAsync(string conversationId, CancellationToken cancellationToken = default)
+    public Task ReleaseAsync(string budgetKey, CancellationToken cancellationToken = default)
     {
-        ArgumentException.ThrowIfNullOrEmpty(conversationId);
-        _entries.TryRemove(conversationId, out _);
+        ArgumentException.ThrowIfNullOrEmpty(budgetKey);
+        _entries.TryRemove(budgetKey, out _);
         return Task.CompletedTask;
     }
 

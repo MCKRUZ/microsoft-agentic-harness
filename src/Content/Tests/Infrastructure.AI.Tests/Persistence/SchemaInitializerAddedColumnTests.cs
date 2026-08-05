@@ -120,11 +120,19 @@ public sealed class SchemaInitializerAddedColumnTests : IDisposable
 
     /// <summary>
     /// Reconciliation walks the whole model, so it meets tables the database has never had — a
-    /// subsystem whose file predates a second entity entirely. Creating one here would build it
-    /// without its indexes or foreign keys, so an absent table is left for EnsureCreated to own.
+    /// subsystem whose file predates a second entity entirely. It must create them.
     /// </summary>
+    /// <remarks>
+    /// This assertion is the reverse of what it was. The earlier version pinned "leave an absent table
+    /// alone", reasoning that a hand-built table would lack its indexes and foreign keys. The reasoning
+    /// held for hand-built DDL and the conclusion did not: the durable conversation budget was the
+    /// first table to ship into existing databases, and on every one of them each statement against it
+    /// failed while the tracker's own fault-tolerance swallowed the error — a governance ceiling that
+    /// reported itself enforced and enforced nothing. Creation now goes through EF's own migrations
+    /// generator, so the objection about indexes and foreign keys no longer applies.
+    /// </remarks>
     [Fact]
-    public void SchemaInitializer_ModelHasATableTheDatabaseLacks_LeavesItAloneWithoutThrowing()
+    public void SchemaInitializer_ModelHasATableTheDatabaseLacks_CreatesIt()
     {
         CreateDatabaseWithTheNarrowModel();
 
@@ -133,6 +141,7 @@ public sealed class SchemaInitializerAddedColumnTests : IDisposable
 
         act.Should().NotThrow();
         ColumnsOfWidgets().Should().Contain("Note", "the table that IS present must still be reconciled");
+        ColumnsOf("gadgets").Should().Contain("Id", "the table that was absent must now exist");
     }
 
     /// <summary>
@@ -147,11 +156,13 @@ public sealed class SchemaInitializerAddedColumnTests : IDisposable
         context.SaveChanges();
     }
 
-    private List<string> ColumnsOfWidgets()
+    private List<string> ColumnsOfWidgets() => ColumnsOf("widgets");
+
+    private List<string> ColumnsOf(string table)
     {
         using var connection = new SqliteConnection($"DataSource={_databasePath};Pooling=False");
         connection.Open();
-        return SqliteSchemaProbe.ColumnsAsync(connection, "widgets").GetAwaiter().GetResult();
+        return SqliteSchemaProbe.ColumnsAsync(connection, table).GetAwaiter().GetResult();
     }
 
     private DbContextOptions<T> OptionsFor<T>() where T : DbContext =>

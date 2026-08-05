@@ -100,11 +100,11 @@ public sealed class SqliteConversationBudgetTracker : IConversationBudgetTracker
     /// </para>
     /// </remarks>
     public async Task RecordUsageAsync(
-        string conversationId,
+        string budgetKey,
         int tokensUsed,
         CancellationToken cancellationToken = default)
     {
-        ArgumentException.ThrowIfNullOrEmpty(conversationId);
+        ArgumentException.ThrowIfNullOrEmpty(budgetKey);
         ArgumentOutOfRangeException.ThrowIfNegative(tokensUsed);
 
         if (tokensUsed == 0 || ConfiguredBudget <= 0)
@@ -123,7 +123,7 @@ public sealed class SqliteConversationBudgetTracker : IConversationBudgetTracker
             await context.Database.ExecuteSqlInterpolatedAsync(
                 $"""
                 INSERT INTO conversation_budgets (BudgetKey, ConsumedTokens, UpdatedAt)
-                VALUES ({conversationId}, {tokens}, {nowTicks})
+                VALUES ({budgetKey}, {tokens}, {nowTicks})
                 ON CONFLICT(BudgetKey) DO UPDATE SET
                     ConsumedTokens = ConsumedTokens + excluded.ConsumedTokens,
                     UpdatedAt = excluded.UpdatedAt
@@ -140,17 +140,17 @@ public sealed class SqliteConversationBudgetTracker : IConversationBudgetTracker
                 ex,
                 "Conversation budget accrual failed for {BudgetKey}; {Tokens} tokens are not counted "
                     + "against its ceiling",
-                conversationId,
+                budgetKey,
                 tokensUsed);
         }
     }
 
     /// <inheritdoc />
     public async Task<ConversationBudgetStatus> GetStatusAsync(
-        string conversationId,
+        string budgetKey,
         CancellationToken cancellationToken = default)
     {
-        ArgumentException.ThrowIfNullOrEmpty(conversationId);
+        ArgumentException.ThrowIfNullOrEmpty(budgetKey);
 
         var budget = ConfiguredBudget;
         if (budget <= 0)
@@ -161,7 +161,7 @@ public sealed class SqliteConversationBudgetTracker : IConversationBudgetTracker
             await using var context = await _contextFactory.CreateDbContextAsync(cancellationToken);
 
             var consumed = await context.ConversationBudgets
-                .Where(e => e.BudgetKey == conversationId)
+                .Where(e => e.BudgetKey == budgetKey)
                 .Select(e => (long?)e.ConsumedTokens)
                 .FirstOrDefaultAsync(cancellationToken);
 
@@ -179,29 +179,29 @@ public sealed class SqliteConversationBudgetTracker : IConversationBudgetTracker
             _logger.LogWarning(
                 ex,
                 "Conversation budget read failed for {BudgetKey}; treating it as within its ceiling",
-                conversationId);
+                budgetKey);
 
             return new ConversationBudgetStatus(true, budget, 0);
         }
     }
 
     /// <inheritdoc />
-    public async Task ReleaseAsync(string conversationId, CancellationToken cancellationToken = default)
+    public async Task ReleaseAsync(string budgetKey, CancellationToken cancellationToken = default)
     {
-        ArgumentException.ThrowIfNullOrEmpty(conversationId);
+        ArgumentException.ThrowIfNullOrEmpty(budgetKey);
 
         try
         {
             await using var context = await _contextFactory.CreateDbContextAsync(cancellationToken);
 
             await context.ConversationBudgets
-                .Where(e => e.BudgetKey == conversationId)
+                .Where(e => e.BudgetKey == budgetKey)
                 .ExecuteDeleteAsync(cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(
-                ex, "Conversation budget release failed for {BudgetKey}; its row remains", conversationId);
+                ex, "Conversation budget release failed for {BudgetKey}; its row remains", budgetKey);
         }
     }
 }
