@@ -6,20 +6,20 @@ using Microsoft.Extensions.Logging;
 
 namespace Application.AI.Common.Factories;
 
-/// <summary>
-/// Context-provider half of <see cref="AgentExecutionContextFactory"/>: builds the
-/// <see cref="AIContextProvider"/> rail an agent runs on — progressive skill disclosure, the tool
-/// permission filter, cross-session and learnings recall, the governance wrapper, and the per-turn
-/// budget measurer.
-/// </summary>
-/// <remarks>
-/// <strong>Order on this rail is behaviour, not style.</strong> The runtime feeds each provider the
-/// previous one's output, so a provider only sees what everything above it produced. The two
-/// positional rules that hold the rail together are documented on the members below: any
-/// tool-contributing provider must go above <see cref="Services.Agent.ToolPermissionFilter"/>, and
-/// the per-turn measurer must go last. Both are load-bearing — moving a line here changes which
-/// tools an agent can call and what its budget records.
-/// </remarks>
+// Context-provider half of AgentExecutionContextFactory: builds the AIContextProvider rail an agent
+// runs on — progressive skill disclosure, the tool permission filter, cross-session and learnings
+// recall, the governance wrapper, and the per-turn budget measurer.
+//
+// ORDER ON THIS RAIL IS BEHAVIOUR, NOT STYLE. The runtime feeds each provider the previous one's
+// output, so a provider only sees what everything above it produced. Two positional rules hold the
+// rail together: any tool-contributing provider must go above ToolPermissionFilter (see the inline
+// comment at that call site), and the per-turn measurer must go last (see AppendPerTurnBudgetProvider).
+// Both are load-bearing — moving a line here changes which tools an agent can call and what its
+// budget records.
+//
+// Deliberately a plain comment, not an XML doc: the type's <summary> lives on the primary partial in
+// AgentExecutionContextFactory.cs. A second class-level <summary> on the same type would be merged
+// into one <member> entry, and which one tooling shows is compile-order dependent.
 public partial class AgentExecutionContextFactory
 {
     /// <summary>

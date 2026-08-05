@@ -4,16 +4,15 @@ using Domain.Common.Config.AI;
 
 namespace Application.AI.Common.Factories;
 
-/// <summary>
-/// Resolution half of <see cref="AgentExecutionContextFactory"/>: the pure decisions that turn a
-/// skill plus its call options into the scalar settings an agent context needs — deployment,
-/// framework type, tool ceiling, middleware chain, additional properties, and agent name.
-/// </summary>
-/// <remarks>
-/// Every member here is a resolver: it reads declarations and configuration and returns a value.
-/// None of them touch the budget tracker, the trace store, or the context-provider rail, which is
-/// why they sit apart from the orchestration in <c>AgentExecutionContextFactory.cs</c>.
-/// </remarks>
+// Resolution half of AgentExecutionContextFactory: the per-skill decisions and naming that turn a
+// skill plus its call options into the settings an agent context needs — deployment, framework type,
+// tool ceiling, middleware chain, additional properties, and agent name.
+//
+// What these members have in common is not a shape but an absence: none of them touch the budget
+// tracker, the trace store, or the context-provider rail. They read declarations and configuration
+// and return a value, which is why they sit apart from the orchestration in the primary partial.
+//
+// Deliberately a plain comment, not an XML doc — see AgentExecutionContextFactory.ContextProviders.cs.
 public partial class AgentExecutionContextFactory
 {
     private static AIAgentFrameworkClientType? ResolveFrameworkTypeFromMetadata(SkillDefinition skill)

@@ -14,6 +14,7 @@ using Domain.AI.Telemetry.Conventions;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
 using Domain.Common.MetaHarness;
+using Microsoft.Agents.AI;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -23,7 +24,7 @@ namespace Application.AI.Common.Factories;
 /// Bridges declarative skill definitions (SKILL.md) to runtime <see cref="AgentExecutionContext"/>.
 /// Delegates tool provisioning to <see cref="IToolChainBuilder"/> and prerequisite resolution
 /// to <see cref="ISkillPrerequisiteResolver"/>. Handles instruction assembly, middleware
-/// resolution, budget tracking, and wiring of <c>AgentSkillsProvider</c> for progressive
+/// resolution, budget tracking, and wiring of <see cref="AgentSkillsProvider"/> for progressive
 /// skill disclosure.
 /// </summary>
 /// <remarks>
@@ -35,7 +36,7 @@ namespace Application.AI.Common.Factories;
 ///   <item><c>AgentExecutionContextFactory.Prompt.cs</c> — authoritative static system prompt composition.</item>
 ///   <item><c>AgentExecutionContextFactory.SkillDisclosure.cs</c> — progressive-disclosure budget charging and fallback reporting.</item>
 ///   <item><c>AgentExecutionContextFactory.ContextProviders.cs</c> — the ordered <c>AIContextProvider</c> rail.</item>
-///   <item><c>AgentExecutionContextFactory.Resolution.cs</c> — deployment, framework, tool-ceiling, middleware, and naming resolvers.</item>
+///   <item><c>AgentExecutionContextFactory.Resolution.cs</c> — deployment, framework, tool-ceiling, middleware, additional-property, and naming decisions.</item>
 /// </list>
 /// </remarks>
 public partial class AgentExecutionContextFactory

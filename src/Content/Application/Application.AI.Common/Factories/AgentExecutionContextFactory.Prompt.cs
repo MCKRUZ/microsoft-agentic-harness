@@ -5,17 +5,11 @@ using Microsoft.Extensions.Logging;
 
 namespace Application.AI.Common.Factories;
 
-/// <summary>
-/// Static-prompt half of <see cref="AgentExecutionContextFactory"/>: composes the authoritative
-/// system prompt through <see cref="ISystemPromptComposer"/> when prompt composition is enabled.
-/// </summary>
-/// <remarks>
-/// This path is fail-open by design. Composition is an improvement on the legacy merged instruction,
-/// never a precondition for running an agent, so every way it can fall short — no request scope, no
-/// composer, a fault, an empty result — returns the legacy instruction unchanged rather than
-/// throwing. That is what keeps the feature safe to enable in a host that has not wired the scoped
-/// composer.
-/// </remarks>
+// Static-prompt half of AgentExecutionContextFactory: composes the authoritative system prompt
+// through ISystemPromptComposer when prompt composition is enabled. Fail-open by design — see the
+// member's own doc for the four ways it falls back.
+//
+// Deliberately a plain comment, not an XML doc — see AgentExecutionContextFactory.ContextProviders.cs.
 public partial class AgentExecutionContextFactory
 {
     /// <summary>

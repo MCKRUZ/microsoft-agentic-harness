@@ -4,18 +4,13 @@ using Microsoft.Extensions.Logging;
 
 namespace Application.AI.Common.Factories;
 
-/// <summary>
-/// Progressive-disclosure half of <see cref="AgentExecutionContextFactory"/>: makes the skills the
-/// framework will serve on demand chargeable to the agent's budget, and reports the ones that had to
-/// stay eagerly in the static prompt.
-/// </summary>
-/// <remarks>
-/// Disclosure only pays for itself if its cost is visible. A skill served on demand is invisible to
-/// the factory's up-front budget records — the tokens arrive later, when the model pulls the body —
-/// and a skill that quietly falls back to eager injection is invisible too, because the agent keeps
-/// working and only the prompt grows. The two members here close both gaps: one charges the pulls,
-/// the other names the fallbacks.
-/// </remarks>
+// Progressive-disclosure half of AgentExecutionContextFactory. Disclosure only pays for itself if its
+// cost is visible, and both halves of that cost are invisible by default: tokens for an on-demand
+// skill arrive later (when the model pulls the body), and a skill that silently falls back to eager
+// injection shows no symptom at all. The two members here close those gaps — one charges the pulls,
+// the other names the fallbacks.
+//
+// Deliberately a plain comment, not an XML doc — see AgentExecutionContextFactory.ContextProviders.cs.
 public partial class AgentExecutionContextFactory
 {
     /// <summary>
