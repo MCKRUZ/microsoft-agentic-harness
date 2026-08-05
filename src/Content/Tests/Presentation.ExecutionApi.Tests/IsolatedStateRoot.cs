@@ -29,10 +29,14 @@ namespace Presentation.ExecutionApi.Tests;
 /// </remarks>
 internal static class IsolatedStateRoot
 {
+    private const string RootPrefix = "execapi-tests-";
+
     [ModuleInitializer]
     internal static void Redirect()
     {
-        var root = Path.Combine(Path.GetTempPath(), $"execapi-tests-{Guid.NewGuid():N}");
+        SweepAbandonedRoots();
+
+        var root = Path.Combine(Path.GetTempPath(), $"{RootPrefix}{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
 
         // Absolute paths survive the hosts' Path.Combine(AppContext.BaseDirectory, configured)
@@ -45,6 +49,31 @@ internal static class IsolatedStateRoot
             "AppConfig__AI__Rag__GraphDatabase__DataDirectory", Path.Combine(root, "graph"));
 
         AppDomain.CurrentDomain.ProcessExit += (_, _) => TryDelete(root);
+    }
+
+    /// <summary>
+    /// Removes roots left by earlier runs that never reached their process-exit cleanup — a run
+    /// killed from the IDE, or one whose SQLite handles were still open. Without this, moving the
+    /// state out of the build output would just relocate the accumulation to the temp directory.
+    /// A day's grace keeps it clear of any run still in flight on the same machine.
+    /// </summary>
+    private static void SweepAbandonedRoots()
+    {
+        try
+        {
+            var cutoff = DateTime.UtcNow.AddDays(-1);
+            foreach (var stale in Directory.EnumerateDirectories(Path.GetTempPath(), $"{RootPrefix}*"))
+            {
+                if (Directory.GetCreationTimeUtc(stale) < cutoff)
+                    TryDelete(stale);
+            }
+        }
+        catch (IOException)
+        {
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
     }
 
     /// <summary>

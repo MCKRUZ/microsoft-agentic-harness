@@ -79,6 +79,45 @@ public sealed class SkillMetadataParserEgressTests : IDisposable
     }
 
     /// <summary>
+    /// The allowlist must survive a blank line between entries on a CRLF file, and a line of
+    /// spaces. Both look like "no leading whitespace" or "a real indent level" to an
+    /// indent-sensitive parser, and truncating the list here silently NARROWS an egress
+    /// allowlist — a security control losing entries without saying so.
+    /// </summary>
+    [Fact]
+    public void ParseFromFile_CrlfAndWhitespaceLinesInsideAllowlist_KeepsEveryEntry()
+    {
+        // The whitespace-only line sits between "allowlist:" and the FIRST entry. That is the
+        // position that decides the whole block: the item-indent probe reads a line of spaces as
+        // "indented, but not a list item — malformed" and abandons the allowlist entirely.
+        var content = string.Join("\r\n",
+            "---",
+            "name: \"github-reader\"",
+            "description: \"Reads GitHub issues\"",
+            "egress:",
+            "  allowlist:",
+            "    ",
+            "    - host: \"api.github.com\"",
+            "      schemes: [\"https\"]",
+            "      ports: [443]",
+            "",
+            "    - host: \"api.example.com\"",
+            "      schemes: [\"https\"]",
+            "    - hostPattern: \"*.azure-api.net\"",
+            "      schemes: [\"https\"]",
+            "---",
+            "Body content here.");
+
+        var path = WriteSkillFile(content);
+        var skill = _sut.ParseFromFile(path, _tempDir);
+
+        skill.Egress.Should().NotBeNull();
+        skill.Egress!.Allowlist.Should().HaveCount(3);
+        skill.Egress.Allowlist[1].Host.Should().Be("api.example.com");
+        skill.Egress.Allowlist[2].HostPattern.Should().Be("*.azure-api.net");
+    }
+
+    /// <summary>
     /// A skill without an <c>egress</c> block has <see cref="Domain.AI.Skills.SkillDefinition.Egress"/> == null.
     /// Inheritance of the harness-wide default with no additions happens in the resolver.
     /// </summary>

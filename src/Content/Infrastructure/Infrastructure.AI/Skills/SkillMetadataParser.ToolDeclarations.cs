@@ -135,14 +135,15 @@ public sealed partial class SkillMetadataParser
     {
         var declaration = new ToolDeclaration();
 
-        // Set while a key has been seen whose value is a block sequence rather than an inline
-        // array, so the following '- item' lines are read as that key's entries.
-        string? pendingListKey = null;
+        // Set while `operations:` has been seen with no inline value, so the following '- item'
+        // lines are read as its entries. Operations is the only key that can be a block sequence,
+        // which is why one flag suffices.
+        var operationsPending = false;
 
         var first = lines[startIdx].TrimStart();
         var firstAfterDash = first.Length > 1 ? first[1..].TrimStart() : string.Empty;
         if (!string.IsNullOrEmpty(firstAfterDash))
-            ApplyDeclarationKvp(firstAfterDash, declaration, ref pendingListKey);
+            operationsPending = ApplyDeclarationKvp(firstAfterDash, declaration);
 
         var i = startIdx + 1;
         while (i < lines.Length)
@@ -160,20 +161,17 @@ public sealed partial class SkillMetadataParser
 
             var trimmed = raw.TrimStart();
 
-            if (pendingListKey is not null && trimmed.StartsWith('-'))
+            if (operationsPending && trimmed.StartsWith('-'))
             {
                 var item = trimmed[1..].Trim().Trim('"', '\'');
-                if (!string.IsNullOrEmpty(item) &&
-                    pendingListKey.Equals("operations", StringComparison.OrdinalIgnoreCase))
-                {
+                if (!string.IsNullOrEmpty(item))
                     declaration.Operations.Add(item);
-                }
 
                 i++;
                 continue;
             }
 
-            ApplyDeclarationKvp(trimmed, declaration, ref pendingListKey);
+            operationsPending = ApplyDeclarationKvp(trimmed, declaration);
             i++;
         }
 
@@ -183,18 +181,19 @@ public sealed partial class SkillMetadataParser
             : (declaration, consumed);
     }
 
-    private static void ApplyDeclarationKvp(
-        string trimmed,
-        ToolDeclaration declaration,
-        ref string? pendingListKey)
+    /// <summary>
+    /// Applies one <c>key: value</c> line to <paramref name="declaration"/>. Returns true when the
+    /// line opened <c>operations:</c> with no inline value, meaning the caller should read the
+    /// following <c>- item</c> lines as its entries.
+    /// </summary>
+    private static bool ApplyDeclarationKvp(string trimmed, ToolDeclaration declaration)
     {
         var colon = trimmed.IndexOf(':', StringComparison.Ordinal);
         if (colon <= 0)
-            return;
+            return false;
 
         var key = trimmed[..colon].Trim();
         var value = trimmed[(colon + 1)..].Trim().Trim('"', '\'');
-        pendingListKey = null;
 
         if (key.Equals("name", StringComparison.OrdinalIgnoreCase))
             declaration.Name = value;
@@ -215,9 +214,11 @@ public sealed partial class SkillMetadataParser
             if (value.StartsWith('['))
                 declaration.Operations = [.. ParseInlineStringArray(value)];
             else if (value.Length == 0)
-                pendingListKey = "operations";
+                return true; // a block sequence follows
         }
         // Unknown scalar keys ignored — see the remarks on ParseToolDeclarations.
+
+        return false;
     }
 
     /// <summary>

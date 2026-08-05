@@ -473,7 +473,7 @@ public sealed partial class SkillMetadataParser
         for (var probe = i; probe < lines.Length; probe++)
         {
             var raw = lines[probe];
-            if (raw.Length == 0)
+            if (IsBlank(raw))
                 continue;
 
             var leading = CountLeadingSpaces(raw);
@@ -497,7 +497,7 @@ public sealed partial class SkillMetadataParser
         while (i < lines.Length)
         {
             var raw = lines[i];
-            if (raw.Length == 0)
+            if (IsBlank(raw))
             {
                 i++;
                 continue;
@@ -551,7 +551,7 @@ public sealed partial class SkillMetadataParser
         while (i < lines.Length)
         {
             var raw = lines[i];
-            if (raw.Length == 0)
+            if (IsBlank(raw))
             {
                 i++;
                 continue;
