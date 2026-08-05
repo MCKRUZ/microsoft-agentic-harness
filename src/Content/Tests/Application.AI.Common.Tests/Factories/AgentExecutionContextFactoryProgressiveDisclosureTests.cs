@@ -1,6 +1,9 @@
 using Application.AI.Common.Factories;
+using Application.AI.Common.Helpers;
+using Application.AI.Common.Interfaces.Context;
 using Application.AI.Common.Interfaces.Skills;
 using Application.AI.Common.Services.Agent;
+using Application.AI.Common.Services.Context;
 using Application.AI.Common.Services.Skills;
 using Application.AI.Common.Services.Tools;
 using Application.AI.Common.Tests.Helpers;
@@ -95,7 +98,7 @@ public sealed class AgentExecutionContextFactoryProgressiveDisclosureTests : IDi
         AllowedTools = ["file_system"]
     };
 
-    private AgentExecutionContextFactory CreateFactory()
+    private AgentExecutionContextFactory CreateFactory(IContextBudgetTracker? budgetTracker = null)
     {
         var appConfig = new AppConfig
         {
@@ -115,8 +118,18 @@ public sealed class AgentExecutionContextFactoryProgressiveDisclosureTests : IDi
             NullLoggerFactory.Instance,
             new ToolChainBuilder(NullLogger<ToolChainBuilder>.Instance, sp),
             new SkillPrerequisiteResolver(),
-            new UnsandboxedSkillFileReader());
+            new UnsandboxedSkillFileReader(),
+            budgetTracker);
     }
+
+    private static ContextBudgetTracker CreateBudgetTracker() => new(
+        Mock.Of<IOptionsMonitor<AppConfig>>(m => m.CurrentValue == new AppConfig()),
+        NullLogger<ContextBudgetTracker>.Instance);
+
+    /// <summary>
+    /// The agent name the factory derives from the skill name, which is the key the budget is filed under.
+    /// </summary>
+    private const string AgentName = "DemoSkillAgent";
 
     /// <summary>
     /// Drives the framework skills provider exactly as the agent runtime does and returns the
@@ -288,5 +301,73 @@ public sealed class AgentExecutionContextFactoryProgressiveDisclosureTests : IDi
             ReferenceMarker,
             "Tier 3 exists so bulk reference material stays out of the prompt until asked for; if the read " +
             "does not return the file's contents, that material is simply unreachable");
+    }
+
+    // ── The budget sees what the tiers defer ──────────────────────────────────
+
+    [Fact]
+    public async Task LoadSkill_ChargesTheBodyItServedToTheContextBudget()
+    {
+        var budget = CreateBudgetTracker();
+        var context = await CreateFactory(budget).MapToAgentContextAsync([MakeSkill()], new SkillAgentOptions());
+        var aiContext = await InvokeSkillsProviderAsync(SkillsProviderOf(context));
+
+        var beforeLoad = budget.GetBreakdown(AgentName);
+        var body = await aiContext.Tools!
+            .OfType<AIFunction>()
+            .Single(t => t.Name == AgentSkillsProvider.LoadSkillToolName)
+            .InvokeAsync(new AIFunctionArguments { ["skillName"] = SkillName });
+
+        // Positive control: without this, a provider that served nothing would satisfy the assertion below
+        // by charging nothing, and the test would pass while proving the opposite of what it claims.
+        body?.ToString().Should().Contain(BodyMarker, "the load must actually have served the body");
+
+        beforeLoad.Should().NotContainKey(
+            BudgetChargingSkill.Tier2Component,
+            "Tier 2 is deferred — nothing is owed for it until the model asks");
+        budget.GetBreakdown(AgentName).Should().ContainKey(
+            BudgetChargingSkill.Tier2Component,
+            "the tokens the body just put into the context are spent whether or not the harness counts " +
+            "them; uncounted, the budget under-reports worst on the turns that load the most skills")
+            .WhoseValue.Should().Be(TokenEstimationHelper.EstimateTokens(body?.ToString()));
+    }
+
+    [Fact]
+    public async Task ReadSkillResource_ChargesTheFileItServedToTheContextBudget()
+    {
+        var referencePath = Path.Combine(_skillDir, "references", "guide.md");
+        Directory.CreateDirectory(Path.GetDirectoryName(referencePath)!);
+        await File.WriteAllTextAsync(referencePath, ReferenceMarker);
+
+        var skill = MakeSkill();
+        skill.References.Add(new SkillResource
+        {
+            FileName = "guide.md",
+            RelativePath = "references/guide.md",
+            FilePath = referencePath,
+            ResourceType = SkillResourceType.Reference
+        });
+
+        var budget = CreateBudgetTracker();
+        var context = await CreateFactory(budget).MapToAgentContextAsync([skill], new SkillAgentOptions());
+        var aiContext = await InvokeSkillsProviderAsync(SkillsProviderOf(context));
+
+        var readArguments = new AIFunctionArguments
+        {
+            ["skillName"] = SkillName,
+            ["resourceName"] = "references/guide.md"
+        };
+        readArguments.Services = new ServiceCollection().BuildServiceProvider();
+
+        var resource = await aiContext.Tools!
+            .OfType<AIFunction>()
+            .Single(t => t.Name == AgentSkillsProvider.ReadSkillResourceToolName)
+            .InvokeAsync(readArguments);
+
+        resource?.ToString().Should().Contain(ReferenceMarker, "the read must actually have served the file");
+        budget.GetBreakdown(AgentName).Should().ContainKey(
+            BudgetChargingSkill.Tier3Component,
+            "Tier 3 is where the bulk lives — supporting files are exactly the material progressive " +
+            "disclosure defers, so a budget blind to them is blind to the largest on-demand cost");
     }
 }

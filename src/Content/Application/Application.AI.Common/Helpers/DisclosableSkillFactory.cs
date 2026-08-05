@@ -13,8 +13,13 @@ namespace Application.AI.Common.Helpers;
 /// The <see cref="SkillDefinition.Id"/> this was built from. Its instructions are served on demand through
 /// <c>load_skill</c> and may therefore be left out of the prompt.
 /// </param>
-/// <param name="Skill">The framework skill handed to <c>AgentSkillsProviderBuilder.UseSkills</c>.</param>
-public sealed record DisclosableSkill(string SkillId, AgentInlineSkill Skill);
+/// <param name="Skill">
+/// The framework skill handed to <c>AgentSkillsProviderBuilder.UseSkills</c>. Typed as the
+/// <see cref="AgentSkill"/> base rather than the concrete inline skill so callers can decorate it —
+/// <see cref="Services.Skills.BudgetChargingSkill"/> does, to charge on-demand pulls to the context
+/// budget — which subclassing cannot achieve, as <see cref="AgentInlineSkill"/> is sealed.
+/// </param>
+public sealed record DisclosableSkill(string SkillId, AgentSkill Skill);
 
 /// <summary>
 /// Builds the framework skills that back progressive (Tier 2/3) disclosure, one per skill actually

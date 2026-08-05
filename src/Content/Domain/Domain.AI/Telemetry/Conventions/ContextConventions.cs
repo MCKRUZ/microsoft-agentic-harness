@@ -26,6 +26,20 @@ public static class ContextConventions
     /// <summary>Context source type dimension label.</summary>
     public const string SourceType = "agent.context.source_type";
 
+    /// <summary>
+    /// Values for the <see cref="SkillsTier"/> dimension — which disclosure tier a skill's tokens were
+    /// paid for. Numeric so a dashboard can order them; the names carry the meaning.
+    /// </summary>
+    public static class SkillsTierValues
+    {
+        /// <summary>Tier 1 — the name/description index card, present from the first turn.</summary>
+        public const string IndexCard = "1";
+        /// <summary>Tier 2 — the skill body, pulled when the model calls <c>load_skill</c>.</summary>
+        public const string Folder = "2";
+        /// <summary>Tier 3 — a supporting file, pulled when the model calls <c>read_skill_resource</c>.</summary>
+        public const string FilingCabinet = "3";
+    }
+
     public static class SourceTypeValues
     {
         public const string SystemPrompt = "system_prompt";

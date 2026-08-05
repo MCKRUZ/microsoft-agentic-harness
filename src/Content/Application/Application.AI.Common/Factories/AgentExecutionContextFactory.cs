@@ -111,6 +111,12 @@ public class AgentExecutionContextFactory
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         LogSkillsExcludedFromDisclosure(skills, disclosedOnDemand);
 
+        // Everything above moves cost OUT of the static prompt and into on-demand pulls the harness never
+        // sees, because they happen inside the framework provider. Left there, the budget recorded below
+        // would under-report by exactly the amount progressive disclosure defers — worst on the turns that
+        // load the most. Wrapping each skill puts harness code back in that path (issue #248).
+        disclosableSkills = ChargeSkillLoadsToBudget(disclosableSkills, agentName);
+
         // Static system prompt. The legacy path merges skill instructions + additional context
         // verbatim (SkillInstructionMerger is the single source of truth for that format). Bodies the
         // framework provider will serve through load_skill are omitted — that is Tier 2 content, and the
@@ -502,6 +508,29 @@ public class AgentExecutionContextFactory
         }
 
         return providers.Count > 0 ? providers : null;
+    }
+
+    /// <summary>
+    /// Wraps each disclosable skill so the tokens its Tier 2 body and Tier 3 files put into the context are
+    /// charged to <paramref name="agentName"/>'s budget when the model pulls them.
+    /// </summary>
+    /// <param name="disclosableSkills">The skills about to be handed to the framework provider.</param>
+    /// <param name="agentName">The agent whose budget the pulls are charged to.</param>
+    /// <returns>
+    /// The same skills, each wrapped — or the input unchanged when no budget tracker is wired in, so a host
+    /// that does not track context passes the framework's own skill objects through untouched.
+    /// </returns>
+    private IReadOnlyList<DisclosableSkill> ChargeSkillLoadsToBudget(
+        IReadOnlyList<DisclosableSkill> disclosableSkills,
+        string agentName)
+    {
+        if (_budgetTracker is null || disclosableSkills.Count == 0)
+            return disclosableSkills;
+
+        return [.. disclosableSkills.Select(s => s with
+        {
+            Skill = new Services.Skills.BudgetChargingSkill(s.Skill, agentName, _budgetTracker)
+        })];
     }
 
     /// <summary>
