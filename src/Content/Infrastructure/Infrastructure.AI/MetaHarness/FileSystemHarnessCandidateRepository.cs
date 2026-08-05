@@ -17,7 +17,7 @@ namespace Infrastructure.AI.MetaHarness;
 public sealed class FileSystemHarnessCandidateRepository : IHarnessCandidateRepository, IDisposable
 {
     private readonly IOptionsMonitor<MetaHarnessConfig> _options;
-    private readonly ConcurrentDictionary<Guid, SemaphoreSlim> _indexLocks = new();
+    private readonly ConcurrentDictionary<Guid, IndexLock> _indexLocks = new();
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -40,6 +40,12 @@ public sealed class FileSystemHarnessCandidateRepository : IHarnessCandidateRepo
         _options = options;
     }
 
+    /// <summary>
+    /// The number of optimization runs currently holding or awaiting the index lock. Exposed so
+    /// the eviction tests can observe it; not part of <see cref="IHarnessCandidateRepository"/>.
+    /// </summary>
+    internal int TrackedIndexLocks => _indexLocks.Count;
+
     /// <inheritdoc/>
     public async Task SaveAsync(HarnessCandidate candidate, CancellationToken ct = default)
     {
@@ -50,8 +56,20 @@ public sealed class FileSystemHarnessCandidateRepository : IHarnessCandidateRepo
         var json = JsonSerializer.Serialize(dto, JsonOptions);
         await WriteAtomicAsync(Path.Combine(dir, "candidate.json"), json, ct);
 
-        var semaphore = _indexLocks.GetOrAdd(candidate.OptimizationRunId, _ => new SemaphoreSlim(1, 1));
-        await semaphore.WaitAsync(ct);
+        var entry = Reserve(candidate.OptimizationRunId);
+
+        try
+        {
+            await entry.Semaphore.WaitAsync(ct);
+        }
+        catch
+        {
+            // Cancelled while queued. The reservation has to come back off, or an abandoned wait
+            // pins the entry for the lifetime of the host — the same leak by a different route.
+            Unreserve(candidate.OptimizationRunId, entry);
+            throw;
+        }
+
         try
         {
             var indexPath = IndexPath(candidate.OptimizationRunId);
@@ -75,7 +93,11 @@ public sealed class FileSystemHarnessCandidateRepository : IHarnessCandidateRepo
         }
         finally
         {
-            semaphore.Release();
+            // Release before unreserving. Unreserving can dispose the semaphore, and disposing one
+            // that has not been released loses the slot for every future acquirer of a re-created
+            // entry — which is a deadlock, not a leak.
+            entry.Semaphore.Release();
+            Unreserve(candidate.OptimizationRunId, entry);
         }
     }
 
@@ -192,10 +214,110 @@ public sealed class FileSystemHarnessCandidateRepository : IHarnessCandidateRepo
     }
 
     /// <inheritdoc/>
+    /// <remarks>
+    /// Entries evict themselves as soon as nothing holds or awaits them, so in a settled host
+    /// this has nothing to do. It remains as the backstop for disposal mid-save.
+    /// </remarks>
     public void Dispose()
     {
-        foreach (var semaphore in _indexLocks.Values)
-            semaphore.Dispose();
+        foreach (var entry in _indexLocks.Values)
+        {
+            // Take the entry's own gate and mark it evicted rather than disposing blind. Disposal
+            // racing an in-flight Unreserve would otherwise dispose the same semaphore twice, and
+            // a reserver that has already published a successor entry would be handed a disposed
+            // one. Marking under the gate makes both paths agree on who disposes.
+            lock (entry.Gate)
+            {
+                if (entry.Evicted)
+                    continue;
+
+                entry.Evicted = true;
+                entry.Semaphore.Dispose();
+            }
+        }
+
+        _indexLocks.Clear();
+    }
+
+    // -------------------------------------------------------------------------
+    // Index-lock lifetime
+    // -------------------------------------------------------------------------
+
+    /// <summary>
+    /// Takes a reference on the run's index lock, creating it if needed.
+    /// </summary>
+    /// <remarks>
+    /// The retry loop closes the window between <c>GetOrAdd</c> handing back an entry and this
+    /// thread taking its reference: a releasing thread may evict that entry in between. Eviction
+    /// sets <see cref="IndexLock.Evicted"/> under the entry's own lock, so a reserver that loses
+    /// the race sees the flag and starts again against whatever is in the dictionary now — rather
+    /// than waiting on a semaphore no future writer will look up.
+    /// <para>
+    /// What makes the retry terminate is that eviction also removes the entry from the dictionary
+    /// under that same lock, so the next <c>GetOrAdd</c> cannot hand back the flagged one.
+    /// Flagging without removing turns this into a spin that never ends.
+    /// </para>
+    /// </remarks>
+    private IndexLock Reserve(Guid optimizationRunId)
+    {
+        while (true)
+        {
+            var entry = _indexLocks.GetOrAdd(optimizationRunId, static _ => new IndexLock());
+
+            lock (entry.Gate)
+            {
+                if (!entry.Evicted)
+                {
+                    entry.References++;
+                    return entry;
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Drops a reference and evicts the entry once nothing holds or awaits it.
+    /// </summary>
+    /// <remarks>
+    /// Disposing the semaphore here is safe precisely because the count reached zero: no thread
+    /// holds it and none is waiting on it, and a thread about to wait is still blocked on
+    /// <see cref="IndexLock.Gate"/> in <see cref="Reserve"/> and will see the eviction flag
+    /// instead. The key-and-value overload of <c>TryRemove</c> matters — removing by key alone
+    /// could delete a successor entry a concurrent reserver has already published.
+    /// </remarks>
+    private void Unreserve(Guid optimizationRunId, IndexLock entry)
+    {
+        lock (entry.Gate)
+        {
+            if (--entry.References > 0)
+                return;
+
+            // Already evicted means Dispose got here first and owns the semaphore.
+            if (entry.Evicted)
+                return;
+
+            entry.Evicted = true;
+            _indexLocks.TryRemove(new KeyValuePair<Guid, IndexLock>(optimizationRunId, entry));
+            entry.Semaphore.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// Per-run index-file lock plus the reference count that decides when it is dropped.
+    /// </summary>
+    private sealed class IndexLock
+    {
+        /// <summary>Guards <see cref="References"/> and <see cref="Evicted"/>. Never held across an await.</summary>
+        public object Gate { get; } = new();
+
+        /// <summary>The binary lock serialising index writes for one optimization run.</summary>
+        public SemaphoreSlim Semaphore { get; } = new(1, 1);
+
+        /// <summary>Holders plus waiters. Guarded by <see cref="Gate"/>.</summary>
+        public int References { get; set; }
+
+        /// <summary>Set once this entry has left the dictionary, so a racing reserver retries.</summary>
+        public bool Evicted { get; set; }
     }
 
     // -------------------------------------------------------------------------

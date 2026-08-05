@@ -19,12 +19,13 @@ namespace Infrastructure.AI.Skills;
 /// for the authoritative list. Background: <c>docs/plans/skills-refactor-to-framework.md</c>.
 /// </para>
 /// <para>
-/// It does <em>not</em> parse the structured <c>tools:</c> block that shipped SKILL.md files
-/// declare — <see cref="SkillDefinition.ToolDeclarations"/> is never populated from frontmatter
-/// (issue #222).
+/// That list includes the structured <c>tools:</c> block, which the framework cannot represent
+/// at all: its <c>metadata:</c> escape hatch captures flat strings, while a tool declaration is
+/// a list of maps carrying operations, an optional flag, and a fallback. Parsing it here is what
+/// makes <see cref="SkillDefinition.ToolDeclarations"/> reach the runtime (issue #222).
 /// </para>
 /// </remarks>
-public sealed class SkillMetadataParser
+public sealed partial class SkillMetadataParser
 {
     private readonly ILogger<SkillMetadataParser> _logger;
 
@@ -68,6 +69,7 @@ public sealed class SkillMetadataParser
             AgentId = ParseString(frontmatter, "agent-id"),
             Tags = ParseList(frontmatter, "tags"),
             AllowedTools = ParseList(frontmatter, "allowed-tools"),
+            ToolDeclarations = ParseToolDeclarations(frontmatter),
             Prerequisites = ParseList(frontmatter, "prerequisites"),
             CompletionTool = ParseString(frontmatter, "completion_tool"),
             Metadata = metaBlock?.ToDictionary(kv => kv.Key, kv => (object)kv.Value),
@@ -129,6 +131,7 @@ public sealed class SkillMetadataParser
             AgentId = ParseString(rawFrontmatter, "agent-id"),
             Tags = ParseList(rawFrontmatter, "tags"),
             AllowedTools = ParseList(rawFrontmatter, "allowed-tools"),
+            ToolDeclarations = ParseToolDeclarations(rawFrontmatter),
             Prerequisites = ParseList(rawFrontmatter, "prerequisites"),
             CompletionTool = ParseString(rawFrontmatter, "completion_tool"),
             Metadata = metaBlock?.ToDictionary(kv => kv.Key, kv => (object)kv.Value),
@@ -142,13 +145,20 @@ public sealed class SkillMetadataParser
         };
     }
 
+    /// <remarks>
+    /// Line endings are normalised to LF because every block parser below splits on <c>'\n'</c>
+    /// and then judges a line by its leading whitespace. Left as CRLF, a blank line arrives as
+    /// <c>"\r"</c> — no leading whitespace, which reads as "the block ended" and silently
+    /// truncates the rest of it. Every SKILL.md in this repository is CRLF on disk, so this is
+    /// the normal case rather than an edge one.
+    /// </remarks>
     private static string? ExtractFrontmatter(string raw)
     {
         if (!raw.StartsWith("---", StringComparison.Ordinal))
             return null;
 
         var end = raw.IndexOf("---", 3, StringComparison.Ordinal);
-        return end < 0 ? null : raw[3..end];
+        return end < 0 ? null : raw[3..end].Replace("\r\n", "\n", StringComparison.Ordinal);
     }
 
     private static string ExtractBody(string raw, string? frontmatter)
@@ -463,7 +473,7 @@ public sealed class SkillMetadataParser
         for (var probe = i; probe < lines.Length; probe++)
         {
             var raw = lines[probe];
-            if (raw.Length == 0)
+            if (IsBlank(raw))
                 continue;
 
             var leading = CountLeadingSpaces(raw);
@@ -487,7 +497,7 @@ public sealed class SkillMetadataParser
         while (i < lines.Length)
         {
             var raw = lines[i];
-            if (raw.Length == 0)
+            if (IsBlank(raw))
             {
                 i++;
                 continue;
@@ -541,7 +551,7 @@ public sealed class SkillMetadataParser
         while (i < lines.Length)
         {
             var raw = lines[i];
-            if (raw.Length == 0)
+            if (IsBlank(raw))
             {
                 i++;
                 continue;
