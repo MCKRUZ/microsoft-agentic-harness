@@ -287,7 +287,8 @@ public sealed class AgUiRunHandler
         // Conversation-lifetime budget gate: decline gracefully (no LLM dispatch) when the
         // conversation has exhausted its cumulative ceiling, emitting the explanatory message as a
         // normal assistant turn rather than a RunErrorEvent. No-op when the budget is disabled.
-        if (_conversationBudget.GetStatus(input.ThreadId).IsExhausted)
+        var budgetStatus = await _conversationBudget.GetStatusAsync(input.ThreadId, ct);
+        if (budgetStatus.IsExhausted)
         {
             await EmitBudgetExhaustedAsync(writer, input, record.AgentName, callerId, ct);
             return;
@@ -355,7 +356,8 @@ public sealed class AgUiRunHandler
 
         // Fold this turn's tokens into the conversation-lifetime budget so a subsequent run is
         // declined once the cumulative ceiling is crossed. No-op when the budget is disabled.
-        _conversationBudget.RecordUsage(input.ThreadId, result.InputTokens + result.OutputTokens);
+        await _conversationBudget.RecordUsageAsync(
+            input.ThreadId, result.InputTokens + result.OutputTokens, ct);
 
         var previousTelemetry = record.Telemetry ?? TelemetryAccumulator.Zero;
         var updatedTelemetry = previousTelemetry.Add(

@@ -368,7 +368,9 @@ public sealed class AgUiRunHandlerTests
         {
             // Budget disabled by default — most tests don't exercise the conversation budget.
             budget = new Mock<IConversationBudgetTracker>();
-            budget.Setup(b => b.GetStatus(It.IsAny<string>())).Returns(ConversationBudgetStatus.Disabled);
+            budget
+                .Setup(b => b.GetStatusAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(ConversationBudgetStatus.Disabled);
         }
 
         var environment = new Mock<IHostEnvironment>();
@@ -529,7 +531,9 @@ public sealed class AgUiRunHandlerTests
              .ReturnsAsync(new List<ConversationMessage>());
 
         var budget = new Mock<IConversationBudgetTracker>();
-        budget.Setup(b => b.GetStatus(threadId)).Returns(new ConversationBudgetStatus(true, 100, 100));
+        budget
+            .Setup(b => b.GetStatusAsync(threadId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ConversationBudgetStatus(true, 100, 100));
 
         var handler = BuildHandler(mediator, store, budget: budget);
         var input = MakeInput(threadId, "hello");
@@ -636,7 +640,9 @@ public sealed class AgUiRunHandlerTests
                 .ReturnsAsync(MakeSuccessResult(agentResponse));
 
         var budget = new Mock<IConversationBudgetTracker>();
-        budget.Setup(b => b.GetStatus(It.IsAny<string>())).Returns(ConversationBudgetStatus.Disabled);
+        budget
+            .Setup(b => b.GetStatusAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ConversationBudgetStatus.Disabled);
 
         var handler = BuildHandler(mediator, store, budget: budget);
         var input = MakeInput(threadId, "Hi there");
@@ -676,7 +682,8 @@ public sealed class AgUiRunHandlerTests
               .Should().BeTrue();
 
         // A successful turn folds its usage into the conversation-lifetime budget.
-        budget.Verify(b => b.RecordUsage(threadId, It.IsAny<int>()), Times.Once);
+        budget.Verify(
+            b => b.RecordUsageAsync(threadId, It.IsAny<int>(), It.IsAny<CancellationToken>()), Times.Once);
 
         // Conversation persistence: user msg + assistant msg both appended
         store.Verify(s => s.AppendMessageAsync(

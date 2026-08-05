@@ -127,10 +127,10 @@ public sealed class PlanRunLlmCallScopeTests
     /// </summary>
     private (PlanRunExecutor Executor, RecordingPlanExecutor PlanExecutor) BuildRun(int stepCount)
     {
-        var budget = new ConversationBudgetTracker(
+        var budget = new InProcessConversationBudgetTracker(
             Mock.Of<IOptionsMonitor<AppConfig>>(m => m.CurrentValue == new AppConfig { AI = new AIConfig() }),
             TimeProvider.System,
-            NullLogger<ConversationBudgetTracker>.Instance);
+            NullLogger<InProcessConversationBudgetTracker>.Instance);
 
         var governor = new Mock<IToolInvocationGovernor>();
         governor.Setup(g => g.AuthorizeAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))

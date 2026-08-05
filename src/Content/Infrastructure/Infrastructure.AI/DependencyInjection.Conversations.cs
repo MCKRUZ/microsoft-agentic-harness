@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces.AI;
+using Application.AI.Common.Services.AI;
 using Domain.Common.Config;
 using Domain.Common.Config.AI.Conversations;
 using Infrastructure.AI.Conversations;
@@ -56,6 +57,11 @@ public static partial class DependencyInjection
             // lease that reaches only that far loses nothing; a durable lease paired with it would
             // serialise turns the store cannot survive anyway.
             services.AddSingleton<IConversationTurnLease, InProcessConversationTurnLease>();
+
+            // Same reasoning a third time. A budget that reaches only this process is exactly as far
+            // as this store's transcripts do, so nothing is under-enforced that was not already
+            // single-host; and a durable budget here would need a database this provider never opens.
+            services.AddSingleton<IConversationBudgetTracker, InProcessConversationBudgetTracker>();
             return;
         }
 
@@ -72,6 +78,11 @@ public static partial class DependencyInjection
         // Singleton for the same reason the store is: the lease's state is the conversation row, and
         // an instance holds only configuration, so nothing is gained by a shorter lifetime.
         services.AddSingleton<IConversationTurnLease, SqliteConversationTurnLease>();
+
+        // The third member of the same choice. A conversation whose transcript is shared between hosts
+        // but whose token ceiling is not lets each host enforce a private copy of one number, and the
+        // conversation spends roughly twice it (issue #245).
+        services.AddSingleton<IConversationBudgetTracker, SqliteConversationBudgetTracker>();
     }
 
     /// <summary>

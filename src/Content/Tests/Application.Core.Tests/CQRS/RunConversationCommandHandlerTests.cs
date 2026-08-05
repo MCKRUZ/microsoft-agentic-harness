@@ -21,7 +21,9 @@ public class RunConversationCommandHandlerTests
     public RunConversationCommandHandlerTests()
     {
         // Budget disabled by default — these tests don't exercise the conversation budget.
-        _budget.Setup(b => b.GetStatus(It.IsAny<string>())).Returns(ConversationBudgetStatus.Disabled);
+        _budget
+            .Setup(b => b.GetStatusAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ConversationBudgetStatus.Disabled);
 
         _handler = new RunConversationCommandHandler(
             _mediator.Object,
@@ -75,9 +77,9 @@ public class RunConversationCommandHandlerTests
     public async Task Handle_ConversationBudgetExhausted_StopsGracefullyBeforeNextTurn()
     {
         // First turn's gate sees budget available; after it runs, the next gate sees it exhausted.
-        _budget.SetupSequence(b => b.GetStatus(It.IsAny<string>()))
-            .Returns(ConversationBudgetStatus.Disabled)              // turn 1 gate → allowed
-            .Returns(new ConversationBudgetStatus(true, 100, 100));  // turn 2 gate → exhausted
+        _budget.SetupSequence(b => b.GetStatusAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ConversationBudgetStatus.Disabled)              // turn 1 gate → allowed
+            .ReturnsAsync(new ConversationBudgetStatus(true, 100, 100));  // turn 2 gate → exhausted
 
         _mediator
             .Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
@@ -101,7 +103,7 @@ public class RunConversationCommandHandlerTests
     }
 
     [Fact]
-    public async Task Handle_RecordsUsageAndReleasesBudget()
+    public async Task Handle_RecordsUsageAgainstTheConversation()
     {
         _mediator
             .Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
@@ -116,8 +118,61 @@ public class RunConversationCommandHandlerTests
 
         await _handler.Handle(command, CancellationToken.None);
 
-        _budget.Verify(b => b.RecordUsage("conv-release", It.IsAny<int>()), Times.Once);
-        _budget.Verify(b => b.Release("conv-release"), Times.Once);
+        _budget.Verify(
+            b => b.RecordUsageAsync("conv-release", It.IsAny<int>(), It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    /// <summary>
+    /// The budget spans the whole conversation, and a conversation now outlives one run and one host
+    /// (issue #235). This handler used to release in a <c>finally</c>, which reset the accumulated
+    /// total every run and turned a lifetime ceiling into a per-run one — silently, because the run
+    /// that erased it was also the run that succeeded.
+    /// </summary>
+    [Fact]
+    public async Task Handle_NeverReleasesTheConversationBudget_SoATotalSurvivesTheRun()
+    {
+        _mediator
+            .Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SuccessTurn("answer"));
+
+        var command = new RunConversationCommand
+        {
+            AgentName = "TestAgent",
+            ConversationId = "conv-survives",
+            UserMessages = ["one"]
+        };
+
+        await _handler.Handle(command, CancellationToken.None);
+
+        _budget.Verify(
+            b => b.ReleaseAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    /// <summary>
+    /// The same guarantee on the failure path, which is where the old <c>finally</c> lived: a run that
+    /// throws must not take the conversation's accumulated spend with it, or a caller could reset a
+    /// ceiling by failing repeatedly.
+    /// </summary>
+    [Fact]
+    public async Task Handle_ThrowingTurn_StillNeverReleasesTheConversationBudget()
+    {
+        _mediator
+            .Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("turn exploded"));
+
+        var command = new RunConversationCommand
+        {
+            AgentName = "TestAgent",
+            ConversationId = "conv-throws",
+            UserMessages = ["one"]
+        };
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => _handler.Handle(command, CancellationToken.None));
+
+        _budget.Verify(
+            b => b.ReleaseAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]

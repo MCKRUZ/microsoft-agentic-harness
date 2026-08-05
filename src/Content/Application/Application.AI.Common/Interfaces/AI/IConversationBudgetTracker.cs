@@ -8,42 +8,61 @@ namespace Application.AI.Common.Interfaces.AI;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Registered as a <strong>singleton</strong> keyed internally by conversation id: a conversation spans
-/// many turns (each its own MediatR request scope), so the tracker must outlive any one scope — unlike
-/// the per-turn scoped <see cref="ITokenBudgetTracker"/>, which caps a single turn and is re-seeded each
-/// request. The two are complementary: <see cref="ITokenBudgetTracker"/> bounds intra-turn cost (and
+/// Registered as a <strong>singleton</strong> keyed by an arbitrary caller-supplied string: a conversation
+/// spans many turns (each its own MediatR request scope), so the tracker must outlive any one scope —
+/// unlike the per-turn scoped <see cref="ITokenBudgetTracker"/>, which caps a single turn and is re-seeded
+/// each request. The two are complementary: <see cref="ITokenBudgetTracker"/> bounds intra-turn cost (and
 /// throws on a pre-flight overage); this tracker bounds whole-conversation cost and is consulted
 /// <em>between</em> turns to break the loop gracefully — it never throws.
 /// </para>
 /// <para>
-/// Implementations are thread-safe and bound their memory: a long-lived interactive deployment can
-/// accumulate many conversations, so entries are capped and evicted rather than retained forever.
+/// <strong>The key is not necessarily a conversation id.</strong> Plan runs deliberately namespace their
+/// own keys (<c>Domain.AI.Planner.PlanRunKeys.RunBudgetKey</c>) so a plan's budget cannot collide with, or
+/// be erased by, a conversation sharing the same identifier. Implementations must therefore treat the key
+/// as an opaque string and never join it against conversation storage.
+/// </para>
+/// <para>
+/// <strong>Asynchronous because a total may be shared.</strong> When AgentHub and the Execution API run in
+/// separate processes, each host enforcing a private copy of one ceiling lets a conversation spend roughly
+/// double it. A durable implementation therefore reads shared state on <em>every</em> gate check, and any
+/// in-process cache in front of that read reintroduces the very divergence it exists to remove.
+/// </para>
+/// <para>
+/// Implementations are thread-safe and bound their storage: a long-lived deployment can accumulate many
+/// keys, so entries are reclaimed (by eviction in memory, or by retention over a durable store) rather than
+/// retained forever.
 /// </para>
 /// </remarks>
 public interface IConversationBudgetTracker
 {
     /// <summary>
-    /// Adds a completed turn's token usage to the conversation's running total, creating the
-    /// conversation's entry (seeded from configuration) on first use.
+    /// Adds a completed turn's token usage to the key's running total, creating the entry
+    /// (seeded from configuration) on first use.
     /// </summary>
-    /// <param name="conversationId">The conversation the usage belongs to.</param>
+    /// <param name="conversationId">The opaque budget key the usage belongs to.</param>
     /// <param name="tokensUsed">Input+output tokens consumed by the turn. Non-negative; zero is a no-op.</param>
-    void RecordUsage(string conversationId, int tokensUsed);
+    /// <param name="cancellationToken">Cancels the accrual.</param>
+    Task RecordUsageAsync(string conversationId, int tokensUsed, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Returns the conversation's current budget status. When no budget is configured, or the
-    /// conversation has no recorded usage yet, returns a status whose <see cref="ConversationBudgetStatus.IsExhausted"/>
-    /// reflects the configured ceiling (disabled ceilings never report exhausted).
+    /// Returns the key's current budget status. When no budget is configured, or the key has no recorded
+    /// usage yet, returns a status whose <see cref="ConversationBudgetStatus.IsExhausted"/> reflects the
+    /// configured ceiling (disabled ceilings never report exhausted).
     /// </summary>
-    /// <param name="conversationId">The conversation to query.</param>
-    ConversationBudgetStatus GetStatus(string conversationId);
+    /// <param name="conversationId">The opaque budget key to query.</param>
+    /// <param name="cancellationToken">Cancels the read.</param>
+    Task<ConversationBudgetStatus> GetStatusAsync(string conversationId, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Drops the conversation's tracked usage, freeing its entry. Call when a conversation ends (e.g. the
-    /// batch conversation loop completes) so the singleton does not retain state indefinitely. Safe to
-    /// call for an unknown conversation id. Bounded eviction also reclaims abandoned entries, so this is
-    /// an optimisation, not a correctness requirement.
+    /// Drops the key's tracked usage, freeing its entry.
     /// </summary>
-    /// <param name="conversationId">The conversation to release.</param>
-    void Release(string conversationId);
+    /// <remarks>
+    /// Call this only when the caller genuinely owns the key's whole lifetime and knows it has ended — a
+    /// plan run does; a single turn of a conversation does not, because the conversation continues in
+    /// another run or another host. Releasing a key that is still live erases the accumulated total and
+    /// silently resets the ceiling. Safe to call for an unknown key.
+    /// </remarks>
+    /// <param name="conversationId">The opaque budget key to release.</param>
+    /// <param name="cancellationToken">Cancels the release.</param>
+    Task ReleaseAsync(string conversationId, CancellationToken cancellationToken = default);
 }

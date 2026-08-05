@@ -216,7 +216,10 @@ public sealed class PlanRunExecutorTests
 
         await _sut.ExecuteAsync(request, CancellationToken.None);
 
-        _budget.Verify(b => b.Release(PlanRunKeys.RunBudgetKey("conv-1")), Times.Once);
+        _budget.Verify(
+            b => b.ReleaseAsync(
+                PlanRunKeys.RunBudgetKey("conv-1"), It.IsAny<CancellationToken>()),
+            Times.Once);
     }
 
     /// <summary>Shared observation channel between the test and the scoped fake executor.</summary>

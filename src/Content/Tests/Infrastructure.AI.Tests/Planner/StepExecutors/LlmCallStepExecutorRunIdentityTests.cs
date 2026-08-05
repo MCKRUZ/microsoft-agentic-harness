@@ -30,7 +30,7 @@ namespace Infrastructure.AI.Tests.Planner.StepExecutors;
 /// evict state belonging to steps still in flight.
 /// </para>
 /// <para>
-/// <strong>The run budget uses the REAL <see cref="ConversationBudgetTracker"/>.</strong> A mocked
+/// <strong>The run budget uses the REAL <see cref="InProcessConversationBudgetTracker"/>.</strong> A mocked
 /// tracker cannot reproduce <c>RunConversationCommandHandler</c>'s <c>Release</c>-in-<c>finally</c>,
 /// which removes the entry and makes any budget keyed on a conversation id read back as zero. This
 /// fixture simulates that release explicitly so the cross-step accounting is proven against real
@@ -58,32 +58,33 @@ public sealed class LlmCallStepExecutorRunIdentityTests : IDisposable
     }
 
     /// <summary>
-    /// Builds an executor over the real budget tracker. Each dispatched conversation reports
-    /// <paramref name="tokensPerStep"/> tokens and then releases its own conversation entry, exactly
-    /// as the real handler's <c>finally</c> does.
+    /// Builds an executor over the real budget tracker. Each dispatched conversation records
+    /// <paramref name="tokensPerStep"/> tokens against its own conversation id, exactly as the real
+    /// handler does — and, exactly as the real handler now does, releases nothing: a conversation
+    /// outlives one run and one host (issue #235). Cleaning up the step's entry is the executor's job,
+    /// which is what these tests then hold it to.
     /// </summary>
     private LlmCallStepExecutor BuildExecutor(
         IConversationBudgetTracker budget, int tokensPerStep, PlanId? currentPlanId = null)
     {
         _sender
             .Setup(s => s.Send(It.IsAny<RunConversationCommand>(), It.IsAny<CancellationToken>()))
-            .Returns<object, CancellationToken>((c, _) =>
+            .Returns<object, CancellationToken>(async (c, _) =>
             {
                 var command = (RunConversationCommand)c;
                 _dispatched.Add(command);
 
                 // What the real handler does: record the turn's usage under its own conversation id,
-                // then release that entry on the way out.
-                budget.RecordUsage(command.ConversationId, tokensPerStep);
-                budget.Release(command.ConversationId);
+                // and release nothing.
+                await budget.RecordUsageAsync(command.ConversationId, tokensPerStep);
 
-                return Task.FromResult(new ConversationResult
+                return new ConversationResult
                 {
                     Success = true,
                     Turns = [],
                     FinalResponse = "ok",
                     TotalTokens = tokensPerStep
-                });
+                };
             });
 
         var governor = new Mock<IToolInvocationGovernor>();
@@ -108,7 +109,7 @@ public sealed class LlmCallStepExecutorRunIdentityTests : IDisposable
             NullLogger<LlmCallStepExecutor>.Instance);
     }
 
-    private static ConversationBudgetTracker RealTracker(int ceiling)
+    private static InProcessConversationBudgetTracker RealTracker(int ceiling)
     {
         var config = new AppConfig
         {
@@ -118,10 +119,10 @@ public sealed class LlmCallStepExecutorRunIdentityTests : IDisposable
             }
         };
 
-        return new ConversationBudgetTracker(
+        return new InProcessConversationBudgetTracker(
             Mock.Of<IOptionsMonitor<AppConfig>>(m => m.CurrentValue == config),
             TimeProvider.System,
-            NullLogger<ConversationBudgetTracker>.Instance);
+            NullLogger<InProcessConversationBudgetTracker>.Instance);
     }
 
     private static PlanStep Step(string name, string deploymentKey) => new()
@@ -159,10 +160,10 @@ public sealed class LlmCallStepExecutorRunIdentityTests : IDisposable
     [Fact]
     public async Task ExecuteAsync_ThreeSequentialSteps_ThirdIsRefusedByTheRunBudget()
     {
-        // BLOCKING-2: the handler releases its per-conversation entry on every exit, so a budget keyed
-        // on a conversation id always reads zero and never refuses anything. The run-level key is
-        // owned by the plan run, so spend genuinely accumulates: 5k + 5k reaches the 10k ceiling and
-        // the third step is refused before dispatching any inference.
+        // BLOCKING-2: steps each get their own conversation id, so spend keyed on one is spread across
+        // an entry per step and never sums to what the run cost. The run-level key is owned by the
+        // plan run, so spend genuinely accumulates: 5k + 5k reaches the 10k ceiling and the third step
+        // is refused before dispatching any inference.
         var budget = RealTracker(ceiling: 10_000);
         var sut = BuildExecutor(budget, tokensPerStep: 5_000);
 
@@ -183,14 +184,15 @@ public sealed class LlmCallStepExecutorRunIdentityTests : IDisposable
     [Fact]
     public async Task ExecuteAsync_RunBudgetKey_IsNamespacedAwayFromConversationIds()
     {
-        // The run key must not be reachable as a conversation id, or a handler's Release would erase
-        // the run's accumulated spend — the exact failure this design avoids.
+        // The run key must not be reachable as a conversation id, or a release keyed on a conversation
+        // would erase the run's accumulated spend — the exact failure this design avoids.
         var budget = RealTracker(ceiling: 10_000);
         var sut = BuildExecutor(budget, tokensPerStep: 5_000);
 
         await sut.ExecuteAsync(Step("S1", "a"), new Dictionary<PlanStepId, string>(), CancellationToken.None);
 
-        Assert.Equal(5_000, budget.GetStatus(PlanRunKeys.RunBudgetKey(RunScope)).ConsumedTokens);
+        var runStatus = await budget.GetStatusAsync(PlanRunKeys.RunBudgetKey(RunScope));
+        Assert.Equal(5_000, runStatus.ConsumedTokens);
         Assert.StartsWith(PlanRunKeys.RunBudgetPrefix, PlanRunKeys.RunBudgetKey(RunScope));
         Assert.All(_dispatched, c => Assert.DoesNotContain(PlanRunKeys.RunBudgetPrefix, c.ConversationId));
     }
@@ -222,8 +224,8 @@ public sealed class LlmCallStepExecutorRunIdentityTests : IDisposable
         Assert.NotEqual(PlanStepErrors.BudgetExhausted, second.ErrorMessage);
 
         // And no orphan key was created under the plan id.
-        Assert.Equal(
-            0, budget.GetStatus(PlanRunKeys.RunBudgetKey(planId.Value.ToString())).ConsumedTokens);
+        var orphan = await budget.GetStatusAsync(PlanRunKeys.RunBudgetKey(planId.Value.ToString()));
+        Assert.Equal(0, orphan.ConsumedTokens);
     }
 
     [Fact]
@@ -242,4 +244,53 @@ public sealed class LlmCallStepExecutorRunIdentityTests : IDisposable
         Assert.Equal(2, _dispatched.Select(c => c.ConversationId).Distinct(StringComparer.Ordinal).Count());
     }
 
+    /// <summary>
+    /// The step's own conversation entry must be cleaned up here, because nothing else will. The
+    /// command handler stopped releasing when a conversation became something that outlives one run
+    /// and one host (issue #235) — but a step conversation is created here, used for one turn, and
+    /// never resumed, so without this every step of every plan run leaves an entry behind.
+    /// </summary>
+    [Fact]
+    public async Task ExecuteAsync_ReleasesTheStepsOwnConversationEntry()
+    {
+        var budget = RealTracker(ceiling: 10_000);
+        var sut = BuildExecutor(budget, tokensPerStep: 5_000);
+        var step = Step("S1", "a");
+
+        await sut.ExecuteAsync(step, new Dictionary<PlanStepId, string>(), CancellationToken.None);
+
+        var stepKey = PlanRunKeys.StepConversationId(RunScope, step.Id);
+        var status = await budget.GetStatusAsync(stepKey);
+
+        Assert.Equal(0, status.ConsumedTokens);
+    }
+
+    /// <summary>
+    /// And on the failure path too, which is where the old <c>finally</c> in the handler used to cover
+    /// this: a throwing turn must not leave its step entry behind either.
+    /// </summary>
+    [Fact]
+    public async Task ExecuteAsync_ThrowingTurn_StillReleasesTheStepsOwnConversationEntry()
+    {
+        var budget = RealTracker(ceiling: 10_000);
+        var sut = BuildExecutor(budget, tokensPerStep: 5_000);
+        var step = Step("S1", "a");
+
+        // Re-arm the sender to record the turn's usage and then throw, so there is something to leak.
+        _sender
+            .Setup(s => s.Send(It.IsAny<RunConversationCommand>(), It.IsAny<CancellationToken>()))
+            .Returns<object, CancellationToken>(async (c, _) =>
+            {
+                await budget.RecordUsageAsync(((RunConversationCommand)c).ConversationId, 5_000);
+                throw new InvalidOperationException("turn exploded");
+            });
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => sut.ExecuteAsync(step, new Dictionary<PlanStepId, string>(), CancellationToken.None));
+
+        var stepKey = PlanRunKeys.StepConversationId(RunScope, step.Id);
+        var status = await budget.GetStatusAsync(stepKey);
+
+        Assert.Equal(0, status.ConsumedTokens);
+    }
 }

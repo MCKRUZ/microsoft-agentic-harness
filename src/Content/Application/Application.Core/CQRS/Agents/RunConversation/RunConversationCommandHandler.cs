@@ -80,7 +80,10 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 				// Conversation-lifetime budget gate: checked before starting a turn so a conversation
 				// that exhausted its cumulative token ceiling on a prior turn stops gracefully here
 				// rather than running another. The first turn always proceeds (nothing recorded yet).
-				if (_conversationBudget.GetStatus(request.ConversationId).IsExhausted)
+				var budgetStatus = await _conversationBudget.GetStatusAsync(
+					request.ConversationId, cancellationToken);
+
+				if (budgetStatus.IsExhausted)
 				{
 					stoppedForBudget = true;
 					_logger.LogWarning(
@@ -161,8 +164,10 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 				// Fold this turn's input+output into the conversation-lifetime budget (mirrors the
 				// per-turn TokenBudgetBehavior's accounting). The next loop iteration's gate decides
 				// whether the cumulative total has crossed the ceiling.
-				_conversationBudget.RecordUsage(
-					request.ConversationId, lastResult.InputTokens + lastResult.OutputTokens);
+				await _conversationBudget.RecordUsageAsync(
+					request.ConversationId,
+					lastResult.InputTokens + lastResult.OutputTokens,
+					cancellationToken);
 
 				var totalInput = totalInputTokens + totalCacheRead;
 				var cacheHitRate = totalInput > 0 ? (decimal)totalCacheRead / totalInput : 0m;
@@ -238,9 +243,13 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 			SessionMetrics.ActiveSessions.Add(-1, sessionTags);
 			_agentCache.Evict(request.ConversationId);
 
-			// This handler owns the conversation's full lifecycle, so release its budget entry on
-			// every exit path to free the singleton's state (eviction is only a backstop).
-			_conversationBudget.Release(request.ConversationId);
+			// The conversation budget is deliberately NOT released here. This handler used to, on the
+			// premise that it owned the conversation's whole lifecycle — but a conversation now
+			// continues across runs and across hosts (issue #235), so the end of this run is not the
+			// end of the conversation. Releasing would reset the accumulated total, handing every
+			// subsequent run a fresh ceiling and making a lifetime budget a per-run one. The two
+			// interactive callers have never released for the same reason; reclamation is retention's
+			// job, not a turn's.
 		}
 	}
 

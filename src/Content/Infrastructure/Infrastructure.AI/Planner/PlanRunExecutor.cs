@@ -133,10 +133,13 @@ public sealed class PlanRunExecutor : IPlanRunExecutor
         }
         finally
         {
-            // This run owns its budget entry — no conversation handler releases it, which is the
-            // whole reason it exists as a separate key. Freed on every exit path; releasing a key that
-            // a failed setup never created is a no-op remove.
-            _conversationBudget.Release(PlanRunKeys.RunBudgetKey(runScope));
+            // This run owns its budget entry outright: it is created here, spans exactly this
+            // execution, and is never resumed — unlike a conversation, which now continues across runs
+            // and hosts and is therefore deliberately never released. Freed on every exit path;
+            // releasing a key that a failed setup never created is a no-op remove. Uses None so a
+            // cancelled run still cleans up.
+            await _conversationBudget.ReleaseAsync(
+                PlanRunKeys.RunBudgetKey(runScope), CancellationToken.None);
         }
     }
 }

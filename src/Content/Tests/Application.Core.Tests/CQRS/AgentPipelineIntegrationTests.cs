@@ -75,8 +75,8 @@ public class AgentPipelineIntegrationTests
         // RunConversation handler resolves and never reports exhaustion.
         var budgetMock = new Mock<Application.AI.Common.Interfaces.AI.IConversationBudgetTracker>();
         budgetMock
-            .Setup(b => b.GetStatus(It.IsAny<string>()))
-            .Returns(Domain.AI.Budget.ConversationBudgetStatus.Disabled);
+            .Setup(b => b.GetStatusAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Domain.AI.Budget.ConversationBudgetStatus.Disabled);
         services.AddSingleton(budgetMock.Object);
 
         // Agent conversation cache — mock returns testable agents

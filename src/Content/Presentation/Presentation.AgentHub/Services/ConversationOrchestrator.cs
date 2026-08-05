@@ -293,7 +293,8 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
         // Conversation-lifetime budget gate: if prior turns already exhausted the cumulative token
         // ceiling, decline this turn gracefully (no LLM dispatch, no cost) with an explanatory
         // assistant message rather than throwing or surfacing an error to the client.
-        if (_conversationBudget.GetStatus(conversationId).IsExhausted)
+        var budgetStatus = await _conversationBudget.GetStatusAsync(conversationId, ct);
+        if (budgetStatus.IsExhausted)
             return await BuildBudgetExhaustedOutcomeAsync(conversationId, callerId, agentName, turnNumber, ct);
 
         var obsSessionId = _connectionTracker.Get(sessionKey)?.ObservabilitySessionId ?? Guid.Empty;
@@ -372,7 +373,8 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
 
         // Fold this turn's tokens into the conversation-lifetime budget so a subsequent turn is
         // declined once the cumulative ceiling is crossed. No-op when the budget is disabled.
-        _conversationBudget.RecordUsage(conversationId, result.InputTokens + result.OutputTokens);
+        await _conversationBudget.RecordUsageAsync(
+            conversationId, result.InputTokens + result.OutputTokens, ct);
 
         var userTag = new KeyValuePair<string, object?>(UserConventions.UserId, callerId);
         var userAgentTag = new KeyValuePair<string, object?>(AgentConventions.Name, agentName);

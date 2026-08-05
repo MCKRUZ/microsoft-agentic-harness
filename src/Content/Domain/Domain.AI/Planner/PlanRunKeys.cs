@@ -15,13 +15,18 @@ namespace Domain.AI.Planner;
 /// tracking of steps still in flight. Every step consequently gets its own conversation id.
 /// </para>
 /// <para>
-/// <strong>Why the budget key is separate.</strong> <c>RunConversationCommandHandler</c> owns the
-/// whole lifecycle of its conversation's budget entry and calls
-/// <c>IConversationBudgetTracker.Release</c> in a <c>finally</c>, which removes the entry outright.
-/// A budget accumulated under any conversation id it is given is therefore erased the moment that
-/// conversation ends, so cross-step spend cannot be tracked there. The run-level key is namespaced
-/// out of the conversation-id space so no handler owns it, and the plan run accumulates against it
-/// explicitly and releases it when the run finishes.
+/// <strong>Why the budget key is separate.</strong> Steps each get their own conversation id, so spend
+/// recorded under those ids is spread across one entry per step and never sums to what the run cost.
+/// The run-level key is namespaced out of the conversation-id space so that nothing else can claim it,
+/// and the plan run accumulates against it explicitly and releases it when the run finishes.
+/// </para>
+/// <para>
+/// The two also differ in who may release them. A plan run and a plan step each own their key outright
+/// — created for one execution, never resumed — and so release it on completion. An ordinary
+/// conversation is the opposite: it continues across runs and across hosts (issue #235), which is why
+/// <c>RunConversationCommandHandler</c> no longer releases anything. It used to, in a <c>finally</c>,
+/// and that is why a budget accumulated under a conversation id it was given used to be erased the
+/// moment the run ended.
 /// </para>
 /// </remarks>
 public static class PlanRunKeys
@@ -44,7 +49,7 @@ public static class PlanRunKeys
 
     /// <summary>
     /// The budget key accumulating token spend across every step of one plan run. Owned by the plan
-    /// run — no conversation handler releases it.
+    /// run, which releases it when the run ends — nothing else may.
     /// </summary>
     /// <param name="runScope">Identity of the run (its conversation id or plan id).</param>
     /// <returns>The run's budget key.</returns>

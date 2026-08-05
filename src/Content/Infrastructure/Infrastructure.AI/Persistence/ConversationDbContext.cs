@@ -27,6 +27,12 @@ public sealed class ConversationDbContext : DbContext
     /// <summary>Messages, one row each, ordered within a conversation by ordinal.</summary>
     public DbSet<ConversationMessageEntity> ConversationMessages => Set<ConversationMessageEntity>();
 
+    /// <summary>
+    /// Cumulative token spend per budget key. Unrelated to <see cref="Conversations"/> by design — see
+    /// <see cref="ConversationBudgetEntity"/>.
+    /// </summary>
+    public DbSet<ConversationBudgetEntity> ConversationBudgets => Set<ConversationBudgetEntity>();
+
     /// <summary>Initializes a new context with the supplied options.</summary>
     /// <param name="options">Provider and connection options.</param>
     public ConversationDbContext(DbContextOptions<ConversationDbContext> options) : base(options)
@@ -89,5 +95,19 @@ public sealed class ConversationDbContext : DbContext
         message.HasIndex(e => new { e.ConversationId, e.MessageId })
             .IsUnique()
             .HasDatabaseName("ux_conversation_messages_conversation_message_id");
+
+        var budget = modelBuilder.Entity<ConversationBudgetEntity>();
+        budget.ToTable("conversation_budgets");
+        // The key is the identity: every read and every accrual addresses exactly one key, so the
+        // primary-key index is the only one this table needs for its hot path. No relationship to
+        // `conversations` is declared — two of the four callers have no row there.
+        budget.HasKey(e => e.BudgetKey);
+        budget.Property(e => e.BudgetKey).HasMaxLength(200).ValueGeneratedNever();
+        budget.Property(e => e.ConsumedTokens).IsRequired();
+        budget.Property(e => e.UpdatedAt).HasConversion(SqliteValueConverters.DateTimeOffsetAsUtcTicks);
+
+        // Serves age-based retention sweeps, which are the only access path that is not by key.
+        budget.HasIndex(e => e.UpdatedAt)
+            .HasDatabaseName("ix_conversation_budgets_updated_at");
     }
 }
