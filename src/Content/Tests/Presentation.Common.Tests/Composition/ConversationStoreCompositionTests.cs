@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces.AI;
+using Application.AI.Common.Services.AI;
 using FluentAssertions;
 using Infrastructure.AI.Conversations;
 using Microsoft.Data.Sqlite;
@@ -122,10 +123,18 @@ public sealed class ConversationStoreCompositionTests : IDisposable
     }
 
     [Theory]
-    [InlineData(null, typeof(EfCoreConversationStore), typeof(SqliteConversationTurnLease))]
-    [InlineData("FileSystem", typeof(FileSystemConversationStore), typeof(InProcessConversationTurnLease))]
+    [InlineData(
+        null,
+        typeof(EfCoreConversationStore),
+        typeof(SqliteConversationTurnLease),
+        typeof(SqliteConversationBudgetTracker))]
+    [InlineData(
+        "FileSystem",
+        typeof(FileSystemConversationStore),
+        typeof(InProcessConversationTurnLease),
+        typeof(InProcessConversationBudgetTracker))]
     public async Task CompositionRoot_TurnLease_AlwaysMatchesTheSelectedStore(
-        string? provider, Type expectedStore, Type expectedLease)
+        string? provider, Type expectedStore, Type expectedLease, Type expectedBudget)
     {
         // This also covers "the lease resolves at all", which matters for the same reason the store
         // does: two hosts can now run turns on one conversation, so what stops them running at the
@@ -136,6 +145,11 @@ public sealed class ConversationStoreCompositionTests : IDisposable
         // file-backed store with the durable lease — has a lease looking for conversations in a
         // database nothing writes to, and refuses every turn. Two AgentHub test factories did exactly
         // that for one test run while this lease was being built.
+        //
+        // The budget tracker is the third member of the same choice, for the same kind of reason: a
+        // conversation whose transcript is shared between hosts but whose token ceiling is not lets
+        // each host enforce a private copy of one number, so the conversation spends roughly twice
+        // what was configured and nothing reports an error (issue #245).
         var settings = new Dictionary<string, string?>
         {
             ["AppConfig:AI:Conversations:DatabasePath"] = Path.Combine(_workingDir, "conversations.db"),
@@ -149,6 +163,7 @@ public sealed class ConversationStoreCompositionTests : IDisposable
 
         built.GetRequiredService<IConversationStore>().Should().BeOfType(expectedStore);
         built.GetRequiredService<IConversationTurnLease>().Should().BeOfType(expectedLease);
+        built.GetRequiredService<IConversationBudgetTracker>().Should().BeOfType(expectedBudget);
     }
 
     private Dictionary<string, string?> SqliteSettings() => new()

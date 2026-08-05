@@ -36,7 +36,9 @@ public class RunConversationCommandHandlerSolutionReviewFixTests
             .ReturnsAsync(SessionId);
 
         var budget = new Mock<IConversationBudgetTracker>();
-        budget.Setup(b => b.GetStatus(It.IsAny<string>())).Returns(ConversationBudgetStatus.Disabled);
+        budget
+            .Setup(b => b.GetStatusAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ConversationBudgetStatus.Disabled);
 
         _handler = new RunConversationCommandHandler(
             _mediator.Object,

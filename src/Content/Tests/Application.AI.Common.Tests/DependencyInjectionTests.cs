@@ -43,15 +43,20 @@ public class DependencyInjectionTests
         descriptor.ImplementationType.Should().Be(typeof(AgentExecutionContext));
     }
 
+    /// <summary>
+    /// The conversation budget is chosen by <c>AppConfig.AI.Conversations.Provider</c> alongside the
+    /// conversation store and the turn lease — all three have to agree on how far a conversation reaches
+    /// — so Infrastructure.AI owns the registration. A default registered here as well would leave two
+    /// registrations for one interface, with the winner decided by the order the composition root
+    /// happens to add the layers, and a host would get a per-process ceiling from a durable
+    /// configuration without anything failing.
+    /// </summary>
     [Fact]
-    public void AddApplicationAIDependencies_RegistersConversationBudgetTracker_AsSingleton()
+    public void AddApplicationAIDependencies_DoesNotRegisterConversationBudgetTracker()
     {
         var services = CreateServicesWithAIDependencies();
 
-        var descriptor = services.FirstOrDefault(d => d.ServiceType == typeof(IConversationBudgetTracker));
-        descriptor.Should().NotBeNull();
-        descriptor!.Lifetime.Should().Be(ServiceLifetime.Singleton);
-        descriptor.ImplementationType.Should().Be(typeof(Application.AI.Common.Services.AI.ConversationBudgetTracker));
+        services.Should().NotContain(d => d.ServiceType == typeof(IConversationBudgetTracker));
     }
 
     [Fact]

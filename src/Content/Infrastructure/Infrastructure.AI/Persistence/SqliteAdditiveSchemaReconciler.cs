@@ -1,13 +1,18 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
+using Microsoft.EntityFrameworkCore.Migrations.Operations;
+using Microsoft.Extensions.DependencyInjection;
 using System.Data.Common;
 
 namespace Infrastructure.AI.Persistence;
 
 /// <summary>
-/// Adds the columns and indexes a model has gained since its SQLite database was created. Purely
-/// additive: it issues <c>ALTER TABLE … ADD COLUMN</c> and <c>CREATE INDEX IF NOT EXISTS</c> and
-/// nothing else — never a drop, rename, retype, or table rebuild.
+/// Adds the tables, columns and indexes a model has gained since its SQLite database was created.
+/// Purely additive: it issues <c>CREATE TABLE</c> for a table the database lacks entirely,
+/// <c>ALTER TABLE … ADD COLUMN</c>, and <c>CREATE INDEX IF NOT EXISTS</c> — never a drop, rename,
+/// retype, or table rebuild.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -35,9 +40,9 @@ namespace Infrastructure.AI.Persistence;
 public static class SqliteAdditiveSchemaReconciler
 {
     /// <summary>
-    /// Brings every table in <paramref name="context"/>'s model up to date with the columns and
-    /// indexes added since the database was created. A no-op on a database that already matches, and
-    /// on one that <c>EnsureCreated</c> has just built from scratch.
+    /// Brings <paramref name="context"/>'s database up to date with the tables, columns and indexes
+    /// its model has gained since that database was created. A no-op on a database that already
+    /// matches, and on one that <c>EnsureCreated</c> has just built from scratch.
     /// </summary>
     /// <param name="context">The context whose model and database should be reconciled.</param>
     public static void Reconcile(DbContext context)
@@ -61,25 +66,48 @@ public static class SqliteAdditiveSchemaReconciler
 
         try
         {
-            foreach (var table in ModelTables(context))
-            {
-                var existing = ExistingColumns(connection, table.Name);
+            var tables = ModelTables(context);
 
-                // An empty result means the table is not there at all. EnsureCreated owns creation;
-                // inventing one here would build it without indexes or foreign keys.
-                if (existing.Count == 0)
+            // One probe per table for the whole pass. Both the creation step and the column step need
+            // to know which columns a table currently has, and asking twice doubles the pragma queries
+            // for no new information.
+            var columnsByTable = tables.ToDictionary(
+                table => table.Name,
+                table => ExistingColumns(connection, table.Name),
+                StringComparer.OrdinalIgnoreCase);
+
+            // Whole tables first, and in one pass, because a table added at the same time as another
+            // may carry a foreign key to it — creating them one at a time in model order would fail on
+            // whichever came first. EF's own generator orders them for exactly this reason.
+            var created = CreateMissingTables(context, connection, columnsByTable);
+
+            foreach (var table in tables)
+            {
+                var justCreated = created.Contains(table.Name);
+
+                // Neither there before nor creatable now — a table EF's differ did not emit. Altering
+                // or indexing it would fail against nothing.
+                if (!justCreated && columnsByTable[table.Name].Count == 0)
                     continue;
 
-                foreach (var column in table.Columns)
+                // A table created just above already has every column the model declares, because the
+                // same model produced both. Only an older table can be missing one.
+                if (!justCreated)
                 {
-                    if (existing.Contains(column.Name))
-                        continue;
+                    var existing = columnsByTable[table.Name];
 
-                    AddColumn(connection, table.Name, column);
+                    foreach (var column in table.Columns)
+                    {
+                        if (existing.Contains(column.Name))
+                            continue;
+
+                        AddColumn(connection, table.Name, column);
+                    }
                 }
 
                 // After the columns, because an index over a just-added column cannot be created
                 // before it exists — which is the exact case a scope-filtering index is added for.
+                // A created table reaches here too: a create-table operation carries no indexes.
                 foreach (var index in table.Indexes)
                     CreateIndexIfMissing(connection, table.Name, index);
             }
@@ -89,6 +117,86 @@ public static class SqliteAdditiveSchemaReconciler
             if (openedHere)
                 connection.Close();
         }
+    }
+
+    /// <summary>
+    /// Creates any table the model declares and the database does not have, using EF Core's own
+    /// migrations generator so the result is byte-for-byte what <c>EnsureCreated</c> would have built.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>Why this is needed, separately from added columns.</strong> A release that adds a whole
+    /// <em>entity</em> is in the same position as one that adds a property: <c>EnsureCreated</c> no-ops
+    /// on an existing file, so the table is present in the model and absent from every consumer's
+    /// database. An earlier revision deliberately skipped this case, reasoning that a hand-built table
+    /// would lack its indexes and foreign keys. That reasoning was right about hand-building and wrong
+    /// about the conclusion — the durable conversation budget was the first table to ship this way, and
+    /// on an upgraded database every statement against it failed while the tracker's own
+    /// fault-tolerance swallowed the error, leaving a governance ceiling that reported itself enforced
+    /// and enforced nothing.
+    /// </para>
+    /// <para>
+    /// <strong>Why EF's generator rather than hand-built DDL.</strong> Asking
+    /// <see cref="IMigrationsModelDiffer"/> for the difference between "nothing" and the current model
+    /// yields the same <see cref="CreateTableOperation"/> set EF uses to create a database from
+    /// scratch, complete with primary keys, foreign keys, delete behaviours and store types. Only the
+    /// operations for missing tables are executed. Nothing here needs to know how SQLite spells a
+    /// composite key, and a future model feature is handled by EF rather than by this file.
+    /// </para>
+    /// <para>
+    /// Indexes are deliberately left to the pass that follows: a create-table operation does not carry
+    /// them, and that pass is already idempotent.
+    /// </para>
+    /// </remarks>
+    /// <param name="context">The context whose model supplies the table definitions.</param>
+    /// <param name="connection">An open connection to the database being reconciled.</param>
+    /// <param name="columnsByTable">
+    /// Each model table's current columns; an empty entry is how a wholly absent table presents.
+    /// </param>
+    /// <returns>
+    /// The names of the tables actually created, so the caller can tell them from tables that were
+    /// already there — a created table needs no column reconciliation, and one that could not be
+    /// created must not be altered or indexed at all.
+    /// </returns>
+    private static HashSet<string> CreateMissingTables(
+        DbContext context,
+        DbConnection connection,
+        IReadOnlyDictionary<string, HashSet<string>> columnsByTable)
+    {
+        var created = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        var missing = columnsByTable
+            .Where(entry => entry.Value.Count == 0)
+            .Select(entry => entry.Key)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        if (missing.Count == 0)
+            return created;
+
+        var differ = context.GetService<IMigrationsModelDiffer>();
+        var generator = context.GetService<IMigrationsSqlGenerator>();
+        var model = context.GetService<IDesignTimeModel>().Model;
+
+        var creations = differ
+            .GetDifferences(null, model.GetRelationalModel())
+            .OfType<CreateTableOperation>()
+            .Where(operation => missing.Contains(operation.Name))
+            .ToList();
+
+        if (creations.Count == 0)
+            return created;
+
+        foreach (var command in generator.Generate(creations, model))
+        {
+            using var statement = connection.CreateCommand();
+            statement.CommandText = command.CommandText;
+            statement.ExecuteNonQuery();
+        }
+
+        foreach (var operation in creations)
+            created.Add(operation.Name);
+
+        return created;
     }
 
     /// <summary>

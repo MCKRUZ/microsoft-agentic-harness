@@ -117,7 +117,8 @@ public sealed class LlmCallStepExecutor : IPlanStepExecutor
         var runScope = ResolveRunScope();
         var runBudgetKey = runScope is null ? null : PlanRunKeys.RunBudgetKey(runScope);
 
-        if (runBudgetKey is not null && _conversationBudget.GetStatus(runBudgetKey).IsExhausted)
+        if (runBudgetKey is not null
+            && (await _conversationBudget.GetStatusAsync(runBudgetKey, ct)).IsExhausted)
         {
             _logger.LogWarning(
                 "LlmCall step {Step} refused: plan run {RunScope} has exhausted its lifetime token budget",
@@ -133,17 +134,21 @@ public sealed class LlmCallStepExecutor : IPlanStepExecutor
 
         var sw = Stopwatch.StartNew();
 
+        // Per-step, never shared: this id keys the agent cache, skill-completion tracking, and the
+        // observability session. See PlanRunKeys. Held in a local because this executor owns its whole
+        // lifetime — one command, MaxTurns 1 — and so is the only place that can release the budget
+        // entry the handler accrues under it.
+        var stepConversationId = runScope is null
+            ? Guid.NewGuid().ToString()
+            : PlanRunKeys.StepConversationId(runScope, step.Id);
+
         var command = new RunConversationCommand
         {
             AgentName = config.ModelDeploymentKey,
             SystemPrompt = config.SystemPrompt,
             UserMessages = BuildUserMessages(config, upstreamOutputs),
             MaxTurns = 1,
-            // Per-step, never shared: this id keys the agent cache, skill-completion tracking, and the
-            // observability session. See PlanRunKeys.
-            ConversationId = runScope is null
-                ? Guid.NewGuid().ToString()
-                : PlanRunKeys.StepConversationId(runScope, step.Id),
+            ConversationId = stepConversationId,
             OnProgress = async progress =>
             {
                 _logger.LogDebug("LLM turn {Turn} for step {Step}: {Status}",
@@ -155,19 +160,29 @@ public sealed class LlmCallStepExecutor : IPlanStepExecutor
         // Per-step scope: the turn binds its own IAgentExecutionContext (deployment key + this step's
         // conversation) without colliding with the run identity the plan's scope already holds.
         ConversationResult result;
-        await using (var stepScope = _scopeFactory.CreateAsyncScope())
+        try
         {
+            await using var stepScope = _scopeFactory.CreateAsyncScope();
             var sender = stepScope.ServiceProvider.GetRequiredService<ISender>();
             result = await sender.Send(command, ct);
+        }
+        finally
+        {
+            // Release the step's own budget entry on every exit path, including a throwing turn. The
+            // command handler no longer releases anything — a conversation there outlives one run and
+            // one host (issue #235) — but a step conversation genuinely does not: it was created here,
+            // used for exactly one turn, and is never resumed. Left unreleased it would leave one
+            // abandoned entry per step of every plan run. Uses None so a cancelled step still cleans up.
+            await _conversationBudget.ReleaseAsync(stepConversationId, CancellationToken.None);
         }
 
         sw.Stop();
 
-        // Fold this step's spend into the run-level budget the plan owns. The handler already
-        // released its own per-conversation entry by now, which is exactly why this is accounted
-        // separately rather than read back from that entry.
+        // Fold this step's spend into the run-level budget the plan owns. Accounted separately rather
+        // than read back from the step's own entry because that entry is per-step by construction —
+        // summing the run would mean enumerating keys the tracker does not expose.
         if (runBudgetKey is not null && result.TotalTokens > 0)
-            _conversationBudget.RecordUsage(runBudgetKey, result.TotalTokens);
+            await _conversationBudget.RecordUsageAsync(runBudgetKey, result.TotalTokens, ct);
 
         if (result.Success)
         {

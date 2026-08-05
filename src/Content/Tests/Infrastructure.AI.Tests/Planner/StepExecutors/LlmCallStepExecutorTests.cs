@@ -34,7 +34,9 @@ public sealed class LlmCallStepExecutorTests : IDisposable
 
         // Ungoverned, unbudgeted defaults: matches a direct in-process caller.
         GovernorReturns(allowed: true);
-        _budget.Setup(b => b.GetStatus(It.IsAny<string>())).Returns(ConversationBudgetStatus.Disabled);
+        _budget
+            .Setup(b => b.GetStatusAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ConversationBudgetStatus.Disabled);
 
         // The executor dispatches through an ISender resolved from a per-step scope, so the fake is
         // registered in a container rather than injected directly.
@@ -84,8 +86,8 @@ public sealed class LlmCallStepExecutorTests : IDisposable
         // The run budget only exists once a run scope is armed — see ResolveRunScope. Without an
         // ambient conversation there is deliberately no run-level gate at all.
         _agentContext.SetupGet(c => c.ConversationId).Returns("plan-run-conversation");
-        _budget.Setup(b => b.GetStatus(It.IsAny<string>()))
-            .Returns(new ConversationBudgetStatus(IsEnabled: true, TotalBudget: 100, ConsumedTokens: 100));
+        _budget.Setup(b => b.GetStatusAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ConversationBudgetStatus(IsEnabled: true, TotalBudget: 100, ConsumedTokens: 100));
         var step = CreateStep(new LlmCallConfig { SystemPrompt = "x", ModelDeploymentKey = "gpt-4" });
 
         var result = await _sut.ExecuteAsync(step, new Dictionary<PlanStepId, string>(), CancellationToken.None);
@@ -101,8 +103,8 @@ public sealed class LlmCallStepExecutorTests : IDisposable
     {
         // The ungoverned in-process path keeps its pre-W2 behaviour: no run scope, no run budget, so
         // a singleton entry left over from some other flow can never refuse it.
-        _budget.Setup(b => b.GetStatus(It.IsAny<string>()))
-            .Returns(new ConversationBudgetStatus(IsEnabled: true, TotalBudget: 100, ConsumedTokens: 100));
+        _budget.Setup(b => b.GetStatusAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ConversationBudgetStatus(IsEnabled: true, TotalBudget: 100, ConsumedTokens: 100));
         _sender.Setup(s => s.Send(It.IsAny<RunConversationCommand>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new ConversationResult { Success = true, Turns = [], FinalResponse = "ok" });
         var step = CreateStep(new LlmCallConfig { SystemPrompt = "x", ModelDeploymentKey = "gpt-4" });
@@ -110,7 +112,8 @@ public sealed class LlmCallStepExecutorTests : IDisposable
         var result = await _sut.ExecuteAsync(step, new Dictionary<PlanStepId, string>(), CancellationToken.None);
 
         Assert.Equal(StepExecutionStatus.Completed, result.Status);
-        _budget.Verify(b => b.GetStatus(It.IsAny<string>()), Times.Never);
+        _budget.Verify(
+            b => b.GetStatusAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -132,7 +135,10 @@ public sealed class LlmCallStepExecutorTests : IDisposable
         Assert.Equal(
             PlanRunKeys.StepConversationId("plan-run-conversation", step.Id), captured!.ConversationId);
         Assert.NotEqual("plan-run-conversation", captured.ConversationId);
-        _budget.Verify(b => b.GetStatus(PlanRunKeys.RunBudgetKey("plan-run-conversation")), Times.Once);
+        _budget.Verify(
+            b => b.GetStatusAsync(
+                PlanRunKeys.RunBudgetKey("plan-run-conversation"), It.IsAny<CancellationToken>()),
+            Times.Once);
     }
 
     private static PlanStep CreateStep(StepConfiguration config) => new()

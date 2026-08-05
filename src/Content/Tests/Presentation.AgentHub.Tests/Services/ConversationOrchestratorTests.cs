@@ -42,7 +42,9 @@ public class ConversationOrchestratorTests
     public ConversationOrchestratorTests()
     {
         // Budget disabled by default — most tests don't exercise the conversation budget.
-        _budget.Setup(b => b.GetStatus(It.IsAny<string>())).Returns(ConversationBudgetStatus.Disabled);
+        _budget
+            .Setup(b => b.GetStatusAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ConversationBudgetStatus.Disabled);
     }
 
     private ConversationOrchestrator CreateOrchestrator(string environmentName = "Development")
@@ -191,7 +193,8 @@ public class ConversationOrchestratorTests
         outcome.AssistantMessageId.Should().NotBeEmpty();
         chunks.Should().Equal("Hello ", "from agent");
         // A successful turn folds its usage into the conversation-lifetime budget.
-        _budget.Verify(b => b.RecordUsage("c1", It.IsAny<int>()), Times.Once);
+        _budget.Verify(
+            b => b.RecordUsageAsync("c1", It.IsAny<int>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -275,7 +278,9 @@ public class ConversationOrchestratorTests
             .ReturnsAsync(Guid.NewGuid());
 
         // Budget already exhausted before this turn.
-        _budget.Setup(b => b.GetStatus("c1")).Returns(new ConversationBudgetStatus(true, 100, 100));
+        _budget
+            .Setup(b => b.GetStatusAsync("c1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ConversationBudgetStatus(true, 100, 100));
 
         var orchestrator = CreateOrchestrator();
 
