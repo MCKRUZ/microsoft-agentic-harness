@@ -209,10 +209,12 @@ public sealed class RunConversationDurableTests
     }
 
     [Fact]
-    public async Task Handle_TurnFails_KeepsTheQuestionAndRecordsNoAnswer()
+    public async Task Handle_TurnFails_LeavesNoHalfTurnBehind()
     {
-        // Persisting per turn is the reason a run that dies partway keeps what it completed. The
-        // question survives because it was written before the dispatch that failed.
+        // A failed turn must leave the transcript holding only complete exchanges. Writing the question
+        // up-front — which the interactive transports do, so a live user can see what they asked — would
+        // be wrong here: nobody is watching, and the next run REPLAYS this transcript to a model, which
+        // would then see the user ask and go unanswered and would answer as if asked twice.
         _mediator
             .Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new AgentTurnResult
@@ -226,9 +228,7 @@ public sealed class RunConversationDurableTests
         var result = await BuildSut().Handle(Durable("did this survive?"), CancellationToken.None);
 
         result.Success.Should().BeFalse();
-        _store.Appended.Should().ContainSingle();
-        _store.Appended[0].Message.Role.Should().Be(MessageRole.User);
-        _store.Appended[0].Message.Content.Should().Be("did this survive?");
+        _store.Appended.Should().BeEmpty();
     }
 
     // -- Conversation-lifetime token budget --
@@ -290,15 +290,19 @@ public sealed class RunConversationDurableTests
         // Losing the lease means another host is now taking turns on this conversation. Continuing
         // would produce exactly the interleaved transcript the lease exists to prevent, so the run has
         // to stop — which only happens if the lost-lease signal is linked into the token the turns run
-        // under. Unlink it and this test hangs on to completion with three turns instead of one.
+        // under. Unlink it and this runs to completion with three turns instead of stopping after one.
+        //
+        // The lease drops during the SECOND turn, so the first is fully written and the second leaves
+        // nothing: a turn interrupted between its question and its answer must not be half-persisted.
         SetupTurns("one", "two", "three");
-        _lease.LoseLeaseAfterTurns = 1;
+        _lease.LoseLeaseAfterTurns = 2;
 
         var act = () => BuildSut().Handle(Durable("a", "b", "c"), CancellationToken.None);
 
         await act.Should().ThrowAsync<OperationCanceledException>();
-        _store.Appended.Count(a => a.Message.Role == MessageRole.Assistant).Should().Be(1,
-            "only the turn that completed before the lease was lost may reach the transcript");
+        _store.Appended.Select(a => (a.Message.Role, a.Message.Content)).Should().Equal(
+            (MessageRole.User, "a"),
+            (MessageRole.Assistant, "one"));
     }
 
     [Fact]
@@ -434,6 +438,8 @@ public sealed class RunConversationDurableTests
         public Task<ConversationRecord> GetOrCreateAsync(
             string agentName, string userId, string conversationId, CancellationToken ct = default)
         {
+            ct.ThrowIfCancellationRequested();
+
             if (GetOrCreateThrows is not null)
                 return Task.FromException<ConversationRecord>(GetOrCreateThrows);
 
@@ -453,13 +459,22 @@ public sealed class RunConversationDurableTests
         public Task<IReadOnlyList<ConversationMessage>?> GetHistoryForDispatch(
             string conversationId, string callerId, int maxMessages, CancellationToken ct = default)
         {
+            ct.ThrowIfCancellationRequested();
             HistoryRequests.Add((conversationId, callerId, maxMessages, CallSequence.Next()));
             return Task.FromResult<IReadOnlyList<ConversationMessage>?>(History);
         }
 
+        /// <remarks>
+        /// <strong>Honours the cancellation token, and that is load-bearing.</strong> An earlier version
+        /// of this double ignored it, which made the lost-lease test pass for the wrong reason: the
+        /// handler was writing to the transcript on a token the lost lease had already cancelled, a real
+        /// store would have thrown, and the test could not see it. A double that is more permissive than
+        /// the thing it stands in for does not simplify a test, it silences one.
+        /// </remarks>
         public Task AppendMessageAsync(
             string conversationId, string callerId, ConversationMessage message, CancellationToken ct = default)
         {
+            ct.ThrowIfCancellationRequested();
             Appended.Add((conversationId, callerId, message));
             return Task.CompletedTask;
         }
@@ -494,8 +509,18 @@ public sealed class RunConversationDurableTests
 
         public bool Released => _handles.Count > 0 && _handles.TrueForAll(h => h.Disposed);
 
-        /// <summary>How many turns were dispatched while a lease was held.</summary>
+        /// <summary>
+        /// How many turns were dispatched while a lease was actually held — counted only when a handle
+        /// exists and has not been disposed.
+        /// </summary>
+        /// <remarks>
+        /// The "actually held" part is the whole value of the counter. Incrementing unconditionally
+        /// counted turns whether or not the lease was still in hand, so a handler that released the
+        /// lease before running a single turn would have left the assertion green.
+        /// </remarks>
         public int TurnsWhileHeld { get; private set; }
+
+        private Handle? Current => _handles.Count > 0 ? _handles[^1] : null;
 
         public Task<IConversationTurnLeaseHandle> AcquireAsync(
             string conversationId, CancellationToken ct = default)
@@ -515,10 +540,16 @@ public sealed class RunConversationDurableTests
         /// </summary>
         public void NoteTurn()
         {
-            TurnsWhileHeld++;
-            if (LoseLeaseAfterTurns > 0 && TurnsWhileHeld >= LoseLeaseAfterTurns)
-                _handles[^1].Lose();
+            _turnsDispatched++;
+
+            if (Current is { Disposed: false })
+                TurnsWhileHeld++;
+
+            if (LoseLeaseAfterTurns > 0 && _turnsDispatched >= LoseLeaseAfterTurns)
+                Current?.Lose();
         }
+
+        private int _turnsDispatched;
 
         private sealed class Handle : IConversationTurnLeaseHandle
         {

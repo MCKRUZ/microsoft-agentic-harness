@@ -535,15 +535,8 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
         };
     }
 
+    // Delegates to the shared projection rather than repeating the role switch — see
+    // ConversationMessageMapping for why three copies of one mapping was a latent bug.
     private static IReadOnlyList<ChatMessage> ToMeaiHistory(IReadOnlyList<ConversationMessage> messages) =>
-        messages.Select(m => new ChatMessage(ToChatRole(m.Role), m.Content)).ToList();
-
-    private static ChatRole ToChatRole(MessageRole role) => role switch
-    {
-        MessageRole.User => ChatRole.User,
-        MessageRole.Assistant => ChatRole.Assistant,
-        MessageRole.System => ChatRole.System,
-        MessageRole.Tool => ChatRole.Tool,
-        _ => ChatRole.User,
-    };
+        ConversationMessageMapping.ToChatMessages(messages);
 }

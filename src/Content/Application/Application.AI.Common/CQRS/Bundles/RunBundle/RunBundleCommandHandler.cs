@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces.AI;
 using Application.AI.Common.Interfaces.Bundles;
+using Application.Common.Exceptions.ExceptionTypes;
 using Domain.AI.Bundles;
 using Domain.Common;
 using Domain.Common.Config;
@@ -147,16 +148,28 @@ public sealed class RunBundleCommandHandler
     {
         try
         {
+            // Asking for a zero-message window, not the conversation. This needs to know only whether
+            // the conversation exists and whether it is the caller's, and GetAsync would load the whole
+            // transcript to answer that — on the synchronous request path, for a value thrown away. The
+            // store guarantees a non-positive window returns NO messages rather than all of them, and
+            // says so explicitly because the natural SQL translation would do the opposite; there are
+            // contract tests on both implementations holding it to that.
+            //
             // The result is discarded deliberately: absent is fine (the run creates it) and present is
             // fine (it is the caller's, or this would have thrown). Only the refusal carries meaning.
             await _conversationStore
-                .GetAsync(request.ConversationId!, request.OwnerId, cancellationToken)
+                .GetHistoryForDispatch(request.ConversationId!, request.OwnerId, 0, cancellationToken)
                 .ConfigureAwait(false);
 
             return true;
         }
-        catch (UnauthorizedAccessException)
+        catch (ConversationAccessDeniedException)
         {
+            // Deliberately the derived type, not UnauthorizedAccessException. The file-backed store
+            // touches the file system, which raises the BASE type for an ACL or read-only failure that
+            // has nothing to do with ownership — catching that would report an operator's permissions
+            // problem to the caller as "no such conversation" and bury it.
+            //
             // Not logged again: the store already recorded the caller, the conversation and its real
             // owner. A second line adds no fact and doubles every refusal in the audit trail.
             return false;

@@ -43,6 +43,26 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 	private readonly IOptions<ConversationsConfig> _conversationsConfig;
 	private readonly ILogger<RunConversationCommandHandler> _logger;
 
+	/// <summary>Initializes a new <see cref="RunConversationCommandHandler"/>.</summary>
+	/// <param name="mediator">Dispatches each turn.</param>
+	/// <param name="agentCache">Per-conversation agent cache, evicted when the run ends.</param>
+	/// <param name="conversationBudget">The conversation-lifetime token ceiling, gated before every turn.</param>
+	/// <param name="observabilityStore">Session-level telemetry for the run.</param>
+	/// <param name="conversationStore">
+	/// The durable transcript. Used only when the command carries an owner; it also enforces ownership,
+	/// which is why this handler never compares owners itself.
+	/// </param>
+	/// <param name="turnLease">
+	/// Serialises turns on one conversation across hosts. Held for a whole durable run.
+	/// </param>
+	/// <param name="conversationsConfig">Supplies the bounded replay window.</param>
+	/// <param name="logger">Diagnostic logger.</param>
+	/// <remarks>
+	/// The last three are ordinary required dependencies rather than optional ones, even though a
+	/// self-contained run never touches them. A host that composes this handler without conversation
+	/// storage then fails at startup, which is a fixable misconfiguration, instead of on its first
+	/// durable run, which is an outage.
+	/// </remarks>
 	public RunConversationCommandHandler(
 		IMediator mediator,
 		IAgentConversationCache agentCache,
@@ -53,6 +73,15 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 		IOptions<ConversationsConfig> conversationsConfig,
 		ILogger<RunConversationCommandHandler> logger)
 	{
+		ArgumentNullException.ThrowIfNull(mediator);
+		ArgumentNullException.ThrowIfNull(agentCache);
+		ArgumentNullException.ThrowIfNull(conversationBudget);
+		ArgumentNullException.ThrowIfNull(observabilityStore);
+		ArgumentNullException.ThrowIfNull(conversationStore);
+		ArgumentNullException.ThrowIfNull(turnLease);
+		ArgumentNullException.ThrowIfNull(conversationsConfig);
+		ArgumentNullException.ThrowIfNull(logger);
+
 		_mediator = mediator;
 		_agentCache = agentCache;
 		_conversationBudget = conversationBudget;
@@ -199,13 +228,6 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 					});
 				}
 
-				// Persist the question before asking it, so a turn that fails still leaves a transcript
-				// showing what was asked. The interactive transports append in this order for the same
-				// reason. Deliberately after the budget gate: a turn declined for budget never ran, and
-				// recording its question would leave the next run replaying a question nobody answered.
-				if (transcript is not null)
-					await transcript.AppendUserAsync(userMessage, cancellationToken);
-
 				var turnCommand = new ExecuteAgentTurnCommand
 				{
 					AgentName = request.AgentName,
@@ -248,12 +270,21 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 					};
 				}
 
-				// Close the turn in the transcript as soon as it succeeds, rather than writing the whole
-				// run back at the end. A run that dies on its seventh turn then keeps the six that
-				// completed, which is the difference between a durable conversation and a durable
-				// summary of one.
+				// Write the turn as soon as it succeeds, rather than writing the whole run back at the
+				// end: a run that dies on its seventh turn keeps the six that completed, which is the
+				// difference between a durable conversation and a durable summary of one.
+				//
+				// Question and answer are written TOGETHER, and only once there is an answer. Writing
+				// the question up-front — which is what the interactive transports do, so that a live
+				// user can see what they asked — is wrong here for two reasons that both come back to
+				// this transcript being REPLAYED to a model rather than read by a person. A turn that
+				// fails, or one cut short by a lost lease, would leave a question with no answer, and
+				// the next run would replay a conversation in which the user apparently asked twice
+				// and was ignored once. And the second write happens on a token the lost lease has
+				// already cancelled, so the pair would be split precisely when the lease was taken —
+				// the one moment the transcript must not be half-written.
 				if (transcript is not null)
-					await transcript.AppendAssistantAsync(lastResult.Response, cancellationToken);
+					await transcript.AppendTurnAsync(userMessage, lastResult.Response, cancellationToken);
 
 				turns.Add(new TurnSummary
 				{

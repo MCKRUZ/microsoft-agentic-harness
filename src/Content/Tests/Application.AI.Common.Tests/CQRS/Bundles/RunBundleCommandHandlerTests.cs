@@ -137,7 +137,8 @@ public sealed class RunBundleCommandHandlerTests
 
         created!.ConversationId.Should().BeNull();
         _conversations.Verify(
-            c => c.GetAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            c => c.GetHistoryForDispatch(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<CancellationToken>()),
             Times.Never);
     }
 
@@ -151,7 +152,8 @@ public sealed class RunBundleCommandHandlerTests
         _handleStore.Setup(h => h.GetOwner("handle-1")).Returns("owner-1");
         _handleStore.Setup(h => h.TryGet("handle-1")).Returns(Staged());
         _conversations
-            .Setup(c => c.GetAsync("conv-theirs", "owner-1", It.IsAny<CancellationToken>()))
+            .Setup(c => c.GetHistoryForDispatch(
+                "conv-theirs", "owner-1", It.IsAny<int>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new ConversationAccessDeniedException());
 
         var result = await BuildSut(enabled: true)
@@ -169,11 +171,20 @@ public sealed class RunBundleCommandHandlerTests
         // store returns null by default, which is exactly that case.
         _handleStore.Setup(h => h.GetOwner("handle-1")).Returns("owner-1");
         _handleStore.Setup(h => h.TryGet("handle-1")).Returns(Staged());
+        BundleRunRecord? created = null;
+        _jobStore.Setup(j => j.Create(It.IsAny<BundleRunRecord>())).Callback<BundleRunRecord>(r => created = r);
 
         var result = await BuildSut(enabled: true)
             .Handle(Command() with { ConversationId = "conv-new" }, CancellationToken.None);
 
         result.IsSuccess.Should().BeTrue();
+        created!.ConversationId.Should().Be("conv-new");
+
+        // Asserting the probe HAPPENED, not just that the result was a success — success is the default
+        // outcome, so without this the test stays green with the whole pre-check deleted.
+        _conversations.Verify(
+            c => c.GetHistoryForDispatch("conv-new", "owner-1", 0, It.IsAny<CancellationToken>()),
+            Times.Once);
     }
 
     [Fact]
@@ -187,8 +198,12 @@ public sealed class RunBundleCommandHandlerTests
         await BuildSut(enabled: true)
             .Handle(Command() with { ConversationId = "conv-1" }, CancellationToken.None);
 
+        // Zero messages: this needs existence and ownership, not the transcript. Asking for the whole
+        // conversation to throw it away would put a full transcript load on the synchronous request
+        // path of every run — the cost this issue exists to remove, reintroduced one layer down.
         _conversations.Verify(
-            c => c.GetAsync("conv-1", "owner-1", It.IsAny<CancellationToken>()), Times.Once);
+            c => c.GetHistoryForDispatch("conv-1", "owner-1", 0, It.IsAny<CancellationToken>()),
+            Times.Once);
     }
 
     [Fact]

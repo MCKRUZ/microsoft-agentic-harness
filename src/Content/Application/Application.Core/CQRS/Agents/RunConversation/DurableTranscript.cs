@@ -60,20 +60,33 @@ internal sealed class DurableTranscript
         if (messages is null || messages.Count == 0)
             return [];
 
-        return messages.Select(m => new ChatMessage(ToChatRole(m.Role), m.Content)).ToList();
+        return ConversationMessageMapping.ToChatMessages(messages);
     }
 
-    /// <summary>Appends the user message that opens a turn.</summary>
-    /// <param name="content">The user's message text.</param>
+    /// <summary>
+    /// Appends one completed exchange — the question and the answer it produced — to the transcript.
+    /// </summary>
+    /// <param name="userMessage">The user's message that opened the turn.</param>
+    /// <param name="agentResponse">The agent's reply that closed it.</param>
     /// <param name="ct">Cancellation token.</param>
-    public Task AppendUserAsync(string content, CancellationToken ct) =>
-        AppendAsync(MessageRole.User, content, ct);
-
-    /// <summary>Appends the assistant message that closes a turn.</summary>
-    /// <param name="content">The agent's response text.</param>
-    /// <param name="ct">Cancellation token.</param>
-    public Task AppendAssistantAsync(string content, CancellationToken ct) =>
-        AppendAsync(MessageRole.Assistant, content, ct);
+    /// <remarks>
+    /// <para>
+    /// A turn is written as a pair, and only once it has an answer, because this transcript is replayed
+    /// to a model rather than read by a person. A question stored without its answer is not an
+    /// incomplete record, it is a misleading one: the next run replays a conversation in which the user
+    /// asked and was ignored, and the model answers accordingly.
+    /// </para>
+    /// <para>
+    /// The two writes are still two calls, so a failure between them can leave the question alone. That
+    /// is the store's atomicity to fix, not this type's, and the ordering here at least makes the
+    /// window a single failed append wide rather than a whole model round-trip wide.
+    /// </para>
+    /// </remarks>
+    public async Task AppendTurnAsync(string userMessage, string agentResponse, CancellationToken ct)
+    {
+        await AppendAsync(MessageRole.User, userMessage, ct);
+        await AppendAsync(MessageRole.Assistant, agentResponse, ct);
+    }
 
     /// <remarks>
     /// A fresh id per message rather than a caller-supplied one. The interactive transports preserve the
@@ -87,13 +100,4 @@ internal sealed class DurableTranscript
             _ownerId,
             new ConversationMessage(Guid.NewGuid(), role, content, DateTimeOffset.UtcNow),
             ct);
-
-    private static ChatRole ToChatRole(MessageRole role) => role switch
-    {
-        MessageRole.User => ChatRole.User,
-        MessageRole.Assistant => ChatRole.Assistant,
-        MessageRole.System => ChatRole.System,
-        MessageRole.Tool => ChatRole.Tool,
-        _ => ChatRole.User,
-    };
 }
