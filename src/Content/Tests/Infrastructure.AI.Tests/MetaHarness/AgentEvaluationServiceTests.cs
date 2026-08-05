@@ -1,3 +1,4 @@
+using Application.AI.Common.Helpers;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.MetaHarness;
 using Application.AI.Common.Interfaces.Traces;
@@ -317,6 +318,78 @@ public class AgentEvaluationServiceTests : IAsyncDisposable
         var taskResult = Assert.Single(result.PerExampleResults);
         Assert.False(taskResult.Passed);
         Assert.Contains("resolves outside", taskResult.FailureReason);
+    }
+
+    // ── Token cost: the second thing evaluation reports (issue #267) ──────────
+
+    /// <summary>
+    /// The provider's own billed figure is what a cost comparison should use, so it must reach the result.
+    /// </summary>
+    [Fact]
+    public async Task EvaluateAsync_ProviderReportsUsage_ReportsThatCostRatherThanZero()
+    {
+        _agentFactoryMock
+            .Setup(f => f.CreateAgentAsync(It.IsAny<AgentExecutionContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new TestableAIAgent(_ => new AgentResponse(
+                new ChatMessage(ChatRole.Assistant, "the answer is 42"))
+            {
+                Usage = new UsageDetails { InputTokenCount = 900, OutputTokenCount = 100, TotalTokenCount = 1000 }
+            }));
+
+        var sut = BuildSut();
+        var tasks = new[] { BuildTask("t1", "question 1"), BuildTask("t2", "question 2") };
+
+        var result = await sut.EvaluateAsync(BuildCandidate(), tasks);
+
+        // Cost feeds candidate selection. Pinned to zero, an agent that burned three times the context
+        // scored as identically cheap to one that did not, so the cheaper agent could never win.
+        Assert.Equal(2000L, result.TotalTokenCost);
+        Assert.All(result.PerExampleResults, r => Assert.Equal(1000L, r.TokenCost));
+    }
+
+    /// <summary>
+    /// Providers that report no usage — the echo client used offline among them — must still yield a
+    /// comparable figure rather than falling back to the zero this issue exists to remove.
+    /// </summary>
+    [Fact]
+    public async Task EvaluateAsync_ProviderReportsNoUsage_EstimatesRatherThanReportingZero()
+    {
+        const string prompt = "a question long enough to estimate above zero tokens";
+        const string answer = "an answer long enough to estimate above zero tokens";
+
+        _agentFactoryMock
+            .Setup(f => f.CreateAgentAsync(It.IsAny<AgentExecutionContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new TestableAIAgent(answer));
+
+        var sut = BuildSut();
+        var result = await sut.EvaluateAsync(BuildCandidate(), [BuildTask("t1", prompt)]);
+
+        var expected = TokenEstimationHelper.EstimateTokens(prompt)
+            + TokenEstimationHelper.EstimateTokens(answer);
+
+        // Control on the control: an estimate that happened to be zero would make this assertion vacuous.
+        Assert.True(expected > 0);
+        Assert.Equal(expected, Assert.Single(result.PerExampleResults).TokenCost);
+    }
+
+    /// <summary>
+    /// A task that threw has no response to read usage from, and the throw may have come before anything
+    /// reached the provider or after a full turn was billed. Zero is recorded as a genuine unknown, and
+    /// this pins that as a decision rather than leaving it to look like the defect that was just fixed.
+    /// </summary>
+    [Fact]
+    public async Task EvaluateAsync_TaskThrew_ReportsZeroBecauseTheCostIsUnknowable()
+    {
+        _agentFactoryMock
+            .Setup(f => f.CreateAgentAsync(It.IsAny<AgentExecutionContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(TestableAIAgent.Throwing(new InvalidOperationException("provider exploded")));
+
+        var sut = BuildSut();
+        var result = await sut.EvaluateAsync(BuildCandidate(), [BuildTask("t1", "question")]);
+
+        var taskResult = Assert.Single(result.PerExampleResults);
+        Assert.False(taskResult.Passed);
+        Assert.Equal(0L, taskResult.TokenCost);
     }
 
     public async ValueTask DisposeAsync()

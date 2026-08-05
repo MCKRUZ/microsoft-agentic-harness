@@ -22,6 +22,23 @@ public static class TokenEstimationHelper
     /// <summary>Average characters per token for English text.</summary>
     private const int CharsPerToken = 4;
 
+    /// <summary>Nominal token cost of one tool's JSON schema.</summary>
+    private const int TokensPerToolSchema = 50;
+
+    /// <summary>
+    /// Estimates the token cost of sending <paramref name="toolCount"/> tool JSON schemas to the model.
+    /// </summary>
+    /// <param name="toolCount">The number of tools whose schemas are sent. Negative counts estimate 0.</param>
+    /// <returns>The estimated token count.</returns>
+    /// <remarks>
+    /// A flat per-schema figure rather than a measurement of the serialised schema: the schemas are built
+    /// by the model client at request time and are not available to the harness when the budget is charged.
+    /// It lives here so every site charging for tool schemas uses one number — two sites that each hardcode
+    /// their own would drift silently, and the budget would still look plausible.
+    /// </remarks>
+    public static int EstimateToolSchemaTokens(int toolCount) =>
+        toolCount <= 0 ? 0 : toolCount * TokensPerToolSchema;
+
     /// <summary>
     /// Estimates the token count for a text string.
     /// </summary>

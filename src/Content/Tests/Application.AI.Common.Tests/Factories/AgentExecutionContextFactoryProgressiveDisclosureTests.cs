@@ -8,6 +8,7 @@ using Application.AI.Common.Services.Skills;
 using Application.AI.Common.Services.Tools;
 using Application.AI.Common.Tests.Helpers;
 using Domain.AI.Skills;
+using Domain.AI.Telemetry.Conventions;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
 using FluentAssertions;
@@ -147,6 +148,33 @@ public sealed class AgentExecutionContextFactoryProgressiveDisclosureTests : IDi
 
     private static AgentSkillsProvider SkillsProviderOf(Domain.AI.Agents.AgentExecutionContext context) =>
         context.AIContextProviders!.OfType<AgentSkillsProvider>().Single();
+
+    /// <summary>
+    /// Drives the agent's whole context-provider rail the way the runtime does — seeded with the agent's
+    /// own instructions and tools, then feeding each provider the previous one's output — and returns the
+    /// finished context.
+    /// </summary>
+    /// <remarks>
+    /// Invoking one provider in isolation cannot exercise per-turn accounting, because the measurer sits at
+    /// the end of the chain and only sees what the providers ahead of it accumulated.
+    /// </remarks>
+    private static async Task<AIContext> DriveRailAsync(Domain.AI.Agents.AgentExecutionContext context)
+    {
+        var current = new AIContext
+        {
+            Instructions = context.Instruction,
+            Messages = new List<ChatMessage> { new(ChatRole.User, "go") },
+            Tools = context.Tools is null ? [] : [.. context.Tools]
+        };
+
+        foreach (var provider in context.AIContextProviders!)
+        {
+            current = await provider.InvokingAsync(new AIContextProvider.InvokingContext(
+                new Mock<AIAgent>().Object, new Mock<AgentSession>().Object, current));
+        }
+
+        return current;
+    }
 
     // ── Tier 1: the prompt carries the index card, not the body ──────────────
 
@@ -335,6 +363,73 @@ public sealed class AgentExecutionContextFactoryProgressiveDisclosureTests : IDi
             "the tokens the body just put into the context are spent whether or not the harness counts " +
             "them; uncounted, the budget under-reports worst on the turns that load the most skills")
             .WhoseValue.Should().Be(TokenEstimationHelper.EstimateTokens(body?.ToString()));
+    }
+
+    [Fact]
+    public async Task TheRail_ChargesItsTier1IndexCardToTheContextBudget_OnEveryTurn()
+    {
+        var budget = CreateBudgetTracker();
+        var context = await CreateFactory(budget).MapToAgentContextAsync([MakeSkill()], new SkillAgentOptions());
+
+        // What the skills provider contributes on its own: the Tier 1 index card. Measured from an empty
+        // input so it is the card alone, and used below as an independent expectation rather than a
+        // restatement of the measurer's own arithmetic.
+        var indexCard = await InvokeSkillsProviderAsync(SkillsProviderOf(context));
+        indexCard.Instructions.Should().Contain(
+            SkillName, "control: a provider advertising nothing would make every assertion below vacuous");
+
+        // Control. Building the agent charges the static prompt and the tool schemas; nothing on the rail
+        // has run yet, so a per-turn charge appearing here would mean the measurer bills at construction —
+        // the opposite error, and equally wrong.
+        budget.GetBreakdown(AgentName).Should().NotContainKey(
+            ContextConventions.BudgetComponents.PerTurnContext);
+
+        await DriveRailAsync(context);
+        var afterOneTurn = budget.GetBreakdown(AgentName)[ContextConventions.BudgetComponents.PerTurnContext];
+
+        afterOneTurn.Should().BeGreaterThanOrEqualTo(
+            TokenEstimationHelper.EstimateTokens(indexCard.Instructions),
+            "the index card is composed by the framework and injected on every turn; uncounted, the budget " +
+            "under-reports by its full size on each one");
+
+        await DriveRailAsync(context);
+
+        budget.GetBreakdown(AgentName)[ContextConventions.BudgetComponents.PerTurnContext]
+            .Should().Be(afterOneTurn * 2,
+                "this cost recurs — charging it once would leave the reported budget drifting further from " +
+                "the real context the longer a conversation runs, which is the defect, not the fix");
+    }
+
+    [Fact]
+    public async Task TheRail_ChargesTheSameAmount_HoweverLargeTheStaticSystemPromptIs()
+    {
+        // Two agents differing only in the size of their static prompt. The rail contributes the same
+        // index card to both, so the per-turn charge must be identical — that is what "the baseline is
+        // excluded" means, stated without restating the measurer's own arithmetic.
+        var longPrompt = string.Join(" ", Enumerable.Repeat("STATIC-PROMPT-FILLER", 200));
+
+        var withoutPrompt = CreateBudgetTracker();
+        var withPrompt = CreateBudgetTracker();
+
+        var bare = await CreateFactory(withoutPrompt)
+            .MapToAgentContextAsync([MakeSkill()], new SkillAgentOptions());
+        var padded = await CreateFactory(withPrompt)
+            .MapToAgentContextAsync([MakeSkill()], new SkillAgentOptions { AgentInstructions = longPrompt });
+
+        // Control: the two really do differ where the test claims they differ. Without this, two agents
+        // that both ended up with an empty prompt would satisfy the equality below and prove nothing.
+        TokenEstimationHelper.EstimateTokens(padded.Instruction).Should().BeGreaterThan(
+            TokenEstimationHelper.EstimateTokens(bare.Instruction) + 1000);
+
+        await DriveRailAsync(bare);
+        await DriveRailAsync(padded);
+
+        var component = ContextConventions.BudgetComponents.PerTurnContext;
+        withPrompt.GetBreakdown(AgentName)[component].Should().Be(
+            withoutPrompt.GetBreakdown(AgentName)[component],
+            "the measurer sees the static prompt in the accumulated context on every turn; charging what " +
+            "it sees rather than what the rail added would re-bill the whole prompt each turn — a larger " +
+            "error than the one being fixed, and one that would still look like a working feature");
     }
 
     [Fact]

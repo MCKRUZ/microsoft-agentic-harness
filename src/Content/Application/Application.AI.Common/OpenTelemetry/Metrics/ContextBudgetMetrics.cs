@@ -33,6 +33,10 @@ public static class ContextBudgetMetrics
     public static Histogram<long> ToolsSchemaTokens { get; } =
         AppInstrument.Meter.CreateHistogram<long>(ContextConventions.ToolsSchemaTokens, "{token}", "Tool schemas token load");
 
+    /// <summary>Per-turn context-provider rail token load. Tags: agent.name.</summary>
+    public static Histogram<long> PerTurnContextTokens { get; } =
+        AppInstrument.Meter.CreateHistogram<long>(ContextConventions.PerTurnContextTokens, "{token}", "Per-turn injected context token load");
+
     /// <summary>Budget utilization ratio (0-1). Tags: agent.name.</summary>
     public static Histogram<double> BudgetUtilization { get; } =
         AppInstrument.Meter.CreateHistogram<double>(ContextConventions.BudgetUtilization, "{ratio}", "Context budget utilization ratio");

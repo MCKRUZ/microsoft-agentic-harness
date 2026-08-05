@@ -137,6 +137,12 @@ public class AgentExecutionContextFactory
         var tools = mergedToolChain.Tools.ToList();
         var middlewareTypes = ResolveMiddlewareTypes(primarySkill, options);
         var aiContextProviders = BuildMergedAIContextProviders(skills.Count, effectiveAllowedTools, disclosableSkills);
+
+        // Everything on that rail contributes to the model's context on every turn and was, until this
+        // line, charged nothing. Appended after the list is complete so it measures the finished context;
+        // see PerTurnBudgetContextProvider for why one measurer at the end beats a wrapper per provider
+        // (issue #266).
+        AppendPerTurnBudgetProvider(aiContextProviders, agentName, instruction, tools?.Count ?? 0);
         var frameworkType = options.FrameworkType
             ?? ResolveFrameworkTypeFromMetadata(primarySkill)
             ?? _appConfig.CurrentValue.AI?.AgentFramework?.ClientType
@@ -161,7 +167,7 @@ public class AgentExecutionContextFactory
                     agentName,
                     ContextConventions.BudgetComponents.ToolSchemas,
                     ContextConventions.SourceTypeValues.ToolsSchema,
-                    tools.Count * 50, // ~50 tokens per tool schema
+                    TokenEstimationHelper.EstimateToolSchemaTokens(tools.Count),
                     ContextBudgetMetrics.ToolsSchemaTokens);
             }
         }
@@ -503,6 +509,52 @@ public class AgentExecutionContextFactory
         }
 
         return providers.Count > 0 ? providers : null;
+    }
+
+    /// <summary>
+    /// Appends the measurer that charges whatever <paramref name="providers"/> inject into each turn to
+    /// <paramref name="agentName"/>'s budget.
+    /// </summary>
+    /// <param name="providers">
+    /// The rail built for this agent, mutated in place. <see langword="null"/> or empty means the agent has
+    /// no rail, so there is nothing per-turn to charge and nothing is appended.
+    /// </param>
+    /// <param name="agentName">The agent whose budget the per-turn context is charged to.</param>
+    /// <param name="instruction">
+    /// The static system prompt, already charged separately. It is the baseline the measurer subtracts, so
+    /// only what the rail adds is charged here rather than the prompt being billed again every turn.
+    /// </param>
+    /// <param name="toolCount">
+    /// The number of tools the agent was built with, already charged as tool schemas — the baseline for
+    /// tools the rail contributes, such as the framework's own skill-disclosure tools.
+    /// </param>
+    /// <remarks>
+    /// It must be last: the runtime feeds each provider the previous one's output, so only the final
+    /// position sees everything the others contributed. Placing it after
+    /// <see cref="Services.Agent.GoverningToolContextProvider"/> — which is itself documented as going last
+    /// — is safe, because this provider neither adds nor removes tools and so cannot escape that governance
+    /// wrapper or defeat it. Nothing is appended when no budget tracker is wired in, leaving a host that
+    /// does not track context with exactly the rail it had before.
+    /// </remarks>
+    private void AppendPerTurnBudgetProvider(
+        IList<AIContextProvider>? providers,
+        string agentName,
+        string instruction,
+        int toolCount)
+    {
+        if (_budgetTracker is null || providers is null || providers.Count == 0)
+            return;
+
+        providers.Add(new Services.Agent.PerTurnBudgetContextProvider(
+            agentName,
+            _budgetTracker,
+            instruction,
+            toolCount,
+            _loggerFactory.CreateLogger<Services.Agent.PerTurnBudgetContextProvider>()));
+
+        _logger.LogDebug(
+            "Wired PerTurnBudgetContextProvider for {AgentName} behind {ProviderCount} context provider(s)",
+            agentName, providers.Count - 1);
     }
 
     /// <summary>
