@@ -35,6 +35,9 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="Infrastructure.AI.Tests" />
+    <!-- SkillFrontmatter reads SKILL.md frontmatter (issue #258). Already pinned centrally and
+         already used by the evaluation dataset loader, so this adds no supply-chain surface. -->
+    <PackageReference Include="YamlDotNet" />
   </ItemGroup>
 
   <ItemGroup>
