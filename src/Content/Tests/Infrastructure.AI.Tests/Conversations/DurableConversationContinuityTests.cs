@@ -9,9 +9,7 @@ using FluentAssertions;
 using Infrastructure.AI.Conversations;
 using Infrastructure.AI.Persistence;
 using MediatR;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Moq;
@@ -42,10 +40,9 @@ public sealed class DurableConversationContinuityTests : IDisposable
     private const string Owner = "owner-1";
     private const string Stranger = "someone-else";
 
-    private readonly string _databasePath = Path.Combine(
-        Path.GetTempPath(), $"durable-continuity-{Guid.NewGuid():N}.db");
-
-    private readonly ServiceProvider _provider;
+    private readonly string _tempDir;
+    private readonly TestConversationDbContextFactory _contextFactory;
+    private readonly SchemaInitializer<ConversationDbContext> _schema;
     private readonly EfCoreConversationStore _store;
     private readonly IConversationTurnLease _lease;
 
@@ -63,23 +60,23 @@ public sealed class DurableConversationContinuityTests : IDisposable
 
     public DurableConversationContinuityTests()
     {
-        var services = new ServiceCollection();
-        services.AddDbContextFactory<ConversationDbContext>(o => o.UseSqlite($"DataSource={_databasePath}"));
-        services.AddSingleton<SchemaInitializer<ConversationDbContext>>();
-        _provider = services.BuildServiceProvider();
+        // The shared fixture, not a hand-rolled one. It disables connection pooling, which is what lets
+        // the database file be deleted at the end of the test rather than staying open until the pool
+        // is cleared — a hand-rolled factory in this same folder had to call ClearAllPools to compensate.
+        _tempDir = Path.Combine(Path.GetTempPath(), $"durable-continuity-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(_tempDir);
+        _contextFactory = new TestConversationDbContextFactory(Path.Combine(_tempDir, "conversations.db"));
+        _schema = new SchemaInitializer<ConversationDbContext>(_contextFactory);
 
         _store = new EfCoreConversationStore(
-            _provider.GetRequiredService<IDbContextFactory<ConversationDbContext>>(),
-            _clock,
-            NullLogger<EfCoreConversationStore>.Instance,
-            _provider.GetRequiredService<SchemaInitializer<ConversationDbContext>>());
+            _contextFactory, _clock, NullLogger<EfCoreConversationStore>.Instance, _schema);
 
         _lease = new SqliteConversationTurnLease(
-            _provider.GetRequiredService<IDbContextFactory<ConversationDbContext>>(),
+            _contextFactory,
             Options.Create(new ConversationsConfig()),
             _clock,
             NullLogger<SqliteConversationTurnLease>.Instance,
-            _provider.GetRequiredService<SchemaInitializer<ConversationDbContext>>());
+            _schema);
     }
 
     [Fact]
@@ -258,12 +255,8 @@ public sealed class DurableConversationContinuityTests : IDisposable
 
     public void Dispose()
     {
-        _provider.Dispose();
-
-        // The connection pool holds the file open until it is cleared, so a delete before this is a
-        // no-op that leaves a stray database behind on every run.
-        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
-        if (File.Exists(_databasePath))
-            File.Delete(_databasePath);
+        // Takes the WAL and shared-memory sidecars with it, same as the other SQLite suites here.
+        if (Directory.Exists(_tempDir))
+            Directory.Delete(_tempDir, recursive: true);
     }
 }

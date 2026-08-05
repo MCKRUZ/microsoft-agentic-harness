@@ -146,6 +146,45 @@ public interface IConversationStore
     /// </exception>
     Task AppendMessageAsync(string conversationId, string callerId, ConversationMessage message, CancellationToken ct = default);
 
+    /// <summary>
+    /// Appends several messages as one unit, in the order given. Either all of them are stored or none
+    /// is.
+    /// </summary>
+    /// <param name="conversationId">The conversation to append to.</param>
+    /// <param name="callerId">The authenticated caller. Must be non-blank.</param>
+    /// <param name="messages">
+    /// The messages, oldest first. An empty list is a no-op. The same id rules as
+    /// <see cref="AppendMessageAsync"/> apply, and they apply <em>within</em> this batch too: two
+    /// messages here sharing one id is the same defect as one colliding with a stored message.
+    /// </param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <remarks>
+    /// <para>
+    /// This exists for the caller that has a complete exchange to store — a question and the answer it
+    /// produced — and it is not merely a convenience over calling <see cref="AppendMessageAsync"/>
+    /// twice. Two calls are two writes, and both of the shipped stores pay a per-call cost that the
+    /// batch pays once: the file-backed store rewrites the entire transcript on every append, so
+    /// storing a turn as two appends rewrites a linearly growing file twice per turn — quadratic bytes
+    /// over a session, which is precisely the growth the durable-conversation work exists to remove
+    /// from the token bill.
+    /// </para>
+    /// <para>
+    /// Atomicity is the other half. A turn split across two writes can be interrupted between them,
+    /// leaving a question with no answer — and this transcript is replayed to a model, so a half-turn
+    /// is not an incomplete record but a misleading one.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="ArgumentException"><paramref name="callerId"/> is blank.</exception>
+    /// <exception cref="UnauthorizedAccessException">The conversation belongs to another user.</exception>
+    /// <exception cref="InvalidOperationException">
+    /// The conversation does not exist, or a message id is already present. Nothing is written.
+    /// </exception>
+    Task AppendMessagesAsync(
+        string conversationId,
+        string callerId,
+        IReadOnlyList<ConversationMessage> messages,
+        CancellationToken ct = default);
+
     /// <summary>Permanently deletes a conversation record.</summary>
     /// <param name="conversationId">The conversation to delete.</param>
     /// <param name="callerId">The authenticated caller. Must be non-blank.</param>

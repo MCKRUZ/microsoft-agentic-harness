@@ -87,8 +87,12 @@ public class ConversationOrchestratorTests
     [Fact]
     public async Task StartConversation_ExistingConversation_ReturnsExistingRecord()
     {
+        // A supplied id now goes through the store's atomic open. The read-then-create this replaced
+        // was a race: CreateAsync REPLACES, so two clients reconnecting on the same id could both see
+        // it absent and the loser's create would delete the winner's transcript.
         var existing = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
-        _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(existing);
+        _store.Setup(s => s.GetOrCreateAsync("agent", "user1", "c1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(existing);
         _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<ConversationMessage>());
 
@@ -96,7 +100,8 @@ public class ConversationOrchestratorTests
         var (record, _) = await orchestrator.StartConversationAsync("conn1", "agent", "c1", "user1", CancellationToken.None);
 
         record.Should().Be(existing);
-        _store.Verify(s => s.CreateAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+        _store.Verify(s => s.CreateAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never,
+            "a caller-supplied id must never reach the replacing create path");
     }
 
     [Fact]
@@ -105,7 +110,10 @@ public class ConversationOrchestratorTests
         // Keyed on the attacker, because the store is the thing that decides now: it is asked as the
         // caller who actually made the request, and refuses. What the orchestrator still owes is that
         // it asks with the real caller and lets the refusal out — not that it re-derives the rule.
-        _store.Setup(s => s.GetAsync("c1", "attacker", It.IsAny<CancellationToken>()))
+        //
+        // Stubbed explicitly, and it has to be: a MOCKED store enforces nothing, so without this the
+        // test would assert an intruder is refused while nothing in the run does any refusing.
+        _store.Setup(s => s.GetOrCreateAsync("agent", "attacker", "c1", It.IsAny<CancellationToken>()))
             .ThrowsAsync(new ConversationAccessDeniedException());
 
         var orchestrator = CreateOrchestrator();

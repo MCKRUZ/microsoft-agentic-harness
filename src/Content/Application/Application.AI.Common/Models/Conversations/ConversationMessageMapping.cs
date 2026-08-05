@@ -25,7 +25,11 @@ public static class ConversationMessageMapping
 {
     /// <summary>Maps a stored message role onto the agent framework's chat role.</summary>
     /// <param name="role">The stored role.</param>
-    public static ChatRole ToChatRole(MessageRole role) => role switch
+    /// <remarks>
+    /// Private deliberately. Every caller wants a whole window projected, not one role converted, and
+    /// in a template consumers clone and extend, a public member is a supported member.
+    /// </remarks>
+    private static ChatRole ToChatRole(MessageRole role) => role switch
     {
         MessageRole.User => ChatRole.User,
         MessageRole.Assistant => ChatRole.Assistant,

@@ -102,7 +102,7 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 		// IsNullOrWhiteSpace test: an empty identity has been read as "everyone" in this codebase before,
 		// and treating it as "nobody in particular, carry on" is how that happens again.
 		return request.ConversationOwnerId is null
-			? RunAsync(request, seedHistory: [], transcript: null, cancellationToken)
+			? RunAsync(request, transcript: null, cancellationToken)
 			: RunDurableAsync(request, cancellationToken);
 	}
 
@@ -139,24 +139,33 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 
 		var transcript = new DurableTranscript(_conversationStore, request.ConversationId, ownerId);
 
-		// Read under the lease, not before it: the turn this run queued behind may have appended to the
-		// transcript, and a window read earlier would omit exactly the messages that turn just wrote.
-		var seedHistory = await transcript.LoadHistoryAsync(
-			_conversationsConfig.Value.MaxHistoryMessages, turnCts.Token);
-
-		_logger.LogInformation(
-			"Continuing durable conversation {ConversationId} with {HistoryCount} prior message(s) replayed.",
-			request.ConversationId, seedHistory.Count);
-
-		return await RunAsync(request, seedHistory, transcript, turnCts.Token);
+		return await RunAsync(request, transcript, turnCts.Token);
 	}
 
 	private async Task<ConversationResult> RunAsync(
 		RunConversationCommand request,
-		IReadOnlyList<ChatMessage> seedHistory,
 		DurableTranscript? transcript,
 		CancellationToken cancellationToken)
 	{
+		// Derived from the transcript rather than passed alongside it: the two are one piece of state,
+		// and a signature that took both would let a caller pass a seed with no transcript, or a window
+		// belonging to some other conversation, with nothing to object.
+		//
+		// Read here rather than before the lease was taken: the turn this run queued behind may have
+		// appended to the transcript, and a window read earlier would omit exactly the messages that
+		// turn just wrote.
+		var seedHistory = transcript is null
+			? []
+			: await transcript.LoadHistoryAsync(
+				_conversationsConfig.Value.MaxHistoryMessages, cancellationToken);
+
+		if (transcript is not null)
+		{
+			_logger.LogInformation(
+				"Continuing durable conversation {ConversationId} with {HistoryCount} prior message(s) replayed.",
+				request.ConversationId, seedHistory.Count);
+		}
+
 		_logger.LogInformation("Starting conversation with {AgentName}, {MessageCount} messages, max {MaxTurns} turns",
 			request.AgentName, request.UserMessages.Count, request.MaxTurns);
 

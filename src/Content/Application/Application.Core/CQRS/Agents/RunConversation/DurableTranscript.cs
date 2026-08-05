@@ -77,16 +77,22 @@ internal sealed class DurableTranscript
     /// asked and was ignored, and the model answers accordingly.
     /// </para>
     /// <para>
-    /// The two writes are still two calls, so a failure between them can leave the question alone. That
-    /// is the store's atomicity to fix, not this type's, and the ordering here at least makes the
-    /// window a single failed append wide rather than a whole model round-trip wide.
+    /// Written through the store's batch append, so the pair is one unit: either the whole exchange is
+    /// stored or none of it is. Two separate appends could be interrupted between them — most obviously
+    /// by the lease being lost, which cancels the token both writes run under — and would leave exactly
+    /// the half-turn this method exists to avoid. It is also one file rewrite instead of two on the
+    /// file-backed store, whose appends rewrite the entire transcript.
     /// </para>
     /// </remarks>
-    public async Task AppendTurnAsync(string userMessage, string agentResponse, CancellationToken ct)
-    {
-        await AppendAsync(MessageRole.User, userMessage, ct);
-        await AppendAsync(MessageRole.Assistant, agentResponse, ct);
-    }
+    public Task AppendTurnAsync(string userMessage, string agentResponse, CancellationToken ct) =>
+        _store.AppendMessagesAsync(
+            _conversationId,
+            _ownerId,
+            [
+                NewMessage(MessageRole.User, userMessage),
+                NewMessage(MessageRole.Assistant, agentResponse),
+            ],
+            ct);
 
     /// <remarks>
     /// A fresh id per message rather than a caller-supplied one. The interactive transports preserve the
@@ -94,10 +100,6 @@ internal sealed class DurableTranscript
     /// resolve it; a bundle run has no such client and no such bubble, so minting the id here keeps the
     /// store's "ids are unique within a conversation" rule without inventing a protocol to carry one.
     /// </remarks>
-    private Task AppendAsync(MessageRole role, string content, CancellationToken ct) =>
-        _store.AppendMessageAsync(
-            _conversationId,
-            _ownerId,
-            new ConversationMessage(Guid.NewGuid(), role, content, DateTimeOffset.UtcNow),
-            ct);
+    private static ConversationMessage NewMessage(MessageRole role, string content) =>
+        new(Guid.NewGuid(), role, content, DateTimeOffset.UtcNow);
 }

@@ -249,9 +249,34 @@ public sealed class FileSystemConversationStore : IConversationStore
     }
 
     /// <inheritdoc/>
-    public async Task AppendMessageAsync(string conversationId, string callerId, ConversationMessage message, CancellationToken ct = default)
+    public Task AppendMessageAsync(string conversationId, string callerId, ConversationMessage message, CancellationToken ct = default) =>
+        AppendMessagesAsync(conversationId, callerId, [message], ct);
+
+    /// <inheritdoc/>
+    /// <remarks>
+    /// <para>
+    /// The batch is the real implementation and the single-message append delegates to it. That matters
+    /// far more here than in the SQLite store: every append re-reads, re-serialises and rewrites the
+    /// <em>whole</em> transcript file, so storing a turn as two calls rewrites a linearly growing file
+    /// twice per turn. Over a long session that is quadratic bytes — the shape the durable-conversation
+    /// work exists to remove from the token bill, reappearing on disk.
+    /// </para>
+    /// <para>
+    /// One lock acquisition covers the whole batch, which is also what makes it atomic and stops an
+    /// unrelated conversation's append from being serialised behind the second half of this one.
+    /// </para>
+    /// </remarks>
+    public async Task AppendMessagesAsync(
+        string conversationId,
+        string callerId,
+        IReadOnlyList<ConversationMessage> messages,
+        CancellationToken ct = default)
     {
         ConversationOwnership.RequireCallerId(callerId);
+        ArgumentNullException.ThrowIfNull(messages);
+
+        if (messages.Count == 0)
+            return;
 
         var path = ResolveAndValidatePath(conversationId);
 
@@ -271,20 +296,29 @@ public sealed class FileSystemConversationStore : IConversationStore
             // id the conversation already holds. Rejected rather than appended: a transcript with two
             // rows sharing one id makes a retry's cut point arbitrary, since truncation resolves an id
             // to the first match. The SQLite store gets the same rejection from a unique index.
-            if (message.Id != Guid.Empty && existing.Messages.Any(m => m.Id == message.Id))
+            //
+            // Checked against the incoming batch as well as the stored transcript. The unique index the
+            // other store relies on does not care which statement a colliding id arrived in, so a batch
+            // carrying the same id twice must be refused here too or the two stores disagree.
+            var seen = new HashSet<Guid>(existing.Messages.Select(m => m.Id));
+            foreach (var message in messages)
             {
-                throw new InvalidOperationException(
-                    $"Message '{message.Id}' already exists in conversation '{conversationId}'.");
+                if (message.Id != Guid.Empty && !seen.Add(message.Id))
+                {
+                    throw new InvalidOperationException(
+                        $"Message '{message.Id}' already exists in conversation '{conversationId}'.");
+                }
             }
 
+            var firstUserMessage = messages.FirstOrDefault(m => m.Role == MessageRole.User);
             var derivedTitle = existing.Title
-                ?? (message.Role == MessageRole.User
-                    ? ConversationRecordTitleDerivation.Derive(message.Content)
-                    : null);
+                ?? (firstUserMessage is null
+                    ? null
+                    : ConversationRecordTitleDerivation.Derive(firstUserMessage.Content));
 
             var updated = existing with
             {
-                Messages = [..existing.Messages, message],
+                Messages = [.. existing.Messages, .. messages],
                 UpdatedAt = _timeProvider.GetUtcNow(),
                 Title = derivedTitle,
             };

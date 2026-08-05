@@ -411,6 +411,119 @@ public abstract class ConversationStoreContractTests
         (await Store.GetAsync(id, Owner))!.Messages.Should().ContainSingle();
     }
 
+    // -- AppendMessagesAsync --
+    //
+    // The batch exists so a complete exchange is stored as one unit. All-or-nothing is the property
+    // that matters: this transcript is replayed to a model, so a half-written turn is not an incomplete
+    // record but a misleading one.
+
+    [Fact]
+    public async Task AppendMessages_StoresThemAllInOrder()
+    {
+        var record = await Store.CreateAsync("agent", Owner);
+
+        await Store.AppendMessagesAsync(record.Id, Owner, [
+            UserMessage("what is my name?"),
+            AssistantMessage("Sam"),
+        ]);
+
+        (await Store.GetAsync(record.Id, Owner))!.Messages.Select(m => m.Content).Should().Equal(
+            "what is my name?", "Sam");
+    }
+
+    [Fact]
+    public async Task AppendMessages_EmptyBatch_IsANoOp()
+    {
+        var record = await Store.CreateAsync("agent", Owner);
+
+        await Store.AppendMessagesAsync(record.Id, Owner, []);
+
+        (await Store.GetAsync(record.Id, Owner))!.Messages.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task AppendMessages_ToAnotherUsersConversation_IsRefusedAndWritesNothing()
+    {
+        var record = await Store.CreateAsync("agent", Owner);
+
+        var act = () => Store.AppendMessagesAsync(record.Id, Stranger, [
+            UserMessage("not mine"),
+            AssistantMessage("nor this"),
+        ]);
+
+        await act.Should().ThrowAsync<ConversationAccessDeniedException>();
+        (await Store.GetAsync(record.Id, Owner))!.Messages.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task AppendMessages_ToAnUnknownConversation_FailsAndWritesNothing()
+    {
+        var act = () => Store.AppendMessagesAsync($"missing-{Guid.NewGuid():N}", Owner, [
+            UserMessage("nowhere to go"),
+        ]);
+
+        await act.Should().ThrowAsync<InvalidOperationException>();
+    }
+
+    [Fact]
+    public async Task AppendMessages_DuplicateIdInsideTheBatch_IsRejectedAndNothingIsWritten()
+    {
+        // The whole batch is refused, not merely the offending message. A partially applied batch is
+        // the failure this operation exists to prevent, so failing halfway would be worse than the two
+        // separate appends it replaces.
+        var record = await Store.CreateAsync("agent", Owner);
+        var shared = Guid.NewGuid();
+
+        var act = () => Store.AppendMessagesAsync(record.Id, Owner, [
+            new ConversationMessage(shared, MessageRole.User, "first", Clock.GetUtcNow()),
+            new ConversationMessage(shared, MessageRole.Assistant, "second", Clock.GetUtcNow()),
+        ]);
+
+        await act.Should().ThrowAsync<InvalidOperationException>();
+        (await Store.GetAsync(record.Id, Owner))!.Messages.Should().BeEmpty(
+            "a batch that cannot be stored whole must not be stored in part");
+    }
+
+    [Fact]
+    public async Task AppendMessages_IdAlreadyInTheConversation_IsRejectedAndTheEarlierBatchSurvives()
+    {
+        var record = await Store.CreateAsync("agent", Owner);
+        var first = UserMessage("already here");
+        await Store.AppendMessagesAsync(record.Id, Owner, [first]);
+
+        var act = () => Store.AppendMessagesAsync(record.Id, Owner, [
+            AssistantMessage("fine on its own"),
+            new ConversationMessage(first.Id, MessageRole.User, "a replay", Clock.GetUtcNow()),
+        ]);
+
+        await act.Should().ThrowAsync<InvalidOperationException>();
+        (await Store.GetAsync(record.Id, Owner))!.Messages.Select(m => m.Content).Should().Equal(
+            "already here");
+    }
+
+    [Fact]
+    public async Task AppendMessages_DerivesTheTitleFromTheFirstUserMessageInTheBatch()
+    {
+        // Same rule the single append follows, so a turn stored as one batch and the same turn stored
+        // as two appends cannot end up with different titles.
+        var record = await Store.CreateAsync("agent", Owner);
+
+        await Store.AppendMessagesAsync(record.Id, Owner, [
+            UserMessage("the opening question"),
+            AssistantMessage("the reply"),
+        ]);
+
+        (await Store.GetAsync(record.Id, Owner))!.Title.Should().NotBeNullOrWhiteSpace();
+    }
+
+    [Fact]
+    public async Task AppendMessages_BlankCallerId_IsRejectedRatherThanTreatedAsGlobal()
+    {
+        var act = () => Store.AppendMessagesAsync("any", "  ", [UserMessage("nope")]);
+
+        await act.Should().ThrowAsync<ArgumentException>();
+    }
+
     // -- ListAsync --
 
     [Fact]

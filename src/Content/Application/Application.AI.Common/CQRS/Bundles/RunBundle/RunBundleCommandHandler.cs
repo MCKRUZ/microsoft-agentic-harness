@@ -25,6 +25,19 @@ namespace Application.AI.Common.CQRS.Bundles.RunBundle;
 public sealed class RunBundleCommandHandler
     : IRequestHandler<RunBundleCommand, Result<RunBundleResult>>
 {
+    /// <summary>
+    /// The single refusal message for an unknown handle, a handle belonging to someone else, and a
+    /// conversation belonging to someone else.
+    /// </summary>
+    /// <remarks>
+    /// One constant rather than three literals, because their being identical is a security property
+    /// rather than a coincidence: a caller who can tell these apart can enumerate other people's
+    /// handles and conversation ids by watching the response change. Kept in one place so that stays
+    /// true by construction instead of by everyone remembering to copy it exactly.
+    /// </remarks>
+    private const string HandleNotFoundMessage =
+        "Bundle handle not found or expired. Register the bundle again to obtain a fresh handle.";
+
     private readonly IBundleHandleStore _handleStore;
     private readonly IBundleRunJobStore _jobStore;
     private readonly IBundleRunDispatchQueue _dispatchQueue;
@@ -81,8 +94,7 @@ public sealed class RunBundleCommandHandler
         var staged = owner == request.OwnerId ? _handleStore.TryGet(request.Handle) : null;
         if (owner != request.OwnerId || staged is null)
         {
-            return Result<RunBundleResult>.NotFound(
-                "Bundle handle not found or expired. Register the bundle again to obtain a fresh handle.");
+            return Result<RunBundleResult>.NotFound(HandleNotFoundMessage);
         }
 
         // Refuse a conversation belonging to someone else here, while the caller is still on the line.
@@ -92,8 +104,7 @@ public sealed class RunBundleCommandHandler
         if (request.ConversationId is not null
             && !await CanUseConversationAsync(request, cancellationToken).ConfigureAwait(false))
         {
-            return Result<RunBundleResult>.NotFound(
-                "Bundle handle not found or expired. Register the bundle again to obtain a fresh handle.");
+            return Result<RunBundleResult>.NotFound(HandleNotFoundMessage);
         }
 
         var record = new BundleRunRecord

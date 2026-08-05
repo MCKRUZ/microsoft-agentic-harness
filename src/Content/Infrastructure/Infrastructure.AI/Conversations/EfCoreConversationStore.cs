@@ -277,22 +277,43 @@ public sealed class EfCoreConversationStore : IConversationStore
     private const int SqliteConstraintPrimaryKey = 1555;
 
     /// <inheritdoc/>
-    public async Task AppendMessageAsync(
+    public Task AppendMessageAsync(
         string conversationId,
         string callerId,
         ConversationMessage message,
+        CancellationToken ct = default) =>
+        AppendMessagesAsync(conversationId, callerId, [message], ct);
+
+    /// <inheritdoc/>
+    /// <remarks>
+    /// The batch is the real implementation and the single-message append delegates to it, rather than
+    /// the other way round: one transaction, one header update and one round trip however many messages
+    /// arrive. Writing a turn as two calls would open two transactions to store one exchange, and would
+    /// let the pair be interrupted halfway.
+    /// </remarks>
+    public async Task AppendMessagesAsync(
+        string conversationId,
+        string callerId,
+        IReadOnlyList<ConversationMessage> messages,
         CancellationToken ct = default)
     {
         ConversationOwnership.RequireCallerId(callerId);
+        ArgumentNullException.ThrowIfNull(messages);
+
+        if (messages.Count == 0)
+            return;
 
         var now = _timeProvider.GetUtcNow();
 
         // A title is derived from the first user message only. Passing null for every other case
         // lets the UPDATE below express "keep the existing title" as a coalesce, so no read is
-        // needed to decide whether one is already set.
-        var candidateTitle = message.Role == MessageRole.User
-            ? ConversationRecordTitleDerivation.Derive(message.Content)
-            : null;
+        // needed to decide whether one is already set. Across a batch that is the first USER message
+        // in it — a turn arrives question-first, so this is the same message it would have been had
+        // the batch been appended one at a time.
+        var firstUserMessage = messages.FirstOrDefault(m => m.Role == MessageRole.User);
+        var candidateTitle = firstUserMessage is null
+            ? null
+            : ConversationRecordTitleDerivation.Derive(firstUserMessage.Content);
 
         await using var context = await _contextFactory.CreateDbContextAsync(ct);
         await using var transaction = await context.Database.BeginTransactionAsync(ct);
@@ -313,7 +334,8 @@ public sealed class EfCoreConversationStore : IConversationStore
             throw new InvalidOperationException($"Conversation '{conversationId}' does not exist.");
         }
 
-        context.ConversationMessages.Add(ConversationEntityMapper.ToEntity(conversationId, message));
+        foreach (var message in messages)
+            context.ConversationMessages.Add(ConversationEntityMapper.ToEntity(conversationId, message));
 
         try
         {
@@ -325,8 +347,15 @@ public sealed class EfCoreConversationStore : IConversationStore
             // id the conversation already holds. The unique index has to reject it — truncation
             // resolves an id to a cut point, and two rows sharing one id makes that cut arbitrary —
             // but the caller is owed a defined failure rather than whatever the provider threw.
+            //
+            // The failing id is not named across a batch: the provider reports which statement failed,
+            // not which of ours, and guessing would put a specific and possibly wrong id into an error
+            // message. The transaction rolls back either way, so nothing is written.
             throw new InvalidOperationException(
-                $"Message '{message.Id}' already exists in conversation '{conversationId}'.", ex);
+                messages.Count == 1
+                    ? $"Message '{messages[0].Id}' already exists in conversation '{conversationId}'."
+                    : $"One of the messages already exists in conversation '{conversationId}'.",
+                ex);
         }
 
         await transaction.CommitAsync(ct);

@@ -472,10 +472,24 @@ public sealed class RunConversationDurableTests
         /// the thing it stands in for does not simplify a test, it silences one.
         /// </remarks>
         public Task AppendMessageAsync(
-            string conversationId, string callerId, ConversationMessage message, CancellationToken ct = default)
+            string conversationId, string callerId, ConversationMessage message, CancellationToken ct = default) =>
+            AppendMessagesAsync(conversationId, callerId, [message], ct);
+
+        /// <remarks>
+        /// All-or-nothing, like the real stores: the batch is recorded only once the token has been
+        /// checked. A double that recorded messages one at a time and then threw would leave a
+        /// half-written turn the production stores cannot produce, and the test asserting that a lost
+        /// lease writes nothing would be asserting against a fiction.
+        /// </remarks>
+        public Task AppendMessagesAsync(
+            string conversationId, string callerId, IReadOnlyList<ConversationMessage> messages,
+            CancellationToken ct = default)
         {
             ct.ThrowIfCancellationRequested();
-            Appended.Add((conversationId, callerId, message));
+
+            foreach (var message in messages)
+                Appended.Add((conversationId, callerId, message));
+
             return Task.CompletedTask;
         }
 
