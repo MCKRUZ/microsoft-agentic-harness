@@ -3,6 +3,7 @@ using System.Text.Json.Serialization;
 using Application.AI.Common.Evaluation;
 using Application.AI.Common.Evaluation.Models;
 using Application.AI.Common.Evaluation.Outcomes;
+using Application.AI.Common.Extensions;
 using Application.AI.Common.Json;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
@@ -258,7 +259,7 @@ internal static class JudgeCallCore
 
         logger.LogInformation(
             "Judge consumed input={InputTokens} output={OutputTokens} total={TotalTokens}",
-            input, output, usage.TotalTokenCount ?? (input + output));
+            input, output, usage.TotalTokens());
     }
 
     private static IList<ChatMessage> BuildMessages(string systemPrompt, string userPrompt, bool stricter)

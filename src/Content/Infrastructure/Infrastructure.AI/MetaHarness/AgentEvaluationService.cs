@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using Application.AI.Common.Extensions;
 using Application.AI.Common.Helpers;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.MetaHarness;
@@ -142,12 +143,17 @@ public sealed class AgentEvaluationService : IEvaluationService
 
             var output = ExtractContent(response);
             var (passed, failureReason) = Grade(output, task.ExpectedOutputPattern);
-            taskResult = new TaskEvaluationResult(task.TaskId, passed, TokenCost: 0L, failureReason);
+            taskResult = new TaskEvaluationResult(
+                task.TaskId, passed, ResolveTokenCost(response, task.InputPrompt, output), failureReason);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogError(ex, "Task {TaskId} failed for candidate {CandidateId}",
                 task.TaskId, candidate.CandidateId);
+
+            // Zero here is a genuine unknown, not a placeholder: without a response there is no usage to
+            // read, and the throw may have come before anything reached the provider or after a full turn
+            // was billed. Estimating would put an invented number into a candidate-selection input.
             taskResult = new TaskEvaluationResult(task.TaskId, Passed: false, TokenCost: 0L, ex.Message);
         }
         finally
@@ -291,6 +297,52 @@ public sealed class AgentEvaluationService : IEvaluationService
         {
             return (false, "regex_timeout");
         }
+    }
+
+    /// <summary>
+    /// Resolves what a completed eval task cost in tokens, preferring the provider's own accounting.
+    /// </summary>
+    /// <param name="response">The agent's response, whose usage the model provider populates.</param>
+    /// <param name="inputPrompt">The prompt sent, used only by the fallback estimate.</param>
+    /// <param name="output">The text produced, used only by the fallback estimate.</param>
+    /// <returns>The task's token cost. Never negative.</returns>
+    /// <remarks>
+    /// <para>
+    /// Cost is one of the two things evaluation reports, and it feeds candidate selection: with it pinned
+    /// to zero a candidate that solved every task by burning three times the context scored as identically
+    /// cheap as one that solved them directly, so the cheaper agent could not win on the axis it wins on
+    /// (issue #267).
+    /// </para>
+    /// <para>
+    /// The provider's own figure is preferred because it is what actually gets billed, and it counts the
+    /// whole request — the system prompt and every skill body the candidate loaded included, which is
+    /// exactly the spending being compared. Providers populate usage inconsistently: some report a total,
+    /// while others (the echo client used for offline runs among them) report input and output separately
+    /// and leave the total unset, so both shapes are read before giving up.
+    /// </para>
+    /// <para>
+    /// The fallback is the same characters-per-token estimate the context budget uses, over the prompt and
+    /// the produced text only. It is a floor, not an equivalent: it cannot see the system prompt or the
+    /// skill bodies, so a candidate's real spending is understated on that path. It is kept because a low
+    /// figure derived from real text still orders candidates better than a zero that ranks them all equal.
+    /// Taking it is logged, so a run whose costs look implausibly uniform can be checked rather than
+    /// guessed at.
+    /// </para>
+    /// </remarks>
+    private long ResolveTokenCost(AgentResponse? response, string inputPrompt, string output)
+    {
+        var billed = response?.Usage.TotalTokens() ?? 0;
+        if (billed > 0)
+            return billed;
+
+        var estimated = TokenEstimationHelper.EstimateTokens(inputPrompt)
+            + TokenEstimationHelper.EstimateTokens(output);
+
+        _logger.LogDebug(
+            "Model provider reported no usable token usage; falling back to an estimate of {EstimatedTokens} tokens",
+            estimated);
+
+        return estimated;
     }
 
     private static string ExtractContent(object? response)

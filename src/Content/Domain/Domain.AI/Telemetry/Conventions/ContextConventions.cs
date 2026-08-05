@@ -16,6 +16,8 @@ public static class ContextConventions
     public const string SkillsTier = "agent.context.skills_tier";
     /// <summary>Token load from tool JSON schemas sent to the LLM.</summary>
     public const string ToolsSchemaTokens = "agent.context.tools_schema_tokens";
+    /// <summary>Token load injected into every turn by the context-provider rail. Tags: agent.name.</summary>
+    public const string PerTurnContextTokens = "agent.context.per_turn_context_tokens";
     /// <summary>Remaining token budget for the agent session.</summary>
     public const string BudgetRemaining = "agent.context.budget_remaining";
     /// <summary>Budget utilization ratio (0-1, used/limit).</summary>
@@ -41,6 +43,17 @@ public static class ContextConventions
         public const string SkillsTier2 = "skills_tier2";
         /// <summary>Skill supporting files served on demand through <c>read_skill_resource</c>.</summary>
         public const string SkillsTier3 = "skills_tier3";
+
+        /// <summary>
+        /// Everything the <c>AIContextProvider</c> rail adds to a turn: the skills index card (Tier 1) and
+        /// the framework's disclosure tools, cross-session memory recall, and task-similarity learnings.
+        /// </summary>
+        /// <remarks>
+        /// Charged <em>every turn</em>, unlike <see cref="SystemPrompt"/> and <see cref="ToolSchemas"/>,
+        /// which are charged once when the agent is built. That difference is the point of this component:
+        /// this cost recurs, so the gap it closes widens as a conversation goes on (issue #266).
+        /// </remarks>
+        public const string PerTurnContext = "per_turn_context";
     }
 
     /// <summary>
@@ -48,9 +61,12 @@ public static class ContextConventions
     /// paid for. Numeric so a dashboard can order them; the names carry the meaning.
     /// </summary>
     /// <remarks>
-    /// Tier 1 has no value here on purpose. The index card is composed by the framework's skills provider
-    /// rather than pulled on demand, so nothing in the harness is positioned to measure it and no emitter
-    /// would use the constant.
+    /// Tier 1 has no value here on purpose, but not because it is unmeasurable — it is measured, and
+    /// charged under <see cref="BudgetComponents.PerTurnContext"/>. The index card is composed by the
+    /// framework's skills provider and contributed on the context-provider rail rather than pulled on
+    /// demand, so it is not a <em>tier</em> of this instrument's dimension: it arrives every turn whether
+    /// or not any skill is loaded, and it is charged with the rest of that rail's per-turn cost. Nothing
+    /// emits a Tier 1 value here, so no constant exists for one.
     /// </remarks>
     public static class SkillsTierValues
     {
@@ -65,6 +81,9 @@ public static class ContextConventions
         public const string SystemPrompt = "system_prompt";
         public const string Skills = "skills";
         public const string ToolsSchema = "tools_schema";
+        /// <summary>Context contributed by the provider rail on every turn. See
+        /// <see cref="BudgetComponents.PerTurnContext"/>.</summary>
+        public const string PerTurnContext = "per_turn_context";
         public const string Hooks = "hooks";
         public const string UserMessage = "user_message";
         public const string ToolResult = "tool_result";

@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces;
+using Application.AI.Common.Interfaces.Context;
 using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Application.AI.Common.Interfaces.Learnings;
 using Application.AI.Common.Services.Agent;
@@ -81,6 +82,12 @@ public sealed class AIContextProviderMergeContractTests
             new GoverningToolContextProvider(NullLogger<GoverningToolContextProvider>.Instance),
         [nameof(KnowledgeMemoryContextProvider)] = BuildKnowledgeMemory,
         [nameof(LearningsRecallContextProvider)] = BuildLearningsRecall,
+        [nameof(PerTurnBudgetContextProvider)] = () => new PerTurnBudgetContextProvider(
+            "MergeContractAgent",
+            new Mock<IContextBudgetTracker>().Object,
+            SystemSentinel,
+            baselineToolCount: 2,
+            NullLogger<PerTurnBudgetContextProvider>.Instance),
     };
 
     public static TheoryData<string> AllProviders
