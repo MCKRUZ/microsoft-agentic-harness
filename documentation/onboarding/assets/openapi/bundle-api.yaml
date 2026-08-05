@@ -233,6 +233,12 @@ paths:
                   userMessages: ["Walk me through what you found."]
                   maxTurns: 5
                   stream: true
+              continue:
+                summary: Continue a durable conversation — send only the new message
+                value:
+                  userMessages: ["And what about the second clause?"]
+                  maxTurns: 3
+                  conversationId: "voice-session-8f14e45f"
       responses:
         "202":
           description: The run was created. It is queued for background dispatch, or reserved awaiting its stream.
@@ -1078,8 +1084,9 @@ components:
         userMessages:
           type: array
           description: >-
-            The user messages seeding the conversation — one turn per message. At least one, at most
-            100, none empty.
+            The user messages this run contributes — one turn per message. At least one, at most 100,
+            none empty. Without `conversationId` these are the whole conversation; with it, they are
+            appended to what the conversation already holds.
           minItems: 1
           maxItems: 100
           items:
@@ -1087,10 +1094,33 @@ components:
             minLength: 1
         maxTurns:
           type: integer
-          description: Maximum number of turns the conversation may run.
+          description: >-
+            Maximum number of turns **this run** may take. It does not bound the conversation: with
+            `conversationId` set the conversation outlives any one run, and its total length is bounded
+            by the conversation-lifetime token budget instead.
           default: 10
           minimum: 1
           maximum: 100
+        conversationId:
+          type: string
+          description: >-
+            Continues a durable conversation instead of running one-shot. The agent is given the
+            conversation's recent history before the first turn, and this run's turns are saved — so a
+            caller driving a multi-turn session sends only what is new rather than replaying the whole
+            transcript every time, which is what the 100-message cap would otherwise force it to do.
+
+
+            The id is yours to choose and opaque to the API; a GUID is the obvious pick. It is created
+            on first use and owned by the caller that first used it. Naming a conversation owned by
+            someone else returns `404`, identically to an unknown handle, so the endpoint cannot be
+            used to discover other people's conversation ids.
+
+
+            Turns on one conversation are serialised: a second run naming a conversation that is
+            mid-turn waits for it rather than interleaving.
+          pattern: "^[A-Za-z0-9_-]+$"
+          maxLength: 200
+          example: "voice-session-8f14e45f"
         stream:
           type: boolean
           description: >-

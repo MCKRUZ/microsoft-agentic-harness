@@ -44,6 +44,18 @@ public sealed record RunBundleCommand : IRequest<Result<RunBundleResult>>
     public int MaxTurns { get; init; } = 10;
 
     /// <summary>
+    /// The durable conversation this run continues, or null for a one-shot run. Supplying it is what
+    /// makes a bundle run stateful: prior turns are replayed to the model and this run's turns are
+    /// persisted, so a caller driving a long session sends only what is new rather than replaying the
+    /// whole transcript on every turn.
+    /// </summary>
+    /// <remarks>
+    /// Created on first use, owned by <see cref="OwnerId"/>. A conversation belonging to another caller
+    /// is reported exactly as a missing bundle handle is — the API does not disclose that it exists.
+    /// </remarks>
+    public string? ConversationId { get; init; }
+
+    /// <summary>
     /// Selects the run's dispatch mode. When true the run is reserved for external, streamed execution: the
     /// record is created <see cref="BundleRunStatus.Queued"/> but is <em>not</em> enqueued to the dispatcher, so
     /// its only driver is the transport that later claims and streams it. When false (the default) the run is

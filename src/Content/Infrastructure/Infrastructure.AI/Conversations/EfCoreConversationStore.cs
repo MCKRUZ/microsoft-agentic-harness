@@ -192,22 +192,128 @@ public sealed class EfCoreConversationStore : IConversationStore
     }
 
     /// <inheritdoc/>
-    public async Task AppendMessageAsync(
+    /// <remarks>
+    /// Atomic where <see cref="CreateAsync"/> is not, and by a different mechanism: nothing is deleted
+    /// and nothing depends on the read deciding the write. The insert either lands or violates the
+    /// primary key, and the primary key is enforced by the database rather than by the gap between two
+    /// of our statements. Losing that race is not an error here — the winner created the same empty
+    /// conversation this call wanted — so the loser re-reads and returns it, which also re-applies the
+    /// ownership check against whoever actually won.
+    /// </remarks>
+    public async Task<ConversationRecord> GetOrCreateAsync(
+        string agentName,
+        string userId,
+        string conversationId,
+        CancellationToken ct = default)
+    {
+        ConversationOwnership.RequireCallerId(userId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(conversationId);
+
+        // GetAsync applies the ownership check, so a conversation belonging to someone else is refused
+        // here rather than falling through to an insert that would collide with their row.
+        var existing = await GetAsync(conversationId, userId, ct);
+        if (existing is not null)
+            return existing;
+
+        var now = _timeProvider.GetUtcNow();
+
+        await using var context = await _contextFactory.CreateDbContextAsync(ct);
+        context.Conversations.Add(new ConversationEntity
+        {
+            Id = conversationId,
+            AgentName = agentName,
+            UserId = userId,
+            CreatedAt = now,
+            UpdatedAt = now,
+        });
+
+        try
+        {
+            await context.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateException ex) when (IsDuplicateConversationId(ex))
+        {
+            // Someone created this conversation between the read above and this insert. Re-read rather
+            // than overwrite: the winner may already have appended a turn, and this call promised never
+            // to destroy a transcript. The re-read refuses it if the winner was another user.
+            var raced = await GetAsync(conversationId, userId, ct);
+            if (raced is not null)
+                return raced;
+
+            // The row collided but is now unreadable — it was deleted between the two. Nothing sensible
+            // is left to return, and retrying could loop, so surface the original failure.
+            throw;
+        }
+
+        _logger.LogDebug(
+            "Opened conversation {ConversationId} for user {UserId} (created).", conversationId, userId);
+
+        return new ConversationRecord(
+            Id: conversationId,
+            AgentName: agentName,
+            UserId: userId,
+            CreatedAt: now,
+            UpdatedAt: now,
+            Messages: []);
+    }
+
+    /// <summary>
+    /// True when <paramref name="ex"/> is the conversation table's primary-key collision rather than
+    /// any other write failure.
+    /// </summary>
+    /// <remarks>
+    /// SQLite reports a clashing <em>primary</em> key as <c>SQLITE_CONSTRAINT_PRIMARYKEY</c>, not as
+    /// <c>SQLITE_CONSTRAINT_UNIQUE</c> — the code the message-id check matches. Both are accepted
+    /// because which one arrives depends on how the key is declared, and a store that recognised only
+    /// the unique variant would turn the ordinary lost-create race into an unhandled write failure.
+    /// </remarks>
+    private static bool IsDuplicateConversationId(DbUpdateException ex) =>
+        ex.InnerException is SqliteException
+        {
+            SqliteExtendedErrorCode: SqliteConstraintPrimaryKey or SqliteConstraintUnique
+        };
+
+    /// <summary>SQLite's <c>SQLITE_CONSTRAINT_PRIMARYKEY</c> extended result code.</summary>
+    private const int SqliteConstraintPrimaryKey = 1555;
+
+    /// <inheritdoc/>
+    public Task AppendMessageAsync(
         string conversationId,
         string callerId,
         ConversationMessage message,
+        CancellationToken ct = default) =>
+        AppendMessagesAsync(conversationId, callerId, [message], ct);
+
+    /// <inheritdoc/>
+    /// <remarks>
+    /// The batch is the real implementation and the single-message append delegates to it, rather than
+    /// the other way round: one transaction, one header update and one round trip however many messages
+    /// arrive. Writing a turn as two calls would open two transactions to store one exchange, and would
+    /// let the pair be interrupted halfway.
+    /// </remarks>
+    public async Task AppendMessagesAsync(
+        string conversationId,
+        string callerId,
+        IReadOnlyList<ConversationMessage> messages,
         CancellationToken ct = default)
     {
         ConversationOwnership.RequireCallerId(callerId);
+        ArgumentNullException.ThrowIfNull(messages);
+
+        if (messages.Count == 0)
+            return;
 
         var now = _timeProvider.GetUtcNow();
 
         // A title is derived from the first user message only. Passing null for every other case
         // lets the UPDATE below express "keep the existing title" as a coalesce, so no read is
-        // needed to decide whether one is already set.
-        var candidateTitle = message.Role == MessageRole.User
-            ? ConversationRecordTitleDerivation.Derive(message.Content)
-            : null;
+        // needed to decide whether one is already set. Across a batch that is the first USER message
+        // in it — a turn arrives question-first, so this is the same message it would have been had
+        // the batch been appended one at a time.
+        var firstUserMessage = messages.FirstOrDefault(m => m.Role == MessageRole.User);
+        var candidateTitle = firstUserMessage is null
+            ? null
+            : ConversationRecordTitleDerivation.Derive(firstUserMessage.Content);
 
         await using var context = await _contextFactory.CreateDbContextAsync(ct);
         await using var transaction = await context.Database.BeginTransactionAsync(ct);
@@ -228,7 +334,8 @@ public sealed class EfCoreConversationStore : IConversationStore
             throw new InvalidOperationException($"Conversation '{conversationId}' does not exist.");
         }
 
-        context.ConversationMessages.Add(ConversationEntityMapper.ToEntity(conversationId, message));
+        foreach (var message in messages)
+            context.ConversationMessages.Add(ConversationEntityMapper.ToEntity(conversationId, message));
 
         try
         {
@@ -240,8 +347,15 @@ public sealed class EfCoreConversationStore : IConversationStore
             // id the conversation already holds. The unique index has to reject it — truncation
             // resolves an id to a cut point, and two rows sharing one id makes that cut arbitrary —
             // but the caller is owed a defined failure rather than whatever the provider threw.
+            //
+            // The failing id is not named across a batch: the provider reports which statement failed,
+            // not which of ours, and guessing would put a specific and possibly wrong id into an error
+            // message. The transaction rolls back either way, so nothing is written.
             throw new InvalidOperationException(
-                $"Message '{message.Id}' already exists in conversation '{conversationId}'.", ex);
+                messages.Count == 1
+                    ? $"Message '{messages[0].Id}' already exists in conversation '{conversationId}'."
+                    : $"One of the messages already exists in conversation '{conversationId}'.",
+                ex);
         }
 
         await transaction.CommitAsync(ct);

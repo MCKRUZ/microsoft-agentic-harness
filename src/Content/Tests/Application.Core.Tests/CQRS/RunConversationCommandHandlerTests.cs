@@ -3,10 +3,12 @@ using Application.AI.Common.Interfaces.AI;
 using Application.Core.CQRS.Agents.ExecuteAgentTurn;
 using Application.Core.CQRS.Agents.RunConversation;
 using Domain.AI.Budget;
+using Domain.Common.Config.AI.Conversations;
 using FluentAssertions;
 using MediatR;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Moq;
 using Xunit;
 
@@ -25,11 +27,17 @@ public class RunConversationCommandHandlerTests
             .Setup(b => b.GetStatusAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(ConversationBudgetStatus.Disabled);
 
+        // Store and lease are strict about being unused here: every test in this class runs a
+        // self-contained conversation (no ConversationOwnerId), and touching either would mean the
+        // handler had silently taken the durable path. A throwing double says so immediately.
         _handler = new RunConversationCommandHandler(
             _mediator.Object,
             new Mock<IAgentConversationCache>().Object,
             _budget.Object,
             new Mock<IObservabilityStore>().Object,
+            new Mock<IConversationStore>(MockBehavior.Strict).Object,
+            new Mock<IConversationTurnLease>(MockBehavior.Strict).Object,
+            Options.Create(new ConversationsConfig()),
             NullLogger<RunConversationCommandHandler>.Instance);
     }
 

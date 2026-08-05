@@ -1,0 +1,89 @@
+using Application.AI.Common.CQRS.Bundles.RunBundle;
+using Domain.AI.Bundles;
+using FluentAssertions;
+using Xunit;
+
+namespace Application.AI.Common.Tests.CQRS.Bundles;
+
+/// <summary>
+/// Validation of <see cref="RunBundleCommand"/>, concentrating on the conversation id introduced for
+/// durable bundle runs (#235).
+/// </summary>
+/// <remarks>
+/// The id's charset is a security control rather than tidiness. The file-backed transcript store turns
+/// an id into a file name and rejects one that escapes its directory; the SQLite store accepts whatever
+/// it is handed. Validating at this boundary means a traversal attempt is refused identically whichever
+/// provider a consumer has configured — the store interface explicitly tells callers not to depend on a
+/// particular implementation's rejection.
+/// </remarks>
+public sealed class RunBundleCommandValidatorTests
+{
+    private readonly RunBundleCommandValidator _validator = new();
+
+    private static RunBundleCommand Command(string? conversationId = null) => new()
+    {
+        Handle = "handle-1",
+        UserMessages = ["hello"],
+        Envelope = new CapabilityEnvelope(),
+        OwnerId = "owner-1",
+        MaxTurns = 4,
+        ConversationId = conversationId
+    };
+
+    [Fact]
+    public void Validate_NoConversationId_IsValid()
+    {
+        // Omitting it is how a caller asks for a one-shot run; the rules must not fire.
+        _validator.Validate(Command()).IsValid.Should().BeTrue();
+    }
+
+    [Theory]
+    [InlineData("conv-1")]
+    [InlineData("8f14e45fceea167a5a36dedd4bea2543")]
+    [InlineData("voice_session_42")]
+    public void Validate_OpaqueConversationId_IsValid(string id)
+    {
+        _validator.Validate(Command(id)).IsValid.Should().BeTrue();
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void Validate_BlankConversationId_IsRejected(string id)
+    {
+        // Supplied-but-blank is a caller bug, and must not be read as "omitted". A blank identity or id
+        // that flows onward is how this codebase has previously widened access rather than narrowing it.
+        _validator.Validate(Command(id)).IsValid.Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData("../../etc/passwd")]
+    [InlineData("..\\..\\windows\\system32")]
+    [InlineData("conv/../other")]
+    [InlineData("conv/nested")]
+    [InlineData("conv\\nested")]
+    [InlineData("conv:1")]
+    [InlineData("conv id")]
+    [InlineData("conv\n1")]
+    public void Validate_ConversationIdWithPathOrControlCharacters_IsRejected(string id)
+    {
+        _validator.Validate(Command(id)).IsValid.Should().BeFalse(
+            "an id reaches a store that may turn it into a file name");
+    }
+
+    [Fact]
+    public void Validate_ConversationIdAtTheLengthLimit_IsValid()
+    {
+        var id = new string('a', RunBundleCommandValidator.MaxConversationIdLength);
+
+        _validator.Validate(Command(id)).IsValid.Should().BeTrue();
+    }
+
+    [Fact]
+    public void Validate_ConversationIdOverTheLengthLimit_IsRejected()
+    {
+        var id = new string('a', RunBundleCommandValidator.MaxConversationIdLength + 1);
+
+        _validator.Validate(Command(id)).IsValid.Should().BeFalse();
+    }
+}

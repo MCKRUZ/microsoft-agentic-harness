@@ -91,6 +91,43 @@ public interface IConversationStore
     /// </exception>
     Task<ConversationRecord> CreateAsync(string agentName, string userId, string? conversationId = null, CancellationToken ct = default);
 
+    /// <summary>
+    /// Returns the conversation with <paramref name="conversationId"/>, creating an empty one owned by
+    /// <paramref name="userId"/> if it does not exist. Never replaces an existing transcript.
+    /// </summary>
+    /// <param name="agentName">The agent to bind a newly created conversation to. Ignored if one exists.</param>
+    /// <param name="userId">The caller, and the owner of a conversation created here. Must be non-blank.</param>
+    /// <param name="conversationId">The conversation to open. Must be non-blank.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <remarks>
+    /// <para>
+    /// This exists because <see cref="CreateAsync"/> <em>replaces</em>, which makes the obvious
+    /// composition — read, and create when the read came back empty — a transcript-destroying race
+    /// rather than merely a redundant one. Two runs opening the same new conversation can both see it
+    /// absent; if the loser's create lands after the winner has already appended a turn, the winner's
+    /// messages are deleted by the cascade and nothing reports an error. The window is one store
+    /// round-trip wide, which is small enough to survive review and far too large to run a transcript
+    /// through.
+    /// </para>
+    /// <para>
+    /// Implementations must make the create atomic against a concurrent create of the same id, and must
+    /// resolve a lost race by returning the winner's record — not by overwriting it. The turn lease
+    /// cannot stand in for this: a lease claims a conversation that already exists, so there is nothing
+    /// for it to hold while one is being created.
+    /// </para>
+    /// <para>
+    /// Ownership is enforced on both outcomes, so losing the create race to another user is refused
+    /// exactly as reading their conversation would be.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="ArgumentException"><paramref name="userId"/> or <paramref name="conversationId"/> is blank.</exception>
+    /// <exception cref="UnauthorizedAccessException">The conversation exists and belongs to another user.</exception>
+    Task<ConversationRecord> GetOrCreateAsync(
+        string agentName,
+        string userId,
+        string conversationId,
+        CancellationToken ct = default);
+
     /// <summary>Appends <paramref name="message"/> to an existing conversation record.</summary>
     /// <param name="conversationId">The conversation to append to.</param>
     /// <param name="callerId">The authenticated caller. Must be non-blank.</param>
@@ -108,6 +145,45 @@ public interface IConversationStore
     /// written in either case.
     /// </exception>
     Task AppendMessageAsync(string conversationId, string callerId, ConversationMessage message, CancellationToken ct = default);
+
+    /// <summary>
+    /// Appends several messages as one unit, in the order given. Either all of them are stored or none
+    /// is.
+    /// </summary>
+    /// <param name="conversationId">The conversation to append to.</param>
+    /// <param name="callerId">The authenticated caller. Must be non-blank.</param>
+    /// <param name="messages">
+    /// The messages, oldest first. An empty list is a no-op. The same id rules as
+    /// <see cref="AppendMessageAsync"/> apply, and they apply <em>within</em> this batch too: two
+    /// messages here sharing one id is the same defect as one colliding with a stored message.
+    /// </param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <remarks>
+    /// <para>
+    /// This exists for the caller that has a complete exchange to store — a question and the answer it
+    /// produced — and it is not merely a convenience over calling <see cref="AppendMessageAsync"/>
+    /// twice. Two calls are two writes, and both of the shipped stores pay a per-call cost that the
+    /// batch pays once: the file-backed store rewrites the entire transcript on every append, so
+    /// storing a turn as two appends rewrites a linearly growing file twice per turn — quadratic bytes
+    /// over a session, which is precisely the growth the durable-conversation work exists to remove
+    /// from the token bill.
+    /// </para>
+    /// <para>
+    /// Atomicity is the other half. A turn split across two writes can be interrupted between them,
+    /// leaving a question with no answer — and this transcript is replayed to a model, so a half-turn
+    /// is not an incomplete record but a misleading one.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="ArgumentException"><paramref name="callerId"/> is blank.</exception>
+    /// <exception cref="UnauthorizedAccessException">The conversation belongs to another user.</exception>
+    /// <exception cref="InvalidOperationException">
+    /// The conversation does not exist, or a message id is already present. Nothing is written.
+    /// </exception>
+    Task AppendMessagesAsync(
+        string conversationId,
+        string callerId,
+        IReadOnlyList<ConversationMessage> messages,
+        CancellationToken ct = default);
 
     /// <summary>Permanently deletes a conversation record.</summary>
     /// <param name="conversationId">The conversation to delete.</param>

@@ -19,7 +19,24 @@ public sealed record RunBundleRequest
     public IReadOnlyList<string> UserMessages { get; init; } = [];
 
     /// <summary>The maximum number of turns the conversation may run. Defaults to 10.</summary>
+    /// <remarks>
+    /// Bounds <em>this run</em>. When <see cref="ConversationId"/> is set the conversation outlives the
+    /// run, and its total length is bounded by the conversation-lifetime token budget instead.
+    /// </remarks>
     public int MaxTurns { get; init; } = 10;
+
+    /// <summary>
+    /// Continues a durable conversation instead of starting a one-shot run. Prior turns are replayed to
+    /// the agent and this run's turns are saved, so a caller driving a multi-turn session sends only the
+    /// new messages rather than the whole transcript every time. Omit it for a self-contained run.
+    /// </summary>
+    /// <remarks>
+    /// Caller-chosen and opaque — a GUID is the obvious choice. It is created on first use and owned by
+    /// the caller that first used it; naming a conversation belonging to someone else is reported as
+    /// <c>404</c>, exactly as an unknown handle is. Letters, digits, hyphens and underscores only, up to
+    /// 200 characters.
+    /// </remarks>
+    public string? ConversationId { get; init; }
 
     /// <summary>
     /// When true the run is reserved for a live stream instead of background dispatch: it is not executed until

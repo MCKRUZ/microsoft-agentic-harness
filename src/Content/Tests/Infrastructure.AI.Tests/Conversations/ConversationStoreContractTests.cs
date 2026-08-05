@@ -303,6 +303,227 @@ public abstract class ConversationStoreContractTests
         retrieved.Messages.Should().BeEmpty("a replaced conversation does not inherit the old transcript");
     }
 
+    // -- GetOrCreateAsync --
+    //
+    // The operation exists because the obvious composition — read, then create when the read came back
+    // empty — is a transcript-destroying race, since CreateAsync REPLACES. The tests that matter here
+    // are therefore the ones asserting what it must never do.
+
+    [Fact]
+    public async Task GetOrCreate_UnknownConversation_CreatesItUnderTheGivenIdAndOwner()
+    {
+        var id = $"conv-{Guid.NewGuid():N}";
+
+        var record = await Store.GetOrCreateAsync("agent", Owner, id);
+
+        record.Id.Should().Be(id);
+        record.UserId.Should().Be(Owner);
+        record.AgentName.Should().Be("agent");
+        record.Messages.Should().BeEmpty();
+        (await Store.GetAsync(id, Owner)).Should().NotBeNull("the conversation must actually be stored");
+    }
+
+    [Fact]
+    public async Task GetOrCreate_ExistingConversation_ReturnsItWithItsTranscriptIntact()
+    {
+        // The whole point of the operation. If this ever returns an empty record, a second run
+        // continuing a conversation silently starts it over — and CreateAsync would have done exactly
+        // that, which is why this is not simply a call to CreateAsync.
+        var created = await Store.CreateAsync("agent", Owner);
+        await Store.AppendMessageAsync(created.Id, Owner, UserMessage("first turn"));
+
+        var reopened = await Store.GetOrCreateAsync("agent", Owner, created.Id);
+
+        reopened.Messages.Should().ContainSingle().Which.Content.Should().Be("first turn");
+    }
+
+    [Fact]
+    public async Task GetOrCreate_ExistingConversation_DoesNotDestroyItEvenWhenTheAgentDiffers()
+    {
+        // A caller naming a different agent must not be read as "make me a new one". CreateAsync's
+        // replace semantics make that the natural mistake for an implementation to inherit.
+        var created = await Store.CreateAsync("original-agent", Owner);
+        await Store.AppendMessageAsync(created.Id, Owner, UserMessage("keep me"));
+
+        var reopened = await Store.GetOrCreateAsync("a-different-agent", Owner, created.Id);
+
+        reopened.AgentName.Should().Be("original-agent", "an existing conversation keeps its own agent");
+        reopened.Messages.Should().ContainSingle().Which.Content.Should().Be("keep me");
+    }
+
+    [Fact]
+    public async Task GetOrCreate_ConversationOwnedByAnotherUser_IsRefusedAndLeavesItIntact()
+    {
+        // Without this, the operation is a way to take over any id you can guess: the refusal is what
+        // stops a stranger's conversation being replaced by an empty one they then own.
+        var created = await Store.CreateAsync("agent", Owner);
+        await Store.AppendMessageAsync(created.Id, Owner, UserMessage("mine"));
+
+        var act = () => Store.GetOrCreateAsync("agent", Stranger, created.Id);
+
+        await act.Should().ThrowAsync<ConversationAccessDeniedException>();
+        (await Store.GetAsync(created.Id, Owner))!.Messages.Should().ContainSingle(
+            "a refused open must not have replaced the conversation");
+    }
+
+    [Fact]
+    public async Task GetOrCreate_BlankCallerId_IsRejectedRatherThanTreatedAsGlobal()
+    {
+        var act = () => Store.GetOrCreateAsync("agent", "  ", $"conv-{Guid.NewGuid():N}");
+
+        await act.Should().ThrowAsync<ArgumentException>();
+    }
+
+    [Fact]
+    public async Task GetOrCreate_BlankConversationId_IsRejected()
+    {
+        // Distinct from CreateAsync, where an absent id means "mint me one". Here the id is the thing
+        // being opened, so a blank one has no reading that is not a caller bug.
+        var act = () => Store.GetOrCreateAsync("agent", Owner, "  ");
+
+        await act.Should().ThrowAsync<ArgumentException>();
+    }
+
+    [Fact]
+    public async Task GetOrCreate_ConcurrentOpensOfOneNewConversation_AllAgreeAndNoneDestroysTheTranscript()
+    {
+        // Twenty callers open the same brand-new id at once. Exactly one create can win, and every
+        // loser must be handed the winner's record instead of failing or replacing it — an
+        // implementation that inserts without handling the collision leaves nineteen of these throwing.
+        //
+        // What this does NOT prove, stated so nobody reads more into a green run than is there: it
+        // cannot force a loser's write to land AFTER a message has been appended, which is the exact
+        // interleaving that makes a read-then-create implementation destroy a transcript. All twenty
+        // opens have completed before anything is appended here. The deterministic half of that
+        // guarantee is covered by the two "existing conversation" tests above; this one covers the
+        // concurrent half only as far as a test without a seam into the store can reach.
+        var id = $"conv-{Guid.NewGuid():N}";
+
+        var opens = Enumerable.Range(0, 20)
+            .Select(_ => Task.Run(() => Store.GetOrCreateAsync("agent", Owner, id)))
+            .ToArray();
+
+        var records = await Task.WhenAll(opens);
+
+        records.Should().OnlyContain(r => r.Id == id && r.UserId == Owner);
+
+        await Store.AppendMessageAsync(id, Owner, UserMessage("survived"));
+        (await Store.GetAsync(id, Owner))!.Messages.Should().ContainSingle();
+    }
+
+    // -- AppendMessagesAsync --
+    //
+    // The batch exists so a complete exchange is stored as one unit. All-or-nothing is the property
+    // that matters: this transcript is replayed to a model, so a half-written turn is not an incomplete
+    // record but a misleading one.
+
+    [Fact]
+    public async Task AppendMessages_StoresThemAllInOrder()
+    {
+        var record = await Store.CreateAsync("agent", Owner);
+
+        await Store.AppendMessagesAsync(record.Id, Owner, [
+            UserMessage("what is my name?"),
+            AssistantMessage("Sam"),
+        ]);
+
+        (await Store.GetAsync(record.Id, Owner))!.Messages.Select(m => m.Content).Should().Equal(
+            "what is my name?", "Sam");
+    }
+
+    [Fact]
+    public async Task AppendMessages_EmptyBatch_IsANoOp()
+    {
+        var record = await Store.CreateAsync("agent", Owner);
+
+        await Store.AppendMessagesAsync(record.Id, Owner, []);
+
+        (await Store.GetAsync(record.Id, Owner))!.Messages.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task AppendMessages_ToAnotherUsersConversation_IsRefusedAndWritesNothing()
+    {
+        var record = await Store.CreateAsync("agent", Owner);
+
+        var act = () => Store.AppendMessagesAsync(record.Id, Stranger, [
+            UserMessage("not mine"),
+            AssistantMessage("nor this"),
+        ]);
+
+        await act.Should().ThrowAsync<ConversationAccessDeniedException>();
+        (await Store.GetAsync(record.Id, Owner))!.Messages.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task AppendMessages_ToAnUnknownConversation_FailsAndWritesNothing()
+    {
+        var act = () => Store.AppendMessagesAsync($"missing-{Guid.NewGuid():N}", Owner, [
+            UserMessage("nowhere to go"),
+        ]);
+
+        await act.Should().ThrowAsync<InvalidOperationException>();
+    }
+
+    [Fact]
+    public async Task AppendMessages_DuplicateIdInsideTheBatch_IsRejectedAndNothingIsWritten()
+    {
+        // The whole batch is refused, not merely the offending message. A partially applied batch is
+        // the failure this operation exists to prevent, so failing halfway would be worse than the two
+        // separate appends it replaces.
+        var record = await Store.CreateAsync("agent", Owner);
+        var shared = Guid.NewGuid();
+
+        var act = () => Store.AppendMessagesAsync(record.Id, Owner, [
+            new ConversationMessage(shared, MessageRole.User, "first", Clock.GetUtcNow()),
+            new ConversationMessage(shared, MessageRole.Assistant, "second", Clock.GetUtcNow()),
+        ]);
+
+        await act.Should().ThrowAsync<InvalidOperationException>();
+        (await Store.GetAsync(record.Id, Owner))!.Messages.Should().BeEmpty(
+            "a batch that cannot be stored whole must not be stored in part");
+    }
+
+    [Fact]
+    public async Task AppendMessages_IdAlreadyInTheConversation_IsRejectedAndTheEarlierBatchSurvives()
+    {
+        var record = await Store.CreateAsync("agent", Owner);
+        var first = UserMessage("already here");
+        await Store.AppendMessagesAsync(record.Id, Owner, [first]);
+
+        var act = () => Store.AppendMessagesAsync(record.Id, Owner, [
+            AssistantMessage("fine on its own"),
+            new ConversationMessage(first.Id, MessageRole.User, "a replay", Clock.GetUtcNow()),
+        ]);
+
+        await act.Should().ThrowAsync<InvalidOperationException>();
+        (await Store.GetAsync(record.Id, Owner))!.Messages.Select(m => m.Content).Should().Equal(
+            "already here");
+    }
+
+    [Fact]
+    public async Task AppendMessages_DerivesTheTitleFromTheFirstUserMessageInTheBatch()
+    {
+        // Same rule the single append follows, so a turn stored as one batch and the same turn stored
+        // as two appends cannot end up with different titles.
+        var record = await Store.CreateAsync("agent", Owner);
+
+        await Store.AppendMessagesAsync(record.Id, Owner, [
+            UserMessage("the opening question"),
+            AssistantMessage("the reply"),
+        ]);
+
+        (await Store.GetAsync(record.Id, Owner))!.Title.Should().NotBeNullOrWhiteSpace();
+    }
+
+    [Fact]
+    public async Task AppendMessages_BlankCallerId_IsRejectedRatherThanTreatedAsGlobal()
+    {
+        var act = () => Store.AppendMessagesAsync("any", "  ", [UserMessage("nope")]);
+
+        await act.Should().ThrowAsync<ArgumentException>();
+    }
+
     // -- ListAsync --
 
     [Fact]

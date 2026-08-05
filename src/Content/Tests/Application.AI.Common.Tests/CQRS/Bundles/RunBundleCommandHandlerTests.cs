@@ -1,5 +1,7 @@
 using Application.AI.Common.CQRS.Bundles.RunBundle;
+using Application.AI.Common.Interfaces.AI;
 using Application.AI.Common.Interfaces.Bundles;
+using Application.Common.Exceptions.ExceptionTypes;
 using Domain.AI.Agents;
 using Domain.AI.Bundles;
 using Domain.Common;
@@ -24,6 +26,7 @@ public sealed class RunBundleCommandHandlerTests
     private readonly Mock<IBundleHandleStore> _handleStore = new();
     private readonly Mock<IBundleRunJobStore> _jobStore = new();
     private readonly Mock<IBundleRunDispatchQueue> _queue = new();
+    private readonly Mock<IConversationStore> _conversations = new();
 
     private sealed class StaticOptionsMonitor<T>(T value) : IOptionsMonitor<T>
     {
@@ -37,7 +40,7 @@ public sealed class RunBundleCommandHandlerTests
         var cfg = new AppConfig();
         cfg.AI.BundleExecution.Enabled = enabled;
         return new RunBundleCommandHandler(
-            _handleStore.Object, _jobStore.Object, _queue.Object,
+            _handleStore.Object, _jobStore.Object, _queue.Object, _conversations.Object,
             new StaticOptionsMonitor<AppConfig>(cfg), _time,
             NullLogger<RunBundleCommandHandler>.Instance);
     }
@@ -98,6 +101,109 @@ public sealed class RunBundleCommandHandlerTests
         created.MaxTurns.Should().Be(4);
         result.Value!.JobId.Should().Be(created.JobId);
         _queue.Verify(q => q.EnqueueAsync(created.JobId, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    // -- Conversation continuity (#235) --
+
+    [Fact]
+    public async Task Handle_WithConversationId_CarriesItOntoTheRunRecord()
+    {
+        // The id is what makes the run continue a conversation rather than start a throwaway one. If it
+        // is dropped here, the run still succeeds — it just silently forgets, which is the failure mode
+        // this whole issue is about.
+        _handleStore.Setup(h => h.GetOwner("handle-1")).Returns("owner-1");
+        _handleStore.Setup(h => h.TryGet("handle-1")).Returns(Staged());
+        BundleRunRecord? created = null;
+        _jobStore.Setup(j => j.Create(It.IsAny<BundleRunRecord>())).Callback<BundleRunRecord>(r => created = r);
+
+        var result = await BuildSut(enabled: true)
+            .Handle(Command() with { ConversationId = "conv-1" }, CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        created!.ConversationId.Should().Be("conv-1");
+    }
+
+    [Fact]
+    public async Task Handle_WithoutConversationId_LeavesTheRunSelfContainedAndNeverTouchesTheStore()
+    {
+        // A one-shot run must not consult the transcript store at all — reaching it would make every
+        // bundle run pay for a lookup it has no use for.
+        _handleStore.Setup(h => h.GetOwner("handle-1")).Returns("owner-1");
+        _handleStore.Setup(h => h.TryGet("handle-1")).Returns(Staged());
+        BundleRunRecord? created = null;
+        _jobStore.Setup(j => j.Create(It.IsAny<BundleRunRecord>())).Callback<BundleRunRecord>(r => created = r);
+
+        await BuildSut(enabled: true).Handle(Command(), CancellationToken.None);
+
+        created!.ConversationId.Should().BeNull();
+        _conversations.Verify(
+            c => c.GetHistoryForDispatch(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task Handle_ConversationOwnedByAnotherCaller_ReturnsNotFound_AndDoesNotRun()
+    {
+        // Refused the same way a foreign handle is, and reported identically: a caller must not be able
+        // to discover which conversation ids exist for other people by watching the status code change.
+        // The refusal has to happen HERE, while the caller is still on the line — deferring it to the
+        // background run turns a permission decision into a polled failure.
+        _handleStore.Setup(h => h.GetOwner("handle-1")).Returns("owner-1");
+        _handleStore.Setup(h => h.TryGet("handle-1")).Returns(Staged());
+        _conversations
+            .Setup(c => c.GetHistoryForDispatch(
+                "conv-theirs", "owner-1", It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new ConversationAccessDeniedException());
+
+        var result = await BuildSut(enabled: true)
+            .Handle(Command() with { ConversationId = "conv-theirs" }, CancellationToken.None);
+
+        result.FailureType.Should().Be(ResultFailureType.NotFound);
+        _jobStore.Verify(j => j.Create(It.IsAny<BundleRunRecord>()), Times.Never);
+        _queue.Verify(q => q.EnqueueAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Handle_ConversationNotYetCreated_IsAcceptedSoTheRunCanCreateIt()
+    {
+        // An absent conversation is the ordinary first turn of a new session, not an error. The mocked
+        // store returns null by default, which is exactly that case.
+        _handleStore.Setup(h => h.GetOwner("handle-1")).Returns("owner-1");
+        _handleStore.Setup(h => h.TryGet("handle-1")).Returns(Staged());
+        BundleRunRecord? created = null;
+        _jobStore.Setup(j => j.Create(It.IsAny<BundleRunRecord>())).Callback<BundleRunRecord>(r => created = r);
+
+        var result = await BuildSut(enabled: true)
+            .Handle(Command() with { ConversationId = "conv-new" }, CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        created!.ConversationId.Should().Be("conv-new");
+
+        // Asserting the probe HAPPENED, not just that the result was a success — success is the default
+        // outcome, so without this the test stays green with the whole pre-check deleted.
+        _conversations.Verify(
+            c => c.GetHistoryForDispatch("conv-new", "owner-1", 0, It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task Handle_ChecksTheConversationAgainstTheCallingOwnerNotTheHandleOwner()
+    {
+        // The store is what refuses a foreign conversation, and it can only do so if this handler hands
+        // it the caller. Passing anything else would defeat the check without appearing to remove it.
+        _handleStore.Setup(h => h.GetOwner("handle-1")).Returns("owner-1");
+        _handleStore.Setup(h => h.TryGet("handle-1")).Returns(Staged());
+
+        await BuildSut(enabled: true)
+            .Handle(Command() with { ConversationId = "conv-1" }, CancellationToken.None);
+
+        // Zero messages: this needs existence and ownership, not the transcript. Asking for the whole
+        // conversation to throw it away would put a full transcript load on the synchronous request
+        // path of every run — the cost this issue exists to remove, reintroduced one layer down.
+        _conversations.Verify(
+            c => c.GetHistoryForDispatch("conv-1", "owner-1", 0, It.IsAny<CancellationToken>()),
+            Times.Once);
     }
 
     [Fact]

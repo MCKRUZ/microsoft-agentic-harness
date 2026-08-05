@@ -462,19 +462,11 @@ public sealed class AgUiRunHandler
             ? parsed
             : Guid.NewGuid();
 
-    // Widget (empty-content) messages are already excluded upstream by GetHistoryForDispatch, so this is
-    // a straight projection of the dispatch history to the framework's chat-message shape.
+    // Delegates to the shared projection rather than repeating the role switch. This file, the SignalR
+    // orchestrator and the durable multi-turn loop each carried a byte-identical copy; a role added to
+    // one of three copies does not fail, it silently replays as the fallback.
     private static IReadOnlyList<ChatMessage> ToMeaiHistory(IReadOnlyList<ConversationMessage> messages) =>
-        messages.Select(m => new ChatMessage(ToChatRole(m.Role), m.Content)).ToList();
-
-    private static ChatRole ToChatRole(MessageRole role) => role switch
-    {
-        MessageRole.User => ChatRole.User,
-        MessageRole.Assistant => ChatRole.Assistant,
-        MessageRole.System => ChatRole.System,
-        MessageRole.Tool => ChatRole.Tool,
-        _ => ChatRole.User,
-    };
+        ConversationMessageMapping.ToChatMessages(messages);
 
     private static async Task TryWriteErrorAsync(IAgUiEventWriter writer, string message, CancellationToken ct)
     {

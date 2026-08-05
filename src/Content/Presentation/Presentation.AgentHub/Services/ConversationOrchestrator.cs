@@ -67,24 +67,22 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
         // The only entry point that may arrive without an id — "start me a fresh conversation". Every
         // other one takes a non-null id and reads through the store directly, which is where the
         // ownership refusal now comes from.
-        var existing = string.IsNullOrWhiteSpace(conversationId)
-            ? null
-            : await _conversationStore.GetAsync(conversationId, callerId, ct);
-
+        //
+        // A supplied id goes through the store's atomic open rather than the read-then-create this used
+        // to compose. That composition is a transcript-destroying race, because CreateAsync REPLACES:
+        // two clients reconnecting on the same id can both see it absent, and the loser's create
+        // deletes the winner's turns. A freshly minted id cannot collide, so that branch still creates.
         ConversationRecord record;
-        if (existing is null)
+        if (string.IsNullOrWhiteSpace(conversationId))
         {
-            record = await _conversationStore.CreateAsync(
-                agentName, callerId,
-                conversationId: string.IsNullOrWhiteSpace(conversationId) ? null : conversationId,
-                ct: ct);
+            record = await _conversationStore.CreateAsync(agentName, callerId, conversationId: null, ct: ct);
 
             _logger.LogInformation("Created conversation {ConversationId} for user {UserId}.",
                 record.Id, callerId);
         }
         else
         {
-            record = existing;
+            record = await _conversationStore.GetOrCreateAsync(agentName, callerId, conversationId, ct);
         }
 
         var history = await _conversationStore.GetHistoryForDispatch(
@@ -535,15 +533,8 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
         };
     }
 
+    // Delegates to the shared projection rather than repeating the role switch — see
+    // ConversationMessageMapping for why three copies of one mapping was a latent bug.
     private static IReadOnlyList<ChatMessage> ToMeaiHistory(IReadOnlyList<ConversationMessage> messages) =>
-        messages.Select(m => new ChatMessage(ToChatRole(m.Role), m.Content)).ToList();
-
-    private static ChatRole ToChatRole(MessageRole role) => role switch
-    {
-        MessageRole.User => ChatRole.User,
-        MessageRole.Assistant => ChatRole.Assistant,
-        MessageRole.System => ChatRole.System,
-        MessageRole.Tool => ChatRole.Tool,
-        _ => ChatRole.User,
-    };
+        ConversationMessageMapping.ToChatMessages(messages);
 }
