@@ -175,6 +175,11 @@
     </Project>
   </Folder>
   <Folder Name="/Tests/">
+    <Project Path="Content/Tests/Tests.Common/Tests.Common.csproj">
+      <BuildType Solution="Debug-AgentHub-All|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-Dashboard|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-WebUI|*" Project="Debug" />
+    </Project>
     <Project Path="Content/Tests/Presentation.FoundryHost.Tests/Presentation.FoundryHost.Tests.csproj">
       <BuildType Solution="Debug-AgentHub-All|*" Project="Debug" />
       <BuildType Solution="Debug-AgentHub-Dashboard|*" Project="Debug" />
