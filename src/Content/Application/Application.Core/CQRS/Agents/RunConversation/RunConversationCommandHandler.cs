@@ -292,8 +292,29 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 				// and was ignored once. And the second write happens on a token the lost lease has
 				// already cancelled, so the pair would be split precisely when the lease was taken —
 				// the one moment the transcript must not be half-written.
+				//
+				// A turn that succeeds with NO text is not a complete exchange either, and storing it
+				// would produce the very half-turn described above by a longer route: both stores drop
+				// empty-content messages from the dispatch window (that is how widget messages are kept
+				// out of prompts), so the answer would be written, filtered out on the next read, and
+				// leave the question standing alone. A turn can end this way legitimately — a model
+				// replying with tool calls and no prose — so this is skipped rather than treated as a
+				// failure, and logged so it is visible rather than silent.
 				if (transcript is not null)
-					await transcript.AppendTurnAsync(userMessage, lastResult.Response, cancellationToken);
+				{
+					if (string.IsNullOrWhiteSpace(lastResult.Response))
+					{
+						_logger.LogWarning(
+							"Turn {Turn} of conversation {ConversationId} produced no text; not persisted, "
+							+ "because an empty answer is filtered from the replay window and would leave "
+							+ "the question unanswered.",
+							index + 1, request.ConversationId);
+					}
+					else
+					{
+						await transcript.AppendTurnAsync(userMessage, lastResult.Response, cancellationToken);
+					}
+				}
 
 				turns.Add(new TurnSummary
 				{

@@ -231,6 +231,31 @@ public sealed class RunConversationDurableTests
         _store.Appended.Should().BeEmpty();
     }
 
+    [Fact]
+    public async Task Handle_TurnSucceedsWithNoText_WritesNothingRatherThanAnAnswerThatVanishesOnRead()
+    {
+        // A turn can legitimately succeed with no prose — a model replying with tool calls only. Storing
+        // it would take the long way round to the same half-turn a failed turn would leave: BOTH stores
+        // drop empty-content messages from the dispatch window (that is how widget messages are kept out
+        // of prompts), so the answer would be written, filtered out on the next read, and the question
+        // would stand alone forever. Every other test here uses a non-empty response, which is exactly
+        // why this needs its own.
+        _mediator
+            .Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new AgentTurnResult
+            {
+                Success = true,
+                Response = string.Empty,
+                UpdatedHistory = []
+            });
+
+        var result = await BuildSut().Handle(Durable("any tool calls?"), CancellationToken.None);
+
+        result.Success.Should().BeTrue("an answer with no prose is not a failed turn");
+        _store.Appended.Should().BeEmpty(
+            "a question whose answer would be filtered out on read must not be stored alone");
+    }
+
     // -- Conversation-lifetime token budget --
 
     [Fact]
