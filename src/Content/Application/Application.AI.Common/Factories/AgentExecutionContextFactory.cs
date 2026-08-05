@@ -1,3 +1,4 @@
+using Application.AI.Common.Extensions;
 using Application.AI.Common.Helpers;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Context;
@@ -111,10 +112,8 @@ public class AgentExecutionContextFactory
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         LogSkillsExcludedFromDisclosure(skills, disclosedOnDemand);
 
-        // Everything above moves cost OUT of the static prompt and into on-demand pulls the harness never
-        // sees, because they happen inside the framework provider. Left there, the budget recorded below
-        // would under-report by exactly the amount progressive disclosure defers — worst on the turns that
-        // load the most. Wrapping each skill puts harness code back in that path (issue #248).
+        // Everything above defers cost to pulls that happen inside the framework provider; this is what
+        // keeps the budget recorded below able to see them. See BudgetChargingSkill for why (issue #248).
         disclosableSkills = ChargeSkillLoadsToBudget(disclosableSkills, agentName);
 
         // Static system prompt. The legacy path merges skill instructions + additional context
@@ -149,25 +148,21 @@ public class AgentExecutionContextFactory
         // Track context budget allocations
         if (_budgetTracker != null)
         {
-            var instructionTokens = TokenEstimationHelper.EstimateTokens(instruction);
-            _budgetTracker.RecordAllocation(agentName, "system_prompt", instructionTokens);
-
-            ContextBudgetMetrics.SystemPromptTokens.Record(instructionTokens,
-                new KeyValuePair<string, object?>(AgentConventions.Name, agentName));
-            ContextSourceMetrics.SourceTokens.Record(instructionTokens,
-                new KeyValuePair<string, object?>(ContextConventions.SourceType, ContextConventions.SourceTypeValues.SystemPrompt),
-                new KeyValuePair<string, object?>(AgentConventions.Name, agentName));
+            _budgetTracker.RecordAndPublish(
+                agentName,
+                ContextConventions.BudgetComponents.SystemPrompt,
+                ContextConventions.SourceTypeValues.SystemPrompt,
+                TokenEstimationHelper.EstimateTokens(instruction),
+                ContextBudgetMetrics.SystemPromptTokens);
 
             if (tools?.Count > 0)
             {
-                var toolTokens = tools.Count * 50; // ~50 tokens per tool schema
-                _budgetTracker.RecordAllocation(agentName, "tool_schemas", toolTokens);
-
-                ContextBudgetMetrics.ToolsSchemaTokens.Record(toolTokens,
-                    new KeyValuePair<string, object?>(AgentConventions.Name, agentName));
-                ContextSourceMetrics.SourceTokens.Record(toolTokens,
-                    new KeyValuePair<string, object?>(ContextConventions.SourceType, ContextConventions.SourceTypeValues.ToolsSchema),
-                    new KeyValuePair<string, object?>(AgentConventions.Name, agentName));
+                _budgetTracker.RecordAndPublish(
+                    agentName,
+                    ContextConventions.BudgetComponents.ToolSchemas,
+                    ContextConventions.SourceTypeValues.ToolsSchema,
+                    tools.Count * 50, // ~50 tokens per tool schema
+                    ContextBudgetMetrics.ToolsSchemaTokens);
             }
         }
 

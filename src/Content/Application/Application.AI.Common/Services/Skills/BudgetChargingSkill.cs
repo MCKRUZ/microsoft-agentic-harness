@@ -1,3 +1,4 @@
+using Application.AI.Common.Extensions;
 using Application.AI.Common.Helpers;
 using Application.AI.Common.Interfaces.Context;
 using Application.AI.Common.OpenTelemetry.Metrics;
@@ -32,6 +33,15 @@ namespace Application.AI.Common.Services.Skills;
 /// under-reporting this exists to remove.
 /// </para>
 /// <para>
+/// <b>What "measured" means here.</b> The <em>content</em> is captured exactly — it passes through this
+/// wrapper on its way to the model. The <em>token figure</em> is not exact: it comes from
+/// <see cref="TokenEstimationHelper"/>, a characters-per-token approximation. That is deliberate, and it is
+/// the same estimator the system prompt and tool schemas are charged with, so every component of the
+/// budget is stated in one consistent unit. A tokenizer-accurate count for skills alone would make the
+/// components incomparable, which is worse than a uniform approximation. What this fixes is a component
+/// that was missing altogether, not the precision of the ones already there.
+/// </para>
+/// <para>
 /// This records consumption; it does not refuse it. <see cref="IContextBudgetTracker.EnsureBudget"/> is
 /// deliberately not called here — turning an over-budget skill load into a thrown exception mid-turn is a
 /// governance decision that belongs to whoever owns the turn, not to an accounting wrapper.
@@ -45,10 +55,22 @@ namespace Application.AI.Common.Services.Skills;
 public sealed class BudgetChargingSkill : AgentSkill
 {
     /// <summary>Budget component recording skill bodies served through <c>load_skill</c>.</summary>
-    public const string Tier2Component = "skills_tier2";
+    public const string Tier2Component = ContextConventions.BudgetComponents.SkillsTier2;
 
     /// <summary>Budget component recording supporting files served through <c>read_skill_resource</c>.</summary>
-    public const string Tier3Component = "skills_tier3";
+    public const string Tier3Component = ContextConventions.BudgetComponents.SkillsTier3;
+
+    /// <summary>
+    /// The budget component and metric dimension a Tier 2 pull is charged under, paired here rather than at
+    /// the call site: mismatch them and the budget stays right while the tier dimension misreports, which
+    /// nothing would fail on.
+    /// </summary>
+    private static readonly (string Component, string Tier) Tier2 =
+        (Tier2Component, ContextConventions.SkillsTierValues.Folder);
+
+    /// <summary>The same pairing for a Tier 3 pull.</summary>
+    private static readonly (string Component, string Tier) Tier3 =
+        (Tier3Component, ContextConventions.SkillsTierValues.FilingCabinet);
 
     private readonly AgentSkill _inner;
     private readonly string _agentName;
@@ -86,7 +108,7 @@ public sealed class BudgetChargingSkill : AgentSkill
     public override async ValueTask<string> GetContentAsync(CancellationToken cancellationToken = default)
     {
         var content = await _inner.GetContentAsync(cancellationToken).ConfigureAwait(false);
-        Charge(Tier2Component, ContextConventions.SkillsTierValues.Folder, content);
+        Charge(Tier2, content);
         return content;
     }
 
@@ -132,25 +154,23 @@ public sealed class BudgetChargingSkill : AgentSkill
 
     /// <summary>
     /// Records <paramref name="text"/>'s estimated token cost against the agent's budget and emits the
-    /// matching context-source telemetry.
+    /// telemetry that goes with it.
     /// </summary>
-    /// <param name="component">The budget component to charge.</param>
-    /// <param name="tier">The disclosure tier, for the metric dimension.</param>
+    /// <param name="tier">The component/dimension pair for the tier being charged.</param>
     /// <param name="text">The content that reached the model.</param>
-    private void Charge(string component, string tier, string? text)
+    private void Charge((string Component, string Tier) tier, string? text)
     {
         var tokens = TokenEstimationHelper.EstimateTokens(text);
         if (tokens == 0)
             return;
 
-        _budgetTracker.RecordAllocation(_agentName, component, tokens);
-
-        ContextBudgetMetrics.SkillsLoadedTokens.Record(tokens,
-            new KeyValuePair<string, object?>(AgentConventions.Name, _agentName),
-            new KeyValuePair<string, object?>(ContextConventions.SkillsTier, tier));
-        ContextSourceMetrics.SourceTokens.Record(tokens,
-            new KeyValuePair<string, object?>(ContextConventions.SourceType, ContextConventions.SourceTypeValues.Skills),
-            new KeyValuePair<string, object?>(AgentConventions.Name, _agentName));
+        _budgetTracker.RecordAndPublish(
+            _agentName,
+            tier.Component,
+            ContextConventions.SourceTypeValues.Skills,
+            tokens,
+            ContextBudgetMetrics.SkillsLoadedTokens,
+            new KeyValuePair<string, object?>(ContextConventions.SkillsTier, tier.Tier));
     }
 
     /// <summary>
@@ -176,7 +196,7 @@ public sealed class BudgetChargingSkill : AgentSkill
             CancellationToken cancellationToken = default)
         {
             var value = await inner.ReadAsync(serviceProvider, cancellationToken).ConfigureAwait(false);
-            owner.Charge(Tier3Component, ContextConventions.SkillsTierValues.FilingCabinet, value?.ToString());
+            owner.Charge(Tier3, value?.ToString());
             return value;
         }
     }

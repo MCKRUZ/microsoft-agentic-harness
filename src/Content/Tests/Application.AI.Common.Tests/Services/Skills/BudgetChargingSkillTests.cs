@@ -43,7 +43,7 @@ public sealed class BudgetChargingSkillTests
     // ── Tier 2: the skill body served by load_skill ───────────────────────────
 
     [Fact]
-    public async Task GetContent_ChargesTheBodyItServed()
+    public async Task GetContent_BodyServed_ChargesItsMeasuredTokens()
     {
         var skill = Wrap(Inline());
 
@@ -56,7 +56,7 @@ public sealed class BudgetChargingSkillTests
     }
 
     [Fact]
-    public async Task GetContent_ReturnsTheBodyUnchanged()
+    public async Task GetContent_BodyServed_ReturnsItUnchanged()
     {
         var inner = Inline();
         var expected = await inner.GetContentAsync();
@@ -98,7 +98,7 @@ public sealed class BudgetChargingSkillTests
     // ── Tier 3: supporting files served by read_skill_resource ────────────────
 
     [Fact]
-    public async Task ReadResource_ChargesTheFileItServed()
+    public async Task ReadResource_FileServed_ChargesItsMeasuredTokens()
     {
         const string fileContent = "reference material the model asked for";
         var inline = Inline();
@@ -139,7 +139,7 @@ public sealed class BudgetChargingSkillTests
     }
 
     [Fact]
-    public async Task GetResource_PreservesTheDescriptorIdentity()
+    public async Task GetResource_KnownName_PreservesTheDescriptorIdentity()
     {
         var inline = Inline();
         inline.AddResource("references/guide.md", () => Task.FromResult("content"));
@@ -157,7 +157,7 @@ public sealed class BudgetChargingSkillTests
     // ── Forwarding: everything this wrapper does not account for ──────────────
 
     [Fact]
-    public void Frontmatter_IsTheWrappedSkills()
+    public void Frontmatter_AnyWrappedSkill_IsForwardedUnchanged()
     {
         var inline = Inline();
 
@@ -168,7 +168,7 @@ public sealed class BudgetChargingSkillTests
     }
 
     [Fact]
-    public async Task GetScript_IsForwardedAndNotCharged()
+    public async Task GetScript_NoScriptRegistered_IsForwardedAndNotCharged()
     {
         // Skill scripts run through the harness's own sandboxed tool chain, so their output is accounted
         // for there. This call returns the definition, not the output — there is nothing here to charge.
@@ -181,7 +181,7 @@ public sealed class BudgetChargingSkillTests
     }
 
     [Fact]
-    public void Construction_RequiresAnAgentToChargeTo()
+    public void Construction_BlankAgentName_Throws()
     {
         // The budget is keyed by agent name. A blank one would file the tokens under a budget nothing reads,
         // which looks identical to not charging at all.

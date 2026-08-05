@@ -322,9 +322,14 @@ public sealed class AgentExecutionContextFactoryProgressiveDisclosureTests : IDi
         // by charging nothing, and the test would pass while proving the opposite of what it claims.
         body?.ToString().Should().Contain(BodyMarker, "the load must actually have served the body");
 
+        // Captured after the provider composed its index card but before load_skill ran. This is the
+        // control for the assertion that follows: it proves the charge tracks the model's pull and not
+        // merely the provider being invoked, which would over-report on every turn — the inverse of the
+        // bug being fixed, and just as wrong.
         beforeLoad.Should().NotContainKey(
             BudgetChargingSkill.Tier2Component,
-            "Tier 2 is deferred — nothing is owed for it until the model asks");
+            "Tier 2 is deferred — building the index card reads the frontmatter, never the body, so " +
+            "nothing is owed for it until the model actually asks");
         budget.GetBreakdown(AgentName).Should().ContainKey(
             BudgetChargingSkill.Tier2Component,
             "the tokens the body just put into the context are spent whether or not the harness counts " +

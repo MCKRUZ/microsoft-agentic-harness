@@ -27,13 +27,33 @@ public static class ContextConventions
     public const string SourceType = "agent.context.source_type";
 
     /// <summary>
+    /// The named components a context budget is broken down by. One home for these names because the
+    /// breakdown is only meaningful if every writer and every reader spells a component identically — a
+    /// typo does not fail, it silently splits one slice of the budget into two.
+    /// </summary>
+    public static class BudgetComponents
+    {
+        /// <summary>The composed static system prompt, charged once when the agent is built.</summary>
+        public const string SystemPrompt = "system_prompt";
+        /// <summary>The tool JSON schemas sent to the model, charged once when the agent is built.</summary>
+        public const string ToolSchemas = "tool_schemas";
+        /// <summary>Skill bodies served on demand through <c>load_skill</c>.</summary>
+        public const string SkillsTier2 = "skills_tier2";
+        /// <summary>Skill supporting files served on demand through <c>read_skill_resource</c>.</summary>
+        public const string SkillsTier3 = "skills_tier3";
+    }
+
+    /// <summary>
     /// Values for the <see cref="SkillsTier"/> dimension — which disclosure tier a skill's tokens were
     /// paid for. Numeric so a dashboard can order them; the names carry the meaning.
     /// </summary>
+    /// <remarks>
+    /// Tier 1 has no value here on purpose. The index card is composed by the framework's skills provider
+    /// rather than pulled on demand, so nothing in the harness is positioned to measure it and no emitter
+    /// would use the constant.
+    /// </remarks>
     public static class SkillsTierValues
     {
-        /// <summary>Tier 1 — the name/description index card, present from the first turn.</summary>
-        public const string IndexCard = "1";
         /// <summary>Tier 2 — the skill body, pulled when the model calls <c>load_skill</c>.</summary>
         public const string Folder = "2";
         /// <summary>Tier 3 — a supporting file, pulled when the model calls <c>read_skill_resource</c>.</summary>
