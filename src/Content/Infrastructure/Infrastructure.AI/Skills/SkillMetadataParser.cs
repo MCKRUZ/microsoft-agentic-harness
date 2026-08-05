@@ -1,3 +1,5 @@
+using Application.AI.Common.Exceptions;
+using Application.AI.Common.Interfaces.Skills;
 using Domain.AI.Egress;
 using Domain.AI.Skills;
 using Microsoft.Extensions.Logging;
@@ -28,10 +30,23 @@ namespace Infrastructure.AI.Skills;
 public sealed partial class SkillMetadataParser
 {
     private readonly ILogger<SkillMetadataParser> _logger;
+    private readonly ISkillFileReader _fileReader;
 
-    public SkillMetadataParser(ILogger<SkillMetadataParser> logger)
+    /// <summary>
+    /// Initializes a new instance of the <see cref="SkillMetadataParser"/> class.
+    /// </summary>
+    /// <param name="logger">Logger for parse diagnostics.</param>
+    /// <param name="fileReader">
+    /// Sandboxed, read-only access to skill content. Every manifest read goes through it so a
+    /// <c>SKILL.md</c> outside the configured skill roots cannot be loaded (issue #247).
+    /// </param>
+    public SkillMetadataParser(ILogger<SkillMetadataParser> logger, ISkillFileReader fileReader)
     {
+        ArgumentNullException.ThrowIfNull(logger);
+        ArgumentNullException.ThrowIfNull(fileReader);
+
         _logger = logger;
+        _fileReader = fileReader;
     }
 
     /// <summary>
@@ -43,7 +58,7 @@ public sealed partial class SkillMetadataParser
     /// <param name="pluginSource">Optional plugin source identifier; set when loading skills from a plugin package.</param>
     public SkillDefinition ParseFromFile(string skillFilePath, string sourcePath, string? pluginSource = null)
     {
-        var raw = File.ReadAllText(skillFilePath);
+        var raw = _fileReader.ReadText(skillFilePath);
         var rawFrontmatter = ExtractFrontmatter(raw);
         var body = ExtractBody(raw, rawFrontmatter);
 
@@ -77,14 +92,19 @@ public sealed partial class SkillMetadataParser
 
         try
         {
-            if (File.Exists(skillFilePath))
+            if (_fileReader.FileExists(skillFilePath))
             {
-                var raw = File.ReadAllText(skillFilePath);
+                var raw = _fileReader.ReadText(skillFilePath);
                 rawFrontmatter = ExtractFrontmatter(raw);
             }
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not SkillPathRefusedException)
         {
+            // A sandbox refusal is deliberately NOT caught here. Degrading to null frontmatter looks
+            // harmless but is not: SkillFrontmatter.Load(null) yields a skill with an EMPTY
+            // allowed-tools list and no egress policy, which downstream is indistinguishable from a
+            // manifest that legitimately declares neither. A skill whose manifest the sandbox
+            // refuses must fail loudly rather than load with its restrictions quietly dropped.
             _logger.LogWarning(ex, "Could not read custom frontmatter from {Path}", skillFilePath);
         }
 

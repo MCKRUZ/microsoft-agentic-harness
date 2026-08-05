@@ -48,7 +48,8 @@ public class AgentExecutionContextFactoryToolEnforcementTests
             sp,
             NullLoggerFactory.Instance,
             new ToolChainBuilder(NullLogger<ToolChainBuilder>.Instance, sp),
-            new SkillPrerequisiteResolver());
+            new SkillPrerequisiteResolver(),
+            new UnsandboxedSkillFileReader());
     }
 
     [Fact]

@@ -85,7 +85,8 @@ public sealed class CapabilityMatchSupervisorEscalationTests : IDisposable
             Mock.Of<IServiceProvider>(),
             NullLoggerFactory.Instance,
             Mock.Of<IToolChainBuilder>(),
-            Mock.Of<ISkillPrerequisiteResolver>());
+            Mock.Of<ISkillPrerequisiteResolver>(),
+            new UnsandboxedSkillFileReader());
 
         _supervisor = new CapabilityMatchSupervisor(
             _strategyMock.Object,

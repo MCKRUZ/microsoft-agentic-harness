@@ -489,6 +489,79 @@ var cmd = $"grep {userInput}";           // a shell now interprets metacharacter
                         </div>
                     </div>
 
+                    <h2 id="file-access">What a skill can read: two file sandboxes, not one</h2>
+                    <p>
+                        File access on the host runs through two separate sandboxes with deliberately different
+                        permissions. They share one implementation of the rules — allow/deny geometry, symlink
+                        resolution, hard-link identity checks — so they cannot drift on what "inside" means, but they
+                        permit different directories and offer different operations.
+                    </p>
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>Sandbox</th>
+                                <th>Reachable by</th>
+                                <th>Permits</th>
+                                <th>Operations</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><code>IFileSystemService</code></td>
+                                <td>The model, via the <code>file_system</code> tool</td>
+                                <td><code>AppConfig:Infrastructure:FileSystem:AllowedBasePaths</code>, plus the
+                                    configured logs directory</td>
+                                <td>Read, write, list, search</td>
+                            </tr>
+                            <tr>
+                                <td><code>ISkillFileReader</code></td>
+                                <td>The harness's own skill loader only</td>
+                                <td>The configured skill content roots:
+                                    <code>AppConfig:AI:Skills</code>, <code>AppConfig:AI:Agents</code>, and the bundle
+                                    staging root</td>
+                                <td><strong>Read only</strong> — the interface exposes no write operation</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <p>
+                        <strong>The guarantee, stated plainly:</strong> skill loading is confined to the
+                        <em>configured skill content roots</em>, read-only — and to nothing in the model's own file
+                        allowlist. Everything a skill can load — its <code>SKILL.md</code>, and any reference or
+                        template file it discloses on demand through <code>read_skill_resource</code> — must live
+                        inside one of those roots. A path outside them is refused with an error, never silently
+                        treated as missing: a refusal that read as "this directory holds no skills" would be
+                        indistinguishable from a directory that genuinely holds none, so a misconfigured root would
+                        boot an agent quietly missing its skills instead of failing.
+                    </p>
+                    <p>
+                        The two allowlists are disjoint by design, so the guarantee is <em>not</em> the union of the
+                        two — the model's file tool gains nothing from the skill roots, and skill loading gains
+                        nothing from the model's configured paths.
+                    </p>
+                    <div class="callout callout-warning">
+                        <div class="callout-title">Why these are not one sandbox</div>
+                        <p>
+                            Merging them is the obvious simplification and it is unsafe. Skill content sits outside the
+                            model's sandbox by default — the shipped configuration allows <code>workspace</code> while
+                            skills live in <code>skills</code> — so unifying them means adding the skill roots to the
+                            allowlist the <code>file_system</code> tool uses. That tool exposes an ungated
+                            <code>write</code>. The model would then be able to rewrite its own <code>SKILL.md</code>
+                            files, including the <code>allowed-tools</code> list that constrains which tools it may
+                            call. Two narrow sandboxes over one shared rulebook avoids that; a regression test
+                            (<code>ModelFileSandbox_DoesNotCoverSkillRoots_SoSkillsCannotBeRewritten</code>) fails if
+                            the two allowlists are ever merged.
+                        </p>
+                    </div>
+                    <p>
+                        The skill sandbox resolves its permitted roots from live configuration rather than snapshotting
+                        them at startup. Plugin-supplied skill directories are registered during host start, after the
+                        dependency container is built; a snapshot taken at registration time would refuse exactly the
+                        plugin skills the harness advertises support for. A plugin cannot widen the sandbox arbitrarily
+                        — its skill directory is accepted only after being verified as contained within the plugin's own
+                        directory, and that directory comes from operator configuration under
+                        <code>AppConfig:AI:Plugins:Packages</code>.
+                    </p>
+
                     <h2 id="forward">Where the network side lives</h2>
                     <p>
                         This layer contains what a tool can <em>do on the host</em>: how much it can consume, what it can

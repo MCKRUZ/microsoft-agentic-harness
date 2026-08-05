@@ -168,8 +168,9 @@ public static partial class DependencyInjection
 
         // --- Skills and agents ---
 
-        services.AddSingleton<SkillMetadataParser>();
-        services.AddSingleton<ISkillMetadataRegistry, SkillMetadataRegistry>();
+        // Reader + parser + registry as one unit — see AddSkillDiscovery for why they must not be
+        // registered piecemeal, and why the reader is a separate sandbox from IFileSystemService.
+        services.AddSkillDiscovery();
 
         // The owned-skill store and agent registry are decorated so a bundle run can resolve its
         // ephemeral agent and owned skills from an ambient overlay ahead of the persistent registries,

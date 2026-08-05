@@ -31,9 +31,9 @@ public sealed class SkillMetadataRegistryTests
         };
         var optionsMonitor = new OptionsMonitorStub(appConfig);
         var logger = NullLogger<SkillMetadataRegistry>.Instance;
-        var parser = new SkillMetadataParser(NullLogger<SkillMetadataParser>.Instance);
+        var parser = new SkillMetadataParser(NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader());
 
-        return new SkillMetadataRegistry(logger, optionsMonitor, parser);
+        return new SkillMetadataRegistry(logger, optionsMonitor, parser, new UnsandboxedSkillFileReader());
     }
 
     [Fact]
@@ -58,7 +58,8 @@ public sealed class SkillMetadataRegistryTests
         var registry = new SkillMetadataRegistry(
             NullLogger<SkillMetadataRegistry>.Instance,
             new OptionsMonitorStub(appConfig),
-            new SkillMetadataParser(NullLogger<SkillMetadataParser>.Instance),
+            new SkillMetadataParser(NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader()),
+            new UnsandboxedSkillFileReader(),
             pluginRegistry: null);
 
         var act = () => registry.GetAll();
@@ -165,6 +166,8 @@ public sealed class SkillMetadataRegistryTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton<IOptionsMonitor<AppConfig>>(new OptionsMonitorStub(new AppConfig()));
+        services.AddSingleton<Application.AI.Common.Interfaces.Skills.ISkillFileReader,
+            Infrastructure.AI.Skills.SkillFileReader>();
         services.AddSingleton<SkillMetadataParser>();
         services.AddSingleton<ISkillMetadataRegistry, SkillMetadataRegistry>();
 

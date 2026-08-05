@@ -1,5 +1,6 @@
 using System.Threading.RateLimiting;
 using Application.AI.Common.Interfaces;
+using Application.AI.Common.Interfaces.Skills;
 using Domain.Common.Config;
 using Infrastructure.AI.MCPServer.Extensions;
 using Infrastructure.AI.Skills;
@@ -47,9 +48,10 @@ public class Program
         // explicitly opted into anonymous serving — regardless of environment.
         builder.Services.AddMcpAuthentication(appConfig);
 
-        // Skill catalog — discovered from the configured skills directory
-        builder.Services.AddSingleton<SkillMetadataParser>();
-        builder.Services.AddSingleton<ISkillMetadataRegistry, SkillMetadataRegistry>();
+        // Skill catalog — discovered from the configured skills directory. This host composes its own
+        // services rather than calling AddAIDependencies, so it registers the discovery trio through
+        // the shared entry point instead of by hand (issue #247).
+        builder.Services.AddSkillDiscovery();
 
         // Rate limiting
         builder.Services.AddRateLimiter(options =>

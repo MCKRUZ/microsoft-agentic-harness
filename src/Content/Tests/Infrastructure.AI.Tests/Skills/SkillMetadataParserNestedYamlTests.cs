@@ -15,7 +15,7 @@ public sealed class SkillMetadataParserNestedYamlTests : IDisposable
 
     public SkillMetadataParserNestedYamlTests()
     {
-        _sut = new SkillMetadataParser(NullLogger<SkillMetadataParser>.Instance);
+        _sut = new SkillMetadataParser(NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader());
         _tempDir = Path.Combine(Path.GetTempPath(), $"skill-nested-yaml-tests-{Guid.NewGuid():N}");
         Directory.CreateDirectory(_tempDir);
     }

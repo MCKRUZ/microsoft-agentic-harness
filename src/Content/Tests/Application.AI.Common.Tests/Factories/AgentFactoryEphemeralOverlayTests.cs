@@ -60,7 +60,7 @@ public sealed class AgentFactoryEphemeralOverlayTests
             monitor,
             new ServiceCollection().BuildServiceProvider(),
             NullLoggerFactory.Instance,
-            null!, null!, null!, null!, null!, null!);
+            null!, null!, new UnsandboxedSkillFileReader(), null!, null!, null!, null!);
 
         _contextFactory
             .Setup(f => f.MapToAgentContextAsync(

@@ -1,6 +1,7 @@
 using System.IO.Compression;
 using Application.AI.Common.Interfaces.Bundles;
 using Application.AI.Common.Interfaces.Plugins;
+using Application.AI.Common.Interfaces.Skills;
 using Domain.AI.Bundles;
 using Domain.AI.Skills;
 using Domain.Common;
@@ -41,20 +42,35 @@ public sealed class BundleStagingService : IBundleStagingService
     private readonly IOptionsMonitor<AppConfig> _appConfig;
     private readonly AgentMetadataParser _agentParser;
     private readonly SkillMetadataParser _skillParser;
+    private readonly ISkillFileReader _skillFileReader;
     private readonly IPluginManifestReader _pluginReader;
     private readonly ILogger<BundleStagingService> _logger;
 
     /// <summary>Initialises the staging service with its parsers, configuration, and logger.</summary>
+    /// <param name="appConfig">Monitor over the live application configuration.</param>
+    /// <param name="agentParser">Parser that reads a staged bundle's <c>AGENT.md</c>.</param>
+    /// <param name="skillParser">Parser that reads each of a staged bundle's <c>SKILL.md</c> files.</param>
+    /// <param name="skillFileReader">
+    /// Sandboxed, read-only access to skill content. The staging root is one of its permitted roots,
+    /// so a staged bundle's own skills remain readable while the scan cannot reach outside it
+    /// (issue #247).
+    /// </param>
+    /// <param name="pluginReader">Reader for a staged bundle's plugin manifest.</param>
+    /// <param name="logger">Logger for staging diagnostics.</param>
     public BundleStagingService(
         IOptionsMonitor<AppConfig> appConfig,
         AgentMetadataParser agentParser,
         SkillMetadataParser skillParser,
+        ISkillFileReader skillFileReader,
         IPluginManifestReader pluginReader,
         ILogger<BundleStagingService> logger)
     {
+        ArgumentNullException.ThrowIfNull(skillFileReader);
+
         _appConfig = appConfig;
         _agentParser = agentParser;
         _skillParser = skillParser;
+        _skillFileReader = skillFileReader;
         _pluginReader = pluginReader;
         _logger = logger;
     }
@@ -132,19 +148,10 @@ public sealed class BundleStagingService : IBundleStagingService
         }
     }
 
-    private static string ResolveStagingRoot(BundleExecutionConfig cfg) =>
+    private string ResolveStagingRoot(BundleExecutionConfig cfg) =>
         string.IsNullOrWhiteSpace(cfg.TempRoot)
-            ? Path.Combine(Path.GetTempPath(), "agent-bundles")
-            : ResolveConfiguredPath(cfg.TempRoot);
-
-    /// <summary>
-    /// Resolves a configured path to an absolute one, relative paths being taken against
-    /// <see cref="AppContext.BaseDirectory"/> (the bin folder) to match the registries. Used for both the
-    /// staging root and the discovery roots so the disjointness guard compares like against like — a
-    /// difference here could let an overlapping root slip past.
-    /// </summary>
-    private static string ResolveConfiguredPath(string path) =>
-        Path.IsPathRooted(path) ? path : Path.GetFullPath(path, AppContext.BaseDirectory);
+            ? SkillContentRoots.BundleStaging(_appConfig.CurrentValue)
+            : SkillContentRoots.Resolve(cfg.TempRoot);
 
     /// <summary>
     /// Rejects a staging root that overlaps any configured skill or agent discovery root. The global
@@ -173,12 +180,8 @@ public sealed class BundleStagingService : IBundleStagingService
         return Result.Success();
     }
 
-    private IEnumerable<string> ConfiguredDiscoveryRoots()
-    {
-        var ai = _appConfig.CurrentValue.AI;
-        foreach (var p in ai.Skills.AllPaths.Concat(ai.Agents.AllPaths))
-            yield return ResolveConfiguredPath(p);
-    }
+    private IEnumerable<string> ConfiguredDiscoveryRoots() =>
+        SkillContentRoots.Discovery(_appConfig.CurrentValue);
 
     private async Task<Result<BufferedArchive>> BufferArchiveAsync(
         Stream archive, BundleExecutionConfig cfg, CancellationToken cancellationToken)
@@ -365,7 +368,8 @@ public sealed class BundleStagingService : IBundleStagingService
         // Reuses the same nested-skill discovery a host agent uses for its own <agentDir>/skills/, so a
         // malformed SKILL.md is skipped-and-warned rather than aborting the whole bundle. This layer only
         // adds bundle-specific de-duplication (keep first) on top of the shared scan.
-        var scanned = NestedSkillScanner.Scan(Path.Combine(bundleDir, "skills"), _skillParser, _logger);
+        var scanned = NestedSkillScanner.Scan(
+            Path.Combine(bundleDir, "skills"), _skillParser, _skillFileReader, _logger);
 
         var byId = new Dictionary<string, SkillDefinition>(StringComparer.OrdinalIgnoreCase);
         foreach (var skill in scanned)

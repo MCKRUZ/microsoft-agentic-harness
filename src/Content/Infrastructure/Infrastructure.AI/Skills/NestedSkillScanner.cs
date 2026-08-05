@@ -1,3 +1,5 @@
+using Application.AI.Common.Exceptions;
+using Application.AI.Common.Interfaces.Skills;
 using Domain.AI.Skills;
 using Microsoft.Extensions.Logging;
 
@@ -24,21 +26,40 @@ internal static class NestedSkillScanner
     /// <c>&lt;subdir&gt;/SKILL.md</c>), in filesystem-enumeration order and possibly containing duplicate
     /// ids if two subdirectories declare the same one — the caller decides how to resolve those.
     /// </summary>
-    /// <param name="skillsRoot">The <c>skills/</c> directory to scan. A non-existent path yields an empty list.</param>
+    /// <param name="skillsRoot">
+    /// The <c>skills/</c> directory to scan. A non-existent path yields an empty list; a path the
+    /// sandbox refuses throws rather than yielding one — see the exception below.
+    /// </param>
     /// <param name="parser">Parser used to read each <c>SKILL.md</c>.</param>
+    /// <param name="fileReader">
+    /// Sandboxed, read-only access to skill content. Both the enumeration and the manifest probe go
+    /// through it, confining the scan to the configured skill content roots (issue #247).
+    /// </param>
     /// <param name="logger">Logger for enumeration and per-skill parse diagnostics.</param>
-    public static IReadOnlyList<SkillDefinition> Scan(string skillsRoot, SkillMetadataParser parser, ILogger logger)
+    /// <exception cref="SkillPathRefusedException">
+    /// <paramref name="skillsRoot"/> lies outside the configured skill content roots. Propagated
+    /// rather than absorbed into an empty result, so a misconfigured root fails loudly instead of
+    /// producing an agent silently missing its own skills. An ordinary permission denial on an
+    /// in-bounds directory is a different type and is still tolerated.
+    /// </exception>
+    public static IReadOnlyList<SkillDefinition> Scan(
+        string skillsRoot, SkillMetadataParser parser, ISkillFileReader fileReader, ILogger logger)
     {
-        if (!Directory.Exists(skillsRoot))
+        if (!fileReader.DirectoryExists(skillsRoot))
             return [];
 
-        IEnumerable<string> skillDirs;
+        IReadOnlyList<string> skillDirs;
         try
         {
-            skillDirs = Directory.EnumerateDirectories(skillsRoot);
+            skillDirs = fileReader.EnumerateDirectories(skillsRoot);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not SkillPathRefusedException)
         {
+            // A sandbox refusal is deliberately NOT caught. Returning an empty list for a refused
+            // root reports "this directory holds no skills", which is indistinguishable from a
+            // directory that genuinely holds none — so a misconfigured root would silently produce
+            // an agent with none of its own skills instead of a startup failure. Best-effort
+            // tolerance is for a malformed entry, not for being told the path is out of bounds.
             logger.LogWarning(ex, "Could not enumerate nested skills directory: {Path}", skillsRoot);
             return [];
         }
@@ -47,7 +68,7 @@ internal static class NestedSkillScanner
         foreach (var skillDir in skillDirs)
         {
             var skillFile = Path.Combine(skillDir, "SKILL.md");
-            if (!File.Exists(skillFile))
+            if (!fileReader.FileExists(skillFile))
                 continue;
 
             try
@@ -56,8 +77,10 @@ internal static class NestedSkillScanner
                 if (!string.IsNullOrEmpty(skill.Id))
                     skills.Add(skill);
             }
-            catch (Exception ex)
+            catch (Exception ex) when (ex is not SkillPathRefusedException)
             {
+                // Same rule as the enumeration above: a malformed manifest is skipped, a refused
+                // one is not.
                 logger.LogWarning(ex, "Failed to parse nested skill from {Path}", skillFile);
             }
         }

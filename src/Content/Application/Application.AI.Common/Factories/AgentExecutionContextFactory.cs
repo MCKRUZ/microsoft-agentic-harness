@@ -37,6 +37,7 @@ public class AgentExecutionContextFactory
     private readonly ILoggerFactory _loggerFactory;
     private readonly IToolChainBuilder _toolChainBuilder;
     private readonly ISkillPrerequisiteResolver _prerequisiteResolver;
+    private readonly ISkillFileReader _skillFileReader;
     private readonly IContextBudgetTracker? _budgetTracker;
     private readonly IExecutionTraceStore? _traceStore;
     private readonly IAgentConfigReporter? _agentConfigReporter;
@@ -49,17 +50,21 @@ public class AgentExecutionContextFactory
         ILoggerFactory loggerFactory,
         IToolChainBuilder toolChainBuilder,
         ISkillPrerequisiteResolver prerequisiteResolver,
+        ISkillFileReader skillFileReader,
         IContextBudgetTracker? budgetTracker = null,
         IExecutionTraceStore? traceStore = null,
         IAgentConfigReporter? agentConfigReporter = null,
         IResilientChatClientProvider? resilientChatClientProvider = null)
     {
+        ArgumentNullException.ThrowIfNull(skillFileReader);
+
         _logger = logger;
         _appConfig = appConfig;
         _serviceProvider = serviceProvider;
         _loggerFactory = loggerFactory;
         _toolChainBuilder = toolChainBuilder;
         _prerequisiteResolver = prerequisiteResolver;
+        _skillFileReader = skillFileReader;
         _budgetTracker = budgetTracker;
         _traceStore = traceStore;
         _agentConfigReporter = agentConfigReporter;
@@ -100,7 +105,7 @@ public class AgentExecutionContextFactory
         // One list drives two decisions that must never disagree: which skills the framework provider is
         // given, and which skills may therefore omit their body from the static prompt. Because the prompt's
         // decision is read off the very set that gets registered, the two cannot drift apart.
-        var disclosableSkills = DisclosableSkillFactory.Create(skills, _logger);
+        var disclosableSkills = DisclosableSkillFactory.Create(skills, _skillFileReader, _logger);
         var disclosedOnDemand = disclosableSkills
             .Select(s => s.SkillId)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
