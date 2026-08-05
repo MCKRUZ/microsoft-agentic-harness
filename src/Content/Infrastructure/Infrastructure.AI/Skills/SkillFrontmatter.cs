@@ -25,10 +25,20 @@ namespace Infrastructure.AI.Skills;
 /// the change, not assumed.
 /// </para>
 /// <para>
-/// <strong>Malformed frontmatter degrades, it does not throw.</strong> <see cref="Load"/> returns
-/// an empty document when the YAML cannot be read, matching what the hand-rolled parser did. A
-/// template consumer with a typo in a manifest gets a skill with missing fields, exactly as before,
-/// rather than a host that fails to start. The caller logs the reason.
+/// <strong>Unreadable frontmatter REFUSES the skill; it does not load a partial one.</strong> The
+/// hand-rolled parser degraded per field, so a typo cost one field. A strict reader cannot do
+/// that — one bad line fails the whole document — and degrading to an empty document would have
+/// silently emptied <c>allowed-tools</c> and <c>egress</c> along with it. An empty allowlist is
+/// not "no opinion": it means this skill contributes no tool ceiling, and a null egress manifest
+/// means "inherit the global default". A typo would therefore have quietly widened the security
+/// posture behind a warning nobody reads.
+/// </para>
+/// <para>
+/// So <see cref="Load"/> throws instead, and both callers — <c>SkillMetadataRegistry</c> and
+/// <c>NestedSkillScanner</c> — already catch per manifest and continue. The result is that one
+/// unreadable skill is skipped and logged while every other skill still loads: loud, contained,
+/// and never half-configured. The inputs this matters for are ordinary typos, not exotica: an
+/// unquoted colon in a description, a tab used for indentation, or a duplicate key.
 /// </para>
 /// </remarks>
 internal sealed class SkillFrontmatter
@@ -40,15 +50,21 @@ internal sealed class SkillFrontmatter
     private SkillFrontmatter(YamlMappingNode? root) => _root = root;
 
     /// <summary>
-    /// Parses raw frontmatter text. Returns an empty document — never null, never throwing — when
-    /// the text is absent, unparseable, or not a mapping at the top level.
+    /// Parses raw frontmatter text.
     /// </summary>
     /// <param name="frontmatter">The text between the opening and closing <c>---</c> markers.</param>
-    /// <param name="error">The parse failure, when one occurred and the document came back empty.</param>
-    internal static SkillFrontmatter Load(string? frontmatter, out Exception? error)
+    /// <returns>
+    /// The parsed document. An empty document when there is no frontmatter at all, or when the
+    /// document's root is not a mapping — both mean "this manifest declares nothing", which is a
+    /// legitimate state and not an error.
+    /// </returns>
+    /// <exception cref="InvalidOperationException">
+    /// The frontmatter is present but is not valid YAML. Deliberately fatal for this manifest —
+    /// see the remarks on <see cref="SkillFrontmatter"/> for why a partial load is the more
+    /// dangerous outcome.
+    /// </exception>
+    internal static SkillFrontmatter Load(string? frontmatter)
     {
-        error = null;
-
         if (string.IsNullOrWhiteSpace(frontmatter))
             return EmptyDocument;
 
@@ -63,8 +79,11 @@ internal sealed class SkillFrontmatter
         }
         catch (YamlDotNet.Core.YamlException ex)
         {
-            error = ex;
-            return EmptyDocument;
+            throw new InvalidOperationException(
+                "SKILL.md frontmatter is not valid YAML. The skill is not loaded rather than " +
+                "loaded with missing fields, because the fields that would go missing include " +
+                "allowed-tools and egress. " + ex.Message,
+                ex);
         }
     }
 
@@ -89,9 +108,15 @@ internal sealed class SkillFrontmatter
 
     /// <summary>
     /// A nested block of scalar key/value pairs (e.g. <c>metadata:</c>), or null when the key is
-    /// absent or the block has no scalar entries. Non-scalar children are skipped rather than
-    /// flattened, matching the previous behaviour.
+    /// absent or the block has no scalar entries.
     /// </summary>
+    /// <remarks>
+    /// Non-scalar children are skipped. This is a deliberate CHANGE: the hand-rolled parser
+    /// flattened them, so <c>metadata: {author: a, nested: {key: b}}</c> used to yield
+    /// <c>author=a, nested="", key=b</c> — the nested key promoted to the top level and its parent
+    /// left as an empty string. Nothing depended on that, and a flattened key silently colliding
+    /// with a real one is worse than an absent one.
+    /// </remarks>
     internal Dictionary<string, string>? ScalarBlock(string key)
     {
         if (Node(key) is not YamlMappingNode block)

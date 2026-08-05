@@ -47,7 +47,7 @@ public sealed partial class SkillMetadataParser
         var rawFrontmatter = ExtractFrontmatter(raw);
         var body = ExtractBody(raw, rawFrontmatter);
 
-        var frontmatter = LoadFrontmatter(rawFrontmatter, skillFilePath);
+        var frontmatter = SkillFrontmatter.Load(rawFrontmatter);
 
         return Build(
             frontmatter,
@@ -88,7 +88,7 @@ public sealed partial class SkillMetadataParser
             _logger.LogWarning(ex, "Could not read custom frontmatter from {Path}", skillFilePath);
         }
 
-        var frontmatter = LoadFrontmatter(rawFrontmatter, skillFilePath);
+        var frontmatter = SkillFrontmatter.Load(rawFrontmatter);
 
         return Build(
             frontmatter,
@@ -98,28 +98,6 @@ public sealed partial class SkillMetadataParser
             skillFilePath,
             resolvedSourcePath,
             pluginSource);
-    }
-
-    /// <summary>
-    /// Reads the frontmatter, logging and continuing when it cannot be parsed.
-    /// </summary>
-    /// <remarks>
-    /// A manifest with a YAML typo yields a skill with missing fields rather than a host that
-    /// fails to start — the behaviour the hand-rolled parser had, kept deliberately because this
-    /// is a template and the manifests are consumer-authored.
-    /// </remarks>
-    private SkillFrontmatter LoadFrontmatter(string? rawFrontmatter, string skillFilePath)
-    {
-        var frontmatter = SkillFrontmatter.Load(rawFrontmatter, out var error);
-        if (error is not null)
-        {
-            _logger.LogWarning(
-                error,
-                "SKILL.md frontmatter at {Path} is not valid YAML; the skill will load with missing fields",
-                skillFilePath);
-        }
-
-        return frontmatter;
     }
 
     /// <summary>
@@ -174,11 +152,10 @@ public sealed partial class SkillMetadataParser
     }
 
     /// <remarks>
-    /// Line endings are normalised to LF because every block parser below splits on <c>'\n'</c>
-    /// and then judges a line by its leading whitespace. Left as CRLF, a blank line arrives as
-    /// <c>"\r"</c> — no leading whitespace, which reads as "the block ended" and silently
-    /// truncates the rest of it. Every SKILL.md in this repository is CRLF on disk, so this is
-    /// the normal case rather than an edge one.
+    /// Line endings are normalised to LF for the benefit of readers downstream of this method, not
+    /// of the YAML parse: YamlDotNet handles CRLF correctly on its own (checked). It is kept
+    /// because the returned text is also what gets logged and compared, and mixed endings there
+    /// are a nuisance rather than a defect. Every SKILL.md in this repository is CRLF on disk.
     /// </remarks>
     private static string? ExtractFrontmatter(string raw)
     {
