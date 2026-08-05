@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using Application.AI.Common.Extensions;
 using Application.AI.Common.Helpers;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.MetaHarness;
@@ -313,26 +314,32 @@ public sealed class AgentEvaluationService : IEvaluationService
     /// (issue #267).
     /// </para>
     /// <para>
-    /// The provider's own figure is preferred because it is what actually gets billed and it settles
-    /// arguments that an estimate only starts. It is not always present — a provider may omit usage, and
-    /// the echo client used for offline runs reports none — so the fallback is the same
-    /// characters-per-token estimate the context budget uses, over the prompt and the produced text. That
-    /// covers what crossed the wire, not any context the candidate assembled and never sent, so it reads
-    /// low; a low figure derived from real text is still a far better comparison input than zero. Which
-    /// path was taken is logged, so a run whose costs look implausibly uniform can be checked rather than
+    /// The provider's own figure is preferred because it is what actually gets billed, and it counts the
+    /// whole request — the system prompt and every skill body the candidate loaded included, which is
+    /// exactly the spending being compared. Providers populate usage inconsistently: some report a total,
+    /// while others (the echo client used for offline runs among them) report input and output separately
+    /// and leave the total unset, so both shapes are read before giving up.
+    /// </para>
+    /// <para>
+    /// The fallback is the same characters-per-token estimate the context budget uses, over the prompt and
+    /// the produced text only. It is a floor, not an equivalent: it cannot see the system prompt or the
+    /// skill bodies, so a candidate's real spending is understated on that path. It is kept because a low
+    /// figure derived from real text still orders candidates better than a zero that ranks them all equal.
+    /// Taking it is logged, so a run whose costs look implausibly uniform can be checked rather than
     /// guessed at.
     /// </para>
     /// </remarks>
     private long ResolveTokenCost(AgentResponse? response, string inputPrompt, string output)
     {
-        if (response?.Usage?.TotalTokenCount is { } billed and >= 0)
+        var billed = response?.Usage.TotalTokens() ?? 0;
+        if (billed > 0)
             return billed;
 
         var estimated = TokenEstimationHelper.EstimateTokens(inputPrompt)
             + TokenEstimationHelper.EstimateTokens(output);
 
         _logger.LogDebug(
-            "Model provider reported no token usage; falling back to an estimate of {EstimatedTokens} tokens",
+            "Model provider reported no usable token usage; falling back to an estimate of {EstimatedTokens} tokens",
             estimated);
 
         return estimated;

@@ -138,11 +138,8 @@ public class AgentExecutionContextFactory
         var middlewareTypes = ResolveMiddlewareTypes(primarySkill, options);
         var aiContextProviders = BuildMergedAIContextProviders(skills.Count, effectiveAllowedTools, disclosableSkills);
 
-        // Everything on that rail contributes to the model's context on every turn and was, until this
-        // line, charged nothing. Appended after the list is complete so it measures the finished context;
-        // see PerTurnBudgetContextProvider for why one measurer at the end beats a wrapper per provider
-        // (issue #266).
-        AppendPerTurnBudgetProvider(aiContextProviders, agentName, instruction, tools?.Count ?? 0);
+        // Charges what that rail injects into every turn — see AppendPerTurnBudgetProvider (issue #266).
+        AppendPerTurnBudgetProvider(aiContextProviders, agentName, instruction, tools.Count);
         var frameworkType = options.FrameworkType
             ?? ResolveFrameworkTypeFromMetadata(primarySkill)
             ?? _appConfig.CurrentValue.AI?.AgentFramework?.ClientType

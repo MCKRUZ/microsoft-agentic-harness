@@ -51,6 +51,15 @@ namespace Application.AI.Common.Services.Agent;
 /// built by the model client and never pass through the harness.
 /// </para>
 /// <para>
+/// <b>What it does not cover.</b> Only <see cref="AIContext.Instructions"/> and
+/// <see cref="AIContext.Tools"/> are charged. A provider that contributed
+/// <see cref="AIContext.Messages"/> instead would go uncounted: unlike the instructions, whose baseline is
+/// the agent's fixed prompt, the message baseline is the conversation itself and grows every turn, so the
+/// end of the rail cannot tell an injected message from the turn's own. None of the providers wired today
+/// contributes messages. A future one that does needs a baseline captured at the head of the rail rather
+/// than passed in at construction.
+/// </para>
+/// <para>
 /// This records consumption; it does not refuse it. <see cref="IContextBudgetTracker.EnsureBudget"/> is
 /// deliberately not called — turning an over-budget turn into a thrown exception is a governance decision
 /// belonging to whoever owns the turn, not to an accounting provider.
@@ -63,12 +72,6 @@ namespace Application.AI.Common.Services.Agent;
 /// </remarks>
 public sealed class PerTurnBudgetContextProvider : AIContextProvider
 {
-    /// <summary>The budget component every charge from this provider lands in.</summary>
-    public const string Component = ContextConventions.BudgetComponents.PerTurnContext;
-
-    /// <summary>Contributes nothing — the whole point is to observe without perturbing.</summary>
-    private static readonly AIContext NoContribution = new();
-
     private readonly string _agentName;
     private readonly IContextBudgetTracker _budgetTracker;
     private readonly string _baselineInstructions;
@@ -106,7 +109,7 @@ public sealed class PerTurnBudgetContextProvider : AIContextProvider
         _agentName = agentName;
         _budgetTracker = budgetTracker;
         _baselineInstructions = baselineInstructions ?? string.Empty;
-        _baselineToolCount = Math.Max(0, baselineToolCount);
+        _baselineToolCount = baselineToolCount;
         _logger = logger;
     }
 
@@ -120,10 +123,12 @@ public sealed class PerTurnBudgetContextProvider : AIContextProvider
         InvokingContext context,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(context);
-
         Charge(context.AIContext);
-        return ValueTask.FromResult(NoContribution);
+
+        // A fresh instance per turn rather than a shared empty one: AIContext's properties are settable,
+        // and handing the same object to the framework on every turn of every agent would make one
+        // mutation anywhere a cross-agent bug. Allocating an empty record costs nothing worth saving.
+        return ValueTask.FromResult(new AIContext());
     }
 
     /// <summary>
@@ -141,7 +146,7 @@ public sealed class PerTurnBudgetContextProvider : AIContextProvider
 
         _budgetTracker.RecordAndPublish(
             _agentName,
-            Component,
+            ContextConventions.BudgetComponents.PerTurnContext,
             ContextConventions.SourceTypeValues.PerTurnContext,
             tokens,
             ContextBudgetMetrics.PerTurnContextTokens);
@@ -167,7 +172,10 @@ public sealed class PerTurnBudgetContextProvider : AIContextProvider
         if (injectedChars <= 0)
             return 0;
 
-        if (_baselineInstructions.Length > 0
+        // Gated: the comparison scans the whole system prompt on every turn to detect a condition the
+        // merge contract makes essentially impossible, and its only outcome is the warning below.
+        if (_logger.IsEnabled(LogLevel.Warning)
+            && _baselineInstructions.Length > 0
             && !text.StartsWith(_baselineInstructions, StringComparison.Ordinal))
         {
             _logger.LogWarning(
@@ -176,6 +184,8 @@ public sealed class PerTurnBudgetContextProvider : AIContextProvider
                 _agentName);
         }
 
-        return TokenEstimationHelper.EstimateTokens(text[^injectedChars..]);
+        // Sliced as a span, not a substring: the tail is everything the rail injected — index card plus
+        // every recalled block — and copying it only to read its length would allocate kilobytes per turn.
+        return TokenEstimationHelper.EstimateTokens(text.AsSpan(text.Length - injectedChars));
     }
 }

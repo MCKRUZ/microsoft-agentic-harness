@@ -53,6 +53,19 @@ public static class TokenEstimationHelper
         string.IsNullOrEmpty(text) ? 0 : (text.Length + CharsPerToken - 1) / CharsPerToken;
 
     /// <summary>
+    /// Estimates the token count for a span of text.
+    /// </summary>
+    /// <param name="text">The text to estimate. Returns 0 when empty.</param>
+    /// <returns>The estimated token count.</returns>
+    /// <remarks>
+    /// For callers holding a slice of a larger string — measuring what was appended to a prompt, say.
+    /// Materialising the slice just to be measured copies it for nothing, and on a per-turn path that is
+    /// a copy of several kilobytes discarded immediately.
+    /// </remarks>
+    public static int EstimateTokens(ReadOnlySpan<char> text) =>
+        text.IsEmpty ? 0 : (text.Length + CharsPerToken - 1) / CharsPerToken;
+
+    /// <summary>
     /// Estimates the total token count for multiple text segments.
     /// </summary>
     /// <param name="segments">The text segments to estimate.</param>
