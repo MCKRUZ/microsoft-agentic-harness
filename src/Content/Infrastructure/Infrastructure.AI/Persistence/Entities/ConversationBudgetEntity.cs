@@ -20,9 +20,11 @@ namespace Infrastructure.AI.Persistence.Entities;
 /// read-modify-write, so two concurrent turns sum rather than collide.
 /// </para>
 /// <para>
-/// Rows are not deleted when a conversation ends — the two interactive callers have no "ended" signal to
-/// act on. <see cref="UpdatedAt"/> exists so a retention sweep can reclaim abandoned keys by age; at
-/// roughly 60 bytes per row, 50,000 abandoned keys cost about 3 MB.
+/// Rows are not deleted when a conversation ends — the two interactive callers have no "ended" signal
+/// to act on. <see cref="UpdatedAt"/> records when a key last spent, which is what a retention sweep
+/// would select on and what an operator reads to tell a live conversation from an abandoned one. No
+/// such sweep exists yet, and no index serves one yet; at roughly 60 bytes per row, 50,000 abandoned
+/// keys cost about 3 MB, so the growth is bounded enough to decide that separately.
 /// </para>
 /// </remarks>
 public sealed class ConversationBudgetEntity

@@ -39,8 +39,9 @@ namespace Infrastructure.AI.Conversations;
 /// <para>
 /// <strong>Retention.</strong> Rows are removed only by <see cref="ReleaseAsync"/>, and the two
 /// interactive callers never call it because a turn ending is not a conversation ending. Abandoned keys
-/// therefore persist; <c>ConversationBudgetEntity.UpdatedAt</c> and its index exist so an age-based
-/// sweep can reclaim them. At roughly 60 bytes per row, 50,000 abandoned keys cost about 3 MB.
+/// therefore persist, and unlike the in-process sibling — which caps at 50,000 entries and evicts —
+/// this one has no bound. At roughly 60 bytes per row, 50,000 abandoned keys cost about 3 MB, which is
+/// small enough that a sweep is a separate decision rather than a prerequisite.
 /// </para>
 /// </remarks>
 public sealed class SqliteConversationBudgetTracker : IConversationBudgetTracker

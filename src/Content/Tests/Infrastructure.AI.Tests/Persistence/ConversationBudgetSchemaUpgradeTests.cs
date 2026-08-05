@@ -63,19 +63,30 @@ public sealed class ConversationBudgetSchemaUpgradeTests : IDisposable
     }
 
     /// <summary>
-    /// A created table must arrive with its indexes, not just its columns — otherwise the retention
-    /// sweep this table exists to allow does a full scan on every consumer who upgraded rather than
-    /// started fresh, and nothing says so.
+    /// A created table must arrive with its primary key, not just its columns — the accrual upsert's
+    /// <c>ON CONFLICT(BudgetKey)</c> needs one to conflict against, so a table built without it would
+    /// insert a second row per key instead of adding to the first, and under-count every total.
     /// </summary>
     [Fact]
-    public void SchemaInitializer_CreatedTable_AlsoGetsItsIndexes()
+    public void SchemaInitializer_CreatedTable_HasItsPrimaryKey()
     {
         CreateDatabaseWithoutTheBudgetTable();
 
         _ = new SchemaInitializer<ConversationDbContext>(
             new TestDbContextFactory<ConversationDbContext>(Options()));
 
-        Indexes(BudgetTable).Should().Contain("ix_conversation_budgets_updated_at");
+        using var connection = new SqliteConnection($"DataSource={_databasePath};Pooling=False");
+        connection.Open();
+
+        using var command = connection.CreateCommand();
+        command.CommandText = $"SELECT name FROM pragma_table_info('{BudgetTable}') WHERE pk > 0;";
+
+        var keyColumns = new List<string>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+            keyColumns.Add(reader.GetString(0));
+
+        keyColumns.Should().Equal("BudgetKey");
     }
 
     /// <summary>
@@ -144,13 +155,6 @@ public sealed class ConversationBudgetSchemaUpgradeTests : IDisposable
         using var connection = new SqliteConnection($"DataSource={_databasePath};Pooling=False");
         connection.Open();
         return SqliteSchemaProbe.ColumnsAsync(connection, table).GetAwaiter().GetResult();
-    }
-
-    private List<string> Indexes(string table)
-    {
-        using var connection = new SqliteConnection($"DataSource={_databasePath};Pooling=False");
-        connection.Open();
-        return SqliteSchemaProbe.IndexNamesAsync(connection, table).GetAwaiter().GetResult();
     }
 
     private DbContextOptions<ConversationDbContext> Options() =>

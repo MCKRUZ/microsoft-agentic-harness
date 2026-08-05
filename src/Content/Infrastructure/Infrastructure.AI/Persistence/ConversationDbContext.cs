@@ -106,8 +106,9 @@ public sealed class ConversationDbContext : DbContext
         budget.Property(e => e.ConsumedTokens).IsRequired();
         budget.Property(e => e.UpdatedAt).HasConversion(SqliteValueConverters.DateTimeOffsetAsUtcTicks);
 
-        // Serves age-based retention sweeps, which are the only access path that is not by key.
-        budget.HasIndex(e => e.UpdatedAt)
-            .HasDatabaseName("ix_conversation_budgets_updated_at");
+        // No index on UpdatedAt. It would serve an age-based retention sweep and nothing else, and no
+        // sweep exists yet — an index for a caller that has not been written is cost with no reader.
+        // Adding one later is cheap and safe: SqliteAdditiveSchemaReconciler creates indexes a model
+        // has gained, including on databases that already exist.
     }
 }

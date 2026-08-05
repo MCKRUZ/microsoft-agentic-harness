@@ -145,6 +145,27 @@ public sealed class SchemaInitializerAddedColumnTests : IDisposable
     }
 
     /// <summary>
+    /// A created table must also get its indexes. EF's create-table operation does not carry them, so
+    /// they come from the pass that follows — and that pass only reaches a created table because
+    /// creation is tracked separately from "was already present". Without that tracking the table
+    /// appears, every column is right, and the indexes are silently missing.
+    /// </summary>
+    [Fact]
+    public void SchemaInitializer_CreatedTable_AlsoGetsItsIndexes()
+    {
+        CreateDatabaseWithTheNarrowModel();
+
+        _ = new SchemaInitializer<TwoTableContext>(
+            new TestDbContextFactory<TwoTableContext>(OptionsFor<TwoTableContext>()));
+
+        using var connection = new SqliteConnection($"DataSource={_databasePath};Pooling=False");
+        connection.Open();
+
+        SqliteSchemaProbe.IndexNamesAsync(connection, "gadgets").GetAwaiter().GetResult()
+            .Should().Contain("ix_gadgets_label");
+    }
+
+    /// <summary>
     /// Builds the database from a model WITHOUT the later column, standing in for a consumer whose
     /// <c>conversations.db</c> was created by an earlier release.
     /// </summary>
@@ -201,6 +222,9 @@ public sealed class SchemaInitializerAddedColumnTests : IDisposable
     private sealed class Gadget
     {
         public required string Id { get; set; }
+
+        /// <summary>Indexed, so a created table can be checked for more than its columns.</summary>
+        public string? Label { get; set; }
     }
 
     private sealed class StampedWidget
@@ -253,7 +277,10 @@ public sealed class SchemaInitializerAddedColumnTests : IDisposable
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             modelBuilder.Entity<WideWidget>().ToTable("widgets").HasKey(e => e.Id);
-            modelBuilder.Entity<Gadget>().ToTable("gadgets").HasKey(e => e.Id);
+
+            var gadget = modelBuilder.Entity<Gadget>();
+            gadget.ToTable("gadgets").HasKey(e => e.Id);
+            gadget.HasIndex(e => e.Label).HasDatabaseName("ix_gadgets_label");
         }
     }
 

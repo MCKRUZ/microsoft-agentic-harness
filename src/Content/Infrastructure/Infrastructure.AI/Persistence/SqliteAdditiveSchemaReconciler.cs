@@ -68,30 +68,46 @@ public static class SqliteAdditiveSchemaReconciler
         {
             var tables = ModelTables(context);
 
+            // One probe per table for the whole pass. Both the creation step and the column step need
+            // to know which columns a table currently has, and asking twice doubles the pragma queries
+            // for no new information.
+            var columnsByTable = tables.ToDictionary(
+                table => table.Name,
+                table => ExistingColumns(connection, table.Name),
+                StringComparer.OrdinalIgnoreCase);
+
             // Whole tables first, and in one pass, because a table added at the same time as another
             // may carry a foreign key to it — creating them one at a time in model order would fail on
             // whichever came first. EF's own generator orders them for exactly this reason.
-            CreateMissingTables(context, connection, tables);
+            var created = CreateMissingTables(context, connection, columnsByTable);
 
             foreach (var table in tables)
             {
-                var existing = ExistingColumns(connection, table.Name);
+                var justCreated = created.Contains(table.Name);
 
-                // Still possible after the pass above: a non-relational model quirk, or a table EF's
-                // differ does not emit. Nothing to add columns to either way.
-                if (existing.Count == 0)
+                // Neither there before nor creatable now — a table EF's differ did not emit. Altering
+                // or indexing it would fail against nothing.
+                if (!justCreated && columnsByTable[table.Name].Count == 0)
                     continue;
 
-                foreach (var column in table.Columns)
+                // A table created just above already has every column the model declares, because the
+                // same model produced both. Only an older table can be missing one.
+                if (!justCreated)
                 {
-                    if (existing.Contains(column.Name))
-                        continue;
+                    var existing = columnsByTable[table.Name];
 
-                    AddColumn(connection, table.Name, column);
+                    foreach (var column in table.Columns)
+                    {
+                        if (existing.Contains(column.Name))
+                            continue;
+
+                        AddColumn(connection, table.Name, column);
+                    }
                 }
 
                 // After the columns, because an index over a just-added column cannot be created
                 // before it exists — which is the exact case a scope-filtering index is added for.
+                // A created table reaches here too: a create-table operation carries no indexes.
                 foreach (var index in table.Indexes)
                     CreateIndexIfMissing(connection, table.Name, index);
             }
@@ -132,16 +148,30 @@ public static class SqliteAdditiveSchemaReconciler
     /// them, and that pass is already idempotent.
     /// </para>
     /// </remarks>
-    private static void CreateMissingTables(
-        DbContext context, DbConnection connection, IReadOnlyList<TableSpec> tables)
+    /// <param name="context">The context whose model supplies the table definitions.</param>
+    /// <param name="connection">An open connection to the database being reconciled.</param>
+    /// <param name="columnsByTable">
+    /// Each model table's current columns; an empty entry is how a wholly absent table presents.
+    /// </param>
+    /// <returns>
+    /// The names of the tables actually created, so the caller can tell them from tables that were
+    /// already there — a created table needs no column reconciliation, and one that could not be
+    /// created must not be altered or indexed at all.
+    /// </returns>
+    private static HashSet<string> CreateMissingTables(
+        DbContext context,
+        DbConnection connection,
+        IReadOnlyDictionary<string, HashSet<string>> columnsByTable)
     {
-        var missing = tables
-            .Where(table => ExistingColumns(connection, table.Name).Count == 0)
-            .Select(table => table.Name)
+        var created = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        var missing = columnsByTable
+            .Where(entry => entry.Value.Count == 0)
+            .Select(entry => entry.Key)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         if (missing.Count == 0)
-            return;
+            return created;
 
         var differ = context.GetService<IMigrationsModelDiffer>();
         var generator = context.GetService<IMigrationsSqlGenerator>();
@@ -154,7 +184,7 @@ public static class SqliteAdditiveSchemaReconciler
             .ToList();
 
         if (creations.Count == 0)
-            return;
+            return created;
 
         foreach (var command in generator.Generate(creations, model))
         {
@@ -162,6 +192,11 @@ public static class SqliteAdditiveSchemaReconciler
             statement.CommandText = command.CommandText;
             statement.ExecuteNonQuery();
         }
+
+        foreach (var operation in creations)
+            created.Add(operation.Name);
+
+        return created;
     }
 
     /// <summary>
