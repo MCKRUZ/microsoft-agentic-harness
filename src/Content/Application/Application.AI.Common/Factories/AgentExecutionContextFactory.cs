@@ -56,13 +56,15 @@ public class AgentExecutionContextFactory
         IAgentConfigReporter? agentConfigReporter = null,
         IResilientChatClientProvider? resilientChatClientProvider = null)
     {
+        ArgumentNullException.ThrowIfNull(skillFileReader);
+
         _logger = logger;
         _appConfig = appConfig;
         _serviceProvider = serviceProvider;
         _loggerFactory = loggerFactory;
         _toolChainBuilder = toolChainBuilder;
         _prerequisiteResolver = prerequisiteResolver;
-        _skillFileReader = skillFileReader ?? throw new ArgumentNullException(nameof(skillFileReader));
+        _skillFileReader = skillFileReader;
         _budgetTracker = budgetTracker;
         _traceStore = traceStore;
         _agentConfigReporter = agentConfigReporter;

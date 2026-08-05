@@ -72,7 +72,7 @@ public sealed class FileSystemService : IFileSystemService
         _logger = logger;
         _guard = new SandboxedPathGuard(logger, allowedBasePaths, protectedPaths);
 
-        if (!_guard.HasAllowedPaths)
+        if (_guard.AllowedPathCount == 0)
             _logger.LogWarning("FileSystemService initialized with zero allowed base paths — all operations will be denied");
         else
             _logger.LogInformation("FileSystemService initialized with {PathCount} allowed base paths", _guard.AllowedPathCount);

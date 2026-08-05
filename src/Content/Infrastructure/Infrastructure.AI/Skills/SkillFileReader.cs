@@ -1,3 +1,4 @@
+using Application.AI.Common.Exceptions;
 using Application.AI.Common.Interfaces.Skills;
 using Domain.Common.Config;
 using Infrastructure.AI.Tools;
@@ -74,16 +75,16 @@ public sealed class SkillFileReader : ISkillFileReader
     }
 
     /// <inheritdoc />
-    public bool FileExists(string path) => File.Exists(Guard().ResolveAndValidate(path));
+    public bool FileExists(string path) => File.Exists(Resolve(path));
 
     /// <inheritdoc />
-    public bool DirectoryExists(string path) => Directory.Exists(Guard().ResolveAndValidate(path));
+    public bool DirectoryExists(string path) => Directory.Exists(Resolve(path));
 
     /// <inheritdoc />
     public IReadOnlyList<string> EnumerateDirectories(string path)
     {
-        var guard = Guard();
-        var fullPath = guard.ResolveAndValidate(path);
+        var guard = CurrentGuard();
+        var fullPath = Resolve(path);
 
         if (!Directory.Exists(fullPath))
             throw new DirectoryNotFoundException($"Directory not found: {path}");
@@ -104,11 +105,35 @@ public sealed class SkillFileReader : ISkillFileReader
     }
 
     /// <summary>
+    /// Validates a path against the current sandbox, reporting a refusal as
+    /// <see cref="SkillPathRefusedException"/>.
+    /// </summary>
+    /// <remarks>
+    /// The translation is the point. Callers must be able to tell "the sandbox said no" — which is
+    /// fatal, because absorbing it into an empty result would boot an agent silently missing its
+    /// skills — apart from an ordinary file-permission denial on a directory that is legitimately
+    /// inside the sandbox, which is not. Both arrive as <see cref="UnauthorizedAccessException"/>,
+    /// so only the one raised here can be distinguished by type.
+    /// </remarks>
+    private string Resolve(string path)
+    {
+        try
+        {
+            return CurrentGuard().ResolveAndValidate(path);
+        }
+        catch (UnauthorizedAccessException ex) when (ex is not SkillPathRefusedException)
+        {
+            throw new SkillPathRefusedException(
+                $"Path is outside the configured skill content roots: {path}", ex);
+        }
+    }
+
+    /// <summary>
     /// Validates a path for reading and enforces the size limit before any content is loaded.
     /// </summary>
     private string ValidateForRead(string path)
     {
-        var fullPath = Guard().ResolveAndValidate(path);
+        var fullPath = Resolve(path);
 
         var fileInfo = new FileInfo(fullPath);
         if (!fileInfo.Exists)
@@ -124,7 +149,7 @@ public sealed class SkillFileReader : ISkillFileReader
     /// Returns a guard over the currently configured skill content roots, rebuilding it only when
     /// that set has changed since the last call.
     /// </summary>
-    private SandboxedPathGuard Guard()
+    private SandboxedPathGuard CurrentGuard()
     {
         var roots = ResolveContentRoots();
         var signature = string.Join('\0', roots);
@@ -139,7 +164,7 @@ public sealed class SkillFileReader : ISkillFileReader
             // governance-state directory is guarded on the surface that can write to it.
             var guard = new SandboxedPathGuard(_logger, roots);
 
-            if (!guard.HasAllowedPaths)
+            if (guard.AllowedPathCount == 0)
             {
                 _logger.LogWarning(
                     "SkillFileReader initialized with zero skill content roots — all skill reads will be denied");
@@ -157,36 +182,14 @@ public sealed class SkillFileReader : ISkillFileReader
     }
 
     /// <summary>
-    /// The directories skill content may be read from: the configured skill roots, the configured
-    /// agent roots (an agent's own skills live in <c>&lt;agentDir&gt;/skills</c>), and the bundle
-    /// staging root (a staged bundle carries its own <c>skills/</c> directory).
+    /// Every directory skill content may be read from, resolved live from configuration.
     /// </summary>
     /// <remarks>
-    /// Relative paths resolve against <see cref="AppContext.BaseDirectory"/>, matching the registries
-    /// and <c>BundleStagingService</c>. Resolving them any other way here would produce a sandbox
-    /// that refuses the very directories discovery then walks.
+    /// Delegates to <see cref="SkillContentRoots"/> rather than resolving roots itself: the same
+    /// answer is needed by the registries that walk these directories and by the staging service
+    /// that refuses a staging root overlapping them, and a sandbox that resolved a root differently
+    /// would refuse the very directory discovery then walks.
     /// </remarks>
-    private IReadOnlyList<string> ResolveContentRoots()
-    {
-        var ai = _appConfig.CurrentValue.AI;
-        if (ai is null)
-            return [];
-
-        var roots = new List<string>();
-
-        foreach (var path in ai.Skills.AllPaths.Concat(ai.Agents.AllPaths))
-        {
-            if (!string.IsNullOrWhiteSpace(path))
-                roots.Add(Resolve(path));
-        }
-
-        roots.Add(string.IsNullOrWhiteSpace(ai.BundleExecution.TempRoot)
-            ? Path.Combine(Path.GetTempPath(), "agent-bundles")
-            : Resolve(ai.BundleExecution.TempRoot));
-
-        return [.. roots.Distinct(StringComparer.Ordinal)];
-
-        static string Resolve(string path) =>
-            Path.IsPathRooted(path) ? path : Path.GetFullPath(path, AppContext.BaseDirectory);
-    }
+    private IReadOnlyList<string> ResolveContentRoots() =>
+        SkillContentRoots.All(_appConfig.CurrentValue);
 }

@@ -1,6 +1,8 @@
 using Application.AI.Common.Helpers;
+using Application.AI.Common.Interfaces.Skills;
 using Domain.AI.Skills;
 using FluentAssertions;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
@@ -36,6 +38,61 @@ public sealed class DisclosableSkillFactoryTests
 
     private static IReadOnlyList<DisclosableSkill> Create(params SkillDefinition[] skills) =>
         DisclosableSkillFactory.Create(skills, new UnsandboxedSkillFileReader(), NullLogger.Instance);
+
+    [Fact]
+    public async Task RegisteredResource_IsServedThroughTheSandboxedReader_NotRawFileIo()
+    {
+        // Tier-3 disclosure is the one path the MODEL drives: it names a resource, the framework
+        // invokes this callback, and whatever comes back is handed to the model. Every other test
+        // here injects a permissive double, so nothing else would notice if this reverted to
+        // File.ReadAllTextAsync — which is exactly the unguarded read issue #247 closed. The spy
+        // returns content no file on disk holds, so a raw read cannot produce it.
+        var reader = new RecordingSkillFileReader("served through the sandbox");
+        var skill = Skill();
+        skill.References.Add(new SkillResource
+        {
+            FileName = "api.md",
+            RelativePath = "references/api.md",
+            FilePath = Path.Combine("Z:", "not-a-real-path", "references", "api.md"),
+        });
+
+        var created = DisclosableSkillFactory.Create([skill], reader, NullLogger.Instance);
+
+        // GetResourceAsync returns the resource DESCRIPTOR; ReadAsync is what invokes the callback
+        // and therefore what actually exercises the wiring under test.
+        var resource = await created.Single().Skill.GetResourceAsync("references/api.md");
+        resource.Should().NotBeNull();
+        var content = await resource!.ReadAsync(new ServiceCollection().BuildServiceProvider());
+
+        content?.ToString().Should().Contain("served through the sandbox");
+        reader.RequestedPaths.Should().ContainSingle()
+            .Which.Should().EndWith(Path.Combine("references", "api.md"));
+    }
+
+    /// <summary>
+    /// Records what was asked for and returns a sentinel, so a test can prove the read went through
+    /// <see cref="ISkillFileReader"/> rather than the file system.
+    /// </summary>
+    private sealed class RecordingSkillFileReader(string content) : ISkillFileReader
+    {
+        public List<string> RequestedPaths { get; } = [];
+
+        public Task<string> ReadTextAsync(string path, CancellationToken cancellationToken = default)
+        {
+            RequestedPaths.Add(path);
+            return Task.FromResult(content);
+        }
+
+        public string ReadText(string path)
+        {
+            RequestedPaths.Add(path);
+            return content;
+        }
+
+        public bool FileExists(string path) => true;
+        public bool DirectoryExists(string path) => true;
+        public IReadOnlyList<string> EnumerateDirectories(string path) => [];
+    }
 
     [Fact]
     public void Create_WellFormedSkill_IsRegisteredUnderItsDeclaredName()

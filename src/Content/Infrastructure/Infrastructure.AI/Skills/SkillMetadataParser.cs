@@ -1,3 +1,4 @@
+using Application.AI.Common.Exceptions;
 using Application.AI.Common.Interfaces.Skills;
 using Domain.AI.Egress;
 using Domain.AI.Skills;
@@ -97,7 +98,7 @@ public sealed partial class SkillMetadataParser
                 rawFrontmatter = ExtractFrontmatter(raw);
             }
         }
-        catch (Exception ex) when (ex is not UnauthorizedAccessException)
+        catch (Exception ex) when (ex is not SkillPathRefusedException)
         {
             // A sandbox refusal is deliberately NOT caught here. Degrading to null frontmatter looks
             // harmless but is not: SkillFrontmatter.Load(null) yields a skill with an EMPTY

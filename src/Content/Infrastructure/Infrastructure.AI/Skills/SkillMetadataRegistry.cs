@@ -1,3 +1,4 @@
+using Application.AI.Common.Exceptions;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Plugins;
 using Application.AI.Common.Interfaces.Skills;
@@ -260,8 +261,12 @@ public sealed class SkillMetadataRegistry : ISkillMetadataRegistry
             foreach (var subDir in _fileReader.EnumerateDirectories(directory))
                 DiscoverInDirectory(subDir, depth + 1, pluginPaths, result);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not SkillPathRefusedException)
         {
+            // A sandbox refusal propagates. Swallowing it would report "no skills here", which is
+            // indistinguishable from an empty directory, so a misconfigured root would boot an
+            // agent with none of its skills rather than failing. Tolerating an unreadable
+            // directory is the point of this catch; tolerating being told it is out of bounds is not.
             _logger.LogWarning(ex, "Could not enumerate directory: {Path}", directory);
         }
     }
@@ -298,8 +303,10 @@ public sealed class SkillMetadataRegistry : ISkillMetadataRegistry
                 "Discovered skill: {SkillId} from {Path} (source: {Source})",
                 definition.Id, directory, pluginSource ?? "built-in");
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not SkillPathRefusedException)
         {
+            // Same rule as the enumeration above: a malformed manifest is skipped, a refused one is
+            // not — dropping it would leave the skill absent with only a warning to say why.
             _logger.LogWarning(ex, "Failed to parse skill from {Path}", skillFile);
         }
     }

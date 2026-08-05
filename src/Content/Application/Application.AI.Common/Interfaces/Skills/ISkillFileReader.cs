@@ -25,8 +25,12 @@ namespace Application.AI.Common.Interfaces.Skills;
 /// at registration time would refuse exactly the plugin skills the harness advertises support for.
 /// </para>
 /// <para>
-/// <b>Refusals are loud.</b> A path outside the roots throws <see cref="UnauthorizedAccessException"/>
-/// from every member, including the existence probes. Returning <see langword="false"/> for a refused
+/// <b>Refusals are loud.</b> A path outside the roots throws
+/// <see cref="Exceptions.SkillPathRefusedException"/> from every member, including the existence
+/// probes. That type is distinct from a plain <see cref="UnauthorizedAccessException"/> on purpose:
+/// the operating system raises the latter for an ordinary permission denial on a directory that is
+/// legitimately inside the sandbox, and callers must be able to tolerate that while treating a
+/// sandbox refusal as fatal. Returning <see langword="false"/> for a refused
 /// path would let a misconfigured root read as "this skill has no manifest", turning a security
 /// refusal into a silently empty skill set.
 /// </para>
@@ -43,7 +47,11 @@ public interface ISkillFileReader
     /// </remarks>
     /// <param name="path">An absolute path inside a configured skill content root.</param>
     /// <returns>The file's contents.</returns>
-    /// <exception cref="UnauthorizedAccessException">The path is outside the skill content roots.</exception>
+    /// <exception cref="ArgumentException">
+    /// The path is empty, or is rejected by the sandbox's input validation — which refuses
+    /// traversal sequences, so a relative path must be resolved to an absolute one first.
+    /// </exception>
+    /// <exception cref="Exceptions.SkillPathRefusedException">The path is outside the skill content roots.</exception>
     /// <exception cref="FileNotFoundException">The path is permitted but names no file.</exception>
     /// <exception cref="IOException">The file exceeds the read size limit.</exception>
     string ReadText(string path);
@@ -58,7 +66,11 @@ public interface ISkillFileReader
     /// <param name="path">An absolute path inside a configured skill content root.</param>
     /// <param name="cancellationToken">Token to observe while reading.</param>
     /// <returns>The file's contents.</returns>
-    /// <exception cref="UnauthorizedAccessException">The path is outside the skill content roots.</exception>
+    /// <exception cref="ArgumentException">
+    /// The path is empty, or is rejected by the sandbox's input validation — which refuses
+    /// traversal sequences, so a relative path must be resolved to an absolute one first.
+    /// </exception>
+    /// <exception cref="Exceptions.SkillPathRefusedException">The path is outside the skill content roots.</exception>
     /// <exception cref="FileNotFoundException">The path is permitted but names no file.</exception>
     /// <exception cref="IOException">The file exceeds the read size limit.</exception>
     Task<string> ReadTextAsync(string path, CancellationToken cancellationToken = default);
@@ -68,7 +80,11 @@ public interface ISkillFileReader
     /// </summary>
     /// <param name="path">An absolute path inside a configured skill content root.</param>
     /// <returns><see langword="true"/> when the file exists.</returns>
-    /// <exception cref="UnauthorizedAccessException">The path is outside the skill content roots.</exception>
+    /// <exception cref="ArgumentException">
+    /// The path is empty, or is rejected by the sandbox's input validation — which refuses
+    /// traversal sequences, so a relative path must be resolved to an absolute one first.
+    /// </exception>
+    /// <exception cref="Exceptions.SkillPathRefusedException">The path is outside the skill content roots.</exception>
     bool FileExists(string path);
 
     /// <summary>
@@ -76,7 +92,11 @@ public interface ISkillFileReader
     /// </summary>
     /// <param name="path">An absolute path inside a configured skill content root.</param>
     /// <returns><see langword="true"/> when the directory exists.</returns>
-    /// <exception cref="UnauthorizedAccessException">The path is outside the skill content roots.</exception>
+    /// <exception cref="ArgumentException">
+    /// The path is empty, or is rejected by the sandbox's input validation — which refuses
+    /// traversal sequences, so a relative path must be resolved to an absolute one first.
+    /// </exception>
+    /// <exception cref="Exceptions.SkillPathRefusedException">The path is outside the skill content roots.</exception>
     bool DirectoryExists(string path);
 
     /// <summary>
@@ -89,7 +109,11 @@ public interface ISkillFileReader
     /// </remarks>
     /// <param name="path">An absolute path inside a configured skill content root.</param>
     /// <returns>Absolute paths of the immediate subdirectories, empty when there are none.</returns>
-    /// <exception cref="UnauthorizedAccessException">The path is outside the skill content roots.</exception>
+    /// <exception cref="ArgumentException">
+    /// The path is empty, or is rejected by the sandbox's input validation — which refuses
+    /// traversal sequences, so a relative path must be resolved to an absolute one first.
+    /// </exception>
+    /// <exception cref="Exceptions.SkillPathRefusedException">The path is outside the skill content roots.</exception>
     /// <exception cref="DirectoryNotFoundException">The path is permitted but names no directory.</exception>
     IReadOnlyList<string> EnumerateDirectories(string path);
 }

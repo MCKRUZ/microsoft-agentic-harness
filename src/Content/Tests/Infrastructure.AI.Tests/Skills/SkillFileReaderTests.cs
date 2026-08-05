@@ -147,6 +147,92 @@ public sealed class SkillFileReaderTests : IDisposable
     }
 
     [Fact]
+    public async Task ReadTextAsync_SkillResourceInsideSkillRoot_IsRead()
+    {
+        // The member the MODEL reaches, through the framework's read_skill_resource tool.
+        var reference = Path.Combine(_skillsRoot, "do-thing", "references");
+        Directory.CreateDirectory(reference);
+        var path = Path.Combine(reference, "api.md");
+        await File.WriteAllTextAsync(path, "reference body");
+        var reader = CreateReader();
+
+        (await reader.ReadTextAsync(path)).Should().Contain("reference body");
+    }
+
+    [Fact]
+    public async Task ReadTextAsync_PathOutsideEverySkillRoot_IsRefused()
+    {
+        var secret = Path.Combine(_outsideRoot, "secret.md");
+        await File.WriteAllTextAsync(secret, "not skill content");
+        var reader = CreateReader();
+
+        var act = async () => await reader.ReadTextAsync(secret);
+
+        await act.Should().ThrowAsync<UnauthorizedAccessException>();
+    }
+
+    [Fact]
+    public void FileExists_DistinguishesPresentFromAbsentInsideTheSandbox()
+    {
+        var manifest = WriteSkill(_skillsRoot, "present", "body");
+        var reader = CreateReader();
+
+        reader.FileExists(manifest).Should().BeTrue();
+        reader.FileExists(Path.Combine(_skillsRoot, "present", "MISSING.md")).Should().BeFalse();
+    }
+
+    [Fact]
+    public void FileExists_PathOutsideSkillRoots_IsRefusedRatherThanReportedMissing()
+    {
+        var reader = CreateReader();
+
+        var act = () => reader.FileExists(Path.Combine(_outsideRoot, "secret.md"));
+
+        act.Should().Throw<UnauthorizedAccessException>();
+    }
+
+    [Fact]
+    public void ReadText_FileBeyondTheSizeLimit_IsRefusedBeforeItIsLoaded()
+    {
+        // Bounds memory on a path that reads whatever a manifest names. 10 MB + 1 byte.
+        var dir = Path.Combine(_skillsRoot, "huge");
+        Directory.CreateDirectory(dir);
+        var path = Path.Combine(dir, "SKILL.md");
+        File.WriteAllBytes(path, new byte[(10 * 1024 * 1024) + 1]);
+        var reader = CreateReader();
+
+        var act = () => reader.ReadText(path);
+
+        act.Should().Throw<IOException>();
+    }
+
+    [Fact]
+    public void ReadText_PermittedPathNamingNoFile_ThrowsFileNotFound()
+    {
+        var reader = CreateReader();
+
+        var act = () => reader.ReadText(Path.Combine(_skillsRoot, "nothing-here", "SKILL.md"));
+
+        act.Should().Throw<FileNotFoundException>();
+    }
+
+    [Fact]
+    public void NestedSkillScanner_RefusedRoot_ThrowsInsteadOfReportingNoSkills()
+    {
+        // The scanner is best-effort by design — a malformed manifest is skipped so its siblings
+        // still load. That tolerance must not extend to a sandbox refusal: returning an empty list
+        // there is indistinguishable from a directory that genuinely holds no skills, so a
+        // misconfigured root would boot an agent silently missing all of its own skills.
+        var reader = CreateReader();
+        var parser = new SkillMetadataParser(NullLogger<SkillMetadataParser>.Instance, reader);
+
+        var act = () => NestedSkillScanner.Scan(
+            _outsideRoot, parser, reader, NullLogger<SkillFileReaderTests>.Instance);
+
+        act.Should().Throw<UnauthorizedAccessException>();
+    }
+
+    [Fact]
     public async Task ModelFileSandbox_DoesNotCoverSkillRoots_SoSkillsCannotBeRewritten()
     {
         // The whole reason SkillFileReader exists as a separate sandbox. FileSystemService is what

@@ -75,7 +75,7 @@ internal sealed class SandboxedPathGuard
     /// <param name="logger">Receives a warning for every refusal, and the path that caused it.</param>
     /// <param name="allowedBasePaths">
     /// The set of absolute directory paths this guard permits. Paths are canonicalized and normalized
-    /// once, here. An empty set denies everything — see <see cref="HasAllowedPaths"/>.
+    /// once, here. An empty set denies everything — see <see cref="AllowedPathCount"/>.
     /// </param>
     /// <param name="protectedPaths">
     /// Absolute directory paths denied even when they fall inside <paramref name="allowedBasePaths"/>.
@@ -118,16 +118,11 @@ internal sealed class SandboxedPathGuard
     }
 
     /// <summary>
-    /// The number of directories this guard permits. Zero means every operation is refused.
+    /// The number of directories this guard permits. <b>Zero means every operation is refused</b> —
+    /// callers surface that at construction so a misconfiguration shows up in the log rather than
+    /// only as a refusal on first use.
     /// </summary>
     public int AllowedPathCount => _allowedBasePaths.Count;
-
-    /// <summary>
-    /// <see langword="false"/> when the guard was given nothing to allow, in which case it denies
-    /// everything. Callers surface this at construction so a misconfiguration is visible in the log
-    /// rather than only as a refusal on first use.
-    /// </summary>
-    public bool HasAllowedPaths => _allowedBasePaths.Count > 0;
 
     /// <summary>
     /// The refusal handed to a caller whose path names a file the sandbox cannot prove is unique.

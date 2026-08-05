@@ -148,19 +148,10 @@ public sealed class BundleStagingService : IBundleStagingService
         }
     }
 
-    private static string ResolveStagingRoot(BundleExecutionConfig cfg) =>
+    private string ResolveStagingRoot(BundleExecutionConfig cfg) =>
         string.IsNullOrWhiteSpace(cfg.TempRoot)
-            ? Path.Combine(Path.GetTempPath(), "agent-bundles")
-            : ResolveConfiguredPath(cfg.TempRoot);
-
-    /// <summary>
-    /// Resolves a configured path to an absolute one, relative paths being taken against
-    /// <see cref="AppContext.BaseDirectory"/> (the bin folder) to match the registries. Used for both the
-    /// staging root and the discovery roots so the disjointness guard compares like against like — a
-    /// difference here could let an overlapping root slip past.
-    /// </summary>
-    private static string ResolveConfiguredPath(string path) =>
-        Path.IsPathRooted(path) ? path : Path.GetFullPath(path, AppContext.BaseDirectory);
+            ? SkillContentRoots.BundleStaging(_appConfig.CurrentValue)
+            : SkillContentRoots.Resolve(cfg.TempRoot);
 
     /// <summary>
     /// Rejects a staging root that overlaps any configured skill or agent discovery root. The global
@@ -189,12 +180,8 @@ public sealed class BundleStagingService : IBundleStagingService
         return Result.Success();
     }
 
-    private IEnumerable<string> ConfiguredDiscoveryRoots()
-    {
-        var ai = _appConfig.CurrentValue.AI;
-        foreach (var p in ai.Skills.AllPaths.Concat(ai.Agents.AllPaths))
-            yield return ResolveConfiguredPath(p);
-    }
+    private IEnumerable<string> ConfiguredDiscoveryRoots() =>
+        SkillContentRoots.Discovery(_appConfig.CurrentValue);
 
     private async Task<Result<BufferedArchive>> BufferArchiveAsync(
         Stream archive, BundleExecutionConfig cfg, CancellationToken cancellationToken)
