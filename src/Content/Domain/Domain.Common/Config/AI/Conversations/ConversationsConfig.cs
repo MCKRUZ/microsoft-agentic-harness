@@ -40,6 +40,28 @@ public sealed class ConversationsConfig
     public ConversationTurnLeaseConfig TurnLease { get; set; } = new();
 
     /// <summary>
+    /// How many of a conversation's most recent messages are replayed to the model when a durable run
+    /// continues it. Bounds prompt growth: a conversation's transcript is unbounded, the window sent to
+    /// the model is not.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Read by the shared multi-turn loop, so it applies to every caller that opts into a durable
+    /// conversation rather than to one host. It deliberately does <em>not</em> govern the interactive
+    /// AgentHub paths: the SignalR hub and orchestrator read <c>AppConfig:AgentHub:MaxHistoryMessages</c>
+    /// (20), and the AG-UI handler carries its own hardcoded 50. Three settings for one concept is one
+    /// too many, and consolidating them changes interactive behaviour, so it is flagged here rather than
+    /// done quietly as part of unrelated work.
+    /// </para>
+    /// <para>
+    /// Zero or negative sends no history at all — every turn starts cold. That is a real configuration,
+    /// not a disabled feature, and the store reads it that way too: <c>GetHistoryForDispatch</c> is
+    /// explicit that a non-positive window returns nothing rather than everything.
+    /// </para>
+    /// </remarks>
+    public int MaxHistoryMessages { get; set; } = 50;
+
+    /// <summary>
     /// File system path where conversation records are persisted by the
     /// <see cref="ConversationStoreProvider.FileSystem"/> provider. Ignored by the SQLite provider.
     /// </summary>

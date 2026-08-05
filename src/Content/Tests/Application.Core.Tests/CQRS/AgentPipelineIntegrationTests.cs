@@ -91,6 +91,18 @@ public class AgentPipelineIntegrationTests
         // Observability store — no-op mock for integration tests
         services.AddSingleton(new Mock<IObservabilityStore>().Object);
 
+        // Durable-conversation collaborators. Strict and unstubbed on purpose: every conversation this
+        // pipeline runs is self-contained (no ConversationOwnerId), so a call to either would mean the
+        // handler had taken the durable path. They are registered rather than omitted because the
+        // handler demands them as ordinary constructor dependencies — which is what makes a host that
+        // forgets to compose conversation storage fail at startup instead of on its first durable run.
+        services.AddSingleton(
+            new Mock<Application.AI.Common.Interfaces.AI.IConversationStore>(MockBehavior.Strict).Object);
+        services.AddSingleton(
+            new Mock<Application.AI.Common.Interfaces.AI.IConversationTurnLease>(MockBehavior.Strict).Object);
+        services.AddSingleton(Microsoft.Extensions.Options.Options.Create(
+            new Domain.Common.Config.AI.Conversations.ConversationsConfig()));
+
         // LLM usage capture — scoped mock matching production DI lifetime
         var usageCaptureMock = new Mock<ILlmUsageCapture>();
         usageCaptureMock.Setup(c => c.TakeSnapshot())

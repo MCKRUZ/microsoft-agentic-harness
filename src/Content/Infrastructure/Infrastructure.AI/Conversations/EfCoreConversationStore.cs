@@ -192,6 +192,91 @@ public sealed class EfCoreConversationStore : IConversationStore
     }
 
     /// <inheritdoc/>
+    /// <remarks>
+    /// Atomic where <see cref="CreateAsync"/> is not, and by a different mechanism: nothing is deleted
+    /// and nothing depends on the read deciding the write. The insert either lands or violates the
+    /// primary key, and the primary key is enforced by the database rather than by the gap between two
+    /// of our statements. Losing that race is not an error here — the winner created the same empty
+    /// conversation this call wanted — so the loser re-reads and returns it, which also re-applies the
+    /// ownership check against whoever actually won.
+    /// </remarks>
+    public async Task<ConversationRecord> GetOrCreateAsync(
+        string agentName,
+        string userId,
+        string conversationId,
+        CancellationToken ct = default)
+    {
+        ConversationOwnership.RequireCallerId(userId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(conversationId);
+
+        // GetAsync applies the ownership check, so a conversation belonging to someone else is refused
+        // here rather than falling through to an insert that would collide with their row.
+        var existing = await GetAsync(conversationId, userId, ct);
+        if (existing is not null)
+            return existing;
+
+        var now = _timeProvider.GetUtcNow();
+
+        await using var context = await _contextFactory.CreateDbContextAsync(ct);
+        context.Conversations.Add(new ConversationEntity
+        {
+            Id = conversationId,
+            AgentName = agentName,
+            UserId = userId,
+            CreatedAt = now,
+            UpdatedAt = now,
+        });
+
+        try
+        {
+            await context.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateException ex) when (IsDuplicateConversationId(ex))
+        {
+            // Someone created this conversation between the read above and this insert. Re-read rather
+            // than overwrite: the winner may already have appended a turn, and this call promised never
+            // to destroy a transcript. The re-read refuses it if the winner was another user.
+            var raced = await GetAsync(conversationId, userId, ct);
+            if (raced is not null)
+                return raced;
+
+            // The row collided but is now unreadable — it was deleted between the two. Nothing sensible
+            // is left to return, and retrying could loop, so surface the original failure.
+            throw;
+        }
+
+        _logger.LogDebug(
+            "Opened conversation {ConversationId} for user {UserId} (created).", conversationId, userId);
+
+        return new ConversationRecord(
+            Id: conversationId,
+            AgentName: agentName,
+            UserId: userId,
+            CreatedAt: now,
+            UpdatedAt: now,
+            Messages: []);
+    }
+
+    /// <summary>
+    /// True when <paramref name="ex"/> is the conversation table's primary-key collision rather than
+    /// any other write failure.
+    /// </summary>
+    /// <remarks>
+    /// SQLite reports a clashing <em>primary</em> key as <c>SQLITE_CONSTRAINT_PRIMARYKEY</c>, not as
+    /// <c>SQLITE_CONSTRAINT_UNIQUE</c> — the code the message-id check matches. Both are accepted
+    /// because which one arrives depends on how the key is declared, and a store that recognised only
+    /// the unique variant would turn the ordinary lost-create race into an unhandled write failure.
+    /// </remarks>
+    private static bool IsDuplicateConversationId(DbUpdateException ex) =>
+        ex.InnerException is SqliteException
+        {
+            SqliteExtendedErrorCode: SqliteConstraintPrimaryKey or SqliteConstraintUnique
+        };
+
+    /// <summary>SQLite's <c>SQLITE_CONSTRAINT_PRIMARYKEY</c> extended result code.</summary>
+    private const int SqliteConstraintPrimaryKey = 1555;
+
+    /// <inheritdoc/>
     public async Task AppendMessageAsync(
         string conversationId,
         string callerId,

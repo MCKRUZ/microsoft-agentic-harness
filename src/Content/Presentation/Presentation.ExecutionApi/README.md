@@ -25,6 +25,7 @@ It is a composition root, exactly like `Presentation.AgentHub`: `builder.Service
 │  │                                                                        │ │
 │  │  POST   /                        → RegisterBundleCommand               │ │
 │  │  POST   /{handle}/runs           → RunBundleCommand   ← envelope bound  │ │
+│  │           optional conversationId → run continues a durable transcript  │ │
 │  │  GET    /{handle}/runs/{jobId}   → GetBundleRunQuery                   │ │
 │  │  GET    /{handle}/runs/{jobId}/stream → BundleRunStreamer (SSE)        │ │
 │  │  DELETE /{handle}                → DeleteBundleCommand                 │ │
@@ -178,6 +179,28 @@ Everything lives under `AppConfig:AI:BundleExecution` (`Domain.Common/Config/AI/
 | `Auth:AllowAnonymous` | `false` | Explicit local-dev opt-in; `Environment=Development` alone does not disable auth |
 
 The shipped `appsettings.json` sets `Enabled: true` with an empty `Auth` block, so it boots only in Development — where the shipped `appsettings.Development.json` opts into anonymous auth. Every other environment fails closed at startup until a real scheme is configured.
+
+### Durable conversations (`AppConfig:AI:Conversations`)
+
+A run may carry a `conversationId`, which makes it *continue* a stored conversation rather than run
+one-shot: prior turns are replayed to the agent and this run's turns are appended (#235). The
+transcript store, its turn lease and its token budget are shared infrastructure registered by
+`Infrastructure.AI`, not by this host -- see `Domain.Common/Config/AI/Conversations/`.
+
+| Key | Default | Notes |
+|-----|---------|-------|
+| `Provider` | `Sqlite` | `Sqlite` or `FileSystem`. Store, turn lease and budget switch together -- they are one choice, never mix them |
+| `DatabasePath` | `data/conversations.db` | **Relative resolves against each host's own output directory.** Sharing conversations between this host and AgentHub therefore takes a deliberate *absolute* path in both |
+| `MaxHistoryMessages` | 50 | How many recent messages are replayed to the model. Bounds prompt growth; the transcript itself is unbounded |
+
+Two caps that now mean something narrower than they read: `userMessages` (100) and `maxTurns` (100)
+bound **one run**. A durable conversation outlives any run, so what bounds its total length is the
+conversation-lifetime token budget, which is durable and spans every run against that conversation.
+
+A conversation is created on first use and owned by the caller that first used it. A run naming
+someone else's conversation is refused **synchronously** as `404` -- identically to an unknown handle,
+so the endpoint cannot be used to enumerate other callers' conversation ids. Ownership itself is
+enforced inside `IConversationStore`, never re-derived here.
 
 ### Direct tool invocation (`AppConfig:AI:DirectToolInvocation`)
 

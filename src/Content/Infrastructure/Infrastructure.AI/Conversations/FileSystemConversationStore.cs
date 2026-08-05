@@ -187,6 +187,68 @@ public sealed class FileSystemConversationStore : IConversationStore
     }
 
     /// <inheritdoc/>
+    /// <remarks>
+    /// The check and the write share one lock acquisition, which is what makes this atomic here — the
+    /// same arrangement <see cref="CreateAsync"/> uses, applied to the opposite decision: that one
+    /// approves an overwrite, this one refuses to perform it. The guarantee reaches exactly as far as
+    /// this store's does, which is one process; the store is already documented as unsafe for two.
+    /// </remarks>
+    public async Task<ConversationRecord> GetOrCreateAsync(
+        string agentName,
+        string userId,
+        string conversationId,
+        CancellationToken ct = default)
+    {
+        ConversationOwnership.RequireCallerId(userId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(conversationId);
+
+        var path = ResolveAndValidatePath(conversationId);
+
+        await _lock.WaitAsync(ct);
+        try
+        {
+            if (File.Exists(path))
+            {
+                var existingJson = await File.ReadAllTextAsync(path, ct);
+                var existing = JsonSerializer.Deserialize<ConversationRecord>(existingJson, ConversationJson.Options);
+                if (existing is not null)
+                {
+                    RequireOwner(conversationId, userId, existing.UserId);
+
+                    // Same backfill GetAsync performs. Returning the record unmigrated would hand the
+                    // caller messages with empty ids, which a later truncation cannot resolve to a
+                    // cut point.
+                    var migrated = MigrateMissingIds(existing);
+                    if (migrated is null)
+                        return existing;
+
+                    await WriteAtomicLockedAsync(path, migrated, ct);
+                    return migrated;
+                }
+            }
+
+            var now = _timeProvider.GetUtcNow();
+            var record = new ConversationRecord(
+                Id: conversationId,
+                AgentName: agentName,
+                UserId: userId,
+                CreatedAt: now,
+                UpdatedAt: now,
+                Messages: []);
+
+            await WriteAtomicLockedAsync(path, record, ct);
+
+            _logger.LogDebug(
+                "Opened conversation {ConversationId} for user {UserId} (created).", conversationId, userId);
+            return record;
+        }
+        finally
+        {
+            _lock.Release();
+        }
+    }
+
+    /// <inheritdoc/>
     public async Task AppendMessageAsync(string conversationId, string callerId, ConversationMessage message, CancellationToken ct = default)
     {
         ConversationOwnership.RequireCallerId(callerId);

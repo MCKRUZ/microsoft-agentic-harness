@@ -6,8 +6,11 @@ using Application.AI.Common.OpenTelemetry.Metrics;
 using Application.Core.CQRS.Agents.ExecuteAgentTurn;
 using Domain.AI.Governance;
 using Domain.AI.Telemetry.Conventions;
+using Domain.Common.Config.AI.Conversations;
 using MediatR;
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace Application.Core.CQRS.Agents.RunConversation;
 
@@ -15,12 +18,29 @@ namespace Application.Core.CQRS.Agents.RunConversation;
 /// Handles <see cref="RunConversationCommand"/> by executing sequential turns
 /// with the specified agent, feeding each response back as context.
 /// </summary>
+/// <remarks>
+/// <para>
+/// <strong>Two modes, one loop.</strong> Without <see cref="RunConversationCommand.ConversationOwnerId"/>
+/// the run is self-contained: it starts from nothing and leaves nothing behind. With it, the run
+/// <em>continues</em> a durable conversation — prior turns seed the first dispatch, every turn is
+/// persisted as it completes, and the run holds the conversation's turn lease throughout.
+/// </para>
+/// <para>
+/// The continuation logic lives here, in the one place turns are actually executed, rather than in the
+/// Execution API caller that first needed it (issue #235). Putting it in the caller would have made
+/// durability visible only as a finished lump — a run that died on its seventh turn would persist
+/// nothing — and would have left the next consumer to build it again.
+/// </para>
+/// </remarks>
 public class RunConversationCommandHandler : IRequestHandler<RunConversationCommand, ConversationResult>
 {
 	private readonly IMediator _mediator;
 	private readonly IAgentConversationCache _agentCache;
 	private readonly IConversationBudgetTracker _conversationBudget;
 	private readonly IObservabilityStore _observabilityStore;
+	private readonly IConversationStore _conversationStore;
+	private readonly IConversationTurnLease _turnLease;
+	private readonly IOptions<ConversationsConfig> _conversationsConfig;
 	private readonly ILogger<RunConversationCommandHandler> _logger;
 
 	public RunConversationCommandHandler(
@@ -28,16 +48,85 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 		IAgentConversationCache agentCache,
 		IConversationBudgetTracker conversationBudget,
 		IObservabilityStore observabilityStore,
+		IConversationStore conversationStore,
+		IConversationTurnLease turnLease,
+		IOptions<ConversationsConfig> conversationsConfig,
 		ILogger<RunConversationCommandHandler> logger)
 	{
 		_mediator = mediator;
 		_agentCache = agentCache;
 		_conversationBudget = conversationBudget;
 		_observabilityStore = observabilityStore;
+		_conversationStore = conversationStore;
+		_turnLease = turnLease;
+		_conversationsConfig = conversationsConfig;
 		_logger = logger;
 	}
 
-	public async Task<ConversationResult> Handle(RunConversationCommand request, CancellationToken cancellationToken)
+	/// <inheritdoc/>
+	public Task<ConversationResult> Handle(RunConversationCommand request, CancellationToken cancellationToken)
+	{
+		ArgumentNullException.ThrowIfNull(request);
+
+		// Only an ABSENT owner opts out. A blank one falls through to the durable path, where the store
+		// rejects it — the same fail-closed reading the store documents, and the reason this is not an
+		// IsNullOrWhiteSpace test: an empty identity has been read as "everyone" in this codebase before,
+		// and treating it as "nobody in particular, carry on" is how that happens again.
+		return request.ConversationOwnerId is null
+			? RunAsync(request, seedHistory: [], transcript: null, cancellationToken)
+			: RunDurableAsync(request, cancellationToken);
+	}
+
+	/// <summary>
+	/// Runs the conversation against its durable transcript: opens it, takes its turn lease, replays the
+	/// bounded history window, and hands the loop a transcript to write each turn back to.
+	/// </summary>
+	/// <remarks>
+	/// <para>
+	/// <strong>Order is load-bearing.</strong> The conversation is opened <em>before</em> the lease is
+	/// taken because a durable lease claims an existing conversation row and throws when there is none —
+	/// so the lease cannot be what protects the opening. That is why opening is a single atomic
+	/// <see cref="IConversationStore.GetOrCreateAsync"/> rather than a read followed by a create: two
+	/// runs opening the same new conversation both see it absent, and the composed version lets the
+	/// loser's create delete the winner's turns.
+	/// </para>
+	/// <para>
+	/// <strong>Losing the lease mid-run cancels the run.</strong> Another host holding the lease means
+	/// any turn written from here on is exactly the concurrent turn the lease exists to prevent, so the
+	/// lost-lease token is linked into the token every turn runs under.
+	/// </para>
+	/// </remarks>
+	private async Task<ConversationResult> RunDurableAsync(
+		RunConversationCommand request, CancellationToken cancellationToken)
+	{
+		var ownerId = request.ConversationOwnerId!;
+
+		await _conversationStore.GetOrCreateAsync(
+			request.AgentName, ownerId, request.ConversationId, cancellationToken);
+
+		await using var lease = await _turnLease.AcquireAsync(request.ConversationId, cancellationToken);
+		using var turnCts = CancellationTokenSource.CreateLinkedTokenSource(
+			cancellationToken, lease.LeaseLost);
+
+		var transcript = new DurableTranscript(_conversationStore, request.ConversationId, ownerId);
+
+		// Read under the lease, not before it: the turn this run queued behind may have appended to the
+		// transcript, and a window read earlier would omit exactly the messages that turn just wrote.
+		var seedHistory = await transcript.LoadHistoryAsync(
+			_conversationsConfig.Value.MaxHistoryMessages, turnCts.Token);
+
+		_logger.LogInformation(
+			"Continuing durable conversation {ConversationId} with {HistoryCount} prior message(s) replayed.",
+			request.ConversationId, seedHistory.Count);
+
+		return await RunAsync(request, seedHistory, transcript, turnCts.Token);
+	}
+
+	private async Task<ConversationResult> RunAsync(
+		RunConversationCommand request,
+		IReadOnlyList<ChatMessage> seedHistory,
+		DurableTranscript? transcript,
+		CancellationToken cancellationToken)
 	{
 		_logger.LogInformation("Starting conversation with {AgentName}, {MessageCount} messages, max {MaxTurns} turns",
 			request.AgentName, request.UserMessages.Count, request.MaxTurns);
@@ -79,7 +168,14 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 
 				// Conversation-lifetime budget gate: checked before starting a turn so a conversation
 				// that exhausted its cumulative token ceiling on a prior turn stops gracefully here
-				// rather than running another. The first turn always proceeds (nothing recorded yet).
+				// rather than running another.
+				//
+				// This turn is NOT exempt just because it is the run's first. That used to be true, and
+				// stopped being true when a conversation started outliving the run carrying it: the
+				// budget is keyed by conversation and is durable, so a run continuing a conversation that
+				// was already exhausted declines before its first dispatch — which is the whole point of
+				// a lifetime ceiling. A self-contained run still proceeds, because nothing has been
+				// recorded under an id nobody has used before.
 				var budgetStatus = await _conversationBudget.GetStatusAsync(
 					request.ConversationId, cancellationToken);
 
@@ -103,11 +199,22 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 					});
 				}
 
+				// Persist the question before asking it, so a turn that fails still leaves a transcript
+				// showing what was asked. The interactive transports append in this order for the same
+				// reason. Deliberately after the budget gate: a turn declined for budget never ran, and
+				// recording its question would leave the next run replaying a question nobody answered.
+				if (transcript is not null)
+					await transcript.AppendUserAsync(userMessage, cancellationToken);
+
 				var turnCommand = new ExecuteAgentTurnCommand
 				{
 					AgentName = request.AgentName,
 					UserMessage = userMessage,
-					ConversationHistory = lastResult?.UpdatedHistory ?? [],
+
+					// The seed is used only by the first turn; from then on each turn carries the one
+					// before it, and UpdatedHistory already includes whatever was passed in — so the
+					// replayed transcript flows through the rest of the run without being re-read.
+					ConversationHistory = lastResult?.UpdatedHistory ?? seedHistory,
 					ConversationId = request.ConversationId,
 					TurnNumber = index + 1,
 					ObservabilitySessionId = dbSessionId
@@ -140,6 +247,13 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 						Error = $"Turn {index + 1} failed: {lastResult.Error}"
 					};
 				}
+
+				// Close the turn in the transcript as soon as it succeeds, rather than writing the whole
+				// run back at the end. A run that dies on its seventh turn then keeps the six that
+				// completed, which is the difference between a durable conversation and a durable
+				// summary of one.
+				if (transcript is not null)
+					await transcript.AppendAssistantAsync(lastResult.Response, cancellationToken);
 
 				turns.Add(new TurnSummary
 				{

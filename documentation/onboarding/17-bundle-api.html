@@ -214,8 +214,60 @@
                         Only <code>userMessages</code> is required (1–100 entries, none of them empty).
                         <code>maxTurns</code> defaults to <code>10</code> and must be between 1 and 100;
                         <code>stream</code> defaults to <code>false</code> and is explained under
-                        <a href="#two-ways">Two ways to get the output</a>.
+                        <a href="#two-ways">Two ways to get the output</a>. A fourth field,
+                        <code>conversationId</code>, turns the run into a continuing session — see
+                        <a href="#durable-conversations">Continuing a conversation</a>.
                     </p>
+
+                    <h3 id="durable-conversations">Continuing a conversation across runs</h3>
+                    <p>
+                        By default a run is self-contained: it answers the messages you send and forgets them.
+                        For a one-off question that is exactly what you want. For anything that runs as a
+                        <em>session</em> — a voice channel, a chat widget, a long-lived assistant — it means the
+                        agent starts every turn with no memory, so the only way to be understood is to resend the
+                        entire transcript each time. That gets more expensive and slower with every turn, and it
+                        stops working altogether once the conversation exceeds the 100-message cap.
+                    </p>
+                    <p>
+                        Send a <code>conversationId</code> instead and the harness keeps the transcript for you.
+                        The agent is given the conversation's recent history before the first turn, and this run's
+                        turns are saved for the next one — so each request carries only what is new.
+                    </p>
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-block-lang">http · POST /api/bundles/{handle}/runs — continuing a session</span></div>
+                        <pre><code>{
+  "userMessages": [ "And what about the second clause?" ],
+  "conversationId": "voice-session-8f14e45f"
+}</code></pre>
+                    </div>
+                    <p>
+                        The id is yours to choose — a GUID is the obvious pick — and it is created the first time
+                        you use it. A few things worth knowing:
+                    </p>
+                    <ul>
+                        <li>
+                            <strong>The conversation belongs to whoever created it.</strong> Naming a conversation
+                            that belongs to another caller returns <code>404</code>, exactly as an unknown handle
+                            does, so nobody can probe for other people's session ids.
+                        </li>
+                        <li>
+                            <strong>Turns never interleave.</strong> If a second run names a conversation that is
+                            mid-turn, it waits its turn rather than talking over it — including when the two runs
+                            land on different servers.
+                        </li>
+                        <li>
+                            <strong><code>maxTurns</code> and the 100-message cap bound one run, not the
+                            conversation.</strong> A session can run far longer than either. What bounds its total
+                            length is the conversation's lifetime token budget, which is cumulative across every
+                            run; when it is exhausted the run stops gracefully with
+                            <code>budgetExhausted: true</code> rather than failing.
+                        </li>
+                        <li>
+                            <strong>Only recent history is replayed</strong> — the last
+                            <code>AppConfig:AI:Conversations:MaxHistoryMessages</code> messages (50 by default), so
+                            the prompt cannot grow without limit even though the stored transcript does.
+                        </li>
+                    </ul>
                     <div class="code-block">
                         <div class="code-block-header"><span class="code-block-lang">http · → 202 Accepted</span></div>
                         <pre><code>{
@@ -652,7 +704,7 @@ The agent runs with exactly one tool: file_system.</code></pre>
                             <tr>
                                 <td><code>POST /api/bundles/{handle}/runs</code></td>
                                 <td><code>202</code></td>
-                                <td>Body: <code>userMessages</code> (1–100, none empty), <code>maxTurns</code> (1–100, default 10), <code>stream</code> (default false).</td>
+                                <td>Body: <code>userMessages</code> (1–100, none empty), <code>maxTurns</code> (1–100, default 10), <code>stream</code> (default false), <code>conversationId</code> (optional; continues a stored conversation).</td>
                             </tr>
                             <tr>
                                 <td><code>GET /api/bundles/{handle}/runs/{jobId}</code></td>
@@ -1214,10 +1266,10 @@ curl -sS -H "Authorization: Bearer $TOKEN" \
                     <table>
                         <thead><tr><th>Status</th><th>Means</th><th>Do</th></tr></thead>
                         <tbody>
-                            <tr><td><code>400</code></td><td>Archive guard rejection, or an invalid run request (no messages, empty message, <code>maxTurns</code> out of range).</td><td>Read <code>detail</code>; fix the payload. Not retryable as-is.</td></tr>
+                            <tr><td><code>400</code></td><td>Archive guard rejection, or an invalid run request (no messages, empty message, <code>maxTurns</code> out of range, malformed <code>conversationId</code> — letters, digits, hyphens and underscores only, up to 200 characters).</td><td>Read <code>detail</code>; fix the payload. Not retryable as-is.</td></tr>
                             <tr><td><code>401</code></td><td>No/invalid token, or a principal with no usable identity to own resources under.</td><td>Re-authenticate against <code>api://{ClientId}</code>.</td></tr>
                             <tr><td><code>403</code></td><td>Bundle execution is disabled on this host.</td><td>Operator action — <code>Enabled: true</code>. Do not retry.</td></tr>
-                            <tr><td><code>404</code></td><td>Handle or run is unknown, expired, or not yours. The three are deliberately indistinguishable.</td><td>Re-register the bundle to get a fresh handle.</td></tr>
+                            <tr><td><code>404</code></td><td>Handle, run, or named conversation is unknown, expired, or not yours. These are deliberately indistinguishable, so the API never confirms that someone else's resource exists.</td><td>Re-register the bundle to get a fresh handle; check the <code>conversationId</code> is one you created.</td></tr>
                             <tr><td><code>409</code></td><td>The run is not awaiting a stream — it is a background run, already being streamed, or already finished.</td><td>Poll the status endpoint instead.</td></tr>
                             <tr><td><code>429</code></td><td>10/min register; 60/min run, poll, and delete; the stream endpoint is capped by open connections instead.</td><td>Back off; for streams, close one first.</td></tr>
                             <tr><td><code>500</code></td><td>Unexpected server error. The body is deliberately generic.</td><td>The detail is in the host's logs. Retry idempotently.</td></tr>

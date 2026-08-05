@@ -1,3 +1,4 @@
+using Application.AI.Common.Interfaces.AI;
 using Application.AI.Common.Interfaces.Bundles;
 using Domain.AI.Bundles;
 using Domain.Common;
@@ -26,6 +27,7 @@ public sealed class RunBundleCommandHandler
     private readonly IBundleHandleStore _handleStore;
     private readonly IBundleRunJobStore _jobStore;
     private readonly IBundleRunDispatchQueue _dispatchQueue;
+    private readonly IConversationStore _conversationStore;
     private readonly IOptionsMonitor<AppConfig> _config;
     private readonly TimeProvider _time;
     private readonly ILogger<RunBundleCommandHandler> _logger;
@@ -35,6 +37,7 @@ public sealed class RunBundleCommandHandler
         IBundleHandleStore handleStore,
         IBundleRunJobStore jobStore,
         IBundleRunDispatchQueue dispatchQueue,
+        IConversationStore conversationStore,
         IOptionsMonitor<AppConfig> config,
         TimeProvider time,
         ILogger<RunBundleCommandHandler> logger)
@@ -42,6 +45,7 @@ public sealed class RunBundleCommandHandler
         ArgumentNullException.ThrowIfNull(handleStore);
         ArgumentNullException.ThrowIfNull(jobStore);
         ArgumentNullException.ThrowIfNull(dispatchQueue);
+        ArgumentNullException.ThrowIfNull(conversationStore);
         ArgumentNullException.ThrowIfNull(config);
         ArgumentNullException.ThrowIfNull(time);
         ArgumentNullException.ThrowIfNull(logger);
@@ -49,6 +53,7 @@ public sealed class RunBundleCommandHandler
         _handleStore = handleStore;
         _jobStore = jobStore;
         _dispatchQueue = dispatchQueue;
+        _conversationStore = conversationStore;
         _config = config;
         _time = time;
         _logger = logger;
@@ -79,6 +84,17 @@ public sealed class RunBundleCommandHandler
                 "Bundle handle not found or expired. Register the bundle again to obtain a fresh handle.");
         }
 
+        // Refuse a conversation belonging to someone else here, while the caller is still on the line.
+        // The run itself would refuse it too — the store enforces ownership on every call the executor
+        // makes — but only as an asynchronous failure the caller has to poll for, which reports a
+        // permission decision as though the run had gone wrong.
+        if (request.ConversationId is not null
+            && !await CanUseConversationAsync(request, cancellationToken).ConfigureAwait(false))
+        {
+            return Result<RunBundleResult>.NotFound(
+                "Bundle handle not found or expired. Register the bundle again to obtain a fresh handle.");
+        }
+
         var record = new BundleRunRecord
         {
             JobId = Guid.NewGuid().ToString("N"),
@@ -87,6 +103,7 @@ public sealed class RunBundleCommandHandler
             AgentName = staged.Agent.Id,
             UserMessages = request.UserMessages,
             MaxTurns = request.MaxTurns,
+            ConversationId = request.ConversationId,
             Envelope = request.Envelope,
             Status = BundleRunStatus.Queued,
             Streaming = request.Stream,
@@ -107,5 +124,42 @@ public sealed class RunBundleCommandHandler
             request.Stream ? "awaiting stream" : "queued for background dispatch");
 
         return Result<RunBundleResult>.Success(new RunBundleResult { JobId = record.JobId });
+    }
+
+    /// <summary>
+    /// True when this caller may run against the requested conversation — either because it is theirs,
+    /// or because it does not exist yet and the run will create it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The ownership decision is the store's, not this handler's: it is made by passing the caller to
+    /// <see cref="IConversationStore.GetAsync"/> and letting it refuse. Nothing here compares owners —
+    /// that comparison was hand-written in six places before it moved into the store, and this would
+    /// have been the seventh.
+    /// </para>
+    /// <para>
+    /// A refusal is reported as "not found", identically to an unknown handle, so a caller cannot use
+    /// this endpoint to discover which conversation ids exist for other people.
+    /// </para>
+    /// </remarks>
+    private async Task<bool> CanUseConversationAsync(
+        RunBundleCommand request, CancellationToken cancellationToken)
+    {
+        try
+        {
+            // The result is discarded deliberately: absent is fine (the run creates it) and present is
+            // fine (it is the caller's, or this would have thrown). Only the refusal carries meaning.
+            await _conversationStore
+                .GetAsync(request.ConversationId!, request.OwnerId, cancellationToken)
+                .ConfigureAwait(false);
+
+            return true;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // Not logged again: the store already recorded the caller, the conversation and its real
+            // owner. A second line adds no fact and doubles every refusal in the audit trail.
+            return false;
+        }
     }
 }

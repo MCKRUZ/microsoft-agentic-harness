@@ -99,6 +99,7 @@ public sealed class BundlesController : ControllerBase
             Handle = handle,
             UserMessages = request.UserMessages,
             MaxTurns = request.MaxTurns,
+            ConversationId = request.ConversationId,
             Envelope = envelope,
             OwnerId = callerId,
             Stream = request.Stream

@@ -102,6 +102,53 @@ public sealed class BundleRunExecutorTests : IDisposable
         TotalToolInvocations = 1
     };
 
+    // -- Conversation continuity (#235) --
+
+    [Fact]
+    public async Task ExecuteAsync_RunWithConversationId_ContinuesThatConversationAsItsOwner()
+    {
+        // Two things have to be right together. The conversation id must become the run's conversation
+        // — not the job id — so the transcript, the lifetime token budget and the turn lease all key off
+        // the same thing across runs. And the owner must ride along, because that is what switches the
+        // shared loop into durable mode at all.
+        RunConversationCommand? dispatched = null;
+        var mediator = new Mock<IMediator>();
+        mediator.Setup(m => m.Send(It.IsAny<RunConversationCommand>(), It.IsAny<CancellationToken>()))
+            .Callback<object, CancellationToken>((c, _) => dispatched = (RunConversationCommand)c)
+            .ReturnsAsync(Ok());
+
+        var (executor, jobStore, handleStore) = BuildSut(mediator.Object);
+        var handle = handleStore.Register(StageOnDisk("b1"), "owner-1");
+        jobStore.Create(QueuedRecord("j1", handle, "agent-b1") with { ConversationId = "conv-1" });
+
+        await executor.ExecuteAsync("j1", CancellationToken.None);
+
+        dispatched.Should().NotBeNull();
+        dispatched!.ConversationId.Should().Be("conv-1");
+        dispatched.ConversationOwnerId.Should().Be("owner-1");
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_RunWithoutConversationId_StaysSelfContainedUnderItsJobId()
+    {
+        // Passing an owner here would make every one-shot run write a transcript nobody asked for, and
+        // keying the run by anything but its own job id would let two unrelated runs share a budget.
+        RunConversationCommand? dispatched = null;
+        var mediator = new Mock<IMediator>();
+        mediator.Setup(m => m.Send(It.IsAny<RunConversationCommand>(), It.IsAny<CancellationToken>()))
+            .Callback<object, CancellationToken>((c, _) => dispatched = (RunConversationCommand)c)
+            .ReturnsAsync(Ok());
+
+        var (executor, jobStore, handleStore) = BuildSut(mediator.Object);
+        var handle = handleStore.Register(StageOnDisk("b2"), "owner-1");
+        jobStore.Create(QueuedRecord("j1", handle, "agent-b2"));
+
+        await executor.ExecuteAsync("j1", CancellationToken.None);
+
+        dispatched!.ConversationId.Should().Be("j1");
+        dispatched.ConversationOwnerId.Should().BeNull();
+    }
+
     [Fact]
     public async Task ExecuteAsync_UnknownJobId_ReturnsNotFound()
     {

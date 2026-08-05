@@ -56,6 +56,25 @@ public sealed record BundleRunRecord
     public required int MaxTurns { get; init; }
 
     /// <summary>
+    /// The durable conversation this run continues, or null for a self-contained run. When set, the run
+    /// replays that conversation's recent history before its first turn and appends every turn it takes,
+    /// so a caller driving a long session sends only the new messages instead of the whole transcript.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Caller-supplied and opaque. A run naming a conversation that does not exist creates it, owned by
+    /// <see cref="OwnerId"/>; a run naming one owned by somebody else is refused exactly as an unknown
+    /// handle is, so the API never confirms that another caller's conversation exists.
+    /// </para>
+    /// <para>
+    /// <see cref="MaxTurns"/> and the seed-message cap still bound <em>this run</em> and say nothing
+    /// about the conversation's total length — what bounds that is the conversation-lifetime token
+    /// budget, which is durable and spans every run.
+    /// </para>
+    /// </remarks>
+    public string? ConversationId { get; init; }
+
+    /// <summary>
     /// The per-caller capability grant resolved for this run. The dispatcher re-publishes it ambiently for
     /// the whole run so the permission gate chain and tool-chain builder confine the ephemeral agent.
     /// </summary>

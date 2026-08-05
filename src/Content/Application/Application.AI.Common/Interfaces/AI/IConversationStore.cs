@@ -91,6 +91,43 @@ public interface IConversationStore
     /// </exception>
     Task<ConversationRecord> CreateAsync(string agentName, string userId, string? conversationId = null, CancellationToken ct = default);
 
+    /// <summary>
+    /// Returns the conversation with <paramref name="conversationId"/>, creating an empty one owned by
+    /// <paramref name="userId"/> if it does not exist. Never replaces an existing transcript.
+    /// </summary>
+    /// <param name="agentName">The agent to bind a newly created conversation to. Ignored if one exists.</param>
+    /// <param name="userId">The caller, and the owner of a conversation created here. Must be non-blank.</param>
+    /// <param name="conversationId">The conversation to open. Must be non-blank.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <remarks>
+    /// <para>
+    /// This exists because <see cref="CreateAsync"/> <em>replaces</em>, which makes the obvious
+    /// composition — read, and create when the read came back empty — a transcript-destroying race
+    /// rather than merely a redundant one. Two runs opening the same new conversation can both see it
+    /// absent; if the loser's create lands after the winner has already appended a turn, the winner's
+    /// messages are deleted by the cascade and nothing reports an error. The window is one store
+    /// round-trip wide, which is small enough to survive review and far too large to run a transcript
+    /// through.
+    /// </para>
+    /// <para>
+    /// Implementations must make the create atomic against a concurrent create of the same id, and must
+    /// resolve a lost race by returning the winner's record — not by overwriting it. The turn lease
+    /// cannot stand in for this: a lease claims a conversation that already exists, so there is nothing
+    /// for it to hold while one is being created.
+    /// </para>
+    /// <para>
+    /// Ownership is enforced on both outcomes, so losing the create race to another user is refused
+    /// exactly as reading their conversation would be.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="ArgumentException"><paramref name="userId"/> or <paramref name="conversationId"/> is blank.</exception>
+    /// <exception cref="UnauthorizedAccessException">The conversation exists and belongs to another user.</exception>
+    Task<ConversationRecord> GetOrCreateAsync(
+        string agentName,
+        string userId,
+        string conversationId,
+        CancellationToken ct = default);
+
     /// <summary>Appends <paramref name="message"/> to an existing conversation record.</summary>
     /// <param name="conversationId">The conversation to append to.</param>
     /// <param name="callerId">The authenticated caller. Must be non-blank.</param>

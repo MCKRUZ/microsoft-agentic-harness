@@ -173,12 +173,17 @@ public sealed class BundleRunExecutor : IBundleRunExecutor
         using (EphemeralAgentOverlayAccessor.Begin(overlay))
         using (CapabilityEnvelopeAccessor.Begin(record.Envelope))
         {
+            // A run that names a conversation continues it; one that does not gets an id of its own so
+            // its budget and telemetry still have somewhere to accumulate. The owner rides along only in
+            // the first case — it is what switches the shared loop into durable mode, so passing it for
+            // a self-contained run would make every one-shot run write a transcript nobody asked for.
             var command = new RunConversationCommand
             {
                 AgentName = record.AgentName,
                 UserMessages = record.UserMessages,
                 MaxTurns = record.MaxTurns,
-                ConversationId = record.JobId
+                ConversationId = record.ConversationId ?? record.JobId,
+                ConversationOwnerId = record.ConversationId is null ? null : record.OwnerId
             };
 
             return await mediator.Send(command, cancellationToken).ConfigureAwait(false);

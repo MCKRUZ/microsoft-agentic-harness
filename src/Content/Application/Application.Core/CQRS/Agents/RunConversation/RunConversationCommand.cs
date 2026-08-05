@@ -49,6 +49,31 @@ public record RunConversationCommand : IRequest<ConversationResult>, IHasTimeout
 	/// Conversation identifier shared across all turns.
 	/// </summary>
 	public string ConversationId { get; init; } = Guid.NewGuid().ToString();
+
+	/// <summary>
+	/// The owner of the durable transcript this conversation belongs to. Setting it makes the run
+	/// <em>continue</em> a conversation rather than start a throwaway one: prior turns are loaded and
+	/// replayed to the model, each turn is persisted as it completes, and the whole run holds the
+	/// conversation's turn lease. Leaving it null keeps the original behaviour — nothing is read and
+	/// nothing is written.
+	/// </summary>
+	/// <remarks>
+	/// <para>
+	/// This is the caller's authenticated identity, not a value the caller chooses. It is passed
+	/// straight to <c>IConversationStore</c>, which refuses a conversation owned by anyone else; the
+	/// handler never compares owners itself. A blank string is rejected rather than treated as "no
+	/// owner", because an absent identity has repeatedly been read as global access in this codebase —
+	/// omit the property to opt out, do not blank it.
+	/// </para>
+	/// <para>
+	/// <strong><see cref="MaxTurns"/> and the seed-message cap bound this run, not the conversation.</strong>
+	/// A durable conversation outlives any one run, so a per-run ceiling cannot also be its lifetime
+	/// ceiling — what bounds total length is the conversation-lifetime token budget, which is durable and
+	/// spans every run. Reading <see cref="MaxTurns"/> as a conversation limit would cap a long-lived
+	/// session at a number chosen for a single request.
+	/// </para>
+	/// </remarks>
+	public string? ConversationOwnerId { get; init; }
 }
 
 /// <summary>
@@ -68,10 +93,11 @@ public record ConversationResult
 	/// <remarks>
 	/// <para>
 	/// The handler folds the same figure into the conversation-lifetime budget under this
-	/// conversation's own id, then releases that entry when it returns. Surfacing the total lets a
-	/// caller that owns a <em>larger</em> unit of work than one conversation — a plan run spanning
-	/// many single-conversation steps — accumulate spend against its own budget key without trying
-	/// to reach into the entry this handler owns and disposes.
+	/// conversation's own id, and — since issue #245 — deliberately does <em>not</em> release that
+	/// entry when it returns, because a conversation now outlives the run that happened to carry it.
+	/// Surfacing the total lets a caller that owns a <em>larger</em> unit of work than one conversation
+	/// — a plan run spanning many single-conversation steps — accumulate spend against its own budget
+	/// key without reading the entry this handler writes.
 	/// </para>
 	/// <para>
 	/// <strong>Not an exact meter on the failure path.</strong> A turn that fails returns before its

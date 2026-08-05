@@ -3,9 +3,11 @@ using Application.AI.Common.Interfaces.AI;
 using Application.Core.CQRS.Agents.ExecuteAgentTurn;
 using Application.Core.CQRS.Agents.RunConversation;
 using Domain.AI.Budget;
+using Domain.Common.Config.AI.Conversations;
 using FluentAssertions;
 using MediatR;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Moq;
 using Xunit;
 
@@ -40,11 +42,16 @@ public class RunConversationCommandHandlerSolutionReviewFixTests
             .Setup(b => b.GetStatusAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(ConversationBudgetStatus.Disabled);
 
+        // Strict and unstubbed: these tests run self-contained conversations, so any call to the
+        // transcript store or the turn lease means the handler took the durable path by mistake.
         _handler = new RunConversationCommandHandler(
             _mediator.Object,
             _agentCache.Object,
             budget.Object,
             _observabilityStore.Object,
+            new Mock<IConversationStore>(MockBehavior.Strict).Object,
+            new Mock<IConversationTurnLease>(MockBehavior.Strict).Object,
+            Options.Create(new ConversationsConfig()),
             NullLogger<RunConversationCommandHandler>.Instance);
     }
 

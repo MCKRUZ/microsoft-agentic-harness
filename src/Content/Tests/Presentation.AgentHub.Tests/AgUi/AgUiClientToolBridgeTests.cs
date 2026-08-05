@@ -198,6 +198,8 @@ public sealed class AgUiClientToolBridgeTests
             throw new NotSupportedException();
         public Task<ConversationRecord> CreateAsync(string agentName, string userId, string? conversationId = null, CancellationToken ct = default) =>
             throw new NotSupportedException();
+        public Task<ConversationRecord> GetOrCreateAsync(string agentName, string userId, string conversationId, CancellationToken ct = default) =>
+            throw new NotSupportedException();
         public Task<bool> DeleteAsync(string conversationId, string callerId, CancellationToken ct = default) =>
             throw new NotSupportedException();
         public Task<IReadOnlyList<ConversationMessage>?> GetHistoryForDispatch(string conversationId, string callerId, int maxMessages, CancellationToken ct = default) =>
