@@ -1,4 +1,4 @@
-using System.Text;
+using Application.AI.Common.Interfaces.Skills;
 using Domain.AI.Skills;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.Logging;
@@ -41,6 +41,11 @@ public static class DisclosableSkillFactory
     /// Creates a framework skill for each of <paramref name="skills"/> that can back on-demand disclosure.
     /// </summary>
     /// <param name="skills">The skills composing this agent.</param>
+    /// <param name="fileReader">
+    /// Sandboxed, read-only access to skill content. Every resource the model opens through
+    /// <c>read_skill_resource</c> is read through it, so a skill cannot serve a file from outside
+    /// the configured skill roots (issue #247).
+    /// </param>
     /// <param name="logger">Receives a Debug record of each skill that could not be registered, and why.</param>
     /// <returns>
     /// The registrable skills, in input order. A skill is omitted — and so keeps its body in the static
@@ -49,9 +54,11 @@ public static class DisclosableSkillFactory
     /// </returns>
     public static IReadOnlyList<DisclosableSkill> Create(
         IReadOnlyList<SkillDefinition> skills,
+        ISkillFileReader fileReader,
         ILogger logger)
     {
         ArgumentNullException.ThrowIfNull(skills);
+        ArgumentNullException.ThrowIfNull(fileReader);
         ArgumentNullException.ThrowIfNull(logger);
 
         var created = new List<DisclosableSkill>(skills.Count);
@@ -96,7 +103,7 @@ public static class DisclosableSkillFactory
                 continue;
             }
 
-            AddResources(inline, skill);
+            AddResources(inline, skill, fileReader);
             created.Add(new DisclosableSkill(skill.Id, inline));
         }
 
@@ -114,7 +121,7 @@ public static class DisclosableSkillFactory
     /// registered — the harness runs skill scripts through its own sandboxed tool chain, not through the
     /// framework's runner.
     /// </remarks>
-    private static void AddResources(AgentInlineSkill inline, SkillDefinition skill)
+    private static void AddResources(AgentInlineSkill inline, SkillDefinition skill, ISkillFileReader fileReader)
     {
         var claimed = new HashSet<string>(StringComparer.Ordinal);
 
@@ -133,18 +140,12 @@ public static class DisclosableSkillFactory
             // by the skill, which is held by the provider, which is attached to an agent cached on a
             // sliding expiry. Closing over `resource` instead would pin every SkillResource (and the
             // Content each caches once read) for that whole lifetime; closing over one string does not.
+            // The read goes through the sandboxed reader rather than System.IO: this callback is
+            // invoked when the MODEL asks for a resource, so an unguarded read here would serve the
+            // model any file a skill's manifest happened to name. Closing over the reader is free —
+            // it is a singleton, unlike the resource whose pinning the hoisted path avoids.
             var path = resource.FilePath;
-            inline.AddResource(name, () => ReadResourceAsync(path));
+            inline.AddResource(name, () => fileReader.ReadTextAsync(path));
         }
     }
-
-    /// <summary>
-    /// Reads a resource file as UTF-8, matching how the framework's own file-backed resources are read.
-    /// </summary>
-    /// <remarks>
-    /// Returns the task directly rather than awaiting it — nothing follows the read, so an async state
-    /// machine would be pure overhead on every resource the model opens.
-    /// </remarks>
-    private static Task<string> ReadResourceAsync(string path) =>
-        File.ReadAllTextAsync(path, Encoding.UTF8);
 }

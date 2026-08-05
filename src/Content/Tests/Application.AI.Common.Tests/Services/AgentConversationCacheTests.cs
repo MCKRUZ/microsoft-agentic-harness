@@ -65,7 +65,8 @@ public sealed class AgentConversationCacheTests
             services,
             NullLoggerFactory.Instance,
             new ToolChainBuilder(NullLogger<ToolChainBuilder>.Instance, services, null, null),
-            new SkillPrerequisiteResolver());
+            new SkillPrerequisiteResolver(),
+            new UnsandboxedSkillFileReader());
 
         // Registry returns a two-skill graph where "deploy" depends on "validate".
         var registry = new Mock<ISkillMetadataRegistry>();

@@ -168,6 +168,15 @@ public static partial class DependencyInjection
 
         // --- Skills and agents ---
 
+        // Read-only sandbox over skill content, DELIBERATELY SEPARATE from IFileSystemService.
+        // That service is what the model reaches through the file_system tool and it can write, so
+        // adding the skill roots to its allowlist — the obvious way to route skill loading through
+        // a sandbox — would have let the model rewrite its own SKILL.md files, allowed-tools list
+        // included. Two narrow sandboxes over one shared rulebook (SandboxedPathGuard) instead.
+        // Resolves its roots from live config on each call so plugin skill directories, appended by
+        // PluginStartupLoader after the container is built, are covered. See issue #247.
+        services.AddSingleton<ISkillFileReader, SkillFileReader>();
+
         services.AddSingleton<SkillMetadataParser>();
         services.AddSingleton<ISkillMetadataRegistry, SkillMetadataRegistry>();
 

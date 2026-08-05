@@ -27,6 +27,7 @@ public sealed class AgentMetadataRegistry : IAgentMetadataRegistry
     private readonly IOptionsMonitor<AppConfig> _appConfig;
     private readonly AgentMetadataParser _parser;
     private readonly SkillMetadataParser _skillParser;
+    private readonly ISkillFileReader _skillFileReader;
     private readonly IAgentOwnedSkillStore _ownedSkills;
 
     private Dictionary<string, AgentDefinition>? _cache;
@@ -38,6 +39,10 @@ public sealed class AgentMetadataRegistry : IAgentMetadataRegistry
     /// <param name="appConfig">Monitor over the live application configuration (agent search paths).</param>
     /// <param name="parser">Parser that reads an <c>AGENT.md</c> file into an <see cref="AgentDefinition"/>.</param>
     /// <param name="skillParser">Parser used to read each agent's own nested <c>SKILL.md</c> files.</param>
+    /// <param name="skillFileReader">
+    /// Sandboxed, read-only access to skill content, confining the nested-skill scan to the
+    /// configured skill and agent roots (issue #247).
+    /// </param>
     /// <param name="ownedSkills">
     /// Store populated during discovery with the skills found under each agent's
     /// <c>&lt;agentDir&gt;/skills/</c> directory, so <c>AgentFactory</c> can resolve them ahead of the
@@ -48,12 +53,16 @@ public sealed class AgentMetadataRegistry : IAgentMetadataRegistry
         IOptionsMonitor<AppConfig> appConfig,
         AgentMetadataParser parser,
         SkillMetadataParser skillParser,
+        ISkillFileReader skillFileReader,
         IAgentOwnedSkillStore ownedSkills)
     {
+        ArgumentNullException.ThrowIfNull(skillFileReader);
+
         _logger = logger;
         _appConfig = appConfig;
         _parser = parser;
         _skillParser = skillParser;
+        _skillFileReader = skillFileReader;
         _ownedSkills = ownedSkills;
     }
 
@@ -219,7 +228,7 @@ public sealed class AgentMetadataRegistry : IAgentMetadataRegistry
     private void DiscoverAgentOwnedSkills(string agentDirectory, string agentId)
     {
         var skillsRoot = Path.Combine(agentDirectory, "skills");
-        foreach (var skill in NestedSkillScanner.Scan(skillsRoot, _skillParser, _logger))
+        foreach (var skill in NestedSkillScanner.Scan(skillsRoot, _skillParser, _skillFileReader, _logger))
         {
             _ownedSkills.Register(agentId, skill);
             _logger.LogDebug(

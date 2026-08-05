@@ -209,7 +209,8 @@ public sealed class BundleStagingServiceTests : IDisposable
         new(
             new OptionsMonitorStub(appConfig),
             new AgentMetadataParser(NullLogger<AgentMetadataParser>.Instance),
-            new SkillMetadataParser(NullLogger<SkillMetadataParser>.Instance),
+            new SkillMetadataParser(NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader()),
+            new UnsandboxedSkillFileReader(),
             new PluginManifestReader(NullLogger<PluginManifestReader>.Instance),
             NullLogger<BundleStagingService>.Instance);
 

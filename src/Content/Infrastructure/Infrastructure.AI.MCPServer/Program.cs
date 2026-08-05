@@ -1,5 +1,6 @@
 using System.Threading.RateLimiting;
 using Application.AI.Common.Interfaces;
+using Application.AI.Common.Interfaces.Skills;
 using Domain.Common.Config;
 using Infrastructure.AI.MCPServer.Extensions;
 using Infrastructure.AI.Skills;
@@ -47,7 +48,11 @@ public class Program
         // explicitly opted into anonymous serving — regardless of environment.
         builder.Services.AddMcpAuthentication(appConfig);
 
-        // Skill catalog — discovered from the configured skills directory
+        // Skill catalog — discovered from the configured skills directory. This host composes the
+        // skill services itself rather than calling AddAIDependencies, so the read-only skill
+        // sandbox has to be registered here too; without it the parser cannot be constructed and
+        // the server fails at startup (issue #247).
+        builder.Services.AddSingleton<ISkillFileReader, SkillFileReader>();
         builder.Services.AddSingleton<SkillMetadataParser>();
         builder.Services.AddSingleton<ISkillMetadataRegistry, SkillMetadataRegistry>();
 

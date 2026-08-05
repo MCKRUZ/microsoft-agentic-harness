@@ -40,7 +40,8 @@ public sealed class AgentMetadataRegistryTests
             NullLogger<AgentMetadataRegistry>.Instance,
             new OptionsMonitorStub(appConfig),
             new AgentMetadataParser(NullLogger<AgentMetadataParser>.Instance),
-            new SkillMetadataParser(NullLogger<SkillMetadataParser>.Instance),
+            new SkillMetadataParser(NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader()),
+            new UnsandboxedSkillFileReader(),
             ownedSkills);
     }
 
@@ -135,6 +136,8 @@ public sealed class AgentMetadataRegistryTests
         services.AddLogging();
         services.AddSingleton<IOptionsMonitor<AppConfig>>(new OptionsMonitorStub(new AppConfig()));
         services.AddSingleton<AgentMetadataParser>();
+        services.AddSingleton<Application.AI.Common.Interfaces.Skills.ISkillFileReader,
+            Infrastructure.AI.Skills.SkillFileReader>();
         services.AddSingleton<SkillMetadataParser>();
         services.AddSingleton<IAgentOwnedSkillStore, AgentOwnedSkillStore>();
         services.AddSingleton<IAgentMetadataRegistry, AgentMetadataRegistry>();

@@ -59,7 +59,8 @@ public sealed class AgentExecutionContextFactoryGovernanceTests
             sp,
             NullLoggerFactory.Instance,
             toolChainBuilder,
-            new SkillPrerequisiteResolver());
+            new SkillPrerequisiteResolver(),
+            new UnsandboxedSkillFileReader());
     }
 
     private void SetupMcpTools(params (string server, string[] tools)[] servers)

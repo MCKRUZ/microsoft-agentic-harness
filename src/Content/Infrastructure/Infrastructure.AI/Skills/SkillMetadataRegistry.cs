@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Plugins;
+using Application.AI.Common.Interfaces.Skills;
 using Domain.AI.Skills;
 using Domain.Common.Config;
 using Domain.Common.Helpers;
@@ -30,6 +31,7 @@ public sealed class SkillMetadataRegistry : ISkillMetadataRegistry
     private readonly ILogger<SkillMetadataRegistry> _logger;
     private readonly IOptionsMonitor<AppConfig> _appConfig;
     private readonly SkillMetadataParser _parser;
+    private readonly ISkillFileReader _fileReader;
     private readonly IPluginRegistry? _pluginRegistry;
 
     private Dictionary<string, SkillDefinition>? _cache;
@@ -42,6 +44,10 @@ public sealed class SkillMetadataRegistry : ISkillMetadataRegistry
     /// <param name="logger">Logger for discovery diagnostics.</param>
     /// <param name="appConfig">Monitor over the live application configuration (skill search paths).</param>
     /// <param name="parser">Parser that reads a SKILL.md file into a <see cref="SkillDefinition"/>.</param>
+    /// <param name="fileReader">
+    /// Sandboxed, read-only access to skill content. The discovery walk probes and enumerates
+    /// through it so it cannot be led outside the configured skill roots (issue #247).
+    /// </param>
     /// <param name="pluginRegistry">
     /// Optional registry of loaded plugins. When supplied, each discovered skill whose directory
     /// falls under a loaded plugin's <c>SkillPaths</c> is attributed to that plugin via
@@ -53,11 +59,15 @@ public sealed class SkillMetadataRegistry : ISkillMetadataRegistry
         ILogger<SkillMetadataRegistry> logger,
         IOptionsMonitor<AppConfig> appConfig,
         SkillMetadataParser parser,
+        ISkillFileReader fileReader,
         IPluginRegistry? pluginRegistry = null)
     {
+        ArgumentNullException.ThrowIfNull(fileReader);
+
         _logger = logger;
         _appConfig = appConfig;
         _parser = parser;
+        _fileReader = fileReader;
         _pluginRegistry = pluginRegistry;
     }
 
@@ -143,8 +153,12 @@ public sealed class SkillMetadataRegistry : ISkillMetadataRegistry
         var resolvedPaths = new List<string>();
         foreach (var p in paths)
         {
+            // Resolved to absolute BEFORE the sandbox sees it: configured roots are legitimately
+            // written as traversals relative to the bin folder ("../../.."), which the sandbox's
+            // input validation rejects outright. The sandbox's own allowed set is derived from these
+            // same configured roots, so a root is permitted here by construction.
             var abs = Path.IsPathRooted(p) ? p : Path.GetFullPath(p, AppContext.BaseDirectory);
-            if (Directory.Exists(abs))
+            if (_fileReader.DirectoryExists(abs))
                 resolvedPaths.Add(abs);
             else
                 _logger.LogWarning("Skill path not found, skipping: {Path}", abs);
@@ -230,7 +244,7 @@ public sealed class SkillMetadataRegistry : ISkillMetadataRegistry
 
         var skillFile = Path.Combine(directory, "SKILL.md");
 
-        if (File.Exists(skillFile))
+        if (_fileReader.FileExists(skillFile))
         {
             TryAddSkill(skillFile, directory, pluginPaths, result);
 
@@ -238,10 +252,12 @@ public sealed class SkillMetadataRegistry : ISkillMetadataRegistry
             return;
         }
 
-        // Recurse into subdirectories to find nested skills
+        // Recurse into subdirectories to find nested skills. The reader drops any subdirectory the
+        // sandbox refuses (a junction out of the skill roots, say), so the walk cannot be steered
+        // outside the roots by planting one.
         try
         {
-            foreach (var subDir in Directory.EnumerateDirectories(directory))
+            foreach (var subDir in _fileReader.EnumerateDirectories(directory))
                 DiscoverInDirectory(subDir, depth + 1, pluginPaths, result);
         }
         catch (Exception ex)

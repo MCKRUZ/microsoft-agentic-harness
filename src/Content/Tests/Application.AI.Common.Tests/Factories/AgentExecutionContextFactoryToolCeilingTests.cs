@@ -46,7 +46,8 @@ public sealed class AgentExecutionContextFactoryToolCeilingTests
             sp,
             NullLoggerFactory.Instance,
             new ToolChainBuilder(NullLogger<ToolChainBuilder>.Instance, sp),
-            new SkillPrerequisiteResolver());
+            new SkillPrerequisiteResolver(),
+            new UnsandboxedSkillFileReader());
     }
 
     private static SkillDefinition Skill(string id, params string[] allowedTools) => new()

@@ -65,7 +65,8 @@ public sealed class AgentExecutionContextFactoryPromptComposerTests
             serviceProvider,
             NullLoggerFactory.Instance,
             new ToolChainBuilder(NullLogger<ToolChainBuilder>.Instance, serviceProvider),
-            new SkillPrerequisiteResolver());
+            new SkillPrerequisiteResolver(),
+            new UnsandboxedSkillFileReader());
 
     /// <summary>
     /// Builds a root provider containing the full prompt-composition graph plus the ambient request

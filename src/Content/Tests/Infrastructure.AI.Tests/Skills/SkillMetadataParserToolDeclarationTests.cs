@@ -24,7 +24,7 @@ public sealed class SkillMetadataParserToolDeclarationTests : IDisposable
 
     public SkillMetadataParserToolDeclarationTests()
     {
-        _sut = new SkillMetadataParser(NullLogger<SkillMetadataParser>.Instance);
+        _sut = new SkillMetadataParser(NullLogger<SkillMetadataParser>.Instance, new UnsandboxedSkillFileReader());
         _tempDir = Path.Combine(Path.GetTempPath(), $"tooldecl-parser-tests-{Guid.NewGuid():N}");
         Directory.CreateDirectory(_tempDir);
     }

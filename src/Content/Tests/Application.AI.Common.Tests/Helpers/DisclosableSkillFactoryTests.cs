@@ -35,7 +35,7 @@ public sealed class DisclosableSkillFactoryTests
         };
 
     private static IReadOnlyList<DisclosableSkill> Create(params SkillDefinition[] skills) =>
-        DisclosableSkillFactory.Create(skills, NullLogger.Instance);
+        DisclosableSkillFactory.Create(skills, new UnsandboxedSkillFileReader(), NullLogger.Instance);
 
     [Fact]
     public void Create_WellFormedSkill_IsRegisteredUnderItsDeclaredName()

@@ -82,7 +82,8 @@ public sealed class CapabilityMatchSupervisorTests : IDisposable
             Mock.Of<IServiceProvider>(),
             NullLoggerFactory.Instance,
             Mock.Of<IToolChainBuilder>(),
-            Mock.Of<ISkillPrerequisiteResolver>());
+            Mock.Of<ISkillPrerequisiteResolver>(),
+            new UnsandboxedSkillFileReader());
 
         SetupDefaults();
 

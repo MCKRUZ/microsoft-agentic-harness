@@ -1,3 +1,4 @@
+using Application.AI.Common.Interfaces.Skills;
 using Domain.AI.Skills;
 using Microsoft.Extensions.Logging;
 
@@ -26,16 +27,21 @@ internal static class NestedSkillScanner
     /// </summary>
     /// <param name="skillsRoot">The <c>skills/</c> directory to scan. A non-existent path yields an empty list.</param>
     /// <param name="parser">Parser used to read each <c>SKILL.md</c>.</param>
+    /// <param name="fileReader">
+    /// Sandboxed, read-only access to skill content. Both the enumeration and the manifest probe go
+    /// through it, confining the scan to the configured skill content roots (issue #247).
+    /// </param>
     /// <param name="logger">Logger for enumeration and per-skill parse diagnostics.</param>
-    public static IReadOnlyList<SkillDefinition> Scan(string skillsRoot, SkillMetadataParser parser, ILogger logger)
+    public static IReadOnlyList<SkillDefinition> Scan(
+        string skillsRoot, SkillMetadataParser parser, ISkillFileReader fileReader, ILogger logger)
     {
-        if (!Directory.Exists(skillsRoot))
+        if (!fileReader.DirectoryExists(skillsRoot))
             return [];
 
-        IEnumerable<string> skillDirs;
+        IReadOnlyList<string> skillDirs;
         try
         {
-            skillDirs = Directory.EnumerateDirectories(skillsRoot);
+            skillDirs = fileReader.EnumerateDirectories(skillsRoot);
         }
         catch (Exception ex)
         {
@@ -47,7 +53,7 @@ internal static class NestedSkillScanner
         foreach (var skillDir in skillDirs)
         {
             var skillFile = Path.Combine(skillDir, "SKILL.md");
-            if (!File.Exists(skillFile))
+            if (!fileReader.FileExists(skillFile))
                 continue;
 
             try

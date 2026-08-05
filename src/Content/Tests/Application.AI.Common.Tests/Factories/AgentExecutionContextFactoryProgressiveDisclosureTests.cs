@@ -114,7 +114,8 @@ public sealed class AgentExecutionContextFactoryProgressiveDisclosureTests : IDi
             sp,
             NullLoggerFactory.Instance,
             new ToolChainBuilder(NullLogger<ToolChainBuilder>.Instance, sp),
-            new SkillPrerequisiteResolver());
+            new SkillPrerequisiteResolver(),
+            new UnsandboxedSkillFileReader());
     }
 
     /// <summary>

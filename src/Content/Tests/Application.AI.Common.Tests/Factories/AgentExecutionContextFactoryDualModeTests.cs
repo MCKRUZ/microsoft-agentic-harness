@@ -58,7 +58,8 @@ public class AgentExecutionContextFactoryDualModeTests
             sp,
             NullLoggerFactory.Instance,
             toolChainBuilder,
-            new SkillPrerequisiteResolver());
+            new SkillPrerequisiteResolver(),
+            new UnsandboxedSkillFileReader());
     }
 
     [Fact]
