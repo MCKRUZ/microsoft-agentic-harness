@@ -28,6 +28,7 @@ public class RunOrchestratedTaskCommandHandler : IRequestHandler<RunOrchestrated
 	private readonly IAgentExecutionContext _executionContext;
 	private readonly IToolInvocationGovernor _governor;
 	private readonly IToolClassificationGate _classificationGate;
+	private readonly IToolCallObserverChain _observerChain;
 	private readonly ILogger<RunOrchestratedTaskCommandHandler> _logger;
 
 	public RunOrchestratedTaskCommandHandler(
@@ -36,6 +37,7 @@ public class RunOrchestratedTaskCommandHandler : IRequestHandler<RunOrchestrated
 		IAgentExecutionContext executionContext,
 		IToolInvocationGovernor governor,
 		IToolClassificationGate classificationGate,
+		IToolCallObserverChain observerChain,
 		ILogger<RunOrchestratedTaskCommandHandler> logger)
 	{
 		_agentFactory = agentFactory;
@@ -43,6 +45,7 @@ public class RunOrchestratedTaskCommandHandler : IRequestHandler<RunOrchestrated
 		_executionContext = executionContext;
 		_governor = governor;
 		_classificationGate = classificationGate;
+		_observerChain = observerChain;
 		_logger = logger;
 	}
 
@@ -188,11 +191,13 @@ public class RunOrchestratedTaskCommandHandler : IRequestHandler<RunOrchestrated
 	private async Task<object?> RunOrchestratorGovernedAsync(
 		AIAgent orchestrator, List<ChatMessage> messages, CancellationToken cancellationToken)
 	{
-		// Expose this scope's governor and classification gate to the governed tool wrappers for the
+		// Expose this scope's governor, classification gate, and consumer observers to the governed tool
+		// wrappers for the
 		// orchestrator's own RunAsync. Set/clear tightly around the call so interleaved sub-agent turns
 		// (which set their own ambient gates in their child scope) are unaffected.
 		ToolGovernanceAccessor.Current = _governor;
 		ClassificationGateAccessor.Current = _classificationGate;
+		ToolCallObserverAccessor.Current = _observerChain;
 		try
 		{
 			return await orchestrator.RunAsync(messages, cancellationToken: cancellationToken);
@@ -201,6 +206,7 @@ public class RunOrchestratedTaskCommandHandler : IRequestHandler<RunOrchestrated
 		{
 			ToolGovernanceAccessor.Current = null;
 			ClassificationGateAccessor.Current = null;
+			ToolCallObserverAccessor.Current = null;
 		}
 	}
 

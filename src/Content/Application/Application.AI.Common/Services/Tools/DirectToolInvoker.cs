@@ -206,8 +206,13 @@ public sealed partial class DirectToolInvoker : IDirectToolInvoker
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(armed.Request.RequestedTimeout ?? armed.Config.InvocationTimeout);
 
+        // Parameters are passed for the same reason the agent path passes them: if this verdict is
+        // routed to a human, approving a bare tool name tells them nothing. This is the surface most
+        // exposed to external callers, so it is the one where an approver most needs to see what
+        // they are signing off on.
         var decision = await armed.Governor
-            .AuthorizeAsync(armed.ToolName, deadline.Token).ConfigureAwait(false);
+            .AuthorizeAsync(armed.ToolName, deadline.Token, armed.Request.Parameters)
+            .ConfigureAwait(false);
 
         if (!decision.IsAllowed)
         {

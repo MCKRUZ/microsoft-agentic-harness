@@ -20,22 +20,38 @@ namespace Application.AI.Common.Services.Governance;
 public sealed partial class ToolInvocationGovernor
 {
     /// <summary>
-    /// Resolves a verdict of "requires approval" by asking a human, and blocks if that does not
-    /// produce an affirmative answer.
+    /// The outcome of putting an approval-required verdict to a human.
+    /// </summary>
+    /// <param name="Granted">Whether a human approved the call.</param>
+    /// <param name="Block">
+    /// The recorded block to return when <paramref name="Granted"/> is false; null when granted.
+    /// </param>
+    /// <param name="Reason">Approver attribution, carried onto the final trace record.</param>
+    private readonly record struct ApprovalGate(
+        bool Granted,
+        ToolInvocationDecision? Block,
+        string Reason);
+
+    /// <summary>
+    /// Puts an approval-required verdict to a human and reports whether they allowed it.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// This is the single place both approval sources converge — the permission resolver's
     /// <c>Ask</c> behaviour and the declarative policy engine's <c>RequireApproval</c> action — so
     /// the two cannot drift into different approval semantics.
+    /// </para>
+    /// <para>
+    /// <strong>An approval is not a verdict; it answers one gate.</strong> This method deliberately
+    /// does not return an allow. A human approving an <c>Ask</c> has answered the permission layer
+    /// and nothing else — the capability envelope, sandbox capability enforcement, and the policy
+    /// engine have not ruled on the call yet. Returning an allow here would let an approver grant a
+    /// tool the sandbox never granted the capability for, or one an armed envelope does not list.
+    /// The caller resumes the normal pipeline instead, so approval can only ever advance a call to
+    /// the checks that were already going to run — never past them.
+    /// </para>
     /// </remarks>
-    /// <param name="agentId">The agent attempting the call.</param>
-    /// <param name="toolName">The tool awaiting a decision.</param>
-    /// <param name="reason">Why approval is required, carried to the approver and the trace.</param>
-    /// <param name="profile">The tool's risk profile, whose blast radius drives escalation priority.</param>
-    /// <param name="arguments">The call arguments, so the approver rules on this specific invocation.</param>
-    /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>An allow decision only when a human approved; otherwise the recorded block.</returns>
-    private async ValueTask<ToolInvocationDecision> ResolveApprovalAsync(
+    private async ValueTask<ApprovalGate> RequestApprovalAsync(
         string agentId, string toolName, string reason, ToolRiskProfile profile,
         IReadOnlyDictionary<string, object?>? arguments, CancellationToken cancellationToken)
     {
@@ -44,22 +60,15 @@ public sealed partial class ToolInvocationGovernor
             .ConfigureAwait(false);
 
         if (approval.Outcome == ToolApprovalOutcome.Approved)
-        {
-            Record(new ToolDecisionRecord(toolName, ToolDecisionOutcome.Allowed,
-                $"approved by human: {approval.Reason}", profile.Radius,
-                RequiredApproval: true, ApprovalGranted: true, Enforced: true));
-
-            if (_governanceConfig.CurrentValue.EnableAudit)
-                _auditService.Log(agentId, toolName, ToolDecisionOutcome.Allowed.ToString());
-
-            return ToolInvocationDecision.Allow();
-        }
+            return new ApprovalGate(Granted: true, Block: null, approval.Reason);
 
         // Not approved. Count it against the agent exactly as an unrouted approval verdict always
         // has, so repeated attempts at a tool nobody will approve still trip the denial tracker.
         _denialTracker.RecordDenial(agentId, toolName);
-        return Blocked(toolName, ToolDecisionOutcome.PendingApproval,
+        var block = Blocked(toolName, ToolDecisionOutcome.PendingApproval,
             $"requires approval: {reason} ({approval.Reason})", profile.Radius,
             requiredApproval: true, agentId);
+
+        return new ApprovalGate(Granted: false, block, approval.Reason);
     }
 }

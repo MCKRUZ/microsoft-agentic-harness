@@ -81,7 +81,24 @@ public sealed class EscalationToolApprovalRouter : IToolApprovalRouter
 
         // An escalation with nobody on the roster can never be answered — it would stall the turn
         // until it timed out and then block anyway. Refuse immediately instead, and say why.
-        if (approval.Approvers.Count == 0)
+        //
+        // Blank entries are dropped rather than passed through: EscalationRequestInvariants rejects
+        // an empty approver name, which the escalation service raises as an exception, which this
+        // class's own catch-all converts into a block. The net effect of one stray whitespace entry
+        // in config would be every approval-required call refused forever, diagnosable only from a
+        // per-call error log. Dropping them means a roster of ["alice", ""] still works.
+        var roster = approval.Approvers
+            .Where(a => !string.IsNullOrWhiteSpace(a))
+            .ToList();
+
+        if (roster.Count < approval.Approvers.Count)
+        {
+            _logger.LogWarning(
+                "ToolApproval:Approvers contains {Count} blank entr(ies), which were ignored. Remove them from configuration.",
+                approval.Approvers.Count - roster.Count);
+        }
+
+        if (roster.Count == 0)
         {
             _logger.LogWarning(
                 "Tool approval routing is enabled but no approvers are configured — tool {ToolName} blocked without raising an escalation. " +
@@ -90,7 +107,22 @@ public sealed class EscalationToolApprovalRouter : IToolApprovalRouter
             return ToolApprovalResult.NotRouted("no approvers configured");
         }
 
-        var request = BuildRequest(agentId, toolName, reason, radius, arguments, governance);
+        EscalationRequest request;
+        try
+        {
+            // Inside the try on purpose. Building the request renders and sanitizes model-supplied
+            // arguments, so it can throw on input the model controls — a deeply nested value exceeds
+            // the JSON writer's depth limit, and a host sanitizer may throw for its own reasons. The
+            // class promises to fail closed at every exit; leaving construction outside the try made
+            // that promise false for exactly the inputs an adversarial turn would choose.
+            request = BuildRequest(agentId, toolName, reason, radius, arguments, governance, roster);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "Could not build the approval request for {ToolName} — call blocked (fail-closed).", toolName);
+            return ToolApprovalResult.Denied("the approval request could not be prepared");
+        }
 
         try
         {
@@ -126,10 +158,13 @@ public sealed class EscalationToolApprovalRouter : IToolApprovalRouter
         string reason,
         BlastRadius radius,
         IReadOnlyDictionary<string, object?>? arguments,
-        GovernanceConfig governance)
+        GovernanceConfig governance,
+        IReadOnlyList<string> roster)
     {
         var approval = governance.ToolApproval;
         var escalation = governance.Escalation;
+
+        var strategy = ParseStrategy(escalation.DefaultApprovalStrategy);
 
         var priority = radius >= ParseCriticalThreshold(approval.CriticalAtBlastRadius)
             ? EscalationPriority.Critical
@@ -144,8 +179,9 @@ public sealed class EscalationToolApprovalRouter : IToolApprovalRouter
             Description = $"Agent '{agentId}' is attempting to call tool '{toolName}'. {reason}",
             RiskLevel = radius.ToRiskLevel(),
             Priority = priority,
-            ApprovalStrategy = ParseStrategy(escalation.DefaultApprovalStrategy),
-            Approvers = [.. approval.Approvers],
+            ApprovalStrategy = strategy,
+            QuorumThreshold = QuorumFor(strategy, roster.Count),
+            Approvers = [.. roster],
             TimeoutSeconds = approval.TimeoutSeconds ?? escalation.DefaultTimeoutSeconds,
             TimeoutAction = TimeoutAction,
             RequestedAt = DateTimeOffset.UtcNow
@@ -158,7 +194,13 @@ public sealed class EscalationToolApprovalRouter : IToolApprovalRouter
         {
             // Named deliberately: an approved consequential action must be attributable to the
             // people who approved it, in the same log line that records it proceeding.
-            var approvers = string.Join(", ", outcome.Decisions.Where(d => d.Approved).Select(d => d.ApproverName));
+            // An outcome can resolve approved with no recorded decisions (an administrative
+            // force-approve, or a rehydrated outcome). Naming the resolution beats naming nobody:
+            // an approved consequential action must never be recorded as attributable to "".
+            var named = outcome.Decisions.Where(d => d.Approved).Select(d => d.ApproverName).ToList();
+            var approvers = named.Count > 0
+                ? string.Join(", ", named)
+                : $"no named approver ({outcome.ResolutionType})";
             _logger.LogInformation(
                 "Tool {ToolName} approved by [{Approvers}] (escalation {EscalationId}, resolution {Resolution}) — call proceeding.",
                 toolName, approvers, escalationId, outcome.ResolutionType);
@@ -215,10 +257,12 @@ public sealed class EscalationToolApprovalRouter : IToolApprovalRouter
         {
             text = value as string ?? JsonSerializer.Serialize(value);
         }
-        catch (NotSupportedException)
+        catch (Exception)
         {
-            // A value the serializer cannot represent must not fail the approval request; the
-            // approver still learns a value of this shape was passed.
+            // Any serialization failure — an unsupported type, a cycle, or a value nested deeper
+            // than the writer's depth limit — must not fail the approval request. The approver still
+            // learns a value of this shape was passed. Catching broadly here is deliberate: this runs
+            // on model-supplied input, so the set of reachable exceptions is not ours to enumerate.
             text = $"<unserializable {value.GetType().Name}>";
         }
 
@@ -237,6 +281,21 @@ public sealed class EscalationToolApprovalRouter : IToolApprovalRouter
             configured);
         return BlastRadius.Critical;
     }
+
+    /// <summary>
+    /// The N in "N of M must approve", for a Quorum roster.
+    /// </summary>
+    /// <remarks>
+    /// Only Quorum carries a threshold; the other strategies ignore it and take zero. Leaving it at
+    /// zero for Quorum is not a benign default — <c>EscalationRequestInvariants</c> requires it to
+    /// fall within 1..approvers, so a host whose <c>DefaultApprovalStrategy</c> is "Quorum" (a value
+    /// the escalation config validator accepts) would have had every single tool approval throw
+    /// inside the escalation service and come back as a block. The feature would have been silently
+    /// dead on exactly the hosts running the strictest approval policy.
+    /// Simple majority is the conventional reading of a quorum and needs no additional configuration.
+    /// </remarks>
+    private static int QuorumFor(ApprovalStrategyType strategy, int approverCount) =>
+        strategy == ApprovalStrategyType.Quorum ? (approverCount / 2) + 1 : 0;
 
     private static ApprovalStrategyType ParseStrategy(string configured) =>
         Enum.TryParse<ApprovalStrategyType>(configured, ignoreCase: true, out var parsed)

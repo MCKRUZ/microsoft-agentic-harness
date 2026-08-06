@@ -278,6 +278,43 @@ public sealed class ToolInvocationGovernorTests
     }
 
     [Fact]
+    public async Task AuthorizeAsync_HumanApproves_ButCapabilityEnforcementStillRefuses_Blocks()
+    {
+        // A human answers the PERMISSION question. They do not answer the capability question, and
+        // must not be able to. This regressed once: an approved Ask returned Allow directly, so an
+        // approver clicking "yes" could run a tool with a sandbox capability the host never granted.
+        AskingPermission();
+        RouterAnswers(ToolApprovalResult.Approved("approved by alice", Guid.NewGuid()));
+        _capabilities
+            .Setup(x => x.EnforceAsync(It.IsAny<string>(), It.IsAny<Domain.AI.Sandbox.ToolCapability>(),
+                It.IsAny<IReadOnlyList<string>?>(), It.IsAny<IReadOnlyList<string>?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Fail("tool requires a capability the sandbox did not grant"));
+        var governor = Build();
+
+        var decision = await governor.AuthorizeAsync(Tool, CancellationToken.None);
+
+        Assert.False(decision.IsAllowed);
+        Assert.Equal(ToolDecisionOutcome.Denied, Assert.Single(governor.GetTrace().ToolDecisions).Outcome);
+    }
+
+    [Fact]
+    public async Task AuthorizeAsync_HumanApproves_ButEnvelopeDoesNotGrantTheTool_Blocks()
+    {
+        // Same invariant against the capability envelope, whose independent re-check exists because
+        // the permission resolver's arbitration has been wrong twice before.
+        AskingPermission();
+        RouterAnswers(ToolApprovalResult.Approved("approved by alice", Guid.NewGuid()));
+        using var envelope = CapabilityEnvelopeAccessor.Begin(
+            new Domain.AI.Bundles.CapabilityEnvelope { AllowedTools = ["something_else"] });
+        var governor = Build();
+
+        var decision = await governor.AuthorizeAsync(Tool, CancellationToken.None);
+
+        Assert.False(decision.IsAllowed);
+        Assert.Equal(ToolDecisionOutcome.Denied, Assert.Single(governor.GetTrace().ToolDecisions).Outcome);
+    }
+
+    [Fact]
     public async Task AuthorizeAsync_ApprovalRequiredAndHumanRefuses_StillBlocks()
     {
         AskingPermission();

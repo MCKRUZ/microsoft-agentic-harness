@@ -34,8 +34,17 @@ namespace Application.AI.Common.Services.Governance;
 /// tool and its arguments is raised, and the call proceeds only on an affirmative decision. When
 /// routing is switched off — the default — or when it cannot run, the verdict degrades to the
 /// original behaviour: recorded as <see cref="ToolDecisionOutcome.PendingApproval"/> and blocked,
-/// fail-closed. Approval can therefore only ever turn a block into an approved call, never the
-/// reverse.
+/// fail-closed.
+/// </para>
+/// <para>
+/// <strong>An approval answers the permission layer and nothing else.</strong> A human who approves
+/// an <c>Ask</c> does not thereby clear the capability envelope, sandbox capability enforcement, or
+/// the declarative policy engine — the call resumes into those gates exactly where an outright
+/// <c>Allow</c> would have entered them, and any one of them can still refuse it. This is worth
+/// stating because getting it wrong is silent: an earlier revision returned an allow straight from
+/// the approval, so an approver could have granted a tool the sandbox never granted the capability
+/// for. Approval advances a call to the checks that were already going to run; it never carries it
+/// past them.
 /// </para>
 /// </remarks>
 public sealed partial class ToolInvocationGovernor : IToolInvocationGovernor
@@ -197,20 +206,21 @@ public sealed partial class ToolInvocationGovernor : IToolInvocationGovernor
                     requiredApproval: false, agentId);
 
             case PermissionBehaviorType.Ask:
-                return await ResolveApprovalAsync(agentId, toolName, permission.Reason, profile,
+                // A human answers the PERMISSION layer only. Approval does not skip the gates that
+                // have not ruled yet — it advances the call into them, exactly where an outright
+                // Allow would have entered.
+                var gate = await RequestApprovalAsync(agentId, toolName, permission.Reason, profile,
                     arguments, cancellationToken).ConfigureAwait(false);
 
-            case PermissionBehaviorType.Allow:
-                if (!EnvelopeGrantsToolWhenArmed(toolName))
-                {
-                    _denialTracker.RecordDenial(agentId, toolName);
-                    return Blocked(toolName, ToolDecisionOutcome.Denied,
-                        GovernanceDenials.NotPermitted(toolName), profile.Radius,
-                        requiredApproval: false, agentId);
-                }
+                if (!gate.Granted)
+                    return gate.Block!;
 
-                return await AuthorizeAllowedAsync(agentId, toolName, profile, arguments, cancellationToken)
-                    .ConfigureAwait(false);
+                return await AuthorizeGrantedAsync(agentId, toolName, profile, arguments,
+                    approval: gate, cancellationToken).ConfigureAwait(false);
+
+            case PermissionBehaviorType.Allow:
+                return await AuthorizeGrantedAsync(agentId, toolName, profile, arguments,
+                    approval: null, cancellationToken).ConfigureAwait(false);
 
             default:
                 // Unknown behaviour: fail closed.
@@ -220,10 +230,44 @@ public sealed partial class ToolInvocationGovernor : IToolInvocationGovernor
         }
     }
 
-    private async ValueTask<ToolInvocationDecision> AuthorizeAllowedAsync(
+    /// <summary>
+    /// Runs every gate after the permission layer for a tool the rule layer has cleared — the armed
+    /// capability envelope, sandbox capability enforcement, and the declarative policy engine — and
+    /// allows only if all of them agree.
+    /// </summary>
+    /// <param name="approval">
+    /// The human approval that got the call here, when it arrived via an <c>Ask</c> verdict; null
+    /// when the permission layer allowed it outright.
+    /// </param>
+    /// <remarks>
+    /// <para>
+    /// <strong>Both entry paths converge here deliberately.</strong> An approved <c>Ask</c> used to
+    /// return an allow directly, which silently skipped all three of these gates — so an approver
+    /// could grant a tool the sandbox had not granted the capability for, or one an armed envelope
+    /// did not list. A human answers the permission question; they do not answer the capability,
+    /// envelope, or policy questions, and must not be able to.
+    /// </para>
+    /// <para>
+    /// A prior approval <em>does</em> satisfy a subsequent policy <c>RequireApproval</c> for the
+    /// same call: it is the same human ruling on the same invocation with the same arguments, so
+    /// asking twice would be a worse experience with no additional safety.
+    /// </para>
+    /// </remarks>
+    private async ValueTask<ToolInvocationDecision> AuthorizeGrantedAsync(
         string agentId, string toolName, ToolRiskProfile profile,
-        IReadOnlyDictionary<string, object?>? arguments, CancellationToken cancellationToken)
+        IReadOnlyDictionary<string, object?>? arguments, ApprovalGate? approval,
+        CancellationToken cancellationToken)
     {
+        // Independent envelope confirmation. Defence in depth against a resolver arbitration bug —
+        // see EnvelopeGrantsToolWhenArmed's remarks for the two occasions that arbitration was wrong.
+        if (!EnvelopeGrantsToolWhenArmed(toolName))
+        {
+            _denialTracker.RecordDenial(agentId, toolName);
+            return Blocked(toolName, ToolDecisionOutcome.Denied,
+                GovernanceDenials.NotPermitted(toolName), profile.Radius,
+                requiredApproval: approval is not null, agentId);
+        }
+
         // Capability enforcement: the rule layer allowed the tool, now confirm the granted sandbox
         // capabilities satisfy what the tool needs.
         var grantedCapabilities = ToolCapability.None;
@@ -239,7 +283,7 @@ public sealed partial class ToolInvocationGovernor : IToolInvocationGovernor
         {
             var reason = capResult.Errors.Count > 0 ? capResult.Errors[0] : "capability check failed";
             return Blocked(toolName, ToolDecisionOutcome.Denied, $"capability violation: {reason}",
-                profile.Radius, requiredApproval: false, agentId);
+                profile.Radius, requiredApproval: approval is not null, agentId);
         }
 
         // Declarative policy layer (YAML policies), only when configured.
@@ -254,18 +298,33 @@ public sealed partial class ToolInvocationGovernor : IToolInvocationGovernor
             {
                 if (decision.Action == GovernancePolicyAction.RequireApproval)
                 {
-                    return await ResolveApprovalAsync(agentId, toolName, decision.Reason, profile,
-                        arguments, cancellationToken).ConfigureAwait(false);
-                }
+                    // Already approved for this same call — do not ask the same human twice.
+                    if (approval is null)
+                    {
+                        var gate = await RequestApprovalAsync(agentId, toolName, decision.Reason, profile,
+                            arguments, cancellationToken).ConfigureAwait(false);
 
-                _denialTracker.RecordDenial(agentId, toolName);
-                return Blocked(toolName, ToolDecisionOutcome.Denied, decision.Reason, profile.Radius,
-                    requiredApproval: false, agentId);
+                        if (!gate.Granted)
+                            return gate.Block!;
+
+                        approval = gate;
+                    }
+                }
+                else
+                {
+                    _denialTracker.RecordDenial(agentId, toolName);
+                    return Blocked(toolName, ToolDecisionOutcome.Denied, decision.Reason, profile.Radius,
+                        requiredApproval: approval is not null, agentId);
+                }
             }
         }
 
-        Record(new ToolDecisionRecord(toolName, ToolDecisionOutcome.Allowed, "allowed",
-            profile.Radius, RequiredApproval: false, ApprovalGranted: false, Enforced: true));
+        Record(new ToolDecisionRecord(toolName, ToolDecisionOutcome.Allowed,
+            approval is { } granted ? $"approved by human: {granted.Reason}" : "allowed",
+            profile.Radius,
+            RequiredApproval: approval is not null,
+            ApprovalGranted: approval is not null,
+            Enforced: true));
 
         if (governance.EnableAudit)
             _auditService.Log(agentId, toolName, ToolDecisionOutcome.Allowed.ToString());

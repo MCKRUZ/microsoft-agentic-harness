@@ -7,13 +7,22 @@ namespace Application.AI.Common.Services.Governance;
 /// agent's converted tool functions.
 /// </summary>
 /// <remarks>
+/// <para>
 /// Mirrors <see cref="ToolGovernanceAccessor"/>, <see cref="ClassificationGateAccessor"/>, and
 /// <see cref="ProgressGuardAccessor"/>, and exists for the same reason: agents — and the tool
 /// invocation lambdas they capture — are cached across turns, so the governed tool wrapper cannot
 /// hold a scoped chain captured at build time without it going stale. The turn handler publishes
-/// the live scoped chain at the start of each turn and restores the previous value on the way out;
-/// the wrapper reads it at invocation time. When unset — a tool invoked outside a governed turn —
-/// the wrapper skips observers entirely.
+/// the live scoped chain at the start of each turn and clears it on the way out; the wrapper reads
+/// it at invocation time. When unset — a tool invoked outside a governed turn — the wrapper skips
+/// observers entirely.
+/// </para>
+/// <para>
+/// <strong>Two arming idioms are in use, deliberately.</strong> The turn handlers assign
+/// <see cref="Current"/> and null it in a <c>finally</c>, matching the three accessors alongside
+/// them; they sit at the outermost turn boundary where nothing encloses them, so nulling cannot
+/// disarm an outer flow. <see cref="Begin"/> is used where a flow can nest —
+/// <c>DirectToolInvoker</c> — and is the right default for any new call site.
+/// </para>
 /// </remarks>
 public static class ToolCallObserverAccessor
 {
