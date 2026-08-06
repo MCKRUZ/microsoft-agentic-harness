@@ -150,31 +150,15 @@ public sealed class AgentExecutionContextFactoryProgressiveDisclosureTests : IDi
         context.AIContextProviders!.OfType<AgentSkillsProvider>().Single();
 
     /// <summary>
-    /// Drives the agent's whole context-provider rail the way the runtime does — seeded with the agent's
-    /// own instructions and tools, then feeding each provider the previous one's output — and returns the
-    /// finished context.
+    /// Drives the agent's whole context-provider rail the way the runtime does, via the shared
+    /// <see cref="AIContextRailDriver"/>.
     /// </summary>
     /// <remarks>
     /// Invoking one provider in isolation cannot exercise per-turn accounting, because the measurer sits at
     /// the end of the chain and only sees what the providers ahead of it accumulated.
     /// </remarks>
-    private static async Task<AIContext> DriveRailAsync(Domain.AI.Agents.AgentExecutionContext context)
-    {
-        var current = new AIContext
-        {
-            Instructions = context.Instruction,
-            Messages = new List<ChatMessage> { new(ChatRole.User, "go") },
-            Tools = context.Tools is null ? [] : [.. context.Tools]
-        };
-
-        foreach (var provider in context.AIContextProviders!)
-        {
-            current = await provider.InvokingAsync(new AIContextProvider.InvokingContext(
-                new Mock<AIAgent>().Object, new Mock<AgentSession>().Object, current));
-        }
-
-        return current;
-    }
+    private static Task<AIContext> DriveRailAsync(Domain.AI.Agents.AgentExecutionContext context) =>
+        AIContextRailDriver.DriveAsync(context);
 
     // ── Tier 1: the prompt carries the index card, not the body ──────────────
 

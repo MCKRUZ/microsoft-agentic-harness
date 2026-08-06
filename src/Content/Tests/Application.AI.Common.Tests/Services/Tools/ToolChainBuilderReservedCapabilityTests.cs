@@ -155,25 +155,4 @@ public sealed class ToolChainBuilderReservedCapabilityTests
             "the by-name path must apply the reserved filter, not bypass it");
     }
 
-    private sealed class StubTool(string name) : ITool
-    {
-        public string Name { get; } = name;
-        public string Description => "stub";
-        public IReadOnlyList<string> SupportedOperations { get; } = ["run"];
-
-        public Task<ToolResult> ExecuteAsync(
-            string operation,
-            IReadOnlyDictionary<string, object?> parameters,
-            CancellationToken cancellationToken = default) => Task.FromResult(ToolResult.Ok("r"));
-    }
-
-    private sealed class PassThroughToolConverter : IToolConverter
-    {
-        public int Priority => 100;
-
-        public bool CanConvert(ITool tool) => true;
-
-        public AITool? Convert(ITool tool, IReadOnlyList<string>? allowedOperations = null) =>
-            AIFunctionFactory.Create(() => "r", tool.Name);
-    }
 }

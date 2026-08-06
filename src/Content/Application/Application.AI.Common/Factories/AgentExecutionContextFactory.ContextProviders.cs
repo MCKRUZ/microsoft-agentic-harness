@@ -140,8 +140,8 @@ public partial class AgentExecutionContextFactory
     /// <paramref name="agentName"/>'s budget.
     /// </summary>
     /// <param name="providers">
-    /// The rail built for this agent, mutated in place. <see langword="null"/> or empty means the agent has
-    /// no rail, so there is nothing per-turn to charge and nothing is appended.
+    /// The rail built for this agent, mutated in place. An empty rail means the agent has no providers, so
+    /// there is nothing per-turn to charge and nothing is appended.
     /// </param>
     /// <param name="agentName">The agent whose budget the per-turn context is charged to.</param>
     /// <param name="instruction">
@@ -163,12 +163,12 @@ public partial class AgentExecutionContextFactory
     /// does not track context with exactly the rail it had before.
     /// </remarks>
     private void AppendPerTurnBudgetProvider(
-        IList<AIContextProvider>? providers,
+        IList<AIContextProvider> providers,
         string agentName,
         string instruction,
         int toolCount)
     {
-        if (_budgetTracker is null || providers is null || providers.Count == 0)
+        if (_budgetTracker is null || providers.Count == 0)
             return;
 
         providers.Add(new Services.Agent.PerTurnBudgetContextProvider(

@@ -141,35 +141,13 @@ public sealed class AgentExecutionContextFactoryRailOrderTests : IDisposable
                 : null);
     }
 
-    private sealed class StubTool(string name) : ITool
-    {
-        public string Name { get; } = name;
-        public string Description => "stub";
-        public IReadOnlyList<string> SupportedOperations { get; } = ["run"];
-
-        public Task<ToolResult> ExecuteAsync(
-            string operation,
-            IReadOnlyDictionary<string, object?> parameters,
-            CancellationToken cancellationToken = default) => Task.FromResult(ToolResult.Ok("r"));
-    }
-
-    private sealed class PassThroughToolConverter : IToolConverter
-    {
-        public int Priority => 100;
-
-        public bool CanConvert(ITool tool) => true;
-
-        public AITool? Convert(ITool tool, IReadOnlyList<string>? allowedOperations = null) =>
-            AIFunctionFactory.Create(() => "r", tool.Name);
-    }
-
     private static IReadOnlyList<Type> RailTypes(Domain.AI.Agents.AgentExecutionContext context) =>
         [.. context.AIContextProviders!.Select(p => p.GetType())];
 
     // ── The whole rail, in order ──────────────────────────────────────────────
 
     [Fact]
-    public async Task Rail_WithEveryOptionalProviderEnabled_IsExactlyThisSequence()
+    public async Task MapToAgentContext_EveryOptionalProviderEnabled_RailIsExactlyThisSequence()
     {
         var context = await CreateFactory().MapToAgentContextAsync([MakeSkill()], new SkillAgentOptions());
 
@@ -194,7 +172,7 @@ public sealed class AgentExecutionContextFactoryRailOrderTests : IDisposable
     [InlineData(true, false)]
     [InlineData(false, true)]
     [InlineData(false, false)]
-    public async Task Rail_TheBudgetMeasurerIsLast_WhicheverOptionalProvidersAreOn(bool recall, bool governance)
+    public async Task MapToAgentContext_AnyOptionalProviderCombination_BudgetMeasurerIsLast(bool recall, bool governance)
     {
         var context = await CreateFactory(recall, governance)
             .MapToAgentContextAsync([MakeSkill()], new SkillAgentOptions());
@@ -212,20 +190,34 @@ public sealed class AgentExecutionContextFactoryRailOrderTests : IDisposable
     }
 
     [Fact]
-    public async Task Rail_WithNoBudgetTrackerWired_IsTheSameRailWithoutAMeasurer()
+    public async Task MapToAgentContext_NoBudgetTrackerWired_RailIsTheFullyLoadedRailMinusTheMeasurer()
     {
         // A host that does not track context must get exactly the rail it had before the measurer existed —
         // not a rail with an inert provider on the end of it.
-        var context = await CreateFactory(recall: false, governance: false, budgetTracker: false)
+        //
+        // Run fully loaded on purpose. Asserting this against a two-provider rail would pass for any
+        // factory that merely omits the measurer, including one that also dropped or reordered the
+        // providers that only appear when the optional features are on — the case with something to break.
+        var tracked = await CreateFactory(recall: true, governance: true, budgetTracker: true)
+            .MapToAgentContextAsync([MakeSkill()], new SkillAgentOptions());
+        var untracked = await CreateFactory(recall: true, governance: true, budgetTracker: false)
             .MapToAgentContextAsync([MakeSkill()], new SkillAgentOptions());
 
-        RailTypes(context).Should().Equal([typeof(AgentSkillsProvider), typeof(ToolPermissionFilter)]);
+        // Control: "minus the measurer" is only meaningful if the tracked rail ends with one. Without
+        // this, a factory that appended nothing at all would satisfy the assertion below.
+        RailTypes(tracked)[^1].Should().Be(typeof(PerTurnBudgetContextProvider));
+
+        // Derived from the tracked rail rather than restated, so the sequence has one home. Restating it
+        // would let the two drift apart and still pass, which is the thing this test exists to notice.
+        RailTypes(untracked).Should().Equal(
+            RailTypes(tracked).SkipLast(1),
+            "an untracked host gets the rail unchanged, not a rail that quietly differs in some other way");
     }
 
     // ── Rule 1: the filter's decision survives to the end of the rail ─────────
 
     [Fact]
-    public async Task Rail_NoProviderBelowTheFilterReintroducesADeniedTool()
+    public async Task MapToAgentContext_FullyLoadedRail_NoProviderBelowTheFilterReintroducesADeniedTool()
     {
         var context = await CreateFactory().MapToAgentContextAsync([MakeSkill()], new SkillAgentOptions());
 
@@ -235,12 +227,12 @@ public sealed class AgentExecutionContextFactoryRailOrderTests : IDisposable
         // nothing at all.
         // Driven by identity, not by index: the control must keep holding under exactly the misordering
         // this test exists to catch, or a broken rail would fail here and never reach the assertion below.
-        var contributed = await DriveAsync(context.AIContextProviders!.OfType<AgentSkillsProvider>(), context);
+        var contributed = await AIContextRailDriver.DriveAsync(context.AIContextProviders!.OfType<AgentSkillsProvider>(), context);
         ToolNames(contributed).Should().Contain(
             AgentSkillsProvider.RunSkillScriptToolName,
             "control: the rail must actually offer a tool the allowlist denies, or this test proves nothing");
 
-        var finished = await DriveAsync(context.AIContextProviders!, context);
+        var finished = await AIContextRailDriver.DriveAsync(context.AIContextProviders!, context);
 
         // The security property, read at the end of the rail rather than at the filter. A tool-contributing
         // provider inserted below the filter would surface here and nowhere else.
@@ -262,28 +254,4 @@ public sealed class AgentExecutionContextFactoryRailOrderTests : IDisposable
 
     private static IEnumerable<string> ToolNames(AIContext context) =>
         context.Tools?.Select(t => t.Name) ?? [];
-
-    /// <summary>
-    /// Drives <paramref name="providers"/> the way the runtime does — seeded with the agent's own
-    /// instructions and tools, then feeding each provider the previous one's output.
-    /// </summary>
-    private static async Task<AIContext> DriveAsync(
-        IEnumerable<AIContextProvider> providers,
-        Domain.AI.Agents.AgentExecutionContext context)
-    {
-        var current = new AIContext
-        {
-            Instructions = context.Instruction,
-            Messages = new List<ChatMessage> { new(ChatRole.User, "go") },
-            Tools = context.Tools is null ? [] : [.. context.Tools]
-        };
-
-        foreach (var provider in providers)
-        {
-            current = await provider.InvokingAsync(new AIContextProvider.InvokingContext(
-                new Mock<AIAgent>().Object, new Mock<AgentSession>().Object, current));
-        }
-
-        return current;
-    }
 }
