@@ -106,9 +106,16 @@ public sealed class ConversationDbContext : DbContext
         budget.Property(e => e.ConsumedTokens).IsRequired();
         budget.Property(e => e.UpdatedAt).HasConversion(SqliteValueConverters.DateTimeOffsetAsUtcTicks);
 
-        // No index on UpdatedAt. It would serve an age-based retention sweep and nothing else, and no
-        // sweep exists yet — an index for a caller that has not been written is cost with no reader.
-        // Adding one later is cheap and safe: SqliteAdditiveSchemaReconciler creates indexes a model
-        // has gained, including on databases that already exist.
+        // Still no index on UpdatedAt, now that a reader for one exists. The retention sweep
+        // (SqliteConversationBudgetTracker.SweepAbandonedAsync) filters on it, so an index was the
+        // obvious addition — and it would cost more than it saves. UpdatedAt is rewritten by every
+        // accrual, which is the per-turn hot path, so the index would be maintained on every turn to
+        // speed a query that runs four times a day. It is also poorly selective for that query: in
+        // steady state most surviving rows ARE older than the grace period, and their conversations
+        // still exist, so the age predicate excludes almost nothing and the correlated NOT EXISTS —
+        // which hits `conversations` by primary key — does the real work.
+        //
+        // Revisit if this table ever grows far beyond one row per conversation, which would mean the
+        // sweep has stopped working and the index is not the problem to fix (issue #253).
     }
 }

@@ -86,6 +86,33 @@ public sealed class ConversationStoreCompositionTests : IDisposable
     }
 
     [Fact]
+    public async Task CompositionRoot_RegistersTheBudgetRetentionSweep_OnTheSqliteProvider()
+    {
+        // Same lesson one issue later. The sweep's own tests construct the service directly, so they
+        // stay green with this registration deleted — and a sweep nothing resolves sweeps nothing,
+        // leaving the table growing exactly as it did before (issue #253).
+        await using var provider = CompositionRootTestHost.BuildProvider(SqliteSettings());
+
+        provider.GetServices<IHostedService>()
+            .Should().Contain(s => s.GetType().Name == "ConversationBudgetRetentionService",
+                "a retention sweep nothing resolves reclaims nothing");
+    }
+
+    [Fact]
+    public async Task CompositionRoot_BudgetTrackerAndSweep_ShareOneInstance()
+    {
+        // The tracker is registered by concrete type with the interface forwarding to it, precisely so
+        // the sweep and the budget callers are the same object. Registering the implementation twice
+        // would compile, resolve, and quietly give two — each with its own schema initializer.
+        await using var provider = CompositionRootTestHost.BuildProvider(SqliteSettings());
+
+        var viaInterface = provider.GetRequiredService<IConversationBudgetTracker>();
+        var viaConcrete = provider.GetRequiredService<SqliteConversationBudgetTracker>();
+
+        viaConcrete.Should().BeSameAs(viaInterface);
+    }
+
+    [Fact]
     public async Task CompositionRoot_RegistersConversationStore_AsSingleton()
     {
         await using var provider = CompositionRootTestHost.BuildProvider(SqliteSettings());
