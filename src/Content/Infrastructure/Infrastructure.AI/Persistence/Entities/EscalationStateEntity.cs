@@ -8,10 +8,12 @@ namespace Infrastructure.AI.Persistence.Entities;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Configured inline in <see cref="Infrastructure.AI.Persistence.GovernanceStateDbContext"/> —
-/// deliberately not via an <c>IEntityTypeConfiguration</c>, which
-/// <see cref="Infrastructure.AI.Persistence.PlannerDbContext"/> would pick up through its
-/// assembly scan. No <c>Version</c> column: rows are single-writer per escalation (the
+/// Configured inline in <see cref="Infrastructure.AI.Persistence.GovernanceStateDbContext"/>,
+/// matching the other contexts here. This used to be forced:
+/// <see cref="Infrastructure.AI.Persistence.PlannerDbContext"/> scanned the whole assembly and
+/// would have applied an <c>IEntityTypeConfiguration</c> for this entity to its own model. The
+/// planner now declares its five configurations explicitly, so inline is a convention rather than
+/// a constraint. No <c>Version</c> column: rows are single-writer per escalation (the
 /// singleton escalation service serializes writes per record), so the planner's
 /// <c>SqliteVersionInterceptor</c> concurrency scheme is not applied to this context.
 /// </para>
