@@ -35,7 +35,7 @@ public sealed class ConversationBudgetStartupDisclosureTests
     }
 
     [Fact]
-    public async Task StartAsync_NegativeCeiling_WarnsToo()
+    public async Task StartAsync_NegativeCeiling_WarnsThatConversationsAreUnbounded()
     {
         // The trackers go inert at anything not positive, not only at exactly zero. A disclosure that
         // tested for zero would stay quiet on the one value a fat-fingered edit is most likely to leave.
