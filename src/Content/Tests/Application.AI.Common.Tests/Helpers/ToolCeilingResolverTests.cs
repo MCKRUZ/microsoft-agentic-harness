@@ -151,4 +151,44 @@ public sealed class ToolCeilingResolverTests
 
         result.Should().BeNull();
     }
+
+    // ── Union: the step that PRODUCES the null-versus-empty distinction ───────
+    //
+    // This half of the invariant used to live private inside the agent factory, where exercising it
+    // meant constructing the whole factory with four collaborators to assert a six-line pure function.
+    // The distinction it produces is what every ApplyCeiling test above depends on.
+
+    [Fact]
+    public void Union_NoDeclarationRestrictsAnything_IsUnbounded()
+    {
+        // The case that matters most: null means "nothing restricted this", which a later ceiling then
+        // caps from "everything". Returning an empty list here instead would mean deny-all, and an
+        // agent whose skills declare no allowlist would silently lose every tool.
+        var result = ToolCeilingResolver.Union([null, [], null]);
+
+        result.Should().BeNull(
+            "no declaration restricting anything is unbounded, not a restriction that permits nothing");
+    }
+
+    [Fact]
+    public void Union_SeveralDeclarations_CombinesThemCaseInsensitivelyWithoutDuplicates()
+    {
+        var result = ToolCeilingResolver.Union([["read", "write"], ["READ", "search"], null]);
+
+        result.Should().BeEquivalentTo(["read", "write", "search"]);
+    }
+
+    [Fact]
+    public void Union_ThenCeiling_NarrowsRatherThanWidens()
+    {
+        // The two halves composed, which is how the factory uses them: several declarations grant a
+        // union, and the agent's own ceiling can only cut that down. A ceiling naming a tool no
+        // declaration granted must not add it.
+        var granted = ToolCeilingResolver.Union([["read", "write"], ["search"]]);
+
+        var capped = ToolCeilingResolver.ApplyCeiling(granted, ["read", "delete"]);
+
+        capped.Should().BeEquivalentTo(["read"],
+            "a ceiling tightens the granted set and can never introduce a tool nothing granted");
+    }
 }

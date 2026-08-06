@@ -144,11 +144,15 @@ public partial class AgentExecutionContextFactory
         var effectiveAllowedTools = ResolveEffectiveAllowlist(skills, options, allowedTools);
         var mergedToolChain = await _toolChainBuilder.BuildMergedToolsWithSourcesAsync(skills, options, effectiveAllowedTools);
         var tools = mergedToolChain.Tools.ToList();
-        var middlewareTypes = ResolveMiddlewareTypes(primarySkill, options);
+        var middlewareTypes = ResolveMiddlewareTypes(options);
         // The rail ends with the measurer that charges what it injects into every turn — appended inside
-        // the builder, not here, so nothing outside can displace it from last (issues #266, #271).
+        // the builder and handed back read-only, so nothing out here can displace it from last
+        // (issues #266, #271, #277). The rule itself is stated on AppendPerTurnBudgetProvider.
         var aiContextProviders = BuildMergedAIContextProviders(
-            skills.Count, effectiveAllowedTools, disclosableSkills, agentName, instruction, tools.Count);
+            skills.Count,
+            effectiveAllowedTools,
+            disclosableSkills,
+            new PerTurnBudgetBaseline(agentName, instruction, tools.Count));
 
         var frameworkType = options.FrameworkType
             ?? ResolveFrameworkTypeFromMetadata(primarySkill)
@@ -158,26 +162,7 @@ public partial class AgentExecutionContextFactory
         // Resolve or create a trace scope for this execution
         var traceScope = options.TraceScope ?? TraceScope.ForExecution(Guid.NewGuid());
 
-        // Track context budget allocations
-        if (_budgetTracker != null)
-        {
-            _budgetTracker.RecordAndPublish(
-                agentName,
-                ContextConventions.BudgetComponents.SystemPrompt,
-                ContextConventions.SourceTypeValues.SystemPrompt,
-                TokenEstimationHelper.EstimateTokens(instruction),
-                ContextBudgetMetrics.SystemPromptTokens);
-
-            if (tools?.Count > 0)
-            {
-                _budgetTracker.RecordAndPublish(
-                    agentName,
-                    ContextConventions.BudgetComponents.ToolSchemas,
-                    ContextConventions.SourceTypeValues.ToolsSchema,
-                    TokenEstimationHelper.EstimateToolSchemaTokens(tools.Count),
-                    ContextBudgetMetrics.ToolsSchemaTokens);
-            }
-        }
+        RecordStaticContextBudget(agentName, instruction, tools.Count);
 
         var additionalProps = BuildAdditionalProperties(primarySkill, options);
 
@@ -187,51 +172,8 @@ public partial class AgentExecutionContextFactory
         if (prerequisiteMap.HasAnyPrerequisites)
             additionalProps[SkillPrerequisiteMap.AdditionalPropertiesKey] = prerequisiteMap;
 
-        // Stash the composed resilient chat client for AgentFactory to consume. Gated on:
-        // (a) ResilienceConfig.Enabled — when off the provider would return the PRIMARY raw
-        //     client, which must not override the per-context resolution above; and
-        // (b) ResilientClientEligibility — the fallback chain can only stand in for a context
-        //     that resolved to exactly the primary configured provider + default deployment.
-        //     Per-skill/per-options overrides, PersistentAgents (AgentId-bound), FoundryResponses,
-        //     and Echo contexts keep their raw client.
-        if (_resilientChatClientProvider is not null
-            && _appConfig.CurrentValue.AI?.Resilience?.Enabled == true)
-        {
-            if (ResilientClientEligibility.IsEligible(
-                    frameworkType, deploymentName, _appConfig.CurrentValue.AI?.AgentFramework))
-            {
-                var resilientClient = await _resilientChatClientProvider.GetResilientChatClientAsync();
-                additionalProps[IResilientChatClientProvider.AdditionalPropertiesKey] = resilientClient;
-
-                _logger.LogDebug("Stashed resilient chat client (fallback chain) for agent {AgentName}", agentName);
-            }
-            else
-            {
-                _logger.LogDebug(
-                    "Resilience enabled but agent {AgentName} keeps its raw client: resolved {FrameworkType}/{Deployment} is not the primary configured provider/deployment",
-                    agentName, frameworkType, deploymentName);
-            }
-        }
-
-        // Start a trace run when a store is wired in
-        if (_traceStore != null)
-        {
-            var metadata = new RunMetadata
-            {
-                AgentName = agentName,
-                StartedAt = DateTimeOffset.UtcNow
-            };
-            var traceWriter = await _traceStore.StartRunAsync(traceScope, metadata);
-            additionalProps[ITraceWriter.AdditionalPropertiesKey] = traceWriter;
-
-            // Set candidate baggage on the current Activity for CausalSpanAttributionProcessor
-            if (traceScope.CandidateId.HasValue)
-            {
-                System.Diagnostics.Activity.Current?.AddBaggage(
-                    Domain.AI.Telemetry.Conventions.ToolConventions.HarnessCandidateId,
-                    traceScope.CandidateId.Value.ToString("D"));
-            }
-        }
+        await StashResilientChatClientAsync(additionalProps, agentName, frameworkType, deploymentName);
+        await StartTraceRunAsync(additionalProps, agentName, traceScope);
 
         var context = new AgentExecutionContext
         {
@@ -267,6 +209,119 @@ public partial class AgentExecutionContextFactory
     }
 
     /// <summary>
+    /// Records what the agent's static context costs before a single turn runs: the system prompt and
+    /// the tool schemas.
+    /// </summary>
+    /// <param name="agentName">The agent whose budget these are charged to.</param>
+    /// <param name="instruction">The composed static system prompt.</param>
+    /// <param name="toolCount">How many tool schemas the agent ships with.</param>
+    /// <remarks>
+    /// These two are charged once, at construction, because they are the same on every turn. What the
+    /// context-provider rail adds per turn is charged separately by
+    /// <see cref="Services.Agent.PerTurnBudgetContextProvider"/>, which subtracts exactly these figures
+    /// as its baseline so the prompt is not billed again every turn.
+    /// </remarks>
+    private void RecordStaticContextBudget(string agentName, string instruction, int toolCount)
+    {
+        if (_budgetTracker is null)
+            return;
+
+        _budgetTracker.RecordAndPublish(
+            agentName,
+            ContextConventions.BudgetComponents.SystemPrompt,
+            ContextConventions.SourceTypeValues.SystemPrompt,
+            TokenEstimationHelper.EstimateTokens(instruction),
+            ContextBudgetMetrics.SystemPromptTokens);
+
+        if (toolCount > 0)
+        {
+            _budgetTracker.RecordAndPublish(
+                agentName,
+                ContextConventions.BudgetComponents.ToolSchemas,
+                ContextConventions.SourceTypeValues.ToolsSchema,
+                TokenEstimationHelper.EstimateToolSchemaTokens(toolCount),
+                ContextBudgetMetrics.ToolsSchemaTokens);
+        }
+    }
+
+    /// <summary>
+    /// Stashes the composed resilient chat client for <c>AgentFactory</c> to consume, when this agent is
+    /// one the fallback chain may stand in for.
+    /// </summary>
+    /// <param name="additionalProps">The context's property bag, written to on success.</param>
+    /// <param name="agentName">The agent being built; diagnostics only.</param>
+    /// <param name="frameworkType">The framework this context resolved to.</param>
+    /// <param name="deploymentName">The deployment this context resolved to.</param>
+    /// <remarks>
+    /// Two gates, and both matter. <c>ResilienceConfig.Enabled</c>, because when resilience is off the
+    /// provider returns the PRIMARY raw client, which must not override the per-context resolution
+    /// already made. And <see cref="ResilientClientEligibility"/>, because the fallback chain can
+    /// only stand in for a context that resolved to exactly the primary configured provider and default
+    /// deployment — per-skill or per-options overrides, <c>PersistentAgents</c> (which is AgentId-bound),
+    /// <c>FoundryResponses</c> and <c>Echo</c> all keep their raw client.
+    /// </remarks>
+    private async Task StashResilientChatClientAsync(
+        Dictionary<string, object> additionalProps,
+        string agentName,
+        AIAgentFrameworkClientType frameworkType,
+        string deploymentName)
+    {
+        if (_resilientChatClientProvider is null
+            || _appConfig.CurrentValue.AI?.Resilience?.Enabled != true)
+            return;
+
+        if (!ResilientClientEligibility.IsEligible(
+                frameworkType, deploymentName, _appConfig.CurrentValue.AI?.AgentFramework))
+        {
+            _logger.LogDebug(
+                "Resilience enabled but agent {AgentName} keeps its raw client: resolved {FrameworkType}/{Deployment} is not the primary configured provider/deployment",
+                agentName, frameworkType, deploymentName);
+            return;
+        }
+
+        additionalProps[IResilientChatClientProvider.AdditionalPropertiesKey] =
+            await _resilientChatClientProvider.GetResilientChatClientAsync();
+
+        _logger.LogDebug("Stashed resilient chat client (fallback chain) for agent {AgentName}", agentName);
+    }
+
+    /// <summary>
+    /// Starts a trace run for this execution and stashes its writer, when a trace store is wired in.
+    /// </summary>
+    /// <param name="additionalProps">The context's property bag, written to on success.</param>
+    /// <param name="agentName">The agent being traced.</param>
+    /// <param name="traceScope">The scope this execution runs under.</param>
+    /// <remarks>
+    /// The candidate baggage is set on the ambient activity rather than passed anywhere, because
+    /// <c>CausalSpanAttributionProcessor</c> reads it off the activity from inside the exporter pipeline
+    /// — there is no call path between the two to hand it along.
+    /// </remarks>
+    private async Task StartTraceRunAsync(
+        Dictionary<string, object> additionalProps,
+        string agentName,
+        TraceScope traceScope)
+    {
+        if (_traceStore is null)
+            return;
+
+        var metadata = new RunMetadata
+        {
+            AgentName = agentName,
+            StartedAt = DateTimeOffset.UtcNow
+        };
+
+        additionalProps[ITraceWriter.AdditionalPropertiesKey] =
+            await _traceStore.StartRunAsync(traceScope, metadata);
+
+        if (traceScope.CandidateId.HasValue)
+        {
+            System.Diagnostics.Activity.Current?.AddBaggage(
+                Domain.AI.Telemetry.Conventions.ToolConventions.HarnessCandidateId,
+                traceScope.CandidateId.Value.ToString("D"));
+        }
+    }
+
+    /// <summary>
     /// Creates an execution context for a delegated agent. Used by <see cref="Interfaces.Agents.ISupervisor"/>
     /// when delegating a task. Bypasses skill-based tool resolution — tools are resolved separately
     /// by the supervisor using <see cref="Interfaces.Agents.ISubagentToolResolver"/>.
@@ -277,13 +332,15 @@ public partial class AgentExecutionContextFactory
         int delegationDepth,
         Guid delegationId)
     {
-        var deploymentName = definition.ModelOverride
-            ?? _appConfig.CurrentValue.AI?.AgentFramework?.DefaultDeployment
-            ?? "default";
+        var deploymentName = definition.ModelOverride ?? DefaultDeployment;
 
         var context = new AgentExecutionContext
         {
-            Name = definition.AgentType + "Agent",
+            // Through ToAgentName, which already owns this rule and is idempotent for a name that
+            // already ends in "Agent". The hand-written concatenation here produced the same string
+            // today only because AgentType is an enum and so is never "Agent"-suffixed — a second copy
+            // of a rule, correct by coincidence.
+            Name = ToAgentName(definition.AgentType.ToString()),
             Instruction = definition.SystemPromptOverride,
             DeploymentName = deploymentName,
             DelegationDepth = delegationDepth,

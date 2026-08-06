@@ -33,10 +33,21 @@ public partial class AgentExecutionContextFactory
             return skill.ModelOverride;
 
         if (skill.Metadata?.TryGetValue("deployment", out var deployment) == true)
-            return deployment.ToString() ?? "default";
+            return deployment.ToString() ?? DefaultDeployment;
 
-        return _appConfig.CurrentValue.AI?.AgentFramework?.DefaultDeployment ?? "default";
+        return DefaultDeployment;
     }
+
+    /// <summary>
+    /// The deployment an agent gets when nothing more specific applies.
+    /// </summary>
+    /// <remarks>
+    /// Read by <see cref="ResolveDeploymentName"/> and by the delegation path, which used to spell the
+    /// same <c>?? DefaultDeployment ?? "default"</c> tail out for itself. The two now live in different
+    /// files, so a second copy is one an edit that does not grep would miss.
+    /// </remarks>
+    private string DefaultDeployment =>
+        _appConfig.CurrentValue.AI?.AgentFramework?.DefaultDeployment ?? "default";
 
     /// <summary>
     /// Resolves the single effective tool allowlist that governs an agent: the union of its skills'
@@ -51,37 +62,34 @@ public partial class AgentExecutionContextFactory
         SkillAgentOptions options,
         IReadOnlyList<string>? explicitAllowlist)
     {
-        var effective = ToolCeilingResolver.ApplyCeiling(MergeSkillAllowedTools(skills), options.AllowedTools);
+        var granted = ToolCeilingResolver.Union(skills.Select(s => s.AllowedTools));
+        var effective = ToolCeilingResolver.ApplyCeiling(granted, options.AllowedTools);
         return ToolCeilingResolver.ApplyCeiling(effective, explicitAllowlist);
     }
 
     /// <summary>
-    /// Deduplicated union of every skill's <c>AllowedTools</c> constraint, case-insensitively, or
-    /// <see langword="null"/> when no skill declares a constraint — the "unbounded" input the ceiling
-    /// resolver expects for "no restriction" (distinct from an empty list, which means deny all).
+    /// The middleware chain every agent runs, plus whatever the caller adds.
     /// </summary>
-    private static IReadOnlyList<string>? MergeSkillAllowedTools(IReadOnlyList<SkillDefinition> skills)
+    /// <param name="options">Supplies any caller-declared middleware to append.</param>
+    /// <returns>The chain, always non-empty.</returns>
+    /// <remarks>
+    /// Non-nullable, because the two unconditional entries mean it can never be empty. It used to
+    /// return <c>List&lt;Type&gt;?</c> with a <c>Count > 0</c> check that no input could fail, which
+    /// made every caller null-check for a case that does not exist. It also took the skill and ignored
+    /// it.
+    /// </remarks>
+    private static List<Type> ResolveMiddlewareTypes(SkillAgentOptions options)
     {
-        var union = skills
-            .Where(s => s.AllowedTools?.Count > 0)
-            .SelectMany(s => s.AllowedTools!)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-
-        return union.Count > 0 ? union : null;
-    }
-
-    private List<Type>? ResolveMiddlewareTypes(SkillDefinition skill, SkillAgentOptions options)
-    {
-        var types = new List<Type>();
-
-        types.Add(typeof(Middleware.ObservabilityMiddleware));
-        types.Add(typeof(Middleware.ToolDiagnosticsMiddleware));
+        var types = new List<Type>
+        {
+            typeof(Middleware.ObservabilityMiddleware),
+            typeof(Middleware.ToolDiagnosticsMiddleware)
+        };
 
         if (options.MiddlewareTypes?.Count > 0)
             types.AddRange(options.MiddlewareTypes);
 
-        return types.Count > 0 ? types : null;
+        return types;
     }
 
     private static Dictionary<string, object> BuildAdditionalProperties(SkillDefinition skill, SkillAgentOptions options)

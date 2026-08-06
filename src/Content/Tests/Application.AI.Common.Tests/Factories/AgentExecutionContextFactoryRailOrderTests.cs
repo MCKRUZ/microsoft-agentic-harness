@@ -165,7 +165,32 @@ public sealed class AgentExecutionContextFactoryRailOrderTests : IDisposable
             + "records. If this list needs to change, the change is the thing to review — not the test");
     }
 
-    // ── Rule 2: the measurer is last, in every configuration ──────────────────
+    // ── Rule 2: the measurer is last, and stays last ──────────────────────────
+
+    [Fact]
+    public async Task MapToAgentContext_AppendingToTheBuiltRail_IsRefused()
+    {
+        // The rail leaves the factory through a settable IList property and is handed to the framework
+        // as one, so no type on that path can express "this list is finished". Refusing the append is
+        // therefore the instance's own job (issue #277).
+        //
+        // Displacement is the failure this refuses. A provider appended after the measurer pushes it out
+        // of last place, and from any earlier position it charges the turn for less than the turn
+        // actually cost — so the budget meant to bound a conversation stops bounding it, silently, in
+        // the direction nobody notices.
+        var context = await CreateFactory().MapToAgentContextAsync([MakeSkill()], new SkillAgentOptions());
+
+        var append = () => context.AIContextProviders!.Add(new ToolPermissionFilter([AllowedTool]));
+
+        append.Should().Throw<NotSupportedException>(
+            "a consumer that appends to a finished rail must fail loudly rather than silently displace "
+            + "the per-turn measurer from the last position");
+
+        RailTypes(context)[^1].Should().Be(typeof(PerTurnBudgetContextProvider),
+            "the refused append must also leave the rail as it was");
+    }
+
+    // ── Rule 2 continued: the measurer is last, in every configuration ────────
 
     [Theory]
     [InlineData(true, true)]
