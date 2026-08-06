@@ -47,6 +47,28 @@ public class AgentFrameworkConfigTests
     }
 
     [Fact]
+    public void ConversationTokenBudget_DefaultsToOneMillion()
+    {
+        var config = new AgentFrameworkConfig();
+
+        // The figure is a product decision (#256): roughly 50-100 exchanges once each turn's resent
+        // history is counted. Pinned so that changing it is a deliberate edit with this test in the diff.
+        config.ConversationTokenBudget.Should().Be(1_000_000);
+    }
+
+    [Fact]
+    public void ConversationTokenBudget_IsNotZero_BecauseZeroSilentlyMeansUnbounded()
+    {
+        // Deliberately separate from the figure above, because this is the part that must not change. A
+        // durable conversation outlives any single run, so the per-run caps do not bound it — the
+        // Execution API contract names this budget as the only thing that does. At 0 the tracker reports
+        // Disabled and records nothing, so the documented bound silently ceases to exist. That was the
+        // shipped state #256 was filed against. Tuning the number is fine; returning it to 0 is not.
+        new AgentFrameworkConfig().ConversationTokenBudget.Should().BePositive(
+            "a conversation with no ceiling has nothing else bounding its total length");
+    }
+
+    [Fact]
     public void IsConfigured_WithNoApiKey_ReturnsFalse()
     {
         var config = new AgentFrameworkConfig();

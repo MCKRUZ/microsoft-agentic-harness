@@ -74,6 +74,47 @@ public sealed class SqliteConversationBudgetTrackerTests
     }
 
     /// <summary>
+    /// A stock deployment must actually bound a conversation. This is the tracker a stock deployment
+    /// gets — <c>AppConfig.AI.Conversations.Provider</c> defaults to SQLite — so this is the end-to-end
+    /// form of #256: not "the config object holds a number" but "a conversation configured with nothing
+    /// at all stops".
+    /// </summary>
+    /// <remarks>
+    /// Every other test in this file and its contract passes an explicit ceiling, which is correct for
+    /// asserting budget behaviour but means none of them touches the default. Before this test, changing
+    /// the shipped default from enforcing to disabled broke no test in the solution — the reason #256's
+    /// gap survived shipping. Deliberately asserts the <em>property</em> (a conversation is bounded), not
+    /// the figure; the figure is pinned once, in <c>AgentFrameworkConfigTests</c>.
+    /// </remarks>
+    [Fact]
+    public async Task StockConfiguration_BoundsAConversation_WithNothingConfigured()
+    {
+        var config = new AppConfig();
+        var stock = new SqliteConversationBudgetTracker(
+            _contextFactory,
+            Mock.Of<IOptionsMonitor<AppConfig>>(m => m.CurrentValue == config),
+            new FakeTimeProvider(Origin),
+            NullLogger<SqliteConversationBudgetTracker>.Instance,
+            new SchemaInitializer<ConversationDbContext>(_contextFactory));
+
+        var ceiling = config.AI.AgentFramework.ConversationTokenBudget;
+        var key = NewKey();
+
+        // Control: a fresh conversation is enabled and has room. Without this, the exhaustion assertion
+        // below would also pass against a tracker that reported exhausted from the very first turn.
+        var fresh = await stock.GetStatusAsync(key);
+        fresh.IsEnabled.Should().BeTrue("a stock deployment must enforce a ceiling, not run unbounded");
+        fresh.IsExhausted.Should().BeFalse("a conversation that has spent nothing has not exhausted anything");
+
+        await stock.RecordUsageAsync(key, ceiling);
+
+        var spent = await stock.GetStatusAsync(key);
+        spent.IsExhausted.Should().BeTrue(
+            "the Execution API contract names this budget as the only thing bounding a durable "
+            + "conversation's total length, so on stock configuration it has to actually stop one");
+    }
+
+    /// <summary>
     /// The reason this implementation exists. Two hosts running turns of one conversation must enforce
     /// one ceiling between them; with a per-process total they each enforce a private copy and the
     /// conversation spends roughly twice what was configured.

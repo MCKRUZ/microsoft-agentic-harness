@@ -59,13 +59,27 @@ public class AgentFrameworkConfig
     /// rather than throwing. Distinct from <see cref="DefaultTokenBudget"/>, which caps a single turn.
     /// </summary>
     /// <remarks>
-    /// Defaults to <c>0</c> = <strong>disabled</strong> (opt-in): conversations are unbounded across
-    /// turns unless a positive ceiling is configured, preserving existing multi-turn behaviour. Tune via
+    /// <para>
+    /// Defaults to 1,000,000 tokens — roughly 50–100 exchanges once each turn's resent history is counted,
+    /// which is a long support or voice session rather than a limit an ordinary conversation reaches. It is
+    /// deliberately a runaway guard, not a business rule: a conversation that loops or is never closed stops
+    /// itself at a bounded cost instead of billing indefinitely.
+    /// </para>
+    /// <para>
+    /// <strong>This default is load-bearing, not decoration.</strong> A durable conversation outlives any
+    /// single run, so the per-run caps (<c>maxTurns</c> and the seed-message cap) deliberately do not bound
+    /// it — this budget is the only thing that does, and the Execution API contract says so. Shipping it
+    /// disabled left that documented promise unbacked on stock configuration, which is what #256 recorded.
+    /// </para>
+    /// <para>
+    /// Set to <c>0</c> to disable, restoring genuinely unbounded multi-turn conversations. Do that only
+    /// deliberately: with it off, nothing bounds a conversation's total length. Tune via
     /// <c>AppConfig:AI:AgentFramework:ConversationTokenBudget</c>. Enforced by
     /// <c>IConversationBudgetTracker</c> between turns, never mid-turn (intra-turn cost is bounded by
-    /// <see cref="DefaultTokenBudget"/>).
+    /// <see cref="DefaultTokenBudget"/>), so a turn already in flight always finishes.
+    /// </para>
     /// </remarks>
-    public int ConversationTokenBudget { get; set; }
+    public int ConversationTokenBudget { get; set; } = 1_000_000;
 
     /// <summary>
     /// Gets or sets whether to enable Anthropic prompt caching on the OpenAI-compatible client path

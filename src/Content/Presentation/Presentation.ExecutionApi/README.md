@@ -197,6 +197,14 @@ Two caps that now mean something narrower than they read: `userMessages` (100) a
 bound **one run**. A durable conversation outlives any run, so what bounds its total length is the
 conversation-lifetime token budget, which is durable and spans every run against that conversation.
 
+That budget is `AppConfig:AI:AgentFramework:ConversationTokenBudget`, and it is **on by default** at
+1,000,000 cumulative tokens -- roughly 50-100 exchanges once each turn's resent history is counted. It
+is a runaway guard rather than a business rule: a conversation that loops or is never closed stops
+itself at a bounded cost instead of billing indefinitely. When it is reached the next turn is declined
+gracefully between turns, never mid-answer. Setting it to `0` disables it, at which point **nothing**
+bounds a conversation's total length -- the per-run caps above deliberately do not. It shipped at `0`
+until #256.
+
 A conversation is created on first use and owned by the caller that first used it. A run naming
 someone else's conversation is refused **synchronously** as `404` -- identically to an unknown handle,
 so the endpoint cannot be used to enumerate other callers' conversation ids. Ownership itself is
