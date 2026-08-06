@@ -282,7 +282,13 @@ public sealed class AgUiRunHandler
         // Use a reasonable default — the hub reads this from config; we use 50 here
         // since AgUiRunHandler is not wired to AgentHubConfig directly.
         var history = await _conversationStore.GetHistoryForDispatch(input.ThreadId, callerId, 50, ct) ?? [];
-        var turnNumber = record.Messages.Count + 1;
+
+        // Counted from the conversation's completed turns, not its message count. Per-turn observability
+        // rows are keyed by conversation AND turn number, and the bundle-run path numbers the same
+        // conversation from the same counter (issue #255). Message count advances two per exchange, so
+        // it produced 1, 3, 5… here against 1, 2, 3… there — two writers interleaving into one key
+        // space, overwriting each other's turns on any conversation driven from both.
+        var turnNumber = (record.Telemetry?.TurnCount ?? 0) + 1;
 
         // Conversation-lifetime budget gate: decline gracefully (no LLM dispatch) when the
         // conversation has exhausted its cumulative ceiling, emitting the explanatory message as a
