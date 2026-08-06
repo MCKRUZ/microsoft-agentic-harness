@@ -49,6 +49,13 @@ public static partial class DependencyInjection
         // Application.Common, and TryAdd lets whichever ran first win rather than fighting over it.
         services.TryAddSingleton(TimeProvider.System);
 
+        // Registered for both providers, and unconditionally rather than only when the ceiling is off.
+        // Deciding here which message applies would put the condition in one file and the wording in
+        // another, and the two would drift; the disclosure reads the configuration itself and says what
+        // it finds. Both trackers fall silent below a positive ceiling, which is how the budget shipped
+        // switched off and stayed unnoticed (issues #256, #279).
+        services.AddHostedService<ConversationBudgetStartupDisclosure>();
+
         if (appConfig.AI.Conversations.Provider == ConversationStoreProvider.FileSystem)
         {
             services.AddSingleton<IConversationStore, FileSystemConversationStore>();
