@@ -12,18 +12,32 @@ namespace Application.AI.Common.Factories;
 //
 // ORDER ON THIS RAIL IS BEHAVIOUR, NOT STYLE. The runtime feeds each provider the previous one's
 // output, so a provider only sees what everything above it produced. Two positional rules hold the
-// rail together: any tool-contributing provider must go above ToolPermissionFilter (see the inline
-// comment at that call site), and the per-turn measurer must go last (see AppendPerTurnBudgetProvider).
-// Both are load-bearing — moving a line here changes which tools an agent can call and what its
-// budget records. AgentExecutionContextFactoryRailOrderTests asserts both, by position rather than by
-// presence, because every other test in this assembly reads the rail with OfType<T>().Single() and so
-// passes whatever the order is.
+// rail together, and each is stated once where it is enforced rather than restated here:
+// tool contributors go above ToolPermissionFilter (see the inline comment at that call site), and the
+// per-turn measurer goes last (see AppendPerTurnBudgetProvider). Moving a line here changes which
+// tools an agent can call and what its budget records. AgentExecutionContextFactoryRailOrderTests
+// asserts both by position rather than by presence, because every other test in this assembly reads
+// the rail with OfType<T>().Single() and so passes whatever the order is.
 //
 // Deliberately a plain comment, not an XML doc: the type's <summary> lives on the primary partial in
 // AgentExecutionContextFactory.cs. A second class-level <summary> on the same type would be merged
 // into one <member> entry, and which one tooling shows is compile-order dependent.
 public partial class AgentExecutionContextFactory
 {
+    /// <summary>
+    /// What the agent was already charged for before its rail ran — the baseline the per-turn measurer
+    /// subtracts so a turn is billed for what the rail added rather than for the prompt again.
+    /// </summary>
+    /// <param name="AgentName">The agent whose budget the per-turn context is charged to.</param>
+    /// <param name="Instruction">The static system prompt, already charged separately.</param>
+    /// <param name="ToolCount">The number of tools the agent was built with, already charged as schemas.</param>
+    /// <remarks>
+    /// One concept rather than three parameters travelling together through two signatures. The three
+    /// are only ever read as a set, and naming the set is what makes it obvious that a fourth thing the
+    /// measurer needs belongs here rather than as another argument.
+    /// </remarks>
+    private readonly record struct PerTurnBudgetBaseline(string AgentName, string Instruction, int ToolCount);
+
     /// <summary>
     /// Unions the context providers for this agent over <paramref name="disclosableSkills"/>, which the
     /// caller built once so this wiring and the prompt's disclosure decision cannot disagree.
@@ -35,25 +49,24 @@ public partial class AgentExecutionContextFactory
     /// <param name="skillCount">How many skills this agent was built from; diagnostics only.</param>
     /// <param name="effectiveAllowlist">The one allowlist governing this agent, or <see langword="null"/>.</param>
     /// <param name="disclosableSkills">The skills the framework provider is given, built once by the caller.</param>
-    /// <param name="agentName">The agent whose budget the per-turn measurer charges.</param>
-    /// <param name="instruction">The static system prompt — the measurer's instruction baseline.</param>
-    /// <param name="toolCount">The tool count the agent was built with — the measurer's tool baseline.</param>
-    /// <returns>The ordered rail, or <see langword="null"/> when this agent needs no providers at all.</returns>
+    /// <param name="baseline">What the agent was already charged for; see <see cref="PerTurnBudgetBaseline"/>.</param>
+    /// <returns>
+    /// The ordered rail as a read-only list, or <see langword="null"/> when this agent needs no
+    /// providers at all.
+    /// </returns>
     /// <remarks>
-    /// The per-turn measurer is appended here rather than by the caller, so that "it must be last" is a
-    /// property of this one method instead of a property of a call sequence in another file. That closes the
-    /// gap this method could close. It does not make lastness unbreakable: the rail is handed on as a
-    /// mutable <see cref="IList{T}"/> through a settable property, so a consumer that appended to it would
-    /// still displace the measurer. Nothing does today, and no test would catch it if something started —
-    /// tracked in issue #277.
+    /// The rail is returned read-only, so appending to it throws rather than silently displacing the
+    /// per-turn measurer from the last position — see <see cref="AppendPerTurnBudgetProvider"/> for why
+    /// that position is load-bearing (issue #277). The rail leaves this method through a settable
+    /// <see cref="IList{T}"/> property on the execution context and is handed to the framework as one,
+    /// which is why the guard has to be the instance's own behaviour: no type on that path can express
+    /// "this list is finished".
     /// </remarks>
     private IList<AIContextProvider>? BuildMergedAIContextProviders(
         int skillCount,
         IReadOnlyList<string>? effectiveAllowlist,
         IReadOnlyList<DisclosableSkill> disclosableSkills,
-        string agentName,
-        string instruction,
-        int toolCount)
+        PerTurnBudgetBaseline baseline)
     {
         var providers = new List<AIContextProvider>();
 
@@ -82,44 +95,33 @@ public partial class AgentExecutionContextFactory
                 effectiveAllowlist.Count, skillCount);
         }
 
-        // Cross-session memory recall. The provider resolves tenant-aware IKnowledgeMemory per
-        // invocation from the current request scope (via IAmbientRequestScope), so it is safe to
-        // attach to a singleton-cached agent.
+        // Cross-session memory recall, then task-similarity learnings recall. Both resolve their
+        // tenant-aware dependency per invocation from the current request scope, so both are safe to
+        // attach to a singleton-cached agent; the learnings one injects the most task-relevant lessons
+        // at turn start, which is the read half of the self-improving loop.
         if (_appConfig.CurrentValue.AI?.KnowledgeBridge?.Enabled == true)
         {
-            var ambientScope = _serviceProvider.GetService<IAmbientRequestScope>();
-            if (ambientScope is not null)
-            {
-                providers.Add(new Services.Agent.KnowledgeMemoryContextProvider(
-                    ambientScope,
-                    _appConfig,
-                    _loggerFactory.CreateLogger<Services.Agent.KnowledgeMemoryContextProvider>()));
-
-                _logger.LogDebug("Wired KnowledgeMemoryContextProvider for cross-session recall");
-            }
+            AddRecallProvider(
+                providers,
+                scope => new Services.Agent.KnowledgeMemoryContextProvider(
+                    scope, _appConfig,
+                    _loggerFactory.CreateLogger<Services.Agent.KnowledgeMemoryContextProvider>()),
+                "cross-session recall");
         }
 
-        // Task-similarity learnings recall. Like the memory provider above, it resolves the scoped,
-        // tenant-aware ILearningRecaller per invocation from the current request scope, so it is safe to
-        // attach to a singleton-cached agent. Injects the most task-relevant lessons (every source,
-        // including work-memory synthesis output) at turn start — the read half of the self-improving loop.
         if (_appConfig.CurrentValue.AI?.LearningsRecall?.Enabled == true)
         {
-            var ambientScope = _serviceProvider.GetService<IAmbientRequestScope>();
-            if (ambientScope is not null)
-            {
-                providers.Add(new Services.Agent.LearningsRecallContextProvider(
-                    ambientScope,
-                    _appConfig,
-                    _loggerFactory.CreateLogger<Services.Agent.LearningsRecallContextProvider>()));
-
-                _logger.LogDebug("Wired LearningsRecallContextProvider for task-similarity recall");
-            }
+            AddRecallProvider(
+                providers,
+                scope => new Services.Agent.LearningsRecallContextProvider(
+                    scope, _appConfig,
+                    _loggerFactory.CreateLogger<Services.Agent.LearningsRecallContextProvider>()),
+                "task-similarity recall");
         }
 
-        // Governance wrapper — added LAST so it wraps the final, filtered tool set. When
-        // tool-invocation enforcement is on, this guarantees the governor gates every tool the agent
-        // can call, including framework progressive-disclosure tools that bypass ToolChainBuilder.
+        // Governance wrapper — added after the recall providers so it wraps the final, filtered tool
+        // set. When tool-invocation enforcement is on, this guarantees the governor gates every tool the
+        // agent can call, including framework progressive-disclosure tools that bypass ToolChainBuilder.
         // Inert (and skipped entirely) when enforcement is off, so default behaviour is unchanged.
         if (_appConfig.CurrentValue.AI?.Governance?.EnforceToolInvocation == true)
         {
@@ -128,58 +130,89 @@ public partial class AgentExecutionContextFactory
             _logger.LogDebug("Wired GoverningToolContextProvider (tool-invocation enforcement enabled)");
         }
 
-        // Last, unconditionally and from inside this method — see the remarks above and on
-        // AppendPerTurnBudgetProvider. An empty rail gets nothing appended, so the null below is unaffected.
-        AppendPerTurnBudgetProvider(providers, agentName, instruction, toolCount);
+        AppendPerTurnBudgetProvider(providers, baseline);
 
-        return providers.Count > 0 ? providers : null;
+        // AsReadOnly wraps rather than copies, so the returned list is a live view of a list nothing
+        // else holds a reference to — the local goes out of scope here.
+        return providers.Count > 0 ? providers.AsReadOnly() : null;
+    }
+
+    /// <summary>
+    /// Adds one of the two recall providers, when a request scope exists for it to read identity from.
+    /// </summary>
+    /// <param name="providers">The rail under construction.</param>
+    /// <param name="create">Builds the provider from the resolved ambient scope.</param>
+    /// <param name="purpose">What this provider recalls; diagnostics only.</param>
+    /// <remarks>
+    /// <para>
+    /// The two recall providers are the same steps with the type swapped — resolve the ambient scope,
+    /// skip when absent, construct, log — and were written out twice.
+    /// </para>
+    /// <para>
+    /// <strong>The feature flag is checked by the caller, not here, and must stay that way.</strong>
+    /// Both flags default to disabled, so on the default path nothing is called: no service lookup for
+    /// <see cref="IAmbientRequestScope"/>, and not even a delegate allocated for <paramref name="create"/>.
+    /// Taking the flag as a parameter would move both costs onto every agent construction, for a feature
+    /// almost nobody has switched on.
+    /// </para>
+    /// <para>
+    /// A missing <see cref="IAmbientRequestScope"/> is a silent skip rather than a failure because the
+    /// provider cannot function without one and the feature is optional — a host that enabled recall
+    /// without registering the scope gets no recall, not a broken agent.
+    /// </para>
+    /// </remarks>
+    private void AddRecallProvider(
+        List<AIContextProvider> providers,
+        Func<IAmbientRequestScope, AIContextProvider> create,
+        string purpose)
+    {
+        var ambientScope = _serviceProvider.GetService<IAmbientRequestScope>();
+        if (ambientScope is null)
+            return;
+
+        var provider = create(ambientScope);
+        providers.Add(provider);
+
+        _logger.LogDebug("Wired {ProviderType} for {Purpose}", provider.GetType().Name, purpose);
     }
 
     /// <summary>
     /// Appends the measurer that charges whatever <paramref name="providers"/> inject into each turn to
-    /// <paramref name="agentName"/>'s budget.
+    /// the budget of the agent named by <paramref name="baseline"/>.
     /// </summary>
     /// <param name="providers">
     /// The rail built for this agent, mutated in place. An empty rail means the agent has no providers, so
     /// there is nothing per-turn to charge and nothing is appended.
     /// </param>
-    /// <param name="agentName">The agent whose budget the per-turn context is charged to.</param>
-    /// <param name="instruction">
-    /// The static system prompt, already charged separately. It is the baseline the measurer subtracts, so
-    /// only what the rail adds is charged here rather than the prompt being billed again every turn.
-    /// </param>
-    /// <param name="toolCount">
-    /// The number of tools the agent was built with, already charged as tool schemas — the baseline for
-    /// tools the rail contributes, such as the framework's own skill-disclosure tools.
-    /// </param>
+    /// <param name="baseline">What the agent was already charged for, which the measurer subtracts.</param>
     /// <remarks>
-    /// It must be last: the runtime feeds each provider the previous one's output, so only the final
-    /// position sees everything the others contributed. That is why this is called from the tail of
+    /// <strong>This is the canonical statement of the lastness rule.</strong> The measurer must be last:
+    /// the runtime feeds each provider the previous one's output, so only the final position sees
+    /// everything the others contributed. That is why it is appended from the tail of
     /// <see cref="BuildMergedAIContextProviders"/> rather than by whoever consumes the rail — lastness is
-    /// then a property of the builder, not of a call sequence somewhere else. Placing it after
-    /// <see cref="Services.Agent.GoverningToolContextProvider"/> — which is itself documented as going last
-    /// — is safe, because this provider neither adds nor removes tools and so cannot escape that governance
+    /// then a property of the builder, not of a call sequence somewhere else — and why that method hands
+    /// the finished rail out read-only. Placing it after
+    /// <see cref="Services.Agent.GoverningToolContextProvider"/>, which is itself documented as going
+    /// last, is safe: this provider neither adds nor removes tools, so it cannot escape that governance
     /// wrapper or defeat it. Nothing is appended when no budget tracker is wired in, leaving a host that
     /// does not track context with exactly the rail it had before.
     /// </remarks>
     private void AppendPerTurnBudgetProvider(
-        IList<AIContextProvider> providers,
-        string agentName,
-        string instruction,
-        int toolCount)
+        List<AIContextProvider> providers,
+        PerTurnBudgetBaseline baseline)
     {
         if (_budgetTracker is null || providers.Count == 0)
             return;
 
         providers.Add(new Services.Agent.PerTurnBudgetContextProvider(
-            agentName,
+            baseline.AgentName,
             _budgetTracker,
-            instruction,
-            toolCount,
+            baseline.Instruction,
+            baseline.ToolCount,
             _loggerFactory.CreateLogger<Services.Agent.PerTurnBudgetContextProvider>()));
 
         _logger.LogDebug(
             "Wired PerTurnBudgetContextProvider for {AgentName} behind {ProviderCount} context provider(s)",
-            agentName, providers.Count - 1);
+            baseline.AgentName, providers.Count - 1);
     }
 }

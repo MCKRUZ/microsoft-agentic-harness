@@ -27,6 +27,49 @@ namespace Application.AI.Common.Helpers;
 public static class ToolCeilingResolver
 {
     /// <summary>
+    /// Combines the allowlists several declarations each grant into the single unbounded-or-bounded
+    /// input <see cref="ApplyCeiling"/> expects.
+    /// </summary>
+    /// <param name="declarations">
+    /// One allowlist per declaration. A <see langword="null"/> or empty entry is a declaration that
+    /// restricts nothing and contributes nothing. Typed as a sequence of sequences rather than of
+    /// lists because callers hold these as <c>IList</c>, <c>IReadOnlyList</c> and arrays, and neither
+    /// list interface converts to the other in this position.
+    /// </param>
+    /// <returns>
+    /// The de-duplicated union, or <see langword="null"/> when no declaration restricted anything —
+    /// <em>unbounded</em>, which is what a ceiling then caps.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// This is the step that <em>produces</em> the null-versus-empty distinction the rest of this type
+    /// depends on, so it belongs beside <see cref="ApplyCeiling"/> rather than in the factory that
+    /// happens to call it. It lived there, private, which meant the union half of the invariant could
+    /// only be exercised by constructing an entire agent factory with four collaborators.
+    /// </para>
+    /// <para>
+    /// Union, not intersection, and deliberately: an agent built from several skills may use what any
+    /// of them grants. Narrowing happens afterwards and only through <see cref="ApplyCeiling"/>, which
+    /// is the one place that can tighten.
+    /// </para>
+    /// <para>
+    /// Kept to strings so this helper takes no dependency on the skill domain model, and so the same
+    /// primitive serves any future caller whose declarations are not skills.
+    /// </para>
+    /// </remarks>
+    public static IReadOnlyList<string>? Union(IEnumerable<IEnumerable<string>?> declarations)
+    {
+        ArgumentNullException.ThrowIfNull(declarations);
+
+        var union = declarations
+            .SelectMany(d => d ?? [])
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        return union.Count > 0 ? union : null;
+    }
+
+    /// <summary>
     /// Caps <paramref name="current"/> by an optional tool <paramref name="ceiling"/>, tighten-only.
     /// </summary>
     /// <param name="current">

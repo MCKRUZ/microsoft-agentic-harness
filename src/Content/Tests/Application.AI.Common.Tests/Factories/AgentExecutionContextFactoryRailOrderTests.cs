@@ -165,7 +165,63 @@ public sealed class AgentExecutionContextFactoryRailOrderTests : IDisposable
             + "records. If this list needs to change, the change is the thing to review — not the test");
     }
 
-    // ── Rule 2: the measurer is last, in every configuration ──────────────────
+    // ── Rule 2: the measurer is last, and stays last ──────────────────────────
+
+    [Fact]
+    public async Task MapToAgentContext_AppendingToTheBuiltRail_IsRefused()
+    {
+        // The rail leaves the factory through a settable IList property and is handed to the framework
+        // as one, so no type on that path can express "this list is finished". Refusing the append is
+        // therefore the instance's own job (issue #277).
+        //
+        // Displacement is the failure this refuses. A provider appended after the measurer pushes it out
+        // of last place, and from any earlier position it charges the turn for less than the turn
+        // actually cost — so the budget meant to bound a conversation stops bounding it, silently, in
+        // the direction nobody notices.
+        var context = await CreateFactory().MapToAgentContextAsync([MakeSkill()], new SkillAgentOptions());
+
+        var append = () => context.AIContextProviders!.Add(new ToolPermissionFilter([AllowedTool]));
+
+        append.Should().Throw<NotSupportedException>(
+            "a consumer that appends to a finished rail must fail loudly rather than silently displace "
+            + "the per-turn measurer from the last position");
+
+        RailTypes(context)[^1].Should().Be(typeof(PerTurnBudgetContextProvider),
+            "the refused append must also leave the rail as it was");
+    }
+
+    [Fact]
+    public async Task MapToAgentContext_TheReadOnlyRail_IsAcceptedByTheFrameworkAgentItIsBuiltFor()
+    {
+        // The other half of #277. Refusing the append is only safe if the framework itself never needed to
+        // mutate the rail — and nothing else in this suite would notice if a future Microsoft.Agents.AI
+        // upgrade started to, because every other test reads the rail without ever handing it to a real
+        // agent. That would surface in production as a NotSupportedException at agent construction.
+        var context = await CreateFactory().MapToAgentContextAsync([MakeSkill()], new SkillAgentOptions());
+
+        // Control: the instrument can fail. Without this, an agent that quietly ignored the rail entirely
+        // would satisfy the assertion below just as well as one that handles it correctly.
+        var append = () => context.AIContextProviders!.Add(new ToolPermissionFilter([AllowedTool]));
+        append.Should().Throw<NotSupportedException>(
+            "control: the rail handed over below must be one that would throw if the framework mutated it");
+
+        // Built the way AgentFactory builds it, so this exercises the shape production actually hands over.
+        using var chatClient = new Fakes.FakeChatClient().WithDefaultResponse("ok");
+        var agent = new ChatClientAgent(chatClient, new ChatClientAgentOptions
+        {
+            Name = context.Name,
+            ChatOptions = new ChatOptions { Instructions = context.Instruction },
+            AIContextProviders = context.AIContextProviders
+        });
+
+        var run = async () => await agent.RunAsync("hello");
+
+        await run.Should().NotThrowAsync(
+            "the framework consumes the rail as a sequence and copies it, so handing it out read-only is "
+            + "safe; if an upgrade changes that, this fails here rather than in a host's production logs");
+    }
+
+    // ── Rule 2 continued: the measurer is last, in every configuration ────────
 
     [Theory]
     [InlineData(true, true)]
