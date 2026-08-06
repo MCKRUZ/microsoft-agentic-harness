@@ -1,0 +1,239 @@
+using Application.AI.Common.Interfaces;
+using Application.AI.Common.Interfaces.Agent;
+using Application.AI.Common.Interfaces.Governance;
+using Application.AI.Common.Interfaces.Tools;
+using Application.AI.Common.Services.Governance;
+using Domain.AI.Governance;
+using FluentAssertions;
+using Microsoft.Extensions.AI;
+using Microsoft.Extensions.DependencyInjection;
+using Xunit;
+
+namespace Presentation.Common.Tests.Composition;
+
+/// <summary>
+/// Proves the consumer-authored observer seam is live on the REAL composition root: a rule the host
+/// registers is consulted on every agent tool call and can stop one — and, critically, cannot
+/// resurrect a call the built-in gates already refused.
+/// </summary>
+/// <remarks>
+/// <para>
+/// The seam exists because the harness's three built-in observers answer harness questions ("may
+/// this agent use this tool", "is the data too sensitive", "is the agent looping") and none answers
+/// the consumer's question ("is this specific invocation a good idea"). The chokepoint class is
+/// internal and sealed, so before this there was nowhere to put a domain rule.
+/// </para>
+/// <para>
+/// <strong>The load-bearing test here is
+/// <see cref="PermissiveObserver_CannotRescueACallTheGovernorDenied"/>.</strong> The entire safety
+/// argument for letting consumers inject code into the tool path is that observers run last and can
+/// only tighten. If that ordering ever regressed, a well-meaning observer could widen access past
+/// the capability envelope — so it is asserted against the production graph rather than trusted.
+/// </para>
+/// </remarks>
+public sealed class ToolCallObserverCompositionTests : IDisposable
+{
+    private const string HostSkillId = "observer-host-skill";
+    private const string ToolName = "wire_funds";
+
+    private readonly string _tempRoot;
+    private readonly string _skillsDir;
+
+    public ToolCallObserverCompositionTests()
+    {
+        _tempRoot = Path.Combine(Path.GetTempPath(), "composition-observer-" + Guid.NewGuid().ToString("N"));
+        _skillsDir = Path.Combine(_tempRoot, "skills");
+
+        var skillDir = Path.Combine(_skillsDir, "host");
+        Directory.CreateDirectory(skillDir);
+        File.WriteAllText(Path.Combine(skillDir, "SKILL.md"), $"""
+            ---
+            name: {HostSkillId}
+            description: A built-in skill used to resolve a governed tool.
+            ---
+            Host instructions.
+            """);
+    }
+
+    public void Dispose()
+    {
+        if (Directory.Exists(_tempRoot))
+            Directory.Delete(_tempRoot, recursive: true);
+    }
+
+    /// <param name="permission">
+    /// The permission default every tool resolves under. "Allow" lets a call reach the observers;
+    /// "Deny" has the governor refuse it before they are consulted.
+    /// </param>
+    private Dictionary<string, string?> Settings(string permission) => new()
+    {
+        ["AppConfig:AI:Skills:BasePath"] = _skillsDir,
+        ["AppConfig:AI:Governance:EnforceToolInvocation"] = "true",
+        ["AppConfig:AI:Permissions:DefaultBehavior"] = permission,
+    };
+
+    [Fact]
+    public void ObserverChain_IsRegisteredAndEmptyOnTheDefaultComposition()
+    {
+        // Registration is the opt-in: a host that adds no rules must pay nothing on the hot path.
+        using var provider = CompositionRootTestHost.BuildProvider(Settings("Allow"));
+        using var scope = provider.CreateScope();
+
+        var chain = scope.ServiceProvider.GetRequiredService<IToolCallObserverChain>();
+
+        chain.Should().BeOfType<ToolCallObserverChain>();
+        chain.HasObservers.Should().BeFalse(
+            "the harness ships no observers of its own — the seam is empty until a consumer fills it");
+    }
+
+    [Fact]
+    public async Task RegisteredObserver_IsConsultedOnTheLivePath()
+    {
+        var observer = new RecordingObserver(ToolCallVerdict.Proceed());
+        await using var provider = CompositionRootTestHost.BuildProvider(
+            Settings("Allow"), (services, _) => services.AddSingleton<IToolCallObserver>(observer));
+
+        var executed = false;
+        var tool = await BuildGovernedTool(provider,
+            AIFunctionFactory.Create(() => { executed = true; return "sent"; }, ToolName));
+
+        using var scope = provider.CreateScope();
+        await InvokeUnderGovernedTurn(scope, tool);
+
+        observer.Calls.Should().Be(1, "a registered rule must see every agent tool call");
+        observer.LastObservation!.ToolName.Should().Be(ToolName);
+        executed.Should().BeTrue("the observer raised no objection");
+    }
+
+    [Fact]
+    public async Task RegisteredObserver_BlocksTheCallOnTheLivePath()
+    {
+        // The headline capability: a domain rule the harness could never know, stopping a specific
+        // invocation before it happens.
+        var observer = new RecordingObserver(ToolCallVerdict.Block("amount exceeds the wire limit"));
+        await using var provider = CompositionRootTestHost.BuildProvider(
+            Settings("Allow"), (services, _) => services.AddSingleton<IToolCallObserver>(observer));
+
+        var executed = false;
+        var tool = await BuildGovernedTool(provider,
+            AIFunctionFactory.Create(() => { executed = true; return "sent"; }, ToolName));
+
+        using var scope = provider.CreateScope();
+        var result = await InvokeUnderGovernedTurn(scope, tool);
+
+        executed.Should().BeFalse("the observer blocked the call, so the tool must never have run");
+        ResultText(result).Should().Contain("is not permitted");
+        ResultText(result).Should().NotContain("wire limit",
+            "the rule's reasoning is operator-facing and must not reach the model");
+    }
+
+    [Fact]
+    public async Task PermissiveObserver_CannotRescueACallTheGovernorDenied()
+    {
+        // THE load-bearing assertion. Observers run last, after admission control has settled
+        // whether the agent may use the tool at all. An observer saying "proceed" must not widen
+        // access — and must not even be consulted, since the call was already refused.
+        var observer = new RecordingObserver(ToolCallVerdict.Proceed());
+        await using var provider = CompositionRootTestHost.BuildProvider(
+            Settings("Deny"), (services, _) => services.AddSingleton<IToolCallObserver>(observer));
+
+        var executed = false;
+        var tool = await BuildGovernedTool(provider,
+            AIFunctionFactory.Create(() => { executed = true; return "sent"; }, ToolName));
+
+        using var scope = provider.CreateScope();
+        var (result, trace) = await InvokeUnderGovernedTurnWithTrace(scope, tool);
+
+        executed.Should().BeFalse("the governor denied the call; no observer may override that");
+        ResultText(result).Should().Contain("is not permitted");
+        observer.Calls.Should().Be(0,
+            "observers run after admission control — a denied call must never reach consumer code at all");
+        trace.ToolDecisions.Should().ContainSingle()
+            .Which.Outcome.Should().Be(ToolDecisionOutcome.Denied);
+    }
+
+    [Fact]
+    public async Task MultipleObservers_FirstObjectionWinsOnTheLivePath()
+    {
+        var permissive = new RecordingObserver(ToolCallVerdict.Proceed());
+        var restrictive = new RecordingObserver(ToolCallVerdict.Block("sanctioned counterparty"));
+        await using var provider = CompositionRootTestHost.BuildProvider(
+            Settings("Allow"), (services, _) =>
+            {
+                services.AddSingleton<IToolCallObserver>(permissive);
+                services.AddSingleton<IToolCallObserver>(restrictive);
+            });
+
+        var executed = false;
+        var tool = await BuildGovernedTool(provider,
+            AIFunctionFactory.Create(() => { executed = true; return "sent"; }, ToolName));
+
+        using var scope = provider.CreateScope();
+        await InvokeUnderGovernedTurn(scope, tool);
+
+        executed.Should().BeFalse("a restrictive rule wins regardless of registration order");
+        permissive.Calls.Should().Be(1);
+        restrictive.Calls.Should().Be(1);
+    }
+
+    private static async Task<AIFunction> BuildGovernedTool(ServiceProvider provider, AIFunction probe)
+    {
+        var skill = provider.GetRequiredService<ISkillMetadataRegistry>().TryGet(HostSkillId);
+        skill.Should().NotBeNull("the built-in skill must be discoverable from the configured BasePath");
+
+        var tools = await provider.GetRequiredService<IToolChainBuilder>().BuildToolsAsync(
+            skill!, new Domain.AI.Skills.SkillAgentOptions { AdditionalTools = [probe] });
+
+        return tools.OfType<AIFunction>().Single(t => t.Name == probe.Name);
+    }
+
+    private static async Task<object?> InvokeUnderGovernedTurn(IServiceScope scope, AIFunction function)
+    {
+        var (result, _) = await InvokeUnderGovernedTurnWithTrace(scope, function);
+        return result;
+    }
+
+    /// <summary>
+    /// Invokes a governed function inside a turn shaped exactly like
+    /// <c>ExecuteAgentTurnCommandHandler</c>'s — scoped context initialized, and both the governor
+    /// and the observer chain published ambiently for the duration.
+    /// </summary>
+    private static async Task<(object? Result, GovernanceTrace Trace)> InvokeUnderGovernedTurnWithTrace(
+        IServiceScope scope, AIFunction function)
+    {
+        scope.ServiceProvider.GetRequiredService<IAgentExecutionContext>()
+            .Initialize("composition-observer-agent", "conv-observer", turnNumber: 1);
+
+        var governor = scope.ServiceProvider.GetRequiredService<IToolInvocationGovernor>();
+        var chain = scope.ServiceProvider.GetRequiredService<IToolCallObserverChain>();
+
+        using var governorScope = ToolGovernanceAccessor.Begin(governor);
+        using var observerScope = ToolCallObserverAccessor.Begin(chain);
+
+        var result = await function.InvokeAsync(new AIFunctionArguments(), CancellationToken.None);
+        return (result, governor.GetTrace());
+    }
+
+    private static string ResultText(object? invocationResult) => invocationResult switch
+    {
+        System.Text.Json.JsonElement { ValueKind: System.Text.Json.JsonValueKind.String } element
+            => element.GetString()!,
+        _ => invocationResult?.ToString() ?? string.Empty,
+    };
+
+    /// <summary>A consumer rule that answers as the test dictates and records what it was shown.</summary>
+    private sealed class RecordingObserver(ToolCallVerdict verdict) : IToolCallObserver
+    {
+        public string Name => "test-rule";
+        public int Calls { get; private set; }
+        public ToolCallObservation? LastObservation { get; private set; }
+
+        public ValueTask<ToolCallVerdict> ObserveAsync(
+            ToolCallObservation observation, CancellationToken cancellationToken)
+        {
+            Calls++;
+            LastObservation = observation;
+            return ValueTask.FromResult(verdict);
+        }
+    }
+}

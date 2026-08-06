@@ -33,6 +33,7 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 	private readonly IToolInvocationGovernor _governor;
 	private readonly IProgressEvaluator _progressEvaluator;
 	private readonly IToolClassificationGate _classificationGate;
+	private readonly IToolCallObserverChain _observerChain;
 	private readonly IAgentMetadataRegistry _agentRegistry;
 	private readonly ISkillMetadataRegistry _skillRegistry;
 	private readonly IConversationRegistrationTracker _registrationTracker;
@@ -48,6 +49,7 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 		IToolInvocationGovernor governor,
 		IProgressEvaluator progressEvaluator,
 		IToolClassificationGate classificationGate,
+		IToolCallObserverChain observerChain,
 		IAgentMetadataRegistry agentRegistry,
 		ISkillMetadataRegistry skillRegistry,
 		IConversationRegistrationTracker registrationTracker,
@@ -62,6 +64,7 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 		_governor = governor;
 		_progressEvaluator = progressEvaluator;
 		_classificationGate = classificationGate;
+		_observerChain = observerChain;
 		_agentRegistry = agentRegistry;
 		_skillRegistry = skillRegistry;
 		_registrationTracker = registrationTracker;
@@ -143,6 +146,10 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 			// needs no reset — only the ambient exposure for the governed tool wrapper to consult.
 			ClassificationGateAccessor.Current = _classificationGate;
 
+			// Same per-turn bridge for the host's own tool-call observers. Stateless across calls and
+			// inert when the host registered none, so this costs nothing on the default composition.
+			ToolCallObserverAccessor.Current = _observerChain;
+
 			object? response;
 			var turnSw = Stopwatch.StartNew();
 			try
@@ -164,6 +171,7 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 				ToolGovernanceAccessor.Current = null;
 				ProgressGuardAccessor.Current = null;
 				ClassificationGateAccessor.Current = null;
+				ToolCallObserverAccessor.Current = null;
 			}
 
 			// Capture accumulated token usage from all LLM calls during this turn

@@ -18,9 +18,17 @@ namespace Application.AI.Common.Services.Tools;
 /// — a block returns its model-facing message in place of the tool result, while a redact verdict lets the
 /// call run and scrubs its output afterward; then the ambient <c>IProgressEvaluator</c> (via
 /// <see cref="ProgressGuardAccessor"/>) — a spin verdict returns its halt message in place of the tool
-/// result. Classification and progress are evaluated only for calls the governor permits, and a
-/// classification block likewise skips progress (a blocked call never executed, so it must not count toward
-/// progress). When none are ambient (a tool invoked outside a governed turn), the call passes straight through.
+/// result; and finally the ambient <c>IToolCallObserverChain</c> (via
+/// <see cref="ToolCallObserverAccessor"/>) — the host's own rules, whose block returns the generic
+/// not-permitted message. Each stage is evaluated only for calls the previous stages permitted, so a
+/// blocked call never executed and must not count toward progress. When none are ambient (a tool invoked
+/// outside a governed turn), the call passes straight through.
+/// </para>
+/// <para>
+/// <strong>Consumer observers run last, and that is deliberate.</strong> By the time they are consulted
+/// every question about whether the agent may use the tool at all has been settled by the built-in gates,
+/// so an observer can only make the outcome stricter — it cannot resurrect a call the governor denied,
+/// overrule the capability envelope, or bypass a plugin's deny list.
 /// </para>
 /// <para>
 /// This is the single invocation-time chokepoint for the agent's autonomous tool calls, applied to
@@ -78,6 +86,19 @@ internal sealed class GovernedAIFunction : DelegatingAIFunction
             if (verdict.ShouldHalt)
                 return verdict.HaltMessage
                     ?? $"Error: tool '{Name}' was stopped because the agent is not making progress.";
+        }
+
+        // Consumer-authored observers run LAST, after every built-in gate has permitted the call.
+        // That ordering is the whole safety argument for the seam: an observer only ever sees a call
+        // that was already about to execute, so its verdict can tighten the outcome but never widen
+        // access. Inert unless the host registered observers.
+        var observers = ToolCallObserverAccessor.Current;
+        if (observers is { HasObservers: true })
+        {
+            var observed = await observers
+                .EvaluateAsync(Name, arguments, cancellationToken).ConfigureAwait(false);
+            if (!observed.IsAllowed)
+                return observed.DeniedMessage ?? $"Error: tool '{Name}' was blocked by an observer.";
         }
 
         var result = await base.InvokeCoreAsync(arguments, cancellationToken).ConfigureAwait(false);
