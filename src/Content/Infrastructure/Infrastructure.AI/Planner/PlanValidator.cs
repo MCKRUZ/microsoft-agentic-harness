@@ -238,7 +238,13 @@ public sealed class PlanValidator : IPlanValidator
         where T : StepConfiguration
     {
         var validator = _serviceProvider.GetService<IValidator<T>>();
-        if (validator is null) return [];
+        if (validator is null)
+        {
+            _logger.LogWarning(
+                "No validator registered for StepConfiguration type '{ConfigType}'; step configurations of this type will pass validation without checking",
+                typeof(T).Name);
+            return [];
+        }
 
         var result = await validator.ValidateAsync(config, ct);
         return result.Errors.Select(e => e.ErrorMessage).ToList();

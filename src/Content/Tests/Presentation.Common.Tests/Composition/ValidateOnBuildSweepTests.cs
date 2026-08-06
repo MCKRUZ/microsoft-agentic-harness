@@ -27,19 +27,51 @@ namespace Presentation.Common.Tests.Composition;
 /// If a future change adds a handler whose dependency has no default, this test fails with
 /// the exact unresolved service — not a customer's production stack trace.
 /// </para>
+/// <para>
+/// #251's original ~106 failures came nearly all from conditionally-registered handlers
+/// whose dependencies are only present under some configurations (e.g., handlers gated by
+/// Governance.Enabled). Testing only the all-features-off baseline is blind to that class.
+/// This test is parameterized to cover both the baseline and representative features-on
+/// configurations, closing the gap that #251's first fix left.
+/// </para>
 /// </remarks>
 public sealed class ValidateOnBuildSweepTests
 {
+    /// <summary>
+    /// All-features-off baseline: the default, all-features-off registration set every host
+    /// shares before its host-specific overrides. This is the baseline that must always
+    /// be constructible.
+    /// </summary>
     [Fact]
-    public void ProductionCompositionRoot_BuildsWithValidateOnBuild()
+    public void ProductionCompositionRoot_AllFeaturesOff_BuildsWithValidateOnBuild()
     {
-        // Empty configuration = the default, all-features-off registration set every host
-        // shares before its host-specific overrides. This is the baseline that must always
-        // be constructible.
         var configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>())
             .Build();
 
+        BuildAndValidate(configuration);
+    }
+
+    /// <summary>
+    /// Governance-enabled configuration: handlers that depend on governance services are only
+    /// registered when <c>AppConfig:AI:Governance:Enabled = true</c>. Validates that the graph
+    /// is constructible when this feature is on.
+    /// </summary>
+    [Fact]
+    public void ProductionCompositionRoot_GovernanceEnabled_BuildsWithValidateOnBuild()
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                { "AppConfig:AI:Governance:Enabled", "true" }
+            })
+            .Build();
+
+        BuildAndValidate(configuration);
+    }
+
+    private static void BuildAndValidate(IConfiguration configuration)
+    {
         var services = new ServiceCollection();
         services.AddLogging();
         services.RegisterConfigSections(configuration);
