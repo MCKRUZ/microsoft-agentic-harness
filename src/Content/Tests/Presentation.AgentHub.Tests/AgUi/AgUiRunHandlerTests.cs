@@ -126,6 +126,10 @@ public sealed class AgUiRunHandlerTests
         const string userId = "user-1";
 
         var stale = MakeRecord(threadId, userId);
+
+        // The turn that landed while this one queued wrote BOTH halves of what it produces: the
+        // exchange, and the conversation's running telemetry. A fixture that advanced only the
+        // transcript would describe a state no completed turn can leave behind.
         var fresh = stale with
         {
             Messages =
@@ -133,6 +137,7 @@ public sealed class AgUiRunHandlerTests
                 new ConversationMessage(Guid.NewGuid(), MessageRole.User, "earlier", DateTimeOffset.UtcNow),
                 new ConversationMessage(Guid.NewGuid(), MessageRole.Assistant, "answered", DateTimeOffset.UtcNow),
             ],
+            Telemetry = TelemetryAccumulator.Zero with { TurnCount = 1 },
         };
 
         var mediator = new Mock<IMediator>();
@@ -158,9 +163,9 @@ public sealed class AgUiRunHandlerTests
         await handler.HandleRunAsync(MakeInput(threadId, "Hi"), new AgUiEventWriter(ms), MakeUser(userId));
 
         dispatched.Should().NotBeNull();
-        dispatched!.TurnNumber.Should().Be(fresh.Messages.Count + 1,
-            "the turn must be numbered from the transcript as it stands once the lease is held, not "
-            + "from the snapshot taken before waiting for it");
+        dispatched!.TurnNumber.Should().Be(fresh.Telemetry!.TurnCount + 1,
+            "the turn must be numbered from the conversation as it stands once the lease is held, not "
+            + "from the snapshot taken before waiting for it — the stale record would number this 1");
     }
 
     [Fact]

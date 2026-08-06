@@ -93,31 +93,49 @@ public sealed class RunConversationDurableTests
         MaxTurns = 10
     };
 
-    private void SetupTurns(params string[] responses)
+    /// <summary>
+    /// The one place turns are stubbed. Every variant below supplies only what it varies — the
+    /// response and its usage — and inherits the three things every stub here must do.
+    /// </summary>
+    /// <remarks>
+    /// Those three are load-bearing and were previously repeated per stub, which is how they drifted:
+    /// honouring the token is what lets the lost-lease test observe a stopped run rather than one that
+    /// finished anyway; <c>NoteTurn</c> is what lets the lease count turns and drop itself between two
+    /// of them; and recording the dispatch sequence is what lets writes be ordered against turns. Two
+    /// of the three stubs recorded the sequence and one did not, so swapping stubs silently lost
+    /// ordering data from a test that still passed.
+    /// </remarks>
+    private void SetupTurnCore(Func<ExecuteAgentTurnCommand, AgentTurnResult> respond)
     {
-        var queue = new Queue<string>(responses);
         _mediator
             .Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
             .Returns((ExecuteAgentTurnCommand cmd, CancellationToken ct) =>
             {
-                // Honouring the token is what lets the lost-lease test observe a stopped run rather
-                // than a run that finished anyway.
                 ct.ThrowIfCancellationRequested();
                 _lease.NoteTurn();
+                _dispatchSequences.Add(CallSequence.Next());
 
-                var response = queue.Count > 0 ? queue.Dequeue() : "done";
-                return Task.FromResult(new AgentTurnResult
-                {
-                    Success = true,
-                    Response = response,
-                    UpdatedHistory =
-                    [
-                        .. cmd.ConversationHistory,
-                        new ChatMessage(ChatRole.User, cmd.UserMessage),
-                        new ChatMessage(ChatRole.Assistant, response)
-                    ]
-                });
+                return Task.FromResult(respond(cmd));
             });
+    }
+
+    /// <summary>Builds a successful turn whose reply is <paramref name="response"/>.</summary>
+    private static AgentTurnResult Answer(ExecuteAgentTurnCommand cmd, string response) => new()
+    {
+        Success = true,
+        Response = response,
+        UpdatedHistory =
+        [
+            .. cmd.ConversationHistory,
+            new ChatMessage(ChatRole.User, cmd.UserMessage),
+            new ChatMessage(ChatRole.Assistant, response)
+        ]
+    };
+
+    private void SetupTurns(params string[] responses)
+    {
+        var queue = new Queue<string>(responses);
+        SetupTurnCore(cmd => Answer(cmd, queue.Count > 0 ? queue.Dequeue() : "done"));
     }
 
     // -- Continuity --
@@ -426,26 +444,67 @@ public sealed class RunConversationDurableTests
         // The defect itself. The session row is keyed one-per-conversation and written with SET
         // semantics, so a run reporting its own totals silently replaces everything spent before it —
         // a conversation that has cost dollars reads as costing whatever its most recent run did.
+        // Every figure is distinct, and every one this turn adds is distinct too, so a transposed pair
+        // of arguments anywhere in the chain shows up as a wrong number rather than an equal one.
         _store.ObservabilitySessionId = ExistingSessionId;
         _store.Telemetry = new TelemetryAccumulator(
             TurnCount: 4, ToolCallCount: 3, InputTokens: 800, OutputTokens: 400,
             CacheRead: 200, CacheWrite: 100, CostUsd: 1.50m);
-        SetupTurnsWithUsage(inputTokens: 10, outputTokens: 5, toolCalls: 1);
+        SetupTurnsWithUsage(
+            inputTokens: 10, outputTokens: 5, toolCalls: 1,
+            cacheRead: 7, cacheWrite: 3, costUsd: 0.25m);
 
         await BuildSut().Handle(Durable("one more"), CancellationToken.None);
 
         _observability.Verify(o => o.UpdateSessionMetricsAsync(
             ExistingSessionId,
-            5,      // turns:      4 + 1
-            4,      // tool calls: 3 + 1
+            5,      // turns:       4 + 1
+            4,      // tool calls:  3 + 1
             0,
-            810,    // input:      800 + 10
-            405,    // output:     400 + 5
-            200, 100,
-            1.50m,  // this turn cost nothing, so the conversation's total is unchanged
+            810,    // input:     800 + 10
+            405,    // output:    400 + 5
+            207,    // cacheRead: 200 + 7
+            103,    // cacheWrite:100 + 3
+            1.75m,  // cost:      1.50 + 0.25
             It.IsAny<decimal>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()),
             Times.Once,
             "a run continues a conversation's spend; it does not restate it");
+    }
+
+    [Fact]
+    public async Task Handle_DurableRunThatThrows_LeavesTheConversationsSessionOpen()
+    {
+        // The exception path is the one that was missed when each call site applied the ownership rule
+        // itself: a transient throw inside a durable run ended the whole conversation's session, and
+        // every later run then wrote metrics into a row already marked finished.
+        _store.ObservabilitySessionId = ExistingSessionId;
+        _mediator
+            .Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("the model client fell over"));
+
+        var act = () => BuildSut().Handle(Durable(), CancellationToken.None);
+
+        await act.Should().ThrowAsync<InvalidOperationException>();
+        _observability.Verify(o => o.EndSessionAsync(
+            It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task Handle_SelfContainedRunThatThrows_EndsTheSessionItOpened()
+    {
+        // Control for the test above: where the run is the whole conversation, an unhandled failure
+        // must still close its session out, or a crashed run leaves a row active forever.
+        _mediator
+            .Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("the model client fell over"));
+
+        var act = () => BuildSut().Handle(SelfContained(), CancellationToken.None);
+
+        await act.Should().ThrowAsync<InvalidOperationException>();
+        _observability.Verify(o => o.EndSessionAsync(
+            NewSessionId, "error", "conversation.unhandled_exception", It.IsAny<CancellationToken>()),
+            Times.Once);
     }
 
     [Fact]
@@ -584,60 +643,29 @@ public sealed class RunConversationDurableTests
     private List<ExecuteAgentTurnCommand> CaptureDispatchedTurns()
     {
         var dispatched = new List<ExecuteAgentTurnCommand>();
-        _mediator
-            .Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
-            .Returns((ExecuteAgentTurnCommand cmd, CancellationToken ct) =>
-            {
-                ct.ThrowIfCancellationRequested();
-                _lease.NoteTurn();
-                dispatched.Add(cmd);
-                _dispatchSequences.Add(CallSequence.Next());
-
-                var response = $"answer {dispatched.Count}";
-                return Task.FromResult(new AgentTurnResult
-                {
-                    Success = true,
-                    Response = response,
-                    UpdatedHistory =
-                    [
-                        .. cmd.ConversationHistory,
-                        new ChatMessage(ChatRole.User, cmd.UserMessage),
-                        new ChatMessage(ChatRole.Assistant, response)
-                    ]
-                });
-            });
+        SetupTurnCore(cmd =>
+        {
+            dispatched.Add(cmd);
+            return Answer(cmd, $"answer {dispatched.Count}");
+        });
         return dispatched;
     }
 
     /// <summary>
     /// Turns that report token usage, so the accumulation assertions have something to accumulate.
     /// </summary>
-    private void SetupTurnsWithUsage(int inputTokens, int outputTokens, int toolCalls = 0)
-    {
-        _mediator
-            .Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
-            .Returns((ExecuteAgentTurnCommand cmd, CancellationToken ct) =>
-            {
-                ct.ThrowIfCancellationRequested();
-                _lease.NoteTurn();
-                _dispatchSequences.Add(CallSequence.Next());
-
-                return Task.FromResult(new AgentTurnResult
-                {
-                    Success = true,
-                    Response = "answer",
-                    InputTokens = inputTokens,
-                    OutputTokens = outputTokens,
-                    ToolsInvoked = [.. Enumerable.Range(0, toolCalls).Select(i => $"tool-{i}")],
-                    UpdatedHistory =
-                    [
-                        .. cmd.ConversationHistory,
-                        new ChatMessage(ChatRole.User, cmd.UserMessage),
-                        new ChatMessage(ChatRole.Assistant, "answer")
-                    ]
-                });
-            });
-    }
+    private void SetupTurnsWithUsage(
+        int inputTokens, int outputTokens, int toolCalls = 0,
+        int cacheRead = 0, int cacheWrite = 0, decimal costUsd = 0m) =>
+        SetupTurnCore(cmd => Answer(cmd, "answer") with
+        {
+            InputTokens = inputTokens,
+            OutputTokens = outputTokens,
+            CacheRead = cacheRead,
+            CacheWrite = cacheWrite,
+            CostUsd = costUsd,
+            ToolsInvoked = [.. Enumerable.Range(0, toolCalls).Select(i => $"tool-{i}")],
+        });
 
     private static ConversationMessage Message(MessageRole role, string content) =>
         new(Guid.NewGuid(), role, content, DateTimeOffset.UtcNow);

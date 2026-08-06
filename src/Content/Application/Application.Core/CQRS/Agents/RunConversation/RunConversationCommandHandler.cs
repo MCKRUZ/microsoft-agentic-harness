@@ -172,16 +172,9 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 
 		var sw = Stopwatch.StartNew();
 		var turns = new List<TurnSummary>();
-		var totalToolInvocations = 0;
 		var governanceTraces = new List<GovernanceTrace>();
 		AgentTurnResult? lastResult = null;
 		var stoppedForBudget = false;
-
-		// This run's own totals. They answer "what did this call cost", which is what the caller asked
-		// and what the run-scoped metrics below report — deliberately NOT the same quantity as
-		// conversationTotals, which answers "what has this conversation cost in all".
-		int totalInputTokens = 0, totalOutputTokens = 0;
-		decimal totalCostUsd = 0m;
 		string? sessionModel = null;
 
 		// Everything the conversation has spent, this run included as it goes. A durable run resumes
@@ -189,6 +182,12 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 		var (existingSessionId, conversationTotals) = transcript is null
 			? (Guid.Empty, TelemetryAccumulator.Zero)
 			: await transcript.LoadTelemetryAsync(cancellationToken);
+
+		// Where this run came in. The caller asked what THIS call cost, and the run-scoped metrics
+		// report the same, so that quantity is derived by subtraction rather than accumulated alongside:
+		// two counters over one stream of turns are two chances to disagree, and a pair of totals
+		// disagreeing about the same turns is the whole of issue #255.
+		var runBaseline = conversationTotals;
 
 		var agentTag = new KeyValuePair<string, object?>(AgentConventions.Name, request.AgentName);
 		var sessionTags = new TagList { { AgentConventions.Name, request.AgentName } };
@@ -223,6 +222,32 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 		// normal (success / turn-failure) return path, so the catch block does
 		// not double-end it when an exception escapes after those paths.
 		var sessionEnded = false;
+
+		// Every path that finishes the session goes through here, so the two rules — this run must own
+		// the session, and it must not end one twice — are decided once. They were applied at each of
+		// the four call sites instead, and review found the exception path had been missed, which ended
+		// a live conversation's session on any transient throw.
+		//
+		// Failures are logged and swallowed rather than propagated. Ending a session is bookkeeping;
+		// a bookkeeping failure must not turn a conversation that completed into one that reports an
+		// error, and it must never mask an exception already on its way out. Cleanup runs on an
+		// uncancelled token so it still completes when the caller's token is the reason we are here.
+		async Task EndRunSessionAsync(string status, string? reason)
+		{
+			if (sessionEnded || !ownsSession)
+				return;
+
+			sessionEnded = true;
+
+			try
+			{
+				await _observabilityStore.EndSessionAsync(dbSessionId, status, reason, CancellationToken.None);
+			}
+			catch (Exception ex)
+			{
+				_logger.LogError(ex, "Failed to end observability session {SessionId}", dbSessionId);
+			}
+		}
 
 		try
 		{
@@ -298,20 +323,17 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 					_logger.LogError("Conversation turn {Turn} failed for {AgentName}: {Error}",
 						index + 1, request.AgentName, lastResult.Error);
 
-					if (ownsSession)
-					{
-						await _observabilityStore.EndSessionAsync(
-							dbSessionId, "error", lastResult.Error, cancellationToken);
-						sessionEnded = true;
-					}
+					await EndRunSessionAsync("error", lastResult.Error);
+
+					var partialShare = conversationTotals.Since(runBaseline);
 
 					return new ConversationResult
 					{
 						Success = false,
 						Turns = turns,
 						FinalResponse = string.Empty,
-						TotalToolInvocations = totalToolInvocations,
-						TotalTokens = totalInputTokens + totalOutputTokens,
+						TotalToolInvocations = partialShare.ToolCallCount,
+						TotalTokens = partialShare.InputTokens + partialShare.OutputTokens,
 						Error = $"Turn {index + 1} failed: {lastResult.Error}"
 					};
 				}
@@ -361,14 +383,9 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 					ToolsInvoked = lastResult.ToolsInvoked
 				});
 
-				totalToolInvocations += lastResult.ToolsInvoked.Count;
-
 				if (lastResult.Governance is not null)
 					governanceTraces.Add(lastResult.Governance);
 
-				totalInputTokens += lastResult.InputTokens;
-				totalOutputTokens += lastResult.OutputTokens;
-				totalCostUsd += lastResult.CostUsd;
 				sessionModel ??= lastResult.Model;
 
 				conversationTotals = conversationTotals.Add(
@@ -399,8 +416,24 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 				// and the only one that survives the observability database being absent or switched off,
 				// so it is written every turn rather than once at the end — a run that dies on its
 				// seventh turn leaves the two agreeing about the six that completed.
+				//
+				// Logged and swallowed, matching what the interactive host does with the same write and
+				// what the observability store does internally: the turn succeeded and its answer is
+				// already in the transcript, so failing it now over a telemetry write would discard real
+				// work to protect a number. The cost is that the next run resumes from a stale total.
 				if (transcript is not null)
-					await transcript.PersistTelemetryAsync(dbSessionId, conversationTotals, cancellationToken);
+				{
+					try
+					{
+						await transcript.PersistTelemetryAsync(dbSessionId, conversationTotals, cancellationToken);
+					}
+					catch (Exception ex) when (ex is not OperationCanceledException)
+					{
+						_logger.LogWarning(ex,
+							"Failed to persist telemetry for conversation {ConversationId}; the next run will "
+							+ "resume from a stale total", request.ConversationId);
+					}
+				}
 
 				if (request.OnProgress != null)
 				{
@@ -415,42 +448,42 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 			}
 
 			sw.Stop();
+
+			// What this run alone spent, taken as the difference between where the conversation stands
+			// now and where it stood when the run started. Everything below reports on the run, not the
+			// conversation, so all of it reads from here.
+			var runShare = conversationTotals.Since(runBaseline);
+
 			_logger.LogInformation("Conversation completed: {TurnCount} turns, {ToolCount} tool invocations",
-				turns.Count, totalToolInvocations);
+				turns.Count, runShare.ToolCallCount);
 
 			OrchestrationMetrics.ConversationDuration.Record(sw.Elapsed.TotalMilliseconds, agentTag);
 			OrchestrationMetrics.TurnsPerConversation.Record(turns.Count, agentTag);
-			if (totalToolInvocations > 0)
-				OrchestrationMetrics.ToolCalls.Add(totalToolInvocations, agentTag);
+			if (runShare.ToolCallCount > 0)
+				OrchestrationMetrics.ToolCalls.Add(runShare.ToolCallCount, agentTag);
 
-			if (totalCostUsd > 0)
-				SessionMetrics.SessionCost.Record((double)totalCostUsd, agentTag);
+			if (runShare.CostUsd > 0)
+				SessionMetrics.SessionCost.Record((double)runShare.CostUsd, agentTag);
 
-			if (ownsSession)
-			{
-				await _observabilityStore.EndSessionAsync(
-					dbSessionId, "completed", null, cancellationToken);
-				sessionEnded = true;
-			}
+			await EndRunSessionAsync("completed", null);
 
 			return new ConversationResult
 			{
 				Success = true,
 				Turns = turns,
 				FinalResponse = lastResult?.Response ?? string.Empty,
-				TotalToolInvocations = totalToolInvocations,
-				TotalTokens = totalInputTokens + totalOutputTokens,
+				TotalToolInvocations = runShare.ToolCallCount,
+				TotalTokens = runShare.InputTokens + runShare.OutputTokens,
 				BudgetExhausted = stoppedForBudget,
 				Governance = governanceTraces.Count > 0 ? GovernanceTrace.Merge(governanceTraces) : null
 			};
 		}
 		catch (OperationCanceledException)
 		{
-			// Caller cancellation (e.g. client disconnect) is routine, not exceptional.
-			// End the session as cancelled using a non-cancelled token so the cleanup
-			// write still completes, then rethrow to preserve cancellation semantics.
-			await EndSessionSafelyAsync(dbSessionId, "cancelled", null, sessionEnded || !ownsSession);
-			sessionEnded = true;
+			// Caller cancellation (e.g. client disconnect) is routine, not exceptional — so the session
+			// closes as "cancelled" rather than "error", and the exception is rethrown rather than
+			// turned into a failed result, because a caller that walked away is not a run that failed.
+			await EndRunSessionAsync("cancelled", null);
 			throw;
 		}
 		catch (Exception ex)
@@ -460,8 +493,7 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 			// session with a stable scrubbed status code and rethrow.
 			_logger.LogError(ex, "Conversation with {AgentName} failed with an unhandled exception",
 				request.AgentName);
-			await EndSessionSafelyAsync(dbSessionId, "error", "conversation.unhandled_exception", sessionEnded);
-			sessionEnded = true;
+			await EndRunSessionAsync("error", "conversation.unhandled_exception");
 			throw;
 		}
 		finally
@@ -481,32 +513,4 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 		}
 	}
 
-	/// <summary>
-	/// Ends the observability session defensively during exception/cancellation
-	/// handling: uses a non-cancelled token so cleanup completes even when the
-	/// caller's token is cancelled, and never lets a cleanup failure mask the
-	/// original exception being propagated.
-	/// </summary>
-	/// <param name="sessionId">The session to end.</param>
-	/// <param name="status">The terminal status to record.</param>
-	/// <param name="reason">A scrubbed reason code, or <see langword="null"/>.</param>
-	/// <param name="alreadyHandled">
-	/// <see langword="true"/> when there is nothing left to do: either a normal return path already
-	/// ended the session, or this run does not own it because it is continuing a durable conversation
-	/// that outlives the run.
-	/// </param>
-	private async Task EndSessionSafelyAsync(Guid sessionId, string status, string? reason, bool alreadyHandled)
-	{
-		if (alreadyHandled)
-			return;
-
-		try
-		{
-			await _observabilityStore.EndSessionAsync(sessionId, status, reason, CancellationToken.None);
-		}
-		catch (Exception endEx)
-		{
-			_logger.LogError(endEx, "Failed to end observability session {SessionId} during cleanup", sessionId);
-		}
-	}
 }
