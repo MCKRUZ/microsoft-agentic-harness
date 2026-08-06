@@ -59,13 +59,38 @@ jobs:
       - name: Build
         run: dotnet build src/AgenticHarness.slnx --no-restore --configuration Release
 
+      # Output is tee'd to a file so the step below can explain a failure the summary lines hide.
+      # `set -o pipefail` is what stops tee from swallowing dotnet's exit code — without it this
+      # step reports success whenever the tests fail, which is the opposite of a gate.
       - name: Unit and integration tests
-        run: >
-          dotnet test src/AgenticHarness.slnx
-          --no-build
-          --configuration Release
-          --collect:"XPlat Code Coverage"
-          --results-directory coverage
+        id: tests
+        run: |
+          set -euo pipefail
+          dotnet test src/AgenticHarness.slnx \
+            --no-build \
+            --configuration Release \
+            --collect:"XPlat Code Coverage" \
+            --results-directory coverage 2>&1 | tee test-output.log
+
+      # Says nothing unless the failure was the runner crashing rather than a test failing. See the
+      # script for what that failure looks like and why it is worth a step of its own.
+      #
+      # Conditioned on the tests step rather than a bare failure(), so a Build or schema failure does
+      # not send it looking at a file that was never written.
+      - name: Explain a test-runner crash
+        if: steps.tests.outcome == 'failure'
+        run: .github/scripts/explain-runner-crash.sh test-output.log
+
+      # The log outlives the workspace on purpose. This crash took one occurrence in four runs to
+      # appear and could not be reproduced, so the run that catches it next is the only evidence
+      # there will be — and a 60-line excerpt in a job summary is not enough to diagnose from.
+      - name: Upload test output
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: test-output
+          path: test-output.log
+          if-no-files-found: ignore
 
       - name: Upload coverage
         uses: actions/upload-artifact@v7
@@ -162,17 +187,28 @@ jobs:
         run: dotnet build src/AgenticHarness.slnx --no-restore --configuration Release
 
       - name: Run OWASP Agentic eval fixtures (hard gate)
+        id: owasp-tests
         # Any Verdict.Fail causes a non-zero exit code and blocks the merge.
         # To document a legitimate bypass, add an entry to .github/eval-bypasses.md
         # with the case id, reason, and expiry date — but the gate still runs.
-        run: >
-          dotnet test
-          src/Content/Tests/Application.AI.Common.Tests/Application.AI.Common.Tests.csproj
-          --no-build
-          --configuration Release
-          --filter "Category=OwaspAgentic"
-          --logger "trx;LogFileName=owasp-agentic-gate.trx"
-          --results-directory owasp-results
+        #
+        # Tee'd like the main test job, and for the same reason: this step asks for a TRX log, which
+        # records per-test source file and line, so it engages the same symbol-reading path the
+        # runner has crashed in (issue #263). A gate that can go red with every test passing is worth
+        # six lines to explain wherever it can happen — not just where it happened first.
+        run: |
+          set -euo pipefail
+          dotnet test \
+            src/Content/Tests/Application.AI.Common.Tests/Application.AI.Common.Tests.csproj \
+            --no-build \
+            --configuration Release \
+            --filter "Category=OwaspAgentic" \
+            --logger "trx;LogFileName=owasp-agentic-gate.trx" \
+            --results-directory owasp-results 2>&1 | tee owasp-test-output.log
+
+      - name: Explain a test-runner crash
+        if: steps.owasp-tests.outcome == 'failure'
+        run: .github/scripts/explain-runner-crash.sh owasp-test-output.log
 
       - name: Upload OWASP gate results
         uses: actions/upload-artifact@v7
