@@ -204,16 +204,13 @@ public sealed class ToolApprovalCompositionTests : IDisposable
             .Initialize("composition-approval-agent", "conv-approval", turnNumber: 1);
 
         var governor = scope.ServiceProvider.GetRequiredService<IToolInvocationGovernor>();
-        ToolGovernanceAccessor.Current = governor;
-        try
-        {
-            var result = await function.InvokeAsync(new AIFunctionArguments(), CancellationToken.None);
-            return (result, governor.GetTrace());
-        }
-        finally
-        {
-            ToolGovernanceAccessor.Current = null;
-        }
+
+        // Begin rather than assign-and-null: nulling on teardown disarms whatever an enclosing flow
+        // armed, which is the idiom the accessor's own docs tell you not to use.
+        using var armedGovernor = ToolGovernanceAccessor.Begin(governor);
+
+        var result = await function.InvokeAsync(new AIFunctionArguments(), CancellationToken.None);
+        return (result, governor.GetTrace());
     }
 
     private static string ResultText(object? invocationResult) => invocationResult switch

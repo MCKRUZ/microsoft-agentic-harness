@@ -146,13 +146,22 @@ public sealed partial class DirectToolInvoker : IDirectToolInvoker
             // The progress guard is deliberately NOT armed at all. It detects an agent repeating
             // identical calls across a turn, and a single invocation has no sequence to evaluate —
             // a fresh evaluator that could only ever see one call is machinery that cannot fire.
+            //
+            // Consumer observers ARE armed, for the opposite reason: a domain rule ("never wire over
+            // 10k") judges one call on its own arguments and applies exactly as much to a single
+            // direct invocation as to a call inside an agent turn. Leaving them unarmed here would
+            // mean a consumer's safety rule silently stops applying on the Execution API path — the
+            // registered-but-inert failure this codebase keeps paying for.
+            var observerChain = scope.ServiceProvider.GetService<IToolCallObserverChain>();
+
             using var grantedEnvelope = CapabilityEnvelopeAccessor.Begin(request.Envelope);
             using var armedGovernor = ToolGovernanceAccessor.Begin(governor);
             using var armedGate = ClassificationGateAccessor.Begin(classificationGate);
+            using var armedObservers = ToolCallObserverAccessor.Begin(observerChain);
 
             try
             {
-                var armed = new ArmedInvocation(request, toolName, governor, classificationGate, scope, config);
+                var armed = new ArmedInvocation(request, toolName, governor, classificationGate, observerChain, scope, config);
                 return await AuthorizeAndRunAsync(armed, sw, cancellationToken).ConfigureAwait(false);
             }
             finally
@@ -217,6 +226,26 @@ public sealed partial class DirectToolInvoker : IDirectToolInvoker
                 DirectToolInvocationStatus.Denied,
                 classification.BlockedMessage ?? GovernanceDenials.NotPermitted(armed.ToolName),
                 sw);
+        }
+
+        // Consumer observers, consulted explicitly for the same reason the classification gate is:
+        // this path never builds the AIFunction wrapper that calls them on the agent path, so an
+        // armed-but-unconsulted chain would be a host safety rule that silently did not apply to the
+        // surface most exposed to external callers. Last, exactly as on the agent path, so an observer
+        // still only ever sees a call the built-in gates already permitted.
+        if (armed.Observers is { HasObservers: true } observers)
+        {
+            var observed = await observers
+                .EvaluateAsync(armed.ToolName, armed.Request.Parameters, deadline.Token)
+                .ConfigureAwait(false);
+
+            if (!observed.IsAllowed)
+            {
+                return Refused(
+                    DirectToolInvocationStatus.Denied,
+                    observed.DeniedMessage ?? GovernanceDenials.NotPermitted(armed.ToolName),
+                    sw);
+            }
         }
 
         var tool = armed.Scope.ServiceProvider.GetKeyedService<ITool>(armed.ToolName);
@@ -296,6 +325,7 @@ public sealed partial class DirectToolInvoker : IDirectToolInvoker
     /// <param name="ToolName">The catalog's name for the tool, which is also its keyed-DI key.</param>
     /// <param name="Governor">This invocation's scoped governor.</param>
     /// <param name="ClassificationGate">The data-classification gate, or null when the host registers none.</param>
+    /// <param name="Observers">The host's tool-call observer chain, or null when the host registers none.</param>
     /// <param name="Scope">The invocation's DI scope, from which the tool itself is resolved.</param>
     /// <param name="Config">The host settings this invocation was admitted under.</param>
     private readonly record struct ArmedInvocation(
@@ -303,6 +333,7 @@ public sealed partial class DirectToolInvoker : IDirectToolInvoker
         string ToolName,
         IToolInvocationGovernor Governor,
         IToolClassificationGate? ClassificationGate,
+        IToolCallObserverChain? Observers,
         AsyncServiceScope Scope,
         DirectToolInvocationConfig Config);
 }

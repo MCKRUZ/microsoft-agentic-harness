@@ -3,6 +3,7 @@ using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.Interfaces.Governance;
 using Domain.AI.Changes;
 using Domain.AI.Escalation;
+using Domain.AI.Governance;
 using Domain.Common.Config.AI;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -141,7 +142,7 @@ public sealed class EscalationToolApprovalRouter : IToolApprovalRouter
             ToolName = toolName,
             Arguments = SanitizeArguments(toolName, arguments),
             Description = $"Agent '{agentId}' is attempting to call tool '{toolName}'. {reason}",
-            RiskLevel = MapRisk(radius),
+            RiskLevel = radius.ToRiskLevel(),
             Priority = priority,
             ApprovalStrategy = ParseStrategy(escalation.DefaultApprovalStrategy),
             Approvers = [.. approval.Approvers],
@@ -226,14 +227,6 @@ public sealed class EscalationToolApprovalRouter : IToolApprovalRouter
             : text;
     }
 
-    private static RiskLevel MapRisk(BlastRadius radius) => radius switch
-    {
-        BlastRadius.Trivial or BlastRadius.Low => RiskLevel.Low,
-        BlastRadius.Medium => RiskLevel.Medium,
-        BlastRadius.High => RiskLevel.High,
-        _ => RiskLevel.Critical
-    };
-
     private BlastRadius ParseCriticalThreshold(string configured)
     {
         if (Enum.TryParse<BlastRadius>(configured, ignoreCase: true, out var parsed))
@@ -245,7 +238,7 @@ public sealed class EscalationToolApprovalRouter : IToolApprovalRouter
         return BlastRadius.Critical;
     }
 
-    private ApprovalStrategyType ParseStrategy(string configured) =>
+    private static ApprovalStrategyType ParseStrategy(string configured) =>
         Enum.TryParse<ApprovalStrategyType>(configured, ignoreCase: true, out var parsed)
             ? parsed
             : ApprovalStrategyType.AnyOf;

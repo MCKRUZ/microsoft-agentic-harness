@@ -88,29 +88,22 @@ public sealed class ToolCallObserverChain : IToolCallObserverChain
         {
             var verdict = await SafeObserveAsync(observer, observation, cancellationToken).ConfigureAwait(false);
 
-            switch (verdict.Outcome)
+            if (verdict.Outcome == ToolCallOutcome.Proceed)
+                continue;
+
+            if (verdict.Outcome == ToolCallOutcome.RequireApproval)
             {
-                case ToolCallOutcome.Proceed:
+                // Approved: this observer is satisfied, but the rest have not spoken. Keep going.
+                if (await RouteForApprovalAsync(observer, toolName, verdict.Reason, arguments, cancellationToken)
+                        .ConfigureAwait(false))
                     continue;
 
-                case ToolCallOutcome.Block:
-                    return Blocked(observer.Name, toolName, verdict.Reason ?? "blocked by observer");
-
-                case ToolCallOutcome.RequireApproval:
-                    var approved = await RouteForApprovalAsync(
-                        observer, toolName, verdict.Reason, arguments, cancellationToken).ConfigureAwait(false);
-
-                    // Approved: this observer is satisfied, but the rest have not spoken. Keep going.
-                    if (approved)
-                        continue;
-
-                    return Blocked(observer.Name, toolName, "escalated and not approved");
-
-                default:
-                    // An outcome this chain does not recognise — a newer enum member reaching older
-                    // chain code. Refuse rather than guess which way it was meant to lean.
-                    return Blocked(observer.Name, toolName, $"unrecognized observer outcome '{verdict.Outcome}'");
+                return Blocked(observer.Name, toolName, "escalated and not approved");
             }
+
+            // Block, and anything this chain does not recognise. Falling through to a refusal means a
+            // future outcome added to the enum fails closed here rather than being waved past.
+            return Blocked(observer.Name, toolName, verdict.Reason ?? "blocked by observer");
         }
 
         return ToolInvocationDecision.Allow();

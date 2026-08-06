@@ -4,25 +4,19 @@ using Domain.AI.Governance;
 
 namespace Application.AI.Common.Services.Governance;
 
-/// <summary>
-/// Human approval routing for the one verdict the governor cannot decide alone: a tool call that
-/// is neither plainly permitted nor plainly forbidden, and that policy says a person must rule on.
-/// </summary>
-/// <remarks>
-/// <para>
-/// Kept separate from the main governor file because it is the only decision path that leaves the
-/// process and waits on something outside it. Everything in <c>ToolInvocationGovernor.cs</c>
-/// resolves from configuration and in-memory rules and returns immediately; this suspends the
-/// agent's turn until a human answers or the request times out.
-/// </para>
-/// <para>
-/// <strong>The block is the default, not the fallback.</strong> Routing switched off, an empty
-/// roster, a refusal, a timeout, and a failed escalation all land on the same
-/// <see cref="ToolDecisionOutcome.PendingApproval"/> block that was this verdict's only outcome
-/// before routing existed. A host that does not opt in observes byte-identical behaviour; one that
-/// does can only ever gain calls a human explicitly said yes to.
-/// </para>
-/// </remarks>
+// Human approval routing for the one verdict the governor cannot decide alone: a tool call that is
+// neither plainly permitted nor plainly forbidden, and that policy says a person must rule on.
+//
+// Kept separate from the main governor file because it is the only decision path that leaves the
+// process and waits on something outside it — everything in ToolInvocationGovernor.cs resolves from
+// configuration and in-memory rules and returns immediately.
+//
+// NOTE: deliberately plain comments, not XML docs. Roslyn merges every partial's class-level
+// <summary> into one <member> and publishes whichever file the compiler sees first — which is
+// alphabetical, so this file would outrank ToolInvocationGovernor.cs and replace the type's real
+// documentation with a note about one private method. No warning is emitted when that happens; it
+// was caught here by reading the generated XML. Exactly one partial may carry the class-level doc,
+// and it is the main file.
 public sealed partial class ToolInvocationGovernor
 {
     /// <summary>
