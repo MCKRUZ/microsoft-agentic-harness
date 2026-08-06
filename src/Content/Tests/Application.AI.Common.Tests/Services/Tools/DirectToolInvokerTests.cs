@@ -692,7 +692,8 @@ public sealed class DirectToolInvokerTests
         : IToolInvocationGovernor
     {
         public async ValueTask<ToolInvocationDecision> AuthorizeAsync(
-            string toolName, CancellationToken cancellationToken)
+            string toolName, CancellationToken cancellationToken,
+            IReadOnlyDictionary<string, object?>? arguments = null)
         {
             record.AgentIdWhenAuthorizing = executionContext.AgentId;
 

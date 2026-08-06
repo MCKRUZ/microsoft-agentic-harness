@@ -29,13 +29,16 @@ namespace Application.AI.Common.Services.Governance;
 /// deployments are unchanged. When on, the gate is <em>fail-closed</em>.
 /// </para>
 /// <para>
-/// <strong>Approval handling (PR1a).</strong> A tool that resolves to "requires approval" is recorded
-/// as <see cref="ToolDecisionOutcome.PendingApproval"/> and blocked (fail-closed). Live human
-/// escalation routing mid-tool-call is intentionally deferred to a focused follow-up; this degrades
-/// safely to deny rather than silently allowing.
+/// <strong>Approval handling.</strong> A tool that resolves to "requires approval" is routed to a
+/// human through <see cref="IToolApprovalRouter"/>: the call is suspended, an escalation naming the
+/// tool and its arguments is raised, and the call proceeds only on an affirmative decision. When
+/// routing is switched off — the default — or when it cannot run, the verdict degrades to the
+/// original behaviour: recorded as <see cref="ToolDecisionOutcome.PendingApproval"/> and blocked,
+/// fail-closed. Approval can therefore only ever turn a block into an approved call, never the
+/// reverse.
 /// </para>
 /// </remarks>
-public sealed class ToolInvocationGovernor : IToolInvocationGovernor
+public sealed partial class ToolInvocationGovernor : IToolInvocationGovernor
 {
     private readonly IAgentExecutionContext _executionContext;
     private readonly IToolPermissionService _toolPermissionService;
@@ -45,6 +48,7 @@ public sealed class ToolInvocationGovernor : IToolInvocationGovernor
     private readonly IGovernanceAuditService _auditService;
     private readonly IDenialTracker _denialTracker;
     private readonly ICapabilityEnforcer _capabilityEnforcer;
+    private readonly IToolApprovalRouter _approvalRouter;
     private readonly IOptionsMonitor<GovernanceConfig> _governanceConfig;
     private readonly IOptionsMonitor<PermissionsConfig> _permissionsConfig;
     private readonly IOptionsMonitor<SandboxConfig> _sandboxConfig;
@@ -66,6 +70,7 @@ public sealed class ToolInvocationGovernor : IToolInvocationGovernor
         IGovernanceAuditService auditService,
         IDenialTracker denialTracker,
         ICapabilityEnforcer capabilityEnforcer,
+        IToolApprovalRouter approvalRouter,
         IOptionsMonitor<GovernanceConfig> governanceConfig,
         IOptionsMonitor<PermissionsConfig> permissionsConfig,
         IOptionsMonitor<SandboxConfig> sandboxConfig,
@@ -79,6 +84,7 @@ public sealed class ToolInvocationGovernor : IToolInvocationGovernor
         _auditService = auditService;
         _denialTracker = denialTracker;
         _capabilityEnforcer = capabilityEnforcer;
+        _approvalRouter = approvalRouter;
         _governanceConfig = governanceConfig;
         _permissionsConfig = permissionsConfig;
         _sandboxConfig = sandboxConfig;
@@ -134,7 +140,10 @@ public sealed class ToolInvocationGovernor : IToolInvocationGovernor
         _governanceConfig.CurrentValue.EnforceToolInvocation || BundleRunActive;
 
     /// <inheritdoc />
-    public async ValueTask<ToolInvocationDecision> AuthorizeAsync(string toolName, CancellationToken cancellationToken)
+    public async ValueTask<ToolInvocationDecision> AuthorizeAsync(
+        string toolName,
+        CancellationToken cancellationToken,
+        IReadOnlyDictionary<string, object?>? arguments = null)
     {
         // Opt-in: when enforcement is off the governor never engages — pure pass-through, no record,
         // no behaviour change for existing deployments.
@@ -188,10 +197,8 @@ public sealed class ToolInvocationGovernor : IToolInvocationGovernor
                     requiredApproval: false, agentId);
 
             case PermissionBehaviorType.Ask:
-                _denialTracker.RecordDenial(agentId, toolName);
-                return Blocked(toolName, ToolDecisionOutcome.PendingApproval,
-                    $"requires approval: {permission.Reason}", profile.Radius,
-                    requiredApproval: true, agentId);
+                return await ResolveApprovalAsync(agentId, toolName, permission.Reason, profile,
+                    arguments, cancellationToken).ConfigureAwait(false);
 
             case PermissionBehaviorType.Allow:
                 if (!EnvelopeGrantsToolWhenArmed(toolName))
@@ -202,7 +209,7 @@ public sealed class ToolInvocationGovernor : IToolInvocationGovernor
                         requiredApproval: false, agentId);
                 }
 
-                return await AuthorizeAllowedAsync(agentId, toolName, profile, cancellationToken)
+                return await AuthorizeAllowedAsync(agentId, toolName, profile, arguments, cancellationToken)
                     .ConfigureAwait(false);
 
             default:
@@ -214,7 +221,8 @@ public sealed class ToolInvocationGovernor : IToolInvocationGovernor
     }
 
     private async ValueTask<ToolInvocationDecision> AuthorizeAllowedAsync(
-        string agentId, string toolName, ToolRiskProfile profile, CancellationToken cancellationToken)
+        string agentId, string toolName, ToolRiskProfile profile,
+        IReadOnlyDictionary<string, object?>? arguments, CancellationToken cancellationToken)
     {
         // Capability enforcement: the rule layer allowed the tool, now confirm the granted sandbox
         // capabilities satisfy what the tool needs.
@@ -246,10 +254,8 @@ public sealed class ToolInvocationGovernor : IToolInvocationGovernor
             {
                 if (decision.Action == GovernancePolicyAction.RequireApproval)
                 {
-                    _denialTracker.RecordDenial(agentId, toolName);
-                    return Blocked(toolName, ToolDecisionOutcome.PendingApproval,
-                        $"requires approval: {decision.Reason}", profile.Radius,
-                        requiredApproval: true, agentId);
+                    return await ResolveApprovalAsync(agentId, toolName, decision.Reason, profile,
+                        arguments, cancellationToken).ConfigureAwait(false);
                 }
 
                 _denialTracker.RecordDenial(agentId, toolName);

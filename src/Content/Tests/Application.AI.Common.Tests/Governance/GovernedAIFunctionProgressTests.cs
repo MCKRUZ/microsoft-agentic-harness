@@ -81,7 +81,7 @@ public sealed class GovernedAIFunctionProgressTests : IDisposable
         var (inner, _) = MakeInner();
         var governor = new Mock<IToolInvocationGovernor>();
         governor
-            .Setup(g => g.AuthorizeAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Setup(g => g.AuthorizeAsync(It.IsAny<string>(), It.IsAny<CancellationToken>(), It.IsAny<IReadOnlyDictionary<string, object?>?>()))
             .ReturnsAsync(ToolInvocationDecision.Deny("Error: tool 'file_system' is not permitted."));
         ToolGovernanceAccessor.Current = governor.Object;
 

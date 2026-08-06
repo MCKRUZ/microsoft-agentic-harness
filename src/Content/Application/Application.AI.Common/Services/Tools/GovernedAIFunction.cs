@@ -45,7 +45,12 @@ internal sealed class GovernedAIFunction : DelegatingAIFunction
         var governor = ToolGovernanceAccessor.Current;
         if (governor is not null)
         {
-            var decision = await governor.AuthorizeAsync(Name, cancellationToken).ConfigureAwait(false);
+            // Arguments are passed so an approval verdict can describe the specific invocation to a
+            // human rather than just naming the tool. They inform no authorization decision — every
+            // check the governor runs keys off the tool name alone.
+            var decision = await governor
+                .AuthorizeAsync(Name, cancellationToken, arguments)
+                .ConfigureAwait(false);
             if (!decision.IsAllowed)
                 return decision.DeniedMessage ?? $"Error: tool '{Name}' was blocked by governance policy.";
         }

@@ -91,4 +91,14 @@ public sealed class GovernanceConfig
     /// content-pattern response sanitizers.
     /// </summary>
     public DataClassificationConfig DataClassification { get; init; } = new();
+
+    /// <summary>
+    /// Routes an approval-required verdict on the agent's live tool-call path to the human
+    /// escalation workflow instead of refusing the call. Opt-in via
+    /// <see cref="Governance.ToolApprovalConfig.Enabled"/>; off by default, and additionally gated on
+    /// <see cref="EscalationConfig.Enabled"/>. This is what makes <see cref="EnforceToolInvocation"/>'s
+    /// "requires approval" outcome actually ask somebody — without it the outcome is recorded and
+    /// the call is blocked, which is safe but silent.
+    /// </summary>
+    public ToolApprovalConfig ToolApproval { get; init; } = new();
 }

@@ -121,6 +121,12 @@ public static class DependencyInjection
         // and records the per-turn governance trace. Scoped: one per agent turn.
         services.AddScoped<Interfaces.Governance.IToolInvocationGovernor, Services.Governance.ToolInvocationGovernor>();
 
+        // Human approval routing for the governor's "requires approval" verdict (opt-in via
+        // GovernanceConfig.ToolApproval.Enabled, additionally gated on Escalation.Enabled). Without
+        // this the verdict was recorded and the call blocked — nobody was ever asked. Scoped to match
+        // the governor that consults it.
+        services.AddScoped<Interfaces.Governance.IToolApprovalRouter, Services.Governance.EscalationToolApprovalRouter>();
+
         // Deterministic spin / no-progress guard for the agent's live tool-call path (opt-in via
         // GovernanceConfig.ProgressGuard.Enabled). Consulted at the same chokepoint as the governor;
         // breaks the loop when the agent repeats an identical call or makes no progress. Scoped: one

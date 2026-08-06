@@ -27,12 +27,27 @@ public interface IToolInvocationGovernor
     /// </summary>
     /// <param name="toolName">The tool the agent is attempting to invoke.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
+    /// <param name="arguments">
+    /// The call arguments, when the caller has them. Used only to describe the specific invocation
+    /// to a human when a verdict is routed for approval via <see cref="IToolApprovalRouter"/> —
+    /// approving a tool <em>name</em> tells an approver nothing, approving a tool and its target
+    /// tells them everything. No authorization decision is derived from this: the permission,
+    /// risk, capability, envelope, and policy checks all key off the tool name alone, so passing
+    /// arguments cannot change whether a call is allowed.
+    /// </param>
     /// <returns>
     /// An allow decision, or a deny decision carrying a model-facing message to return in place of
     /// the tool result. When enforcement is disabled the governor records the would-be decision but
     /// always returns <see cref="ToolInvocationDecision.Allow"/>.
     /// </returns>
-    ValueTask<ToolInvocationDecision> AuthorizeAsync(string toolName, CancellationToken cancellationToken);
+    /// <remarks>
+    /// <paramref name="arguments"/> is optional so the callers that authorize by capability name
+    /// rather than by a model-supplied argument set — the plan-step executors — are unaffected.
+    /// </remarks>
+    ValueTask<ToolInvocationDecision> AuthorizeAsync(
+        string toolName,
+        CancellationToken cancellationToken,
+        IReadOnlyDictionary<string, object?>? arguments = null);
 
     /// <summary>Snapshots the governance decisions recorded so far for this turn.</summary>
     GovernanceTrace GetTrace();
