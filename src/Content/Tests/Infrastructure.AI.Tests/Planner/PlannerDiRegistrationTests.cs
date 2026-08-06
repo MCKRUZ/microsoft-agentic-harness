@@ -212,10 +212,7 @@ public sealed class PlannerDiRegistrationTests : IDisposable
     /// </summary>
     private static IServiceCollection CreateServices()
     {
-        var appConfig = new AppConfig
-        {
-            AI = new AIConfig()
-        };
+        var appConfig = IsolatedAppConfig.Create();
 
         var services = new ServiceCollection();
         services.AddOptions();

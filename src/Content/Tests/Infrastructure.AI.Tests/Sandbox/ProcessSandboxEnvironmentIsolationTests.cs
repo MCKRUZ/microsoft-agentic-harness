@@ -18,7 +18,16 @@ namespace Infrastructure.AI.Tests.Sandbox;
 /// These tests assert the child environment is cleared and rebuilt from an explicit,
 /// closed-by-default allowlist plus per-request grants.
 /// </summary>
+/// <remarks>
+/// Two tests here set a canary <em>process-wide</em> environment variable and clear it in a
+/// <c>finally</c>, and the sandbox subprocess inherits whatever the environment holds when it spawns.
+/// Run in parallel with anything else that touches the environment block, a canary can be cleared out
+/// from under a sibling or observed by one that expected it absent — which is what made this class fail
+/// intermittently under full-solution runs while passing alone (issue #269). The failure named an
+/// isolation control, so it read as a hole in the sandbox rather than a test-isolation problem.
+/// </remarks>
 [Trait("Category", "WindowsOnly")]
+[Collection(ProcessEnvironmentCollection.Name)]
 public class ProcessSandboxEnvironmentIsolationTests
 {
     private readonly Mock<IProcessResourceLimiter> _limiter = new();
