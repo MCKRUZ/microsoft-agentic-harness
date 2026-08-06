@@ -41,8 +41,11 @@ public partial class AgentExecutionContextFactory
     /// <returns>The ordered rail, or <see langword="null"/> when this agent needs no providers at all.</returns>
     /// <remarks>
     /// The per-turn measurer is appended here rather than by the caller, so that "it must be last" is a
-    /// property of this one method instead of a property of a call sequence in another file. It cannot be
-    /// displaced from outside without adding a provider to the returned list, which no caller does.
+    /// property of this one method instead of a property of a call sequence in another file. That closes the
+    /// gap this method could close. It does not make lastness unbreakable: the rail is handed on as a
+    /// mutable <see cref="IList{T}"/> through a settable property, so a consumer that appended to it would
+    /// still displace the measurer. Nothing does today, and no test would catch it if something started —
+    /// tracked in issue #275.
     /// </remarks>
     private IList<AIContextProvider>? BuildMergedAIContextProviders(
         int skillCount,

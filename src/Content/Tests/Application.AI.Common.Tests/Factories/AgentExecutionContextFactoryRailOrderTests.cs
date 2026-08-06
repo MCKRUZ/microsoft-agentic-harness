@@ -1,12 +1,14 @@
 using Application.AI.Common.Factories;
 using Application.AI.Common.Interfaces;
-using Application.AI.Common.Interfaces.Context;
+using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Services.Agent;
 using Application.AI.Common.Services.Context;
 using Application.AI.Common.Services.Skills;
 using Application.AI.Common.Services.Tools;
 using Application.AI.Common.Tests.Helpers;
+using Domain.AI.Models;
 using Domain.AI.Skills;
+using Domain.AI.Tools;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
 using FluentAssertions;
@@ -56,10 +58,13 @@ namespace Application.AI.Common.Tests.Factories;
 public sealed class AgentExecutionContextFactoryRailOrderTests : IDisposable
 {
     private const string SkillName = "rail-skill";
-    private const string AllowedTool = "file_system";
 
-    /// <summary>The agent name the factory derives from <see cref="SkillName"/>.</summary>
-    private const string AgentName = "RailSkillAgent";
+    /// <summary>
+    /// The one tool the skill grants. Registered for real below, so the allowlist has something to permit
+    /// as well as something to deny — a filter proven only against denials would pass while stripping
+    /// everything.
+    /// </summary>
+    private const string AllowedTool = "file_system";
 
     private readonly SkillDirectoryFixture _skills = new("railorder");
     private readonly string _skillDir;
@@ -97,7 +102,7 @@ public sealed class AgentExecutionContextFactoryRailOrderTests : IDisposable
     private AgentExecutionContextFactory CreateFactory(
         bool recall = true,
         bool governance = true,
-        IContextBudgetTracker? budgetTracker = null)
+        bool budgetTracker = true)
     {
         var appConfig = new AppConfig
         {
@@ -116,6 +121,9 @@ public sealed class AgentExecutionContextFactoryRailOrderTests : IDisposable
         // The two recall providers are wired only when the factory can reach an ambient request scope —
         // they resolve their tenant-aware collaborator per invocation, so an empty scope is enough here.
         services.AddSingleton(Mock.Of<IAmbientRequestScope>());
+
+        // A real tool behind the name the skill grants, so the agent is actually built holding it.
+        services.AddKeyedSingleton<ITool>(AllowedTool, (_, _) => new StubTool(AllowedTool));
         var sp = services.BuildServiceProvider();
 
         return new AgentExecutionContextFactory(
@@ -123,15 +131,37 @@ public sealed class AgentExecutionContextFactoryRailOrderTests : IDisposable
             Mock.Of<IOptionsMonitor<AppConfig>>(m => m.CurrentValue == appConfig),
             sp,
             NullLoggerFactory.Instance,
-            new ToolChainBuilder(NullLogger<ToolChainBuilder>.Instance, sp),
+            new ToolChainBuilder(NullLogger<ToolChainBuilder>.Instance, sp, new PassThroughToolConverter()),
             new SkillPrerequisiteResolver(),
             new UnsandboxedSkillFileReader(),
-            budgetTracker ?? CreateBudgetTracker());
+            budgetTracker
+                ? new ContextBudgetTracker(
+                    Mock.Of<IOptionsMonitor<AppConfig>>(m => m.CurrentValue == new AppConfig()),
+                    NullLogger<ContextBudgetTracker>.Instance)
+                : null);
     }
 
-    private static ContextBudgetTracker CreateBudgetTracker() => new(
-        Mock.Of<IOptionsMonitor<AppConfig>>(m => m.CurrentValue == new AppConfig()),
-        NullLogger<ContextBudgetTracker>.Instance);
+    private sealed class StubTool(string name) : ITool
+    {
+        public string Name { get; } = name;
+        public string Description => "stub";
+        public IReadOnlyList<string> SupportedOperations { get; } = ["run"];
+
+        public Task<ToolResult> ExecuteAsync(
+            string operation,
+            IReadOnlyDictionary<string, object?> parameters,
+            CancellationToken cancellationToken = default) => Task.FromResult(ToolResult.Ok("r"));
+    }
+
+    private sealed class PassThroughToolConverter : IToolConverter
+    {
+        public int Priority => 100;
+
+        public bool CanConvert(ITool tool) => true;
+
+        public AITool? Convert(ITool tool, IReadOnlyList<string>? allowedOperations = null) =>
+            AIFunctionFactory.Create(() => "r", tool.Name);
+    }
 
     private static IReadOnlyList<Type> RailTypes(Domain.AI.Agents.AgentExecutionContext context) =>
         [.. context.AIContextProviders!.Select(p => p.GetType())];
@@ -186,24 +216,8 @@ public sealed class AgentExecutionContextFactoryRailOrderTests : IDisposable
     {
         // A host that does not track context must get exactly the rail it had before the measurer existed —
         // not a rail with an inert provider on the end of it.
-        var factory = new AgentExecutionContextFactory(
-            NullLogger<AgentExecutionContextFactory>.Instance,
-            Mock.Of<IOptionsMonitor<AppConfig>>(m => m.CurrentValue == new AppConfig
-            {
-                AI = new AIConfig
-                {
-                    AgentFramework = new AgentFrameworkConfig { DefaultDeployment = "gpt-4o" },
-                    Skills = new SkillsConfig { BasePath = _skillsRoot }
-                }
-            }),
-            new ServiceCollection().BuildServiceProvider(),
-            NullLoggerFactory.Instance,
-            new ToolChainBuilder(
-                NullLogger<ToolChainBuilder>.Instance, new ServiceCollection().BuildServiceProvider()),
-            new SkillPrerequisiteResolver(),
-            new UnsandboxedSkillFileReader());
-
-        var context = await factory.MapToAgentContextAsync([MakeSkill()], new SkillAgentOptions());
+        var context = await CreateFactory(recall: false, governance: false, budgetTracker: false)
+            .MapToAgentContextAsync([MakeSkill()], new SkillAgentOptions());
 
         RailTypes(context).Should().Equal([typeof(AgentSkillsProvider), typeof(ToolPermissionFilter)]);
     }
@@ -235,6 +249,15 @@ public sealed class AgentExecutionContextFactoryRailOrderTests : IDisposable
                 || ToolPermissionFilter.SkillDisclosureToolNames.Contains(name),
             "every tool the model is finally offered must be one the allowlist grants or one of the two "
             + "exempt skill-content tools; anything else was contributed after the filter had already run");
+
+        // The other half of the same property: a filter that stripped everything would satisfy the
+        // assertion above. The granted tool and the two exempt ones must all still be there.
+        ToolNames(finished).Should().Contain(
+            [AllowedTool,
+             AgentSkillsProvider.LoadSkillToolName,
+             AgentSkillsProvider.ReadSkillResourceToolName],
+            "the filter denies; it must not also deny what the skill granted, or progressive disclosure "
+            + "and the agent's own capability both die silently");
     }
 
     private static IEnumerable<string> ToolNames(AIContext context) =>
