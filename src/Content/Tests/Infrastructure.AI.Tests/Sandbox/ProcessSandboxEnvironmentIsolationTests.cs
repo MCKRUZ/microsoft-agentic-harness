@@ -18,7 +18,21 @@ namespace Infrastructure.AI.Tests.Sandbox;
 /// These tests assert the child environment is cleared and rebuilt from an explicit,
 /// closed-by-default allowlist plus per-request grants.
 /// </summary>
+/// <remarks>
+/// Two tests here set a canary <em>process-wide</em> environment variable and clear it in a
+/// <c>finally</c>, and the sandbox subprocess inherits whatever the environment holds when it spawns.
+/// Membership of <see cref="ProcessEnvironmentCollection"/> keeps that hazard from ever mattering: no
+/// other test in the assembly that touches the environment block can run alongside these.
+/// <para>
+/// It is a guard, not the fix for issue #269. That issue attributed an intermittent failure here to
+/// exactly this race, and the attribution does not hold — these tests share one class, xUnit does not
+/// run tests within a collection in parallel, and the assembly's only other environment-variable class
+/// was already serialised. The observed failure's cause remains unmeasured; the assertions now report
+/// what the sandbox actually said so the next occurrence identifies itself.
+/// </para>
+/// </remarks>
 [Trait("Category", "WindowsOnly")]
+[Collection(ProcessEnvironmentCollection.Name)]
 public class ProcessSandboxEnvironmentIsolationTests
 {
     private readonly Mock<IProcessResourceLimiter> _limiter = new();
@@ -61,7 +75,7 @@ public class ProcessSandboxEnvironmentIsolationTests
 
             var result = await CreateSut().ExecuteAsync(request, CancellationToken.None);
 
-            result.Success.Should().BeTrue();
+            result.Success.Should().BeTrue(WhyItFailed(result));
             result.Output.Should().NotContain(canaryValue,
                 "the child process environment must be cleared — host secrets must never leak into sandboxed tools");
         }
@@ -81,7 +95,7 @@ public class ProcessSandboxEnvironmentIsolationTests
 
         var result = await CreateSut().ExecuteAsync(request, CancellationToken.None);
 
-        result.Success.Should().BeTrue();
+        result.Success.Should().BeTrue(WhyItFailed(result));
         result.Output!.Trim().Should().Be(
             Environment.GetEnvironmentVariable("SystemRoot"),
             "allowlisted system variables must still flow through so child processes remain functional");
@@ -106,7 +120,7 @@ public class ProcessSandboxEnvironmentIsolationTests
 
             var result = await CreateSut().ExecuteAsync(request, CancellationToken.None);
 
-            result.Success.Should().BeTrue();
+            result.Success.Should().BeTrue(WhyItFailed(result));
             result.Output.Should().NotContain(canaryValue,
                 "only variables named in the configured allowlist may cross the sandbox boundary");
         }
@@ -131,7 +145,7 @@ public class ProcessSandboxEnvironmentIsolationTests
 
         var result = await CreateSut().ExecuteAsync(request, CancellationToken.None);
 
-        result.Success.Should().BeTrue();
+        result.Success.Should().BeTrue(WhyItFailed(result));
         result.Output.Should().Contain("explicitly-granted-value",
             "explicit per-request environment grants are the sanctioned channel for passing values into the sandbox");
     }
@@ -154,7 +168,7 @@ public class ProcessSandboxEnvironmentIsolationTests
 
         var result = await sut.ExecuteAsync(request, CancellationToken.None);
 
-        result.Success.Should().BeTrue();
+        result.Success.Should().BeTrue(WhyItFailed(result));
         result.Output!.Trim().Should().Be(workspaceDir,
             "TEMP must point inside the disposable sandbox workspace, not at the host temp directory");
     }
@@ -186,6 +200,24 @@ public class ProcessSandboxEnvironmentIsolationTests
         result.Attestation.Should().NotBeNull("the rejection must leave a signed audit record");
         result.Attestation!.IsFailureAttestation.Should().BeTrue();
     }
+
+    /// <summary>
+    /// Explains a failed sandbox run in the assertion message, so a failure identifies its own cause.
+    /// </summary>
+    /// <param name="result">The result being asserted on.</param>
+    /// <returns>A reason string naming the error and exit code the run reported.</returns>
+    /// <remarks>
+    /// Issue #269 recorded an intermittent failure here under full-solution runs and attributed it to a
+    /// race on process-wide environment variables. That hypothesis is disproven — these tests share one
+    /// class, xUnit never runs tests within a collection in parallel, and the assembly's only other
+    /// environment-variable class was already serialised, so no two of them could overlap. The real
+    /// cause is still unmeasured, and the bare <c>BeTrue()</c> assertions were part of why: a run that
+    /// timed out and one that was denied produced the same message. The next occurrence now says which.
+    /// </remarks>
+    private static string WhyItFailed(SandboxExecutionResult result) =>
+        $"the sandboxed process was expected to run; it reported ErrorMessage='{result.ErrorMessage}', "
+        + $"ExitCode={result.ExitCode?.ToString() ?? "none"} (a null exit code means it was killed or "
+        + $"never started — which is what exceeding the request's 10s timeout looks like)";
 
     private static SandboxExecutionRequest CreateRequest(string[] argumentList) => new()
     {

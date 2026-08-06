@@ -22,7 +22,7 @@ public sealed class DependencyInjectionTests
 {
     private static ServiceCollection CreateBaseServices(AppConfig? appConfig = null)
     {
-        var config = appConfig ?? new AppConfig();
+        var config = IsolatedAppConfig.Isolate(appConfig ?? new AppConfig());
         var services = new ServiceCollection();
 
         // Register dependencies that Infrastructure.AI expects
@@ -45,7 +45,7 @@ public sealed class DependencyInjectionTests
     public void AddInfrastructureAIDependencies_RegistersIChatClientFactory()
     {
         var services = CreateBaseServices();
-        services.AddInfrastructureAIDependencies(new AppConfig());
+        services.AddInfrastructureAIDependencies(IsolatedAppConfig.Create());
         using var provider = services.BuildServiceProvider();
 
         var factory = provider.GetService<IChatClientFactory>();
@@ -57,7 +57,7 @@ public sealed class DependencyInjectionTests
     public void AddInfrastructureAIDependencies_RegistersIToolPermissionService()
     {
         var services = CreateBaseServices();
-        services.AddInfrastructureAIDependencies(new AppConfig());
+        services.AddInfrastructureAIDependencies(IsolatedAppConfig.Create());
         using var provider = services.BuildServiceProvider();
 
         var permissionService = provider.GetService<IToolPermissionService>();
@@ -69,7 +69,7 @@ public sealed class DependencyInjectionTests
     public void AddInfrastructureAIDependencies_RegistersISkillMetadataRegistry()
     {
         var services = CreateBaseServices();
-        services.AddInfrastructureAIDependencies(new AppConfig());
+        services.AddInfrastructureAIDependencies(IsolatedAppConfig.Create());
         using var provider = services.BuildServiceProvider();
 
         var registry = provider.GetService<ISkillMetadataRegistry>();
@@ -80,7 +80,7 @@ public sealed class DependencyInjectionTests
     [Fact]
     public void RegisterAIClients_UnconfiguredConfig_DoesNotRegisterAnyClients()
     {
-        var config = new AppConfig(); // ApiKey is null => IsConfigured = false
+        var config = IsolatedAppConfig.Create(); // ApiKey is null => IsConfigured = false
         var services = CreateBaseServices(config);
         services.AddInfrastructureAIDependencies(config);
         using var provider = services.BuildServiceProvider();
@@ -95,7 +95,7 @@ public sealed class DependencyInjectionTests
     public void AddInfrastructureAIDependencies_RegistersIEscalationService()
     {
         var services = CreateBaseServices();
-        services.AddInfrastructureAIDependencies(new AppConfig());
+        services.AddInfrastructureAIDependencies(IsolatedAppConfig.Create());
         using var provider = services.BuildServiceProvider();
 
         var svc = provider.GetService<IEscalationService>();
@@ -107,7 +107,7 @@ public sealed class DependencyInjectionTests
     public void AddInfrastructureAIDependencies_RegistersIEscalationAuditStore()
     {
         var services = CreateBaseServices();
-        services.AddInfrastructureAIDependencies(new AppConfig());
+        services.AddInfrastructureAIDependencies(IsolatedAppConfig.Create());
         using var provider = services.BuildServiceProvider();
 
         var store = provider.GetService<IEscalationAuditStore>();
@@ -119,7 +119,7 @@ public sealed class DependencyInjectionTests
     public void AddInfrastructureAIDependencies_RegistersIEscalationNotifier()
     {
         var services = CreateBaseServices();
-        services.AddInfrastructureAIDependencies(new AppConfig());
+        services.AddInfrastructureAIDependencies(IsolatedAppConfig.Create());
         using var provider = services.BuildServiceProvider();
 
         var notifier = provider.GetService<IEscalationNotifier>();
@@ -131,7 +131,7 @@ public sealed class DependencyInjectionTests
     public void AddInfrastructureAIDependencies_RegistersNotificationChannels()
     {
         var services = CreateBaseServices();
-        services.AddInfrastructureAIDependencies(new AppConfig());
+        services.AddInfrastructureAIDependencies(IsolatedAppConfig.Create());
         using var provider = services.BuildServiceProvider();
 
         var channels = provider.GetServices<IEscalationNotificationChannel>().ToList();
@@ -144,7 +144,7 @@ public sealed class DependencyInjectionTests
     public void AddInfrastructureAIDependencies_RegistersIProviderHealthMonitor()
     {
         var services = CreateBaseServices();
-        services.AddInfrastructureAIDependencies(new AppConfig());
+        services.AddInfrastructureAIDependencies(IsolatedAppConfig.Create());
         using var provider = services.BuildServiceProvider();
 
         var monitor = provider.GetService<IProviderHealthMonitor>();
@@ -156,7 +156,7 @@ public sealed class DependencyInjectionTests
     public void AddInfrastructureAIDependencies_RegistersIResilientChatClientProvider()
     {
         var services = CreateBaseServices();
-        services.AddInfrastructureAIDependencies(new AppConfig());
+        services.AddInfrastructureAIDependencies(IsolatedAppConfig.Create());
         using var provider = services.BuildServiceProvider();
 
         var resilientProvider = provider.GetService<IResilientChatClientProvider>();
@@ -167,7 +167,7 @@ public sealed class DependencyInjectionTests
     [Fact]
     public void AddInfrastructureAIDependencies_ResilienceEnabled_RegistersLlmRetryQueueHostedService()
     {
-        var config = new AppConfig { AI = { Resilience = new ResilienceConfig { Enabled = true } } };
+        var config = IsolatedAppConfig.Isolate(new AppConfig { AI = { Resilience = new ResilienceConfig { Enabled = true } } });
         var services = CreateBaseServices(config);
         services.AddSingleton(TimeProvider.System);
         services.AddInfrastructureAIDependencies(config);
@@ -181,7 +181,7 @@ public sealed class DependencyInjectionTests
     [Fact]
     public void AddInfrastructureAIDependencies_ResilienceDisabled_DoesNotRegisterLlmRetryQueueHostedService()
     {
-        var config = new AppConfig { AI = { Resilience = new ResilienceConfig { Enabled = false } } };
+        var config = IsolatedAppConfig.Isolate(new AppConfig { AI = { Resilience = new ResilienceConfig { Enabled = false } } });
         var services = CreateBaseServices(config);
         services.AddInfrastructureAIDependencies(config);
         using var provider = services.BuildServiceProvider();
@@ -195,7 +195,7 @@ public sealed class DependencyInjectionTests
     public void AddInfrastructureAIDependencies_CompositeNotifier_DoesNotContainItself()
     {
         var services = CreateBaseServices();
-        services.AddInfrastructureAIDependencies(new AppConfig());
+        services.AddInfrastructureAIDependencies(IsolatedAppConfig.Create());
         using var provider = services.BuildServiceProvider();
 
         var channels = provider.GetServices<IEscalationNotificationChannel>().ToList();
@@ -211,7 +211,7 @@ public sealed class DependencyInjectionTests
         // HttpClient.Timeout would race that pipeline and could truncate the retry budget
         // mid-attempt; the registration must leave the client timeout infinite so the pipeline
         // owns the budget — consistent with the default (non-typed) clients.
-        var config = new AppConfig();
+        var config = IsolatedAppConfig.Create();
         config.AI.AgentFramework.ClientType = Domain.Common.Config.AI.AIAgentFrameworkClientType.OpenAI;
         config.AI.AgentFramework.EnablePromptCaching = true;
         config.AI.AgentFramework.Endpoint = "https://openrouter.ai/api/v1";

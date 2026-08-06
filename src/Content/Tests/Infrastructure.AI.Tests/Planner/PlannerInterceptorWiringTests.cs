@@ -143,16 +143,11 @@ public sealed class PlannerInterceptorWiringTests : IDisposable
     {
         Directory.CreateDirectory(dbDirectory);
 
-        var appConfig = new AppConfig
-        {
-            AI = new AIConfig
-            {
-                Planner = new Domain.Common.Config.AI.Planner.PlannerOptions
-                {
-                    DatabasePath = Path.Combine(dbDirectory, "planner.db")
-                }
-            }
-        };
+        // Isolated first, then the planner path is pointed at this test's own directory — the test
+        // asserts against that database by name, so it keeps its explicit path while the conversation
+        // and graph paths still move out of the build output (issue #262).
+        var appConfig = IsolatedAppConfig.Create();
+        appConfig.AI.Planner.DatabasePath = Path.Combine(dbDirectory, "planner.db");
 
         var services = new ServiceCollection();
         services.AddOptions();
