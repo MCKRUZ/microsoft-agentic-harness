@@ -17,7 +17,7 @@ namespace Infrastructure.AI.Tests.Telemetry;
 /// process state, so each test that touches it restores the prior value in a
 /// <c>finally</c>.
 /// </summary>
-[Collection("ContentCaptureEnvVar")]
+[Collection(ProcessEnvironmentCollection.Name)]
 public sealed class ContentCaptureStartupValidatorTests
 {
     private static ContentCaptureStartupValidator Build(
@@ -128,11 +128,3 @@ public sealed class ContentCaptureStartupValidatorTests
         await act.Should().NotThrowAsync();
     }
 }
-
-/// <summary>
-/// Serializes tests that mutate the process-global
-/// <c>OTEL_SEMCONV_STABILITY_OPT_IN</c> environment variable so they do not
-/// interfere with one another when xUnit runs collections in parallel.
-/// </summary>
-[CollectionDefinition("ContentCaptureEnvVar", DisableParallelization = true)]
-public sealed class ContentCaptureEnvVarCollection;

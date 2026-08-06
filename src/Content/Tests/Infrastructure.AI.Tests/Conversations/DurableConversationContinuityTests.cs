@@ -112,8 +112,28 @@ public sealed class DurableConversationContinuityTests : IDisposable
         var record = await _store.GetAsync(conversationId, Owner);
 
         record.Should().NotBeNull();
+
+        // "answer 2" for the second run, not "answer 1": the double answers with the turn number it was
+        // given, and turn numbering runs across the conversation rather than restarting each run.
         record!.Messages.Select(m => m.Content).Should().Equal(
-            "first", "answer 1", "second", "answer 1");
+            "first", "answer 1", "second", "answer 2");
+    }
+
+    [Fact]
+    public async Task TurnNumbering_ContinuesAcrossRuns()
+    {
+        // Against the real store, because this is the number per-turn observability rows are keyed by
+        // together with the conversation id. Restarting at 1 each run makes run 2's opening turn collide
+        // with run 1's and overwrite it (issue #255) — a collision no in-memory double would show.
+        var conversationId = $"conv-{Guid.NewGuid():N}";
+        var dispatched = new List<ExecuteAgentTurnCommand>();
+        var handler = BuildHandler(dispatched);
+
+        await handler.Handle(Durable(conversationId, "one"), CancellationToken.None);
+        await handler.Handle(Durable(conversationId, "two"), CancellationToken.None);
+        await handler.Handle(Durable(conversationId, "three"), CancellationToken.None);
+
+        dispatched.Select(d => d.TurnNumber).Should().Equal([1, 2, 3]);
     }
 
     [Fact]
@@ -150,8 +170,10 @@ public sealed class DurableConversationContinuityTests : IDisposable
         await handler.Handle(Durable(conversationId, "two"), CancellationToken.None);
         await handler.Handle(Durable(conversationId, "three"), CancellationToken.None);
 
+        // "answer 2" is the second run's reply — the double echoes the turn number it was handed, and
+        // that number now continues across runs rather than restarting.
         dispatched[2].ConversationHistory.Select(m => m.Text).Should().Equal(
-            "two", "answer 1");
+            "two", "answer 2");
 
         var record = await _store.GetAsync(conversationId, Owner);
         record!.Messages.Should().HaveCount(6, "the transcript keeps every turn the window does not replay");

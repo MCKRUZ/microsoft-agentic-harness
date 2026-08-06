@@ -189,14 +189,14 @@ public sealed class DriftLearningsDiTests
 
     private static ServiceProvider CreateServiceProvider(bool learningsEnabled = true)
     {
-        var appConfig = new AppConfig
+        var appConfig = IsolatedAppConfig.Isolate(new AppConfig
         {
             AI = new AIConfig
             {
                 DriftDetection = new DriftDetectionConfig(),
                 Learnings = new LearningsConfig { Enabled = learningsEnabled }
             }
-        };
+        });
 
         var services = new ServiceCollection();
         services.AddOptions();
