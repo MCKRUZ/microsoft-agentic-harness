@@ -14,30 +14,34 @@ namespace Infrastructure.AI.Tests;
 /// it eventually presents as a product regression that reproduces on one machine and nowhere else.
 /// </para>
 /// <para>
-/// <strong>Ordering does not matter and must not.</strong> This asserts on files, and any test that
-/// creates one has already created it by the time this runs — or will, and then this fails on the next
-/// run. It is deliberately not a "run me last" test, because a test that only works in one position is
-/// a test that stops working.
+/// <strong>Ordering does matter, and the runner is what guarantees it.</strong> This sits in a
+/// <c>DisableParallelization</c> collection, and xUnit runs those only once every parallel collection
+/// has finished — so the tests that register stores have all run by the time this reads the directory.
+/// An earlier draft left it unattributed on the reasoning that a leak would simply fail the next run.
+/// That reasoning holds on a developer machine and fails exactly where it matters: CI starts from a
+/// clean checkout every time, so "the next run" never sees it, and the guard was a coin flip against
+/// the very tests it exists to police.
 /// </para>
 /// </remarks>
+[Collection(SerialTailCollection.Name)]
 public sealed class BuildOutputStaysCleanTests
 {
     [Fact]
     public void NoDatabaseIsWrittenIntoTheBuildOutput()
     {
-        var dataDirectory = Path.Combine(AppContext.BaseDirectory, "data");
+        var baseDirectory = AppContext.BaseDirectory;
 
-        // Absent is the normal outcome; present-but-empty is also fine, because registration creates the
-        // directory eagerly for a path it may never write to. Only actual state is the defect.
-        var leftBehind = Directory.Exists(dataDirectory)
-            ? Directory.GetFiles(dataDirectory, "*", SearchOption.AllDirectories)
-            : [];
+        // Every database anywhere under the build output, not just the `data` folder the two known
+        // offenders used. A config path that resolves to empty lands its file at the build-output root
+        // instead, which a folder-scoped check would never see — and an empty path is precisely what a
+        // regression in the isolation helper would produce.
+        var leftBehind = Directory.GetFiles(baseDirectory, "*.db", SearchOption.AllDirectories);
 
         leftBehind.Should().BeEmpty(
-            $"state under AppContext.BaseDirectory is never cleared between runs, so it accumulates "
-            + $"invisibly on a developer machine and shows up as a product regression CI cannot "
-            + $"reproduce. Either a test registered a store without building its config through "
-            + $"IsolatedAppConfig, or this machine still holds state from a run predating that helper "
-            + $"— delete '{dataDirectory}' and run again to tell the two apart");
+            "state under AppContext.BaseDirectory is never cleared between runs, so it accumulates "
+            + "invisibly on a developer machine and shows up as a product regression CI cannot "
+            + "reproduce. Either a test registered a store without building its config through "
+            + $"IsolatedAppConfig, or this machine still holds state from a run predating that helper — "
+            + $"delete the databases under '{baseDirectory}' and run again to tell the two apart");
     }
 }

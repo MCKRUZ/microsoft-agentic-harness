@@ -35,15 +35,32 @@ internal static class IsolatedAppConfig
     /// <param name="config">The configuration to adjust, typically built with test-specific settings.</param>
     /// <returns>The same instance, for chaining onto an object initializer.</returns>
     /// <remarks>
-    /// Sets every path this assembly can cause to be written, not only the two currently observed in the
-    /// build output. A registration that starts persisting something new is then already covered, and
-    /// setting a path a given test never reaches costs nothing.
+    /// <para>
+    /// Sets the three paths this assembly's registrations are known to write: the planner database, the
+    /// conversation database, and the graph data directory. It is <em>not</em> an exhaustive sweep of
+    /// every path in <see cref="AppConfig"/> — several others (audit receipt and drift audit paths,
+    /// prompt-usage) resolve under the build output too but nothing here currently reaches them.
+    /// <c>BuildOutputStaysCleanTests</c> is what catches it if that changes, which is why that guard
+    /// scans for databases anywhere under the build output rather than only in the folder these three
+    /// use.
+    /// </para>
+    /// <para>
+    /// Governance durable state is deliberately excluded: <c>GovernanceStatePaths.Resolve</c> confines
+    /// that database to the application directory by design and throws for a path outside it, so
+    /// redirecting it here would break the control rather than isolate it.
+    /// </para>
     /// </remarks>
     public static AppConfig Isolate(AppConfig config)
     {
         ArgumentNullException.ThrowIfNull(config);
 
         var root = IsolatedStateRoot.Root;
+
+        // An empty root would silently produce a relative path, which registration then resolves against
+        // AppContext.BaseDirectory — putting the database back in the build output this exists to keep
+        // clean, and doing it quietly. The module initializer makes this unreachable today; the guard is
+        // here so that stops being something a reader has to work out.
+        ArgumentException.ThrowIfNullOrWhiteSpace(root, nameof(IsolatedStateRoot.Root));
 
         config.AI.Planner.DatabasePath = Path.Combine(root, "planner.db");
         config.AI.Conversations.DatabasePath = Path.Combine(root, "conversations.db");
