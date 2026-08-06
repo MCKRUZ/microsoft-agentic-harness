@@ -41,12 +41,13 @@ namespace Infrastructure.AI.Conversations;
 /// this type going quietly inert is how the ceiling shipped switched off (issue #279).
 /// </para>
 /// <para>
-/// <strong>Retention.</strong> Rows are removed only by <see cref="ReleaseAsync"/>, and the two
-/// interactive callers never call it because a turn ending is not a conversation ending. Abandoned keys
-/// therefore persist, and unlike the in-process sibling — which caps at 50,000 entries and evicts —
-/// this one has no bound. At roughly 60 bytes per row, 50,000 abandoned keys cost about 3 MB. Because
-/// the budget is on by default, this table grows on every deployment rather than only on ones that
-/// opted in; a retention sweep is tracked in issue #253.
+/// <strong>Retention.</strong> <see cref="ReleaseAsync"/> removes a row on request, but the interactive
+/// callers never call it — a turn ending is not a conversation ending. What reclaims the rest is
+/// <see cref="SweepAbandonedAsync"/>, run on a schedule by <c>ConversationBudgetRetentionService</c>,
+/// and it removes only rows whose conversation no longer exists. The bound that gives is one row per
+/// conversation that still exists, which is deliberately <em>not</em> the in-process sibling's fixed
+/// 50,000-entry LRU cap: evicting a live conversation's running total to satisfy a row count would
+/// silently reset the very ceiling this class exists to enforce (issue #253).
 /// </para>
 /// </remarks>
 public sealed class SqliteConversationBudgetTracker : IConversationBudgetTracker
@@ -189,6 +190,74 @@ public sealed class SqliteConversationBudgetTracker : IConversationBudgetTracker
 
             return new ConversationBudgetStatus(true, budget, 0);
         }
+    }
+
+    /// <summary>
+    /// Reclaims budget rows that no conversation can ever read again, and returns how many were removed.
+    /// </summary>
+    /// <param name="gracePeriod">
+    /// How long a candidate row must have sat untouched before it is eligible. See the remarks — this
+    /// does not exist to judge how long a person might be away.
+    /// </param>
+    /// <param name="cancellationToken">Cancels the sweep.</param>
+    /// <returns>The number of rows removed; zero when nothing qualified or the statement failed.</returns>
+    /// <remarks>
+    /// <para>
+    /// Two conditions, and they do different jobs. <strong>The existence test is what makes this safe for
+    /// durable conversations.</strong> Nobody can resume a conversation that has been deleted, so
+    /// removing its running total cannot reset a ceiling anyone will meet again — and a conversation that
+    /// still exists is never swept, however long it has been idle. Age alone would be indefensible:
+    /// deleting an idle conversation's row silently hands it a fresh ceiling, which is the failure the
+    /// budget exists to prevent, caused by the thing meant to tidy up after it.
+    /// </para>
+    /// <para>
+    /// <strong>The grace period is the only protection for keys that never had a conversation row.</strong>
+    /// Not merely for ones that lost it — several writers produce keys that never had one: plan runs under
+    /// a <c>planrun:</c> scope, self-contained conversation runs accruing against a caller-supplied id
+    /// with no transcript behind it, and any future caller. For those, the existence test is vacuously
+    /// true and staleness is all there is. See
+    /// <see cref="Domain.Common.Config.AI.Conversations.ConversationBudgetRetentionConfig"/> for how to
+    /// size it.
+    /// </para>
+    /// <para>
+    /// Deliberately not prefix-matching on <c>planrun:</c> to exempt known callers. That works only for
+    /// the callers that exist today; the next one to add an unprefixed key would be swept while running,
+    /// and would find out in production. The grace period protects every caller, including ones nobody
+    /// has written yet.
+    /// </para>
+    /// <para>
+    /// Written as SQL for the same reason accrual is: EF cannot express a correlated <c>NOT EXISTS</c>
+    /// delete as one statement, and doing it as read-then-delete would race a conversation being created
+    /// between the two halves.
+    /// </para>
+    /// <para>
+    /// Unlike every other method here, this one <strong>lets failures out</strong>. The others swallow
+    /// because they sit on the turn path, where a database blip must not cost a caller their work. This
+    /// one is called only by a background sweep that already logs and retries, so swallowing here would
+    /// add nothing except a failure mode no test could reach.
+    /// </para>
+    /// </remarks>
+    public async Task<int> SweepAbandonedAsync(
+        TimeSpan gracePeriod,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(gracePeriod, TimeSpan.Zero, nameof(gracePeriod));
+
+        // UtcTicks by hand, as in RecordUsageAsync: the model's value converter applies to the entity,
+        // not to a parameter on a raw statement.
+        var cutoffTicks = _timeProvider.GetUtcNow().Subtract(gracePeriod).UtcTicks;
+
+        await using var context = await _contextFactory.CreateDbContextAsync(cancellationToken);
+
+        return await context.Database.ExecuteSqlInterpolatedAsync(
+            $"""
+            DELETE FROM conversation_budgets
+            WHERE UpdatedAt < {cutoffTicks}
+              AND NOT EXISTS (
+                  SELECT 1 FROM conversations WHERE conversations.Id = conversation_budgets.BudgetKey
+              )
+            """,
+            cancellationToken);
     }
 
     /// <inheritdoc />

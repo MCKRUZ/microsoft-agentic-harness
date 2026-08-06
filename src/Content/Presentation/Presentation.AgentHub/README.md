@@ -72,6 +72,10 @@ Presentation.Common → Infrastructure.* → Application.* → Domain.*
 
 A durable lease expires (`AppConfig:AI:Conversations:TurnLease:ExpirySeconds`, default 60) so a host that dies mid-turn does not block its conversation forever, and the holder renews it every third of that while the turn runs. If a lease is nonetheless taken — a stalled host, a suspended container — the losing turn is **cancelled** rather than allowed to finish writing, and the client is told the conversation was continued elsewhere.
 
+**Budget retention:** the durable token budget writes one row per conversation and, until issue #253, never removed one — so a deleted conversation left its running total behind for good. A background sweep now reclaims those (`AppConfig:AI:Conversations:BudgetRetention`, on by default, every 6 hours).
+
+It removes a row only when the conversation no longer exists, so **a conversation that merely sits idle keeps its ceiling however long it has been away** — deleting it would silently reset the ceiling the budget exists to enforce. The `GracePeriod` (30 days) is not about idle users at all: it protects budget keys that never had a conversation row, which is the case for plan runs and for self-contained runs made without a conversation owner. If a caller reuses a stable id on that path after a gap longer than the grace period, its ceiling starts again — raise the period if that describes your deployment.
+
 **Transcript persistence:** this host does not own the conversation store. `IConversationStore` lives in `Application.AI.Common/Interfaces/AI/`, its DTOs in `Application.AI.Common/Models/Conversations/`, and both implementations in `Infrastructure.AI/Conversations/`, registered by `AddInfrastructureAIDependencies`. It moved out of this project because the Execution API needs the same transcripts and peer Presentation projects cannot reference each other.
 
 **Ownership is enforced by the store, not by this host.** Every `IConversationStore` operation that

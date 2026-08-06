@@ -49,6 +49,15 @@ internal static class IsolatedAppConfig
     /// that database to the application directory by design and throws for a path outside it, so
     /// redirecting it here would break the control rather than isolate it.
     /// </para>
+    /// <para>
+    /// <strong>Every call gets its own subdirectory, not a shared one.</strong> A single per-assembly
+    /// directory kept the databases out of the build output but still handed every test the same file,
+    /// and xUnit runs test classes in parallel — so two classes building providers would both find a
+    /// table missing, both run <c>EnsureCreated</c>, and one would fail with "table already exists". That
+    /// surfaced the moment a hosted service began demanding the conversation schema at construction
+    /// (issue #253): a different DI test failed on each run, and none of them was at fault. Sharing a
+    /// database between parallel tests is the defect; the hosted service only exposed it.
+    /// </para>
     /// </remarks>
     public static AppConfig Isolate(AppConfig config)
     {
@@ -62,9 +71,15 @@ internal static class IsolatedAppConfig
         // here so that stops being something a reader has to work out.
         ArgumentException.ThrowIfNullOrWhiteSpace(root, nameof(IsolatedStateRoot.Root));
 
-        config.AI.Planner.DatabasePath = Path.Combine(root, "planner.db");
-        config.AI.Conversations.DatabasePath = Path.Combine(root, "conversations.db");
-        config.AI.Rag.GraphDatabase.DataDirectory = Path.Combine(root, "graph");
+        // Unique per call: two configurations must never name one database, however many tests are in
+        // flight. Created eagerly so a caller that writes a file rather than a database still lands
+        // somewhere that exists.
+        var slot = Path.Combine(root, Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(slot);
+
+        config.AI.Planner.DatabasePath = Path.Combine(slot, "planner.db");
+        config.AI.Conversations.DatabasePath = Path.Combine(slot, "conversations.db");
+        config.AI.Rag.GraphDatabase.DataDirectory = Path.Combine(slot, "graph");
 
         return config;
     }

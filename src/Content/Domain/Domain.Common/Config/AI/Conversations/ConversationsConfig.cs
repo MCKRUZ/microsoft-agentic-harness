@@ -40,6 +40,13 @@ public sealed class ConversationsConfig
     public ConversationTurnLeaseConfig TurnLease { get; set; } = new();
 
     /// <summary>
+    /// Governs the sweep that reclaims budget rows whose conversation no longer exists. Read only by the
+    /// <see cref="ConversationStoreProvider.Sqlite"/> provider — the file-backed provider uses the
+    /// in-process budget tracker, which bounds itself by evicting.
+    /// </summary>
+    public ConversationBudgetRetentionConfig BudgetRetention { get; set; } = new();
+
+    /// <summary>
     /// How many of a conversation's most recent messages are replayed to the model when a durable run
     /// continues it. Bounds prompt growth: a conversation's transcript is unbounded, the window sent to
     /// the model is not.

@@ -89,7 +89,23 @@ public static partial class DependencyInjection
         // The third member of the same choice. A conversation whose transcript is shared between hosts
         // but whose token ceiling is not lets each host enforce a private copy of one number, and the
         // conversation spends roughly twice it (issue #245).
-        services.AddSingleton<IConversationBudgetTracker, SqliteConversationBudgetTracker>();
+        //
+        // Registered by concrete type with the interface forwarding to it, rather than the usual
+        // interface-to-implementation pair, so the retention sweep below and every budget caller share
+        // one instance. Two registrations of the implementation would give two, each holding its own
+        // schema initializer, and the resulting double schema check is the kind of thing that works
+        // until it does not.
+        services.AddSingleton<SqliteConversationBudgetTracker>();
+        services.AddSingleton<IConversationBudgetTracker>(
+            sp => sp.GetRequiredService<SqliteConversationBudgetTracker>());
+
+        // Nothing removes a budget row when a conversation is deleted — the interactive callers never
+        // release, because a turn ending is not a conversation ending — so before this the table only
+        // grew. Registered unconditionally rather than behind the retention switch: the switch is read
+        // live on every tick, so a host can turn the sweep on without restarting, and a service that
+        // exists but declines to act is easier to explain than one that silently was never created
+        // (issue #253).
+        services.AddHostedService<ConversationBudgetRetentionService>();
     }
 
     /// <summary>
