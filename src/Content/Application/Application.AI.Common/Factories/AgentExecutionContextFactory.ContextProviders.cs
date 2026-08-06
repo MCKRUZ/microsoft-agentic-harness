@@ -15,7 +15,9 @@ namespace Application.AI.Common.Factories;
 // rail together: any tool-contributing provider must go above ToolPermissionFilter (see the inline
 // comment at that call site), and the per-turn measurer must go last (see AppendPerTurnBudgetProvider).
 // Both are load-bearing — moving a line here changes which tools an agent can call and what its
-// budget records.
+// budget records. AgentExecutionContextFactoryRailOrderTests asserts both, by position rather than by
+// presence, because every other test in this assembly reads the rail with OfType<T>().Single() and so
+// passes whatever the order is.
 //
 // Deliberately a plain comment, not an XML doc: the type's <summary> lives on the primary partial in
 // AgentExecutionContextFactory.cs. A second class-level <summary> on the same type would be merged
@@ -30,10 +32,28 @@ public partial class AgentExecutionContextFactory
     /// <see langword="null"/> when no restriction is active (no filter is wired), or a concrete set —
     /// possibly empty, meaning deny-all — when a restriction applies.
     /// </summary>
+    /// <param name="skillCount">How many skills this agent was built from; diagnostics only.</param>
+    /// <param name="effectiveAllowlist">The one allowlist governing this agent, or <see langword="null"/>.</param>
+    /// <param name="disclosableSkills">The skills the framework provider is given, built once by the caller.</param>
+    /// <param name="agentName">The agent whose budget the per-turn measurer charges.</param>
+    /// <param name="instruction">The static system prompt — the measurer's instruction baseline.</param>
+    /// <param name="toolCount">The tool count the agent was built with — the measurer's tool baseline.</param>
+    /// <returns>The ordered rail, or <see langword="null"/> when this agent needs no providers at all.</returns>
+    /// <remarks>
+    /// The per-turn measurer is appended here rather than by the caller, so that "it must be last" is a
+    /// property of this one method instead of a property of a call sequence in another file. That closes the
+    /// gap this method could close. It does not make lastness unbreakable: the rail is handed on as a
+    /// mutable <see cref="IList{T}"/> through a settable property, so a consumer that appended to it would
+    /// still displace the measurer. Nothing does today, and no test would catch it if something started —
+    /// tracked in issue #277.
+    /// </remarks>
     private IList<AIContextProvider>? BuildMergedAIContextProviders(
         int skillCount,
         IReadOnlyList<string>? effectiveAllowlist,
-        IReadOnlyList<DisclosableSkill> disclosableSkills)
+        IReadOnlyList<DisclosableSkill> disclosableSkills,
+        string agentName,
+        string instruction,
+        int toolCount)
     {
         var providers = new List<AIContextProvider>();
 
@@ -108,6 +128,10 @@ public partial class AgentExecutionContextFactory
             _logger.LogDebug("Wired GoverningToolContextProvider (tool-invocation enforcement enabled)");
         }
 
+        // Last, unconditionally and from inside this method — see the remarks above and on
+        // AppendPerTurnBudgetProvider. An empty rail gets nothing appended, so the null below is unaffected.
+        AppendPerTurnBudgetProvider(providers, agentName, instruction, toolCount);
+
         return providers.Count > 0 ? providers : null;
     }
 
@@ -116,8 +140,8 @@ public partial class AgentExecutionContextFactory
     /// <paramref name="agentName"/>'s budget.
     /// </summary>
     /// <param name="providers">
-    /// The rail built for this agent, mutated in place. <see langword="null"/> or empty means the agent has
-    /// no rail, so there is nothing per-turn to charge and nothing is appended.
+    /// The rail built for this agent, mutated in place. An empty rail means the agent has no providers, so
+    /// there is nothing per-turn to charge and nothing is appended.
     /// </param>
     /// <param name="agentName">The agent whose budget the per-turn context is charged to.</param>
     /// <param name="instruction">
@@ -130,19 +154,21 @@ public partial class AgentExecutionContextFactory
     /// </param>
     /// <remarks>
     /// It must be last: the runtime feeds each provider the previous one's output, so only the final
-    /// position sees everything the others contributed. Placing it after
+    /// position sees everything the others contributed. That is why this is called from the tail of
+    /// <see cref="BuildMergedAIContextProviders"/> rather than by whoever consumes the rail — lastness is
+    /// then a property of the builder, not of a call sequence somewhere else. Placing it after
     /// <see cref="Services.Agent.GoverningToolContextProvider"/> — which is itself documented as going last
     /// — is safe, because this provider neither adds nor removes tools and so cannot escape that governance
     /// wrapper or defeat it. Nothing is appended when no budget tracker is wired in, leaving a host that
     /// does not track context with exactly the rail it had before.
     /// </remarks>
     private void AppendPerTurnBudgetProvider(
-        IList<AIContextProvider>? providers,
+        IList<AIContextProvider> providers,
         string agentName,
         string instruction,
         int toolCount)
     {
-        if (_budgetTracker is null || providers is null || providers.Count == 0)
+        if (_budgetTracker is null || providers.Count == 0)
             return;
 
         providers.Add(new Services.Agent.PerTurnBudgetContextProvider(

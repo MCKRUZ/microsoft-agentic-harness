@@ -145,10 +145,11 @@ public partial class AgentExecutionContextFactory
         var mergedToolChain = await _toolChainBuilder.BuildMergedToolsWithSourcesAsync(skills, options, effectiveAllowedTools);
         var tools = mergedToolChain.Tools.ToList();
         var middlewareTypes = ResolveMiddlewareTypes(primarySkill, options);
-        var aiContextProviders = BuildMergedAIContextProviders(skills.Count, effectiveAllowedTools, disclosableSkills);
+        // The rail ends with the measurer that charges what it injects into every turn — appended inside
+        // the builder, not here, so nothing outside can displace it from last (issues #266, #271).
+        var aiContextProviders = BuildMergedAIContextProviders(
+            skills.Count, effectiveAllowedTools, disclosableSkills, agentName, instruction, tools.Count);
 
-        // Charges what that rail injects into every turn — see AppendPerTurnBudgetProvider (issue #266).
-        AppendPerTurnBudgetProvider(aiContextProviders, agentName, instruction, tools.Count);
         var frameworkType = options.FrameworkType
             ?? ResolveFrameworkTypeFromMetadata(primarySkill)
             ?? _appConfig.CurrentValue.AI?.AgentFramework?.ClientType
