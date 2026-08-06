@@ -21,10 +21,12 @@ namespace Application.AI.Common.Services.AI;
 /// conversation store and turn lease.
 /// </para>
 /// <para>
-/// <strong>Opt-in.</strong> When the configured ceiling is ≤ 0 the tracker is inert:
+/// <strong>On by default, and switchable off.</strong> The ceiling comes from configuration, which since
+/// #256 defaults to a positive value — so a stock deployment <em>is</em> bounded and does pay the
+/// per-call dictionary work below. When the configured ceiling is ≤ 0 the tracker is instead inert:
 /// <see cref="GetStatusAsync"/> returns <see cref="ConversationBudgetStatus.Disabled"/> and
-/// <see cref="RecordUsageAsync"/> stores nothing, so the default deployment does no per-call dictionary
-/// work and conversations run unbounded across turns.
+/// <see cref="RecordUsageAsync"/> stores nothing, so conversations run unbounded across turns and this
+/// type costs nothing. That is a deliberate opt-out, no longer the shipped default.
 /// </para>
 /// <para>
 /// <strong>Bounded memory.</strong> A long-lived interactive host can see many conversations and there is

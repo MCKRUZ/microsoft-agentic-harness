@@ -87,7 +87,7 @@ public sealed class SqliteConversationBudgetTrackerTests
     /// the figure; the figure is pinned once, in <c>AgentFrameworkConfigTests</c>.
     /// </remarks>
     [Fact]
-    public async Task StockConfiguration_BoundsAConversation_WithNothingConfigured()
+    public async Task GetStatusAsync_StockConfiguration_BoundsTheConversation()
     {
         var config = new AppConfig();
         var stock = new SqliteConversationBudgetTracker(

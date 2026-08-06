@@ -452,6 +452,9 @@
                                     conversation meets. Set it to <code>0</code> to disable, but note that
                                     <strong>nothing else</strong> bounds a durable conversation's total length: the
                                     per-run <code>maxTurns</code> and message caps deliberately do not.
+                                    <strong>Upgrading:</strong> this previously shipped disabled, so a deployment that
+                                    pins <code>0</code> in its own <code>appsettings.json</code> keeps that value and
+                                    stays unbounded — remove the pin to pick up the bound.
                                 </td>
                             </tr>
                         </tbody>

@@ -366,8 +366,8 @@ skills:
                                 <code>AppConfig:AI:AgentFramework:DefaultTokenBudget</code> (default
                                 <strong>200,000</strong> tokens). A separate <code>IConversationBudgetTracker</code>
                                 (a singleton) enforces a <em>cross-turn</em> ceiling for the whole conversation
-                                (<code>ConversationTokenBudget</code>, default <strong>1,000,000</strong> tokens) and
-                                gracefully breaks the loop when a long session runs out of budget. If you're seeing skills "disappear" mid-conversation, the
+                                (<code>ConversationTokenBudget</code>, default <strong>1,000,000</strong>
+                                tokens) and gracefully breaks the loop when a long session runs out. If you're seeing skills "disappear" mid-conversation, the
                                 per-turn tracker is preserving budget; if a run stops cleanly after many turns, that's
                                 the conversation tracker. (Note: there is no <code>MaxTurnsPerConversation</code>
                                 property — budgets are token-based, not turn-count-based.)

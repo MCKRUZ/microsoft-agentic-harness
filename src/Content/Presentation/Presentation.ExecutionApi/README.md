@@ -197,13 +197,16 @@ Two caps that now mean something narrower than they read: `userMessages` (100) a
 bound **one run**. A durable conversation outlives any run, so what bounds its total length is the
 conversation-lifetime token budget, which is durable and spans every run against that conversation.
 
-That budget is `AppConfig:AI:AgentFramework:ConversationTokenBudget`, and it is **on by default** at
-1,000,000 cumulative tokens -- roughly 50-100 exchanges once each turn's resent history is counted. It
-is a runaway guard rather than a business rule: a conversation that loops or is never closed stops
-itself at a bounded cost instead of billing indefinitely. When it is reached the next turn is declined
-gracefully between turns, never mid-answer. Setting it to `0` disables it, at which point **nothing**
-bounds a conversation's total length -- the per-run caps above deliberately do not. It shipped at `0`
-until #256.
+That budget is `AppConfig:AI:AgentFramework:ConversationTokenBudget`, **on by default** at 1,000,000
+cumulative tokens. An exhausted conversation declines further turns gracefully with an explanatory
+message -- no model call, no error, and never mid-answer. Setting it to `0` disables it, at which point
+**nothing** bounds a conversation's total length, because the per-run caps above deliberately do not.
+See the XML docs on `AgentFrameworkConfig.ConversationTokenBudget` for the rationale and for how the
+same ceiling applies to plan runs.
+
+**Upgrading:** this shipped at `0` (disabled) before. A deployment whose own `appsettings.json` pins
+`ConversationTokenBudget` to `0` keeps that value and stays unbounded -- the new default only reaches
+hosts that never set it. Remove the pinned `0` to pick up the bound.
 
 A conversation is created on first use and owned by the caller that first used it. A run naming
 someone else's conversation is refused **synchronously** as `404` -- identically to an unknown handle,

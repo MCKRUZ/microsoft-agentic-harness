@@ -62,21 +62,24 @@ public class AgentFrameworkConfig
     /// <para>
     /// Defaults to 1,000,000 tokens — roughly 50–100 exchanges once each turn's resent history is counted,
     /// which is a long support or voice session rather than a limit an ordinary conversation reaches. It is
-    /// deliberately a runaway guard, not a business rule: a conversation that loops or is never closed stops
-    /// itself at a bounded cost instead of billing indefinitely.
+    /// a runaway guard, not a business rule: work that loops or is never closed stops at a bounded cost
+    /// instead of billing indefinitely.
     /// </para>
     /// <para>
-    /// <strong>This default is load-bearing, not decoration.</strong> A durable conversation outlives any
-    /// single run, so the per-run caps (<c>maxTurns</c> and the seed-message cap) deliberately do not bound
-    /// it — this budget is the only thing that does, and the Execution API contract says so. Shipping it
-    /// disabled left that documented promise unbacked on stock configuration, which is what #256 recorded.
+    /// <strong>The default has to be positive.</strong> A durable conversation outlives any single run, so
+    /// the per-run caps (<c>maxTurns</c> and the seed-message cap) deliberately do not bound it — this
+    /// budget is the only thing that does, and the Execution API contract says so. Set it to <c>0</c> to
+    /// disable, and that is what <em>unbounded</em> means: nothing else is watching.
     /// </para>
     /// <para>
-    /// Set to <c>0</c> to disable, restoring genuinely unbounded multi-turn conversations. Do that only
-    /// deliberately: with it off, nothing bounds a conversation's total length. Tune via
-    /// <c>AppConfig:AI:AgentFramework:ConversationTokenBudget</c>. Enforced by
-    /// <c>IConversationBudgetTracker</c> between turns, never mid-turn (intra-turn cost is bounded by
-    /// <see cref="DefaultTokenBudget"/>), so a turn already in flight always finishes.
+    /// <strong>Applies per budget key, of which there are two kinds.</strong> Conversational turns key by
+    /// conversation, and an exhausted conversation declines further turns gracefully with an explanatory
+    /// message — no model call, no error. Plan execution keys by plan run instead, and an exhausted run
+    /// fails the step as a policy denial. Same ceiling, two units and two failure shapes.
+    /// </para>
+    /// <para>
+    /// Enforced by <c>IConversationBudgetTracker</c> between turns, never mid-turn — a turn already in
+    /// flight always finishes, and its own cost is bounded by <see cref="DefaultTokenBudget"/>.
     /// </para>
     /// </remarks>
     public int ConversationTokenBudget { get; set; } = 1_000_000;
