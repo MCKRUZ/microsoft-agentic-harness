@@ -49,12 +49,9 @@ public class AgentFrameworkConfigTests
     [Fact]
     public void ConversationTokenBudget_Unconfigured_DefaultsToOneMillion()
     {
-        // A durable conversation outlives any single run, so the per-run caps do not bound it — the
-        // Execution API contract names this budget as the only thing that does. At 0 the tracker reports
-        // Disabled and records nothing, so that documented bound silently ceases to exist; tuning the
-        // figure is fine, returning it to 0 is not. The figure itself is roughly 50-100 exchanges once
-        // each turn's resent history is counted, and is pinned so that changing it is a deliberate edit
-        // with this test in the diff.
+        // Pinned so that changing the figure is a deliberate edit with this test in the diff, and so a
+        // return to 0 — which silently means unbounded — cannot happen quietly. Rationale for both the
+        // figure and the floor lives on the property's own XML docs.
         new AgentFrameworkConfig().ConversationTokenBudget.Should().Be(
             1_000_000,
             "a conversation with no ceiling has nothing else bounding its total length");
