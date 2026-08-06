@@ -30,6 +30,7 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
     private readonly IConversationTurnLease _turnLease;
     private readonly ISessionHealthTracker _healthTracker;
     private readonly IObservabilityStore _observabilityStore;
+    private readonly IConversationTelemetryRecorder _telemetryRecorder;
     private readonly IConnectionTracker _connectionTracker;
     private readonly IConversationBudgetTracker _conversationBudget;
     private readonly AgentHubConfig _config;
@@ -42,6 +43,7 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
         IConversationTurnLease turnLease,
         ISessionHealthTracker healthTracker,
         IObservabilityStore observabilityStore,
+        IConversationTelemetryRecorder telemetryRecorder,
         IConnectionTracker connectionTracker,
         IConversationBudgetTracker conversationBudget,
         IOptions<AgentHubConfig> config,
@@ -53,6 +55,7 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
         _turnLease = turnLease;
         _healthTracker = healthTracker;
         _observabilityStore = observabilityStore;
+        _telemetryRecorder = telemetryRecorder;
         _connectionTracker = connectionTracker;
         _conversationBudget = conversationBudget;
         _config = config.Value;
@@ -280,13 +283,17 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
         Activity.Current?.AddBaggage("agent.conversation_id", conversationId);
         Activity.Current?.AddBaggage(UserConventions.UserId, callerId);
 
-        await EnsureSessionTrackedAsync(sessionKey, conversationId, agentName, callerId, ct);
+        var telemetry = await EnsureSessionTrackedAsync(sessionKey, conversationId, agentName, callerId, ct);
 
         var history = await _conversationStore.GetHistoryForDispatch(
             conversationId, callerId, _config.MaxHistoryMessages, ct) ?? [];
 
         var updatedRecord = await _conversationStore.GetAsync(conversationId, callerId, ct);
-        var turnNumber = updatedRecord?.Messages.Count ?? 0;
+
+        // Numbered from the conversation's turn count, not its message count. A message count advances
+        // by two per turn, so the same conversation produced a different sequence over this transport
+        // than over the bundle path — in one key space, on one dashboard (issues #255, #280).
+        var turnNumber = telemetry.NextTurnNumber;
 
         // Conversation-lifetime budget gate: if prior turns already exhausted the cumulative token
         // ceiling, decline this turn gracefully (no LLM dispatch, no cost) with an explanatory
@@ -295,7 +302,7 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
         if (budgetStatus.IsExhausted)
             return await BuildBudgetExhaustedOutcomeAsync(conversationId, callerId, agentName, turnNumber, ct);
 
-        var obsSessionId = _connectionTracker.Get(sessionKey)?.ObservabilitySessionId ?? Guid.Empty;
+        var obsSessionId = telemetry.SessionId;
 
         var command = new ExecuteAgentTurnCommand
         {
@@ -378,7 +385,7 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
         var userAgentTag = new KeyValuePair<string, object?>(AgentConventions.Name, agentName);
         UserActivityMetrics.Turns.Add(1, userTag, userAgentTag);
 
-        await UpdateSessionMetricsAsync(sessionKey, result);
+        await RecordTurnAsync(sessionKey, telemetry, result, ct);
 
         // Token deltas were already streamed to the caller during dispatch via the
         // ambient AgentTurnStreamSink. The final authoritative text rides TurnComplete.
@@ -399,69 +406,102 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
         };
     }
 
-    private async Task EnsureSessionTrackedAsync(
+    /// <summary>
+    /// Finds where this conversation has got to, and keeps the connection tracker in step.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The session id and the running totals come from <see cref="IConversationTelemetryRecorder"/>,
+    /// which reads them off the conversation. They used to be opened fresh here on every conversation
+    /// switch and accumulated on a per-<em>connection</em> object — so reconnecting restamped the
+    /// session's start time and then overwrote the conversation's rollup with whatever the new
+    /// connection had spent, which is nothing (issue #280).
+    /// </para>
+    /// <para>
+    /// The connection tracker stays, because it answers a different question: which conversation this
+    /// connection is on, for idle cleanup and the active-conversation view. It is no longer the source
+    /// of truth for what the conversation has spent.
+    /// </para>
+    /// </remarks>
+    private async Task<ConversationTelemetryState> EnsureSessionTrackedAsync(
         string sessionKey, string conversationId, string agentName, string callerId, CancellationToken ct)
     {
         var tracked = _connectionTracker.Get(sessionKey);
-        if (tracked?.ConversationId == conversationId)
-            return;
 
-        if (tracked is not null)
+        // A connection moving to a different conversation still ends the one it is leaving, exactly as
+        // before. It is tempting not to — the conversation is not over, this connection just stopped
+        // looking at it — but nothing else would ever end it: the disconnect and idle-cleanup paths both
+        // end whatever the tracker currently holds, which by then is the NEW conversation. Dropping this
+        // would leave the old session `running` forever, which is worse than ending it early.
+        //
+        // What it costs, stated because the recorder now adopts rather than restarts: coming back to
+        // that conversation writes further turns into a row already marked completed. That is the
+        // session lifetime being per-connection while the session row is per-conversation, which is a
+        // design gap this change surfaces rather than creates — tracked separately.
+        if (tracked is not null && tracked.ConversationId != conversationId)
         {
             SessionMetrics.ActiveSessions.Add(-1, new TagList { { AgentConventions.Name, tracked.AgentName } });
-            await _observabilityStore.EndSessionAsync(tracked.ObservabilitySessionId, "completed", cancellationToken: ct);
+            await _observabilityStore.EndSessionAsync(
+                tracked.ObservabilitySessionId, "completed", cancellationToken: ct);
         }
 
-        var newSessionId = await _observabilityStore.StartSessionAsync(
-            conversationId, agentName, model: null, ct);
+        var state = await _telemetryRecorder.BeginAsync(
+            conversationId, callerId, agentName, knownRecord: null, ct);
 
-        if (newSessionId == Guid.Empty)
-            _logger.LogWarning("StartSessionAsync returned empty GUID for conversation {ConversationId}", conversationId);
+        // Debug, not warning: an empty id is what a host running without an observability database gets
+        // on every turn, and that is a supported configuration. At warning level this filled the log of
+        // every such deployment with a line about a feature it had chosen not to switch on.
+        if (state.SessionId == Guid.Empty)
+            _logger.LogDebug("No observability session for conversation {ConversationId}", conversationId);
+
+        if (tracked?.ConversationId == conversationId)
+            return state;
 
         _connectionTracker.Track(sessionKey, new ActiveConversationInfo(
-            conversationId, agentName, callerId, DateTimeOffset.UtcNow, 0, newSessionId));
+            conversationId, agentName, callerId, DateTimeOffset.UtcNow,
+            state.Totals.TurnCount, state.SessionId,
+            state.Totals.InputTokens, state.Totals.OutputTokens,
+            state.Totals.CacheRead, state.Totals.CacheWrite,
+            state.Totals.CostUsd, state.Totals.ToolCallCount));
 
         SessionMetrics.ActiveSessions.Add(1, new TagList { { AgentConventions.Name, agentName } });
-        SessionMetrics.SessionsStarted.Add(1, new KeyValuePair<string, object?>(AgentConventions.Name, agentName));
-        UserActivityMetrics.SessionsStarted.Add(1,
-            new KeyValuePair<string, object?>(UserConventions.UserId, callerId));
+        return state;
     }
 
-    private async Task UpdateSessionMetricsAsync(string sessionKey, AgentTurnResult result)
+    /// <summary>
+    /// Records the turn against the conversation, and mirrors the new totals onto the connection view.
+    /// </summary>
+    /// <remarks>
+    /// The write itself belongs to the shared recorder — including the cache hit rate, which this path
+    /// used to compute with a different denominator than the other two transports, so the same column
+    /// meant different things depending on how the conversation was reached.
+    /// </remarks>
+    private async Task<ConversationTelemetryState> RecordTurnAsync(
+        string sessionKey, ConversationTelemetryState state, AgentTurnResult result, CancellationToken ct)
     {
-        var convInfo = _connectionTracker.Get(sessionKey);
-        if (convInfo is null) return;
+        var updated = await _telemetryRecorder.RecordTurnAsync(
+            state,
+            new ConversationTurnTelemetry(
+                result.InputTokens, result.OutputTokens, result.CacheRead, result.CacheWrite,
+                result.CostUsd, result.ToolsInvoked.Count, result.Model),
+            ct);
 
-        var updated = convInfo with
+        if (_connectionTracker.Get(sessionKey) is { } convInfo)
         {
-            TurnCount = convInfo.TurnCount + 1,
-            LastActivityAt = DateTimeOffset.UtcNow,
-            ToolCallCount = convInfo.ToolCallCount + result.ToolsInvoked.Count,
-            TotalInputTokens = convInfo.TotalInputTokens + result.InputTokens,
-            TotalOutputTokens = convInfo.TotalOutputTokens + result.OutputTokens,
-            TotalCacheRead = convInfo.TotalCacheRead + result.CacheRead,
-            TotalCacheWrite = convInfo.TotalCacheWrite + result.CacheWrite,
-            TotalCostUsd = convInfo.TotalCostUsd + result.CostUsd,
-        };
-        _connectionTracker.Track(sessionKey, updated);
+            _connectionTracker.Track(sessionKey, convInfo with
+            {
+                LastActivityAt = DateTimeOffset.UtcNow,
+                TurnCount = updated.Totals.TurnCount,
+                ToolCallCount = updated.Totals.ToolCallCount,
+                TotalInputTokens = updated.Totals.InputTokens,
+                TotalOutputTokens = updated.Totals.OutputTokens,
+                TotalCacheRead = updated.Totals.CacheRead,
+                TotalCacheWrite = updated.Totals.CacheWrite,
+                TotalCostUsd = updated.Totals.CostUsd,
+            });
+        }
 
-        try
-        {
-            await _observabilityStore.UpdateSessionMetricsAsync(
-                updated.ObservabilitySessionId,
-                updated.TurnCount, updated.ToolCallCount, subagentCount: 0,
-                updated.TotalInputTokens, updated.TotalOutputTokens,
-                updated.TotalCacheRead, updated.TotalCacheWrite,
-                updated.TotalCostUsd,
-                updated.TotalInputTokens > 0
-                    ? (decimal)updated.TotalCacheRead / updated.TotalInputTokens
-                    : 0m,
-                result.Model);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(ex, "Failed to persist session metrics for session {SessionId}", updated.ObservabilitySessionId);
-        }
+        return updated;
     }
 
     private async Task<TurnOutcome> HandleTurnErrorAsync(

@@ -39,6 +39,7 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 	private readonly IAgentConversationCache _agentCache;
 	private readonly IConversationBudgetTracker _conversationBudget;
 	private readonly IObservabilityStore _observabilityStore;
+	private readonly IConversationTelemetryRecorder _telemetryRecorder;
 	private readonly IConversationStore _conversationStore;
 	private readonly IConversationTurnLease _turnLease;
 	private readonly IOptions<ConversationsConfig> _conversationsConfig;
@@ -69,6 +70,7 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 		IAgentConversationCache agentCache,
 		IConversationBudgetTracker conversationBudget,
 		IObservabilityStore observabilityStore,
+		IConversationTelemetryRecorder telemetryRecorder,
 		IConversationStore conversationStore,
 		IConversationTurnLease turnLease,
 		IOptions<ConversationsConfig> conversationsConfig,
@@ -78,6 +80,7 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 		ArgumentNullException.ThrowIfNull(agentCache);
 		ArgumentNullException.ThrowIfNull(conversationBudget);
 		ArgumentNullException.ThrowIfNull(observabilityStore);
+		ArgumentNullException.ThrowIfNull(telemetryRecorder);
 		ArgumentNullException.ThrowIfNull(conversationStore);
 		ArgumentNullException.ThrowIfNull(turnLease);
 		ArgumentNullException.ThrowIfNull(conversationsConfig);
@@ -87,6 +90,7 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 		_agentCache = agentCache;
 		_conversationBudget = conversationBudget;
 		_observabilityStore = observabilityStore;
+		_telemetryRecorder = telemetryRecorder;
 		_conversationStore = conversationStore;
 		_turnLease = turnLease;
 		_conversationsConfig = conversationsConfig;
@@ -177,11 +181,20 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 		var stoppedForBudget = false;
 		string? sessionModel = null;
 
-		// Everything the conversation has spent, this run included as it goes. A durable run resumes
-		// these from the store; a self-contained run has nothing before it and starts at zero.
-		var (existingSessionId, conversationTotals) = transcript is null
-			? (Guid.Empty, TelemetryAccumulator.Zero)
-			: await transcript.LoadTelemetryAsync(cancellationToken);
+		// Everything the conversation has spent, this run included as it goes, plus the session it is
+		// recorded against — adopted when the conversation already has one, opened when it does not.
+		// A durable run resumes from the store; a self-contained run has nothing before it, starts at
+		// zero, and writes nothing back because there is no record to write to.
+		//
+		// This is the one implementation all three transports share (issue #280). The rule it enforces
+		// is that a conversation gets ONE session for its whole life: re-opening the session it already
+		// has does not open a second, it restamps the first one's start time, and every duration derived
+		// from it then describes only the latest run (issue #255).
+		var telemetry = await _telemetryRecorder.BeginAsync(
+			request.ConversationId, request.ConversationOwnerId, request.AgentName, null, cancellationToken);
+
+		var dbSessionId = telemetry.SessionId;
+		var conversationTotals = telemetry.Totals;
 
 		// Where this run came in. The caller asked what THIS call cost, and the run-scoped metrics
 		// report the same, so that quantity is derived by subtraction rather than accumulated alongside:
@@ -191,24 +204,6 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 
 		var agentTag = new KeyValuePair<string, object?>(AgentConventions.Name, request.AgentName);
 		var sessionTags = new TagList { { AgentConventions.Name, request.AgentName } };
-
-		// A conversation gets ONE observability session and keeps it, because the session table holds one
-		// row per conversation. Re-opening the session a conversation already has does not open a second
-		// one — it restamps the first one's start time, and every duration derived from it then describes
-		// only the latest run (issue #255). So a continuing run adopts the session it finds.
-		var dbSessionId = existingSessionId;
-		if (dbSessionId == Guid.Empty)
-		{
-			dbSessionId = await _observabilityStore.StartSessionAsync(
-				request.ConversationId, request.AgentName, null, cancellationToken);
-
-			SessionMetrics.SessionsStarted.Add(1, agentTag);
-
-			// Recorded before the first turn, not after it, so the conversation still points at its
-			// session when a run opens one and then declines every turn on an exhausted budget.
-			if (transcript is not null)
-				await transcript.PersistTelemetryAsync(dbSessionId, conversationTotals, cancellationToken);
-		}
 
 		SessionMetrics.ActiveSessions.Add(1, sessionTags);
 
@@ -388,11 +383,6 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 
 				sessionModel ??= lastResult.Model;
 
-				conversationTotals = conversationTotals.Add(
-					lastResult.InputTokens, lastResult.OutputTokens,
-					lastResult.CacheRead, lastResult.CacheWrite,
-					lastResult.CostUsd, lastResult.ToolsInvoked.Count);
-
 				// Fold this turn's input+output into the conversation-lifetime budget (mirrors the
 				// per-turn TokenBudgetBehavior's accounting). The next loop iteration's gate decides
 				// whether the cumulative total has crossed the ceiling.
@@ -401,39 +391,22 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 					lastResult.InputTokens + lastResult.OutputTokens,
 					cancellationToken);
 
-				// Cumulative, not this run's share. The session row is written with SET semantics against
-				// a row keyed one-per-conversation, so reporting the run's own totals here replaces the
-				// conversation's with whatever the most recent run happened to spend (issue #255).
-				await _observabilityStore.UpdateSessionMetricsAsync(
-					dbSessionId,
-					conversationTotals.TurnCount, conversationTotals.ToolCallCount, subagentCount: 0,
-					conversationTotals.InputTokens, conversationTotals.OutputTokens,
-					conversationTotals.CacheRead, conversationTotals.CacheWrite,
-					conversationTotals.CostUsd, Math.Round(conversationTotals.CacheHitRate, 4),
-					sessionModel, cancellationToken);
+				// One call for the accumulate and both writes — the observability rollup and the
+				// conversation's own copy of the same totals, always from one value so the two cannot
+				// disagree. Cumulative, not this run's share: the session row is keyed one-per-conversation
+				// and written with SET semantics, so a run's own totals would replace the conversation's
+				// with whatever the latest run happened to spend (issues #255, #280). It never throws —
+				// the turn's answer is already in the transcript, and discarding real work to protect a
+				// number is the wrong trade.
+				telemetry = await _telemetryRecorder.RecordTurnAsync(
+					telemetry,
+					new ConversationTurnTelemetry(
+						lastResult.InputTokens, lastResult.OutputTokens,
+						lastResult.CacheRead, lastResult.CacheWrite,
+						lastResult.CostUsd, lastResult.ToolsInvoked.Count, sessionModel),
+					cancellationToken);
 
-				// The conversation's own copy of the same totals. It is what the next run resumes from,
-				// and the only one that survives the observability database being absent or switched off,
-				// so it is written every turn rather than once at the end — a run that dies on its
-				// seventh turn leaves the two agreeing about the six that completed.
-				//
-				// Logged and swallowed, matching what the interactive host does with the same write and
-				// what the observability store does internally: the turn succeeded and its answer is
-				// already in the transcript, so failing it now over a telemetry write would discard real
-				// work to protect a number. The cost is that the next run resumes from a stale total.
-				if (transcript is not null)
-				{
-					try
-					{
-						await transcript.PersistTelemetryAsync(dbSessionId, conversationTotals, cancellationToken);
-					}
-					catch (Exception ex) when (ex is not OperationCanceledException)
-					{
-						_logger.LogWarning(ex,
-							"Failed to persist telemetry for conversation {ConversationId}; the next run will "
-							+ "resume from a stale total", request.ConversationId);
-					}
-				}
+				conversationTotals = telemetry.Totals;
 
 				if (request.OnProgress != null)
 				{

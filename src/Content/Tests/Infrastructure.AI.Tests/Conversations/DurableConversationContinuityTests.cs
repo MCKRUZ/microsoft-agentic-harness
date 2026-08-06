@@ -3,6 +3,7 @@ using Application.AI.Common.Interfaces.AI;
 using Application.Common.Exceptions.ExceptionTypes;
 using Application.Core.CQRS.Agents.ExecuteAgentTurn;
 using Application.Core.CQRS.Agents.RunConversation;
+using Application.AI.Common.Services.AI;
 using Domain.AI.Budget;
 using Domain.Common.Config.AI.Conversations;
 using FluentAssertions;
@@ -264,11 +265,17 @@ public sealed class DurableConversationContinuityTests : IDisposable
             .Setup(b => b.GetStatusAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(ConversationBudgetStatus.Disabled);
 
+        var observability = new Mock<IObservabilityStore>().Object;
+
         return new RunConversationCommandHandler(
             mediator.Object,
             new Mock<IAgentConversationCache>().Object,
             budget.Object,
-            new Mock<IObservabilityStore>().Object,
+            observability,
+            // The real recorder over the real store this fixture uses, so continuity across runs is
+            // exercised end to end rather than stubbed.
+            new ConversationTelemetryRecorder(
+                observability, _store, NullLogger<ConversationTelemetryRecorder>.Instance),
             _store,
             _lease,
             Options.Create(new ConversationsConfig { MaxHistoryMessages = maxHistoryMessages }),

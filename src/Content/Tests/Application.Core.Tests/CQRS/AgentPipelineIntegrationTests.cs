@@ -8,6 +8,8 @@ using Application.AI.Common.Services.Agent;
 using Application.Core.CQRS.Agents.ExecuteAgentTurn;
 using Application.Core.CQRS.Agents.RunConversation;
 using Application.Core.Tests.Helpers;
+using Application.AI.Common.Interfaces.AI;
+using Application.AI.Common.Services.AI;
 using Domain.AI.Skills;
 using FluentAssertions;
 using MediatR;
@@ -90,6 +92,11 @@ public class AgentPipelineIntegrationTests
 
         // Observability store — no-op mock for integration tests
         services.AddSingleton(new Mock<IObservabilityStore>().Object);
+
+        // The real shared telemetry recorder, resolved from the container like everything else. A
+        // self-contained run reads and writes no conversation record, so the strict store registered
+        // below stays untouched through it — which is the same guard, one layer along.
+        services.AddSingleton<IConversationTelemetryRecorder, ConversationTelemetryRecorder>();
 
         // Durable-conversation collaborators. Strict and unstubbed on purpose: every conversation this
         // pipeline runs is self-contained (no ConversationOwnerId), so a call to either would mean the

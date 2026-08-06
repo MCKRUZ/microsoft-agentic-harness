@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.AI;
+using Application.AI.Common.Services.AI;
 using Application.Common.Exceptions.ExceptionTypes;
 using Application.Core.CQRS.Agents.ExecuteAgentTurn;
 using Domain.AI.Budget;
@@ -385,6 +386,11 @@ public sealed class AgUiRunHandlerTests
             mediator.Object,
             store.Object,
             observability.Object,
+            // The real recorder over the mocked stores, for the same reason as the lease below: a mocked
+            // recorder would make these tests assertions about an interface rather than about what
+            // actually reaches the observability row, which is the whole subject.
+            new ConversationTelemetryRecorder(
+                observability.Object, store.Object, NullLogger<ConversationTelemetryRecorder>.Instance),
             // The real in-process lease by default, not a mock: a mocked one returns a null handle,
             // and every test below would then run a turn that never leased anything.
             turnLease ?? new InProcessConversationTurnLease(),

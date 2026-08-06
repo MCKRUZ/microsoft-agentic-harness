@@ -11,6 +11,7 @@ using Application.AI.Common.Services.Agent;
 using Application.AI.Common.Services.Context;
 using Application.AI.Common.Services.Governance;
 using Application.AI.Common.Services.Skills;
+using Application.AI.Common.Services.AI;
 using Application.AI.Common.Services.Tools;
 using Application.Common.Interfaces.Telemetry;
 using FluentAssertions;
@@ -30,6 +31,29 @@ public class DependencyInjectionTests
         var services = new ServiceCollection();
         services.AddApplicationAIDependencies();
         return services;
+    }
+
+    /// <summary>
+    /// The shared telemetry recorder must be registered here, in the assembly that owns it.
+    /// </summary>
+    /// <remarks>
+    /// Its own unit tests construct it directly, so they stay green with this registration deleted —
+    /// and three transports take it as a constructor dependency, so a host missing it fails to build its
+    /// conversation handler at all. Same trap as issue #279: a registration is untested unless something
+    /// resolves it from the real composition method.
+    /// </remarks>
+    [Fact]
+    public void AddApplicationAIDependencies_RegistersTheSharedTelemetryRecorder()
+    {
+        var services = CreateServicesWithAIDependencies();
+
+        var descriptor = services.FirstOrDefault(
+            d => d.ServiceType == typeof(IConversationTelemetryRecorder));
+
+        descriptor.Should().NotBeNull(
+            "three transports take this as a constructor dependency; unregistered, none of them can be built");
+        descriptor!.Lifetime.Should().Be(ServiceLifetime.Singleton);
+        descriptor.ImplementationType.Should().Be<ConversationTelemetryRecorder>();
     }
 
     [Fact]
