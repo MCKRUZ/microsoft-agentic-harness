@@ -36,7 +36,9 @@ namespace Infrastructure.AI.Conversations;
 /// <strong>On by default, switchable off.</strong> The ceiling comes from configuration, which defaults
 /// to a positive value, so a stock deployment is bounded and does write rows here. When the configured
 /// ceiling is ≤ 0 the tracker is instead inert and touches no database at all. Reaching that state takes
-/// a deliberate <c>0</c> in configuration.
+/// a deliberate <c>0</c> in configuration, and a host that does is told so at startup —
+/// <see cref="ConversationBudgetStartupDisclosure"/> warns that conversations are unbounded, because
+/// this type going quietly inert is how the ceiling shipped switched off (issue #279).
 /// </para>
 /// <para>
 /// <strong>Retention.</strong> Rows are removed only by <see cref="ReleaseAsync"/>, and the two

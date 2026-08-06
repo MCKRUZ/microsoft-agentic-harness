@@ -26,7 +26,9 @@ namespace Application.AI.Common.Services.AI;
 /// below. When the configured ceiling is ≤ 0 the tracker is instead inert:
 /// <see cref="GetStatusAsync"/> returns <see cref="ConversationBudgetStatus.Disabled"/> and
 /// <see cref="RecordUsageAsync"/> stores nothing, so conversations run unbounded across turns and this
-/// type costs nothing. Reaching that state takes a deliberate <c>0</c> in configuration.
+/// type costs nothing. Reaching that state takes a deliberate <c>0</c> in configuration, and a host that
+/// does is told so at startup — <c>ConversationBudgetStartupDisclosure</c> warns that conversations are
+/// unbounded, because this type going quietly inert is how the ceiling shipped switched off (issue #279).
 /// </para>
 /// <para>
 /// <strong>Bounded memory.</strong> A long-lived interactive host can see many conversations and there is

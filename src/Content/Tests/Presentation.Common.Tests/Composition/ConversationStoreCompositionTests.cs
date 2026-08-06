@@ -4,6 +4,7 @@ using FluentAssertions;
 using Infrastructure.AI.Conversations;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Xunit;
 
 namespace Presentation.Common.Tests.Composition;
@@ -68,6 +69,20 @@ public sealed class ConversationStoreCompositionTests : IDisposable
         store.Should().NotBeNull(
             "the transcript store is shared infrastructure — a registration only one host can reach "
             + "is the defect issue #235 exists to fix");
+    }
+
+    [Fact]
+    public async Task CompositionRoot_RegistersTheBudgetDisclosure_ForEveryHost()
+    {
+        // The disclosure exists so a deployment running without a token ceiling cannot do so quietly
+        // (issue #279). Its own unit tests drive it directly, so they stay green with the registration
+        // deleted — and an unregistered hosted service is silent, which is the exact failure it was
+        // written to end. This is the assertion that makes the registration load-bearing.
+        await using var provider = CompositionRootTestHost.BuildProvider(SqliteSettings());
+
+        provider.GetServices<IHostedService>()
+            .Should().Contain(s => s.GetType().Name == "ConversationBudgetStartupDisclosure",
+                "a disclosure nothing resolves discloses nothing");
     }
 
     [Fact]
