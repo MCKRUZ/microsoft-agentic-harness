@@ -45,7 +45,7 @@ public partial class AgentExecutionContextFactory
     /// gap this method could close. It does not make lastness unbreakable: the rail is handed on as a
     /// mutable <see cref="IList{T}"/> through a settable property, so a consumer that appended to it would
     /// still displace the measurer. Nothing does today, and no test would catch it if something started —
-    /// tracked in issue #275.
+    /// tracked in issue #277.
     /// </remarks>
     private IList<AIContextProvider>? BuildMergedAIContextProviders(
         int skillCount,
