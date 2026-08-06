@@ -44,6 +44,51 @@ internal sealed class DurableTranscript
     }
 
     /// <summary>
+    /// Reads the conversation's observability session and everything it has spent across every run
+    /// before this one.
+    /// </summary>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>
+    /// The conversation's session, or <see cref="Guid.Empty"/> when it has never had one, and its
+    /// totals, never <see langword="null"/>. A conversation the store cannot return reads as neither.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// <strong>Must be called under the turn lease, and is, for the same reason the replay window is.</strong>
+    /// A run that queued behind another host's run would otherwise carry totals read before that run
+    /// existed, add its own, and write back a sum missing everything the other host spent — silently
+    /// deleting a peer's telemetry rather than merely reporting it late.
+    /// </para>
+    /// <para>
+    /// This is a second read of a record the run has already opened, which is the price of taking it at
+    /// the right moment rather than the convenient one. It is paid once per run, not once per turn.
+    /// </para>
+    /// </remarks>
+    public async Task<(Guid SessionId, TelemetryAccumulator Totals)> LoadTelemetryAsync(CancellationToken ct)
+    {
+        var record = await _store.GetAsync(_conversationId, _ownerId, ct);
+
+        return (record?.ObservabilitySessionId ?? Guid.Empty,
+                record?.Telemetry ?? TelemetryAccumulator.Zero);
+    }
+
+    /// <summary>
+    /// Records the conversation's running totals, and the session they belong to, on the conversation
+    /// itself.
+    /// </summary>
+    /// <param name="observabilitySessionId">The conversation's session.</param>
+    /// <param name="totals">Cumulative totals across every run so far, not this run's share.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <remarks>
+    /// This is the second of the two places a conversation's telemetry lives, and the one that survives
+    /// the observability database being absent or switched off. Writing only the session row would leave
+    /// the next <see cref="LoadTelemetryAsync"/> reading zero and starting the overwrite again.
+    /// </remarks>
+    public Task PersistTelemetryAsync(
+        Guid observabilitySessionId, TelemetryAccumulator totals, CancellationToken ct) =>
+        _store.UpdateTelemetryAsync(_conversationId, _ownerId, observabilitySessionId, totals, ct);
+
+    /// <summary>
     /// Returns the most recent <paramref name="maxMessages"/> messages, projected onto the framework's
     /// chat shape, ready to seed the run's first turn.
     /// </summary>

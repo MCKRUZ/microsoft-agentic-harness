@@ -39,8 +39,15 @@ public sealed class RunConversationDurableTests
     private const string ConversationId = "conv-235";
     private const string Owner = "owner-1";
 
+    private static readonly Guid NewSessionId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+    private static readonly Guid ExistingSessionId = Guid.Parse("22222222-2222-2222-2222-222222222222");
+
+    /// <summary>When each turn was dispatched, so writes can be ordered against turns.</summary>
+    private readonly List<int> _dispatchSequences = [];
+
     private readonly Mock<IMediator> _mediator = new();
     private readonly Mock<IConversationBudgetTracker> _budget = new();
+    private readonly Mock<IObservabilityStore> _observability = new();
     private readonly FakeConversationStore _store = new();
     private readonly FakeTurnLease _lease = new();
 
@@ -49,6 +56,13 @@ public sealed class RunConversationDurableTests
         _budget
             .Setup(b => b.GetStatusAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(ConversationBudgetStatus.Disabled);
+
+        // A store that answered Guid.Empty would make "the run adopted the session it found" and "the
+        // run opened one" indistinguishable, since both would end up writing against Empty.
+        _observability
+            .Setup(o => o.StartSessionAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(NewSessionId);
     }
 
     private RunConversationCommandHandler BuildSut(int maxHistoryMessages = 50) =>
@@ -56,11 +70,19 @@ public sealed class RunConversationDurableTests
             _mediator.Object,
             new Mock<IAgentConversationCache>().Object,
             _budget.Object,
-            new Mock<IObservabilityStore>().Object,
+            _observability.Object,
             _store,
             _lease,
             Options.Create(new ConversationsConfig { MaxHistoryMessages = maxHistoryMessages }),
             NullLogger<RunConversationCommandHandler>.Instance);
+
+    private static RunConversationCommand SelfContained(params string[] messages) => new()
+    {
+        AgentName = "TestAgent",
+        ConversationId = ConversationId,
+        UserMessages = messages.Length > 0 ? messages : ["hello"],
+        MaxTurns = 10
+    };
 
     private static RunConversationCommand Durable(params string[] messages) => new()
     {
@@ -396,6 +418,167 @@ public sealed class RunConversationDurableTests
             m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
+    // -- Telemetry continuity (issue #255) --
+
+    [Fact]
+    public async Task Handle_DurableRun_AddsToTheConversationsTotalsInsteadOfReplacingThem()
+    {
+        // The defect itself. The session row is keyed one-per-conversation and written with SET
+        // semantics, so a run reporting its own totals silently replaces everything spent before it —
+        // a conversation that has cost dollars reads as costing whatever its most recent run did.
+        _store.ObservabilitySessionId = ExistingSessionId;
+        _store.Telemetry = new TelemetryAccumulator(
+            TurnCount: 4, ToolCallCount: 3, InputTokens: 800, OutputTokens: 400,
+            CacheRead: 200, CacheWrite: 100, CostUsd: 1.50m);
+        SetupTurnsWithUsage(inputTokens: 10, outputTokens: 5, toolCalls: 1);
+
+        await BuildSut().Handle(Durable("one more"), CancellationToken.None);
+
+        _observability.Verify(o => o.UpdateSessionMetricsAsync(
+            ExistingSessionId,
+            5,      // turns:      4 + 1
+            4,      // tool calls: 3 + 1
+            0,
+            810,    // input:      800 + 10
+            405,    // output:     400 + 5
+            200, 100,
+            1.50m,  // this turn cost nothing, so the conversation's total is unchanged
+            It.IsAny<decimal>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()),
+            Times.Once,
+            "a run continues a conversation's spend; it does not restate it");
+    }
+
+    [Fact]
+    public async Task Handle_DurableRun_AdoptsTheSessionTheConversationAlreadyHas()
+    {
+        // Opening a session that exists does not create a second one — the row is unique per
+        // conversation, so the upsert restamps the first one's start time and every duration derived
+        // from it collapses to the latest run.
+        _store.ObservabilitySessionId = ExistingSessionId;
+        var dispatched = CaptureDispatchedTurns();
+
+        await BuildSut().Handle(Durable(), CancellationToken.None);
+
+        _observability.Verify(o => o.StartSessionAsync(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()),
+            Times.Never,
+            "the conversation already had a session, and it only ever gets one");
+        dispatched[0].ObservabilitySessionId.Should().Be(ExistingSessionId);
+    }
+
+    [Fact]
+    public async Task Handle_DurableRunOnAConversationWithNoSessionYet_OpensOneAndRecordsItBeforeTheFirstTurn()
+    {
+        // The control for the test above: the run does still open a session when there is none, so
+        // "never called StartSessionAsync" there is about the session being found, not about this
+        // handler having stopped opening sessions altogether.
+        //
+        // Recorded BEFORE the first turn, so a run that opens a session and then declines every turn
+        // on an exhausted budget still leaves the conversation pointing at it. Otherwise the next run
+        // opens another and restamps the clock.
+        var dispatched = CaptureDispatchedTurns();
+
+        await BuildSut().Handle(Durable(), CancellationToken.None);
+
+        _observability.Verify(o => o.StartSessionAsync(
+            ConversationId, "TestAgent", null, It.IsAny<CancellationToken>()), Times.Once);
+        dispatched[0].ObservabilitySessionId.Should().Be(NewSessionId);
+
+        _store.TelemetryWrites.Should().NotBeEmpty();
+        _store.TelemetryWrites[0].SessionId.Should().Be(NewSessionId);
+        _store.TelemetryWrites[0].Sequence.Should().BeLessThan(
+            _dispatchSequences[0], "the session is recorded before the first turn runs, not after it");
+    }
+
+    [Fact]
+    public async Task Handle_DurableRun_NumbersTurnsAcrossTheConversationNotWithinTheRun()
+    {
+        // Per-turn observability rows are keyed by conversation and turn number. A run that restarted
+        // its numbering at 1 would overwrite the opening turns of the run before it.
+        _store.Telemetry = TelemetryAccumulator.Zero with { TurnCount = 4 };
+        var dispatched = CaptureDispatchedTurns();
+
+        await BuildSut().Handle(Durable("fifth", "sixth"), CancellationToken.None);
+
+        dispatched.Select(d => d.TurnNumber).Should().Equal([5, 6]);
+    }
+
+    [Fact]
+    public async Task Handle_SelfContainedRun_NumbersTurnsFromOne()
+    {
+        // Control for the test above. A run with nothing behind it must still number from 1 — the
+        // change is "continue the conversation's count", not "add an offset from somewhere".
+        var dispatched = CaptureDispatchedTurns();
+
+        await BuildSut().Handle(SelfContained("first", "second"), CancellationToken.None);
+
+        dispatched.Select(d => d.TurnNumber).Should().Equal([1, 2]);
+    }
+
+    [Fact]
+    public async Task Handle_DurableRun_LeavesTheConversationsSessionOpen()
+    {
+        // A run finishing is not the conversation finishing. Ending the session here marks a
+        // conversation complete that the next run — or a user still typing in the interactive host —
+        // is about to continue.
+        _store.ObservabilitySessionId = ExistingSessionId;
+        SetupTurns("answer");
+
+        await BuildSut().Handle(Durable(), CancellationToken.None);
+
+        _observability.Verify(o => o.EndSessionAsync(
+            It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task Handle_SelfContainedRun_EndsTheSessionItOpened()
+    {
+        // Control for the test above, and the reason it is not simply "the handler no longer ends
+        // sessions": where the run IS the whole conversation, leaving the session open forever would
+        // be the regression.
+        SetupTurns("answer");
+
+        await BuildSut().Handle(SelfContained(), CancellationToken.None);
+
+        _observability.Verify(o => o.EndSessionAsync(
+            NewSessionId, "completed", null, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task Handle_DurableRun_WritesTheRunningTotalToTheConversationAfterEveryTurn()
+    {
+        // The conversation's own copy is what the next run resumes from, and the only one that
+        // survives the observability database being absent. Written per turn, not once at the end, so
+        // a run that dies mid-way leaves behind what it actually spent.
+        // Given an existing session so the only writes here are the per-turn ones. A conversation with
+        // no session yet also gets a registration write up front, which is asserted separately.
+        _store.ObservabilitySessionId = ExistingSessionId;
+        _store.Telemetry = TelemetryAccumulator.Zero with { InputTokens = 100 };
+        SetupTurnsWithUsage(inputTokens: 10, outputTokens: 5);
+
+        await BuildSut().Handle(Durable("one", "two"), CancellationToken.None);
+
+        _store.TelemetryWrites.Select(w => w.Telemetry.InputTokens).Should().Equal([110, 120]);
+        _store.TelemetryWrites.Should().OnlyContain(w => w.CallerId == Owner,
+            "the store enforces ownership on this write like every other");
+    }
+
+    [Fact]
+    public async Task Handle_DurableRun_ReadsTheConversationsTotalsUnderTheLease()
+    {
+        // Read before the lease, a run queued behind another host's run would carry totals taken
+        // before that run existed, add its own, and write back a sum missing everything the peer
+        // spent — deleting a peer's telemetry rather than reporting it late.
+        SetupTurns("answer");
+
+        await BuildSut().Handle(Durable(), CancellationToken.None);
+
+        _store.GetSequences.Should().ContainSingle("the totals are read once per run, not per turn");
+        _store.GetSequences[0].Should().BeGreaterThan(
+            _lease.AcquireSequence, "the totals must be read after the lease is held");
+    }
+
     // -- Helpers --
 
     private List<ExecuteAgentTurnCommand> CaptureDispatchedTurns()
@@ -408,6 +591,7 @@ public sealed class RunConversationDurableTests
                 ct.ThrowIfCancellationRequested();
                 _lease.NoteTurn();
                 dispatched.Add(cmd);
+                _dispatchSequences.Add(CallSequence.Next());
 
                 var response = $"answer {dispatched.Count}";
                 return Task.FromResult(new AgentTurnResult
@@ -423,6 +607,36 @@ public sealed class RunConversationDurableTests
                 });
             });
         return dispatched;
+    }
+
+    /// <summary>
+    /// Turns that report token usage, so the accumulation assertions have something to accumulate.
+    /// </summary>
+    private void SetupTurnsWithUsage(int inputTokens, int outputTokens, int toolCalls = 0)
+    {
+        _mediator
+            .Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
+            .Returns((ExecuteAgentTurnCommand cmd, CancellationToken ct) =>
+            {
+                ct.ThrowIfCancellationRequested();
+                _lease.NoteTurn();
+                _dispatchSequences.Add(CallSequence.Next());
+
+                return Task.FromResult(new AgentTurnResult
+                {
+                    Success = true,
+                    Response = "answer",
+                    InputTokens = inputTokens,
+                    OutputTokens = outputTokens,
+                    ToolsInvoked = [.. Enumerable.Range(0, toolCalls).Select(i => $"tool-{i}")],
+                    UpdatedHistory =
+                    [
+                        .. cmd.ConversationHistory,
+                        new ChatMessage(ChatRole.User, cmd.UserMessage),
+                        new ChatMessage(ChatRole.Assistant, "answer")
+                    ]
+                });
+            });
     }
 
     private static ConversationMessage Message(MessageRole role, string content) =>
@@ -456,6 +670,17 @@ public sealed class RunConversationDurableTests
         public IReadOnlyList<ConversationMessage> History { get; set; } = [];
         public int GetOrCreateCalls { get; private set; }
         public int GetOrCreateSequence { get; private set; }
+
+        /// <summary>What the conversation has already spent, as a prior run left it.</summary>
+        public TelemetryAccumulator? Telemetry { get; set; }
+
+        /// <summary>The session a prior run opened for this conversation, if any.</summary>
+        public Guid? ObservabilitySessionId { get; set; }
+
+        public List<(string CallerId, Guid SessionId, TelemetryAccumulator Telemetry, int Sequence)>
+            TelemetryWrites { get; } = [];
+
+        public List<int> GetSequences { get; } = [];
 
         /// <summary>When set, the next open fails with this — the store's refusals, reproduced.</summary>
         public Exception? GetOrCreateThrows { get; set; }
@@ -518,8 +743,21 @@ public sealed class RunConversationDurableTests
             return Task.CompletedTask;
         }
 
-        public Task<ConversationRecord?> GetAsync(string conversationId, string callerId, CancellationToken ct = default) =>
-            throw new NotSupportedException();
+        public Task<ConversationRecord?> GetAsync(string conversationId, string callerId, CancellationToken ct = default)
+        {
+            ct.ThrowIfCancellationRequested();
+            GetSequences.Add(CallSequence.Next());
+
+            return Task.FromResult<ConversationRecord?>(new ConversationRecord(
+                Id: conversationId,
+                AgentName: "TestAgent",
+                UserId: callerId,
+                CreatedAt: DateTimeOffset.UtcNow,
+                UpdatedAt: DateTimeOffset.UtcNow,
+                Messages: History,
+                ObservabilitySessionId: ObservabilitySessionId,
+                Telemetry: Telemetry));
+        }
         public Task<IReadOnlyList<ConversationRecord>> ListAsync(string userId, CancellationToken ct = default) =>
             throw new NotSupportedException();
         public Task<ConversationRecord> CreateAsync(string agentName, string userId, string? conversationId = null, CancellationToken ct = default) =>
@@ -530,8 +768,19 @@ public sealed class RunConversationDurableTests
             throw new NotSupportedException();
         public Task<ConversationRecord?> UpdateSettingsAsync(string conversationId, string callerId, ConversationSettings settings, CancellationToken ct = default) =>
             throw new NotSupportedException();
-        public Task<ConversationRecord?> UpdateTelemetryAsync(string conversationId, string callerId, Guid observabilitySessionId, TelemetryAccumulator telemetry, CancellationToken ct = default) =>
-            throw new NotSupportedException();
+        /// <remarks>
+        /// Records rather than applies: keeping <see cref="Telemetry"/> fixed is what lets a test set up
+        /// "the conversation has already spent this much" once and read every write the run made against
+        /// it, instead of chasing a value the run is mutating underneath the assertion.
+        /// </remarks>
+        public Task<ConversationRecord?> UpdateTelemetryAsync(
+            string conversationId, string callerId, Guid observabilitySessionId,
+            TelemetryAccumulator telemetry, CancellationToken ct = default)
+        {
+            ct.ThrowIfCancellationRequested();
+            TelemetryWrites.Add((callerId, observabilitySessionId, telemetry, CallSequence.Next()));
+            return Task.FromResult<ConversationRecord?>(null);
+        }
     }
 
     /// <summary>A turn lease that records how it was used and can be made to lose itself mid-run.</summary>

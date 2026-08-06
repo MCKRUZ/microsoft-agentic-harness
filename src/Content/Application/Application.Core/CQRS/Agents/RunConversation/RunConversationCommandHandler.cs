@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.AI;
+using Application.AI.Common.Models.Conversations;
 using Application.AI.Common.OpenTelemetry.Metrics;
 using Application.Core.CQRS.Agents.ExecuteAgentTurn;
 using Domain.AI.Governance;
@@ -176,18 +177,47 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 		AgentTurnResult? lastResult = null;
 		var stoppedForBudget = false;
 
-		// Running token/cost aggregates for session-level metrics
-		int totalInputTokens = 0, totalOutputTokens = 0, totalCacheRead = 0, totalCacheWrite = 0;
+		// This run's own totals. They answer "what did this call cost", which is what the caller asked
+		// and what the run-scoped metrics below report — deliberately NOT the same quantity as
+		// conversationTotals, which answers "what has this conversation cost in all".
+		int totalInputTokens = 0, totalOutputTokens = 0;
 		decimal totalCostUsd = 0m;
 		string? sessionModel = null;
 
-		var dbSessionId = await _observabilityStore.StartSessionAsync(
-			request.ConversationId, request.AgentName, null, cancellationToken);
+		// Everything the conversation has spent, this run included as it goes. A durable run resumes
+		// these from the store; a self-contained run has nothing before it and starts at zero.
+		var (existingSessionId, conversationTotals) = transcript is null
+			? (Guid.Empty, TelemetryAccumulator.Zero)
+			: await transcript.LoadTelemetryAsync(cancellationToken);
 
 		var agentTag = new KeyValuePair<string, object?>(AgentConventions.Name, request.AgentName);
 		var sessionTags = new TagList { { AgentConventions.Name, request.AgentName } };
-		SessionMetrics.SessionsStarted.Add(1, agentTag);
+
+		// A conversation gets ONE observability session and keeps it, because the session table holds one
+		// row per conversation. Re-opening the session a conversation already has does not open a second
+		// one — it restamps the first one's start time, and every duration derived from it then describes
+		// only the latest run (issue #255). So a continuing run adopts the session it finds.
+		var dbSessionId = existingSessionId;
+		if (dbSessionId == Guid.Empty)
+		{
+			dbSessionId = await _observabilityStore.StartSessionAsync(
+				request.ConversationId, request.AgentName, null, cancellationToken);
+
+			SessionMetrics.SessionsStarted.Add(1, agentTag);
+
+			// Recorded before the first turn, not after it, so the conversation still points at its
+			// session when a run opens one and then declines every turn on an exhausted budget.
+			if (transcript is not null)
+				await transcript.PersistTelemetryAsync(dbSessionId, conversationTotals, cancellationToken);
+		}
+
 		SessionMetrics.ActiveSessions.Add(1, sessionTags);
+
+		// A run is not the conversation. Only a self-contained run may end the session, because only
+		// there are the two the same thing; ending it on a durable run would mark a conversation
+		// finished that the next run — or a user still typing in the interactive host — is about to
+		// continue. The interactive transports have never ended a session per turn for this reason.
+		var ownsSession = transcript is null;
 
 		// Tracks whether the observability session has already been ended on a
 		// normal (success / turn-failure) return path, so the catch block does
@@ -247,7 +277,11 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 					// replayed transcript flows through the rest of the run without being re-read.
 					ConversationHistory = lastResult?.UpdatedHistory ?? seedHistory,
 					ConversationId = request.ConversationId,
-					TurnNumber = index + 1,
+
+					// Numbered across the conversation, not within the run. Per-turn observability rows
+					// are keyed by conversation and turn number, so a run that restarted at 1 would
+					// overwrite the first turns of the run before it (issue #255).
+					TurnNumber = conversationTotals.TurnCount + 1,
 					ObservabilitySessionId = dbSessionId
 				};
 
@@ -264,9 +298,12 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 					_logger.LogError("Conversation turn {Turn} failed for {AgentName}: {Error}",
 						index + 1, request.AgentName, lastResult.Error);
 
-					await _observabilityStore.EndSessionAsync(
-						dbSessionId, "error", lastResult.Error, cancellationToken);
-					sessionEnded = true;
+					if (ownsSession)
+					{
+						await _observabilityStore.EndSessionAsync(
+							dbSessionId, "error", lastResult.Error, cancellationToken);
+						sessionEnded = true;
+					}
 
 					return new ConversationResult
 					{
@@ -331,10 +368,13 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 
 				totalInputTokens += lastResult.InputTokens;
 				totalOutputTokens += lastResult.OutputTokens;
-				totalCacheRead += lastResult.CacheRead;
-				totalCacheWrite += lastResult.CacheWrite;
 				totalCostUsd += lastResult.CostUsd;
 				sessionModel ??= lastResult.Model;
+
+				conversationTotals = conversationTotals.Add(
+					lastResult.InputTokens, lastResult.OutputTokens,
+					lastResult.CacheRead, lastResult.CacheWrite,
+					lastResult.CostUsd, lastResult.ToolsInvoked.Count);
 
 				// Fold this turn's input+output into the conversation-lifetime budget (mirrors the
 				// per-turn TokenBudgetBehavior's accounting). The next loop iteration's gate decides
@@ -344,13 +384,23 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 					lastResult.InputTokens + lastResult.OutputTokens,
 					cancellationToken);
 
-				var totalInput = totalInputTokens + totalCacheRead;
-				var cacheHitRate = totalInput > 0 ? (decimal)totalCacheRead / totalInput : 0m;
-
+				// Cumulative, not this run's share. The session row is written with SET semantics against
+				// a row keyed one-per-conversation, so reporting the run's own totals here replaces the
+				// conversation's with whatever the most recent run happened to spend (issue #255).
 				await _observabilityStore.UpdateSessionMetricsAsync(
-					dbSessionId, index + 1, totalToolInvocations, 0,
-					totalInputTokens, totalOutputTokens, totalCacheRead, totalCacheWrite,
-					totalCostUsd, Math.Round(cacheHitRate, 4), sessionModel, cancellationToken);
+					dbSessionId,
+					conversationTotals.TurnCount, conversationTotals.ToolCallCount, subagentCount: 0,
+					conversationTotals.InputTokens, conversationTotals.OutputTokens,
+					conversationTotals.CacheRead, conversationTotals.CacheWrite,
+					conversationTotals.CostUsd, Math.Round(conversationTotals.CacheHitRate, 4),
+					sessionModel, cancellationToken);
+
+				// The conversation's own copy of the same totals. It is what the next run resumes from,
+				// and the only one that survives the observability database being absent or switched off,
+				// so it is written every turn rather than once at the end — a run that dies on its
+				// seventh turn leaves the two agreeing about the six that completed.
+				if (transcript is not null)
+					await transcript.PersistTelemetryAsync(dbSessionId, conversationTotals, cancellationToken);
 
 				if (request.OnProgress != null)
 				{
@@ -376,9 +426,12 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 			if (totalCostUsd > 0)
 				SessionMetrics.SessionCost.Record((double)totalCostUsd, agentTag);
 
-			await _observabilityStore.EndSessionAsync(
-				dbSessionId, "completed", null, cancellationToken);
-			sessionEnded = true;
+			if (ownsSession)
+			{
+				await _observabilityStore.EndSessionAsync(
+					dbSessionId, "completed", null, cancellationToken);
+				sessionEnded = true;
+			}
 
 			return new ConversationResult
 			{
@@ -396,7 +449,7 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 			// Caller cancellation (e.g. client disconnect) is routine, not exceptional.
 			// End the session as cancelled using a non-cancelled token so the cleanup
 			// write still completes, then rethrow to preserve cancellation semantics.
-			await EndSessionSafelyAsync(dbSessionId, "cancelled", null, sessionEnded);
+			await EndSessionSafelyAsync(dbSessionId, "cancelled", null, sessionEnded || !ownsSession);
 			sessionEnded = true;
 			throw;
 		}
@@ -430,14 +483,21 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 
 	/// <summary>
 	/// Ends the observability session defensively during exception/cancellation
-	/// handling: skips the write if the session was already ended on a normal
-	/// return path, uses a non-cancelled token so cleanup completes even when the
+	/// handling: uses a non-cancelled token so cleanup completes even when the
 	/// caller's token is cancelled, and never lets a cleanup failure mask the
 	/// original exception being propagated.
 	/// </summary>
-	private async Task EndSessionSafelyAsync(Guid sessionId, string status, string? reason, bool alreadyEnded)
+	/// <param name="sessionId">The session to end.</param>
+	/// <param name="status">The terminal status to record.</param>
+	/// <param name="reason">A scrubbed reason code, or <see langword="null"/>.</param>
+	/// <param name="alreadyHandled">
+	/// <see langword="true"/> when there is nothing left to do: either a normal return path already
+	/// ended the session, or this run does not own it because it is continuing a durable conversation
+	/// that outlives the run.
+	/// </param>
+	private async Task EndSessionSafelyAsync(Guid sessionId, string status, string? reason, bool alreadyHandled)
 	{
-		if (alreadyEnded)
+		if (alreadyHandled)
 			return;
 
 		try
