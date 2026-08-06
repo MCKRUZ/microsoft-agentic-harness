@@ -145,6 +145,12 @@ public partial class AgentExecutionContextFactory
         var mergedToolChain = await _toolChainBuilder.BuildMergedToolsWithSourcesAsync(skills, options, effectiveAllowedTools);
         var tools = mergedToolChain.Tools.ToList();
         var middlewareTypes = ResolveMiddlewareTypes(options);
+
+        // What the agent is charged for up front. The same figures are recorded once below and handed to
+        // the per-turn measurer as the baseline it subtracts, so the two MUST agree — which is why they
+        // travel as one value rather than as three arguments spelled out twice.
+        var staticBudget = new PerTurnBudgetBaseline(agentName, instruction, tools.Count);
+
         // The rail ends with the measurer that charges what it injects into every turn — appended inside
         // the builder and handed back read-only, so nothing out here can displace it from last
         // (issues #266, #271, #277). The rule itself is stated on AppendPerTurnBudgetProvider.
@@ -152,7 +158,7 @@ public partial class AgentExecutionContextFactory
             skills.Count,
             effectiveAllowedTools,
             disclosableSkills,
-            new PerTurnBudgetBaseline(agentName, instruction, tools.Count));
+            staticBudget);
 
         var frameworkType = options.FrameworkType
             ?? ResolveFrameworkTypeFromMetadata(primarySkill)
@@ -162,7 +168,7 @@ public partial class AgentExecutionContextFactory
         // Resolve or create a trace scope for this execution
         var traceScope = options.TraceScope ?? TraceScope.ForExecution(Guid.NewGuid());
 
-        RecordStaticContextBudget(agentName, instruction, tools.Count);
+        RecordStaticContextBudget(staticBudget);
 
         var additionalProps = BuildAdditionalProperties(primarySkill, options);
 
@@ -212,34 +218,36 @@ public partial class AgentExecutionContextFactory
     /// Records what the agent's static context costs before a single turn runs: the system prompt and
     /// the tool schemas.
     /// </summary>
-    /// <param name="agentName">The agent whose budget these are charged to.</param>
-    /// <param name="instruction">The composed static system prompt.</param>
-    /// <param name="toolCount">How many tool schemas the agent ships with.</param>
+    /// <param name="baseline">
+    /// The figures to charge. This is the same value handed to the rail builder, deliberately: the
+    /// measurer subtracts exactly what is recorded here, and taking one value rather than three
+    /// arguments is what stops the two from being spelled out differently.
+    /// </param>
     /// <remarks>
     /// These two are charged once, at construction, because they are the same on every turn. What the
     /// context-provider rail adds per turn is charged separately by
     /// <see cref="Services.Agent.PerTurnBudgetContextProvider"/>, which subtracts exactly these figures
     /// as its baseline so the prompt is not billed again every turn.
     /// </remarks>
-    private void RecordStaticContextBudget(string agentName, string instruction, int toolCount)
+    private void RecordStaticContextBudget(PerTurnBudgetBaseline baseline)
     {
         if (_budgetTracker is null)
             return;
 
         _budgetTracker.RecordAndPublish(
-            agentName,
+            baseline.AgentName,
             ContextConventions.BudgetComponents.SystemPrompt,
             ContextConventions.SourceTypeValues.SystemPrompt,
-            TokenEstimationHelper.EstimateTokens(instruction),
+            TokenEstimationHelper.EstimateTokens(baseline.Instruction),
             ContextBudgetMetrics.SystemPromptTokens);
 
-        if (toolCount > 0)
+        if (baseline.ToolCount > 0)
         {
             _budgetTracker.RecordAndPublish(
-                agentName,
+                baseline.AgentName,
                 ContextConventions.BudgetComponents.ToolSchemas,
                 ContextConventions.SourceTypeValues.ToolsSchema,
-                TokenEstimationHelper.EstimateToolSchemaTokens(toolCount),
+                TokenEstimationHelper.EstimateToolSchemaTokens(baseline.ToolCount),
                 ContextBudgetMetrics.ToolsSchemaTokens);
         }
     }

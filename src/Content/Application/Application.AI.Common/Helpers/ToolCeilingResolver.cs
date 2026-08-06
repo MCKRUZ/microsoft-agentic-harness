@@ -62,8 +62,7 @@ public static class ToolCeilingResolver
         ArgumentNullException.ThrowIfNull(declarations);
 
         var union = declarations
-            .Where(d => d is not null)
-            .SelectMany(d => d!)
+            .SelectMany(d => d ?? [])
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
 

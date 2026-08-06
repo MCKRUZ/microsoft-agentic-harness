@@ -55,19 +55,12 @@ public partial class AgentExecutionContextFactory
     /// providers at all.
     /// </returns>
     /// <remarks>
-    /// <para>
     /// The rail is returned read-only, so appending to it throws rather than silently displacing the
-    /// per-turn measurer from the last position (issue #277). It leaves this method through a settable
+    /// per-turn measurer from the last position — see <see cref="AppendPerTurnBudgetProvider"/> for why
+    /// that position is load-bearing (issue #277). The rail leaves this method through a settable
     /// <see cref="IList{T}"/> property on the execution context and is handed to the framework as one,
     /// which is why the guard has to be the instance's own behaviour: no type on that path can express
     /// "this list is finished".
-    /// </para>
-    /// <para>
-    /// Displacement is the failure worth refusing. The measurer only measures correctly from last
-    /// place — the runtime feeds each provider the accumulated output of the ones before it — so from
-    /// any earlier position it under-charges the turn, and under-charging means the budget meant to
-    /// bound a conversation stops bounding it without anything erroring.
-    /// </para>
     /// </remarks>
     private IList<AIContextProvider>? BuildMergedAIContextProviders(
         int skillCount,
@@ -106,21 +99,25 @@ public partial class AgentExecutionContextFactory
         // tenant-aware dependency per invocation from the current request scope, so both are safe to
         // attach to a singleton-cached agent; the learnings one injects the most task-relevant lessons
         // at turn start, which is the read half of the self-improving loop.
-        AddRecallProvider(
-            providers,
-            _appConfig.CurrentValue.AI?.KnowledgeBridge?.Enabled == true,
-            scope => new Services.Agent.KnowledgeMemoryContextProvider(
-                scope, _appConfig,
-                _loggerFactory.CreateLogger<Services.Agent.KnowledgeMemoryContextProvider>()),
-            "cross-session recall");
+        if (_appConfig.CurrentValue.AI?.KnowledgeBridge?.Enabled == true)
+        {
+            AddRecallProvider(
+                providers,
+                scope => new Services.Agent.KnowledgeMemoryContextProvider(
+                    scope, _appConfig,
+                    _loggerFactory.CreateLogger<Services.Agent.KnowledgeMemoryContextProvider>()),
+                "cross-session recall");
+        }
 
-        AddRecallProvider(
-            providers,
-            _appConfig.CurrentValue.AI?.LearningsRecall?.Enabled == true,
-            scope => new Services.Agent.LearningsRecallContextProvider(
-                scope, _appConfig,
-                _loggerFactory.CreateLogger<Services.Agent.LearningsRecallContextProvider>()),
-            "task-similarity recall");
+        if (_appConfig.CurrentValue.AI?.LearningsRecall?.Enabled == true)
+        {
+            AddRecallProvider(
+                providers,
+                scope => new Services.Agent.LearningsRecallContextProvider(
+                    scope, _appConfig,
+                    _loggerFactory.CreateLogger<Services.Agent.LearningsRecallContextProvider>()),
+                "task-similarity recall");
+        }
 
         // Governance wrapper — added after the recall providers so it wraps the final, filtered tool
         // set. When tool-invocation enforcement is on, this guarantees the governor gates every tool the
@@ -141,23 +138,22 @@ public partial class AgentExecutionContextFactory
     }
 
     /// <summary>
-    /// Adds one of the two recall providers, when its feature is enabled and a request scope exists.
+    /// Adds one of the two recall providers, when a request scope exists for it to read identity from.
     /// </summary>
-    /// <typeparam name="TProvider">The provider being wired; its name is what gets logged.</typeparam>
     /// <param name="providers">The rail under construction.</param>
-    /// <param name="enabled">Whether this feature's configuration flag is on.</param>
     /// <param name="create">Builds the provider from the resolved ambient scope.</param>
     /// <param name="purpose">What this provider recalls; diagnostics only.</param>
     /// <remarks>
     /// <para>
-    /// The two recall providers are the same five steps with the type swapped — check a flag, resolve
-    /// the ambient scope, skip when absent, construct, log — and were written out twice.
+    /// The two recall providers are the same steps with the type swapped — resolve the ambient scope,
+    /// skip when absent, construct, log — and were written out twice.
     /// </para>
     /// <para>
-    /// <strong>The scope is resolved inside this method, per call, and must stay that way.</strong>
-    /// Both flags default to disabled, so the default path makes zero service lookups; hoisting the
-    /// resolution to a shared local above the two call sites would make one unconditionally, on every
-    /// agent construction, for a feature almost nobody has switched on.
+    /// <strong>The feature flag is checked by the caller, not here, and must stay that way.</strong>
+    /// Both flags default to disabled, so on the default path nothing is called: no service lookup for
+    /// <see cref="IAmbientRequestScope"/>, and not even a delegate allocated for <paramref name="create"/>.
+    /// Taking the flag as a parameter would move both costs onto every agent construction, for a feature
+    /// almost nobody has switched on.
     /// </para>
     /// <para>
     /// A missing <see cref="IAmbientRequestScope"/> is a silent skip rather than a failure because the
@@ -165,23 +161,19 @@ public partial class AgentExecutionContextFactory
     /// without registering the scope gets no recall, not a broken agent.
     /// </para>
     /// </remarks>
-    private void AddRecallProvider<TProvider>(
+    private void AddRecallProvider(
         List<AIContextProvider> providers,
-        bool enabled,
-        Func<IAmbientRequestScope, TProvider> create,
+        Func<IAmbientRequestScope, AIContextProvider> create,
         string purpose)
-        where TProvider : AIContextProvider
     {
-        if (!enabled)
-            return;
-
         var ambientScope = _serviceProvider.GetService<IAmbientRequestScope>();
         if (ambientScope is null)
             return;
 
-        providers.Add(create(ambientScope));
+        var provider = create(ambientScope);
+        providers.Add(provider);
 
-        _logger.LogDebug("Wired {ProviderType} for {Purpose}", typeof(TProvider).Name, purpose);
+        _logger.LogDebug("Wired {ProviderType} for {Purpose}", provider.GetType().Name, purpose);
     }
 
     /// <summary>
@@ -206,7 +198,7 @@ public partial class AgentExecutionContextFactory
     /// does not track context with exactly the rail it had before.
     /// </remarks>
     private void AppendPerTurnBudgetProvider(
-        IList<AIContextProvider> providers,
+        List<AIContextProvider> providers,
         PerTurnBudgetBaseline baseline)
     {
         if (_budgetTracker is null || providers.Count == 0)

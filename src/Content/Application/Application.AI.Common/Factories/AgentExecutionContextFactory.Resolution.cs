@@ -24,6 +24,17 @@ public partial class AgentExecutionContextFactory
         return null;
     }
 
+    /// <summary>
+    /// The deployment a skill's agent runs against: an explicit per-call name, then the skill's own
+    /// override, then a <c>deployment</c> metadata entry, then <see cref="DefaultDeployment"/>.
+    /// </summary>
+    /// <remarks>
+    /// One deliberate behaviour change while routing this through <see cref="DefaultDeployment"/>: a
+    /// <c>deployment</c> metadata entry whose value stringifies to <see langword="null"/> used to fall
+    /// back to the literal <c>"default"</c>, bypassing the host's configured deployment. It now falls
+    /// back to the configured one like every other path here. Unreachable with config-loaded metadata,
+    /// where values are strings, but the old literal was a config bypass rather than a fallback.
+    /// </remarks>
     private string ResolveDeploymentName(SkillDefinition skill, SkillAgentOptions options)
     {
         if (!string.IsNullOrEmpty(options.DeploymentName))

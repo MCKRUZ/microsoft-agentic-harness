@@ -190,6 +190,37 @@ public sealed class AgentExecutionContextFactoryRailOrderTests : IDisposable
             "the refused append must also leave the rail as it was");
     }
 
+    [Fact]
+    public async Task MapToAgentContext_TheReadOnlyRail_IsAcceptedByTheFrameworkAgentItIsBuiltFor()
+    {
+        // The other half of #277. Refusing the append is only safe if the framework itself never needed to
+        // mutate the rail — and nothing else in this suite would notice if a future Microsoft.Agents.AI
+        // upgrade started to, because every other test reads the rail without ever handing it to a real
+        // agent. That would surface in production as a NotSupportedException at agent construction.
+        var context = await CreateFactory().MapToAgentContextAsync([MakeSkill()], new SkillAgentOptions());
+
+        // Control: the instrument can fail. Without this, an agent that quietly ignored the rail entirely
+        // would satisfy the assertion below just as well as one that handles it correctly.
+        var append = () => context.AIContextProviders!.Add(new ToolPermissionFilter([AllowedTool]));
+        append.Should().Throw<NotSupportedException>(
+            "control: the rail handed over below must be one that would throw if the framework mutated it");
+
+        // Built the way AgentFactory builds it, so this exercises the shape production actually hands over.
+        using var chatClient = new Fakes.FakeChatClient().WithDefaultResponse("ok");
+        var agent = new ChatClientAgent(chatClient, new ChatClientAgentOptions
+        {
+            Name = context.Name,
+            ChatOptions = new ChatOptions { Instructions = context.Instruction },
+            AIContextProviders = context.AIContextProviders
+        });
+
+        var run = async () => await agent.RunAsync("hello");
+
+        await run.Should().NotThrowAsync(
+            "the framework consumes the rail as a sequence and copies it, so handing it out read-only is "
+            + "safe; if an upgrade changes that, this fails here rather than in a host's production logs");
+    }
+
     // ── Rule 2 continued: the measurer is last, in every configuration ────────
 
     [Theory]
