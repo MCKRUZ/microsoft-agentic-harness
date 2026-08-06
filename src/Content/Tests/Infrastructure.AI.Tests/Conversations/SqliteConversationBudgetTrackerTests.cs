@@ -58,12 +58,18 @@ public sealed class SqliteConversationBudgetTrackerTests
     /// <inheritdoc />
     protected override IConversationBudgetTracker DisabledTracker => _disabled;
 
+    /// <param name="contextFactory">Supplies contexts over the test database.</param>
+    /// <param name="ceiling">
+    /// The ceiling to configure, or <see langword="null"/> to leave it unset so the tracker runs on the
+    /// shipped default — which is what a stock deployment gets.
+    /// </param>
     private static SqliteConversationBudgetTracker Build(
         IDbContextFactory<ConversationDbContext> contextFactory,
-        int ceiling)
+        int? ceiling)
     {
         var config = new AppConfig();
-        config.AI.AgentFramework.ConversationTokenBudget = ceiling;
+        if (ceiling is not null)
+            config.AI.AgentFramework.ConversationTokenBudget = ceiling.Value;
 
         return new SqliteConversationBudgetTracker(
             contextFactory,
@@ -71,6 +77,43 @@ public sealed class SqliteConversationBudgetTrackerTests
             new FakeTimeProvider(Origin),
             NullLogger<SqliteConversationBudgetTracker>.Instance,
             new SchemaInitializer<ConversationDbContext>(contextFactory));
+    }
+
+    /// <summary>
+    /// A stock deployment must actually bound a conversation. This is the tracker a stock deployment
+    /// gets — <c>AppConfig.AI.Conversations.Provider</c> defaults to SQLite — so this asserts the whole
+    /// claim rather than half of it: not "the config object holds a number" but "a conversation
+    /// configured with nothing at all stops".
+    /// </summary>
+    /// <remarks>
+    /// Every other test in this file and its contract passes an explicit ceiling, which is right for
+    /// asserting budget behaviour but leaves the default untouched — so without this one, flipping the
+    /// shipped default between enforcing and disabled breaks no test in the solution. Asserts the
+    /// <em>property</em> (a conversation is bounded), not the figure; the figure is pinned once, in
+    /// <c>AgentFrameworkConfigTests</c>.
+    /// </remarks>
+    [Fact]
+    public async Task GetStatusAsync_StockConfiguration_BoundsTheConversation()
+    {
+        var stock = Build(_contextFactory, ceiling: null);
+
+        // Read rather than hardcoded, so this test asserts that the shipped default bounds a
+        // conversation without also restating what the figure is. That is pinned once, elsewhere.
+        var ceiling = new AppConfig().AI.AgentFramework.ConversationTokenBudget;
+        var key = NewKey();
+
+        // Control: a fresh conversation is enabled and has room. Without this, the exhaustion assertion
+        // below would also pass against a tracker that reported exhausted from the very first turn.
+        var fresh = await stock.GetStatusAsync(key);
+        fresh.IsEnabled.Should().BeTrue("a stock deployment must enforce a ceiling, not run unbounded");
+        fresh.IsExhausted.Should().BeFalse("a conversation that has spent nothing has not exhausted anything");
+
+        await stock.RecordUsageAsync(key, ceiling);
+
+        var spent = await stock.GetStatusAsync(key);
+        spent.IsExhausted.Should().BeTrue(
+            "the Execution API contract names this budget as the only thing bounding a durable "
+            + "conversation's total length, so on stock configuration it has to actually stop one");
     }
 
     /// <summary>

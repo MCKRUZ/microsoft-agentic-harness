@@ -441,13 +441,20 @@
                             </tr>
                             <tr>
                                 <td><code>ConversationTokenBudget</code></td>
-                                <td><code>—</code></td>
+                                <td><code>1000000</code></td>
                                 <td>
                                     Cross-turn ceiling for the whole conversation, enforced by the
                                     <code>IConversationBudgetTracker</code> singleton — distinct from the per-turn
                                     <code>DefaultTokenBudget</code>. When exhausted, the loop breaks gracefully. There
                                     is <strong>no</strong> <code>MaxTurnsPerConversation</code> property; budgets are
-                                    token-based, not turn-count-based.
+                                    token-based, not turn-count-based. The default is roughly 50–100 exchanges once
+                                    each turn's resent history is counted — a runaway guard, not a limit an ordinary
+                                    conversation meets. Set it to <code>0</code> to disable, but note that
+                                    <strong>nothing else</strong> bounds a durable conversation's total length: the
+                                    per-run <code>maxTurns</code> and message caps deliberately do not.
+                                    <strong>Upgrading:</strong> this previously shipped disabled, so a deployment that
+                                    pins <code>0</code> in its own <code>appsettings.json</code> keeps that value and
+                                    stays unbounded — remove the pin to pick up the bound.
                                 </td>
                             </tr>
                         </tbody>

@@ -59,13 +59,30 @@ public class AgentFrameworkConfig
     /// rather than throwing. Distinct from <see cref="DefaultTokenBudget"/>, which caps a single turn.
     /// </summary>
     /// <remarks>
-    /// Defaults to <c>0</c> = <strong>disabled</strong> (opt-in): conversations are unbounded across
-    /// turns unless a positive ceiling is configured, preserving existing multi-turn behaviour. Tune via
-    /// <c>AppConfig:AI:AgentFramework:ConversationTokenBudget</c>. Enforced by
-    /// <c>IConversationBudgetTracker</c> between turns, never mid-turn (intra-turn cost is bounded by
-    /// <see cref="DefaultTokenBudget"/>).
+    /// <para>
+    /// Defaults to 1,000,000 tokens — roughly 50–100 exchanges once each turn's resent history is counted,
+    /// which is a long support or voice session rather than a limit an ordinary conversation reaches. It is
+    /// a runaway guard, not a business rule: work that loops or is never closed stops at a bounded cost
+    /// instead of billing indefinitely.
+    /// </para>
+    /// <para>
+    /// <strong>The default has to be positive.</strong> A durable conversation outlives any single run, so
+    /// the per-run caps (<c>maxTurns</c> and the seed-message cap) deliberately do not bound it — this
+    /// budget is the only thing that does, and the Execution API contract says so. Set it to <c>0</c> to
+    /// disable, and that is what <em>unbounded</em> means: nothing else is watching.
+    /// </para>
+    /// <para>
+    /// <strong>Applies per budget key, of which there are two kinds.</strong> Conversational turns key by
+    /// conversation, and an exhausted conversation declines further turns gracefully with an explanatory
+    /// message — no model call, no error. Plan execution keys by plan run instead, and an exhausted run
+    /// fails the step as a policy denial. Same ceiling, two units and two failure shapes.
+    /// </para>
+    /// <para>
+    /// Enforced by <c>IConversationBudgetTracker</c> between turns, never mid-turn — a turn already in
+    /// flight always finishes, and its own cost is bounded by <see cref="DefaultTokenBudget"/>.
+    /// </para>
     /// </remarks>
-    public int ConversationTokenBudget { get; set; }
+    public int ConversationTokenBudget { get; set; } = 1_000_000;
 
     /// <summary>
     /// Gets or sets whether to enable Anthropic prompt caching on the OpenAI-compatible client path

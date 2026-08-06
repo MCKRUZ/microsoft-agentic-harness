@@ -33,15 +33,18 @@ namespace Infrastructure.AI.Conversations;
 /// Hosts on different machines with different files each keep their own totals.
 /// </para>
 /// <para>
-/// <strong>Opt-in.</strong> When the configured ceiling is ≤ 0 the tracker is inert and touches no
-/// database at all, so the default deployment pays nothing for a feature it has not turned on.
+/// <strong>On by default, switchable off.</strong> The ceiling comes from configuration, which defaults
+/// to a positive value, so a stock deployment is bounded and does write rows here. When the configured
+/// ceiling is ≤ 0 the tracker is instead inert and touches no database at all. Reaching that state takes
+/// a deliberate <c>0</c> in configuration.
 /// </para>
 /// <para>
 /// <strong>Retention.</strong> Rows are removed only by <see cref="ReleaseAsync"/>, and the two
 /// interactive callers never call it because a turn ending is not a conversation ending. Abandoned keys
 /// therefore persist, and unlike the in-process sibling — which caps at 50,000 entries and evicts —
-/// this one has no bound. At roughly 60 bytes per row, 50,000 abandoned keys cost about 3 MB, which is
-/// small enough that a sweep is a separate decision rather than a prerequisite.
+/// this one has no bound. At roughly 60 bytes per row, 50,000 abandoned keys cost about 3 MB. Because
+/// the budget is on by default, this table grows on every deployment rather than only on ones that
+/// opted in; a retention sweep is tracked in issue #253.
 /// </para>
 /// </remarks>
 public sealed class SqliteConversationBudgetTracker : IConversationBudgetTracker

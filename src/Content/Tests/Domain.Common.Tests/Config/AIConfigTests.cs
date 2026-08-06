@@ -47,6 +47,17 @@ public class AgentFrameworkConfigTests
     }
 
     [Fact]
+    public void ConversationTokenBudget_Unconfigured_DefaultsToOneMillion()
+    {
+        // Pinned so that changing the figure is a deliberate edit with this test in the diff, and so a
+        // return to 0 — which silently means unbounded — cannot happen quietly. Rationale for both the
+        // figure and the floor lives on the property's own XML docs.
+        new AgentFrameworkConfig().ConversationTokenBudget.Should().Be(
+            1_000_000,
+            "a conversation with no ceiling has nothing else bounding its total length");
+    }
+
+    [Fact]
     public void IsConfigured_WithNoApiKey_ReturnsFalse()
     {
         var config = new AgentFrameworkConfig();
