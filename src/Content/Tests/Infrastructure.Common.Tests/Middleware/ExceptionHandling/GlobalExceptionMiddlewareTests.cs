@@ -1,3 +1,5 @@
+using System.Text;
+using Application.Common.Exceptions;
 using Application.Common.Exceptions.ExceptionTypes;
 using FluentAssertions;
 using Infrastructure.Common.Middleware.ExceptionHandling;
@@ -129,5 +131,81 @@ public class GlobalExceptionMiddlewareTests
         await middleware.InvokeAsync(_httpContext);
 
         _httpContext.Response.StatusCode.Should().Be(StatusCodes.Status400BadRequest);
+    }
+
+    [Fact]
+    public async Task InvokeAsync_ExceptionDerivedFromAMappedType_UsesTheNearestMappedAncestor()
+    {
+        // Every exception type this project owns is sealed, so UnauthorizedAccessException — supplied
+        // by the framework — is the only mapped type anything can derive from, and therefore the only
+        // place the old exact-type lookup could go wrong. It did: a derived refusal matched nothing
+        // and was reported as an unhandled fault, which says the server is broken when in fact the
+        // request was understood and declined.
+        _envMock.Setup(e => e.EnvironmentName).Returns(Environments.Development);
+        var middleware = CreateMiddleware(_ =>
+            throw new DerivedUnauthorizedException("Token has no tenant claim"));
+
+        await middleware.InvokeAsync(_httpContext);
+
+        _httpContext.Response.StatusCode.Should().Be(StatusCodes.Status401Unauthorized);
+    }
+
+    [Fact]
+    public async Task InvokeAsync_DerivedExceptionWithItsOwnEntry_KeepsItsOwnStatusNotTheBaseTypes()
+    {
+        // Precedence guard. ConversationAccessDeniedException derives from UnauthorizedAccessException
+        // (401) but is deliberately 403: the caller IS authenticated, and telling them to authenticate
+        // again sends them round a loop that cannot succeed. Walking the chain must therefore stop at
+        // the first match, not the last — an exact entry always beats an inherited one.
+        var middleware = CreateMiddleware(_ =>
+            throw new ConversationAccessDeniedException());
+
+        await middleware.InvokeAsync(_httpContext);
+
+        _httpContext.Response.StatusCode.Should().Be(StatusCodes.Status403Forbidden);
+    }
+
+    [Fact]
+    public async Task InvokeAsync_ExceptionDeclaringItsOwnStatus_BeatsWhatItWouldInherit()
+    {
+        // The reason IHttpStatusException exists. This exception derives from
+        // UnauthorizedAccessException and would inherit 401, but it states 403. A type that answers
+        // for itself is never guessing, so its answer must win — otherwise an exception declared in a
+        // layer above this middleware can only ever get a status by inheriting a wrong one.
+        _envMock.Setup(e => e.EnvironmentName).Returns(Environments.Development);
+        var middleware = CreateMiddleware(_ =>
+            throw new SelfDeclaringForbiddenException("Path outside the sandbox"));
+
+        await middleware.InvokeAsync(_httpContext);
+
+        _httpContext.Response.StatusCode.Should().Be(StatusCodes.Status403Forbidden);
+    }
+
+    [Fact]
+    public async Task InvokeAsync_ExceptionDeclaringItsOwnStatus_InProduction_ReturnsOnlyItsSafeMessage()
+    {
+        // The thrown message names what was refused. Outside development the caller must get the
+        // exception's SafeMessage instead — an error body is as readable as a successful one.
+        _envMock.Setup(e => e.EnvironmentName).Returns(Environments.Production);
+        var body = new MemoryStream();
+        _httpContext.Response.Body = body;
+        var middleware = CreateMiddleware(_ =>
+            throw new SelfDeclaringForbiddenException("C:/secrets/master.key is outside the sandbox"));
+
+        await middleware.InvokeAsync(_httpContext);
+
+        var written = Encoding.UTF8.GetString(body.ToArray());
+        written.Should().NotContain("master.key");
+        written.Should().Contain("Forbidden.");
+    }
+
+    private sealed class DerivedUnauthorizedException(string message) : UnauthorizedAccessException(message);
+
+    private sealed class SelfDeclaringForbiddenException(string message)
+        : UnauthorizedAccessException(message), IHttpStatusException
+    {
+        public int StatusCode => StatusCodes.Status403Forbidden;
+
+        public string SafeMessage => "Forbidden.";
     }
 }

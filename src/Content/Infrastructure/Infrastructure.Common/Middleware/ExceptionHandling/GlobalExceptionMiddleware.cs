@@ -1,3 +1,4 @@
+using Application.Common.Exceptions;
 using Application.Common.Exceptions.ExceptionTypes;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
@@ -50,10 +51,10 @@ public sealed class GlobalExceptionMiddleware
         [typeof(UnauthorizedAccessException)] = (StatusCodes.Status401Unauthorized, "Access denied."),
         [typeof(ForbiddenAccessException)] = (StatusCodes.Status403Forbidden, "Forbidden."),
 
-        // Needs its own entry despite deriving from UnauthorizedAccessException: this map is keyed on
-        // the exact runtime type, so a derived exception matches nothing and would fall through to a
-        // 500. It is deliberately 403 rather than the base type's 401 — the caller is authenticated,
-        // and telling them to authenticate again would send them round a loop that cannot succeed.
+        // Needs its own entry despite deriving from UnauthorizedAccessException. The lookup walks the
+        // base chain and stops at the first hit, so this exact entry wins over the base type's 401 —
+        // deliberately, because the caller is authenticated, and telling them to authenticate again
+        // would send them round a loop that cannot succeed.
         [typeof(ConversationAccessDeniedException)] = (StatusCodes.Status403Forbidden, "Forbidden."),
         [typeof(EntityNotFoundException)] = (StatusCodes.Status404NotFound, "The requested resource was not found."),
         [typeof(DatabaseInteractionException)] = (StatusCodes.Status422UnprocessableEntity, "A data processing error occurred."),
@@ -106,24 +107,54 @@ public sealed class GlobalExceptionMiddleware
 
         context.Response.ContentType = "application/json";
 
-        var exceptionType = ex is AggregateException aggregate
-            ? aggregate.Flatten().InnerExceptions[0].GetType()
-            : ex.GetType();
+        var surfaced = ex is AggregateException aggregate
+            ? aggregate.Flatten().InnerExceptions[0]
+            : ex;
 
-        if (exceptionType == typeof(NoContentException))
+        if (surfaced is NoContentException)
         {
             context.Response.StatusCode = StatusCodes.Status204NoContent;
             return;
         }
 
-        if (ExceptionStatusMap.TryGetValue(exceptionType, out var mapped))
+        if (ResolveStatus(surfaced) is { } mapped)
         {
-            var message = _env.IsDevelopment() ? ex.Message : mapped.SafeMessage;
+            var message = _env.IsDevelopment() ? surfaced.Message : mapped.SafeMessage;
             await WriteErrorResponseAsync(context, mapped.StatusCode, message);
             return;
         }
 
         await WriteUnhandledExceptionResponseAsync(context, ex);
+    }
+
+    /// <summary>
+    /// Decides what status an exception surfaces as: its own answer first, then the nearest mapped
+    /// ancestor, then nothing (which means "unhandled").
+    /// </summary>
+    /// <remarks>
+    /// Order is the whole point. An exception implementing <see cref="IHttpStatusException"/> is
+    /// stating its status, not inheriting one, so it wins — that is how a type declared in a layer
+    /// above this middleware gets the right answer without this layer having to reference it.
+    /// Failing that, the walk starts at the exact runtime type and stops at the first hit, so a
+    /// specific entry always beats the base type's. Reaching <c>null</c> means no ancestor is mapped
+    /// and the exception is genuinely unrecognised — which is a fault, and must keep looking like one.
+    /// </remarks>
+    private static (int StatusCode, string SafeMessage)? ResolveStatus(Exception exception)
+    {
+        if (exception is IHttpStatusException declared)
+        {
+            return (declared.StatusCode, declared.SafeMessage);
+        }
+
+        for (var type = exception.GetType(); type is not null; type = type.BaseType)
+        {
+            if (ExceptionStatusMap.TryGetValue(type, out var mapped))
+            {
+                return mapped;
+            }
+        }
+
+        return null;
     }
 
     private async Task WriteUnhandledExceptionResponseAsync(HttpContext context, Exception ex)
