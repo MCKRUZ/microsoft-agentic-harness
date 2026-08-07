@@ -41,11 +41,11 @@ public sealed class ToolApprovalConfigValidator : AbstractValidator<ToolApproval
         // behaviourally equivalent — both reject numeric forms — so this buys shared vocabulary, not
         // stricter parsing. Worth stating plainly, because the reverse is easy to assume.
         //
-        // The genuine divergence is elsewhere and is NOT closed here: EscalationToolApprovalRouter
-        // parses the same setting with a bare Enum.TryParse, which does accept "3". A validated host
-        // never reaches that, since this rule rejects the value at boot; a host that binds
-        // GovernanceConfig without registering these options would. Closing it means moving the
-        // shared parser down to a layer Application.AI.Common can reference — a separate change.
+        // The genuine divergence WAS elsewhere and is now closed (#296): EscalationToolApprovalRouter
+        // parsed the same setting with a bare Enum.TryParse, which accepts "3" — and, worse, "99",
+        // yielding a BlastRadius that is not a member and silently making the router's
+        // `radius >= threshold` comparison unsatisfiable. Both sites now share
+        // EnumNameHelper.TryParseName, in the one layer both can reference.
         RuleFor(x => x.CriticalAtBlastRadius)
             .Must(v => AutonomyValidationRules.TryParseEnumName<BlastRadius>(v, out _))
             .WithMessage($"CriticalAtBlastRadius is invalid. {AutonomyValidationRules.InvalidBlastRadiusMessage}");

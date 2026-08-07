@@ -279,6 +279,124 @@ public sealed class EscalationToolApprovalRouterTests
         Assert.Equal(expected, captured.Priority);
     }
 
+    [Theory]
+    [InlineData("3")]
+    [InlineData("99")]
+    [InlineData("-1")]
+    public async Task RequestApprovalAsync_NumericCriticalThreshold_FallsBackToCriticalRatherThanBeingHonoured(
+        string configured)
+    {
+        // #296. A bare Enum.TryParse accepts ANY integer string, including one outside the defined
+        // range. "99" produced a BlastRadius of 99 — not a member — and the comparison is
+        // `radius >= threshold`, so nothing could ever reach Critical priority again. The setting's
+        // entire purpose, silently disabled by a typo, with no warning because parsing "succeeded".
+        //
+        // Critical is the safe fallback: it pages the widest audience, so a misconfiguration
+        // over-notifies rather than under-notifies.
+        EscalationRequest? captured = null;
+        _escalation
+            .Setup(x => x.RequestEscalationAsync(It.IsAny<EscalationRequest>(), It.IsAny<CancellationToken>()))
+            .Callback<EscalationRequest, CancellationToken>((r, _) => captured = r)
+            .ReturnsAsync(Outcome(approved: true, EscalationResolutionType.Approved));
+
+        await Route(WithCriticalThreshold(configured), BlastRadius.Critical);
+
+        Assert.NotNull(captured);
+        Assert.Equal(EscalationPriority.Critical, captured.Priority);
+    }
+
+    [Fact]
+    public async Task RequestApprovalAsync_NamedCriticalThreshold_IsStillHonoured()
+    {
+        // The control. Rejecting numeric forms must not have broken the values that always worked:
+        // a threshold of High means a High-radius call pages at Critical priority.
+        EscalationRequest? captured = null;
+        _escalation
+            .Setup(x => x.RequestEscalationAsync(It.IsAny<EscalationRequest>(), It.IsAny<CancellationToken>()))
+            .Callback<EscalationRequest, CancellationToken>((r, _) => captured = r)
+            .ReturnsAsync(Outcome(approved: true, EscalationResolutionType.Approved));
+
+        await Route(WithCriticalThreshold("High"), BlastRadius.High);
+
+        Assert.NotNull(captured);
+        Assert.Equal(EscalationPriority.Critical, captured.Priority);
+    }
+
+    [Theory]
+    [InlineData("2")]
+    [InlineData("99")]
+    public async Task RequestApprovalAsync_NumericApprovalStrategy_FallsBackToADefinedStrategy(
+        string configured)
+    {
+        // #296, the sharper half. DefaultEscalationService resolves the strategy from KEYED DI using
+        // the enum value as the key, so an undefined value has no registered service and throws at
+        // resolution — which this router's own fail-closed catch turns into a block. One mistyped
+        // character would have refused every approval-required tool call for the life of the process.
+        // EscalationRequestInvariants does not catch it: it checks the quorum threshold, not that the
+        // strategy names a defined member.
+        EscalationRequest? captured = null;
+        _escalation
+            .Setup(x => x.RequestEscalationAsync(It.IsAny<EscalationRequest>(), It.IsAny<CancellationToken>()))
+            .Callback<EscalationRequest, CancellationToken>((r, _) => captured = r)
+            .ReturnsAsync(Outcome(approved: true, EscalationResolutionType.Approved));
+
+        await Route(WithApprovalStrategy(configured), BlastRadius.Low);
+
+        Assert.NotNull(captured);
+        Assert.True(Enum.IsDefined(captured.ApprovalStrategy),
+            "an undefined strategy has no keyed service and throws when the escalation service resolves it");
+        Assert.Equal(ApprovalStrategyType.AnyOf, captured.ApprovalStrategy);
+    }
+
+    [Fact]
+    public async Task RequestApprovalAsync_NamedApprovalStrategy_IsStillHonoured()
+    {
+        // The control for the strategy half: a named strategy must survive unchanged, including the
+        // quorum threshold it alone carries.
+        EscalationRequest? captured = null;
+        _escalation
+            .Setup(x => x.RequestEscalationAsync(It.IsAny<EscalationRequest>(), It.IsAny<CancellationToken>()))
+            .Callback<EscalationRequest, CancellationToken>((r, _) => captured = r)
+            .ReturnsAsync(Outcome(approved: true, EscalationResolutionType.Approved));
+
+        await Route(WithApprovalStrategy("Quorum"), BlastRadius.Low);
+
+        Assert.NotNull(captured);
+        Assert.Equal(ApprovalStrategyType.Quorum, captured.ApprovalStrategy);
+        Assert.Equal(1, captured.QuorumThreshold);
+    }
+
+    private static GovernanceConfig WithCriticalThreshold(string criticalAtBlastRadius)
+    {
+        var config = Config();
+        return new GovernanceConfig
+        {
+            Escalation = config.Escalation,
+            ToolApproval = new ToolApprovalConfig
+            {
+                Enabled = true,
+                Approvers = ["alice"],
+                CriticalAtBlastRadius = criticalAtBlastRadius
+            }
+        };
+    }
+
+    private static GovernanceConfig WithApprovalStrategy(string strategy)
+    {
+        var config = Config();
+        return new GovernanceConfig
+        {
+            Escalation = new EscalationConfig
+            {
+                Enabled = true,
+                DefaultTimeoutSeconds = config.Escalation.DefaultTimeoutSeconds,
+                DefaultTimeoutAction = config.Escalation.DefaultTimeoutAction,
+                DefaultApprovalStrategy = strategy
+            },
+            ToolApproval = config.ToolApproval
+        };
+    }
+
     [Fact]
     public async Task RequestApprovalAsync_TimeoutOverride_BoundsHowLongATurnCanStall()
     {

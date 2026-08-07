@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using Application.AI.Common.OpenTelemetry.Metrics;
 using Application.AI.Common.Services;
+using Application.Common.Helpers;
 using Domain.AI.Agents;
 using Domain.AI.Escalation;
 using Domain.AI.Governance;
@@ -36,14 +37,18 @@ public sealed partial class CapabilityMatchSupervisor
             Description = $"Delegation blocked by autonomy tier ({minimumTier}): {taskDescription}",
             RiskLevel = RiskLevel.Medium,
             Priority = EscalationPriority.Blocking,
-            ApprovalStrategy = Enum.TryParse<ApprovalStrategyType>(
-                escalationConfig.DefaultApprovalStrategy, true, out var strategy)
+            // Parsed by member NAME only. A bare Enum.TryParse accepts any integer string, including
+            // one outside the defined range, and the strategy is later resolved from keyed DI by its
+            // enum value — an undefined value has no registered service and throws at resolution.
+            // Same defect, same config keys, third site (#296).
+            ApprovalStrategy = EnumNameHelper.TryParseName<ApprovalStrategyType>(
+                escalationConfig.DefaultApprovalStrategy, out var strategy)
                 ? strategy : ApprovalStrategyType.AnyOf,
             Approvers = [],
             QuorumThreshold = 1,
             TimeoutSeconds = escalationConfig.DefaultTimeoutSeconds,
-            TimeoutAction = Enum.TryParse<EscalationTimeoutAction>(
-                escalationConfig.DefaultTimeoutAction, true, out var timeoutAction)
+            TimeoutAction = EnumNameHelper.TryParseName<EscalationTimeoutAction>(
+                escalationConfig.DefaultTimeoutAction, out var timeoutAction)
                 ? timeoutAction : EscalationTimeoutAction.DenyAndEscalate,
             RequestedAt = DateTimeOffset.UtcNow
         };
