@@ -33,8 +33,21 @@ namespace Tests.Common;
 /// </remarks>
 public static class RepoRoot
 {
-    private const string Anchor = "src/AgenticHarness.slnx";
+    /// <summary>
+    /// The file whose presence marks the repository root, as path segments. The error message is
+    /// derived from these rather than restating them, so renaming the solution cannot leave the
+    /// check looking for one file while the diagnostic names another.
+    /// </summary>
+    private static readonly string[] AnchorSegments = ["src", "AgenticHarness.slnx"];
 
+    private static readonly string AnchorDisplay = string.Join('/', AnchorSegments);
+
+    /// <remarks>
+    /// Anchored on <see cref="AppContext.BaseDirectory"/>, not the current working directory. Three
+    /// of the implementations this replaced used the latter, which any test that calls
+    /// <c>Directory.SetCurrentDirectory</c> can move out from under an unrelated test. The assembly
+    /// location cannot be moved that way.
+    /// </remarks>
     private static readonly Lazy<string> Cached = new(() => Find(AppContext.BaseDirectory));
 
     /// <summary>
@@ -70,14 +83,14 @@ public static class RepoRoot
         var dir = startDirectory;
         while (dir is not null)
         {
-            if (File.Exists(System.IO.Path.Combine(dir, "src", "AgenticHarness.slnx")))
+            if (File.Exists(System.IO.Path.Combine([dir, .. AnchorSegments])))
                 return dir;
 
             dir = System.IO.Path.GetDirectoryName(dir);
         }
 
         throw new InvalidOperationException(
-            $"Could not find the repository root (a directory containing {Anchor}) " +
+            $"Could not find the repository root (a directory containing {AnchorDisplay}) " +
             $"starting from '{startDirectory}'.");
     }
 }
