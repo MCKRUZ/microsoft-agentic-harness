@@ -204,11 +204,10 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 		var runBaseline = conversationTotals;
 
 		var agentTag = new KeyValuePair<string, object?>(AgentConventions.Name, request.AgentName);
-		var sessionTags = new TagList { { AgentConventions.Name, request.AgentName } };
 
 		// A run in flight, not a session: the session belongs to the conversation and outlives this run
 		// whenever the conversation is durable. Paired with the decrement in the finally below.
-		OrchestrationMetrics.RunsActive.Add(1, sessionTags);
+		OrchestrationMetrics.RunsActive.Add(1, agentTag);
 
 		// A run is not the conversation. Only a self-contained run may end the session, because only
 		// there are the two the same thing; ending it on a durable run would mark a conversation
@@ -460,12 +459,10 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 			// is rethrown rather than turned into a failed result: a caller that walked away is not a run
 			// that failed.
 			//
-			// It nevertheless closes as Error. This used to pass the string "cancelled", which the
-			// sessions table does not accept — the write was rejected, logged and swallowed, so every
-			// cancelled run left its session open forever. The schema has no word for cancellation and
-			// the template has no way to add one to a database that already exists (#301), so the
-			// distinction is carried in the reason instead of being lost silently. It does mean a
-			// cancelled run is counted among the errors on the dashboard.
+			// It nevertheless closes as Error. This path is where the string "cancelled" came from; see
+			// SessionStatus for what the database did with it, and why cancellation is carried in the
+			// reason rather than given a state of its own. The visible cost is local and worth naming
+			// here: a cancelled run is counted among the errors on the dashboard.
 			await EndRunSessionAsync(SessionStatus.Error, "conversation.cancelled");
 			throw;
 		}
@@ -483,7 +480,7 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 		{
 			// Decrement the up-down gauge exactly once on every exit path so the runs-in-flight
 			// metric cannot skew permanently when the try block throws.
-			OrchestrationMetrics.RunsActive.Add(-1, sessionTags);
+			OrchestrationMetrics.RunsActive.Add(-1, agentTag);
 			_agentCache.Evict(request.ConversationId);
 
 			// The conversation budget is deliberately NOT released here. This handler used to, on the

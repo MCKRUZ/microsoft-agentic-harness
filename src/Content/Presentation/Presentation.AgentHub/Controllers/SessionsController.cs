@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces;
+using Application.Common.Helpers;
 using Domain.AI.Context;
 using Domain.AI.Observability.Models;
 using Microsoft.AspNetCore.Authorization;
@@ -38,6 +39,12 @@ public sealed class SessionsController : ControllerBase
     /// </summary>
     public const string ObserverRole = "AgentHub.Traces.ReadAll";
 
+    /// <summary>
+    /// How much of a rejected <c>status</c> value the 400 body repeats back. Long enough to identify
+    /// a typo, short enough that the response cannot be used to amplify caller-supplied text.
+    /// </summary>
+    private const int MaxEchoedStatusLength = 32;
+
     private readonly IObservabilityStore _store;
 
     /// <summary>Initialises the controller with its dependencies.</summary>
@@ -50,7 +57,10 @@ public sealed class SessionsController : ControllerBase
     /// </summary>
     /// <param name="limit">Maximum number of sessions to return (1-200, default 50).</param>
     /// <param name="offset">Number of sessions to skip for pagination (default 0).</param>
-    /// <param name="status">Optional status filter: <c>active</c>, <c>completed</c> or <c>error</c>.</param>
+    /// <param name="status">
+    /// Optional status filter: <c>active</c>, <c>completed</c> or <c>error</c>, matched
+    /// case-insensitively. Any other word is a 400 — see the remarks on the 400 response.
+    /// </param>
     /// <param name="since">Optional Unix epoch seconds lower bound on started_at.</param>
     /// <param name="until">Optional Unix epoch seconds upper bound on started_at.</param>
     /// <param name="ct">Cancellation token.</param>
@@ -62,8 +72,15 @@ public sealed class SessionsController : ControllerBase
     /// <see cref="IObservabilityStore.GetLatestBreakdownsAsync"/> call, not
     /// N+1.
     /// </returns>
+    /// <remarks>
+    /// An unrecognised <c>status</c> is rejected rather than treated as "match nothing". The two are
+    /// indistinguishable to a caller — both render as an empty list — and a filter that answers 200
+    /// with no rows reads as "there are none of those", which is exactly how #289's unwritable
+    /// statuses stayed invisible. A typo should say so.
+    /// </remarks>
     [HttpGet]
     [ProducesResponseType(typeof(IReadOnlyList<SessionListRowDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
     public async Task<ActionResult<IReadOnlyList<SessionListRowDto>>> GetSessions(
         [FromQuery] int limit = 50,
         [FromQuery] int offset = 0,
@@ -75,6 +92,34 @@ public sealed class SessionsController : ControllerBase
         limit = Math.Clamp(limit, 1, 200);
         offset = Math.Max(offset, 0);
 
+        // EnumNameHelper, not Enum.TryParse: the latter accepts "2" and "Active,Error" and hands back
+        // a value no row can hold.
+        SessionStatus? statusFilter = null;
+        if (!string.IsNullOrWhiteSpace(status))
+        {
+            if (!EnumNameHelper.TryParseName<SessionStatus>(status, out var parsed))
+            {
+                // The rejected value is echoed back because a diagnostic that will not say what it
+                // read is a poor one — but truncated, because it is caller-controlled and otherwise
+                // unbounded, and an error body is a cheap way to have a service repeat a megabyte
+                // back at whoever sent it and into every log that records the response.
+                var echoed = status.Length > MaxEchoedStatusLength
+                    ? string.Concat(status.AsSpan(0, MaxEchoedStatusLength), "…")
+                    : status;
+
+                return BadRequest(new ProblemDetails
+                {
+                    Title = "Unknown session status.",
+                    Detail =
+                        $"'{echoed}' is not a session status. Expected one of: " +
+                        $"{string.Join(", ", Enum.GetValues<SessionStatus>().Select(s => s.ToDbValue()))}.",
+                    Status = StatusCodes.Status400BadRequest,
+                });
+            }
+
+            statusFilter = parsed;
+        }
+
         DateTimeOffset? sinceDto = since.HasValue
             ? DateTimeOffset.FromUnixTimeSeconds(since.Value)
             : null;
@@ -82,7 +127,7 @@ public sealed class SessionsController : ControllerBase
             ? DateTimeOffset.FromUnixTimeSeconds(until.Value)
             : null;
 
-        var sessions = await _store.GetSessionsAsync(limit, offset, status, sinceDto, untilDto, ct);
+        var sessions = await _store.GetSessionsAsync(limit, offset, statusFilter, sinceDto, untilDto, ct);
 
         // Single batched lookup: one DB hit for the whole page. Rows without a
         // snapshot are omitted by the store, so missing keys mean "no breakdown

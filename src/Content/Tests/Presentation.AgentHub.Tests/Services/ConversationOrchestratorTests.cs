@@ -699,10 +699,12 @@ public class ConversationOrchestratorTests
         _connectionTracker.Setup(t => t.Get("conn1")).Returns(tracked);
 
         var target = new ConversationRecord("c2", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
-        _store.Setup(s => s.GetAsync("c2", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(target);
-        _store.Setup(s => s.GetHistoryForDispatch("c2", "user1", 20, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new List<ConversationMessage>());
 
+        // Only the sequence is set up. A plain GetAsync setup here would be replaced by it, and a
+        // GetHistoryForDispatch setup would never be reached — the switch throws on the second read,
+        // which happens before any dispatch. Both were present and both were dead; left in place they
+        // suggest this test exercises a dispatch it never gets near.
+        //
         // The recorder reads the record again to decide whether to adopt a session. That read is the
         // await sitting between the two gauge movements.
         _store.SetupSequence(s => s.GetAsync("c2", "user1", It.IsAny<CancellationToken>()))

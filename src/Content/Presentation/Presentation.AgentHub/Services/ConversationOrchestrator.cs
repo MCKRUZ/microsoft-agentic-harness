@@ -208,15 +208,13 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
             OrchestrationMetrics.TurnsPerConversation.Record(info.TurnCount, agentTag);
         }
 
-        // This used to pass the string "errored", which is not one of the three words the sessions
-        // table accepts. Postgres rejected the update and the store logged and swallowed it, so a
-        // connection that dropped with an exception left its session open forever — no end time,
-        // status still active, duration growing. Typed now, so the next wrong word will not compile.
+        // This path is where the string "errored" came from; see SessionStatus for what the database
+        // did with it and why the parameter is typed now.
         var status = exception is null ? SessionStatus.Completed : SessionStatus.Error;
 
         // The reason is a stable code, never the exception's own text, and fixing the status above is
-        // exactly why that matters now. While the rejected write was being swallowed, nothing reached
-        // the row; making it land would otherwise have put arbitrary exception messages — connection
+        // exactly why that matters now: while the write was being rejected nothing reached the row, so
+        // making it land would otherwise have started putting arbitrary exception messages — connection
         // strings, tokens, internal paths — into sessions.error_message, which is read back out and
         // served to clients on the session list. The full exception goes to the log, where it belongs.
         // Same rule, and the same stable-code shape, as RunConversationCommandHandler's error path.
@@ -471,11 +469,16 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
         // that conversation writes further turns into a row already marked completed. That is the
         // session lifetime being per-connection while the session row is per-conversation, which is a
         // design gap this change surfaces rather than creates — tracked separately.
-        var switchingConversation = tracked is not null && tracked.ConversationId != conversationId;
-        if (switchingConversation)
+
+        // The conversation this connection is leaving, or null when it is not leaving one. Held as the
+        // entry rather than a bool so both uses below read it off the same non-null reference — the
+        // bool version needed `tracked!` at each use, which asserts a fact the compiler could not see
+        // and the second use is fifty lines from the check that establishes it.
+        var leaving = tracked is not null && tracked.ConversationId != conversationId ? tracked : null;
+        if (leaving is not null)
         {
             await _observabilityStore.EndSessionAsync(
-                tracked!.ObservabilitySessionId, SessionStatus.Completed, cancellationToken: ct);
+                leaving.ObservabilitySessionId, SessionStatus.Completed, cancellationToken: ct);
         }
 
         var state = await _telemetryRecorder.BeginAsync(
@@ -497,10 +500,10 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
         // tracker still holds the OLD entry, and the disconnect that eventually arrives decrements it a
         // second time. Two decrements for one increment, on an up-down counter that never recovers —
         // the exact defect this split exists to remove, reintroduced by the split.
-        if (switchingConversation)
+        if (leaving is not null)
         {
             OrchestrationMetrics.ConnectionsActive.Add(
-                -1, new TagList { { AgentConventions.Name, tracked!.AgentName } });
+                -1, new TagList { { AgentConventions.Name, leaving.AgentName } });
         }
 
         _connectionTracker.Track(sessionKey, new ActiveConversationInfo(

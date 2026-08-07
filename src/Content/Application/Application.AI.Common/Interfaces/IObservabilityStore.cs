@@ -167,9 +167,11 @@ public interface IObservabilityStore
     /// <param name="limit">Maximum number of sessions to return (default 50).</param>
     /// <param name="offset">Number of sessions to skip for pagination (default 0).</param>
     /// <param name="status">
-    /// Optional status filter. Must be one of the values <see cref="SessionStatus"/> can express —
-    /// <c>active</c>, <c>completed</c> or <c>error</c>. Anything else matches nothing; this used to
-    /// name <c>"errored"</c>, which the schema has never accepted and no row has ever held.
+    /// Optional status filter; <see langword="null"/> returns every status. This is the enum and not
+    /// a string for the same reason <see cref="EndSessionAsync"/> is: reads and writes have to share
+    /// one vocabulary. While it was a string the filter accepted <c>"errored"</c> — a word the schema
+    /// has never held — and answered with an empty page that was indistinguishable from "no errored
+    /// sessions", which is how #289's swallowed writes stayed invisible on the dashboard.
     /// </param>
     /// <param name="since">Optional lower bound on started_at (inclusive).</param>
     /// <param name="until">Optional upper bound on started_at (exclusive).</param>
@@ -178,7 +180,7 @@ public interface IObservabilityStore
     Task<IReadOnlyList<SessionRecord>> GetSessionsAsync(
         int limit = 50,
         int offset = 0,
-        string? status = null,
+        SessionStatus? status = null,
         DateTimeOffset? since = null,
         DateTimeOffset? until = null,
         CancellationToken cancellationToken = default);

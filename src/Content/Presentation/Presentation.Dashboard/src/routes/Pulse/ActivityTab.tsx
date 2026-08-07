@@ -104,8 +104,8 @@ export function ActivityTab() {
           sparklineData={tokensPerMin.data?.series[0]?.dataPoints}
         />
         <KpiCard
-          title="Active Runs"
-          description="Units of agent work executing right now — a background run or a streamed run. Counted up when the run starts and down when it finishes, so it returns to zero when the agent is idle."
+          title={activeRuns.entry.title}
+          description={activeRuns.entry.description}
           value={formatKpi(activeVal, 'count')}
           delta={runsDelta?.text}
           trend={runsDelta?.trend}

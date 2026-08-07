@@ -1,3 +1,4 @@
+using Domain.AI.Observability.Models;
 using Infrastructure.Observability.Persistence;
 using Npgsql;
 using Xunit;
@@ -26,7 +27,7 @@ public sealed class ToolExecutionBodyColumnsTests
 
         using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);
         var builder = new TestDataBuilder(_fixture);
-        var session = await builder.CreateSessionAsync(status: "active");
+        var session = await builder.CreateSessionAsync(status: SessionStatus.Active);
         var messageId = await builder.AddMessageAsync(session.Id, role: "assistant", source: "assistant_tool");
 
         await store.RecordToolExecutionAsync(
@@ -59,7 +60,7 @@ public sealed class ToolExecutionBodyColumnsTests
 
         using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);
         var builder = new TestDataBuilder(_fixture);
-        var session = await builder.CreateSessionAsync(status: "active");
+        var session = await builder.CreateSessionAsync(status: SessionStatus.Active);
 
         await store.RecordToolExecutionAsync(
             session.Id, null,
@@ -88,8 +89,8 @@ public sealed class ToolExecutionBodyColumnsTests
 
         using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);
         var builder = new TestDataBuilder(_fixture);
-        var ownerSession = await builder.CreateSessionAsync(status: "active");
-        var otherSession = await builder.CreateSessionAsync(status: "active");
+        var ownerSession = await builder.CreateSessionAsync(status: SessionStatus.Active);
+        var otherSession = await builder.CreateSessionAsync(status: SessionStatus.Active);
 
         await store.RecordToolExecutionAsync(
             ownerSession.Id, null,
@@ -115,7 +116,7 @@ public sealed class ToolExecutionBodyColumnsTests
 
         using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);
         var builder = new TestDataBuilder(_fixture);
-        var session = await builder.CreateSessionAsync(status: "active");
+        var session = await builder.CreateSessionAsync(status: SessionStatus.Active);
 
         await store.RecordToolExecutionAsync(
             session.Id, null,
