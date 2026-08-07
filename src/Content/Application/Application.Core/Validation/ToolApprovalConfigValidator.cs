@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces.Escalation;
+using Application.Core.CQRS.Autonomy;
 using Domain.AI.Changes;
 using Domain.Common.Config.AI.Governance;
 using FluentValidation;
@@ -27,17 +28,27 @@ namespace Application.Core.Validation;
 /// </remarks>
 public sealed class ToolApprovalConfigValidator : AbstractValidator<ToolApprovalConfig>
 {
-    private static readonly string[] ValidBlastRadiusNames = Enum.GetNames<BlastRadius>();
-
     /// <summary>Initializes a new instance of the <see cref="ToolApprovalConfigValidator"/> class.</summary>
     public ToolApprovalConfigValidator()
     {
         // Unvalidated, this parses to Critical and only narrows who is paged — but it does so
         // silently, and a typo in a governance setting should never be discoverable only by
         // noticing that nobody was notified.
+        //
+        // Shares AutonomyValidationRules' parser and message rather than restating them: that class
+        // exists so every boundary rejecting a blast-radius value rejects the same set and says the
+        // same thing, and this is the third such boundary. The local name-list check it replaces was
+        // behaviourally equivalent — both reject numeric forms — so this buys shared vocabulary, not
+        // stricter parsing. Worth stating plainly, because the reverse is easy to assume.
+        //
+        // The genuine divergence is elsewhere and is NOT closed here: EscalationToolApprovalRouter
+        // parses the same setting with a bare Enum.TryParse, which does accept "3". A validated host
+        // never reaches that, since this rule rejects the value at boot; a host that binds
+        // GovernanceConfig without registering these options would. Closing it means moving the
+        // shared parser down to a layer Application.AI.Common can reference — a separate change.
         RuleFor(x => x.CriticalAtBlastRadius)
-            .Must(v => ValidBlastRadiusNames.Contains(v, StringComparer.OrdinalIgnoreCase))
-            .WithMessage($"CriticalAtBlastRadius must be one of: {string.Join(", ", ValidBlastRadiusNames)}.");
+            .Must(v => AutonomyValidationRules.TryParseEnumName<BlastRadius>(v, out _))
+            .WithMessage($"CriticalAtBlastRadius is invalid. {AutonomyValidationRules.InvalidBlastRadiusMessage}");
 
         When(x => x.Enabled, () =>
         {

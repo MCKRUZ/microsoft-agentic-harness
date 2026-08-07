@@ -152,7 +152,11 @@ public sealed partial class DirectToolInvoker : IDirectToolInvoker
             // direct invocation as to a call inside an agent turn. Leaving them unarmed here would
             // mean a consumer's safety rule silently stops applying on the Execution API path — the
             // registered-but-inert failure this codebase keeps paying for.
-            var observerChain = scope.ServiceProvider.GetService<IToolCallObserverChain>();
+            // Required, not GetService: the chain is registered unconditionally, and an absent one is
+            // indistinguishable at runtime from a host that registered no rules — so tolerating null
+            // here would let a broken composition run this path silently unguarded. Same reasoning as
+            // the plan step executors, which take it as a required constructor dependency.
+            var observerChain = scope.ServiceProvider.GetRequiredService<IToolCallObserverChain>();
 
             using var grantedEnvelope = CapabilityEnvelopeAccessor.Begin(request.Envelope);
             using var armedGovernor = ToolGovernanceAccessor.Begin(governor);
@@ -330,7 +334,7 @@ public sealed partial class DirectToolInvoker : IDirectToolInvoker
     /// <param name="ToolName">The catalog's name for the tool, which is also its keyed-DI key.</param>
     /// <param name="Governor">This invocation's scoped governor.</param>
     /// <param name="ClassificationGate">The data-classification gate, or null when the host registers none.</param>
-    /// <param name="Observers">The host's tool-call observer chain, or null when the host registers none.</param>
+    /// <param name="Observers">The host's tool-call observer chain. Empty when no rules are registered.</param>
     /// <param name="Scope">The invocation's DI scope, from which the tool itself is resolved.</param>
     /// <param name="Config">The host settings this invocation was admitted under.</param>
     private readonly record struct ArmedInvocation(
@@ -338,7 +342,7 @@ public sealed partial class DirectToolInvoker : IDirectToolInvoker
         string ToolName,
         IToolInvocationGovernor Governor,
         IToolClassificationGate? ClassificationGate,
-        IToolCallObserverChain? Observers,
+        IToolCallObserverChain Observers,
         AsyncServiceScope Scope,
         DirectToolInvocationConfig Config);
 }

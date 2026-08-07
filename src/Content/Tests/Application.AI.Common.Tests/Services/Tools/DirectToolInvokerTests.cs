@@ -629,7 +629,7 @@ public sealed class DirectToolInvokerTests
         public IReadOnlyDictionary<string, object?> Observed { get; private set; } =
             new Dictionary<string, object?>();
 
-        public bool HasObservers => true;
+        public bool HasObservers { get; init; } = true;
 
         public ValueTask<ToolInvocationDecision> EvaluateAsync(
             string toolName, IReadOnlyDictionary<string, object?> arguments, CancellationToken cancellationToken)
@@ -677,8 +677,13 @@ public sealed class DirectToolInvokerTests
         services.AddKeyedSingleton<ITool>(tool.Name, tool);
         if (_classificationGate is not null)
             services.AddSingleton<IToolClassificationGate>(_classificationGate);
-        if (_observerChain is not null)
-            services.AddSingleton<IToolCallObserverChain>(_observerChain);
+        // Always registered, never conditionally: the invoker resolves this as a REQUIRED service,
+        // because an absent chain and a chain with no rules are indistinguishable at runtime and only
+        // one of them is safe. A test that omitted it would be asserting against a composition that
+        // cannot exist in production. When a test supplies no chain of its own, it gets an empty one —
+        // which is exactly what a host that registered no rules has.
+        services.AddSingleton<IToolCallObserverChain>(
+            _observerChain ?? new FakeObserverChain(ToolInvocationDecision.Allow()) { HasObservers = false });
 
         var provider = services.BuildServiceProvider();
 

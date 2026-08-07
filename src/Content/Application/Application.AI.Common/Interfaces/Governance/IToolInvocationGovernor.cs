@@ -95,8 +95,14 @@ public interface IToolInvocationGovernor
 /// </param>
 public sealed record ToolInvocationDecision(bool IsAllowed, string? DeniedMessage = null)
 {
+    // An allow carries no per-call state, so one instance serves every call. This sits on the agent's
+    // hot path and is now reached two to three times per permitted call (governor, then the observer
+    // chain, then the composed helper), which is three identical allocations for a value that is
+    // immutable and indistinguishable between calls.
+    private static readonly ToolInvocationDecision AllowedDecision = new(true);
+
     /// <summary>An allow decision.</summary>
-    public static ToolInvocationDecision Allow() => new(true);
+    public static ToolInvocationDecision Allow() => AllowedDecision;
 
     /// <summary>A deny decision carrying the model-facing explanation.</summary>
     public static ToolInvocationDecision Deny(string deniedMessage) => new(false, deniedMessage);

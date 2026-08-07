@@ -1,3 +1,4 @@
+using System.Collections.ObjectModel;
 using Application.AI.Common.Interfaces.Governance;
 using Domain.AI.Governance;
 
@@ -31,8 +32,10 @@ public static class ToolAuthorizationExtensions
     /// </summary>
     /// <param name="governor">The built-in governance chokepoint. Runs first.</param>
     /// <param name="observers">
-    /// The host's observer chain, or null where none is available. Consulted only for a call the
-    /// governor already allowed, so an observer can tighten the outcome but never widen access.
+    /// The host's observer chain. Consulted only for a call the governor already allowed, so an
+    /// observer can tighten the outcome but never widen access. Registered unconditionally and empty
+    /// when the host declares no rules — it is not optional, because an absent chain and a chain with
+    /// nothing in it are indistinguishable at runtime, and only one of those is safe.
     /// </param>
     /// <param name="toolName">The tool or plan capability being authorized.</param>
     /// <param name="arguments">
@@ -44,7 +47,7 @@ public static class ToolAuthorizationExtensions
     /// <param name="cancellationToken">Cancels the authorization, including any pending approval.</param>
     public static async ValueTask<ToolInvocationDecision> AuthorizeWithObserversAsync(
         this IToolInvocationGovernor governor,
-        IToolCallObserverChain? observers,
+        IToolCallObserverChain observers,
         string toolName,
         IReadOnlyDictionary<string, object?>? arguments,
         CancellationToken cancellationToken)
@@ -58,7 +61,7 @@ public static class ToolAuthorizationExtensions
         if (!decision.IsAllowed)
             return decision;
 
-        if (observers is not { HasObservers: true })
+        if (!observers.HasObservers)
             return decision;
 
         return await observers
@@ -68,6 +71,8 @@ public static class ToolAuthorizationExtensions
 
     // An observer is always handed a dictionary, never null, so a rule can read arguments without a
     // null check. "The caller had no arguments" and "the call had none" are the same thing to a rule.
+    // ReadOnlyDictionary rather than a bare Dictionary: this instance is shared across every call and
+    // handed to consumer-authored code, which could otherwise downcast it and mutate it for everyone.
     private static readonly IReadOnlyDictionary<string, object?> EmptyArguments =
-        new Dictionary<string, object?>();
+        ReadOnlyDictionary<string, object?>.Empty;
 }

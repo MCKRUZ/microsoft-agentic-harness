@@ -22,13 +22,14 @@ public sealed partial class ToolInvocationGovernor
     /// <summary>
     /// The outcome of putting an approval-required verdict to a human.
     /// </summary>
-    /// <param name="Granted">Whether a human approved the call.</param>
     /// <param name="Block">
-    /// The recorded block to return when <paramref name="Granted"/> is false; null when granted.
+    /// The recorded block to return when the call was not approved; null when it was. This single
+    /// field carries the outcome — a separate "granted" flag would restate it, and the compiler
+    /// cannot see that two such fields agree, which is how a null-forgiving <c>!</c> ends up at the
+    /// call site.
     /// </param>
     /// <param name="Reason">Approver attribution, carried onto the final trace record.</param>
     private readonly record struct ApprovalGate(
-        bool Granted,
         ToolInvocationDecision? Block,
         string Reason);
 
@@ -42,13 +43,10 @@ public sealed partial class ToolInvocationGovernor
     /// the two cannot drift into different approval semantics.
     /// </para>
     /// <para>
-    /// <strong>An approval is not a verdict; it answers one gate.</strong> This method deliberately
-    /// does not return an allow. A human approving an <c>Ask</c> has answered the permission layer
-    /// and nothing else — the capability envelope, sandbox capability enforcement, and the policy
-    /// engine have not ruled on the call yet. Returning an allow here would let an approver grant a
-    /// tool the sandbox never granted the capability for, or one an armed envelope does not list.
-    /// The caller resumes the normal pipeline instead, so approval can only ever advance a call to
-    /// the checks that were already going to run — never past them.
+    /// <strong>This returns a gate, not a verdict.</strong> Deliberately: the caller decides what an
+    /// approval means, and only <see cref="AuthorizeInOrderAsync"/> knows that every deterministic
+    /// gate has already passed by the time a human is asked. Returning an allow from here would put
+    /// that judgement in the wrong place.
     /// </para>
     /// </remarks>
     private async ValueTask<ApprovalGate> RequestApprovalAsync(
@@ -60,7 +58,7 @@ public sealed partial class ToolInvocationGovernor
             .ConfigureAwait(false);
 
         if (approval.Outcome == ToolApprovalOutcome.Approved)
-            return new ApprovalGate(Granted: true, Block: null, approval.Reason);
+            return new ApprovalGate(Block: null, approval.Reason);
 
         // Not approved. Count it against the agent exactly as an unrouted approval verdict always
         // has, so repeated attempts at a tool nobody will approve still trip the denial tracker.
@@ -69,6 +67,6 @@ public sealed partial class ToolInvocationGovernor
             $"requires approval: {reason} ({approval.Reason})", profile.Radius,
             requiredApproval: true, agentId);
 
-        return new ApprovalGate(Granted: false, block, approval.Reason);
+        return new ApprovalGate(block, approval.Reason);
     }
 }

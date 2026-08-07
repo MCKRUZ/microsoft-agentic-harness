@@ -64,7 +64,13 @@ public sealed class ToolInvocationGovernorTests
             .ReturnsAsync(ToolApprovalResult.NotRouted("tool approval routing is disabled"));
     }
 
-    private ToolInvocationGovernor Build() => new(
+    /// <summary>
+    /// Builds the governor under test. Pass <paramref name="governance"/> to override the default
+    /// config — the only thing the per-test constructions ever varied, which is why they were folded
+    /// back into this helper: each was an 8-line copy that had to be edited whenever the constructor
+    /// gained a parameter.
+    /// </summary>
+    private ToolInvocationGovernor Build(GovernanceConfig? governance = null) => new(
         _context.Object,
         _permissions.Object,
         _riskClassifier,
@@ -74,7 +80,7 @@ public sealed class ToolInvocationGovernorTests
         _denialTracker.Object,
         _capabilities.Object,
         _approvalRouter.Object,
-        Mock.Of<IOptionsMonitor<GovernanceConfig>>(m => m.CurrentValue == _governance),
+        Mock.Of<IOptionsMonitor<GovernanceConfig>>(m => m.CurrentValue == (governance ?? _governance)),
         Mock.Of<IOptionsMonitor<PermissionsConfig>>(m => m.CurrentValue == _permissionsConfig),
         Mock.Of<IOptionsMonitor<SandboxConfig>>(m => m.CurrentValue == _sandbox),
         NullLogger<ToolInvocationGovernor>.Instance);
@@ -83,13 +89,7 @@ public sealed class ToolInvocationGovernorTests
     public async Task AuthorizeAsync_EnforcementDisabled_AllowsAndDoesNotEvaluate()
     {
         var governance = new GovernanceConfig { EnforceToolInvocation = false };
-        var governor = new ToolInvocationGovernor(
-            _context.Object, _permissions.Object, _riskClassifier, _autonomy.Object, _policyEngine.Object,
-            Mock.Of<IGovernanceAuditService>(), _denialTracker.Object, _capabilities.Object, _approvalRouter.Object,
-            Mock.Of<IOptionsMonitor<GovernanceConfig>>(m => m.CurrentValue == governance),
-            Mock.Of<IOptionsMonitor<PermissionsConfig>>(m => m.CurrentValue == _permissionsConfig),
-            Mock.Of<IOptionsMonitor<SandboxConfig>>(m => m.CurrentValue == _sandbox),
-            NullLogger<ToolInvocationGovernor>.Instance);
+        var governor = Build(governance);
 
         var decision = await governor.AuthorizeAsync(Tool, CancellationToken.None);
 
@@ -233,13 +233,7 @@ public sealed class ToolInvocationGovernorTests
             .Setup(x => x.EvaluateToolCall(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<IReadOnlyDictionary<string, object?>?>()))
             .Returns(GovernanceDecision.Denied("rule-7", "default-policy", "blocked by policy"));
 
-        var governor = new ToolInvocationGovernor(
-            _context.Object, _permissions.Object, _riskClassifier, _autonomy.Object, _policyEngine.Object,
-            Mock.Of<IGovernanceAuditService>(), _denialTracker.Object, _capabilities.Object, _approvalRouter.Object,
-            Mock.Of<IOptionsMonitor<GovernanceConfig>>(m => m.CurrentValue == governance),
-            Mock.Of<IOptionsMonitor<PermissionsConfig>>(m => m.CurrentValue == _permissionsConfig),
-            Mock.Of<IOptionsMonitor<SandboxConfig>>(m => m.CurrentValue == _sandbox),
-            NullLogger<ToolInvocationGovernor>.Instance);
+        var governor = Build(governance);
 
         var decision = await governor.AuthorizeAsync(Tool, CancellationToken.None);
 
@@ -262,13 +256,7 @@ public sealed class ToolInvocationGovernorTests
             .Callback<string, string, IReadOnlyDictionary<string, object?>?>((_, _, args) => seen = args)
             .Returns(GovernanceDecision.Allowed());
 
-        var governor = new ToolInvocationGovernor(
-            _context.Object, _permissions.Object, _riskClassifier, _autonomy.Object, _policyEngine.Object,
-            Mock.Of<IGovernanceAuditService>(), _denialTracker.Object, _capabilities.Object, _approvalRouter.Object,
-            Mock.Of<IOptionsMonitor<GovernanceConfig>>(m => m.CurrentValue == governance),
-            Mock.Of<IOptionsMonitor<PermissionsConfig>>(m => m.CurrentValue == _permissionsConfig),
-            Mock.Of<IOptionsMonitor<SandboxConfig>>(m => m.CurrentValue == _sandbox),
-            NullLogger<ToolInvocationGovernor>.Instance);
+        var governor = Build(governance);
 
         var arguments = new Dictionary<string, object?> { ["database"] = "prod" };
         await governor.AuthorizeAsync(Tool, CancellationToken.None, arguments);
@@ -391,13 +379,7 @@ public sealed class ToolInvocationGovernorTests
                 (_, _, reason, _, _, _) => askedReason = reason)
             .ReturnsAsync(ToolApprovalResult.Approved("approved by alice", Guid.NewGuid()));
 
-        var governor = new ToolInvocationGovernor(
-            _context.Object, _permissions.Object, _riskClassifier, _autonomy.Object, _policyEngine.Object,
-            Mock.Of<IGovernanceAuditService>(), _denialTracker.Object, _capabilities.Object, _approvalRouter.Object,
-            Mock.Of<IOptionsMonitor<GovernanceConfig>>(m => m.CurrentValue == governance),
-            Mock.Of<IOptionsMonitor<PermissionsConfig>>(m => m.CurrentValue == _permissionsConfig),
-            Mock.Of<IOptionsMonitor<SandboxConfig>>(m => m.CurrentValue == _sandbox),
-            NullLogger<ToolInvocationGovernor>.Instance);
+        var governor = Build(governance);
 
         var decision = await governor.AuthorizeAsync(Tool, CancellationToken.None);
 
@@ -493,13 +475,7 @@ public sealed class ToolInvocationGovernorTests
                 PolicyName: "default-policy"));
         RouterAnswers(ToolApprovalResult.Approved("approved by alice", Guid.NewGuid()));
 
-        var governor = new ToolInvocationGovernor(
-            _context.Object, _permissions.Object, _riskClassifier, _autonomy.Object, _policyEngine.Object,
-            Mock.Of<IGovernanceAuditService>(), _denialTracker.Object, _capabilities.Object, _approvalRouter.Object,
-            Mock.Of<IOptionsMonitor<GovernanceConfig>>(m => m.CurrentValue == governance),
-            Mock.Of<IOptionsMonitor<PermissionsConfig>>(m => m.CurrentValue == _permissionsConfig),
-            Mock.Of<IOptionsMonitor<SandboxConfig>>(m => m.CurrentValue == _sandbox),
-            NullLogger<ToolInvocationGovernor>.Instance);
+        var governor = Build(governance);
 
         var decision = await governor.AuthorizeAsync(Tool, CancellationToken.None);
 

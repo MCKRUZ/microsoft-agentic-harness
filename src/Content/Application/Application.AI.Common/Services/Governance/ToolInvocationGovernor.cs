@@ -37,14 +37,16 @@ namespace Application.AI.Common.Services.Governance;
 /// fail-closed.
 /// </para>
 /// <para>
-/// <strong>An approval answers the permission layer and nothing else.</strong> A human who approves
-/// an <c>Ask</c> does not thereby clear the capability envelope, sandbox capability enforcement, or
-/// the declarative policy engine — the call resumes into those gates exactly where an outright
-/// <c>Allow</c> would have entered them, and any one of them can still refuse it. This is worth
-/// stating because getting it wrong is silent: an earlier revision returned an allow straight from
-/// the approval, so an approver could have granted a tool the sandbox never granted the capability
-/// for. Approval advances a call to the checks that were already going to run; it never carries it
-/// past them.
+/// <strong>An approval never substitutes for a deterministic check.</strong> A human who approves an
+/// <c>Ask</c> does not thereby clear the capability envelope, sandbox capability enforcement, or the
+/// declarative policy engine. That property is now guaranteed by <em>ordering</em>: every gate that
+/// can decide the call without a human runs first, and the human is asked only once nothing
+/// automatic objects — so an approval can only ever clear the one question actually put to it. See
+/// <see cref="AuthorizeInOrderAsync"/> for why the reasons are accumulated and asked as one
+/// question. This is worth stating because getting it wrong is silent, and it has been wrong twice:
+/// once by returning an allow straight from the approval (an approver could have granted a tool the
+/// sandbox never granted the capability for), and once by letting an approval obtained for one
+/// gate's reason satisfy a later gate whose reason the approver was never shown.
 /// </para>
 /// </remarks>
 public sealed partial class ToolInvocationGovernor : IToolInvocationGovernor
@@ -238,7 +240,9 @@ public sealed partial class ToolInvocationGovernor : IToolInvocationGovernor
         IReadOnlyDictionary<string, object?>? arguments, CancellationToken cancellationToken)
     {
         // Accumulates every reason a human must rule on this call, from whichever gate raised it.
-        var approvalReasons = new List<string>();
+        // Left null until a gate actually asks for one: the overwhelmingly common path is a call no
+        // gate wants a human for, and this runs on every authorized tool call.
+        List<string>? approvalReasons = null;
 
         switch (permission.Behavior)
         {
@@ -248,7 +252,7 @@ public sealed partial class ToolInvocationGovernor : IToolInvocationGovernor
                     requiredApproval: false, agentId);
 
             case PermissionBehaviorType.Ask:
-                approvalReasons.Add(permission.Reason);
+                (approvalReasons ??= []).Add(permission.Reason);
                 break;
 
             case PermissionBehaviorType.Allow:
@@ -306,7 +310,7 @@ public sealed partial class ToolInvocationGovernor : IToolInvocationGovernor
             {
                 if (decision.Action == GovernancePolicyAction.RequireApproval)
                 {
-                    approvalReasons.Add(decision.Reason);
+                    (approvalReasons ??= []).Add(decision.Reason);
                 }
                 else
                 {
@@ -318,24 +322,24 @@ public sealed partial class ToolInvocationGovernor : IToolInvocationGovernor
         }
 
         // Nothing deterministic refuses this call. If any gate wants a human, this is the moment.
-        ApprovalGate? approval = null;
-        if (approvalReasons.Count > 0)
+        string? approvedBy = null;
+        if (approvalReasons is not null)
         {
             var gate = await RequestApprovalAsync(agentId, toolName,
                 string.Join("; ", approvalReasons), profile, arguments, cancellationToken)
                 .ConfigureAwait(false);
 
-            if (!gate.Granted)
-                return gate.Block!;
+            if (gate.Block is { } block)
+                return block;
 
-            approval = gate;
+            approvedBy = gate.Reason;
         }
 
         Record(new ToolDecisionRecord(toolName, ToolDecisionOutcome.Allowed,
-            approval is { } granted ? $"approved by human: {granted.Reason}" : "allowed",
+            approvedBy is null ? "allowed" : $"approved by human: {approvedBy}",
             profile.Radius,
-            RequiredApproval: approval is not null,
-            ApprovalGranted: approval is not null,
+            RequiredApproval: approvedBy is not null,
+            ApprovalGranted: approvedBy is not null,
             Enforced: true));
 
         if (governance.EnableAudit)

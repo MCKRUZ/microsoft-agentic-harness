@@ -191,10 +191,10 @@ public class RunOrchestratedTaskCommandHandler : IRequestHandler<RunOrchestrated
 	private async Task<object?> RunOrchestratorGovernedAsync(
 		AIAgent orchestrator, List<ChatMessage> messages, CancellationToken cancellationToken)
 	{
-		// Expose this scope's governor, classification gate, and consumer observers to the governed tool
-		// wrappers for the
-		// orchestrator's own RunAsync. Set/clear tightly around the call so interleaved sub-agent turns
-		// (which set their own ambient gates in their child scope) are unaffected.
+		// Expose this scope's governor, classification gate, and consumer observers to the governed
+		// tool wrappers for the orchestrator's own RunAsync. Set/clear tightly around the call so
+		// interleaved sub-agent turns (which set their own ambient gates in their child scope) are
+		// unaffected.
 		ToolGovernanceAccessor.Current = _governor;
 		ClassificationGateAccessor.Current = _classificationGate;
 		ToolCallObserverAccessor.Current = _observerChain;
