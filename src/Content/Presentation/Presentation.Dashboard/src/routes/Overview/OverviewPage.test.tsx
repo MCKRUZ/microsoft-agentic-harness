@@ -10,7 +10,7 @@ describe('OverviewPage', () => {
     const kpis = await screen.findAllByRole('status', {}, { timeout: 3000 });
     expect(kpis.length).toBeGreaterThanOrEqual(6);
 
-    for (const title of ['Tokens / Minute', 'Active Sessions', 'Cost Today', 'Cache Hit Rate', 'Safety Evaluations', 'Budget Status']) {
+    for (const title of ['Tokens / Minute', 'Active Runs', 'Cost Today', 'Cache Hit Rate', 'Safety Evaluations', 'Budget Status']) {
       expect(screen.getByLabelText(title)).toBeInTheDocument();
     }
   });

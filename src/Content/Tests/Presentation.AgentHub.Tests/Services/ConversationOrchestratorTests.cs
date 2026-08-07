@@ -4,6 +4,8 @@ using Application.AI.Common.Services;
 using Application.AI.Common.Services.AI;
 using Application.Common.Exceptions.ExceptionTypes;
 using Application.Core.CQRS.Agents.ExecuteAgentTurn;
+using Domain.AI.Observability.Models;
+using Domain.AI.Telemetry.Conventions;
 using Domain.AI.Budget;
 using FluentAssertions;
 using Infrastructure.AI.Conversations;
@@ -17,6 +19,7 @@ using Presentation.AgentHub.DTOs;
 using Presentation.AgentHub.Hubs;
 using Presentation.AgentHub.Interfaces;
 using Presentation.AgentHub.Services;
+using Presentation.AgentHub.Tests.Telemetry;
 using Xunit;
 using Application.AI.Common.Models.Conversations;
 
@@ -579,11 +582,13 @@ public class ConversationOrchestratorTests
         var orchestrator = CreateOrchestrator();
         await orchestrator.HandleDisconnectAsync("conn1", null, CancellationToken.None);
 
-        _obsStore.Verify(s => s.EndSessionAsync(sessionId, "completed", null, It.IsAny<CancellationToken>()), Times.Once);
+        _obsStore.Verify(
+            s => s.EndSessionAsync(sessionId, SessionStatus.Completed, null, It.IsAny<CancellationToken>()),
+            Times.Once);
     }
 
     [Fact]
-    public async Task HandleDisconnect_WithException_RecordsErroredStatus()
+    public async Task HandleDisconnect_WithException_RecordsAStatusTheSchemaAccepts()
     {
         var sessionId = Guid.NewGuid();
         var info = new ActiveConversationInfo("c1", "agent", "user1", DateTimeOffset.UtcNow, 1, sessionId);
@@ -593,7 +598,128 @@ public class ConversationOrchestratorTests
         var ex = new Exception("Connection lost");
         await orchestrator.HandleDisconnectAsync("conn1", ex, CancellationToken.None);
 
-        _obsStore.Verify(s => s.EndSessionAsync(sessionId, "errored", "Connection lost", It.IsAny<CancellationToken>()), Times.Once);
+        // This test used to assert the literal "errored" and pass, while production wrote a word the
+        // sessions table refuses — the mock accepted it, Postgres did not, the store logged and
+        // swallowed the rejection, and every connection that dropped with an exception left its session
+        // open forever. A mock enforces nothing; the type does.
+        _obsStore.Verify(
+            s => s.EndSessionAsync(
+                sessionId, SessionStatus.Error, It.IsAny<string?>(), It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task HandleDisconnect_WithException_RecordsAStableCodeRatherThanTheExceptionText()
+    {
+        // Fixing the status turned this from a swallowed write into a real one, and that is exactly what
+        // makes the reason worth guarding: sessions.error_message is read back out and served on the
+        // session list, so an exception's own text would put connection strings, tokens and internal
+        // paths in front of a client. It reached nothing before only because Postgres was rejecting the
+        // whole statement.
+        var sessionId = Guid.NewGuid();
+        var info = new ActiveConversationInfo("c1", "agent", "user1", DateTimeOffset.UtcNow, 1, sessionId);
+        _connectionTracker.Setup(t => t.Untrack("conn1")).Returns(info);
+
+        var orchestrator = CreateOrchestrator();
+        var secret = new Exception("Host=db;Password=hunter2;SharedAccessSignature=sig");
+        await orchestrator.HandleDisconnectAsync("conn1", secret, CancellationToken.None);
+
+        _obsStore.Verify(
+            s => s.EndSessionAsync(
+                sessionId,
+                SessionStatus.Error,
+                It.Is<string?>(reason =>
+                    reason != null
+                    && !reason.Contains("hunter2")
+                    && !reason.Contains("SharedAccessSignature")
+                    && reason.StartsWith("connection.")),
+                It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task HandleDisconnect_TrackedConnection_GivesBackTheConnectionItCounted()
+    {
+        // The hub counts connections, which is the one of the three questions the old shared gauge
+        // asked that genuinely belongs to this transport (issue #289). Both halves are asserted: a
+        // gauge nobody touches nets to zero too, so the measurement count is what shows the decrement
+        // ran rather than that nothing happened.
+        var sessionId = Guid.NewGuid();
+        var info = new ActiveConversationInfo("c1", "agent", "user1", DateTimeOffset.UtcNow, 3, sessionId);
+        _connectionTracker.Setup(t => t.Untrack("conn1")).Returns(info);
+
+        var orchestrator = CreateOrchestrator();
+
+        using var probe = new GaugeProbe(OrchestrationConventions.ConnectionsActive);
+        await orchestrator.HandleDisconnectAsync("conn1", null, CancellationToken.None);
+
+        probe.Measurements.Should().Be(1);
+        probe.Net.Should().Be(-1, "the connection this disconnect ended must stop being counted as live");
+    }
+
+    [Fact]
+    public async Task SendMessage_CountsTheTurnAsAgentWorkInFlightAndGivesItBack()
+    {
+        // The hub dispatches a turn straight to ExecuteAgentTurnCommand and never goes through
+        // RunConversationCommand, so counting runs only in the bundle and AG-UI paths would leave the
+        // "Active Runs" headline reading zero on a SignalR deployment while the agent is generating.
+        // Both halves asserted: an untouched gauge nets to zero too.
+        var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
+        _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<ConversationMessage>());
+        _connectionTracker.Setup(t => t.Get("conn1")).Returns((ActiveConversationInfo?)null);
+        _mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new AgentTurnResult { Success = true, Response = "Hi", UpdatedHistory = [] });
+
+        var orchestrator = CreateOrchestrator();
+
+        using var probe = new GaugeProbe(OrchestrationConventions.RunsActive);
+        await orchestrator.SendMessageAsync(
+            "conn1", "c1", Guid.NewGuid(), "Hello", "user1", null, CancellationToken.None);
+
+        probe.Measurements.Should().Be(2, "the turn must be counted up when it starts and down when it ends");
+        probe.Net.Should().Be(0, "a finished turn is not work in flight");
+    }
+
+    [Fact]
+    public async Task SendMessage_SwitchingConversationFails_DoesNotGiveBackAConnectionItStillHolds()
+    {
+        // The switch decrements the conversation being left and increments the one being joined. If the
+        // decrement runs before the work that can fail, a failure leaves the tracker still holding the
+        // OLD entry — which the eventual disconnect then decrements a second time. Two decrements for
+        // one increment, and an up-down counter never recovers from that: the dashboard reads a
+        // negative number of live connections until the process restarts.
+        //
+        // Provoked through the store because that is how it happens in production: the user navigates
+        // away and the token cancels, or the new conversation refuses the caller, while the connection
+        // is mid-switch.
+        var tracked = new ActiveConversationInfo(
+            "c1", "agent", "user1", DateTimeOffset.UtcNow, 2, Guid.NewGuid());
+        _connectionTracker.Setup(t => t.Get("conn1")).Returns(tracked);
+
+        var target = new ConversationRecord("c2", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []);
+        _store.Setup(s => s.GetAsync("c2", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(target);
+        _store.Setup(s => s.GetHistoryForDispatch("c2", "user1", 20, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<ConversationMessage>());
+
+        // The recorder reads the record again to decide whether to adopt a session. That read is the
+        // await sitting between the two gauge movements.
+        _store.SetupSequence(s => s.GetAsync("c2", "user1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(target)
+            .ThrowsAsync(new ConversationAccessDeniedException());
+
+        var orchestrator = CreateOrchestrator();
+
+        using var probe = new GaugeProbe(OrchestrationConventions.ConnectionsActive);
+        var act = () => orchestrator.SendMessageAsync(
+            "conn1", "c2", Guid.NewGuid(), "Hello", "user1", null, CancellationToken.None);
+
+        await act.Should().ThrowAsync<Exception>();
+
+        probe.Net.Should().Be(0,
+            "a switch that failed released nothing, so it must not report having released anything — "
+            + "the connection is still tracked on the conversation it was already on");
     }
 
     [Fact]
@@ -604,7 +730,10 @@ public class ConversationOrchestratorTests
         var orchestrator = CreateOrchestrator();
         await orchestrator.HandleDisconnectAsync("unknown", null, CancellationToken.None);
 
-        _obsStore.Verify(s => s.EndSessionAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+        _obsStore.Verify(
+            s => s.EndSessionAsync(
+                It.IsAny<Guid>(), It.IsAny<SessionStatus>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()),
+            Times.Never);
     }
 
     // ── Session tracking ─────────────────────────────────────────────────

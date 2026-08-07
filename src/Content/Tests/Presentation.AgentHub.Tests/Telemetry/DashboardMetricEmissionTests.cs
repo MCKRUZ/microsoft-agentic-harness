@@ -72,7 +72,7 @@ public sealed partial class DashboardMetricEmissionTests : IClassFixture<Metrics
         {
             // ── Overview ──
             ["tokens_per_minute"] = (TileStatus.Conditional, "needs real LLM token usage"),
-            ["active_sessions"] = (TileStatus.AlwaysOn, "agent_session_active toggles every session"),
+            ["active_runs"] = (TileStatus.AlwaysOn, "runs_active toggles around every run"),
             ["cost_today"] = (TileStatus.Conditional, "needs real LLM token usage; cost now priced via the default-model fallback (fixed 2026-06-22)"),
             ["cache_hit_rate"] = (TileStatus.Conditional, "needs real LLM token usage"),
             ["safety_violations"] = (TileStatus.AlwaysOn, "ContentSafetyBehavior emits evaluations every turn"),
@@ -114,10 +114,11 @@ public sealed partial class DashboardMetricEmissionTests : IClassFixture<Metrics
 
             // ── Sessions ──
             ["sessions_total"] = (TileStatus.AlwaysOn, "session_started emits every conversation"),
-            ["sessions_active"] = (TileStatus.AlwaysOn, "session_active toggles every session"),
+            ["sessions_runs_active"] = (TileStatus.AlwaysOn, "runs_active toggles around every run"),
+            ["sessions_connections_active"] = (TileStatus.Conditional, "connections_active is hub-only; a bundle run or an AG-UI request has no connection to count"),
             ["sessions_turns_avg"] = (TileStatus.AlwaysOn, "turns_per_conversation emits at conversation end"),
             ["sessions_duration_avg"] = (TileStatus.AlwaysOn, "conversation_duration emits at conversation end"),
-            ["sessions_active_ts"] = (TileStatus.AlwaysOn, "session_active toggles every session"),
+            ["sessions_runs_active_ts"] = (TileStatus.AlwaysOn, "runs_active toggles around every run"),
             ["sessions_turns_ts"] = (TileStatus.AlwaysOn, "turns_total emits every turn (fixed 2026-06-22: removed the doubled _total suffix in the catalog query + the naming contract)"),
 
             // ── RAG (only runs when the agent exercises retrieval/ingestion tools) ──

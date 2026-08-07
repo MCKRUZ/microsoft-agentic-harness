@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.OpenTelemetry.Metrics;
+using Domain.AI.Observability.Models;
 using Domain.AI.Telemetry.Conventions;
 using Microsoft.Extensions.Options;
 using Presentation.AgentHub.Config;
@@ -71,7 +72,7 @@ internal sealed class SessionIdleCleanupService : BackgroundService
             if (_connectionTracker.Untrack(connectionId) is null)
                 continue;
 
-            SessionMetrics.ActiveSessions.Add(-1,
+            OrchestrationMetrics.ConnectionsActive.Add(-1,
                 new TagList { { AgentConventions.Name, info.AgentName } });
 
             if (info.TurnCount > 0)
@@ -82,7 +83,8 @@ internal sealed class SessionIdleCleanupService : BackgroundService
                 OrchestrationMetrics.TurnsPerConversation.Record(info.TurnCount, agentTag);
             }
 
-            await store.EndSessionAsync(info.ObservabilitySessionId, "completed", cancellationToken: ct);
+            await store.EndSessionAsync(
+                info.ObservabilitySessionId, SessionStatus.Completed, cancellationToken: ct);
 
             _logger.LogInformation(
                 "Idle timeout: ended session {SessionId} for agent {AgentName} after {IdleMinutes}m idle.",

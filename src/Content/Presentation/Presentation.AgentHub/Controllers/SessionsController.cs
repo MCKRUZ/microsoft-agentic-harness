@@ -50,7 +50,7 @@ public sealed class SessionsController : ControllerBase
     /// </summary>
     /// <param name="limit">Maximum number of sessions to return (1-200, default 50).</param>
     /// <param name="offset">Number of sessions to skip for pagination (default 0).</param>
-    /// <param name="status">Optional status filter (e.g. "completed", "errored", "active").</param>
+    /// <param name="status">Optional status filter: <c>active</c>, <c>completed</c> or <c>error</c>.</param>
     /// <param name="since">Optional Unix epoch seconds lower bound on started_at.</param>
     /// <param name="until">Optional Unix epoch seconds upper bound on started_at.</param>
     /// <param name="ct">Cancellation token.</param>

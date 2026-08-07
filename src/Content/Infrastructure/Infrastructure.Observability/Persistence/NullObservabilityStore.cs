@@ -19,8 +19,12 @@ public sealed class NullObservabilityStore : IObservabilityStore
 
     /// <inheritdoc />
     public Task EndSessionAsync(
-        Guid sessionId, string status, string? errorMessage,
+        Guid sessionId, SessionStatus status, string? errorMessage,
         CancellationToken cancellationToken = default)
+        => Task.CompletedTask;
+
+    /// <inheritdoc />
+    public Task ResumeSessionAsync(Guid sessionId, CancellationToken cancellationToken = default)
         => Task.CompletedTask;
 
     /// <inheritdoc />

@@ -1,3 +1,4 @@
+using Domain.AI.Observability.Models;
 using Infrastructure.Observability.Persistence;
 using Npgsql;
 
@@ -40,7 +41,8 @@ public sealed class TestDataBuilder
         if (status is "completed" or "error")
         {
             await _store.EndSessionAsync(
-                sessionId, status,
+                sessionId,
+                status == "error" ? SessionStatus.Error : SessionStatus.Completed,
                 status == "error" ? "Test error" : null);
         }
 

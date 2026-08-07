@@ -78,11 +78,12 @@ public class TelemetryPipelineTests : IClassFixture<TelemetryPipelineTests.Telem
         };
 
         // Session metrics
-        SessionMetrics.ActiveSessions.Add(1, tags);
         SessionMetrics.SessionsStarted.Add(1, tags);
         SessionMetrics.SessionCost.Record(0.05, tags);
 
         // Orchestration metrics
+        OrchestrationMetrics.RunsActive.Add(1, tags);
+        OrchestrationMetrics.ConnectionsActive.Add(1, tags);
         OrchestrationMetrics.ConversationDuration.Record(1500.0, tags);
         OrchestrationMetrics.TurnsPerConversation.Record(3, tags);
         OrchestrationMetrics.SubagentSpawns.Add(1, tags);
@@ -177,9 +178,10 @@ public class TelemetryPipelineTests : IClassFixture<TelemetryPipelineTests.Telem
     {
         var metrics = await ScrapeMetrics();
 
-        metrics.Should().Contain(ToPrometheusName("agent_session_active", "updowncounter"));
         metrics.Should().Contain(ToPrometheusName("agent_session_started", "counter"));
         metrics.Should().Contain(ToPrometheusName("agent_session_cost", "histogram_sum"));
+        metrics.Should().Contain(ToPrometheusName("agent_orchestration_runs_active", "updowncounter"));
+        metrics.Should().Contain(ToPrometheusName("agent_orchestration_connections_active", "updowncounter"));
     }
 
     [Fact]

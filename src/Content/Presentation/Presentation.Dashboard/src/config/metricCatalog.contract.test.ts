@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { metricCatalog, getCatalogByCategory } from './metricCatalog';
 
-const OVERVIEW_IDS = ['tokens_per_minute', 'active_sessions', 'cost_today', 'cache_hit_rate', 'safety_violations', 'budget_utilization_pct'];
+const OVERVIEW_IDS = ['tokens_per_minute', 'active_runs', 'cost_today', 'cache_hit_rate', 'safety_violations', 'budget_utilization_pct'];
 const TOKENS_IDS = ['tokens_input_total', 'tokens_output_total', 'tokens_cache_read', 'tokens_cache_write', 'tokens_input_rate', 'tokens_output_rate', 'tokens_by_model', 'tokens_cache_hit_rate_ts'];
 const COST_IDS = ['cost_total', 'cost_rate', 'cost_by_model', 'cost_cache_savings', 'cost_budget_remaining'];
-const SESSIONS_IDS = ['sessions_total', 'sessions_active', 'sessions_turns_avg', 'sessions_duration_avg', 'sessions_active_ts', 'sessions_turns_ts'];
+const SESSIONS_IDS = ['sessions_total', 'sessions_runs_active', 'sessions_connections_active', 'sessions_turns_avg', 'sessions_duration_avg', 'sessions_runs_active_ts', 'sessions_turns_ts'];
 const TOOLS_IDS = ['tools_calls_total', 'tools_errors_total', 'tools_avg_latency', 'tools_result_size', 'tools_calls_by_tool', 'tools_latency_by_tool', 'tools_error_rate'];
 const SAFETY_IDS = ['safety_total', 'safety_blocked', 'safety_checks_total', 'safety_violations_ts', 'safety_by_category', 'safety_block_rate'];
 const RAG_IDS = ['rag_ingestion_total', 'rag_retrieval_total', 'rag_avg_latency', 'rag_chunks_avg', 'rag_ingestion_rate', 'rag_retrieval_latency_ts', 'rag_by_source'];

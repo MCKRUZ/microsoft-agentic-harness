@@ -24,7 +24,7 @@ const TOOL_CALLS_PER_MIN =
 const THROUGHPUT_BY_MODEL =
   'sum by (model) (rate(agentic_harness_agent_tokens_total_sum[5m]) * 60)';
 const CONCURRENCY =
-  'agentic_harness_agent_session_active or vector(0)';
+  'agentic_harness_agent_orchestration_runs_active or vector(0)';
 const SESSIONS_BY_AGENT =
   'sum by (agent_name) (agentic_harness_agent_session_started_total)';
 const TOOLS_BY_NAME =
@@ -32,7 +32,7 @@ const TOOLS_BY_NAME =
 
 export function ActivityTab() {
   const tokensPerMin = useMetric('tokens_per_minute');
-  const activeSessions = useMetric('active_sessions');
+  const activeRuns = useMetric('active_runs');
   const turnsPerMin = usePromQuery(TURNS_PER_MIN);
   const toolCallsPerMin = usePromQuery(TOOL_CALLS_PER_MIN);
   const throughput = usePromQuery(THROUGHPUT_BY_MODEL);
@@ -47,7 +47,7 @@ export function ActivityTab() {
 
   const anyLoading =
     tokensPerMin.isLoading ||
-    activeSessions.isLoading ||
+    activeRuns.isLoading ||
     turnsPerMin.isLoading ||
     toolCallsPerMin.isLoading;
 
@@ -65,12 +65,12 @@ export function ActivityTab() {
   }
 
   const tokVal = latestValue(tokensPerMin.data);
-  const activeVal = latestValue(activeSessions.data);
+  const activeVal = latestValue(activeRuns.data);
   const turnsVal = latestValue(turnsPerMin.data);
   const toolsVal = latestValue(toolCallsPerMin.data);
 
   const tokensDelta = computeDelta(tokensPerMin.data?.series[0]?.dataPoints);
-  const sessionsDelta = computeDelta(activeSessions.data?.series[0]?.dataPoints);
+  const runsDelta = computeDelta(activeRuns.data?.series[0]?.dataPoints);
 
   const agentBars = seriesToBars(
     sessionsByAgent.data?.series ?? [],
@@ -104,12 +104,12 @@ export function ActivityTab() {
           sparklineData={tokensPerMin.data?.series[0]?.dataPoints}
         />
         <KpiCard
-          title="Active Sessions"
-          description="Number of agent sessions currently open. Sessions stay active until explicitly ended or timed out."
+          title="Active Runs"
+          description="Units of agent work executing right now — a background run or a streamed run. Counted up when the run starts and down when it finishes, so it returns to zero when the agent is idle."
           value={formatKpi(activeVal, 'count')}
-          delta={sessionsDelta?.text}
-          trend={sessionsDelta?.trend}
-          sparklineData={activeSessions.data?.series[0]?.dataPoints}
+          delta={runsDelta?.text}
+          trend={runsDelta?.trend}
+          sparklineData={activeRuns.data?.series[0]?.dataPoints}
         />
         <KpiCard
           title="Turns / min"

@@ -188,6 +188,11 @@ public sealed class AgUiRunHandler
         // to prevent.
         using var turnCts = CancellationTokenSource.CreateLinkedTokenSource(ct, lease.LeaseLost);
 
+        // Names the agent this run was counted against, and by being non-null says that it was counted
+        // at all. The gauge is incremented only once the conversation has been read — that is the first
+        // moment the agent name exists — so the finally cannot decrement unconditionally.
+        string? countedAgent = null;
+
         try
         {
             // Re-read now that the turn is exclusive. The record loaded before the lease, and
@@ -214,16 +219,15 @@ public sealed class AgUiRunHandler
             var telemetry = await _telemetryRecorder.BeginAsync(
                 input.ThreadId, callerId, leased.AgentName, leased, turnCts.Token);
 
-            if (telemetry.SessionOpened)
-            {
-                // The gauge, and only the gauge, stays here: this path never ends a session — a
-                // stateless request leaves the conversation's open for the next one — so the rule
-                // differs per transport and the shared recorder deliberately owns none that do.
-                // Read off the recorder rather than re-derived from the record, so the two cannot
-                // disagree about whether a session was just opened.
-                SessionMetrics.ActiveSessions.Add(
-                    1, new TagList { { AgentConventions.Name, leased.AgentName } });
-            }
+            // What this path can honestly count is a run, and it counts every one. It used to increment
+            // the shared active-sessions gauge only when a session was opened, and never decrement it —
+            // there is no moment here that ends a session, because a stateless request leaves the
+            // conversation's open for the next one. So the number it contributed was "conversations
+            // this transport has ever started", rising forever, added to two other transports' answers
+            // to two other questions (issue #289). A run, by contrast, plainly ends: in the finally.
+            countedAgent = leased.AgentName;
+            OrchestrationMetrics.RunsActive.Add(
+                1, new TagList { { AgentConventions.Name, countedAgent } });
 
             _writerAccessor.Writer = writer;
             _writerAccessor.ThreadId = input.ThreadId;
@@ -254,6 +258,12 @@ public sealed class AgUiRunHandler
         }
         finally
         {
+            if (countedAgent is not null)
+            {
+                OrchestrationMetrics.RunsActive.Add(
+                    -1, new TagList { { AgentConventions.Name, countedAgent } });
+            }
+
             _writerAccessor.Writer = null;
             _writerAccessor.ThreadId = null;
             _writerAccessor.CallerId = null;

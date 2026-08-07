@@ -23,12 +23,44 @@ public interface IObservabilityStore
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Marks a session as completed or errored and records its final duration.
+    /// Marks a session as finished and records its final duration.
     /// </summary>
+    /// <param name="sessionId">The session to close. <see cref="Guid.Empty"/> is a no-op.</param>
+    /// <param name="status">
+    /// How it finished. Typed rather than free text: the column is guarded by a CHECK constraint, and
+    /// two callers used to pass words outside it, whereupon the write was rejected and swallowed and
+    /// the session never ended at all. See <see cref="SessionStatus"/>.
+    /// </param>
+    /// <param name="errorMessage">Why it finished this way, when that is worth recording.</param>
+    /// <param name="cancellationToken">Cancels the write.</param>
     Task EndSessionAsync(
         Guid sessionId,
-        string status,
+        SessionStatus status,
         string? errorMessage = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Reopens a session that was previously ended, so a conversation that continues is no longer
+    /// described by a row saying it finished.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A session row is keyed one per conversation, but the decision to end one is taken per
+    /// connection — the hub ends a session when the connection holding it disconnects or switches
+    /// away, which is the only moment it can, yet says nothing about whether the conversation is over.
+    /// Coming back to that conversation continues it, and every turn after that was being written into
+    /// a row marked finished, carrying a past end time and a duration that kept growing (issue #289).
+    /// </para>
+    /// <para>
+    /// This is the counterpart of adoption rather than a transport's rule: whoever adopts an existing
+    /// session is asserting the conversation is live, so the row must say so. Implementations must be
+    /// idempotent — a session that is already open is left exactly as it is, including its start time.
+    /// </para>
+    /// </remarks>
+    /// <param name="sessionId">The session to reopen. <see cref="Guid.Empty"/> is a no-op.</param>
+    /// <param name="cancellationToken">Cancels the write.</param>
+    Task ResumeSessionAsync(
+        Guid sessionId,
         CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -134,7 +166,11 @@ public interface IObservabilityStore
     /// </summary>
     /// <param name="limit">Maximum number of sessions to return (default 50).</param>
     /// <param name="offset">Number of sessions to skip for pagination (default 0).</param>
-    /// <param name="status">Optional status filter (e.g. "completed", "errored").</param>
+    /// <param name="status">
+    /// Optional status filter. Must be one of the values <see cref="SessionStatus"/> can express —
+    /// <c>active</c>, <c>completed</c> or <c>error</c>. Anything else matches nothing; this used to
+    /// name <c>"errored"</c>, which the schema has never accepted and no row has ever held.
+    /// </param>
     /// <param name="since">Optional lower bound on started_at (inclusive).</param>
     /// <param name="until">Optional upper bound on started_at (exclusive).</param>
     /// <param name="cancellationToken">Cancellation token.</param>

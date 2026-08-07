@@ -161,7 +161,7 @@ internal static class MetricCatalog
     [
         // --- Overview ---
         new() { Id = "tokens_per_minute", Title = "Tokens / Minute", Description = "Rate of total token consumption", Query = "rate(agentic_harness_agent_tokens_total_sum[5m]) * 60", ChartType = "stat", Unit = "tokens/min", Category = "overview" },
-        new() { Id = "active_sessions", Title = "Active Sessions", Description = "Sessions with recent activity", Query = "agentic_harness_agent_session_active or vector(0)", ChartType = "stat", Unit = "sessions", Category = "overview" },
+        new() { Id = "active_runs", Title = "Active Runs", Description = "Units of agent work executing right now", Query = "agentic_harness_agent_orchestration_runs_active or vector(0)", ChartType = "stat", Unit = "runs", Category = "overview" },
         new() { Id = "cost_today", Title = "Cost Today", Description = "LLM cost since midnight UTC (provider-reported where available, else estimated)", Query = "sum(agentic_harness_agent_tokens_cost_actual_total) or sum(agentic_harness_agent_tokens_cost_estimated_total) or vector(0)", ChartType = "stat", Unit = "usd", Category = "overview" },
         new() { Id = "cache_hit_rate", Title = "Cache Hit Rate", Description = "Prompt cache hit ratio", Query = "agentic_harness_agent_tokens_cache_hit_rate_sum / agentic_harness_agent_tokens_cache_hit_rate_count or vector(0)", ChartType = "gauge", Unit = "percent", Category = "overview" },
         new() { Id = "safety_violations", Title = "Safety Evaluations", Description = "Content safety evaluations performed", Query = "sum(agentic_harness_agent_safety_evaluations_total) or vector(0)", ChartType = "stat", Unit = "count", Category = "overview" },
@@ -202,10 +202,11 @@ internal static class MetricCatalog
 
         // --- Sessions ---
         new() { Id = "sessions_total", Title = "Total Sessions", Description = "Lifetime session count", Query = "sum(agentic_harness_agent_session_started_total) or vector(0)", ChartType = "stat", Unit = "count", Category = "sessions" },
-        new() { Id = "sessions_active", Title = "Active Sessions", Description = "Currently active sessions", Query = "agentic_harness_agent_session_active or vector(0)", ChartType = "stat", Unit = "count", Category = "sessions" },
+        new() { Id = "sessions_runs_active", Title = "Active Runs", Description = "Units of agent work executing right now", Query = "agentic_harness_agent_orchestration_runs_active or vector(0)", ChartType = "stat", Unit = "count", Category = "sessions" },
+        new() { Id = "sessions_connections_active", Title = "Live Connections", Description = "Interactive connections attached to a conversation", Query = "agentic_harness_agent_orchestration_connections_active or vector(0)", ChartType = "stat", Unit = "count", Category = "sessions" },
         new() { Id = "sessions_turns_avg", Title = "Avg Turns/Session", Description = "Average conversation turns per session", Query = "agentic_harness_agent_orchestration_turns_per_conversation_sum / agentic_harness_agent_orchestration_turns_per_conversation_count or vector(0)", ChartType = "stat", Unit = "turns", Category = "sessions" },
         new() { Id = "sessions_duration_avg", Title = "Avg Duration", Description = "Average session duration", Query = "agentic_harness_agent_orchestration_conversation_duration_sum / agentic_harness_agent_orchestration_conversation_duration_count or vector(0)", ChartType = "stat", Unit = "ms", Category = "sessions" },
-        new() { Id = "sessions_active_ts", Title = "Active Sessions Over Time", Description = "Session concurrency over time", Query = "agentic_harness_agent_session_active or vector(0)", ChartType = "timeseries", Unit = "count", Category = "sessions" },
+        new() { Id = "sessions_runs_active_ts", Title = "Active Runs Over Time", Description = "Run concurrency over time", Query = "agentic_harness_agent_orchestration_runs_active or vector(0)", ChartType = "timeseries", Unit = "count", Category = "sessions" },
         new() { Id = "sessions_turns_ts", Title = "Turns Over Time", Description = "Conversation turns per minute", Query = "rate(agentic_harness_agent_orchestration_turns_total[5m]) * 60", ChartType = "timeseries", Unit = "turns/min", Category = "sessions" },
 
         // --- RAG ---

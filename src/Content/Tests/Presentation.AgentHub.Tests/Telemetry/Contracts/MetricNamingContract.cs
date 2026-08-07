@@ -8,7 +8,6 @@ public static class MetricNamingContract
     public static readonly IReadOnlyList<InstrumentDefinition> AllInstruments = new[]
     {
         // SessionMetrics
-        new InstrumentDefinition("agent.session.active", InstrumentType.UpDownCounter, "{session}"),
         new InstrumentDefinition("agent.session.cost", InstrumentType.Histogram, "{usd}"),
         new InstrumentDefinition("agent.session.started", InstrumentType.Counter, "{session}"),
 
@@ -20,6 +19,8 @@ public static class MetricNamingContract
         new InstrumentDefinition("agent.orchestration.turn_duration", InstrumentType.Histogram, "{ms}"),
         new InstrumentDefinition("agent.orchestration.turns_total", InstrumentType.Counter, "{turn}"),
         new InstrumentDefinition("agent.orchestration.turn_errors", InstrumentType.Counter),
+        new InstrumentDefinition("agent.orchestration.runs_active", InstrumentType.UpDownCounter, "{run}"),
+        new InstrumentDefinition("agent.orchestration.connections_active", InstrumentType.UpDownCounter, "{connection}"),
 
         // TokenUsageMetrics
         new InstrumentDefinition("agent.tokens.input", InstrumentType.Histogram, "{token}"),
