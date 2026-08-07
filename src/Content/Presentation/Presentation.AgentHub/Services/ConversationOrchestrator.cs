@@ -210,7 +210,18 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
 
         // This path is where the string "errored" came from; see SessionStatus for what the database
         // did with it and why the parameter is typed now.
-        var status = exception is null ? SessionStatus.Completed : SessionStatus.Error;
+        //
+        // A cancellation is separated out from the other exceptions rather than lumped in with them.
+        // An OperationCanceledException here means the connection went away deliberately — the client
+        // navigated, the host is shutting down — which is the single most common way a conversation
+        // ends and is not a failure. Counting it as one is not cosmetic: the dashboards' error-rate
+        // panel is literally `status = 'error'`, so every ordinary disconnect inflated it.
+        var status = exception switch
+        {
+            null => SessionStatus.Completed,
+            OperationCanceledException => SessionStatus.Cancelled,
+            _ => SessionStatus.Error,
+        };
 
         // The reason is a stable code, never the exception's own text, and fixing the status above is
         // exactly why that matters now: while the write was being rejected nothing reached the row, so
@@ -218,7 +229,7 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
         // strings, tokens, internal paths — into sessions.error_message, which is read back out and
         // served to clients on the session list. The full exception goes to the log, where it belongs.
         // Same rule, and the same stable-code shape, as RunConversationCommandHandler's error path.
-        if (exception is not null)
+        if (status == SessionStatus.Error)
         {
             _logger.LogError(
                 exception,
@@ -227,12 +238,19 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
                 info.ConversationId);
         }
 
+        var reason = status switch
+        {
+            SessionStatus.Error => "connection.dropped_with_exception",
+            SessionStatus.Cancelled => "connection.cancelled",
+            _ => null,
+        };
+
         try
         {
             await _observabilityStore.EndSessionAsync(
                 info.ObservabilitySessionId,
                 status,
-                exception is null ? null : "connection.dropped_with_exception",
+                reason,
                 ct);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)

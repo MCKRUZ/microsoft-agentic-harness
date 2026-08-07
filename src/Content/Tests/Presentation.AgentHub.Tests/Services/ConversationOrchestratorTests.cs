@@ -609,6 +609,32 @@ public class ConversationOrchestratorTests
     }
 
     [Fact]
+    public async Task HandleDisconnect_WithCancellation_RecordsCancelledRatherThanError()
+    {
+        // A client that navigated away, or a host shutting down, arrives here as an
+        // OperationCanceledException. It is the single most common way a conversation ends and it is
+        // not a failure — but until #301 gave the schema a word for it, every one of them was
+        // recorded as an error. That is not cosmetic: the dashboards' error-rate panel is literally
+        // `status = 'error'`, so ordinary disconnects inflated the number operators watch.
+        var sessionId = Guid.NewGuid();
+        var info = new ActiveConversationInfo("c1", "agent", "user1", DateTimeOffset.UtcNow, 1, sessionId);
+        _connectionTracker.Setup(t => t.Untrack("conn1")).Returns(info);
+
+        var orchestrator = CreateOrchestrator();
+        await orchestrator.HandleDisconnectAsync("conn1", new OperationCanceledException(), CancellationToken.None);
+
+        _obsStore.Verify(
+            s => s.EndSessionAsync(
+                sessionId, SessionStatus.Cancelled, "connection.cancelled", It.IsAny<CancellationToken>()),
+            Times.Once);
+
+        _obsStore.Verify(
+            s => s.EndSessionAsync(
+                It.IsAny<Guid>(), SessionStatus.Error, It.IsAny<string?>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
     public async Task HandleDisconnect_WithException_RecordsAStableCodeRatherThanTheExceptionText()
     {
         // Fixing the status turned this from a swallowed write into a real one, and that is exactly what

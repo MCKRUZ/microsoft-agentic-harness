@@ -41,18 +41,14 @@ jobs:
         with:
           dotnet-version: '10.x'
 
-      # The schema scripts are normally applied by docker-entrypoint-initdb.d, which is
-      # unavailable to GitHub Actions service containers. Apply them in lexical order via
-      # psql once the service is healthy so the observability tables exist before tests run.
-      - name: Apply observability schema
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y postgresql-client
-          for f in Dashboards/init-db/*.sql; do
-            echo "Applying $f"
-            PGPASSWORD=observability psql -h localhost -p 5432 -U observability -d observability -v ON_ERROR_STOP=1 -f "$f"
-          done
-
+      # No schema step. There used to be one here that replayed Dashboards/init-db/*.sql through
+      # psql, and it is the reason #301 stayed invisible for as long as it did: it rebuilt the
+      # schema from scratch on a fresh database every run, so CI could prove a schema change worked
+      # for a new installation while nothing on earth could deliver that change to a database that
+      # already held data.
+      #
+      # PostgresFixture now applies the real migration runner instead, which means every CI run
+      # exercises the actual delivery path rather than a parallel one that only CI ever used.
       - name: Restore
         run: dotnet restore src/AgenticHarness.slnx
 

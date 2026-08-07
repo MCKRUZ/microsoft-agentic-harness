@@ -132,13 +132,16 @@ public class RunConversationCommandHandlerSolutionReviewFixTests
         // Act
         var act = () => _handler.Handle(command, new CancellationToken(canceled: true));
 
-        // Assert — this used to end the session with the literal "cancelled", which the sessions table
-        // does not accept; Postgres rejected the write, the store logged and swallowed it, and every
-        // cancelled run left its session open forever. The distinction survives in the reason instead.
+        // Assert — cancellation is its own terminal state again (#301). It has been three things:
+        // the raw literal "cancelled", which the sessions table rejected, so the store swallowed the
+        // write and the session stayed open forever; then Error, because no schema change could
+        // reach a database that already held data; and now Cancelled, delivered by the migration
+        // runner. Asserting the state and not just the reason is the point — the reason was never the
+        // thing the error-rate panel counted.
         await act.Should().ThrowAsync<OperationCanceledException>();
         _observabilityStore.Verify(
             s => s.EndSessionAsync(
-                SessionId, SessionStatus.Error, "conversation.cancelled", It.IsAny<CancellationToken>()),
+                SessionId, SessionStatus.Cancelled, "conversation.cancelled", It.IsAny<CancellationToken>()),
             Times.Once);
     }
 
@@ -164,7 +167,7 @@ public class RunConversationCommandHandlerSolutionReviewFixTests
         await act.Should().ThrowAsync<OperationCanceledException>();
         _observabilityStore.Verify(
             s => s.EndSessionAsync(
-                SessionId, SessionStatus.Error, It.IsAny<string?>(),
+                SessionId, SessionStatus.Cancelled, It.IsAny<string?>(),
                 It.Is<CancellationToken>(ct => !ct.IsCancellationRequested)),
             Times.Once);
     }

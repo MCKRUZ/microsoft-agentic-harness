@@ -7,7 +7,8 @@ namespace Infrastructure.Observability.Persistence;
 
 /// <summary>
 /// Foresight context-snapshot persistence. Schema lives in
-/// <c>Dashboards/init-db/02-context-snapshots.sql</c>.
+/// <c>Migrations/002_context_snapshots.sql</c>, embedded in this assembly and applied by the
+/// migration runner.
 /// </summary>
 public sealed partial class PostgresObservabilityStore
 {

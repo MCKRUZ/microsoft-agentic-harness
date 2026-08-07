@@ -5,7 +5,8 @@ namespace Infrastructure.Observability.Persistence;
 
 /// <summary>
 /// Foresight loaded-item body persistence — sidecar to <c>context_snapshots</c>.
-/// Schema lives in <c>Dashboards/init-db/03-loaded-bodies.sql</c>.
+/// Schema lives in <c>Migrations/003_loaded_bodies.sql</c>, embedded in this assembly and applied
+/// by the migration runner.
 /// </summary>
 public sealed partial class PostgresObservabilityStore
 {

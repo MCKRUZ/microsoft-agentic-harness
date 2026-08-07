@@ -459,11 +459,12 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 			// is rethrown rather than turned into a failed result: a caller that walked away is not a run
 			// that failed.
 			//
-			// It nevertheless closes as Error. This path is where the string "cancelled" came from; see
-			// SessionStatus for what the database did with it, and why cancellation is carried in the
-			// reason rather than given a state of its own. The visible cost is local and worth naming
-			// here: a cancelled run is counted among the errors on the dashboard.
-			await EndRunSessionAsync(SessionStatus.Error, "conversation.cancelled");
+			// It closes as Cancelled, a state of its own again as of #301. This path is where the
+			// string "cancelled" came from: the schema rejected the word, the store logged and
+			// swallowed the rejected write, and the session was never ended at all. It then spent a
+			// release closing as Error — counted among the failures on every dashboard — because
+			// nothing could deliver a widened constraint to a database that already held data.
+			await EndRunSessionAsync(SessionStatus.Cancelled, "conversation.cancelled");
 			throw;
 		}
 		catch (Exception ex)

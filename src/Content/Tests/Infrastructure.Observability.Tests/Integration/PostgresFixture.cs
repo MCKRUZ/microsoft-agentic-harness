@@ -1,4 +1,6 @@
 using System.Net.Sockets;
+using Infrastructure.Observability.Persistence;
+using Infrastructure.Postgres.Migrations;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Logging;
 using Npgsql;
@@ -58,6 +60,32 @@ public sealed class PostgresFixture : IAsyncLifetime
             // OBSERVABILITY_TEST_CONN — treat as "not provisioned" so local dev runs can skip.
             IsAvailable = false;
         }
+
+        if (IsAvailable) await ApplyMigrationsAsync();
+    }
+
+    /// <summary>
+    /// Brings the test database up to the schema this assembly ships, using the same runner the
+    /// application uses.
+    /// </summary>
+    /// <remarks>
+    /// CI used to do this with a psql loop over <c>Dashboards/init-db/*.sql</c> against a database
+    /// created fresh each run. That is why #301 could hide: the one environment able to prove a
+    /// schema change worked was also the one environment that never had a database old enough to
+    /// need migrating. Going through <see cref="PostgresMigrationRunner"/> means the delivery path
+    /// under test is the delivery path that ships — and, on a developer's long-lived local database,
+    /// it is genuinely the upgrade path rather than the create path.
+    /// </remarks>
+    private async Task ApplyMigrationsAsync()
+    {
+        await using var connection = await DataSource.OpenConnectionAsync();
+
+        var runner = new PostgresMigrationRunner(
+            ObservabilityMigrations.Options,
+            ObservabilityMigrations.Load(),
+            NullLogger.Instance);
+
+        await runner.ApplyAsync(connection);
     }
 
     /// <summary>
@@ -148,18 +176,13 @@ public sealed class PostgresFixture : IAsyncLifetime
                 new NpgsqlParameter { Value = $"{RunTag}%" });
 
             // context_snapshots holds conversation_id by value (no FK) so it is
-            // not cascade-cleaned by the sessions delete above. Best-effort —
-            // table may not exist on older test databases.
-            try
-            {
-                await ExecuteAsync(
-                    "DELETE FROM context_snapshots WHERE conversation_id LIKE $1",
-                    new NpgsqlParameter { Value = $"{RunTag}%" });
-            }
-            catch
-            {
-                // Table doesn't exist on this database — skip.
-            }
+            // not cascade-cleaned by the sessions delete above. The "table may not
+            // exist on older test databases" guard that used to wrap this is gone:
+            // InitializeAsync now migrates the database, so an older one is brought
+            // forward rather than tolerated.
+            await ExecuteAsync(
+                "DELETE FROM context_snapshots WHERE conversation_id LIKE $1",
+                new NpgsqlParameter { Value = $"{RunTag}%" });
         }
         catch
         {

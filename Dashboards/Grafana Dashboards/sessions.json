@@ -464,6 +464,11 @@
                         "color": "blue",
                         "index": 2,
                         "text": "active"
+                      },
+                      "cancelled": {
+                        "color": "orange",
+                        "index": 3,
+                        "text": "cancelled"
                       }
                     }
                   }
@@ -722,9 +727,14 @@
             "selected": false,
             "text": "error",
             "value": "error"
+          },
+          {
+            "selected": false,
+            "text": "cancelled",
+            "value": "cancelled"
           }
         ],
-        "query": "All,active,completed,error",
+        "query": "All,active,completed,error,cancelled",
         "queryValue": "",
         "skipUrlSync": false,
         "type": "custom"

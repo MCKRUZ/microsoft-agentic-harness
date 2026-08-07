@@ -1,21 +1,26 @@
 -- =============================================================================
--- Agentic Harness Observability Schema
--- PostgreSQL 16 — initialized via docker-entrypoint-initdb.d
+-- Agentic Harness Observability Schema — baseline
+-- PostgreSQL 16. Applied by PostgresMigrationRunner, not by the Docker entrypoint.
+--
+-- Every statement here is idempotent, and that is load-bearing rather than
+-- tidiness. A database that predates the migration runner already has these
+-- tables but has no ledger recording them, so the runner will try to apply this
+-- script against it. IF NOT EXISTS makes that a no-op and lets the later
+-- migrations do the real work, which is simpler and more forgiving of drift than
+-- trying to detect an existing installation and mark the baseline as applied.
+--
+-- The grafana_reader role and its grants are NOT here. Creating a role is a
+-- cluster-level operation needing CREATEROLE, which no least-privilege
+-- application account should hold; it lives in Dashboards/postgres-bootstrap/
+-- and runs once when the cluster is created. That file also sets ALTER DEFAULT
+-- PRIVILEGES, so every table created by a migration below is readable by Grafana
+-- without any migration having to grant it.
 -- =============================================================================
-
--- Read-only user for Grafana datasource
-DO $$
-BEGIN
-    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'grafana_reader') THEN
-        CREATE ROLE grafana_reader LOGIN PASSWORD 'grafana_readonly';
-    END IF;
-END
-$$;
 
 -- ---------------------------------------------------------------------------
 -- Sessions: one row per agent conversation
 -- ---------------------------------------------------------------------------
-CREATE TABLE sessions (
+CREATE TABLE IF NOT EXISTS sessions (
     id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     conversation_id       TEXT NOT NULL UNIQUE,
     agent_name            TEXT NOT NULL,
@@ -32,20 +37,24 @@ CREATE TABLE sessions (
     total_cache_write     INTEGER NOT NULL DEFAULT 0,
     total_cost_usd        NUMERIC(10,6) NOT NULL DEFAULT 0,
     cache_hit_rate        NUMERIC(5,4) NOT NULL DEFAULT 0,
-    status                TEXT NOT NULL DEFAULT 'active'
-                          CHECK (status IN ('active','completed','error')),
+    status                TEXT NOT NULL DEFAULT 'active',
     error_message         TEXT,
-    created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    -- Named explicitly. Postgres would name an inline column CHECK for us, but
+    -- the generated name is a convention to be looked up rather than a fact to
+    -- be relied on, and migration 005 has to drop this constraint by name.
+    CONSTRAINT sessions_status_check CHECK (status IN ('active','completed','error'))
 );
 
-CREATE INDEX idx_sessions_started   ON sessions (started_at);
-CREATE INDEX idx_sessions_agent     ON sessions (agent_name, started_at);
-CREATE INDEX idx_sessions_status    ON sessions (status);
+CREATE INDEX IF NOT EXISTS idx_sessions_started   ON sessions (started_at);
+CREATE INDEX IF NOT EXISTS idx_sessions_agent     ON sessions (agent_name, started_at);
+CREATE INDEX IF NOT EXISTS idx_sessions_status    ON sessions (status);
 
 -- ---------------------------------------------------------------------------
 -- Session messages: one row per turn
 -- ---------------------------------------------------------------------------
-CREATE TABLE session_messages (
+CREATE TABLE IF NOT EXISTS session_messages (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     session_id      UUID NOT NULL REFERENCES sessions (id) ON DELETE CASCADE,
     turn_index      INTEGER NOT NULL,
@@ -72,13 +81,13 @@ CREATE TABLE session_messages (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_messages_session ON session_messages (session_id, turn_index);
-CREATE INDEX idx_messages_created ON session_messages (created_at);
+CREATE INDEX IF NOT EXISTS idx_messages_session ON session_messages (session_id, turn_index);
+CREATE INDEX IF NOT EXISTS idx_messages_created ON session_messages (created_at);
 
 -- ---------------------------------------------------------------------------
 -- Tool executions: one row per tool call
 -- ---------------------------------------------------------------------------
-CREATE TABLE tool_executions (
+CREATE TABLE IF NOT EXISTS tool_executions (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     session_id      UUID NOT NULL REFERENCES sessions (id) ON DELETE CASCADE,
     message_id      UUID REFERENCES session_messages (id) ON DELETE SET NULL,
@@ -104,14 +113,14 @@ CREATE TABLE tool_executions (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_tools_session ON tool_executions (session_id);
-CREATE INDEX idx_tools_name    ON tool_executions (tool_name, created_at);
-CREATE INDEX idx_tools_status  ON tool_executions (status) WHERE status != 'success';
+CREATE INDEX IF NOT EXISTS idx_tools_session ON tool_executions (session_id);
+CREATE INDEX IF NOT EXISTS idx_tools_name    ON tool_executions (tool_name, created_at);
+CREATE INDEX IF NOT EXISTS idx_tools_status  ON tool_executions (status) WHERE status != 'success';
 
 -- ---------------------------------------------------------------------------
 -- Content safety evaluations
 -- ---------------------------------------------------------------------------
-CREATE TABLE safety_events (
+CREATE TABLE IF NOT EXISTS safety_events (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     session_id      UUID NOT NULL REFERENCES sessions (id) ON DELETE CASCADE,
     phase           TEXT NOT NULL CHECK (phase IN ('prompt','response')),
@@ -122,13 +131,13 @@ CREATE TABLE safety_events (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_safety_session ON safety_events (session_id);
-CREATE INDEX idx_safety_outcome ON safety_events (outcome) WHERE outcome != 'pass';
+CREATE INDEX IF NOT EXISTS idx_safety_session ON safety_events (session_id);
+CREATE INDEX IF NOT EXISTS idx_safety_outcome ON safety_events (outcome) WHERE outcome != 'pass';
 
 -- ---------------------------------------------------------------------------
 -- Budget configurations
 -- ---------------------------------------------------------------------------
-CREATE TABLE budget_configs (
+CREATE TABLE IF NOT EXISTS budget_configs (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name            TEXT NOT NULL UNIQUE,
     period          TEXT NOT NULL CHECK (period IN ('daily','weekly','monthly')),
@@ -145,7 +154,7 @@ CREATE TABLE budget_configs (
 -- ---------------------------------------------------------------------------
 -- Budget state (current period)
 -- ---------------------------------------------------------------------------
-CREATE TABLE budget_state (
+CREATE TABLE IF NOT EXISTS budget_state (
     config_id       UUID PRIMARY KEY REFERENCES budget_configs (id) ON DELETE CASCADE,
     status          TEXT NOT NULL DEFAULT 'clear'
                     CHECK (status IN ('clear','warning','critical')),
@@ -158,7 +167,7 @@ CREATE TABLE budget_state (
 -- ---------------------------------------------------------------------------
 -- Budget alert transitions (history)
 -- ---------------------------------------------------------------------------
-CREATE TABLE budget_events (
+CREATE TABLE IF NOT EXISTS budget_events (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     config_id       UUID NOT NULL REFERENCES budget_configs (id) ON DELETE CASCADE,
     prev_status     TEXT CHECK (prev_status IN ('clear','warning','critical')),
@@ -168,12 +177,12 @@ CREATE TABLE budget_events (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_budget_events_config ON budget_events (config_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_budget_events_config ON budget_events (config_id, created_at);
 
 -- ---------------------------------------------------------------------------
 -- Audit log
 -- ---------------------------------------------------------------------------
-CREATE TABLE audit_log (
+CREATE TABLE IF NOT EXISTS audit_log (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     operation       TEXT NOT NULL,
     source          TEXT NOT NULL CHECK (source IN ('harness','api','system')),
@@ -182,13 +191,13 @@ CREATE TABLE audit_log (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_audit_created   ON audit_log (created_at);
-CREATE INDEX idx_audit_operation ON audit_log (operation);
+CREATE INDEX IF NOT EXISTS idx_audit_created   ON audit_log (created_at);
+CREATE INDEX IF NOT EXISTS idx_audit_operation ON audit_log (operation);
 
 -- ---------------------------------------------------------------------------
 -- Model pricing reference (seed data)
 -- ---------------------------------------------------------------------------
-CREATE TABLE model_pricing (
+CREATE TABLE IF NOT EXISTS model_pricing (
     model_name              TEXT PRIMARY KEY,
     input_per_million       NUMERIC(10,4) NOT NULL,
     output_per_million      NUMERIC(10,4) NOT NULL,
@@ -211,7 +220,7 @@ ON CONFLICT (model_name) DO NOTHING;
 -- ---------------------------------------------------------------------------
 -- Materialized view: daily cost summary
 -- ---------------------------------------------------------------------------
-CREATE MATERIALIZED VIEW daily_cost_summary AS
+CREATE MATERIALIZED VIEW IF NOT EXISTS daily_cost_summary AS
 SELECT
     DATE_TRUNC('day', started_at)   AS day,
     agent_name,
@@ -228,7 +237,7 @@ FROM sessions
 WHERE ended_at IS NOT NULL
 GROUP BY DATE_TRUNC('day', started_at), agent_name, model;
 
-CREATE UNIQUE INDEX idx_daily_cost ON daily_cost_summary (day, agent_name, model);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_daily_cost ON daily_cost_summary (day, agent_name, model);
 
 -- ---------------------------------------------------------------------------
 -- Seed budget configurations
@@ -247,11 +256,3 @@ INSERT INTO budget_state (config_id, status, current_spend, period_start)
 SELECT id, 'clear', 0, DATE_TRUNC('month', NOW())
 FROM budget_configs WHERE period = 'monthly'
 ON CONFLICT (config_id) DO NOTHING;
-
--- ---------------------------------------------------------------------------
--- Grant read-only access to Grafana user
--- ---------------------------------------------------------------------------
-GRANT CONNECT ON DATABASE observability TO grafana_reader;
-GRANT USAGE ON SCHEMA public TO grafana_reader;
-GRANT SELECT ON ALL TABLES IN SCHEMA public TO grafana_reader;
-ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO grafana_reader;
