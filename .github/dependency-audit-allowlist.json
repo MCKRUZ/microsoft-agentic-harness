@@ -6,5 +6,12 @@
     "passes, so an exception cannot quietly become permanent. The gate also fails on entries that no",
     "longer match a finding, so a fixed package cannot leave its exception behind."
   ],
-  "accepted": []
+  "accepted": [
+    {
+      "package": "js-yaml",
+      "advisory": "GHSA-5p4m-2wfm-xmqj",
+      "reason": "Quadratic CPU consumption resolving !!omap, with no fixed release published. js-yaml is not a dependency of this repo — it arrives transitively through eslint (@eslint/eslintrc) and shadcn (cosmiconfig) in both frontends. Both are build-time tooling: neither reaches the browser bundle, and the only YAML either parses is this repo's own lint and component configuration. Reaching the flaw would require an attacker who can already edit our config files, at which point running an expensive lint is not the interesting thing they can do. Accepted rather than force-resolved because there is nothing to resolve to yet; revisit when eslint or shadcn bump their transitive, or when a patched js-yaml ships. Tracked in #303.",
+      "reviewBy": "2026-11-07"
+    }
+  ]
 }
