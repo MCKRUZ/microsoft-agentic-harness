@@ -1,6 +1,7 @@
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.AI;
 using Application.AI.Common.Services;
+using Application.AI.Common.Services.AI;
 using Application.Common.Exceptions.ExceptionTypes;
 using Application.Core.CQRS.Agents.ExecuteAgentTurn;
 using Domain.AI.Budget;
@@ -57,6 +58,11 @@ public class ConversationOrchestratorTests
             _turnLease,
             _healthTracker.Object,
             _obsStore.Object,
+            // The real recorder over the mocked stores, not a mocked recorder. A mock would make every
+            // assertion below about the recorder's interface rather than about what actually reaches the
+            // observability row — and the defect this replaced was entirely about what reached that row.
+            new ConversationTelemetryRecorder(
+                _obsStore.Object, _store.Object, NullLogger<ConversationTelemetryRecorder>.Instance),
             _connectionTracker.Object,
             _budget.Object,
             Options.Create(_config),
@@ -624,6 +630,102 @@ public class ConversationOrchestratorTests
 
         _obsStore.Verify(s => s.StartSessionAsync("c1", "agent", null, It.IsAny<CancellationToken>()), Times.Once);
         _connectionTracker.Verify(t => t.Track("conn1", It.Is<ActiveConversationInfo>(i => i.ConversationId == "c1")), Times.AtLeastOnce);
+    }
+
+    /// <summary>
+    /// A conversation that already has a session and totals must be continued, not restarted.
+    /// </summary>
+    /// <remarks>
+    /// The defect this replaces (issue #280): the hub opened a session on every conversation switch and
+    /// accumulated totals on a per-<em>connection</em> object that starts at zero. Because the
+    /// observability row is keyed one-per-conversation and written with SET semantics, reconnecting
+    /// restamped the session's start time and then overwrote the conversation's whole rollup with what
+    /// the new connection had spent. Nothing errored; the dashboard just showed a long conversation as
+    /// a short one.
+    /// </remarks>
+    [Fact]
+    public async Task SendMessage_ReconnectingToAConversationWithHistory_ContinuesItsTotals()
+    {
+        var existingSession = Guid.NewGuid();
+        var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, [])
+        {
+            ObservabilitySessionId = existingSession,
+            Telemetry = new TelemetryAccumulator(
+                TurnCount: 7, ToolCallCount: 3, InputTokens: 1_000, OutputTokens: 500,
+                CacheRead: 200, CacheWrite: 100, CostUsd: 1.25m),
+        };
+        _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<ConversationMessage>());
+
+        // A brand-new connection, exactly as after a reconnect: it knows nothing about the conversation.
+        _connectionTracker.Setup(t => t.Get("conn-fresh")).Returns((ActiveConversationInfo?)null);
+
+        _mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new AgentTurnResult
+            {
+                Success = true, Response = "Hi", UpdatedHistory = [],
+                InputTokens = 10, OutputTokens = 20, CostUsd = 0.5m,
+            });
+
+        var orchestrator = CreateOrchestrator();
+        await orchestrator.SendMessageAsync(
+            "conn-fresh", "c1", Guid.NewGuid(), "Hello", "user1", null, CancellationToken.None);
+
+        _obsStore.Verify(
+            s => s.StartSessionAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()),
+            Times.Never,
+            "the conversation already has a session; opening a second restamps its start time and every "
+            + "duration derived from it");
+
+        _obsStore.Verify(
+            s => s.UpdateSessionMetricsAsync(
+                existingSession,
+                8,              // turn count: continued from 7, not restarted at 1
+                3,              // tool calls carried forward
+                0,
+                1_010,          // input tokens: 1,000 + this turn's 10
+                520,
+                200,
+                100,
+                1.75m,
+                It.IsAny<decimal>(),
+                It.IsAny<string?>(),
+                It.IsAny<CancellationToken>()),
+            Times.Once,
+            "the row is written with SET semantics, so anything but the conversation's cumulative total "
+            + "silently replaces its history with one connection's share of it");
+    }
+
+    /// <summary>
+    /// The turn number a reconnected client sees continues the conversation's sequence.
+    /// </summary>
+    /// <remarks>
+    /// It used to come from the message count, which advances by two per turn — so the same conversation
+    /// produced one sequence over the hub and a different one over the bundle path, in one key space.
+    /// </remarks>
+    [Fact]
+    public async Task SendMessage_ConversationWithHistory_NumbersTheTurnFromTheConversationsTurnCount()
+    {
+        var record = new ConversationRecord("c1", "agent", "user1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, [])
+        {
+            ObservabilitySessionId = Guid.NewGuid(),
+            Telemetry = TelemetryAccumulator.Zero with { TurnCount = 4 },
+        };
+        _store.Setup(s => s.GetAsync("c1", "user1", It.IsAny<CancellationToken>())).ReturnsAsync(record);
+        _store.Setup(s => s.GetHistoryForDispatch("c1", "user1", 20, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<ConversationMessage>());
+        _connectionTracker.Setup(t => t.Get("conn1")).Returns((ActiveConversationInfo?)null);
+
+        ExecuteAgentTurnCommand? dispatched = null;
+        _mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
+            .Callback<object, CancellationToken>((c, _) => dispatched = (ExecuteAgentTurnCommand)c)
+            .ReturnsAsync(new AgentTurnResult { Success = true, Response = "Hi", UpdatedHistory = [] });
+
+        var orchestrator = CreateOrchestrator();
+        await orchestrator.SendMessageAsync("conn1", "c1", Guid.NewGuid(), "Hello", "user1", null, CancellationToken.None);
+
+        dispatched!.TurnNumber.Should().Be(5);
     }
 
     // ── Streaming ────────────────────────────────────────────────────────

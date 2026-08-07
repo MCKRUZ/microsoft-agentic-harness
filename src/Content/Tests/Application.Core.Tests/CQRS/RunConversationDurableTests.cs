@@ -4,6 +4,7 @@ using Application.AI.Common.Models.Conversations;
 using Application.Common.Exceptions.ExceptionTypes;
 using Application.Core.CQRS.Agents.ExecuteAgentTurn;
 using Application.Core.CQRS.Agents.RunConversation;
+using Application.AI.Common.Services.AI;
 using Domain.AI.Budget;
 using Domain.Common.Config.AI.Conversations;
 using FluentAssertions;
@@ -71,6 +72,11 @@ public sealed class RunConversationDurableTests
             new Mock<IAgentConversationCache>().Object,
             _budget.Object,
             _observability.Object,
+            // The real recorder over this fixture's own stores. A mocked recorder would turn every
+            // assertion below — adopt-or-open, cumulative totals, turn numbering — into an assertion
+            // about an interface rather than about what reaches the observability row.
+            new ConversationTelemetryRecorder(
+                _observability.Object, _store, NullLogger<ConversationTelemetryRecorder>.Instance),
             _store,
             _lease,
             Options.Create(new ConversationsConfig { MaxHistoryMessages = maxHistoryMessages }),

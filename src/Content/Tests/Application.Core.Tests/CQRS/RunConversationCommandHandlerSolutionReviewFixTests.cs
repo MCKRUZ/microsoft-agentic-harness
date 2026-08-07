@@ -2,6 +2,7 @@ using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.AI;
 using Application.Core.CQRS.Agents.ExecuteAgentTurn;
 using Application.Core.CQRS.Agents.RunConversation;
+using Application.AI.Common.Services.AI;
 using Domain.AI.Budget;
 using Domain.Common.Config.AI.Conversations;
 using FluentAssertions;
@@ -44,12 +45,18 @@ public class RunConversationCommandHandlerSolutionReviewFixTests
 
         // Strict and unstubbed: these tests run self-contained conversations, so any call to the
         // transcript store or the turn lease means the handler took the durable path by mistake.
+        var strictStore = new Mock<IConversationStore>(MockBehavior.Strict).Object;
+
         _handler = new RunConversationCommandHandler(
             _mediator.Object,
             _agentCache.Object,
             budget.Object,
             _observabilityStore.Object,
-            new Mock<IConversationStore>(MockBehavior.Strict).Object,
+            // The strict store is shared with the recorder deliberately: a self-contained run must not
+            // touch it, and the recorder is now the thing that would.
+            new ConversationTelemetryRecorder(
+                _observabilityStore.Object, strictStore, NullLogger<ConversationTelemetryRecorder>.Instance),
+            strictStore,
             new Mock<IConversationTurnLease>(MockBehavior.Strict).Object,
             Options.Create(new ConversationsConfig()),
             NullLogger<RunConversationCommandHandler>.Instance);

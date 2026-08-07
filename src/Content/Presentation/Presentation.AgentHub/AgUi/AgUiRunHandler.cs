@@ -30,6 +30,7 @@ public sealed class AgUiRunHandler
     private readonly IMediator _mediator;
     private readonly IConversationStore _conversationStore;
     private readonly IObservabilityStore _observabilityStore;
+    private readonly IConversationTelemetryRecorder _telemetryRecorder;
     private readonly IConversationTurnLease _turnLease;
     private readonly IAgUiEventWriterAccessor _writerAccessor;
     private readonly IConversationBudgetTracker _conversationBudget;
@@ -43,6 +44,7 @@ public sealed class AgUiRunHandler
         IMediator mediator,
         IConversationStore conversationStore,
         IObservabilityStore observabilityStore,
+        IConversationTelemetryRecorder telemetryRecorder,
         IConversationTurnLease turnLease,
         IAgUiEventWriterAccessor writerAccessor,
         IConversationBudgetTracker conversationBudget,
@@ -52,6 +54,7 @@ public sealed class AgUiRunHandler
         _mediator = mediator;
         _conversationStore = conversationStore;
         _observabilityStore = observabilityStore;
+        _telemetryRecorder = telemetryRecorder;
         _turnLease = turnLease;
         _writerAccessor = writerAccessor;
         _conversationBudget = conversationBudget;
@@ -130,22 +133,6 @@ public sealed class AgUiRunHandler
             return;
         }
 
-        var observabilitySessionId = record.ObservabilitySessionId ?? Guid.Empty;
-        if (observabilitySessionId == Guid.Empty)
-        {
-            var agentTag = new KeyValuePair<string, object?>(AgentConventions.Name, record.AgentName);
-            SessionMetrics.SessionsStarted.Add(1, agentTag);
-            SessionMetrics.ActiveSessions.Add(1, new TagList { { AgentConventions.Name, record.AgentName } });
-            UserActivityMetrics.SessionsStarted.Add(1,
-                new KeyValuePair<string, object?>(UserConventions.UserId, callerId));
-
-            observabilitySessionId = await _observabilityStore.StartSessionAsync(
-                input.ThreadId, record.AgentName, model: null, ct);
-
-            await _conversationStore.UpdateTelemetryAsync(
-                input.ThreadId, callerId, observabilitySessionId, TelemetryAccumulator.Zero, ct);
-        }
-
         Activity.Current?.AddBaggage(UserConventions.UserId, callerId);
 
         IConversationTurnLeaseHandle lease;
@@ -169,7 +156,7 @@ public sealed class AgUiRunHandler
 
         await using (lease)
         {
-            await RunLeasedTurnAsync(input, writer, lease, userMessage, callerId, observabilitySessionId, ct);
+            await RunLeasedTurnAsync(input, writer, lease, userMessage, callerId, ct);
         }
     }
 
@@ -194,7 +181,6 @@ public sealed class AgUiRunHandler
         IConversationTurnLeaseHandle lease,
         AgUiMessage userMessage,
         string callerId,
-        Guid observabilitySessionId,
         CancellationToken ct)
     {
         // Losing the lease mid-turn has to stop the turn. Another host now holds it, so anything
@@ -221,11 +207,29 @@ public sealed class AgUiRunHandler
                 return;
             }
 
+            // Telemetry is established from the LEASED record, not the pre-lease snapshot. The turn
+            // number and the running totals both come from it, and the turn this one waited behind may
+            // have advanced them — numbering from the stale copy would collide with a turn already
+            // written.
+            var telemetry = await _telemetryRecorder.BeginAsync(
+                input.ThreadId, callerId, leased.AgentName, leased, turnCts.Token);
+
+            if (telemetry.SessionOpened)
+            {
+                // The gauge, and only the gauge, stays here: this path never ends a session — a
+                // stateless request leaves the conversation's open for the next one — so the rule
+                // differs per transport and the shared recorder deliberately owns none that do.
+                // Read off the recorder rather than re-derived from the record, so the two cannot
+                // disagree about whether a session was just opened.
+                SessionMetrics.ActiveSessions.Add(
+                    1, new TagList { { AgentConventions.Name, leased.AgentName } });
+            }
+
             _writerAccessor.Writer = writer;
             _writerAccessor.ThreadId = input.ThreadId;
             _writerAccessor.CallerId = callerId;
             await ExecuteRunAsync(
-                input, writer, leased, userMessage, callerId, observabilitySessionId, turnCts.Token);
+                input, writer, leased, userMessage, callerId, telemetry, turnCts.Token);
         }
         catch (OperationCanceledException)
         {
@@ -262,7 +266,7 @@ public sealed class AgUiRunHandler
         ConversationRecord record,
         AgUiMessage userMessage,
         string callerId,
-        Guid observabilitySessionId,
+        ConversationTelemetryState telemetry,
         CancellationToken ct)
     {
         var userMessageText = userMessage.Content!;
@@ -288,7 +292,7 @@ public sealed class AgUiRunHandler
         // conversation from the same counter (issue #255). Message count advances two per exchange, so
         // it produced 1, 3, 5… here against 1, 2, 3… there — two writers interleaving into one key
         // space, overwriting each other's turns on any conversation driven from both.
-        var turnNumber = (record.Telemetry?.TurnCount ?? 0) + 1;
+        var turnNumber = telemetry.NextTurnNumber;
 
         // Conversation-lifetime budget gate: decline gracefully (no LLM dispatch) when the
         // conversation has exhausted its cumulative ceiling, emitting the explanatory message as a
@@ -310,7 +314,7 @@ public sealed class AgUiRunHandler
             DeploymentOverride = record.Settings?.DeploymentName,
             Temperature = record.Settings?.Temperature,
             SystemPromptOverride = record.Settings?.SystemPromptOverride,
-            ObservabilitySessionId = observabilitySessionId,
+            ObservabilitySessionId = telemetry.SessionId,
         };
 
         AgentTurnResult result;
@@ -365,30 +369,15 @@ public sealed class AgUiRunHandler
         await _conversationBudget.RecordUsageAsync(
             input.ThreadId, result.InputTokens + result.OutputTokens, ct);
 
-        var previousTelemetry = record.Telemetry ?? TelemetryAccumulator.Zero;
-        var updatedTelemetry = previousTelemetry.Add(
-            result.InputTokens, result.OutputTokens,
-            result.CacheRead, result.CacheWrite,
-            result.CostUsd, result.ToolsInvoked.Count);
-
-        try
-        {
-            await _observabilityStore.UpdateSessionMetricsAsync(
-                observabilitySessionId,
-                updatedTelemetry.TurnCount, updatedTelemetry.ToolCallCount, subagentCount: 0,
-                updatedTelemetry.InputTokens, updatedTelemetry.OutputTokens,
-                updatedTelemetry.CacheRead, updatedTelemetry.CacheWrite,
-                updatedTelemetry.CostUsd,
-                Math.Round(updatedTelemetry.CacheHitRate, 4),
-                result.Model, ct);
-
-            await _conversationStore.UpdateTelemetryAsync(
-                input.ThreadId, callerId, observabilitySessionId, updatedTelemetry, ct);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(ex, "AG-UI run {RunId}: failed to persist session metrics.", input.RunId);
-        }
+        // One call for what used to be an accumulate, a twelve-argument store write, a second store
+        // write and a swallow — spelled out identically in three files, and drifted in four ways
+        // between them (issue #280).
+        await _telemetryRecorder.RecordTurnAsync(
+            telemetry,
+            new ConversationTurnTelemetry(
+                result.InputTokens, result.OutputTokens, result.CacheRead, result.CacheWrite,
+                result.CostUsd, result.ToolsInvoked.Count, result.Model),
+            ct);
 
         // Stream and persist the assistant response under a single stable id. The client
         // references this id (via TEXT_MESSAGE_START) for retry-from-message, so the streamed

@@ -14,6 +14,7 @@ using Application.AI.Common.Interfaces.Skills;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.MediatRBehaviors;
 using Application.AI.Common.OpenTelemetry;
+using Application.AI.Common.Services.AI;
 using Application.AI.Common.Services.Agent;
 using Application.AI.Common.Services.Context;
 using Application.AI.Common.Services.Sandbox;
@@ -76,6 +77,13 @@ public static class DependencyInjection
         // CQRS surface so handlers actually wire into the pipeline at runtime.
         services.AddMediatR(cfg => cfg.RegisterServicesFromAssembly(assembly));
         services.AddValidatorsFromAssembly(assembly);
+
+        // The one writer of a conversation's telemetry rollup, shared by every transport that runs a
+        // turn (issue #280). Registered here, in the assembly that owns the type and both store
+        // interfaces it needs, rather than beside the observability implementation: three consumers in
+        // three projects depend on it, and a host that wired the CQRS layer without the observability
+        // one would otherwise fail to construct its conversation handler at all.
+        services.AddSingleton<IConversationTelemetryRecorder, ConversationTelemetryRecorder>();
 
         // Agent-specific pipeline behaviors — registered before Application.Common
         // behaviors so they wrap as the outermost layer
