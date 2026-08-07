@@ -3,6 +3,7 @@ using Application.AI.Common.Interfaces.AI;
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Planner;
+using Application.AI.Common.Services.Governance;
 using Application.Core.CQRS.Agents.RunConversation;
 using Domain.AI.Governance;
 using Domain.AI.Planner;
@@ -63,6 +64,7 @@ public sealed class LlmCallStepExecutor : IPlanStepExecutor
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly IPlanProgressNotifier _notifier;
     private readonly IToolInvocationGovernor _toolInvocationGovernor;
+    private readonly IToolCallObserverChain _observers;
     private readonly IConversationBudgetTracker _conversationBudget;
     private readonly IAgentExecutionContext _agentContext;
     private readonly PlanExecutionContext _executionContext;
@@ -72,6 +74,7 @@ public sealed class LlmCallStepExecutor : IPlanStepExecutor
     /// <param name="scopeFactory">Creates the per-step scope the conversation is dispatched in.</param>
     /// <param name="notifier">Plan progress notifier.</param>
     /// <param name="toolInvocationGovernor">Authorizes inference against the ambient capability envelope.</param>
+    /// <param name="observers">The host's own tool-call rules, consulted after the governor allows the step.</param>
     /// <param name="conversationBudget">Lifetime token budget shared across the plan run's inference.</param>
     /// <param name="agentContext">Supplies the run's conversation identity for budget keying.</param>
     /// <param name="executionContext">Current plan execution context.</param>
@@ -80,6 +83,7 @@ public sealed class LlmCallStepExecutor : IPlanStepExecutor
         IServiceScopeFactory scopeFactory,
         IPlanProgressNotifier notifier,
         IToolInvocationGovernor toolInvocationGovernor,
+        IToolCallObserverChain observers,
         IConversationBudgetTracker conversationBudget,
         IAgentExecutionContext agentContext,
         PlanExecutionContext executionContext,
@@ -88,6 +92,7 @@ public sealed class LlmCallStepExecutor : IPlanStepExecutor
         _scopeFactory = scopeFactory;
         _notifier = notifier;
         _toolInvocationGovernor = toolInvocationGovernor;
+        _observers = observers;
         _conversationBudget = conversationBudget;
         _agentContext = agentContext;
         _executionContext = executionContext;
@@ -208,7 +213,8 @@ public sealed class LlmCallStepExecutor : IPlanStepExecutor
     /// </summary>
     private async Task<StepExecutionResult?> AuthorizeAsync(PlanStep step, CancellationToken ct)
     {
-        var decision = await _toolInvocationGovernor.AuthorizeAsync(PlanCapabilities.LlmCall, ct);
+        var decision = await _toolInvocationGovernor
+            .AuthorizeWithObserversAsync(_observers, PlanCapabilities.LlmCall, arguments: null, ct);
         if (decision.IsAllowed)
             return null;
 

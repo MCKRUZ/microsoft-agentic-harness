@@ -129,6 +129,12 @@ public static class DependencyInjection
         // and records the per-turn governance trace. Scoped: one per agent turn.
         services.AddScoped<Interfaces.Governance.IToolInvocationGovernor, Services.Governance.ToolInvocationGovernor>();
 
+        // Human approval routing for the governor's "requires approval" verdict (opt-in via
+        // GovernanceConfig.ToolApproval.Enabled, additionally gated on Escalation.Enabled). Without
+        // this the verdict was recorded and the call blocked — nobody was ever asked. Scoped to match
+        // the governor that consults it.
+        services.AddScoped<Interfaces.Governance.IToolApprovalRouter, Services.Governance.EscalationToolApprovalRouter>();
+
         // Deterministic spin / no-progress guard for the agent's live tool-call path (opt-in via
         // GovernanceConfig.ProgressGuard.Enabled). Consulted at the same chokepoint as the governor;
         // breaks the loop when the agent repeats an identical call or makes no progress. Scoped: one
@@ -142,6 +148,14 @@ public static class DependencyInjection
         // layer — the file-system reference resolver ships here; consumers register more for their tools.
         services.AddScoped<Interfaces.Governance.IToolClassificationGate, Services.Governance.DefaultToolClassificationGate>();
         services.AddSingleton<Interfaces.Governance.IAssetReferenceResolver, Services.Governance.FileSystemAssetReferenceResolver>();
+
+        // Consumer-authored tool-call observers. The harness registers NO IToolCallObserver
+        // implementations — registration is the opt-in, so the default composition resolves an empty
+        // chain that the chokepoint skips outright. Consumers add their own domain rules ("never wire
+        // over 10k") by registering IToolCallObserver in their host. The chain itself is always
+        // registered so the turn handler can depend on it unconditionally. Scoped: reads the per-turn
+        // agent identity and shares the approval router's lifetime.
+        services.AddScoped<Interfaces.Governance.IToolCallObserverChain, Services.Governance.ToolCallObserverChain>();
 
         // AI telemetry configurator — registers AI SDK OTel sources and processors
         services.AddSingleton<ITelemetryConfigurator, AiTelemetryConfigurator>();

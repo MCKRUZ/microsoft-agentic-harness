@@ -37,6 +37,11 @@ public sealed class ToolInvocationGovernorEnvelopeTests
     private readonly Mock<IGovernancePolicyEngine> _policyEngine = new();
     private readonly Mock<IDenialTracker> _denialTracker = new();
     private readonly Mock<ICapabilityEnforcer> _capabilities = new();
+
+    // Approval routing off — a bundle run's envelope decides tool access, and these tests assert the
+    // envelope's verdict survives, not what a human would say about it.
+    private readonly Mock<IToolApprovalRouter> _approvalRouter = new();
+
     private readonly IToolRiskClassifier _riskClassifier =
         Mock.Of<IToolRiskClassifier>(c => c.Classify(It.IsAny<string>()) == new ToolRiskProfile(BlastRadius.Low, true));
 
@@ -57,11 +62,15 @@ public sealed class ToolInvocationGovernorEnvelopeTests
                 It.IsAny<IReadOnlyList<string>?>(), It.IsAny<IReadOnlyList<string>?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result.Success());
         _policyEngine.SetupGet(x => x.HasPolicies).Returns(false);
+        _approvalRouter
+            .Setup(x => x.RequestApprovalAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
+                It.IsAny<BlastRadius>(), It.IsAny<IReadOnlyDictionary<string, object?>?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ToolApprovalResult.NotRouted("tool approval routing is disabled"));
     }
 
     private ToolInvocationGovernor Build() => new(
         _context.Object, _permissions.Object, _riskClassifier, _autonomy.Object, _policyEngine.Object,
-        Mock.Of<IGovernanceAuditService>(), _denialTracker.Object, _capabilities.Object,
+        Mock.Of<IGovernanceAuditService>(), _denialTracker.Object, _capabilities.Object, _approvalRouter.Object,
         Mock.Of<IOptionsMonitor<GovernanceConfig>>(m => m.CurrentValue == _governanceOff),
         Mock.Of<IOptionsMonitor<PermissionsConfig>>(m => m.CurrentValue == _permissionsConfig),
         Mock.Of<IOptionsMonitor<SandboxConfig>>(m => m.CurrentValue == _sandbox),

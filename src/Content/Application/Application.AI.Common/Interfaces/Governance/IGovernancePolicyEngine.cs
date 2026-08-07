@@ -13,9 +13,13 @@ public interface IGovernancePolicyEngine
     /// </summary>
     /// <param name="agentId">The agent requesting the action.</param>
     /// <param name="toolName">The tool being invoked.</param>
-    /// <param name="arguments">Optional tool arguments for context-aware policy evaluation.</param>
+    /// <param name="arguments">
+    /// Optional tool arguments for context-aware policy evaluation. A rule conditioned on an argument
+    /// value can only match when the caller forwards them, so a call site that has the arguments and
+    /// omits them silently disables every argument-conditioned rule the operator authored.
+    /// </param>
     /// <returns>A governance decision indicating whether the action is allowed.</returns>
-    GovernanceDecision EvaluateToolCall(string agentId, string toolName, IReadOnlyDictionary<string, object>? arguments = null);
+    GovernanceDecision EvaluateToolCall(string agentId, string toolName, IReadOnlyDictionary<string, object?>? arguments = null);
 
     /// <summary>
     /// Loads a YAML policy file into the engine at runtime.

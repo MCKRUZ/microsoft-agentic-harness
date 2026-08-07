@@ -181,6 +181,13 @@ public sealed class SubPlanEnvelopeConfinementTests
             m => m.CurrentValue == new PermissionsConfig()));
         services.AddSingleton(Mock.Of<IOptionsMonitor<SandboxConfig>>(
             m => m.CurrentValue == new SandboxConfig()));
+        // Approval routing is not what these tests exercise — they assert an envelope's deny survives
+        // into a sub-plan. A router that never routes keeps the governor's block the envelope's own.
+        services.AddSingleton(Mock.Of<IToolApprovalRouter>(r =>
+            r.RequestApprovalAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
+                It.IsAny<Domain.AI.Changes.BlastRadius>(), It.IsAny<IReadOnlyDictionary<string, object?>?>(),
+                It.IsAny<CancellationToken>())
+            == new ValueTask<ToolApprovalResult>(ToolApprovalResult.NotRouted("routing disabled"))));
         services.AddScoped<IToolInvocationGovernor, ToolInvocationGovernor>();
         services.AddScoped<IPlanExecutor, GovernorProbePlanExecutor>();
 

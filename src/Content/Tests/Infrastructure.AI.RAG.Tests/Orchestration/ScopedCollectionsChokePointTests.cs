@@ -245,6 +245,7 @@ public sealed class ScopedCollectionsChokePointTests
                 g.AuthorizeAsync(It.IsAny<string>(), It.IsAny<CancellationToken>())
                     == ValueTask.FromResult(
                         Application.AI.Common.Interfaces.Governance.ToolInvocationDecision.Allow())),
+            Mock.Of<Application.AI.Common.Interfaces.Governance.IToolCallObserverChain>(),
             new PlanExecutionContext(),
             Mock.Of<ILogger<RetrievalPlanStepExecutor>>());
 

@@ -33,6 +33,12 @@ public sealed class ToolInvocationGovernorTests
     private readonly Mock<IGovernancePolicyEngine> _policyEngine = new();
     private readonly Mock<IDenialTracker> _denialTracker = new();
     private readonly Mock<ICapabilityEnforcer> _capabilities = new();
+
+    // Approval routing off, which is the shipped default and the behaviour every test in this class
+    // predates: an approval verdict blocks without asking anyone. Tests that exercise routing set
+    // their own expectation on this mock.
+    private readonly Mock<IToolApprovalRouter> _approvalRouter = new();
+
     private readonly IToolRiskClassifier _riskClassifier =
         Mock.Of<IToolRiskClassifier>(c => c.Classify(It.IsAny<string>()) == new ToolRiskProfile(BlastRadius.Low, true));
 
@@ -52,9 +58,19 @@ public sealed class ToolInvocationGovernorTests
                 It.IsAny<IReadOnlyList<string>?>(), It.IsAny<IReadOnlyList<string>?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result.Success());
         _policyEngine.SetupGet(x => x.HasPolicies).Returns(false);
+        _approvalRouter
+            .Setup(x => x.RequestApprovalAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
+                It.IsAny<BlastRadius>(), It.IsAny<IReadOnlyDictionary<string, object?>?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ToolApprovalResult.NotRouted("tool approval routing is disabled"));
     }
 
-    private ToolInvocationGovernor Build() => new(
+    /// <summary>
+    /// Builds the governor under test. Pass <paramref name="governance"/> to override the default
+    /// config — the only thing the per-test constructions ever varied, which is why they were folded
+    /// back into this helper: each was an 8-line copy that had to be edited whenever the constructor
+    /// gained a parameter.
+    /// </summary>
+    private ToolInvocationGovernor Build(GovernanceConfig? governance = null) => new(
         _context.Object,
         _permissions.Object,
         _riskClassifier,
@@ -63,7 +79,8 @@ public sealed class ToolInvocationGovernorTests
         Mock.Of<IGovernanceAuditService>(),
         _denialTracker.Object,
         _capabilities.Object,
-        Mock.Of<IOptionsMonitor<GovernanceConfig>>(m => m.CurrentValue == _governance),
+        _approvalRouter.Object,
+        Mock.Of<IOptionsMonitor<GovernanceConfig>>(m => m.CurrentValue == (governance ?? _governance)),
         Mock.Of<IOptionsMonitor<PermissionsConfig>>(m => m.CurrentValue == _permissionsConfig),
         Mock.Of<IOptionsMonitor<SandboxConfig>>(m => m.CurrentValue == _sandbox),
         NullLogger<ToolInvocationGovernor>.Instance);
@@ -72,13 +89,7 @@ public sealed class ToolInvocationGovernorTests
     public async Task AuthorizeAsync_EnforcementDisabled_AllowsAndDoesNotEvaluate()
     {
         var governance = new GovernanceConfig { EnforceToolInvocation = false };
-        var governor = new ToolInvocationGovernor(
-            _context.Object, _permissions.Object, _riskClassifier, _autonomy.Object, _policyEngine.Object,
-            Mock.Of<IGovernanceAuditService>(), _denialTracker.Object, _capabilities.Object,
-            Mock.Of<IOptionsMonitor<GovernanceConfig>>(m => m.CurrentValue == governance),
-            Mock.Of<IOptionsMonitor<PermissionsConfig>>(m => m.CurrentValue == _permissionsConfig),
-            Mock.Of<IOptionsMonitor<SandboxConfig>>(m => m.CurrentValue == _sandbox),
-            NullLogger<ToolInvocationGovernor>.Instance);
+        var governor = Build(governance);
 
         var decision = await governor.AuthorizeAsync(Tool, CancellationToken.None);
 
@@ -219,20 +230,275 @@ public sealed class ToolInvocationGovernorTests
         var governance = new GovernanceConfig { EnforceToolInvocation = true, Enabled = true, EnableAudit = true };
         _policyEngine.SetupGet(x => x.HasPolicies).Returns(true);
         _policyEngine
-            .Setup(x => x.EvaluateToolCall(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<IReadOnlyDictionary<string, object>?>()))
+            .Setup(x => x.EvaluateToolCall(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<IReadOnlyDictionary<string, object?>?>()))
             .Returns(GovernanceDecision.Denied("rule-7", "default-policy", "blocked by policy"));
 
-        var governor = new ToolInvocationGovernor(
-            _context.Object, _permissions.Object, _riskClassifier, _autonomy.Object, _policyEngine.Object,
-            Mock.Of<IGovernanceAuditService>(), _denialTracker.Object, _capabilities.Object,
-            Mock.Of<IOptionsMonitor<GovernanceConfig>>(m => m.CurrentValue == governance),
-            Mock.Of<IOptionsMonitor<PermissionsConfig>>(m => m.CurrentValue == _permissionsConfig),
-            Mock.Of<IOptionsMonitor<SandboxConfig>>(m => m.CurrentValue == _sandbox),
-            NullLogger<ToolInvocationGovernor>.Instance);
+        var governor = Build(governance);
 
         var decision = await governor.AuthorizeAsync(Tool, CancellationToken.None);
 
         Assert.False(decision.IsAllowed);
         Assert.Equal(ToolDecisionOutcome.Denied, Assert.Single(governor.GetTrace().ToolDecisions).Outcome);
+    }
+
+    [Fact]
+    public async Task AuthorizeAsync_ForwardsCallArgumentsToThePolicyEngine()
+    {
+        // The policy engine builds its rule-evaluation context out of these, so a rule conditioned on
+        // an argument value ("deny sql_query where database == 'prod'") can only ever match when they
+        // are supplied. Passing the tool name alone did not make such a rule deny-by-default — it made
+        // it unmatchable, so an operator's rule loaded, reported as active, and silently never fired.
+        IReadOnlyDictionary<string, object?>? seen = null;
+        var governance = new GovernanceConfig { EnforceToolInvocation = true, Enabled = true };
+        _policyEngine.SetupGet(x => x.HasPolicies).Returns(true);
+        _policyEngine
+            .Setup(x => x.EvaluateToolCall(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<IReadOnlyDictionary<string, object?>?>()))
+            .Callback<string, string, IReadOnlyDictionary<string, object?>?>((_, _, args) => seen = args)
+            .Returns(GovernanceDecision.Allowed());
+
+        var governor = Build(governance);
+
+        var arguments = new Dictionary<string, object?> { ["database"] = "prod" };
+        await governor.AuthorizeAsync(Tool, CancellationToken.None, arguments);
+
+        Assert.NotNull(seen);
+        Assert.Equal("prod", seen!["database"]);
+    }
+
+    private void RouterAnswers(ToolApprovalResult result) =>
+        _approvalRouter
+            .Setup(x => x.RequestApprovalAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
+                It.IsAny<BlastRadius>(), It.IsAny<IReadOnlyDictionary<string, object?>?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(result);
+
+    private void AskingPermission() =>
+        _permissions
+            .Setup(x => x.ResolvePermissionAsync(It.IsAny<string>(), It.IsAny<string>(),
+                It.IsAny<string?>(), It.IsAny<IReadOnlyDictionary<string, object?>?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(PermissionDecision.Ask("needs human sign-off"));
+
+    [Fact]
+    public async Task AuthorizeAsync_ApprovalRequiredAndHumanApproves_LetsTheCallThrough()
+    {
+        // The behaviour this whole feature exists for: an approval verdict used to be a dead end.
+        AskingPermission();
+        RouterAnswers(ToolApprovalResult.Approved("approved by alice", Guid.NewGuid()));
+        var governor = Build();
+
+        var decision = await governor.AuthorizeAsync(Tool, CancellationToken.None);
+
+        Assert.True(decision.IsAllowed);
+        var record = Assert.Single(governor.GetTrace().ToolDecisions);
+        Assert.Equal(ToolDecisionOutcome.Allowed, record.Outcome);
+        Assert.True(record.RequiredApproval);
+        Assert.True(record.ApprovalGranted);
+        _denialTracker.Verify(x => x.RecordDenial(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task AuthorizeAsync_HumanApproves_ButCapabilityEnforcementStillRefuses_Blocks()
+    {
+        // A human answers the PERMISSION question. They do not answer the capability question, and
+        // must not be able to. This regressed once: an approved Ask returned Allow directly, so an
+        // approver clicking "yes" could run a tool with a sandbox capability the host never granted.
+        AskingPermission();
+        RouterAnswers(ToolApprovalResult.Approved("approved by alice", Guid.NewGuid()));
+        _capabilities
+            .Setup(x => x.EnforceAsync(It.IsAny<string>(), It.IsAny<Domain.AI.Sandbox.ToolCapability>(),
+                It.IsAny<IReadOnlyList<string>?>(), It.IsAny<IReadOnlyList<string>?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Fail("tool requires a capability the sandbox did not grant"));
+        var governor = Build();
+
+        var decision = await governor.AuthorizeAsync(Tool, CancellationToken.None);
+
+        Assert.False(decision.IsAllowed);
+        Assert.Equal(ToolDecisionOutcome.Denied, Assert.Single(governor.GetTrace().ToolDecisions).Outcome);
+    }
+
+    [Fact]
+    public async Task AuthorizeAsync_HumanApproves_ButEnvelopeDoesNotGrantTheTool_Blocks()
+    {
+        // Same invariant against the capability envelope, whose independent re-check exists because
+        // the permission resolver's arbitration has been wrong twice before.
+        AskingPermission();
+        RouterAnswers(ToolApprovalResult.Approved("approved by alice", Guid.NewGuid()));
+        using var envelope = CapabilityEnvelopeAccessor.Begin(
+            new Domain.AI.Bundles.CapabilityEnvelope { AllowedTools = ["something_else"] });
+        var governor = Build();
+
+        var decision = await governor.AuthorizeAsync(Tool, CancellationToken.None);
+
+        Assert.False(decision.IsAllowed);
+        Assert.Equal(ToolDecisionOutcome.Denied, Assert.Single(governor.GetTrace().ToolDecisions).Outcome);
+    }
+
+    [Fact]
+    public async Task AuthorizeAsync_DeterministicRefusal_NeverPagesAHuman()
+    {
+        // Approvers must not be asked to rule on a call another gate was always going to refuse.
+        // Beyond wasting their attention, it stalls the agent's turn for the whole approval timeout
+        // to reach a denial that was knowable up front — and teaches approvers their answer is moot.
+        AskingPermission();
+        _capabilities
+            .Setup(x => x.EnforceAsync(It.IsAny<string>(), It.IsAny<Domain.AI.Sandbox.ToolCapability>(),
+                It.IsAny<IReadOnlyList<string>?>(), It.IsAny<IReadOnlyList<string>?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Fail("tool requires a capability the sandbox did not grant"));
+        var governor = Build();
+
+        var decision = await governor.AuthorizeAsync(Tool, CancellationToken.None);
+
+        Assert.False(decision.IsAllowed);
+        _approvalRouter.Verify(x => x.RequestApprovalAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
+            It.IsAny<BlastRadius>(), It.IsAny<IReadOnlyDictionary<string, object?>?>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task AuthorizeAsync_TwoGatesWantAHuman_AsksOnceShowingBothReasons()
+    {
+        // The permission layer and the policy engine demand approval for DIFFERENT reasons, written
+        // by different authors. Showing only the first would mean a human approving "needs sign-off"
+        // silently clears "production schema changes need DBA review" — a question never put to them.
+        var governance = new GovernanceConfig { EnforceToolInvocation = true, Enabled = true, EnableAudit = true };
+        AskingPermission();
+        _policyEngine.SetupGet(x => x.HasPolicies).Returns(true);
+        _policyEngine
+            .Setup(x => x.EvaluateToolCall(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<IReadOnlyDictionary<string, object?>?>()))
+            .Returns(new GovernanceDecision(
+                IsAllowed: false,
+                Action: GovernancePolicyAction.RequireApproval,
+                Reason: "production schema changes need DBA review",
+                MatchedRule: "rule-9",
+                PolicyName: "default-policy"));
+
+        string? askedReason = null;
+        _approvalRouter
+            .Setup(x => x.RequestApprovalAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
+                It.IsAny<BlastRadius>(), It.IsAny<IReadOnlyDictionary<string, object?>?>(), It.IsAny<CancellationToken>()))
+            .Callback<string, string, string, BlastRadius, IReadOnlyDictionary<string, object?>?, CancellationToken>(
+                (_, _, reason, _, _, _) => askedReason = reason)
+            .ReturnsAsync(ToolApprovalResult.Approved("approved by alice", Guid.NewGuid()));
+
+        var governor = Build(governance);
+
+        var decision = await governor.AuthorizeAsync(Tool, CancellationToken.None);
+
+        Assert.True(decision.IsAllowed);
+        _approvalRouter.Verify(x => x.RequestApprovalAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
+            It.IsAny<BlastRadius>(), It.IsAny<IReadOnlyDictionary<string, object?>?>(), It.IsAny<CancellationToken>()),
+            Times.Once);
+        Assert.NotNull(askedReason);
+        Assert.Contains("needs human sign-off", askedReason, StringComparison.Ordinal);
+        Assert.Contains("DBA review", askedReason, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task RecordDownstreamBlock_AfterAnAllow_MakesTheTraceTellTheTruth()
+    {
+        // A gate running after the governor (the classification gate, the progress guard, a consumer
+        // observer) can stop a call the governor allowed. Without this the trace would report the
+        // call as Allowed, and every consumer of it would be wrong for exactly the calls a safety
+        // rule stopped. Both records are kept: the governor did allow it, something downstream did
+        // not, and a trail showing only one of those is telling half the story.
+        var governor = Build();
+        await governor.AuthorizeAsync(Tool, CancellationToken.None);
+
+        governor.RecordDownstreamBlock(Tool, "blocked by observer 'wire-limit'");
+
+        var decisions = governor.GetTrace().ToolDecisions;
+        Assert.Contains(decisions, d => d.Outcome == ToolDecisionOutcome.Allowed);
+        Assert.Contains(decisions, d => d.Outcome == ToolDecisionOutcome.Denied);
+    }
+
+    [Fact]
+    public void RecordDownstreamBlock_OnAnUngovernedTurn_RecordsNothing()
+    {
+        // Off the enforced path the governor recorded no allow, so there is nothing to correct and
+        // a bare denial would invent a decision the governor never made.
+        var governor = Build();
+
+        governor.RecordDownstreamBlock(Tool, "blocked by observer 'wire-limit'");
+
+        Assert.Empty(governor.GetTrace().ToolDecisions);
+    }
+
+    [Fact]
+    public async Task AuthorizeAsync_ApprovalRequiredAndHumanRefuses_StillBlocks()
+    {
+        AskingPermission();
+        RouterAnswers(ToolApprovalResult.Denied("an approver refused the call", Guid.NewGuid()));
+        var governor = Build();
+
+        var decision = await governor.AuthorizeAsync(Tool, CancellationToken.None);
+
+        Assert.False(decision.IsAllowed);
+        var record = Assert.Single(governor.GetTrace().ToolDecisions);
+        Assert.Equal(ToolDecisionOutcome.PendingApproval, record.Outcome);
+        Assert.False(record.ApprovalGranted);
+        _denialTracker.Verify(x => x.RecordDenial(Agent, Tool, null), Times.Once);
+    }
+
+    [Fact]
+    public async Task AuthorizeAsync_ApprovalVerdict_PassesTheCallArgumentsToTheApprover()
+    {
+        // Without the arguments an approver is being asked to sign off on a tool name alone.
+        AskingPermission();
+        IReadOnlyDictionary<string, object?>? seen = null;
+        _approvalRouter
+            .Setup(x => x.RequestApprovalAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
+                It.IsAny<BlastRadius>(), It.IsAny<IReadOnlyDictionary<string, object?>?>(), It.IsAny<CancellationToken>()))
+            .Callback<string, string, string, BlastRadius, IReadOnlyDictionary<string, object?>?, CancellationToken>(
+                (_, _, _, _, args, _) => seen = args)
+            .ReturnsAsync(ToolApprovalResult.Denied("refused"));
+        var governor = Build();
+
+        var arguments = new Dictionary<string, object?> { ["path"] = "/etc/passwd" };
+        await governor.AuthorizeAsync(Tool, CancellationToken.None, arguments);
+
+        Assert.NotNull(seen);
+        Assert.Equal("/etc/passwd", seen["path"]);
+    }
+
+    [Fact]
+    public async Task AuthorizeAsync_PolicyRequiresApprovalAndHumanApproves_LetsTheCallThrough()
+    {
+        // The second approval source. Both converge on one routing path so they cannot drift.
+        var governance = new GovernanceConfig { EnforceToolInvocation = true, Enabled = true, EnableAudit = true };
+        _policyEngine.SetupGet(x => x.HasPolicies).Returns(true);
+        _policyEngine
+            .Setup(x => x.EvaluateToolCall(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<IReadOnlyDictionary<string, object?>?>()))
+            .Returns(new GovernanceDecision(
+                IsAllowed: false,
+                Action: GovernancePolicyAction.RequireApproval,
+                Reason: "high blast radius",
+                MatchedRule: "rule-9",
+                PolicyName: "default-policy"));
+        RouterAnswers(ToolApprovalResult.Approved("approved by alice", Guid.NewGuid()));
+
+        var governor = Build(governance);
+
+        var decision = await governor.AuthorizeAsync(Tool, CancellationToken.None);
+
+        Assert.True(decision.IsAllowed);
+        Assert.True(Assert.Single(governor.GetTrace().ToolDecisions).ApprovalGranted);
+    }
+
+    [Fact]
+    public async Task AuthorizeAsync_ApprovalRoutingNotConfigured_BehavesExactlyAsBeforeTheFeature()
+    {
+        // The regression guard for every existing deployment: routing off must be byte-identical to
+        // the old dead-end block, not merely "also a block".
+        AskingPermission();
+        RouterAnswers(ToolApprovalResult.NotRouted("tool approval routing is disabled"));
+        var governor = Build();
+
+        var decision = await governor.AuthorizeAsync(Tool, CancellationToken.None);
+
+        Assert.False(decision.IsAllowed);
+        var record = Assert.Single(governor.GetTrace().ToolDecisions);
+        Assert.Equal(ToolDecisionOutcome.PendingApproval, record.Outcome);
+        Assert.True(record.RequiredApproval);
+        Assert.False(record.ApprovalGranted);
+        _denialTracker.Verify(x => x.RecordDenial(Agent, Tool, null), Times.Once);
     }
 }

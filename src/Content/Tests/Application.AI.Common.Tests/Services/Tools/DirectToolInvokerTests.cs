@@ -57,6 +57,7 @@ public sealed class DirectToolInvokerTests
     private readonly RecordingSanitizer _sanitizer = new();
     private readonly DirectToolInvocationConfig _config = new() { Enabled = true };
     private FakeClassificationGate? _classificationGate;
+    private FakeObserverChain? _observerChain;
 
     // ---- the three load-bearing properties ------------------------------------------------------
 
@@ -599,6 +600,45 @@ public sealed class DirectToolInvokerTests
         _classificationGate.Observed.Should().ContainKey("path");
     }
 
+    [Fact]
+    public async Task Consumer_observers_are_armed_on_the_direct_invocation_path()
+    {
+        // A consumer's domain rule ("never wire over 10k") judges one call on its own arguments, so it
+        // applies to a single direct invocation exactly as much as to a call inside an agent turn.
+        // This path arms the envelope, the governor, and the classification gate; leaving the observer
+        // chain unarmed would let a registered safety rule silently stop applying on the Execution API
+        // — registered-but-inert, which is the failure this codebase keeps paying for.
+        _observerChain = new FakeObserverChain(ToolInvocationDecision.Deny("blocked by a host rule"));
+
+        var outcome = await Invoke(
+            Request("alpha") with { Parameters = new Dictionary<string, object?> { ["amount"] = 50_000 } },
+            Tool("alpha"));
+
+        _observerChain.Observed.Should().ContainKey("amount",
+            "the rule must see the arguments it is there to judge");
+        outcome.Status.Should().NotBe(DirectToolInvocationStatus.Succeeded,
+            "an observer that blocks must stop the call on this path too");
+    }
+
+    /// <summary>
+    /// Stands in for the host's registered observers, recording the arguments it was shown and
+    /// answering with a fixed decision.
+    /// </summary>
+    private sealed class FakeObserverChain(ToolInvocationDecision decision) : IToolCallObserverChain
+    {
+        public IReadOnlyDictionary<string, object?> Observed { get; private set; } =
+            new Dictionary<string, object?>();
+
+        public bool HasObservers { get; init; } = true;
+
+        public ValueTask<ToolInvocationDecision> EvaluateAsync(
+            string toolName, IReadOnlyDictionary<string, object?> arguments, CancellationToken cancellationToken)
+        {
+            Observed = arguments;
+            return ValueTask.FromResult(decision);
+        }
+    }
+
     // ---- fixture --------------------------------------------------------------------------------
 
     private DirectToolInvocationRequest Request(
@@ -637,6 +677,13 @@ public sealed class DirectToolInvokerTests
         services.AddKeyedSingleton<ITool>(tool.Name, tool);
         if (_classificationGate is not null)
             services.AddSingleton<IToolClassificationGate>(_classificationGate);
+        // Always registered, never conditionally: the invoker resolves this as a REQUIRED service,
+        // because an absent chain and a chain with no rules are indistinguishable at runtime and only
+        // one of them is safe. A test that omitted it would be asserting against a composition that
+        // cannot exist in production. When a test supplies no chain of its own, it gets an empty one —
+        // which is exactly what a host that registered no rules has.
+        services.AddSingleton<IToolCallObserverChain>(
+            _observerChain ?? new FakeObserverChain(ToolInvocationDecision.Allow()) { HasObservers = false });
 
         var provider = services.BuildServiceProvider();
 
@@ -692,7 +739,8 @@ public sealed class DirectToolInvokerTests
         : IToolInvocationGovernor
     {
         public async ValueTask<ToolInvocationDecision> AuthorizeAsync(
-            string toolName, CancellationToken cancellationToken)
+            string toolName, CancellationToken cancellationToken,
+            IReadOnlyDictionary<string, object?>? arguments = null)
         {
             record.AgentIdWhenAuthorizing = executionContext.AgentId;
 
@@ -703,6 +751,8 @@ public sealed class DirectToolInvokerTests
         }
 
         public GovernanceTrace GetTrace() => GovernanceTrace.Empty;
+
+        public void RecordDownstreamBlock(string toolName, string reason) { }
 
         public void Reset() { }
     }

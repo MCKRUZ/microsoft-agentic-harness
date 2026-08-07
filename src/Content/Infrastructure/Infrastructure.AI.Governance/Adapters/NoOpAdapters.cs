@@ -7,7 +7,7 @@ namespace Infrastructure.AI.Governance.Adapters;
 internal sealed class NoOpPolicyEngine : IGovernancePolicyEngine
 {
     public bool HasPolicies => false;
-    public GovernanceDecision EvaluateToolCall(string agentId, string toolName, IReadOnlyDictionary<string, object>? arguments = null) =>
+    public GovernanceDecision EvaluateToolCall(string agentId, string toolName, IReadOnlyDictionary<string, object?>? arguments = null) =>
         GovernanceDecision.Allowed();
     public void LoadPolicyFile(string yamlPath) { }
 }

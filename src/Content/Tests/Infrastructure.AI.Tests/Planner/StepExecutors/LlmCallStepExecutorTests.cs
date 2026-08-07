@@ -48,6 +48,7 @@ public sealed class LlmCallStepExecutorTests : IDisposable
             _rootProvider.GetRequiredService<IServiceScopeFactory>(),
             _notifier.Object,
             _governor.Object,
+            Mock.Of<IToolCallObserverChain>(),
             _budget.Object,
             _agentContext.Object,
             _context,

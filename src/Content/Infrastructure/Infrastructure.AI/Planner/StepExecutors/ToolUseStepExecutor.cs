@@ -3,6 +3,7 @@ using System.Text.Json;
 using Application.AI.Common.Interfaces.Attestation;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Planner;
+using Application.AI.Common.Services.Governance;
 using Application.AI.Common.Interfaces.Sandbox;
 using Domain.AI.Governance;
 using Domain.AI.Planner;
@@ -28,6 +29,11 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
 {
     private readonly ICapabilityEnforcer _capabilityEnforcer;
     private readonly IToolInvocationGovernor _toolInvocationGovernor;
+    // Required, not optional-with-a-null-default, and deliberately so. An omitted observer chain is
+    // indistinguishable at runtime from a host that registered no rules, so a default would let a
+    // composition that forgot to wire the seam run silently unguarded — the exact defect this
+    // dependency exists to close. Absent registration should fail at resolution, loudly.
+    private readonly IToolCallObserverChain _observers;
     private readonly IServiceProvider _serviceProvider;
     private readonly IAttestationService _attestationService;
     private readonly ICompositeResponseSanitizer _responseSanitizer;
@@ -38,6 +44,7 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
     public ToolUseStepExecutor(
         ICapabilityEnforcer capabilityEnforcer,
         IToolInvocationGovernor toolInvocationGovernor,
+        IToolCallObserverChain observers,
         IServiceProvider serviceProvider,
         IAttestationService attestationService,
         ICompositeResponseSanitizer responseSanitizer,
@@ -47,6 +54,7 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
     {
         _capabilityEnforcer = capabilityEnforcer;
         _toolInvocationGovernor = toolInvocationGovernor;
+        _observers = observers;
         _serviceProvider = serviceProvider;
         _attestationService = attestationService;
         _responseSanitizer = responseSanitizer;
@@ -72,14 +80,20 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
             };
         }
 
-        var denial = await AuthorizeToolAsync(config.ToolName, step.Name, sw, ct);
+        // Built before authorization, not after, because these are what the tool will actually receive
+        // and therefore what every argument-sensitive check needs to see: the approver reading the
+        // request, an argument-conditioned policy rule, and the host's own observers. Declared
+        // parameters alone would hide anything an upstream step fed into this one.
+        var arguments = BuildToolArguments(config, upstreamOutputs);
+
+        var denial = await AuthorizeToolAsync(config.ToolName, step.Name, arguments, sw, ct);
         if (denial is not null)
             return denial;
 
         var profile = await _capabilityEnforcer.ResolveProfileAsync(config.ToolName, ct);
         var isolationLevel = DetermineIsolation(config, profile, step);
 
-        var input = BuildToolInput(config, upstreamOutputs);
+        var input = JsonSerializer.Serialize(arguments);
         var request = new SandboxExecutionRequest
         {
             ToolName = config.ToolName,
@@ -177,15 +191,26 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
     }
 
     /// <summary>
-    /// Authorizes the tool call through the invocation governor and, when denied, produces the failed
-    /// step result. Returns null when the call is allowed. The governor's denial message is already
-    /// scrubbed for model/caller consumption (rule ids and policy internals stay in the governance
-    /// trace and structured log), so it is safe to surface as the step error.
+    /// Authorizes the tool call through the invocation governor and the host's observer chain and,
+    /// when denied, produces the failed step result. Returns null when the call is allowed. The
+    /// denial message is already scrubbed for model/caller consumption (rule ids and policy internals
+    /// stay in the governance trace and structured log), so it is safe to surface as the step error.
     /// </summary>
+    /// <remarks>
+    /// A plan step is a tool call like any other. Authorizing through the governor alone would let a
+    /// plan reach a tool that the host's own rules refuse on the agent's conversational path — the
+    /// agent could bypass a consumer's rule simply by emitting a plan step instead of calling the
+    /// tool directly.
+    /// </remarks>
     private async Task<StepExecutionResult?> AuthorizeToolAsync(
-        string toolName, string stepName, Stopwatch sw, CancellationToken ct)
+        string toolName,
+        string stepName,
+        IReadOnlyDictionary<string, object?> arguments,
+        Stopwatch sw,
+        CancellationToken ct)
     {
-        var decision = await _toolInvocationGovernor.AuthorizeAsync(toolName, ct);
+        var decision = await _toolInvocationGovernor
+            .AuthorizeWithObserversAsync(_observers, toolName, arguments, ct);
         if (decision.IsAllowed)
             return null;
 
@@ -228,7 +253,11 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
         return level;
     }
 
-    private static string BuildToolInput(
+    /// <summary>
+    /// Merges the step's declared parameters with any JSON object fields produced by upstream steps
+    /// into the effective argument set the tool will be invoked with.
+    /// </summary>
+    private static Dictionary<string, object?> BuildToolArguments(
         ToolUseConfig config,
         IReadOnlyDictionary<PlanStepId, string> upstreamOutputs)
     {
@@ -248,6 +277,6 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
             catch (JsonException) { }
         }
 
-        return JsonSerializer.Serialize(merged);
+        return merged;
     }
 }

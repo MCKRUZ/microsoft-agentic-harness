@@ -73,6 +73,12 @@ public class AgentPipelineIntegrationTests
             .ReturnsAsync(Application.AI.Common.Interfaces.Governance.ClassificationVerdict.Allow());
         services.AddScoped(_ => classificationMock.Object);
 
+        // Consumer tool-call observers — none registered here, matching the default composition, so
+        // the chain reports itself empty and the chokepoint skips it.
+        var observerChainMock = new Mock<Application.AI.Common.Interfaces.Governance.IToolCallObserverChain>();
+        observerChainMock.SetupGet(c => c.HasObservers).Returns(false);
+        services.AddScoped(_ => observerChainMock.Object);
+
         // Conversation-lifetime budget — not under test here; permissive mock (disabled) so the
         // RunConversation handler resolves and never reports exhaustion.
         var budgetMock = new Mock<Application.AI.Common.Interfaces.AI.IConversationBudgetTracker>();

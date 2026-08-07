@@ -29,13 +29,27 @@ namespace Application.AI.Common.Services.Governance;
 /// deployments are unchanged. When on, the gate is <em>fail-closed</em>.
 /// </para>
 /// <para>
-/// <strong>Approval handling (PR1a).</strong> A tool that resolves to "requires approval" is recorded
-/// as <see cref="ToolDecisionOutcome.PendingApproval"/> and blocked (fail-closed). Live human
-/// escalation routing mid-tool-call is intentionally deferred to a focused follow-up; this degrades
-/// safely to deny rather than silently allowing.
+/// <strong>Approval handling.</strong> A tool that resolves to "requires approval" is routed to a
+/// human through <see cref="IToolApprovalRouter"/>: the call is suspended, an escalation naming the
+/// tool and its arguments is raised, and the call proceeds only on an affirmative decision. When
+/// routing is switched off — the default — or when it cannot run, the verdict degrades to the
+/// original behaviour: recorded as <see cref="ToolDecisionOutcome.PendingApproval"/> and blocked,
+/// fail-closed.
+/// </para>
+/// <para>
+/// <strong>An approval never substitutes for a deterministic check.</strong> A human who approves an
+/// <c>Ask</c> does not thereby clear the capability envelope, sandbox capability enforcement, or the
+/// declarative policy engine. That property is now guaranteed by <em>ordering</em>: every gate that
+/// can decide the call without a human runs first, and the human is asked only once nothing
+/// automatic objects — so an approval can only ever clear the one question actually put to it. See
+/// <see cref="AuthorizeInOrderAsync"/> for why the reasons are accumulated and asked as one
+/// question. This is worth stating because getting it wrong is silent, and it has been wrong twice:
+/// once by returning an allow straight from the approval (an approver could have granted a tool the
+/// sandbox never granted the capability for), and once by letting an approval obtained for one
+/// gate's reason satisfy a later gate whose reason the approver was never shown.
 /// </para>
 /// </remarks>
-public sealed class ToolInvocationGovernor : IToolInvocationGovernor
+public sealed partial class ToolInvocationGovernor : IToolInvocationGovernor
 {
     private readonly IAgentExecutionContext _executionContext;
     private readonly IToolPermissionService _toolPermissionService;
@@ -45,6 +59,7 @@ public sealed class ToolInvocationGovernor : IToolInvocationGovernor
     private readonly IGovernanceAuditService _auditService;
     private readonly IDenialTracker _denialTracker;
     private readonly ICapabilityEnforcer _capabilityEnforcer;
+    private readonly IToolApprovalRouter _approvalRouter;
     private readonly IOptionsMonitor<GovernanceConfig> _governanceConfig;
     private readonly IOptionsMonitor<PermissionsConfig> _permissionsConfig;
     private readonly IOptionsMonitor<SandboxConfig> _sandboxConfig;
@@ -66,6 +81,7 @@ public sealed class ToolInvocationGovernor : IToolInvocationGovernor
         IGovernanceAuditService auditService,
         IDenialTracker denialTracker,
         ICapabilityEnforcer capabilityEnforcer,
+        IToolApprovalRouter approvalRouter,
         IOptionsMonitor<GovernanceConfig> governanceConfig,
         IOptionsMonitor<PermissionsConfig> permissionsConfig,
         IOptionsMonitor<SandboxConfig> sandboxConfig,
@@ -79,6 +95,7 @@ public sealed class ToolInvocationGovernor : IToolInvocationGovernor
         _auditService = auditService;
         _denialTracker = denialTracker;
         _capabilityEnforcer = capabilityEnforcer;
+        _approvalRouter = approvalRouter;
         _governanceConfig = governanceConfig;
         _permissionsConfig = permissionsConfig;
         _sandboxConfig = sandboxConfig;
@@ -134,7 +151,10 @@ public sealed class ToolInvocationGovernor : IToolInvocationGovernor
         _governanceConfig.CurrentValue.EnforceToolInvocation || BundleRunActive;
 
     /// <inheritdoc />
-    public async ValueTask<ToolInvocationDecision> AuthorizeAsync(string toolName, CancellationToken cancellationToken)
+    public async ValueTask<ToolInvocationDecision> AuthorizeAsync(
+        string toolName,
+        CancellationToken cancellationToken,
+        IReadOnlyDictionary<string, object?>? arguments = null)
     {
         // Opt-in: when enforcement is off the governor never engages — pure pass-through, no record,
         // no behaviour change for existing deployments.
@@ -180,6 +200,50 @@ public sealed class ToolInvocationGovernor : IToolInvocationGovernor
         // Graded-autonomy risk gate: can only tighten an Allow, never loosen.
         permission = ApplyRiskGate(permission, toolName, profile);
 
+        // Every gate that can decide on its own runs first; the human is asked last, once.
+        // See AuthorizeInOrderAsync for why that ordering is the design and not an accident.
+        return await AuthorizeInOrderAsync(agentId, toolName, permission, profile, arguments, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Runs the gates in decision order — permission, capability envelope, sandbox capabilities,
+    /// declarative policy — and only then, if anything still wants a human, asks one. Once.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>Deterministic gates first, the human last.</strong> Every check before the approval is
+    /// cheap, in-process, and argument-independent: it will reach the same verdict whether or not a
+    /// human is consulted. Asking first — the shape this started as — meant approvers could be paged
+    /// for a call the capability enforcer was always going to refuse, with the agent's turn stalled
+    /// for the whole approval timeout to reach a denial that was knowable up front. It also risks
+    /// training approvers that their answer does not matter.
+    /// </para>
+    /// <para>
+    /// <strong>One question, carrying every reason.</strong> Both the permission layer's <c>Ask</c>
+    /// and the policy engine's <c>RequireApproval</c> can demand a human, and they demand it for
+    /// <em>different</em> reasons written by different authors. Asking twice is a poor experience;
+    /// asking once and showing only the first reason is worse than that — it means a human approves
+    /// "write tools need sign-off" and thereby silently clears "production schema changes need DBA
+    /// review", a question they were never shown. Accumulating the reasons and asking once shows the
+    /// approver everything that is actually being decided.
+    /// </para>
+    /// <para>
+    /// <strong>Approval last also keeps the audit trail honest.</strong> Because nothing can refuse
+    /// the call after a human approves it, a recorded block can never carry
+    /// <c>RequiredApproval: true, ApprovalGranted: false</c> for a call the approver actually
+    /// approved — a combination an auditor would reasonably read as "the approver said no".
+    /// </para>
+    /// </remarks>
+    private async ValueTask<ToolInvocationDecision> AuthorizeInOrderAsync(
+        string agentId, string toolName, PermissionDecision permission, ToolRiskProfile profile,
+        IReadOnlyDictionary<string, object?>? arguments, CancellationToken cancellationToken)
+    {
+        // Accumulates every reason a human must rule on this call, from whichever gate raised it.
+        // Left null until a gate actually asks for one: the overwhelmingly common path is a call no
+        // gate wants a human for, and this runs on every authorized tool call.
+        List<string>? approvalReasons = null;
+
         switch (permission.Behavior)
         {
             case PermissionBehaviorType.Deny:
@@ -188,22 +252,11 @@ public sealed class ToolInvocationGovernor : IToolInvocationGovernor
                     requiredApproval: false, agentId);
 
             case PermissionBehaviorType.Ask:
-                _denialTracker.RecordDenial(agentId, toolName);
-                return Blocked(toolName, ToolDecisionOutcome.PendingApproval,
-                    $"requires approval: {permission.Reason}", profile.Radius,
-                    requiredApproval: true, agentId);
+                (approvalReasons ??= []).Add(permission.Reason);
+                break;
 
             case PermissionBehaviorType.Allow:
-                if (!EnvelopeGrantsToolWhenArmed(toolName))
-                {
-                    _denialTracker.RecordDenial(agentId, toolName);
-                    return Blocked(toolName, ToolDecisionOutcome.Denied,
-                        GovernanceDenials.NotPermitted(toolName), profile.Radius,
-                        requiredApproval: false, agentId);
-                }
-
-                return await AuthorizeAllowedAsync(agentId, toolName, profile, cancellationToken)
-                    .ConfigureAwait(false);
+                break;
 
             default:
                 // Unknown behaviour: fail closed.
@@ -211,12 +264,18 @@ public sealed class ToolInvocationGovernor : IToolInvocationGovernor
                     $"unrecognized permission behaviour '{permission.Behavior}'", profile.Radius,
                     requiredApproval: false, agentId);
         }
-    }
 
-    private async ValueTask<ToolInvocationDecision> AuthorizeAllowedAsync(
-        string agentId, string toolName, ToolRiskProfile profile, CancellationToken cancellationToken)
-    {
-        // Capability enforcement: the rule layer allowed the tool, now confirm the granted sandbox
+        // Independent envelope confirmation. Defence in depth against a resolver arbitration bug —
+        // see EnvelopeGrantsToolWhenArmed's remarks for the two occasions that arbitration was wrong.
+        if (!EnvelopeGrantsToolWhenArmed(toolName))
+        {
+            _denialTracker.RecordDenial(agentId, toolName);
+            return Blocked(toolName, ToolDecisionOutcome.Denied,
+                GovernanceDenials.NotPermitted(toolName), profile.Radius,
+                requiredApproval: false, agentId);
+        }
+
+        // Capability enforcement: the rule layer cleared the tool, now confirm the granted sandbox
         // capabilities satisfy what the tool needs.
         var grantedCapabilities = ToolCapability.None;
         foreach (var name in _sandboxConfig.CurrentValue.DefaultGrantedCapabilities)
@@ -238,28 +297,50 @@ public sealed class ToolInvocationGovernor : IToolInvocationGovernor
         var governance = _governanceConfig.CurrentValue;
         if (governance.Enabled && _policyEngine.HasPolicies)
         {
-            var decision = _policyEngine.EvaluateToolCall(agentId, toolName);
+            // Arguments are forwarded. The policy engine builds its rule-evaluation context from them,
+            // so a rule conditioned on an argument value ("deny sql_query where database == 'prod'")
+            // can only ever match when they are supplied. Passing the tool name alone did not make
+            // such rules deny-by-default — it made them unmatchable, so an operator's rule was loaded,
+            // reported as active, and silently never fired on the live tool path.
+            var decision = _policyEngine.EvaluateToolCall(agentId, toolName, arguments);
 
-            // The outcome is audited once below — by Blocked() on a deny/approval, or by the final
-            // Allowed audit on success — so the policy action is not logged separately here.
+            // The outcome is audited once below — by Blocked() on a deny, or by the final Allowed
+            // audit on success — so the policy action is not logged separately here.
             if (!decision.IsAllowed)
             {
                 if (decision.Action == GovernancePolicyAction.RequireApproval)
                 {
-                    _denialTracker.RecordDenial(agentId, toolName);
-                    return Blocked(toolName, ToolDecisionOutcome.PendingApproval,
-                        $"requires approval: {decision.Reason}", profile.Radius,
-                        requiredApproval: true, agentId);
+                    (approvalReasons ??= []).Add(decision.Reason);
                 }
-
-                _denialTracker.RecordDenial(agentId, toolName);
-                return Blocked(toolName, ToolDecisionOutcome.Denied, decision.Reason, profile.Radius,
-                    requiredApproval: false, agentId);
+                else
+                {
+                    _denialTracker.RecordDenial(agentId, toolName);
+                    return Blocked(toolName, ToolDecisionOutcome.Denied, decision.Reason, profile.Radius,
+                        requiredApproval: false, agentId);
+                }
             }
         }
 
-        Record(new ToolDecisionRecord(toolName, ToolDecisionOutcome.Allowed, "allowed",
-            profile.Radius, RequiredApproval: false, ApprovalGranted: false, Enforced: true));
+        // Nothing deterministic refuses this call. If any gate wants a human, this is the moment.
+        string? approvedBy = null;
+        if (approvalReasons is not null)
+        {
+            var gate = await RequestApprovalAsync(agentId, toolName,
+                string.Join("; ", approvalReasons), profile, arguments, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (gate.Block is { } block)
+                return block;
+
+            approvedBy = gate.Reason;
+        }
+
+        Record(new ToolDecisionRecord(toolName, ToolDecisionOutcome.Allowed,
+            approvedBy is null ? "allowed" : $"approved by human: {approvedBy}",
+            profile.Radius,
+            RequiredApproval: approvedBy is not null,
+            ApprovalGranted: approvedBy is not null,
+            Enforced: true));
 
         if (governance.EnableAudit)
             _auditService.Log(agentId, toolName, ToolDecisionOutcome.Allowed.ToString());
@@ -331,6 +412,25 @@ public sealed class ToolInvocationGovernor : IToolInvocationGovernor
     {
         lock (_lock)
             _decisions.Add(record);
+    }
+
+    /// <inheritdoc />
+    public void RecordDownstreamBlock(string toolName, string reason)
+    {
+        // Only meaningful for a turn this governor actually evaluated. Off the enforced path the
+        // governor recorded nothing, so there is no allow to correct and nothing to add.
+        if (!_enforcedObserved)
+            return;
+
+        var radius = _toolRiskClassifier.Classify(toolName).Radius;
+        Record(new ToolDecisionRecord(toolName, ToolDecisionOutcome.Denied, reason, radius,
+            RequiredApproval: false, ApprovalGranted: false, Enforced: true));
+
+        // Deliberately no audit write. This method corrects the trace on behalf of a gate that has
+        // already audited its own refusal in its own vocabulary; writing a second line here would make
+        // every downstream block count twice for anyone tallying denials from the audit stream. The
+        // caller audits because it always can — this method is inert off the enforced path, and a host
+        // may register observers with governance enforcement switched off.
     }
 
     /// <inheritdoc />

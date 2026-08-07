@@ -43,6 +43,7 @@ public class RunOrchestratedTaskCommandHandler_EdgeCaseTests
             new Application.AI.Common.Services.Agent.AgentExecutionContext(),
             new Mock<Application.AI.Common.Interfaces.Governance.IToolInvocationGovernor>().Object,
             new Mock<Application.AI.Common.Interfaces.Governance.IToolClassificationGate>().Object,
+            new Mock<Application.AI.Common.Interfaces.Governance.IToolCallObserverChain>().Object,
             NullLogger<RunOrchestratedTaskCommandHandler>.Instance);
     }
 

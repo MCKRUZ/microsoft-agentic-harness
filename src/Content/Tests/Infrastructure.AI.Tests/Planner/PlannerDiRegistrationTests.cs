@@ -236,6 +236,12 @@ public sealed class PlannerDiRegistrationTests : IDisposable
         // delegates agent identity to it.
         services.AddScoped(_ => new Mock<Application.AI.Common.Interfaces.Agent.IAgentExecutionContext>().Object);
         services.AddScoped(_ => new Mock<IToolInvocationGovernor>().Object);
+        // Step executors take the observer chain as a required dependency, deliberately: an omitted
+        // chain is indistinguishable at runtime from a host that registered no rules, so a nullable
+        // default would let a composition silently run the plan path unguarded. The real composition
+        // registers it in Application.AI.Common (see ToolCallObserverCompositionTests, which resolves
+        // it from the actual root); this fixture hand-rolls its container, so it stubs it here.
+        services.AddScoped(_ => new Mock<IToolCallObserverChain>().Object);
         services.AddSingleton(new Mock<Application.AI.Common.Interfaces.AI.IConversationBudgetTracker>().Object);
         services.AddSingleton<ISender>(new Mock<ISender>().Object);
         services.AddSingleton<IPlanProgressNotifier>(new Mock<IPlanProgressNotifier>().Object);
