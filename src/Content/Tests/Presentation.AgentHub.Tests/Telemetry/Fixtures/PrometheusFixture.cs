@@ -3,6 +3,7 @@ using System.Text.Json;
 using DotNet.Testcontainers.Builders;
 using DotNet.Testcontainers.Containers;
 using DotNet.Testcontainers.Networks;
+using Tests.Common;
 using Xunit;
 
 namespace Presentation.AgentHub.Tests.Telemetry.Fixtures;
@@ -48,8 +49,6 @@ public sealed class PrometheusFixture : IAsyncLifetime
     /// <summary>Prometheus HTTP API endpoint on the host (e.g., http://localhost:{port}).</summary>
     public string PrometheusQueryEndpoint { get; private set; } = null!;
 
-    private static readonly string RepoRoot = GetRepoRoot();
-
     /// <inheritdoc/>
     public async Task InitializeAsync()
     {
@@ -68,7 +67,7 @@ public sealed class PrometheusFixture : IAsyncLifetime
             .WithPortBinding(4318, true)
             .WithPortBinding(8889, true)
             .WithResourceMapping(
-                Path.Combine(RepoRoot, "scripts", "otel-collector", "config.yaml"),
+                RepoRoot.Combine("scripts", "otel-collector", "config.yaml"),
                 "/etc/otelcol-contrib/")
             .WithEnvironment("DEPLOYMENT_ENVIRONMENT", "test")
             .WithEnvironment("TEMPO_ENDPOINT", "localhost:4317")
@@ -164,11 +163,4 @@ public sealed class PrometheusFixture : IAsyncLifetime
         if (_network != null) await _network.DeleteAsync();
     }
 
-    private static string GetRepoRoot()
-    {
-        var dir = Directory.GetCurrentDirectory();
-        while (dir != null && !Directory.Exists(Path.Combine(dir, ".git")))
-            dir = Directory.GetParent(dir)?.FullName;
-        return dir ?? throw new InvalidOperationException("Could not find repo root (.git directory)");
-    }
 }

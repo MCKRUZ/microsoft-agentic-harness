@@ -3,6 +3,7 @@ using System.Text.RegularExpressions;
 using FluentAssertions;
 using FluentAssertions.Execution;
 using Presentation.AgentHub.Tests.Telemetry.Contracts;
+using Tests.Common;
 using Xunit;
 
 namespace Presentation.AgentHub.Tests.Telemetry;
@@ -17,7 +18,7 @@ namespace Presentation.AgentHub.Tests.Telemetry;
 public sealed partial class DashboardContractTests
 {
     private static readonly string CollectorConfigPath =
-        Path.Combine(GetRepoRoot(), "scripts", "otel-collector", "config.yaml");
+        RepoRoot.Combine("scripts", "otel-collector", "config.yaml");
 
     private static readonly string Namespace =
         MetricNamingContract.GetCollectorNamespace(CollectorConfigPath);
@@ -126,13 +127,5 @@ public sealed partial class DashboardContractTests
         }
 
         return metricNames;
-    }
-
-    private static string GetRepoRoot()
-    {
-        var dir = Directory.GetCurrentDirectory();
-        while (dir != null && !Directory.Exists(Path.Combine(dir, ".git")))
-            dir = Directory.GetParent(dir)?.FullName;
-        return dir ?? throw new InvalidOperationException("Could not find repo root");
     }
 }
