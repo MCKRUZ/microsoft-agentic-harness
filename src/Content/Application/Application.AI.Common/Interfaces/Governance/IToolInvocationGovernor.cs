@@ -53,6 +53,29 @@ public interface IToolInvocationGovernor
     GovernanceTrace GetTrace();
 
     /// <summary>
+    /// Records that a gate running <em>after</em> this governor refused a call the governor had
+    /// already allowed, so the turn's trace reflects what happened rather than what was authorized.
+    /// </summary>
+    /// <param name="toolName">The tool that was stopped.</param>
+    /// <param name="reason">Operator-facing explanation, for the trace and audit only.</param>
+    /// <remarks>
+    /// <para>
+    /// The governor is not the last word on a tool call — the classification gate, the progress
+    /// guard, and the host's own <see cref="IToolCallObserver"/> rules all run after it and can each
+    /// stop a call it permitted. Without this the trace would report such a call as
+    /// <see cref="ToolDecisionOutcome.Allowed"/>, because that is genuinely what the governor
+    /// decided, and every consumer of the trace — bundle-run governance reporting, the dashboard,
+    /// the audit — would be wrong for exactly the calls a safety rule stopped.
+    /// </para>
+    /// <para>
+    /// This does not revoke the earlier record; both are kept. The governor did allow it, something
+    /// downstream did not, and an audit trail that shows only one of those facts is telling half the
+    /// story.
+    /// </para>
+    /// </remarks>
+    void RecordDownstreamBlock(string toolName, string reason);
+
+    /// <summary>
     /// Clears the recorded decisions so the next turn starts clean. The governor is registered
     /// scoped, but nested MediatR sends within a conversation share one DI scope (and thus one
     /// governor instance), so a multi-turn conversation must reset between turns — otherwise

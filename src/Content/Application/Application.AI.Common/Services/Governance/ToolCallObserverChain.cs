@@ -200,6 +200,14 @@ public sealed class ToolCallObserverChain : IToolCallObserverChain
         if (_governanceConfig.CurrentValue.EnableAudit)
             _auditService.Log(_executionContext.AgentId ?? "unknown", toolName, $"observer:{observerName}:blocked");
 
+        // Correct the turn's governance trace. The governor already recorded this call as Allowed —
+        // truthfully, because it was the governor's own verdict — and observers run after it. Without
+        // this, the trace reports Allowed for a call that never executed, and every consumer of it
+        // (bundle-run reporting, the dashboard, the audit) is wrong for precisely the calls a
+        // consumer's safety rule stopped.
+        ToolGovernanceAccessor.Current?.RecordDownstreamBlock(
+            toolName, $"blocked by observer '{observerName}': {reason}");
+
         return ToolInvocationDecision.Deny(GovernanceDenials.NotPermitted(toolName));
     }
 }

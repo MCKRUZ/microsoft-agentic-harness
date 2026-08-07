@@ -50,9 +50,27 @@ public sealed class ToolApprovalConfig
 
     /// <summary>
     /// How long to wait for a decision before the escalation's timeout action decides the call.
-    /// Null inherits <see cref="EscalationConfig.DefaultTimeoutSeconds"/>. This is the upper bound
-    /// on how long a single tool call can stall the agent's turn.
+    /// Null inherits <see cref="EscalationConfig.DefaultTimeoutSeconds"/> (300s). This is the upper
+    /// bound on how long a single tool call can stall the agent's turn.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>Must be shorter than the direct-invocation deadline, or approvals cannot succeed on
+    /// the Execution API.</strong> A direct tool invocation bounds its whole request —
+    /// authorization included — by <c>DirectToolInvocation.InvocationTimeout</c>, which defaults to
+    /// 30 seconds. Since this setting defaults to 300, a host that enables approval routing and
+    /// leaves both defaults gets every approval-required direct invocation cancelled at 30s and
+    /// reported as denied, while the caller's HTTP request is held for the full 30s to get there.
+    /// The agent conversation path has no such ceiling and is unaffected.
+    /// </para>
+    /// <para>
+    /// A synchronous HTTP call is a poor place to wait on a human at all, so the recommended posture
+    /// for hosts that expose direct invocation is either to keep this well under
+    /// <c>InvocationTimeout</c> and accept that approvers have seconds to answer, or to leave
+    /// approval routing for the agent path and let the Execution API's capability envelope do the
+    /// gating.
+    /// </para>
+    /// </remarks>
     public int? TimeoutSeconds { get; init; }
 
     /// <summary>

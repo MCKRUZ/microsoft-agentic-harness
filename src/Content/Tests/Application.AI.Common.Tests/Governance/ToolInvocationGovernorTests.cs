@@ -315,6 +315,102 @@ public sealed class ToolInvocationGovernorTests
     }
 
     [Fact]
+    public async Task AuthorizeAsync_DeterministicRefusal_NeverPagesAHuman()
+    {
+        // Approvers must not be asked to rule on a call another gate was always going to refuse.
+        // Beyond wasting their attention, it stalls the agent's turn for the whole approval timeout
+        // to reach a denial that was knowable up front — and teaches approvers their answer is moot.
+        AskingPermission();
+        _capabilities
+            .Setup(x => x.EnforceAsync(It.IsAny<string>(), It.IsAny<Domain.AI.Sandbox.ToolCapability>(),
+                It.IsAny<IReadOnlyList<string>?>(), It.IsAny<IReadOnlyList<string>?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Fail("tool requires a capability the sandbox did not grant"));
+        var governor = Build();
+
+        var decision = await governor.AuthorizeAsync(Tool, CancellationToken.None);
+
+        Assert.False(decision.IsAllowed);
+        _approvalRouter.Verify(x => x.RequestApprovalAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
+            It.IsAny<BlastRadius>(), It.IsAny<IReadOnlyDictionary<string, object?>?>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task AuthorizeAsync_TwoGatesWantAHuman_AsksOnceShowingBothReasons()
+    {
+        // The permission layer and the policy engine demand approval for DIFFERENT reasons, written
+        // by different authors. Showing only the first would mean a human approving "needs sign-off"
+        // silently clears "production schema changes need DBA review" — a question never put to them.
+        var governance = new GovernanceConfig { EnforceToolInvocation = true, Enabled = true, EnableAudit = true };
+        AskingPermission();
+        _policyEngine.SetupGet(x => x.HasPolicies).Returns(true);
+        _policyEngine
+            .Setup(x => x.EvaluateToolCall(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<IReadOnlyDictionary<string, object>?>()))
+            .Returns(new GovernanceDecision(
+                IsAllowed: false,
+                Action: GovernancePolicyAction.RequireApproval,
+                Reason: "production schema changes need DBA review",
+                MatchedRule: "rule-9",
+                PolicyName: "default-policy"));
+
+        string? askedReason = null;
+        _approvalRouter
+            .Setup(x => x.RequestApprovalAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
+                It.IsAny<BlastRadius>(), It.IsAny<IReadOnlyDictionary<string, object?>?>(), It.IsAny<CancellationToken>()))
+            .Callback<string, string, string, BlastRadius, IReadOnlyDictionary<string, object?>?, CancellationToken>(
+                (_, _, reason, _, _, _) => askedReason = reason)
+            .ReturnsAsync(ToolApprovalResult.Approved("approved by alice", Guid.NewGuid()));
+
+        var governor = new ToolInvocationGovernor(
+            _context.Object, _permissions.Object, _riskClassifier, _autonomy.Object, _policyEngine.Object,
+            Mock.Of<IGovernanceAuditService>(), _denialTracker.Object, _capabilities.Object, _approvalRouter.Object,
+            Mock.Of<IOptionsMonitor<GovernanceConfig>>(m => m.CurrentValue == governance),
+            Mock.Of<IOptionsMonitor<PermissionsConfig>>(m => m.CurrentValue == _permissionsConfig),
+            Mock.Of<IOptionsMonitor<SandboxConfig>>(m => m.CurrentValue == _sandbox),
+            NullLogger<ToolInvocationGovernor>.Instance);
+
+        var decision = await governor.AuthorizeAsync(Tool, CancellationToken.None);
+
+        Assert.True(decision.IsAllowed);
+        _approvalRouter.Verify(x => x.RequestApprovalAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
+            It.IsAny<BlastRadius>(), It.IsAny<IReadOnlyDictionary<string, object?>?>(), It.IsAny<CancellationToken>()),
+            Times.Once);
+        Assert.NotNull(askedReason);
+        Assert.Contains("needs human sign-off", askedReason, StringComparison.Ordinal);
+        Assert.Contains("DBA review", askedReason, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task RecordDownstreamBlock_AfterAnAllow_MakesTheTraceTellTheTruth()
+    {
+        // A gate running after the governor (the classification gate, the progress guard, a consumer
+        // observer) can stop a call the governor allowed. Without this the trace would report the
+        // call as Allowed, and every consumer of it would be wrong for exactly the calls a safety
+        // rule stopped. Both records are kept: the governor did allow it, something downstream did
+        // not, and a trail showing only one of those is telling half the story.
+        var governor = Build();
+        await governor.AuthorizeAsync(Tool, CancellationToken.None);
+
+        governor.RecordDownstreamBlock(Tool, "blocked by observer 'wire-limit'");
+
+        var decisions = governor.GetTrace().ToolDecisions;
+        Assert.Contains(decisions, d => d.Outcome == ToolDecisionOutcome.Allowed);
+        Assert.Contains(decisions, d => d.Outcome == ToolDecisionOutcome.Denied);
+    }
+
+    [Fact]
+    public void RecordDownstreamBlock_OnAnUngovernedTurn_RecordsNothing()
+    {
+        // Off the enforced path the governor recorded no allow, so there is nothing to correct and
+        // a bare denial would invent a decision the governor never made.
+        var governor = Build();
+
+        governor.RecordDownstreamBlock(Tool, "blocked by observer 'wire-limit'");
+
+        Assert.Empty(governor.GetTrace().ToolDecisions);
+    }
+
+    [Fact]
     public async Task AuthorizeAsync_ApprovalRequiredAndHumanRefuses_StillBlocks()
     {
         AskingPermission();

@@ -747,6 +747,8 @@ public sealed class DirectToolInvokerTests
 
         public GovernanceTrace GetTrace() => GovernanceTrace.Empty;
 
+        public void RecordDownstreamBlock(string toolName, string reason) { }
+
         public void Reset() { }
     }
 

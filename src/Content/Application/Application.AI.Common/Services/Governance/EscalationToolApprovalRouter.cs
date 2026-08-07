@@ -41,6 +41,10 @@ public sealed class EscalationToolApprovalRouter : IToolApprovalRouter
     private readonly IOptionsMonitor<GovernanceConfig> _governanceConfig;
     private readonly ILogger<EscalationToolApprovalRouter> _logger;
 
+    // A misconfigured roster is a standing condition, not a per-call event. Warning once keeps the
+    // signal without emitting a line on every approval-required call for the life of the process.
+    private bool _blankApproversWarned;
+
     /// <summary>Initializes a new instance of the <see cref="EscalationToolApprovalRouter"/> class.</summary>
     public EscalationToolApprovalRouter(
         IEscalationService escalationService,
@@ -91,8 +95,9 @@ public sealed class EscalationToolApprovalRouter : IToolApprovalRouter
             .Where(a => !string.IsNullOrWhiteSpace(a))
             .ToList();
 
-        if (roster.Count < approval.Approvers.Count)
+        if (roster.Count < approval.Approvers.Count && !_blankApproversWarned)
         {
+            _blankApproversWarned = true;
             _logger.LogWarning(
                 "ToolApproval:Approvers contains {Count} blank entr(ies), which were ignored. Remove them from configuration.",
                 approval.Approvers.Count - roster.Count);

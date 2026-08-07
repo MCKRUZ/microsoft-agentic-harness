@@ -158,6 +158,13 @@ public static class IServiceCollectionExtensions
             .ValidateFluentValidation<EscalationConfig, EscalationConfigValidator>()
             .ValidateOnStart();
 
+        // Bound and validated separately from GovernanceConfig so a bad value is a startup error
+        // naming the setting, rather than every approval-required tool call being silently refused.
+        services.AddOptions<ToolApprovalConfig>()
+            .Bind(configuration.GetSection("AppConfig:AI:Governance:ToolApproval"))
+            .ValidateFluentValidation<ToolApprovalConfig, ToolApprovalConfigValidator>()
+            .ValidateOnStart();
+
         services.AddOptions<ResilienceConfig>()
             .Bind(configuration.GetSection("AppConfig:AI:Resilience"))
             .ValidateFluentValidation<ResilienceConfig, ResilienceConfigValidator>()
