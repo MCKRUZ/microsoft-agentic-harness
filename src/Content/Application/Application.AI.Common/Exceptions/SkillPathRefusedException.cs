@@ -1,3 +1,5 @@
+using Application.Common.Exceptions;
+
 namespace Application.AI.Common.Exceptions;
 
 /// <summary>
@@ -19,9 +21,24 @@ namespace Application.AI.Common.Exceptions;
 /// refusal would turn a routine ACL problem into a startup abort. Catching this type means "the
 /// sandbox said no", and nothing else.
 /// </para>
+/// <para>
+/// Declares its own HTTP status rather than inheriting one. Deriving from
+/// <see cref="UnauthorizedAccessException"/> would otherwise surface it as 401, which tells a caller
+/// to authenticate — but the caller already is authenticated, and no amount of re-authenticating
+/// widens a sandbox. 403 says the right thing: the request was understood and refused.
+/// </para>
 /// </remarks>
-public sealed class SkillPathRefusedException : UnauthorizedAccessException
+public sealed class SkillPathRefusedException : UnauthorizedAccessException, IHttpStatusException
 {
+    /// <summary>403 Forbidden. See the type remarks for why this is not 401.</summary>
+    public int StatusCode => 403;
+
+    /// <summary>
+    /// What a production caller is told. Deliberately says nothing about which path was refused or
+    /// where the sandbox boundary lies — that is the detail the refusal exists to withhold.
+    /// </summary>
+    public string SafeMessage => "Forbidden.";
+
     /// <summary>
     /// Initializes a new instance of the <see cref="SkillPathRefusedException"/> class.
     /// </summary>
