@@ -1,4 +1,3 @@
-using System.Reflection;
 using Infrastructure.Postgres.Migrations;
 
 namespace Infrastructure.Observability.Persistence;
@@ -20,14 +19,18 @@ public static class ObservabilityMigrations
     /// <c>obs_migr</c>, chosen only so it is unlikely to collide with a key another subsystem picks
     /// in a shared database.
     /// </summary>
+    /// <remarks>
+    /// The ledger is <c>obs_schema_migrations</c>, not <c>schema_migrations</c>. The bare name is
+    /// what Rails, Flyway and Django all use verbatim, so a consumer pointing the harness at a
+    /// database their application already owns would have collided with a ledger that is not ours:
+    /// the runner reads someone else's table, finds none of its own ids there, and applies its entire
+    /// baseline. Prefixing costs nothing and the knowledge-graph set already did it.
+    /// </remarks>
     public static PostgresMigrationOptions Options { get; } =
-        new("schema_migrations", 0x6F62735F6D696772L);
-
-    /// <summary>The assembly carrying the embedded observability migration scripts.</summary>
-    public static Assembly ScriptAssembly => typeof(ObservabilityMigrations).Assembly;
+        new("obs_schema_migrations", 0x6F62735F6D696772L);
 
     /// <summary>Loads the observability migration set in apply order.</summary>
     /// <returns>The migration scripts, ordered by their numeric file-name prefix.</returns>
     public static IReadOnlyList<MigrationScript> Load() =>
-        EmbeddedSqlMigrationSource.Load(ScriptAssembly);
+        EmbeddedSqlMigrationSource.Load(typeof(ObservabilityMigrations).Assembly);
 }

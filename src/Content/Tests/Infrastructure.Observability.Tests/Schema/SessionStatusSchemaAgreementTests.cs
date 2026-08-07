@@ -84,6 +84,7 @@ public sealed class SessionStatusSchemaAgreementTests
     {
         var declaring = ObservabilityMigrations.Load()
             .Where(s => StatusCheckDeclaration.IsMatch(s.Sql))
+            .OrderBy(s => s.Ordinal)
             .ToArray();
 
         Assert.True(
@@ -92,7 +93,16 @@ public sealed class SessionStatusSchemaAgreementTests
             "that a later declaration overrides an earlier one. If the constraint has genuinely been " +
             "consolidated into the baseline, delete this test rather than relaxing it.");
 
-        Assert.Equal(declaring.OrderBy(s => s.Ordinal).Select(s => s.Id), declaring.Select(s => s.Id));
+        // Compare the EARLIEST declaration's values against what the reader returns. Asserting that a
+        // sorted list is sorted — which is what this did first — cannot fail: Load() already returns
+        // scripts in ordinal order and Where preserves it. The real claim is that the reader ignores
+        // the first declaration in favour of the last, and it is only checkable because the two
+        // genuinely differ.
+        var earliest = ParseValues(StatusCheckDeclaration.Match(declaring[0].Sql));
+        var effective = ReadAcceptedStatusesFromMigrations();
+
+        Assert.NotEqual(earliest, effective);
+        Assert.ProperSubset(effective, earliest);
     }
 
     private static HashSet<string> ReadAcceptedStatusesFromMigrations()
@@ -106,9 +116,12 @@ public sealed class SessionStatusSchemaAgreementTests
             declaration is not null,
             "No migration declares a CHECK constraint named 'sessions_status_check' on 'status'.");
 
-        return declaration!.Groups["values"].Value
+        return ParseValues(declaration!);
+    }
+
+    private static HashSet<string> ParseValues(Match declaration) =>
+        declaration.Groups["values"].Value
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Select(v => v.Trim('\''))
             .ToHashSet(StringComparer.Ordinal);
-    }
 }

@@ -621,7 +621,11 @@ public class ConversationOrchestratorTests
         _connectionTracker.Setup(t => t.Untrack("conn1")).Returns(info);
 
         var orchestrator = CreateOrchestrator();
-        await orchestrator.HandleDisconnectAsync("conn1", new OperationCanceledException(), CancellationToken.None);
+        using var stopping = new CancellationTokenSource();
+        await stopping.CancelAsync();
+
+        await orchestrator.HandleDisconnectAsync(
+            "conn1", new OperationCanceledException(), stopping.Token);
 
         _obsStore.Verify(
             s => s.EndSessionAsync(
@@ -631,6 +635,42 @@ public class ConversationOrchestratorTests
         _obsStore.Verify(
             s => s.EndSessionAsync(
                 It.IsAny<Guid>(), SessionStatus.Error, It.IsAny<string?>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    /// <summary>
+    /// A transport that timed out is a failure, even though it arrives as the same exception type a
+    /// deliberate stop does.
+    /// </summary>
+    /// <remarks>
+    /// <c>TaskCanceledException</c> derives from <c>OperationCanceledException</c> and is what a
+    /// keepalive or read timeout throws with nobody having cancelled anything. Matching on the type
+    /// alone reclassified a broken transport as a tidy goodbye — and, because the error log had just
+    /// been routed through a status check, stopped recording it at any level at all.
+    /// </remarks>
+    [Fact]
+    public async Task HandleDisconnect_WithATimeoutRatherThanACancellation_StillRecordsError()
+    {
+        var sessionId = Guid.NewGuid();
+        var info = new ActiveConversationInfo("c1", "agent", "user1", DateTimeOffset.UtcNow, 1, sessionId);
+        _connectionTracker.Setup(t => t.Untrack("conn1")).Returns(info);
+
+        var orchestrator = CreateOrchestrator();
+
+        // Nothing cancelled: the token is live, the exception merely looks like a cancellation.
+        await orchestrator.HandleDisconnectAsync(
+            "conn1", new TaskCanceledException("read timed out"), CancellationToken.None);
+
+        _obsStore.Verify(
+            s => s.EndSessionAsync(
+                sessionId, SessionStatus.Error, "connection.dropped_with_exception",
+                It.IsAny<CancellationToken>()),
+            Times.Once);
+
+        _obsStore.Verify(
+            s => s.EndSessionAsync(
+                It.IsAny<Guid>(), SessionStatus.Cancelled, It.IsAny<string?>(),
+                It.IsAny<CancellationToken>()),
             Times.Never);
     }
 

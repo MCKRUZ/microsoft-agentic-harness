@@ -58,8 +58,13 @@ public sealed class SessionsController : ControllerBase
     /// <param name="limit">Maximum number of sessions to return (1-200, default 50).</param>
     /// <param name="offset">Number of sessions to skip for pagination (default 0).</param>
     /// <param name="status">
-    /// Optional status filter: <c>active</c>, <c>completed</c> or <c>error</c>, matched
-    /// case-insensitively. Any other word is a 400 — see the remarks on the 400 response.
+    /// Optional status filter: any member of <see cref="SessionStatus"/>, matched case-insensitively.
+    /// Any other word is a 400 — see the remarks on the 400 response.
+    /// <para>
+    /// Deliberately not an enumeration of the accepted words. The list was written out here once and
+    /// went stale the moment the vocabulary grew; the code below derives the accepted set from the
+    /// enum, so there is nothing here left to keep in sync.
+    /// </para>
     /// </param>
     /// <param name="since">Optional Unix epoch seconds lower bound on started_at.</param>
     /// <param name="until">Optional Unix epoch seconds upper bound on started_at.</param>

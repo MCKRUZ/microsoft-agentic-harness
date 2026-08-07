@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Reflection;
 
 namespace Infrastructure.Postgres.Migrations;
@@ -64,37 +63,36 @@ public static class EmbeddedSqlMigrationSource
         foreach (var name in names)
         {
             var id = name[prefix.Length..^".sql".Length];
-            var ordinal = ParseOrdinal(id, assembly);
 
-            if (seen.TryGetValue(ordinal, out var clash))
+            // The ordinal is parsed by MigrationScript itself, which throws if the name has no
+            // numeric prefix. Rethrown here with the assembly named, because "migration 'schema'
+            // does not start with a number" is a good deal easier to act on when you know which
+            // assembly's Migrations folder to go and look in.
+            MigrationScript script;
+            try
+            {
+                script = new MigrationScript(id, ReadResource(assembly, name));
+            }
+            catch (ArgumentException ex)
             {
                 throw new InvalidOperationException(
-                    $"Migrations '{clash}' and '{id}' share ordinal {ordinal} in assembly " +
+                    $"Migration '{id}' in assembly '{assembly.GetName().Name}' is not usable: {ex.Message}",
+                    ex);
+            }
+
+            if (seen.TryGetValue(script.Ordinal, out var clash))
+            {
+                throw new InvalidOperationException(
+                    $"Migrations '{clash}' and '{id}' share ordinal {script.Ordinal} in assembly " +
                     $"'{assembly.GetName().Name}'. Two scripts with the same ordinal have no " +
                     "defined order between them; renumber one of them.");
             }
 
-            seen[ordinal] = id;
-            scripts.Add(new MigrationScript(ordinal, id, ReadResource(assembly, name)));
+            seen[script.Ordinal] = id;
+            scripts.Add(script);
         }
 
         return scripts.OrderBy(s => s.Ordinal).ToArray();
-    }
-
-    private static int ParseOrdinal(string id, Assembly assembly)
-    {
-        var digits = 0;
-        while (digits < id.Length && char.IsAsciiDigit(id[digits])) digits++;
-
-        if (digits == 0)
-        {
-            throw new InvalidOperationException(
-                $"Migration '{id}' in assembly '{assembly.GetName().Name}' does not start with a " +
-                "number. Apply order is determined by that prefix, so it is required — name the " +
-                "file like '001_baseline_schema.sql'.");
-        }
-
-        return int.Parse(id[..digits], CultureInfo.InvariantCulture);
     }
 
     private static string ReadResource(Assembly assembly, string name)

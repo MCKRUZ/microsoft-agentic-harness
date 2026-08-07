@@ -41,8 +41,24 @@ GRANT USAGE ON SCHEMA public TO grafana_reader;
 -- Retroactive, for a database that already has tables.
 GRANT SELECT ON ALL TABLES IN SCHEMA public TO grafana_reader;
 
--- Prospective, and the important one. Every table the migration runner creates
--- from here on is readable by Grafana without any migration having to grant it —
--- which is what lets the migrations stay pure schema and stay runnable against a
+-- Prospective, and the important one: tables the migration runner creates from
+-- here on are readable by Grafana without any migration having to grant it, which
+-- is what lets the migrations stay pure schema and stay runnable against a
 -- database where this role was never provisioned at all.
+--
+-- READ THIS BEFORE ADAPTING THE FILE. Default privileges attach to the role that
+-- GRANTS them, not to the schema. Written without FOR ROLE, the statement below
+-- covers only tables created by whoever runs this script. On the docker-compose
+-- path that is the same account the harness connects as, so it just works. On a
+-- managed Postgres — where the header above tells you to run this yourself — you
+-- will typically run it as an admin while the harness connects as something else,
+-- and then it silently covers nothing, because every migration-created table is
+-- owned by the app role instead. Name that role explicitly:
+--
+--   ALTER DEFAULT PRIVILEGES FOR ROLE <role the harness connects as>
+--       IN SCHEMA public GRANT SELECT ON TABLES TO grafana_reader;
+--
+-- The symptom of getting this wrong is Grafana reporting "permission denied" on
+-- tables that plainly exist, which reads like a broken dashboard rather than a
+-- missing grant.
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO grafana_reader;

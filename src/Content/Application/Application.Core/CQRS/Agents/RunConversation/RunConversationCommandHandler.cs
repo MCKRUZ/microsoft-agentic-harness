@@ -453,7 +453,13 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 				Governance = governanceTraces.Count > 0 ? GovernanceTrace.Merge(governanceTraces) : null
 			};
 		}
-		catch (OperationCanceledException)
+		// The filter is load-bearing, not decoration. TaskCanceledException derives from
+		// OperationCanceledException and is what an HTTP client throws when a request exceeds its
+		// timeout — with nobody having cancelled anything. Catching the base type unfiltered would
+		// file a model call that timed out as a deliberate stop: absent from the error rate, and
+		// silent, because only the general handler below logs. Asking the token whether cancellation
+		// was actually requested is what separates "the caller walked away" from "the call failed".
+		catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
 		{
 			// Caller cancellation (e.g. client disconnect) is routine, not exceptional, and the exception
 			// is rethrown rather than turned into a failed result: a caller that walked away is not a run

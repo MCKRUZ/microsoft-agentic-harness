@@ -81,9 +81,7 @@ public sealed class PostgresFixture : IAsyncLifetime
         await using var connection = await DataSource.OpenConnectionAsync();
 
         var runner = new PostgresMigrationRunner(
-            ObservabilityMigrations.Options,
-            ObservabilityMigrations.Load(),
-            NullLogger.Instance);
+            ObservabilityMigrations.Options, ObservabilityMigrations.Load(), NullLogger.Instance);
 
         await runner.ApplyAsync(connection);
     }

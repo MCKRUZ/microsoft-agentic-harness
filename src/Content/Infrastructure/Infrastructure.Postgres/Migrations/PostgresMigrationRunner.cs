@@ -52,8 +52,6 @@ public sealed class PostgresMigrationRunner
         ArgumentNullException.ThrowIfNull(scripts);
         ArgumentNullException.ThrowIfNull(logger);
 
-        options.Validate();
-
         _options = options;
 
         // Sorted here rather than trusted from the caller. EmbeddedSqlMigrationSource already returns
@@ -100,15 +98,12 @@ public sealed class PostgresMigrationRunner
         var applied = await ReadAppliedAsync(connection, transaction, cancellationToken);
 
         var pending = _scripts.Where(s => !applied.Contains(s.Id)).ToArray();
-        if (pending.Length == 0)
-        {
-            await transaction.CommitAsync(cancellationToken);
-            _logger.LogDebug(
-                "Schema is current: {Total} migration(s) already applied in ledger {Ledger}.",
-                _scripts.Count, _options.LedgerTable);
-            return 0;
-        }
 
+        // No early return for the up-to-date case. It existed only to log at Debug instead of
+        // Information, and it bought that with a second CommitAsync and a second exit from the one
+        // block whose entire contract is "did the transaction close" — the shape where a later edit
+        // most easily lands on one branch and not the other. The loop is already a no-op when
+        // nothing is pending, so the commit stays in one place and the logging branches after it.
         foreach (var script in pending)
         {
             try
@@ -129,9 +124,18 @@ public sealed class PostgresMigrationRunner
 
         await transaction.CommitAsync(cancellationToken);
 
-        _logger.LogInformation(
-            "Applied {Count} schema migration(s) to ledger {Ledger}: {Migrations}.",
-            pending.Length, _options.LedgerTable, string.Join(", ", pending.Select(s => s.Id)));
+        if (pending.Length == 0)
+        {
+            _logger.LogDebug(
+                "Schema is current: {Total} migration(s) already applied in ledger {Ledger}.",
+                _scripts.Count, _options.LedgerTable);
+        }
+        else
+        {
+            _logger.LogInformation(
+                "Applied {Count} schema migration(s) to ledger {Ledger}: {Migrations}.",
+                pending.Length, _options.LedgerTable, string.Join(", ", pending.Select(s => s.Id)));
+        }
 
         return pending.Length;
     }

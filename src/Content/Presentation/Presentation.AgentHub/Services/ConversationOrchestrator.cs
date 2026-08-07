@@ -211,15 +211,22 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
         // This path is where the string "errored" came from; see SessionStatus for what the database
         // did with it and why the parameter is typed now.
         //
-        // A cancellation is separated out from the other exceptions rather than lumped in with them.
-        // An OperationCanceledException here means the connection went away deliberately — the client
-        // navigated, the host is shutting down — which is the single most common way a conversation
-        // ends and is not a failure. Counting it as one is not cosmetic: the dashboards' error-rate
-        // panel is literally `status = 'error'`, so every ordinary disconnect inflated it.
+        // A deliberate stop is separated out from the other exceptions rather than lumped in with
+        // them: a client that navigated away or a host shutting down is the single most common way a
+        // conversation ends and is not a failure. Counting it as one is not cosmetic — the dashboards'
+        // error-rate panel is literally `status = 'error'`, so every ordinary disconnect inflated it.
+        //
+        // The token check is what makes that split safe. TaskCanceledException derives from
+        // OperationCanceledException and is also what a keepalive or read timeout throws with nobody
+        // having cancelled anything, so matching on the type alone would quietly reclassify a broken
+        // transport as a tidy goodbye — and, given the logging below, stop recording it at all.
+        var deliberatelyStopped =
+            exception is OperationCanceledException && ct.IsCancellationRequested;
+
         var status = exception switch
         {
             null => SessionStatus.Completed,
-            OperationCanceledException => SessionStatus.Cancelled,
+            _ when deliberatelyStopped => SessionStatus.Cancelled,
             _ => SessionStatus.Error,
         };
 
@@ -235,6 +242,18 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
                 exception,
                 "Connection for conversation {ConversationId} dropped with an exception; the session is "
                     + "recorded as errored",
+                info.ConversationId);
+        }
+        else if (exception is not null)
+        {
+            // A deliberate stop still gets a record, at a level that does not cry wolf. Routing the
+            // Error log through a status check alone would have made this branch log nothing at all
+            // and drop the exception on the floor — trading an over-reported failure for an
+            // unreported one, which is the worse of the two.
+            _logger.LogDebug(
+                exception,
+                "Connection for conversation {ConversationId} was cancelled; the session is recorded "
+                    + "as cancelled rather than errored",
                 info.ConversationId);
         }
 

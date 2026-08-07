@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using Npgsql;
 
 namespace Infrastructure.Postgres.Migrations;
@@ -19,7 +20,17 @@ namespace Infrastructure.Postgres.Migrations;
 /// restart to recover from a condition that fixes itself.
 /// </para>
 /// </remarks>
-public sealed class PostgresSchemaGate : IDisposable
+/// <remarks>
+/// <para>
+/// Deliberately NOT <see cref="IDisposable"/>. It was, briefly, because it holds a
+/// <see cref="SemaphoreSlim"/> — and the ceremony was immediately skipped by one of its two
+/// consumers, which is the tell that it was never needed. A <see cref="SemaphoreSlim"/> only needs
+/// disposing if its <c>AvailableWaitHandle</c> has been touched, which allocates the underlying
+/// handle; nothing here touches it. Exporting a lifetime requirement that does not exist buys
+/// nothing and gives every consumer a decision it can get wrong.
+/// </para>
+/// </remarks>
+public sealed class PostgresSchemaGate
 {
     private readonly PostgresMigrationRunner _runner;
     private readonly SemaphoreSlim _gate = new(1, 1);
@@ -31,6 +42,24 @@ public sealed class PostgresSchemaGate : IDisposable
     {
         ArgumentNullException.ThrowIfNull(runner);
         _runner = runner;
+    }
+
+    /// <summary>
+    /// Initializes a new instance that builds its own runner — the shape both stores actually want.
+    /// </summary>
+    /// <param name="options">Ledger table and advisory lock key for this migration set.</param>
+    /// <param name="scripts">The migration set, in any order.</param>
+    /// <param name="logger">Logger recording which migrations were applied.</param>
+    /// <remarks>
+    /// Exists because both consumers were writing the same nested double-construction. The
+    /// runner-taking overload stays for the test fixture, which needs to hold the runner itself.
+    /// </remarks>
+    public PostgresSchemaGate(
+        PostgresMigrationOptions options,
+        IReadOnlyList<MigrationScript> scripts,
+        ILogger logger)
+        : this(new PostgresMigrationRunner(options, scripts, logger))
+    {
     }
 
     /// <summary>

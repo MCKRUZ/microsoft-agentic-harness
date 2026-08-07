@@ -183,13 +183,32 @@ docker run -d --name jaeger \
                         and <code>SessionTimeline</code> ("view full →" link → <code>/sessions/:id/files/:messageId</code>).
                     </p>
                     <p>
-                        Schema migration: existing observability databases need
-                        <code>psql -f Dashboards/init-db/03-message-and-tool-bodies.sql</code> to add the
-                        <code>content_full</code>, <code>call_id</code>, <code>args</code>, and
-                        <code>stdout</code> columns. Fresh installs pick the schema up automatically via the
-                        alphabetical Docker entrypoint order. Rows recorded before the migration return
+                        Schema migration: nothing to run by hand. The
+                        <code>content_full</code>, <code>call_id</code>, <code>args</code> and
+                        <code>stdout</code> columns arrive from migration
+                        <code>004_message_and_tool_bodies.sql</code>, which the harness applies itself on the
+                        first database connection it opens. Rows recorded before that migration ran return
                         <code>contentFull: null</code>; the dashboard renders a banner explaining the preview
                         fallback in that case.
+                    </p>
+                    <p>
+                        This page previously told you to apply that file yourself with <code>psql</code>, because
+                        the schema used to be delivered by SQL mounted into the Postgres container — and Postgres
+                        runs those scripts <em>only</em> when it first creates an empty data directory. A database
+                        that already held data could not receive a schema change at all, so hand-applying was the
+                        only route. That is fixed: schema now ships as numbered migrations embedded in the
+                        application, applied under a lock, with a ledger table recording what has already run, so
+                        an installation that has been live for months picks up exactly the changes it is missing.
+                    </p>
+                    <p>
+                        Two things worth knowing if you are adapting this for your own deployment. To add a schema
+                        change, drop a numbered <code>.sql</code> file into
+                        <code>Infrastructure.Observability/Migrations/</code> — it is embedded automatically and
+                        applied in numeric order; write it to be safely re-runnable. And
+                        <code>Dashboards/postgres-bootstrap/</code> is a separate, once-per-cluster step that
+                        creates the read-only role Grafana connects as. That one is <em>not</em> applied by the
+                        application, because creating a role needs a privilege no least-privilege application
+                        account should hold — against a managed Postgres you run it yourself, once.
                     </p>
 
                     <hr />

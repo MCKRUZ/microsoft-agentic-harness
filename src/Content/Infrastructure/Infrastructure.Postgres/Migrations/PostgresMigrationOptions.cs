@@ -8,7 +8,14 @@ namespace Infrastructure.Postgres.Migrations;
 /// Unqualified name of the table recording which scripts have been applied. It is interpolated into
 /// DDL rather than parameterized — Postgres does not accept a parameter where an identifier belongs
 /// — so the value must be a literal chosen by the harness, never anything derived from user input.
-/// <see cref="Validate"/> enforces that.
+/// The constructor enforces that it is a bare lower-case identifier.
+/// <para>
+/// Prefix it with the subsystem, as <c>obs_schema_migrations</c> and <c>kg_schema_migrations</c> do.
+/// A bare <c>schema_migrations</c> is the name Rails, Flyway and Django all use verbatim, so a
+/// consumer who points the harness at an existing application database would collide with a ledger
+/// that is not ours — the runner would read someone else's table, find none of its ids, and apply
+/// its whole baseline.
+/// </para>
 /// </param>
 /// <param name="AdvisoryLockKey">
 /// The key passed to <c>pg_advisory_xact_lock</c> to serialize migration runs across processes.
@@ -18,27 +25,36 @@ namespace Infrastructure.Postgres.Migrations;
 public sealed record PostgresMigrationOptions(string LedgerTable, long AdvisoryLockKey)
 {
     /// <summary>
-    /// Throws if <see cref="LedgerTable"/> is anything other than a plain lower-case identifier.
+    /// The ledger table name, guaranteed to be a bare lower-case identifier.
     /// </summary>
     /// <remarks>
-    /// The name reaches Postgres by string interpolation, which is ordinarily how SQL injection
-    /// arrives. It cannot be parameterized, so the defence has to be that the value is not
-    /// attacker-reachable — and this check is what makes that claim checkable rather than assumed.
+    /// Checked here rather than in a separate <c>Validate()</c> the caller had to remember. That is
+    /// how it was written first, and the giveaway was the test that had to exist to document the
+    /// seam: a record that can hold an invalid value plus one constructor that happens to check it is
+    /// strictly worse than a record that cannot hold one. The name reaches Postgres by string
+    /// interpolation, which is ordinarily how SQL injection arrives; the defence is that the value
+    /// cannot be attacker-reachable, and this is what makes that claim checkable rather than assumed.
     /// </remarks>
-    /// <exception cref="ArgumentException">The ledger table name is empty or not a bare identifier.</exception>
-    public void Validate()
-    {
-        if (string.IsNullOrWhiteSpace(LedgerTable))
-            throw new ArgumentException("A migration ledger table name is required.", nameof(LedgerTable));
+    /// <exception cref="ArgumentException">
+    /// The name is empty or contains anything other than lower-case letters, digits and underscores.
+    /// </exception>
+    public string LedgerTable { get; } = ValidateLedgerTable(LedgerTable);
 
-        foreach (var c in LedgerTable)
+    private static string ValidateLedgerTable(string ledgerTable)
+    {
+        if (string.IsNullOrWhiteSpace(ledgerTable))
+            throw new ArgumentException("A migration ledger table name is required.", nameof(ledgerTable));
+
+        foreach (var c in ledgerTable)
         {
             if (c is (>= 'a' and <= 'z') or (>= '0' and <= '9') or '_') continue;
 
             throw new ArgumentException(
-                $"Ledger table '{LedgerTable}' must contain only lower-case letters, digits and " +
+                $"Ledger table '{ledgerTable}' must contain only lower-case letters, digits and " +
                 "underscores. The name is interpolated into DDL and cannot be parameterized.",
-                nameof(LedgerTable));
+                nameof(ledgerTable));
         }
+
+        return ledgerTable;
     }
 }

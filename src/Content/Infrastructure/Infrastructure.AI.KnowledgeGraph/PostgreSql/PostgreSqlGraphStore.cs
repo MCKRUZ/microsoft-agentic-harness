@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Reflection;
 using System.Text.Json;
 using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Infrastructure.Postgres.Migrations;
@@ -63,10 +62,10 @@ public sealed class PostgreSqlGraphStore : IKnowledgeGraphStore
                 "GraphRag.ConnectionString must be configured when using the 'postgresql' graph provider.");
         _logger = logger;
 
-        _schema = new PostgresSchemaGate(new PostgresMigrationRunner(
+        _schema = new PostgresSchemaGate(
             MigrationOptions,
-            EmbeddedSqlMigrationSource.Load(Assembly.GetExecutingAssembly()),
-            logger));
+            EmbeddedSqlMigrationSource.Load(typeof(PostgreSqlGraphStore).Assembly),
+            logger);
     }
 
     /// <inheritdoc />

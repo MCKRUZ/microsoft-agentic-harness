@@ -8,11 +8,27 @@
 -- because the only delivery mechanism reached databases being created for the
 -- first time.
 --
--- The old constraint is dropped by DISCOVERED name, not by assumed name. A
--- database created by 001 has 'sessions_status_check' because 001 says so, but a
--- database created before 001 was rewritten has whatever Postgres generated for
--- an inline column CHECK. Those happen to be the same string today; relying on
--- that would be assuming the very kind of thing this issue punished.
+-- The old constraint is dropped by DISCOVERED name rather than assumed name.
+--
+-- Be honest about how much that buys, because an earlier draft of this comment
+-- was not: for the two databases this template actually produces, the assumed
+-- name would have worked. A database created by 001 is named
+-- 'sessions_status_check' because 001 says so, and on a pre-#301 database
+-- Postgres's generated name for an inline column CHECK is '<table>_<column>_check'
+-- — the same string. Mutation-testing this proved it: replacing the lookup below
+-- with a hardcoded DROP ... IF EXISTS left every test green.
+--
+-- What the lookup covers is the database this template did not produce: one whose
+-- schema was hand-applied, adapted, or restored in a way that named the constraint
+-- something else, which is exactly the population #301 exists to reach and the one
+-- nobody can enumerate. There a hardcoded DROP silently matches nothing and the ADD
+-- then SUCCEEDS, because it declares a name nothing is using yet. Nothing errors,
+-- nothing rolls back, and the table is left carrying two status constraints — the
+-- old narrow one still refusing 'cancelled'. A silent half-upgrade that reports
+-- success is the exact failure shape #301 was filed about, which is why six lines
+-- to not depend on a naming convention are worth it. The control is the test named
+-- ...HandNamedConstraint...; with the lookup replaced by a hardcoded DROP it fails,
+-- and it is the only test here that does.
 -- =============================================================================
 
 DO $$

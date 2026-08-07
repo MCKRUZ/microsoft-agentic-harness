@@ -1,4 +1,8 @@
 using System.Net.Sockets;
+using System.Security.Cryptography;
+using System.Text;
+using Infrastructure.Postgres.Migrations;
+using Microsoft.Extensions.Logging.Abstractions;
 using Npgsql;
 using Xunit;
 
@@ -28,13 +32,16 @@ public sealed class MigrationTestSchema : IAsyncDisposable
     private const string DefaultConnectionString =
         "Host=localhost;Port=5432;Database=observability;Username=observability;Password=observability";
 
+    /// <summary>Ledger table used by tests that do not care which ledger they write to.</summary>
+    private const string TestLedgerTable = "test_schema_migrations";
+
     private MigrationTestSchema(NpgsqlDataSource dataSource, string schemaName)
     {
         DataSource = dataSource;
         SchemaName = schemaName;
     }
 
-    /// <summary>Data source whose connections already have <see cref="SchemaName"/> as search_path.</summary>
+    /// <summary>Data source whose connections resolve unqualified names to <see cref="SchemaName"/>.</summary>
     public NpgsqlDataSource DataSource { get; }
 
     /// <summary>The throwaway schema this instance owns.</summary>
@@ -49,8 +56,8 @@ public sealed class MigrationTestSchema : IAsyncDisposable
     /// still proving nothing extra — the one test that genuinely needs two runners to contend simply
     /// uses the same schema, and therefore the same key.
     /// </remarks>
-    public long AdvisoryLockKey => BitConverter.ToInt64(
-        System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(SchemaName)));
+    public long AdvisoryLockKey =>
+        BitConverter.ToInt64(SHA256.HashData(Encoding.UTF8.GetBytes(SchemaName)));
 
     private static string ConnectionString =>
         Environment.GetEnvironmentVariable("OBSERVABILITY_TEST_CONN") ?? DefaultConnectionString;
@@ -69,40 +76,81 @@ public sealed class MigrationTestSchema : IAsyncDisposable
         try
         {
             probe = NpgsqlDataSource.Create(ConnectionString);
+
             await using (var ping = probe.CreateCommand("SELECT 1"))
                 await ping.ExecuteScalarAsync();
+
+            var schemaName = $"mig_{Guid.NewGuid():N}";
+            await using (var create = probe.CreateCommand($"CREATE SCHEMA \"{schemaName}\""))
+                await create.ExecuteNonQueryAsync();
+
+            // Search Path belongs in the connection string, not in a physical-connection initializer.
+            // The initializer was the first thing tried and it silently did not hold: Npgsql resets a
+            // connection's session state when it goes back to the pool, and the initializer does not
+            // re-run when that physical connection is handed out again — so the first command after
+            // each physical open landed in the throwaway schema and every command after it landed in
+            // public. The tests still passed their early assertions and then failed on counts that had
+            // collected every other test's rows, which is a good deal more confusing than an error.
+            var builder = new NpgsqlConnectionStringBuilder(ConnectionString) { SearchPath = schemaName };
+
+            return new MigrationTestSchema(NpgsqlDataSource.Create(builder.ConnectionString), schemaName);
         }
         catch (Exception ex) when (!IsConnectionExplicitlyConfigured && IsServerAbsent(ex))
         {
-            probe?.Dispose();
             Skip.If(true,
                 "Postgres is not provisioned for this run (set OBSERVABILITY_TEST_CONN or start a " +
                 "local Postgres on localhost:5432). The test is skipped rather than reported as a " +
                 "silent pass.");
             throw; // unreachable; Skip.If throws.
         }
+        finally
+        {
+            // In a finally, not on each exit path. It was written per-path first and leaked the probe
+            // whenever CREATE SCHEMA itself failed — a data source and its whole pool, per failure,
+            // for the life of the test process.
+            probe?.Dispose();
+        }
+    }
 
-        var schemaName = $"mig_{Guid.NewGuid():N}";
-        await using (var create = probe.CreateCommand($"CREATE SCHEMA \"{schemaName}\""))
-            await create.ExecuteNonQueryAsync();
+    /// <summary>
+    /// Applies a migration set to this schema and returns how many ran.
+    /// </summary>
+    /// <param name="scripts">The migrations to apply.</param>
+    /// <param name="ledgerTable">Ledger table to record them in; defaults to a test-owned name.</param>
+    /// <returns>The number of migrations applied.</returns>
+    public async Task<int> ApplyAsync(
+        IReadOnlyList<MigrationScript> scripts, string ledgerTable = TestLedgerTable)
+    {
+        var runner = new PostgresMigrationRunner(
+            new PostgresMigrationOptions(ledgerTable, AdvisoryLockKey),
+            scripts,
+            NullLogger.Instance);
 
-        probe.Dispose();
-
-        // Search Path belongs in the connection string, not in a physical-connection initializer.
-        // The initializer was the first thing tried and it silently did not hold: Npgsql resets a
-        // connection's session state when it goes back to the pool, and the initializer does not
-        // re-run when that physical connection is handed out again — so the first command after each
-        // physical open landed in the throwaway schema and every command after it landed in public.
-        // The tests still passed their early assertions and then failed on counts that had collected
-        // every other test's rows, which is a good deal more confusing than an outright error.
-        var builder = new NpgsqlConnectionStringBuilder(ConnectionString) { SearchPath = schemaName };
-
-        return new MigrationTestSchema(NpgsqlDataSource.Create(builder.ConnectionString), schemaName);
+        await using var connection = await OpenAsync();
+        return await runner.ApplyAsync(connection);
     }
 
     /// <summary>Opens a connection already scoped to this schema.</summary>
     /// <returns>An open connection.</returns>
     public Task<NpgsqlConnection> OpenAsync() => DataSource.OpenConnectionAsync().AsTask();
+
+    /// <summary>Counts tables with the given name in this schema — 0 or 1.</summary>
+    /// <param name="tableName">Unqualified table name.</param>
+    /// <returns>1 if the table exists, otherwise 0.</returns>
+    public Task<int> CountTablesAsync(string tableName) =>
+        ScalarAsync<int>(
+            "SELECT COUNT(*) FROM information_schema.tables " +
+            $"WHERE table_schema = '{SchemaName}' AND table_name = '{tableName}'");
+
+    /// <summary>Counts columns with the given name on the given table in this schema — 0 or 1.</summary>
+    /// <param name="tableName">Unqualified table name.</param>
+    /// <param name="columnName">Column name.</param>
+    /// <returns>1 if the column exists, otherwise 0.</returns>
+    public Task<int> CountColumnsAsync(string tableName, string columnName) =>
+        ScalarAsync<int>(
+            "SELECT COUNT(*) FROM information_schema.columns " +
+            $"WHERE table_schema = '{SchemaName}' AND table_name = '{tableName}' " +
+            $"AND column_name = '{columnName}'");
 
     /// <summary>Runs a statement against this schema and returns the first column of the first row.</summary>
     /// <typeparam name="T">Expected scalar type.</typeparam>
@@ -113,14 +161,6 @@ public sealed class MigrationTestSchema : IAsyncDisposable
         await using var cmd = DataSource.CreateCommand(sql);
         var result = await cmd.ExecuteScalarAsync();
         return result is DBNull or null ? default : (T)Convert.ChangeType(result, typeof(T));
-    }
-
-    /// <summary>Runs a statement against this schema.</summary>
-    /// <param name="sql">The statement to run.</param>
-    public async Task ExecuteAsync(string sql)
-    {
-        await using var cmd = DataSource.CreateCommand(sql);
-        await cmd.ExecuteNonQueryAsync();
     }
 
     /// <summary>Runs a statement and returns the exception it raised, or null if it succeeded.</summary>
@@ -137,6 +177,14 @@ public sealed class MigrationTestSchema : IAsyncDisposable
         {
             return ex;
         }
+    }
+
+    /// <summary>Runs a statement against this schema.</summary>
+    /// <param name="sql">The statement to run.</param>
+    public async Task ExecuteAsync(string sql)
+    {
+        await using var cmd = DataSource.CreateCommand(sql);
+        await cmd.ExecuteNonQueryAsync();
     }
 
     private static bool IsServerAbsent(Exception ex)

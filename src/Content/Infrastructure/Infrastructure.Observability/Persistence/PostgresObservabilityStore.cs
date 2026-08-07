@@ -34,10 +34,8 @@ public sealed partial class PostgresObservabilityStore : IObservabilityStore, ID
     {
         _logger = logger;
 
-        _schema = new PostgresSchemaGate(new PostgresMigrationRunner(
-            ObservabilityMigrations.Options,
-            ObservabilityMigrations.Load(),
-            logger));
+        _schema = new PostgresSchemaGate(
+            ObservabilityMigrations.Options, ObservabilityMigrations.Load(), logger);
 
         var builder = new NpgsqlDataSourceBuilder(connectionString);
 
@@ -97,9 +95,5 @@ public sealed partial class PostgresObservabilityStore : IObservabilityStore, ID
     }
 
     /// <inheritdoc />
-    public void Dispose()
-    {
-        _dataSource.Dispose();
-        _schema.Dispose();
-    }
+    public void Dispose() => _dataSource.Dispose();
 }
