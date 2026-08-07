@@ -10,13 +10,15 @@ namespace Infrastructure.AI.Persistence;
 /// <remarks>
 /// <para>
 /// The model is configured inline here rather than through <c>IEntityTypeConfiguration</c> classes,
-/// matching <c>PromptUsageDbContext</c> and <see cref="GovernanceStateDbContext"/>. This is
-/// load-bearing, not stylistic:
-/// <see cref="PlannerDbContext"/> builds its model with
-/// <c>ApplyConfigurationsFromAssembly(typeof(PlannerDbContext).Assembly)</c>, which picks up
-/// <em>every</em> configuration class in Infrastructure.AI. A conversation configuration class would
-/// therefore be applied to the planner's model too, and <c>EnsureCreated</c> would quietly build
-/// conversation tables inside <c>planner.db</c>.
+/// matching <c>PromptUsageDbContext</c> and <see cref="GovernanceStateDbContext"/>.
+/// </para>
+/// <para>
+/// This used to be load-bearing: <see cref="PlannerDbContext"/> built its model by scanning the whole
+/// Infrastructure.AI assembly, so a conversation configuration class would have been applied to the
+/// planner's model too and <c>EnsureCreated</c> would have quietly built conversation tables inside
+/// <c>planner.db</c>. The planner now declares its five configurations explicitly, so the hazard is
+/// gone and configuration classes are safe here. Inline remains the convention across these contexts;
+/// it is now a style choice rather than a constraint.
 /// </para>
 /// </remarks>
 public sealed class ConversationDbContext : DbContext

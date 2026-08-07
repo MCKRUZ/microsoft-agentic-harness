@@ -60,6 +60,30 @@ public sealed class PlannerDbContextTests : IDisposable
     }
 
     [Fact]
+    public void PlannerDbContext_Model_ContainsOnlyPlannerEntities()
+    {
+        using var ctx = CreateContext();
+
+        var entities = ctx.Model.GetEntityTypes()
+            .Select(e => e.ClrType.Name)
+            .OrderBy(n => n, StringComparer.Ordinal)
+            .ToArray();
+
+        // The planner owns exactly these five. Anything else in this list means an entity from
+        // another subsystem has been pulled into the planner's database — which is what happens
+        // the moment this context goes back to configuring itself by scanning its whole assembly.
+        entities.Should().BeEquivalentTo(
+            [
+                nameof(PlanEdgeEntity),
+                nameof(PlanExecutionLogEntity),
+                nameof(PlanGraphEntity),
+                nameof(PlanStepEntity),
+                nameof(StepExecutionStateEntity)
+            ],
+            "the planner's model must be declared, not discovered");
+    }
+
+    [Fact]
     public async Task PlanGraphEntity_Insert_PersistsAllFields()
     {
         var id = Guid.NewGuid();
