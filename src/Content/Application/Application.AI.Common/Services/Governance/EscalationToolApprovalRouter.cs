@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.Interfaces.Governance;
+using Application.Common.Helpers;
 using Domain.AI.Changes;
 using Domain.AI.Escalation;
 using Domain.AI.Governance;
@@ -295,13 +296,24 @@ public sealed class EscalationToolApprovalRouter : IToolApprovalRouter
             : text;
     }
 
+    /// <summary>
+    /// Resolves the blast radius at or above which an approval is raised at Critical priority.
+    /// </summary>
+    /// <remarks>
+    /// Parses by member NAME only. A bare <see cref="Enum.TryParse{TEnum}(string?, bool, out TEnum)"/>
+    /// accepts any integer string, including one outside the defined range: <c>"99"</c> succeeded and
+    /// produced a <see cref="BlastRadius"/> of 99, which is not a member. The comparison below is
+    /// <c>radius >= threshold</c>, so that value silently made it impossible for any call to reach
+    /// Critical priority — the setting's entire purpose, disabled by a typo, with no warning
+    /// because parsing had "succeeded" (#296).
+    /// </remarks>
     private BlastRadius ParseCriticalThreshold(string configured)
     {
-        if (Enum.TryParse<BlastRadius>(configured, ignoreCase: true, out var parsed))
+        if (EnumNameHelper.TryParseName<BlastRadius>(configured, out var parsed))
             return parsed;
 
         _logger.LogWarning(
-            "ToolApproval:CriticalAtBlastRadius '{Configured}' is not a valid blast radius — treating as Critical.",
+            "ToolApproval:CriticalAtBlastRadius '{Configured}' is not a valid blast radius name — treating as Critical.",
             configured);
         return BlastRadius.Critical;
     }
@@ -321,8 +333,22 @@ public sealed class EscalationToolApprovalRouter : IToolApprovalRouter
     private static int QuorumFor(ApprovalStrategyType strategy, int approverCount) =>
         strategy == ApprovalStrategyType.Quorum ? (approverCount / 2) + 1 : 0;
 
+    /// <summary>
+    /// Resolves the configured approval strategy, falling back to <see cref="ApprovalStrategyType.AnyOf"/>.
+    /// </summary>
+    /// <remarks>
+    /// Parses by member NAME only, for the same reason as <see cref="ParseCriticalThreshold"/> and
+    /// with a sharper consequence. <c>DefaultEscalationService</c> resolves the strategy from
+    /// <em>keyed DI</em>, using the enum value as the key. An undefined value taken from a numeric
+    /// string has no registered service, so <c>GetRequiredKeyedService</c> throws — and this class's
+    /// own fail-closed catch converts that into a block. One mistyped character would refuse every
+    /// approval-required tool call for the life of the process, leaving nothing behind but a per-call
+    /// error log. Note that <c>EscalationRequestInvariants</c> does <em>not</em> catch this: it
+    /// checks the quorum threshold, not that the strategy names a defined member. Rejecting the
+    /// value here turns the whole failure into one warning and a documented default (#296).
+    /// </remarks>
     private static ApprovalStrategyType ParseStrategy(string configured) =>
-        Enum.TryParse<ApprovalStrategyType>(configured, ignoreCase: true, out var parsed)
+        EnumNameHelper.TryParseName<ApprovalStrategyType>(configured, out var parsed)
             ? parsed
             : ApprovalStrategyType.AnyOf;
 

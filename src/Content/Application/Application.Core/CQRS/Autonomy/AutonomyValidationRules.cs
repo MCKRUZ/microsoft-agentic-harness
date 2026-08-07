@@ -1,3 +1,4 @@
+using Application.Common.Helpers;
 using Domain.AI.Changes;
 
 namespace Application.Core.CQRS.Autonomy;
@@ -56,22 +57,19 @@ public static class AutonomyValidationRules
     /// <param name="parsed">The parsed member when the method returns <see langword="true"/>.</param>
     /// <returns><see langword="true"/> when <paramref name="value"/> names a defined member.</returns>
     /// <remarks>
-    /// <see cref="Enum.TryParse{TEnum}(string?, bool, out TEnum)"/> alone would accept any
-    /// integer string — including values outside the defined range — so this helper rejects
-    /// leading digits and signs outright and additionally requires
-    /// <see cref="Enum.IsDefined{TEnum}(TEnum)"/>. The wire contract is names only.
+    /// <para>
+    /// The rule itself lives in <see cref="EnumNameHelper.TryParseName{TEnum}"/>, in the layer that
+    /// <c>Application.AI.Common</c> can also reference. This stays as the autonomy read surface's
+    /// name for it: the wire contract is names only, and that statement belongs beside the messages
+    /// that report a violation of it.
+    /// </para>
+    /// <para>
+    /// It was NOT always shared, and the divergence had teeth — the runtime approval router parsed
+    /// the same governance setting with a bare <see cref="Enum.TryParse{TEnum}(string?, bool, out TEnum)"/>,
+    /// which accepts any integer string including one outside the defined range (#296).
+    /// </para>
     /// </remarks>
     public static bool TryParseEnumName<TEnum>(string? value, out TEnum parsed)
-        where TEnum : struct, Enum
-    {
-        parsed = default;
-
-        if (string.IsNullOrWhiteSpace(value))
-            return false;
-
-        if (char.IsAsciiDigit(value[0]) || value[0] is '-' or '+')
-            return false;
-
-        return Enum.TryParse(value, ignoreCase: true, out parsed) && Enum.IsDefined(parsed);
-    }
+        where TEnum : struct, Enum =>
+        EnumNameHelper.TryParseName(value, out parsed);
 }
