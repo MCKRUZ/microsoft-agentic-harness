@@ -1,8 +1,5 @@
-using Application.AI.Common.Interfaces;
-using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.Interfaces.Governance;
-using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Services.Governance;
 using Domain.AI.Escalation;
 using Domain.AI.Governance;
@@ -36,34 +33,12 @@ namespace Presentation.Common.Tests.Composition;
 /// </remarks>
 public sealed class ToolApprovalCompositionTests : IDisposable
 {
-    private const string HostSkillId = "approval-host-skill";
     private const string ToolName = "wire_funds";
     private const string Approver = "alice";
 
-    private readonly string _tempRoot;
-    private readonly string _skillsDir;
+    private readonly GovernedToolTestSkill _skill = new("approval");
 
-    public ToolApprovalCompositionTests()
-    {
-        _tempRoot = Path.Combine(Path.GetTempPath(), "composition-approval-" + Guid.NewGuid().ToString("N"));
-        _skillsDir = Path.Combine(_tempRoot, "skills");
-
-        var skillDir = Path.Combine(_skillsDir, "host");
-        Directory.CreateDirectory(skillDir);
-        File.WriteAllText(Path.Combine(skillDir, "SKILL.md"), $"""
-            ---
-            name: {HostSkillId}
-            description: A built-in skill used to resolve a governed tool.
-            ---
-            Host instructions.
-            """);
-    }
-
-    public void Dispose()
-    {
-        if (Directory.Exists(_tempRoot))
-            Directory.Delete(_tempRoot, recursive: true);
-    }
+    public void Dispose() => _skill.Dispose();
 
     /// <summary>
     /// Enforcement on, the permission default set to Ask so every tool resolves to "requires
@@ -71,7 +46,7 @@ public sealed class ToolApprovalCompositionTests : IDisposable
     /// </summary>
     private Dictionary<string, string?> Settings(bool approvalEnabled, bool escalationEnabled = true) => new()
     {
-        ["AppConfig:AI:Skills:BasePath"] = _skillsDir,
+        ["AppConfig:AI:Skills:BasePath"] = _skill.SkillsBasePath,
         ["AppConfig:AI:Governance:EnforceToolInvocation"] = "true",
         ["AppConfig:AI:Permissions:DefaultBehavior"] = "Ask",
         ["AppConfig:AI:Governance:Escalation:Enabled"] = escalationEnabled ? "true" : "false",
@@ -102,14 +77,14 @@ public sealed class ToolApprovalCompositionTests : IDisposable
             Settings(approvalEnabled: true), (services, _) => services.AddSingleton<IEscalationService>(escalation));
 
         var executed = false;
-        var tool = await BuildGovernedTool(provider,
+        var tool = await _skill.BuildGovernedToolAsync(provider,
             AIFunctionFactory.Create(() => { executed = true; return "transferred"; }, ToolName));
 
         using var scope = provider.CreateScope();
-        var (result, trace) = await InvokeUnderGovernedTurn(scope, tool);
+        var (result, trace) = await _skill.InvokeUnderGovernedTurnAsync(scope, tool);
 
         executed.Should().BeTrue("a human approved the call, so it must actually run");
-        ResultText(result).Should().Be("transferred");
+        GovernedToolTestSkill.ResultText(result).Should().Be("transferred");
         escalation.Requests.Should().ContainSingle()
             .Which.ToolName.Should().Be(ToolName, "the approver must be told which tool they are approving");
         trace.ToolDecisions.Should().ContainSingle()
@@ -125,14 +100,14 @@ public sealed class ToolApprovalCompositionTests : IDisposable
             Settings(approvalEnabled: true), (services, _) => services.AddSingleton<IEscalationService>(escalation));
 
         var executed = false;
-        var tool = await BuildGovernedTool(provider,
+        var tool = await _skill.BuildGovernedToolAsync(provider,
             AIFunctionFactory.Create(() => { executed = true; return "transferred"; }, ToolName));
 
         using var scope = provider.CreateScope();
-        var (result, trace) = await InvokeUnderGovernedTurn(scope, tool);
+        var (result, trace) = await _skill.InvokeUnderGovernedTurnAsync(scope, tool);
 
         executed.Should().BeFalse("an approver refused, so the tool must never have run");
-        ResultText(result).Should().Contain("is not permitted");
+        GovernedToolTestSkill.ResultText(result).Should().Contain("is not permitted");
         escalation.Requests.Should().ContainSingle("the human was still asked");
         trace.ToolDecisions.Should().ContainSingle()
             .Which.Outcome.Should().Be(ToolDecisionOutcome.PendingApproval);
@@ -148,11 +123,11 @@ public sealed class ToolApprovalCompositionTests : IDisposable
             Settings(approvalEnabled: false), (services, _) => services.AddSingleton<IEscalationService>(escalation));
 
         var executed = false;
-        var tool = await BuildGovernedTool(provider,
+        var tool = await _skill.BuildGovernedToolAsync(provider,
             AIFunctionFactory.Create(() => { executed = true; return "transferred"; }, ToolName));
 
         using var scope = provider.CreateScope();
-        var (_, trace) = await InvokeUnderGovernedTurn(scope, tool);
+        var (_, trace) = await _skill.InvokeUnderGovernedTurnAsync(scope, tool);
 
         executed.Should().BeFalse();
         escalation.Requests.Should().BeEmpty(
@@ -170,55 +145,16 @@ public sealed class ToolApprovalCompositionTests : IDisposable
             (services, _) => services.AddSingleton<IEscalationService>(escalation));
 
         var executed = false;
-        var tool = await BuildGovernedTool(provider,
+        var tool = await _skill.BuildGovernedToolAsync(provider,
             AIFunctionFactory.Create(() => { executed = true; return "transferred"; }, ToolName));
 
         using var scope = provider.CreateScope();
-        await InvokeUnderGovernedTurn(scope, tool);
+        await _skill.InvokeUnderGovernedTurnAsync(scope, tool);
 
         executed.Should().BeFalse();
         escalation.Requests.Should().BeEmpty(
             "the escalation subsystem's own master switch must still gate the routing");
     }
-
-    private static async Task<AIFunction> BuildGovernedTool(ServiceProvider provider, AIFunction probe)
-    {
-        var skill = provider.GetRequiredService<ISkillMetadataRegistry>().TryGet(HostSkillId);
-        skill.Should().NotBeNull("the built-in skill must be discoverable from the configured BasePath");
-
-        var tools = await provider.GetRequiredService<IToolChainBuilder>().BuildToolsAsync(
-            skill!, new Domain.AI.Skills.SkillAgentOptions { AdditionalTools = [probe] });
-
-        return tools.OfType<AIFunction>().Single(t => t.Name == probe.Name);
-    }
-
-    /// <summary>
-    /// Invokes a governed function inside a turn shaped exactly like
-    /// <c>ExecuteAgentTurnCommandHandler</c>'s — scoped context initialized, the scope's governor
-    /// published ambiently, and the accessor cleared in a finally.
-    /// </summary>
-    private static async Task<(object? Result, GovernanceTrace Trace)> InvokeUnderGovernedTurn(
-        IServiceScope scope, AIFunction function)
-    {
-        scope.ServiceProvider.GetRequiredService<IAgentExecutionContext>()
-            .Initialize("composition-approval-agent", "conv-approval", turnNumber: 1);
-
-        var governor = scope.ServiceProvider.GetRequiredService<IToolInvocationGovernor>();
-
-        // Begin rather than assign-and-null: nulling on teardown disarms whatever an enclosing flow
-        // armed, which is the idiom the accessor's own docs tell you not to use.
-        using var armedGovernor = ToolGovernanceAccessor.Begin(governor);
-
-        var result = await function.InvokeAsync(new AIFunctionArguments(), CancellationToken.None);
-        return (result, governor.GetTrace());
-    }
-
-    private static string ResultText(object? invocationResult) => invocationResult switch
-    {
-        System.Text.Json.JsonElement { ValueKind: System.Text.Json.JsonValueKind.String } element
-            => element.GetString()!,
-        _ => invocationResult?.ToString() ?? string.Empty,
-    };
 
     /// <summary>
     /// Stands in for the humans. Records every request it is handed so a test can assert whether

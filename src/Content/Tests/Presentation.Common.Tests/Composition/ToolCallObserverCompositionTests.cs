@@ -1,7 +1,4 @@
-using Application.AI.Common.Interfaces;
-using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Governance;
-using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Services.Governance;
 using Domain.AI.Governance;
 using FluentAssertions;
@@ -33,33 +30,11 @@ namespace Presentation.Common.Tests.Composition;
 /// </remarks>
 public sealed class ToolCallObserverCompositionTests : IDisposable
 {
-    private const string HostSkillId = "observer-host-skill";
     private const string ToolName = "wire_funds";
 
-    private readonly string _tempRoot;
-    private readonly string _skillsDir;
+    private readonly GovernedToolTestSkill _skill = new("observer");
 
-    public ToolCallObserverCompositionTests()
-    {
-        _tempRoot = Path.Combine(Path.GetTempPath(), "composition-observer-" + Guid.NewGuid().ToString("N"));
-        _skillsDir = Path.Combine(_tempRoot, "skills");
-
-        var skillDir = Path.Combine(_skillsDir, "host");
-        Directory.CreateDirectory(skillDir);
-        File.WriteAllText(Path.Combine(skillDir, "SKILL.md"), $"""
-            ---
-            name: {HostSkillId}
-            description: A built-in skill used to resolve a governed tool.
-            ---
-            Host instructions.
-            """);
-    }
-
-    public void Dispose()
-    {
-        if (Directory.Exists(_tempRoot))
-            Directory.Delete(_tempRoot, recursive: true);
-    }
+    public void Dispose() => _skill.Dispose();
 
     /// <param name="permission">
     /// The permission default every tool resolves under. "Allow" lets a call reach the observers;
@@ -67,7 +42,7 @@ public sealed class ToolCallObserverCompositionTests : IDisposable
     /// </param>
     private Dictionary<string, string?> Settings(string permission) => new()
     {
-        ["AppConfig:AI:Skills:BasePath"] = _skillsDir,
+        ["AppConfig:AI:Skills:BasePath"] = _skill.SkillsBasePath,
         ["AppConfig:AI:Governance:EnforceToolInvocation"] = "true",
         ["AppConfig:AI:Permissions:DefaultBehavior"] = permission,
     };
@@ -94,11 +69,11 @@ public sealed class ToolCallObserverCompositionTests : IDisposable
             Settings("Allow"), (services, _) => services.AddSingleton<IToolCallObserver>(observer));
 
         var executed = false;
-        var tool = await BuildGovernedTool(provider,
+        var tool = await _skill.BuildGovernedToolAsync(provider,
             AIFunctionFactory.Create(() => { executed = true; return "sent"; }, ToolName));
 
         using var scope = provider.CreateScope();
-        await InvokeUnderGovernedTurn(scope, tool);
+        await _skill.InvokeUnderGovernedTurnAsync(scope, tool);
 
         observer.Calls.Should().Be(1, "a registered rule must see every agent tool call");
         observer.LastObservation!.ToolName.Should().Be(ToolName);
@@ -115,15 +90,15 @@ public sealed class ToolCallObserverCompositionTests : IDisposable
             Settings("Allow"), (services, _) => services.AddSingleton<IToolCallObserver>(observer));
 
         var executed = false;
-        var tool = await BuildGovernedTool(provider,
+        var tool = await _skill.BuildGovernedToolAsync(provider,
             AIFunctionFactory.Create(() => { executed = true; return "sent"; }, ToolName));
 
         using var scope = provider.CreateScope();
-        var result = await InvokeUnderGovernedTurn(scope, tool);
+        var (result, _) = await _skill.InvokeUnderGovernedTurnAsync(scope, tool);
 
         executed.Should().BeFalse("the observer blocked the call, so the tool must never have run");
-        ResultText(result).Should().Contain("is not permitted");
-        ResultText(result).Should().NotContain("wire limit",
+        GovernedToolTestSkill.ResultText(result).Should().Contain("is not permitted");
+        GovernedToolTestSkill.ResultText(result).Should().NotContain("wire limit",
             "the rule's reasoning is operator-facing and must not reach the model");
     }
 
@@ -138,14 +113,14 @@ public sealed class ToolCallObserverCompositionTests : IDisposable
             Settings("Deny"), (services, _) => services.AddSingleton<IToolCallObserver>(observer));
 
         var executed = false;
-        var tool = await BuildGovernedTool(provider,
+        var tool = await _skill.BuildGovernedToolAsync(provider,
             AIFunctionFactory.Create(() => { executed = true; return "sent"; }, ToolName));
 
         using var scope = provider.CreateScope();
-        var (result, trace) = await InvokeUnderGovernedTurnWithTrace(scope, tool);
+        var (result, trace) = await _skill.InvokeUnderGovernedTurnAsync(scope, tool);
 
         executed.Should().BeFalse("the governor denied the call; no observer may override that");
-        ResultText(result).Should().Contain("is not permitted");
+        GovernedToolTestSkill.ResultText(result).Should().Contain("is not permitted");
         observer.Calls.Should().Be(0,
             "observers run after admission control — a denied call must never reach consumer code at all");
         trace.ToolDecisions.Should().ContainSingle()
@@ -165,61 +140,16 @@ public sealed class ToolCallObserverCompositionTests : IDisposable
             });
 
         var executed = false;
-        var tool = await BuildGovernedTool(provider,
+        var tool = await _skill.BuildGovernedToolAsync(provider,
             AIFunctionFactory.Create(() => { executed = true; return "sent"; }, ToolName));
 
         using var scope = provider.CreateScope();
-        await InvokeUnderGovernedTurn(scope, tool);
+        await _skill.InvokeUnderGovernedTurnAsync(scope, tool);
 
         executed.Should().BeFalse("a restrictive rule wins regardless of registration order");
         permissive.Calls.Should().Be(1);
         restrictive.Calls.Should().Be(1);
     }
-
-    private static async Task<AIFunction> BuildGovernedTool(ServiceProvider provider, AIFunction probe)
-    {
-        var skill = provider.GetRequiredService<ISkillMetadataRegistry>().TryGet(HostSkillId);
-        skill.Should().NotBeNull("the built-in skill must be discoverable from the configured BasePath");
-
-        var tools = await provider.GetRequiredService<IToolChainBuilder>().BuildToolsAsync(
-            skill!, new Domain.AI.Skills.SkillAgentOptions { AdditionalTools = [probe] });
-
-        return tools.OfType<AIFunction>().Single(t => t.Name == probe.Name);
-    }
-
-    private static async Task<object?> InvokeUnderGovernedTurn(IServiceScope scope, AIFunction function)
-    {
-        var (result, _) = await InvokeUnderGovernedTurnWithTrace(scope, function);
-        return result;
-    }
-
-    /// <summary>
-    /// Invokes a governed function inside a turn shaped exactly like
-    /// <c>ExecuteAgentTurnCommandHandler</c>'s — scoped context initialized, and both the governor
-    /// and the observer chain published ambiently for the duration.
-    /// </summary>
-    private static async Task<(object? Result, GovernanceTrace Trace)> InvokeUnderGovernedTurnWithTrace(
-        IServiceScope scope, AIFunction function)
-    {
-        scope.ServiceProvider.GetRequiredService<IAgentExecutionContext>()
-            .Initialize("composition-observer-agent", "conv-observer", turnNumber: 1);
-
-        var governor = scope.ServiceProvider.GetRequiredService<IToolInvocationGovernor>();
-        var chain = scope.ServiceProvider.GetRequiredService<IToolCallObserverChain>();
-
-        using var governorScope = ToolGovernanceAccessor.Begin(governor);
-        using var observerScope = ToolCallObserverAccessor.Begin(chain);
-
-        var result = await function.InvokeAsync(new AIFunctionArguments(), CancellationToken.None);
-        return (result, governor.GetTrace());
-    }
-
-    private static string ResultText(object? invocationResult) => invocationResult switch
-    {
-        System.Text.Json.JsonElement { ValueKind: System.Text.Json.JsonValueKind.String } element
-            => element.GetString()!,
-        _ => invocationResult?.ToString() ?? string.Empty,
-    };
 
     /// <summary>A consumer rule that answers as the test dictates and records what it was shown.</summary>
     private sealed class RecordingObserver(ToolCallVerdict verdict) : IToolCallObserver
