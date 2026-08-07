@@ -83,7 +83,7 @@ public sealed class AgtPolicyEngineAdapterTests
     [Fact]
     public void EvaluateToolCall_WithArguments_PassesThemAsContext()
     {
-        var args = new Dictionary<string, object> { ["path"] = "/etc/passwd" };
+        var args = new Dictionary<string, object?> { ["path"] = "/etc/passwd" };
 
         var decision = _adapter.EvaluateToolCall("agent-1", "read_file", args);
 

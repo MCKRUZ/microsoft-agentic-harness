@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Microsoft.Agents.AI;
+using Tests.Common;
 using Xunit;
 
 namespace Infrastructure.AI.Tests.Skills;
@@ -21,7 +22,7 @@ public class FrameworkLoaderSpikeTests
 
     public FrameworkLoaderSpikeTests()
     {
-        var repoRoot = FindRepoRoot(AppContext.BaseDirectory);
+        var repoRoot = RepoRoot.Path;
         _skillsRoot = Path.Combine(
             repoRoot,
             "src", "Content", "Application", "Application.Core", "Agents", "Skills");
@@ -94,18 +95,4 @@ public class FrameworkLoaderSpikeTests
             "AgentSkillsProvider should be an AIContextProvider for agent wiring");
     }
 
-    private static string FindRepoRoot(string startDir)
-    {
-        var dir = startDir;
-        while (dir != null)
-        {
-            if (File.Exists(Path.Combine(dir, "src", "AgenticHarness.slnx")))
-                return dir;
-
-            dir = Path.GetDirectoryName(dir);
-        }
-
-        throw new InvalidOperationException(
-            $"Could not find repo root (containing src/AgenticHarness.slnx) starting from {startDir}");
-    }
 }

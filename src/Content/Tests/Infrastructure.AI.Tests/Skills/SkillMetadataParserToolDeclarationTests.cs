@@ -2,6 +2,7 @@ using Domain.AI.Skills;
 using FluentAssertions;
 using Infrastructure.AI.Skills;
 using Microsoft.Extensions.Logging.Abstractions;
+using Tests.Common;
 using Xunit;
 
 namespace Infrastructure.AI.Tests.Skills;
@@ -386,7 +387,7 @@ public sealed class SkillMetadataParserToolDeclarationTests : IDisposable
     public void ParseFromFile_ShippedWorkspacePluginManifest_ParsesAllFiveDeclarations()
     {
         var manifest = Path.Combine(
-            RepositoryRoot(), "plugins", "workspace-skill", "skills", "workspace", "SKILL.md");
+            RepoRoot.Path, "plugins", "workspace-skill", "skills", "workspace", "SKILL.md");
 
         File.Exists(manifest).Should().BeTrue($"the shipped manifest should exist at {manifest}");
 
@@ -399,16 +400,6 @@ public sealed class SkillMetadataParserToolDeclarationTests : IDisposable
         skill.ToolDeclarations[0].Operations.Should().Equal("read");
         skill.ToolDeclarations[0].Description.Should()
             .Be("Read a file from the sandbox-injected working-copy path.");
-    }
-
-    private static string RepositoryRoot()
-    {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        while (dir is not null && !Directory.Exists(Path.Combine(dir.FullName, ".git")))
-            dir = dir.Parent;
-
-        return dir?.FullName
-            ?? throw new InvalidOperationException("Could not locate the repository root from the test output directory.");
     }
 
     /// <summary>
