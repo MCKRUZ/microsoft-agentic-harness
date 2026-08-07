@@ -204,7 +204,8 @@ public sealed class ToolCallObserverChain : IToolCallObserverChain
         // truthfully, because it was the governor's own verdict — and observers run after it. Without
         // this, the trace reports Allowed for a call that never executed, and every consumer of it
         // (bundle-run reporting, the dashboard, the audit) is wrong for precisely the calls a
-        // consumer's safety rule stopped.
+        // consumer's safety rule stopped. It corrects the trace only; the audit line above is the one
+        // and only audit record for this block.
         ToolGovernanceAccessor.Current?.RecordDownstreamBlock(
             toolName, $"blocked by observer '{observerName}': {reason}");
 

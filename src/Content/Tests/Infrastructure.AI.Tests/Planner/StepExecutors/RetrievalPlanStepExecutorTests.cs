@@ -60,6 +60,7 @@ public sealed class RetrievalPlanStepExecutorTests
             _mockCostTracker.Object,
             _mockNotifier.Object,
             _governor.Object,
+            Mock.Of<IToolCallObserverChain>(),
             _context,
             NullLogger<RetrievalPlanStepExecutor>.Instance);
     }

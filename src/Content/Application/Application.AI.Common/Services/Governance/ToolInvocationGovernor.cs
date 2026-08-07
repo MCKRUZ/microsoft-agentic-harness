@@ -293,7 +293,12 @@ public sealed partial class ToolInvocationGovernor : IToolInvocationGovernor
         var governance = _governanceConfig.CurrentValue;
         if (governance.Enabled && _policyEngine.HasPolicies)
         {
-            var decision = _policyEngine.EvaluateToolCall(agentId, toolName);
+            // Arguments are forwarded. The policy engine builds its rule-evaluation context from them,
+            // so a rule conditioned on an argument value ("deny sql_query where database == 'prod'")
+            // can only ever match when they are supplied. Passing the tool name alone did not make
+            // such rules deny-by-default — it made them unmatchable, so an operator's rule was loaded,
+            // reported as active, and silently never fired on the live tool path.
+            var decision = _policyEngine.EvaluateToolCall(agentId, toolName, arguments);
 
             // The outcome is audited once below — by Blocked() on a deny, or by the final Allowed
             // audit on success — so the policy action is not logged separately here.
@@ -417,8 +422,11 @@ public sealed partial class ToolInvocationGovernor : IToolInvocationGovernor
         Record(new ToolDecisionRecord(toolName, ToolDecisionOutcome.Denied, reason, radius,
             RequiredApproval: false, ApprovalGranted: false, Enforced: true));
 
-        if (_governanceConfig.CurrentValue.EnableAudit)
-            _auditService.Log(_executionContext.AgentId ?? "unknown", toolName, ToolDecisionOutcome.Denied.ToString());
+        // Deliberately no audit write. This method corrects the trace on behalf of a gate that has
+        // already audited its own refusal in its own vocabulary; writing a second line here would make
+        // every downstream block count twice for anyone tallying denials from the audit stream. The
+        // caller audits because it always can — this method is inert off the enforced path, and a host
+        // may register observers with governance enforcement switched off.
     }
 
     /// <inheritdoc />

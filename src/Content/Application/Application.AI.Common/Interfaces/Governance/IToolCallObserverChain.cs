@@ -7,9 +7,11 @@ namespace Application.AI.Common.Interfaces.Governance;
 /// <remarks>
 /// <para>
 /// Consulted at the same invocation chokepoint as the governor, the classification gate, and the
-/// progress guard — and last among them, so an observer only sees calls the built-in gates have
-/// already permitted. That ordering is what makes an observer unable to widen access: by the time
-/// it runs, every question about whether the agent is <em>allowed</em> the tool has been settled.
+/// progress guard — and last of the access gates, so an observer only sees calls the built-in ones
+/// have already permitted. That ordering is what makes an observer unable to widen access: by the
+/// time it runs, every question about whether the agent is <em>allowed</em> the tool has been
+/// settled. Only the progress guard runs later, and it decides nothing about access — it is the
+/// turn's loop-detection accounting, and it must count only calls that actually reach the tool.
 /// </para>
 /// <para>
 /// <strong>Strictest ruling wins.</strong> Observers are consulted in registration order and the

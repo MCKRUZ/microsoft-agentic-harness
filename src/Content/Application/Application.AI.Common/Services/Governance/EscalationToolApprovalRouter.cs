@@ -43,7 +43,12 @@ public sealed class EscalationToolApprovalRouter : IToolApprovalRouter
 
     // A misconfigured roster is a standing condition, not a per-call event. Warning once keeps the
     // signal without emitting a line on every approval-required call for the life of the process.
-    private bool _blankApproversWarned;
+    //
+    // Static because the router is registered scoped: an instance field resets on every turn, which
+    // is "once per turn", not "once". Interlocked rather than a plain bool so concurrent turns cannot
+    // both observe false and both warn.
+    private static int s_blankApproversWarned;
+    private static int s_escalationDisabledWarned;
 
     /// <summary>Initializes a new instance of the <see cref="EscalationToolApprovalRouter"/> class.</summary>
     public EscalationToolApprovalRouter(
@@ -80,8 +85,22 @@ public sealed class EscalationToolApprovalRouter : IToolApprovalRouter
 
         // The escalation subsystem's own master switch. Routing to a subsystem the operator has
         // turned off would raise requests nothing delivers or resolves.
+        //
+        // Reaching here means the operator explicitly enabled approval routing while leaving the
+        // subsystem it depends on switched off, so every approval-required call is refused forever.
+        // That is a configuration mistake, not a deployment posture, and it was previously the only
+        // exit from this method that said nothing at all — the operator saw tool calls being refused
+        // with no indication that the gate they turned on was never running.
         if (!governance.Escalation.Enabled)
+        {
+            if (Interlocked.Exchange(ref s_escalationDisabledWarned, 1) == 0)
+                _logger.LogWarning(
+                    "AppConfig:AI:Governance:ToolApproval:Enabled is true but Escalation:Enabled is false — " +
+                    "no approval can ever be requested, so every approval-required tool call is refused. " +
+                    "Enable the escalation subsystem or turn tool approval routing off.");
+
             return ToolApprovalResult.NotRouted("escalation subsystem is disabled");
+        }
 
         // An escalation with nobody on the roster can never be answered — it would stall the turn
         // until it timed out and then block anyway. Refuse immediately instead, and say why.
@@ -95,9 +114,9 @@ public sealed class EscalationToolApprovalRouter : IToolApprovalRouter
             .Where(a => !string.IsNullOrWhiteSpace(a))
             .ToList();
 
-        if (roster.Count < approval.Approvers.Count && !_blankApproversWarned)
+        if (roster.Count < approval.Approvers.Count
+            && Interlocked.Exchange(ref s_blankApproversWarned, 1) == 0)
         {
-            _blankApproversWarned = true;
             _logger.LogWarning(
                 "ToolApproval:Approvers contains {Count} blank entr(ies), which were ignored. Remove them from configuration.",
                 approval.Approvers.Count - roster.Count);

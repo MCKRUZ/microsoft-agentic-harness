@@ -150,6 +150,9 @@ public sealed class PlanRunLlmCallScopeTests
 
         services.AddSingleton<IConversationBudgetTracker>(budget);
         services.AddSingleton(governor.Object);
+        // Step executors require the observer chain rather than defaulting it to null, so that a
+        // composition which forgets the seam fails at resolution instead of running unguarded.
+        services.AddSingleton(Mock.Of<IToolCallObserverChain>());
         services.AddSingleton(Mock.Of<IPlanProgressNotifier>());
         services.AddScoped(_ => new PlanExecutionContext());
         services.AddScoped<LlmCallStepExecutor>();

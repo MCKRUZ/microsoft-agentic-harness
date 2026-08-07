@@ -70,6 +70,17 @@ public sealed class ToolApprovalConfig
     /// approval routing for the agent path and let the Execution API's capability envelope do the
     /// gating.
     /// </para>
+    /// <para>
+    /// <strong>On the plan-execution path this occupies a concurrency slot, not just a call.</strong>
+    /// A plan step whose tool resolves to "requires approval" holds its executor slot for as long as
+    /// the approver takes. The plan executor runs a bounded number of steps at once
+    /// (<c>MaxParallelSteps</c>, 10 by default), so enough simultaneously-pending approvals stall the
+    /// whole DAG rather than one step — including steps that needed no approval at all. Hosts running
+    /// plans unattended should either keep this timeout short, or express the checkpoint as an
+    /// explicit <c>HumanGate</c> step — the plan-native way to wait on a person, which queues its
+    /// escalation and returns immediately with the step recorded <c>Blocked</c>, releasing the slot
+    /// instead of holding one open for the duration of a human's attention.
+    /// </para>
     /// </remarks>
     public int? TimeoutSeconds { get; init; }
 

@@ -19,13 +19,17 @@ internal sealed class AgtPolicyEngineAdapter : IGovernancePolicyEngine
     public GovernanceDecision EvaluateToolCall(
         string agentId,
         string toolName,
-        IReadOnlyDictionary<string, object>? arguments = null)
+        IReadOnlyDictionary<string, object?>? arguments = null)
     {
         var context = new Dictionary<string, object> { ["tool"] = toolName };
         if (arguments is not null)
         {
+            // Null-valued arguments are skipped rather than substituted. The AGT rule context holds
+            // non-null values, and mapping a null to a placeholder would let a rule match a value the
+            // caller never supplied. An absent key simply fails to match, which is the honest reading.
             foreach (var kvp in arguments)
-                context[kvp.Key] = kvp.Value;
+                if (kvp.Value is not null)
+                    context[kvp.Key] = kvp.Value;
         }
 
         var sw = Stopwatch.StartNew();

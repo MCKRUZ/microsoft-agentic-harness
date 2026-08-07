@@ -230,7 +230,7 @@ public sealed class ToolInvocationGovernorTests
         var governance = new GovernanceConfig { EnforceToolInvocation = true, Enabled = true, EnableAudit = true };
         _policyEngine.SetupGet(x => x.HasPolicies).Returns(true);
         _policyEngine
-            .Setup(x => x.EvaluateToolCall(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<IReadOnlyDictionary<string, object>?>()))
+            .Setup(x => x.EvaluateToolCall(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<IReadOnlyDictionary<string, object?>?>()))
             .Returns(GovernanceDecision.Denied("rule-7", "default-policy", "blocked by policy"));
 
         var governor = new ToolInvocationGovernor(
@@ -245,6 +245,36 @@ public sealed class ToolInvocationGovernorTests
 
         Assert.False(decision.IsAllowed);
         Assert.Equal(ToolDecisionOutcome.Denied, Assert.Single(governor.GetTrace().ToolDecisions).Outcome);
+    }
+
+    [Fact]
+    public async Task AuthorizeAsync_ForwardsCallArgumentsToThePolicyEngine()
+    {
+        // The policy engine builds its rule-evaluation context out of these, so a rule conditioned on
+        // an argument value ("deny sql_query where database == 'prod'") can only ever match when they
+        // are supplied. Passing the tool name alone did not make such a rule deny-by-default — it made
+        // it unmatchable, so an operator's rule loaded, reported as active, and silently never fired.
+        IReadOnlyDictionary<string, object?>? seen = null;
+        var governance = new GovernanceConfig { EnforceToolInvocation = true, Enabled = true };
+        _policyEngine.SetupGet(x => x.HasPolicies).Returns(true);
+        _policyEngine
+            .Setup(x => x.EvaluateToolCall(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<IReadOnlyDictionary<string, object?>?>()))
+            .Callback<string, string, IReadOnlyDictionary<string, object?>?>((_, _, args) => seen = args)
+            .Returns(GovernanceDecision.Allowed());
+
+        var governor = new ToolInvocationGovernor(
+            _context.Object, _permissions.Object, _riskClassifier, _autonomy.Object, _policyEngine.Object,
+            Mock.Of<IGovernanceAuditService>(), _denialTracker.Object, _capabilities.Object, _approvalRouter.Object,
+            Mock.Of<IOptionsMonitor<GovernanceConfig>>(m => m.CurrentValue == governance),
+            Mock.Of<IOptionsMonitor<PermissionsConfig>>(m => m.CurrentValue == _permissionsConfig),
+            Mock.Of<IOptionsMonitor<SandboxConfig>>(m => m.CurrentValue == _sandbox),
+            NullLogger<ToolInvocationGovernor>.Instance);
+
+        var arguments = new Dictionary<string, object?> { ["database"] = "prod" };
+        await governor.AuthorizeAsync(Tool, CancellationToken.None, arguments);
+
+        Assert.NotNull(seen);
+        Assert.Equal("prod", seen!["database"]);
     }
 
     private void RouterAnswers(ToolApprovalResult result) =>
@@ -345,7 +375,7 @@ public sealed class ToolInvocationGovernorTests
         AskingPermission();
         _policyEngine.SetupGet(x => x.HasPolicies).Returns(true);
         _policyEngine
-            .Setup(x => x.EvaluateToolCall(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<IReadOnlyDictionary<string, object>?>()))
+            .Setup(x => x.EvaluateToolCall(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<IReadOnlyDictionary<string, object?>?>()))
             .Returns(new GovernanceDecision(
                 IsAllowed: false,
                 Action: GovernancePolicyAction.RequireApproval,
@@ -454,7 +484,7 @@ public sealed class ToolInvocationGovernorTests
         var governance = new GovernanceConfig { EnforceToolInvocation = true, Enabled = true, EnableAudit = true };
         _policyEngine.SetupGet(x => x.HasPolicies).Returns(true);
         _policyEngine
-            .Setup(x => x.EvaluateToolCall(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<IReadOnlyDictionary<string, object>?>()))
+            .Setup(x => x.EvaluateToolCall(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<IReadOnlyDictionary<string, object?>?>()))
             .Returns(new GovernanceDecision(
                 IsAllowed: false,
                 Action: GovernancePolicyAction.RequireApproval,

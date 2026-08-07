@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Application.AI.Common.Interfaces.Governance;
+using Application.AI.Common.Services.Governance;
 using Application.AI.Common.Interfaces.Planner;
 using Application.AI.Common.Interfaces.RAG;
 using Application.AI.Common.Interfaces.Routing;
@@ -43,6 +44,7 @@ public sealed class RetrievalPlanStepExecutor : IPlanStepExecutor
     private readonly IRetrievalCostTracker _costTracker;
     private readonly IPlanProgressNotifier _notifier;
     private readonly IToolInvocationGovernor _toolInvocationGovernor;
+    private readonly IToolCallObserverChain _observers;
     private readonly PlanExecutionContext _executionContext;
     private readonly ILogger<RetrievalPlanStepExecutor> _logger;
 
@@ -55,6 +57,7 @@ public sealed class RetrievalPlanStepExecutor : IPlanStepExecutor
     /// <param name="costTracker">Tracks token usage and latency per retrieval call.</param>
     /// <param name="notifier">Plan progress notifier for real-time status updates.</param>
     /// <param name="toolInvocationGovernor">Authorizes retrieval against the ambient capability envelope.</param>
+    /// <param name="observers">The host's own tool-call rules, consulted after the governor allows the step.</param>
     /// <param name="executionContext">Current plan execution context with depth tracking.</param>
     /// <param name="logger">Logger instance.</param>
     public RetrievalPlanStepExecutor(
@@ -64,6 +67,7 @@ public sealed class RetrievalPlanStepExecutor : IPlanStepExecutor
         IRetrievalCostTracker costTracker,
         IPlanProgressNotifier notifier,
         IToolInvocationGovernor toolInvocationGovernor,
+        IToolCallObserverChain observers,
         PlanExecutionContext executionContext,
         ILogger<RetrievalPlanStepExecutor> logger)
     {
@@ -73,6 +77,7 @@ public sealed class RetrievalPlanStepExecutor : IPlanStepExecutor
         _costTracker = costTracker;
         _notifier = notifier;
         _toolInvocationGovernor = toolInvocationGovernor;
+        _observers = observers;
         _executionContext = executionContext;
         _logger = logger;
     }
@@ -93,7 +98,8 @@ public sealed class RetrievalPlanStepExecutor : IPlanStepExecutor
             };
         }
 
-        var decision = await _toolInvocationGovernor.AuthorizeAsync(PlanCapabilities.Retrieval, ct);
+        var decision = await _toolInvocationGovernor
+            .AuthorizeWithObserversAsync(_observers, PlanCapabilities.Retrieval, arguments: null, ct);
         if (!decision.IsAllowed)
         {
             _logger.LogWarning(

@@ -29,7 +29,7 @@ public sealed class ToolUseStepExecutorTests
     public ToolUseStepExecutorTests()
     {
         // Ungoverned default: no envelope armed and enforcement off means the governor allows.
-        _toolGovernor.Setup(g => g.AuthorizeAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+        _toolGovernor.Setup(g => g.AuthorizeAsync(It.IsAny<string>(), It.IsAny<CancellationToken>(), It.IsAny<IReadOnlyDictionary<string, object?>?>()))
             .Returns(ValueTask.FromResult(ToolInvocationDecision.Allow()));
 
         _notifier.Setup(n => n.NotifyStepStartedAsync(
@@ -54,6 +54,7 @@ public sealed class ToolUseStepExecutorTests
         _sut = new ToolUseStepExecutor(
             _capabilityEnforcer.Object,
             _toolGovernor.Object,
+            Mock.Of<IToolCallObserverChain>(),
             sp,
             _attestationService.Object,
             _responseSanitizer.Object,
@@ -226,7 +227,7 @@ public sealed class ToolUseStepExecutorTests
         // The governance gate must precede every execution resource: no permission profile is
         // resolved and no sandbox executor is invoked for a denied tool.
         const string deniedMessage = "Error: tool 'file_system' is not permitted in the current context.";
-        _toolGovernor.Setup(g => g.AuthorizeAsync("file_system", It.IsAny<CancellationToken>()))
+        _toolGovernor.Setup(g => g.AuthorizeAsync("file_system", It.IsAny<CancellationToken>(), It.IsAny<IReadOnlyDictionary<string, object?>?>()))
             .Returns(ValueTask.FromResult(ToolInvocationDecision.Deny(deniedMessage)));
 
         var step = CreateStep(new ToolUseConfig { ToolName = "file_system" });
@@ -242,6 +243,118 @@ public sealed class ToolUseStepExecutorTests
     }
 
     [Fact]
+    public async Task ExecuteAsync_ObserverBlocks_FailsStepWithoutTouchingSandbox()
+    {
+        // A plan step is a tool call like any other. If the governor were the only gate consulted
+        // here, an agent could reach a tool the host's own rules refuse simply by emitting a ToolUse
+        // plan step instead of calling the tool directly on the conversational path — the consumer's
+        // rule would be registered, reported as active, and completely bypassable.
+        const string observerDenial = "Error: tool 'file_system' is not permitted in the current context.";
+        var observers = new Mock<IToolCallObserverChain>();
+        observers.SetupGet(o => o.HasObservers).Returns(true);
+        observers
+            .Setup(o => o.EvaluateAsync(
+                It.IsAny<string>(),
+                It.IsAny<IReadOnlyDictionary<string, object?>>(),
+                It.IsAny<CancellationToken>()))
+            .Returns(ValueTask.FromResult(ToolInvocationDecision.Deny(observerDenial)));
+
+        var sut = CreateExecutor(observers.Object);
+        var step = CreateStep(new ToolUseConfig { ToolName = "file_system" });
+
+        var result = await sut.ExecuteAsync(step, new Dictionary<PlanStepId, string>(), CancellationToken.None);
+
+        Assert.Equal(StepExecutionStatus.Failed, result.Status);
+        Assert.Equal(observerDenial, result.ErrorMessage);
+        Assert.True(result.IsPolicyDenial);
+        _sandboxExecutor.Verify(
+            s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_ObserverSeesTheEffectiveArguments_NotJustTheDeclaredOnes()
+    {
+        // An observer's whole job is argument-sensitive judgement ("never wire over 10k"), so it must
+        // see what the tool will actually receive. A value an upstream step produced is exactly the
+        // kind a plan author did not write down, and exactly the kind a rule needs to catch.
+        IReadOnlyDictionary<string, object?>? observed = null;
+        var observers = new Mock<IToolCallObserverChain>();
+        observers.SetupGet(o => o.HasObservers).Returns(true);
+        observers
+            .Setup(o => o.EvaluateAsync(
+                It.IsAny<string>(),
+                It.IsAny<IReadOnlyDictionary<string, object?>>(),
+                It.IsAny<CancellationToken>()))
+            .Callback<string, IReadOnlyDictionary<string, object?>, CancellationToken>(
+                (_, args, _) => observed = args)
+            .Returns(ValueTask.FromResult(ToolInvocationDecision.Allow()));
+
+        _sandboxExecutor.Setup(s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new SandboxExecutionResult { Success = true, Output = "ok", ResourceUsage = new ResourceUsage() });
+
+        var sut = CreateExecutor(observers.Object);
+        var step = CreateStep(new ToolUseConfig
+        {
+            ToolName = "file_system",
+            InputParameters = new Dictionary<string, object?> { ["declared"] = "yes" }
+        });
+        var upstream = new Dictionary<PlanStepId, string>
+        {
+            [new PlanStepId(Guid.NewGuid())] = """{"fromUpstream": "1000000"}"""
+        };
+
+        await sut.ExecuteAsync(step, upstream, CancellationToken.None);
+
+        Assert.NotNull(observed);
+        Assert.Equal("yes", observed!["declared"]);
+        Assert.True(observed.ContainsKey("fromUpstream"));
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_GovernorDenies_NeverConsultsObservers()
+    {
+        // Observers run only for calls the built-in gates already permitted. That ordering is what
+        // makes an observer unable to widen access, and it also means a consumer's rule — which may
+        // notify, bill, or call a model — is never run for a call that was refused anyway.
+        _toolGovernor.Setup(g => g.AuthorizeAsync(
+                "file_system", It.IsAny<CancellationToken>(), It.IsAny<IReadOnlyDictionary<string, object?>?>()))
+            .Returns(ValueTask.FromResult(ToolInvocationDecision.Deny("nope")));
+
+        var observers = new Mock<IToolCallObserverChain>();
+        observers.SetupGet(o => o.HasObservers).Returns(true);
+
+        var sut = CreateExecutor(observers.Object);
+        var step = CreateStep(new ToolUseConfig { ToolName = "file_system" });
+
+        await sut.ExecuteAsync(step, new Dictionary<PlanStepId, string>(), CancellationToken.None);
+
+        observers.Verify(
+            o => o.EvaluateAsync(
+                It.IsAny<string>(),
+                It.IsAny<IReadOnlyDictionary<string, object?>>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    private ToolUseStepExecutor CreateExecutor(IToolCallObserverChain observers)
+    {
+        var services = new ServiceCollection();
+        services.AddKeyedSingleton<ISandboxExecutor>(SandboxIsolationLevel.Process, _sandboxExecutor.Object);
+        services.AddKeyedSingleton<ISandboxExecutor>(SandboxIsolationLevel.Container, _sandboxExecutor.Object);
+
+        return new ToolUseStepExecutor(
+            _capabilityEnforcer.Object,
+            _toolGovernor.Object,
+            observers,
+            services.BuildServiceProvider(),
+            _attestationService.Object,
+            _responseSanitizer.Object,
+            _notifier.Object,
+            _context,
+            NullLogger<ToolUseStepExecutor>.Instance);
+    }
+
+    [Fact]
     public async Task ExecuteAsync_GovernorAllows_AuthorizesExactToolName()
     {
         _sandboxExecutor.Setup(s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()))
@@ -252,7 +365,7 @@ public sealed class ToolUseStepExecutorTests
         var result = await _sut.ExecuteAsync(step, new Dictionary<PlanStepId, string>(), CancellationToken.None);
 
         Assert.Equal(StepExecutionStatus.Completed, result.Status);
-        _toolGovernor.Verify(g => g.AuthorizeAsync("file_system", It.IsAny<CancellationToken>()), Times.Once);
+        _toolGovernor.Verify(g => g.AuthorizeAsync("file_system", It.IsAny<CancellationToken>(), It.IsAny<IReadOnlyDictionary<string, object?>?>()), Times.Once);
     }
 
     [Fact]

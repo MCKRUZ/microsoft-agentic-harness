@@ -16,19 +16,26 @@ namespace Application.AI.Common.Services.Tools;
 /// returns the governor's model-facing message in place of the tool result and the inner function is
 /// never called; then the ambient <c>IToolClassificationGate</c> (via <see cref="ClassificationGateAccessor"/>)
 /// — a block returns its model-facing message in place of the tool result, while a redact verdict lets the
-/// call run and scrubs its output afterward; then the ambient <c>IProgressEvaluator</c> (via
-/// <see cref="ProgressGuardAccessor"/>) — a spin verdict returns its halt message in place of the tool
-/// result; and finally the ambient <c>IToolCallObserverChain</c> (via
+/// call run and scrubs its output afterward; then the ambient <c>IToolCallObserverChain</c> (via
 /// <see cref="ToolCallObserverAccessor"/>) — the host's own rules, whose block returns the generic
-/// not-permitted message. Each stage is evaluated only for calls the previous stages permitted, so a
-/// blocked call never executed and must not count toward progress. When none are ambient (a tool invoked
-/// outside a governed turn), the call passes straight through.
+/// not-permitted message; and finally the ambient <c>IProgressEvaluator</c> (via
+/// <see cref="ProgressGuardAccessor"/>) — a spin verdict returns its halt message in place of the tool
+/// result. Each stage is evaluated only for calls the previous stages permitted, so a blocked call never
+/// executed and must not count toward progress. When none are ambient (a tool invoked outside a governed
+/// turn), the call passes straight through.
 /// </para>
 /// <para>
-/// <strong>Consumer observers run last, and that is deliberate.</strong> By the time they are consulted
-/// every question about whether the agent may use the tool at all has been settled by the built-in gates,
-/// so an observer can only make the outcome stricter — it cannot resurrect a call the governor denied,
-/// overrule the capability envelope, or bypass a plugin's deny list.
+/// <strong>Consumer observers run last of the access gates, and that is deliberate.</strong> By the time
+/// they are consulted every question about whether the agent may use the tool at all has been settled by
+/// the built-in gates, so an observer can only make the outcome stricter — it cannot resurrect a call the
+/// governor denied, overrule the capability envelope, or bypass a plugin's deny list.
+/// </para>
+/// <para>
+/// <strong>The progress guard runs after the observers, because it is the only stage that records
+/// state.</strong> It is not an access decision — it is the turn's loop-detection accounting, and it must
+/// only ever count calls that actually reached the tool. Placing it ahead of the observers let blocked
+/// calls reset the no-progress counter, which defeated the guard for an agent spinning against an
+/// observer's own rule.
 /// </para>
 /// <para>
 /// This is the single invocation-time chokepoint for the agent's autonomous tool calls, applied to
@@ -54,8 +61,8 @@ internal sealed class GovernedAIFunction : DelegatingAIFunction
         if (governor is not null)
         {
             // Arguments are passed so an approval verdict can describe the specific invocation to a
-            // human rather than just naming the tool. They inform no authorization decision — every
-            // check the governor runs keys off the tool name alone.
+            // human, and so argument-conditioned YAML policy rules can match. Every other check the
+            // governor runs keys off the tool name alone.
             var decision = await governor
                 .AuthorizeAsync(Name, cancellationToken, arguments)
                 .ConfigureAwait(false);
@@ -77,21 +84,10 @@ internal sealed class GovernedAIFunction : DelegatingAIFunction
                     ?? $"Error: tool '{Name}' was blocked by data-classification policy.";
         }
 
-        // Progress / spin guard runs after authorization and classification so it only sees calls that
-        // would actually execute. Inert unless an evaluator is ambient and the guard is opt-in enabled.
-        var progress = ProgressGuardAccessor.Current;
-        if (progress is not null)
-        {
-            var verdict = progress.Evaluate(Name, () => ComputeArgumentsSignature(arguments));
-            if (verdict.ShouldHalt)
-                return verdict.HaltMessage
-                    ?? $"Error: tool '{Name}' was stopped because the agent is not making progress.";
-        }
-
-        // Consumer-authored observers run LAST, after every built-in gate has permitted the call.
-        // That ordering is the whole safety argument for the seam: an observer only ever sees a call
-        // that was already about to execute, so its verdict can tighten the outcome but never widen
-        // access. Inert unless the host registered observers.
+        // Consumer-authored observers run LAST of the access gates, after every built-in one has
+        // permitted the call. That ordering is the whole safety argument for the seam: an observer
+        // only ever sees a call the harness was already willing to make, so its verdict can tighten
+        // the outcome but never widen access. Inert unless the host registered observers.
         var observers = ToolCallObserverAccessor.Current;
         if (observers is { HasObservers: true })
         {
@@ -99,6 +95,22 @@ internal sealed class GovernedAIFunction : DelegatingAIFunction
                 .EvaluateAsync(Name, arguments, cancellationToken).ConfigureAwait(false);
             if (!observed.IsAllowed)
                 return observed.DeniedMessage ?? $"Error: tool '{Name}' was blocked by an observer.";
+        }
+
+        // Progress / spin guard runs last of all, because it is the only stage that MUTATES state:
+        // it records the call's signature and resets the no-progress counter whenever it sees a new
+        // one. Running it ahead of the observers counted calls that the observers then blocked, so an
+        // agent retrying a blocked call with a slightly different argument each time (10000, 10001,
+        // 10002 …) presented a new signature on every attempt, reset the counter on every attempt,
+        // and never tripped the guard it was spinning against. Only calls that reach the tool are
+        // counted. Inert unless an evaluator is ambient and the guard is opt-in enabled.
+        var progress = ProgressGuardAccessor.Current;
+        if (progress is not null)
+        {
+            var verdict = progress.Evaluate(Name, () => ComputeArgumentsSignature(arguments));
+            if (verdict.ShouldHalt)
+                return verdict.HaltMessage
+                    ?? $"Error: tool '{Name}' was stopped because the agent is not making progress.";
         }
 
         var result = await base.InvokeCoreAsync(arguments, cancellationToken).ConfigureAwait(false);
