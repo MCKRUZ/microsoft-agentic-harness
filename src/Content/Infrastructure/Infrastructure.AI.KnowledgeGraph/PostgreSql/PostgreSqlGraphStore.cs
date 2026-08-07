@@ -33,14 +33,6 @@ public sealed class PostgreSqlGraphStore : IKnowledgeGraphStore
     private static readonly ActivitySource ActivitySource = new("Infrastructure.AI.KnowledgeGraph.PostgreSql");
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
 
-    /// <summary>
-    /// Ledger table and advisory lock key for the knowledge-graph migration set. The key is
-    /// unchanged from when this class held its DDL inline, so a rolling deployment where both
-    /// versions are briefly live still serializes their schema work against each other.
-    /// </summary>
-    private static readonly PostgresMigrationOptions MigrationOptions =
-        new("kg_schema_migrations", 0x6B675F736368656DL);
-
     private readonly string _connectionString;
     private readonly ILogger<PostgreSqlGraphStore> _logger;
     private readonly PostgresSchemaGate _schema;
@@ -63,8 +55,8 @@ public sealed class PostgreSqlGraphStore : IKnowledgeGraphStore
         _logger = logger;
 
         _schema = new PostgresSchemaGate(
-            MigrationOptions,
-            EmbeddedSqlMigrationSource.Load(typeof(PostgreSqlGraphStore).Assembly),
+            KnowledgeGraphMigrations.Options,
+            KnowledgeGraphMigrations.Load(),
             logger);
     }
 
@@ -430,24 +422,17 @@ public sealed class PostgreSqlGraphStore : IKnowledgeGraphStore
     {
         var conn = new NpgsqlConnection(_connectionString);
         await conn.OpenAsync(ct);
-        await EnsureSchemaAsync(conn, ct);
+        // Brings kg_nodes/kg_edges up to date on the first connection, then costs a bool read. This
+        // used to be a DDL string constant executed here, which could create the tables but never
+        // change them: a consumer whose database already held a graph kept the original shape for
+        // ever. The DDL is now 001_baseline_kg_schema.sql behind a versioned runner, so the next
+        // column can actually reach an existing installation. The advisory-lock and lazy-once
+        // behaviour is unchanged — it moved into PostgresSchemaGate, which the observability store
+        // shares. (There was a private one-line wrapper here holding this note. It read as a policy
+        // hook and was not one.)
+        await _schema.EnsureAsync(conn, ct);
         return conn;
     }
-
-    /// <summary>
-    /// Brings the <c>kg_nodes</c>/<c>kg_edges</c> schema up to date on first use, then does nothing.
-    /// </summary>
-    /// <remarks>
-    /// This used to execute a DDL string constant held in this class, which could create the tables
-    /// but could never change them: a consumer whose database already held a graph would keep the
-    /// original shape forever. The DDL is now migration <c>001_baseline_kg_schema.sql</c> behind a
-    /// versioned runner, so the next column can actually reach an existing installation. The
-    /// advisory-lock and lazy-once behaviour it had is unchanged — it moved into
-    /// <see cref="PostgresSchemaGate"/> and <see cref="PostgresMigrationRunner"/>, which the
-    /// observability store shares.
-    /// </remarks>
-    private Task EnsureSchemaAsync(NpgsqlConnection conn, CancellationToken ct) =>
-        _schema.EnsureAsync(conn, ct);
 
     private static GraphNode ReadNode(NpgsqlDataReader reader) => ReadNodeAt(reader, 0);
 

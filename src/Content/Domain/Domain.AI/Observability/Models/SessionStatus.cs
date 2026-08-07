@@ -47,9 +47,16 @@ public enum SessionStatus
     /// token — before it could finish.
     /// </summary>
     /// <remarks>
-    /// Distinct from <see cref="Error"/> because it is not a failure, and counting it as one is
-    /// visible: the dashboards' error-rate panel is <c>status = 'error'</c>, so every cancelled run
-    /// used to be reported as something going wrong.
+    /// Distinct from <see cref="Error"/> because it is not a failure, and the distinction is visible:
+    /// this value is what the sessions list and the Grafana <c>$status</c> filter show an operator,
+    /// so while cancellations were written as <see cref="Error"/> every ordinary disconnect read as
+    /// something having gone wrong.
+    /// </remarks>
+    /// <remarks>
+    /// It does <em>not</em> move any error-rate number, and an earlier version of this comment said
+    /// it did. No panel in <c>Dashboards/</c> computes a rate from <c>status = 'error'</c> — the
+    /// error-rate tiles are Prometheus counters over tool errors. The claim was repeated in five
+    /// places, which is how an unchecked justification becomes something everyone assumes was checked.
     /// </remarks>
     Cancelled,
 }

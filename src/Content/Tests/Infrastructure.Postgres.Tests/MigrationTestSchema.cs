@@ -32,20 +32,31 @@ public sealed class MigrationTestSchema : IAsyncDisposable
     private const string DefaultConnectionString =
         "Host=localhost;Port=5432;Database=observability;Username=observability;Password=observability";
 
-    /// <summary>Ledger table used by tests that do not care which ledger they write to.</summary>
-    private const string TestLedgerTable = "test_schema_migrations";
+    /// <summary>
+    /// Ledger table used by tests that do not care which ledger they write to.
+    /// </summary>
+    /// <remarks>
+    /// Public because <c>PostgresMigrationRunnerTests</c> queries this table directly to count applied
+    /// rows. With the name written out in both places, changing it here left those assertions reading
+    /// a table the runner never wrote to — <c>COUNT(*)</c> of nothing, still looking meaningful.
+    /// </remarks>
+    public const string TestLedgerTable = "test_schema_migrations";
 
     private MigrationTestSchema(NpgsqlDataSource dataSource, string schemaName)
     {
         DataSource = dataSource;
         SchemaName = schemaName;
+
+        // Computed once. As an expression-bodied property this re-hashed on every read, which reads
+        // as a constant and was not one.
+        AdvisoryLockKey = BitConverter.ToInt64(SHA256.HashData(Encoding.UTF8.GetBytes(schemaName)));
     }
 
     /// <summary>Data source whose connections resolve unqualified names to <see cref="SchemaName"/>.</summary>
-    public NpgsqlDataSource DataSource { get; }
+    private NpgsqlDataSource DataSource { get; }
 
     /// <summary>The throwaway schema this instance owns.</summary>
-    public string SchemaName { get; }
+    private string SchemaName { get; }
 
     /// <summary>
     /// An advisory lock key unique to this schema.
@@ -56,8 +67,7 @@ public sealed class MigrationTestSchema : IAsyncDisposable
     /// still proving nothing extra — the one test that genuinely needs two runners to contend simply
     /// uses the same schema, and therefore the same key.
     /// </remarks>
-    public long AdvisoryLockKey =>
-        BitConverter.ToInt64(SHA256.HashData(Encoding.UTF8.GetBytes(SchemaName)));
+    private long AdvisoryLockKey { get; }
 
     private static string ConnectionString =>
         Environment.GetEnvironmentVariable("OBSERVABILITY_TEST_CONN") ?? DefaultConnectionString;

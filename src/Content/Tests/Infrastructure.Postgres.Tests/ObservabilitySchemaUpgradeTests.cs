@@ -24,7 +24,9 @@ namespace Infrastructure.Postgres.Tests;
 /// </remarks>
 public sealed class ObservabilitySchemaUpgradeTests
 {
-    private const string Ledger = "obs_schema_migrations";
+    // Taken from the shipped options rather than re-typed. With a literal here, renaming the real
+    // ledger left these tests green while they quietly migrated a table the product no longer writes.
+    private static readonly string Ledger = ObservabilityMigrations.Options.LedgerTable;
 
     private const string InsertCancelledSession =
         """
@@ -90,8 +92,9 @@ public sealed class ObservabilitySchemaUpgradeTests
         Assert.NotNull(rejected);
 
         // Treatment: the full set, replayed over pre-existing tables.
-        var applied = await schema.ApplyAsync(ObservabilityMigrations.Load(), Ledger);
-        Assert.Equal(ObservabilityMigrations.Load().Count, applied);
+        var all = ObservabilityMigrations.Load();
+        var applied = await schema.ApplyAsync(all, Ledger);
+        Assert.Equal(all.Count, applied);
 
         Assert.Null(await schema.TryExecuteAsync(InsertCancelledSession));
         Assert.Equal("cancelled", await schema.ScalarAsync<string>(

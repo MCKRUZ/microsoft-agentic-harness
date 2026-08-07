@@ -21,6 +21,20 @@ public sealed class PostgresMigrationException : Exception
         MigrationId = migrationId;
     }
 
+    /// <summary>Initializes a new instance of the <see cref="PostgresMigrationException"/> class.</summary>
+    /// <param name="migrationId">The id of the migration the run refused to proceed past.</param>
+    /// <param name="message">Why the run was refused.</param>
+    /// <remarks>
+    /// For refusals decided before any SQL is sent — a script whose text no longer matches what this
+    /// database recorded, for instance. There is no inner exception because nothing failed: the run
+    /// was stopped on purpose.
+    /// </remarks>
+    public PostgresMigrationException(string migrationId, string message)
+        : base(message)
+    {
+        MigrationId = migrationId;
+    }
+
     /// <summary>The id of the migration that failed.</summary>
     public string MigrationId { get; }
 }

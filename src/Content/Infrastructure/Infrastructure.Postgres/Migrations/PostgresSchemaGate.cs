@@ -19,8 +19,6 @@ namespace Infrastructure.Postgres.Migrations;
 /// ordinary, and a store that gave up permanently on the first refused connection would need a
 /// restart to recover from a condition that fixes itself.
 /// </para>
-/// </remarks>
-/// <remarks>
 /// <para>
 /// Deliberately NOT <see cref="IDisposable"/>. It was, briefly, because it holds a
 /// <see cref="SemaphoreSlim"/> — and the ceremony was immediately skipped by one of its two
@@ -29,6 +27,13 @@ namespace Infrastructure.Postgres.Migrations;
 /// handle; nothing here touches it. Exporting a lifetime requirement that does not exist buys
 /// nothing and gives every consumer a decision it can get wrong.
 /// </para>
+/// <para>
+/// A public <c>Dispose</c> survived that removal for a while, on a type that no longer implements
+/// the interface — so nothing called it, and nothing could have noticed. Do not put it back. The
+/// observability store invokes this gate from its physical-connection initializer, so a consumer who
+/// found the method and called it would leave every subsequent connection unable to open, and the
+/// store would stop writing entirely.
+/// </para>
 /// </remarks>
 public sealed class PostgresSchemaGate
 {
@@ -36,30 +41,27 @@ public sealed class PostgresSchemaGate
     private readonly SemaphoreSlim _gate = new(1, 1);
     private volatile bool _ready;
 
-    /// <summary>Initializes a new instance of the <see cref="PostgresSchemaGate"/> class.</summary>
-    /// <param name="runner">The migration runner to invoke once.</param>
-    public PostgresSchemaGate(PostgresMigrationRunner runner)
-    {
-        ArgumentNullException.ThrowIfNull(runner);
-        _runner = runner;
-    }
-
     /// <summary>
-    /// Initializes a new instance that builds its own runner — the shape both stores actually want.
+    /// Initializes a new instance of the <see cref="PostgresSchemaGate"/> class.
     /// </summary>
     /// <param name="options">Ledger table and advisory lock key for this migration set.</param>
     /// <param name="scripts">The migration set, in any order.</param>
     /// <param name="logger">Logger recording which migrations were applied.</param>
     /// <remarks>
-    /// Exists because both consumers were writing the same nested double-construction. The
-    /// runner-taking overload stays for the test fixture, which needs to hold the runner itself.
+    /// The gate builds its own runner rather than taking one, because both consumers were otherwise
+    /// writing the same nested double-construction. There was briefly a second, runner-taking
+    /// constructor kept "for the test fixture, which needs to hold the runner itself" — no such
+    /// consumer ever existed, and the two fixtures that might have been it construct a
+    /// <see cref="PostgresMigrationRunner"/> directly and never touch this class. A documented seam
+    /// with no caller is worse than no seam: it survives refactors on the strength of a consumer
+    /// nobody can find.
     /// </remarks>
     public PostgresSchemaGate(
         PostgresMigrationOptions options,
         IReadOnlyList<MigrationScript> scripts,
         ILogger logger)
-        : this(new PostgresMigrationRunner(options, scripts, logger))
     {
+        _runner = new PostgresMigrationRunner(options, scripts, logger);
     }
 
     /// <summary>
@@ -85,7 +87,4 @@ public sealed class PostgresSchemaGate
             _gate.Release();
         }
     }
-
-    /// <inheritdoc />
-    public void Dispose() => _gate.Dispose();
 }

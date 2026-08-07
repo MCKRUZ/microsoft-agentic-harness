@@ -180,8 +180,9 @@ public class RunConversationCommandHandlerSolutionReviewFixTests
         // the raw literal "cancelled", which the sessions table rejected, so the store swallowed the
         // write and the session stayed open forever; then Error, because no schema change could
         // reach a database that already held data; and now Cancelled, delivered by the migration
-        // runner. Asserting the state and not just the reason is the point — the reason was never the
-        // thing the error-rate panel counted.
+        // runner. Asserting the state and not just the reason is the point: the reason is a free-text
+        // column nothing filters on, while the status is the column the sessions list and the Grafana
+        // $status variable both read.
         await act.Should().ThrowAsync<OperationCanceledException>();
         _observabilityStore.Verify(
             s => s.EndSessionAsync(

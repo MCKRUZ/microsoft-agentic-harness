@@ -82,9 +82,11 @@ public sealed class SessionStatusSchemaAgreementTests
     [Fact]
     public void MoreThanOneMigrationDeclaresTheConstraint_AndTheLaterOneIsTheOneThatCounts()
     {
+        // No OrderBy: Load() returns ordinal order as a documented contract, enforced by
+        // EmbeddedSqlMigrationSource, and Where preserves it. Sorting again here implied the ordering
+        // was each caller's job to establish — while a comment eight lines below said the opposite.
         var declaring = ObservabilityMigrations.Load()
             .Where(s => StatusCheckDeclaration.IsMatch(s.Sql))
-            .OrderBy(s => s.Ordinal)
             .ToArray();
 
         Assert.True(
@@ -94,21 +96,25 @@ public sealed class SessionStatusSchemaAgreementTests
             "consolidated into the baseline, delete this test rather than relaxing it.");
 
         // Compare the EARLIEST declaration's values against what the reader returns. Asserting that a
-        // sorted list is sorted — which is what this did first — cannot fail: Load() already returns
-        // scripts in ordinal order and Where preserves it. The real claim is that the reader ignores
-        // the first declaration in favour of the last, and it is only checkable because the two
-        // genuinely differ.
+        // sorted list is sorted — which is what this did first — cannot fail. The real claim is that
+        // the reader ignores the first declaration in favour of the last, and it is only checkable
+        // because the two genuinely differ.
+        //
+        // ProperSubset alone: it already means subset AND not equal, so the NotEqual that used to sit
+        // beside it only made a reader stop and work out whether the two lines were saying different
+        // things.
         var earliest = ParseValues(StatusCheckDeclaration.Match(declaring[0].Sql));
         var effective = ReadAcceptedStatusesFromMigrations();
 
-        Assert.NotEqual(earliest, effective);
         Assert.ProperSubset(effective, earliest);
     }
 
     private static HashSet<string> ReadAcceptedStatusesFromMigrations()
     {
+        // "Last wins" is load-bearing here and rests entirely on Load() returning ordinal order, which
+        // it documents and EmbeddedSqlMigrationSource enforces. Stated rather than re-sorted, so there
+        // is one answer in this file to "whose job is the ordering".
         var declaration = ObservabilityMigrations.Load()
-            .OrderBy(s => s.Ordinal)
             .Select(s => StatusCheckDeclaration.Match(s.Sql))
             .LastOrDefault(m => m.Success);
 

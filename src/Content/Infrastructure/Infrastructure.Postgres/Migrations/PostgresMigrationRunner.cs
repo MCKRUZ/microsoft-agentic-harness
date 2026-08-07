@@ -29,6 +29,24 @@ namespace Infrastructure.Postgres.Migrations;
 /// here: a schema failure that reports success is exactly how the original defect stayed invisible
 /// for as long as it did.
 /// </para>
+/// <para>
+/// <strong>An applied migration is history.</strong> The ledger records a checksum of each script
+/// alongside its id, and a script whose text has changed since this database ran it stops the run.
+/// Without that, editing a released migration is a no-op here and a full apply on every database
+/// created afterwards — the installed base splits in two and nothing says so. See
+/// <see cref="MigrationScript.Checksum"/>.
+/// </para>
+/// <para>
+/// <strong>Postgres only. SQLite is not migrated by this and should not be.</strong> The EF Core
+/// subsystems reconcile their SQLite schema through <c>SchemaInitializer&lt;TContext&gt;</c>, which
+/// diffs the live database against the EF model and adds what is missing. The two are different
+/// mechanisms for different problems, kept apart on purpose: the reconciler is model-driven and
+/// additive-only, which suits a store whose shape is defined by entity classes, while ordered
+/// hand-written DDL is the only way to express a constraint being widened or a table rewritten —
+/// operations SQLite largely cannot perform in place anyway, and which have no representation in an
+/// EF model. Neither is redundant, and extending either to cover the other's job would make it worse
+/// at its own.
+/// </para>
 /// </remarks>
 public sealed class PostgresMigrationRunner
 {
@@ -97,7 +115,9 @@ public sealed class PostgresMigrationRunner
         await EnsureLedgerAsync(connection, transaction, cancellationToken);
         var applied = await ReadAppliedAsync(connection, transaction, cancellationToken);
 
-        var pending = _scripts.Where(s => !applied.Contains(s.Id)).ToArray();
+        await VerifyAppliedScriptsAreUnchangedAsync(connection, transaction, applied, cancellationToken);
+
+        var pending = _scripts.Where(s => !applied.ContainsKey(s.Id)).ToArray();
 
         // No early return for the up-to-date case. It existed only to log at Debug instead of
         // Information, and it bought that with a second CommitAsync and a second exit from the one
@@ -112,8 +132,10 @@ public sealed class PostgresMigrationRunner
                 await command.ExecuteNonQueryAsync(cancellationToken);
 
                 await using var record = new NpgsqlCommand(
-                    $"INSERT INTO {_options.LedgerTable} (id) VALUES (@id)", connection, transaction);
+                    $"INSERT INTO {_options.LedgerTable} (id, checksum) VALUES (@id, @checksum)",
+                    connection, transaction);
                 record.Parameters.AddWithValue("id", script.Id);
+                record.Parameters.AddWithValue("checksum", script.Checksum);
                 await record.ExecuteNonQueryAsync(cancellationToken);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
@@ -143,29 +165,91 @@ public sealed class PostgresMigrationRunner
     private async Task EnsureLedgerAsync(
         NpgsqlConnection connection, NpgsqlTransaction transaction, CancellationToken cancellationToken)
     {
+        // The ledger reconciles itself. ADD COLUMN IF NOT EXISTS is not redundant next to CREATE
+        // TABLE IF NOT EXISTS: a database whose ledger was created before checksums existed keeps
+        // that older two-column table for ever, because CREATE TABLE IF NOT EXISTS looks only at the
+        // name. The ledger is the one table in this system that cannot be evolved by a migration —
+        // it is what decides which migrations have run — so it evolves here or not at all.
+        //
+        // checksum is nullable on purpose. NULL means "recorded before this database knew about
+        // checksums", which is a real state, not a broken one; see the verification below.
         await using var command = new NpgsqlCommand(
             $"""
             CREATE TABLE IF NOT EXISTS {_options.LedgerTable} (
                 id         TEXT PRIMARY KEY,
                 applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            )
+            );
+            ALTER TABLE {_options.LedgerTable} ADD COLUMN IF NOT EXISTS checksum TEXT;
             """,
             connection, transaction);
 
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
-    private async Task<HashSet<string>> ReadAppliedAsync(
+    /// <summary>
+    /// Refuses the run if a script this database already applied no longer says what it said then,
+    /// and adopts a checksum for rows recorded before the ledger carried one.
+    /// </summary>
+    private async Task VerifyAppliedScriptsAreUnchangedAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        IReadOnlyDictionary<string, string?> applied,
+        CancellationToken cancellationToken)
+    {
+        foreach (var script in _scripts)
+        {
+            if (!applied.TryGetValue(script.Id, out var recorded))
+                continue;
+
+            if (recorded is null)
+            {
+                // Adopt, do not accuse. There is nothing to compare against, so the only available
+                // assumption is that the file has not changed since it ran — the same assumption
+                // Flyway's baseline makes. Recording it now means the NEXT edit is caught, which is
+                // the whole point; refusing to start instead would strand every database this branch
+                // migrated before the column existed.
+                await using var backfill = new NpgsqlCommand(
+                    $"UPDATE {_options.LedgerTable} SET checksum = @checksum WHERE id = @id",
+                    connection, transaction);
+                backfill.Parameters.AddWithValue("checksum", script.Checksum);
+                backfill.Parameters.AddWithValue("id", script.Id);
+                await backfill.ExecuteNonQueryAsync(cancellationToken);
+
+                _logger.LogInformation(
+                    "Adopted a checksum for migration {Migration} in ledger {Ledger}; it was applied "
+                        + "before this ledger recorded one.",
+                    script.Id, _options.LedgerTable);
+                continue;
+            }
+
+            if (string.Equals(recorded, script.Checksum, StringComparison.Ordinal))
+                continue;
+
+            // Fatal, and deliberately so. Carrying on would apply nothing — the id is in the ledger —
+            // so this database would keep the old shape while every database created from here on
+            // gets the new one, and no test, log line or dashboard would ever say so.
+            throw new PostgresMigrationException(
+                script.Id,
+                $"Migration '{script.Id}' has changed since this database applied it "
+                    + $"(recorded {recorded}, now {script.Checksum}). An applied migration is history "
+                    + "and cannot be edited: databases that already ran it would keep the old schema "
+                    + "while new ones get the new one. Add a further migration instead. If the "
+                    + "change is genuinely cosmetic and you are certain the schema is unaffected, "
+                    + $"update {_options.LedgerTable}.checksum for this row by hand.");
+        }
+    }
+
+    private async Task<Dictionary<string, string?>> ReadAppliedAsync(
         NpgsqlConnection connection, NpgsqlTransaction transaction, CancellationToken cancellationToken)
     {
-        var applied = new HashSet<string>(StringComparer.Ordinal);
+        var applied = new Dictionary<string, string?>(StringComparer.Ordinal);
 
         await using var command = new NpgsqlCommand(
-            $"SELECT id FROM {_options.LedgerTable}", connection, transaction);
+            $"SELECT id, checksum FROM {_options.LedgerTable}", connection, transaction);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
 
         while (await reader.ReadAsync(cancellationToken))
-            applied.Add(reader.GetString(0));
+            applied.Add(reader.GetString(0), reader.IsDBNull(1) ? null : reader.GetString(1));
 
         return applied;
     }

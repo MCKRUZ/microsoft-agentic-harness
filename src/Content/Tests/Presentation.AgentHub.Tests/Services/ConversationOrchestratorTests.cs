@@ -614,8 +614,8 @@ public class ConversationOrchestratorTests
         // A client that navigated away, or a host shutting down, arrives here as an
         // OperationCanceledException. It is the single most common way a conversation ends and it is
         // not a failure — but until #301 gave the schema a word for it, every one of them was
-        // recorded as an error. That is not cosmetic: the dashboards' error-rate panel is literally
-        // `status = 'error'`, so ordinary disconnects inflated the number operators watch.
+        // recorded as an error, in the column the sessions list and the Grafana $status filter both
+        // read. (It does not move any error-rate number; no panel computes one from this column.)
         var sessionId = Guid.NewGuid();
         var info = new ActiveConversationInfo("c1", "agent", "user1", DateTimeOffset.UtcNow, 1, sessionId);
         _connectionTracker.Setup(t => t.Untrack("conn1")).Returns(info);
@@ -639,14 +639,97 @@ public class ConversationOrchestratorTests
     }
 
     /// <summary>
+    /// The write that closes the session must not carry the token that says the connection is gone,
+    /// or the session is never closed at all.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is the defect #301 was filed about, arriving by a second route nobody had looked at.
+    /// SignalR aborts the connection <em>before</em> dispatching disconnect — its own source says so:
+    /// <c>// Ensure the connection is aborted before firing disconnect</c> — so the token the hub
+    /// hands this method is already cancelled every single time. Handing that token to the terminal
+    /// <c>EndSessionAsync</c> means the UPDATE is refused before it is ever sent, and
+    /// <c>PostgresObservabilityStore</c> catches <em>every</em> exception on a telemetry write and
+    /// logs a warning, cancellation included. The row is left <c>status='active'</c> with no
+    /// <c>ended_at</c>, for ever, on every ordinary disconnect.
+    /// </para>
+    /// <para>
+    /// The status fix on its own would have been theatre: it would have chosen the right word and
+    /// then failed to write it. Cleanup after a cancellation is not itself cancellable, which is the
+    /// same rule <c>RunConversationCommandHandler.EndRunSessionAsync</c> already follows.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task HandleDisconnect_WithCancellation_EndsSessionWithALiveTokenSoTheWriteLands()
+    {
+        var sessionId = Guid.NewGuid();
+        var info = new ActiveConversationInfo("c1", "agent", "user1", DateTimeOffset.UtcNow, 1, sessionId);
+        _connectionTracker.Setup(t => t.Untrack("conn1")).Returns(info);
+
+        var orchestrator = CreateOrchestrator();
+
+        // Exactly what the hub passes: a token that is already cancelled.
+        using var aborted = new CancellationTokenSource();
+        await aborted.CancelAsync();
+
+        await orchestrator.HandleDisconnectAsync("conn1", new OperationCanceledException(), aborted.Token);
+
+        _obsStore.Verify(
+            s => s.EndSessionAsync(
+                sessionId,
+                SessionStatus.Cancelled,
+                It.IsAny<string?>(),
+                It.Is<CancellationToken>(t => !t.IsCancellationRequested)),
+            Times.Once);
+    }
+
+    /// <summary>
+    /// The same rule on the error path: a connection that died from a transport fault also arrives
+    /// with an aborted token, and its session must still be closed.
+    /// </summary>
+    [Fact]
+    public async Task HandleDisconnect_WithException_EndsSessionWithALiveTokenSoTheWriteLands()
+    {
+        var sessionId = Guid.NewGuid();
+        var info = new ActiveConversationInfo("c1", "agent", "user1", DateTimeOffset.UtcNow, 1, sessionId);
+        _connectionTracker.Setup(t => t.Untrack("conn1")).Returns(info);
+
+        var orchestrator = CreateOrchestrator();
+
+        using var aborted = new CancellationTokenSource();
+        await aborted.CancelAsync();
+
+        await orchestrator.HandleDisconnectAsync("conn1", new InvalidOperationException("boom"), aborted.Token);
+
+        _obsStore.Verify(
+            s => s.EndSessionAsync(
+                sessionId,
+                SessionStatus.Error,
+                It.IsAny<string?>(),
+                It.Is<CancellationToken>(t => !t.IsCancellationRequested)),
+            Times.Once);
+    }
+
+    /// <summary>
     /// A transport that timed out is a failure, even though it arrives as the same exception type a
     /// deliberate stop does.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// <c>TaskCanceledException</c> derives from <c>OperationCanceledException</c> and is what a
     /// keepalive or read timeout throws with nobody having cancelled anything. Matching on the type
     /// alone reclassified a broken transport as a tidy goodbye — and, because the error log had just
     /// been routed through a status check, stopped recording it at any level at all.
+    /// </para>
+    /// <para>
+    /// Read this test for what it is: it pins the classification <em>rule</em>, not a production
+    /// guarantee. The only real caller is <c>AgentTelemetryHub.OnDisconnectedAsync</c>, which passes
+    /// <c>Context.ConnectionAborted</c> — and SignalR aborts the connection before dispatching
+    /// disconnect, so in production that token is always already cancelled and this branch cannot be
+    /// reached. Passing <c>CancellationToken.None</c> here exercises a caller shape the hub never
+    /// produces. That is worth stating plainly rather than letting the name imply cover that is not
+    /// there.
+    /// </para>
     /// </remarks>
     [Fact]
     public async Task HandleDisconnect_WithATimeoutRatherThanACancellation_StillRecordsError()

@@ -31,6 +31,15 @@ public static class ObservabilityMigrations
 
     /// <summary>Loads the observability migration set in apply order.</summary>
     /// <returns>The migration scripts, ordered by their numeric file-name prefix.</returns>
-    public static IReadOnlyList<MigrationScript> Load() =>
+    /// <remarks>
+    /// Read once and reused, matching <see cref="Options"/> directly above. It was a method that
+    /// re-enumerated every resource in the assembly and re-read all five scripts on each call, which
+    /// is invisible in production — the store is a singleton — but made callers reason about whether
+    /// calling it twice was wasteful, and at least one assertion pair had already called it twice in
+    /// consecutive lines. <see cref="MigrationScript"/> is immutable, so one instance is shareable.
+    /// </remarks>
+    public static IReadOnlyList<MigrationScript> Load() => Scripts;
+
+    private static readonly IReadOnlyList<MigrationScript> Scripts =
         EmbeddedSqlMigrationSource.Load(typeof(ObservabilityMigrations).Assembly);
 }
