@@ -260,8 +260,8 @@ public class MetricsE2ETests : IClassFixture<PrometheusFixture>, IAsyncLifetime
         var start = now.AddMinutes(-5).ToUnixTimeSeconds();
         var end = now.ToUnixTimeSeconds();
 
-        // This is the exact PromQL the Dashboard's Pulse page uses for active sessions.
-        var query = "agentic_harness_agent_session_active or vector(0)";
+        // This is the exact PromQL the Dashboard's Pulse page uses for run concurrency.
+        var query = "agentic_harness_agent_orchestration_runs_active or vector(0)";
         var response = await _client.GetAsync(
             $"/api/metrics/range?query={Uri.EscapeDataString(query)}" +
             $"&start={start}&end={end}&step=15s");
@@ -273,7 +273,7 @@ public class MetricsE2ETests : IClassFixture<PrometheusFixture>, IAsyncLifetime
         result.Should().NotBeNull();
         result!.Success.Should().BeTrue();
         result.Series.Should().NotBeEmpty(
-            "the Dashboard's Pulse page queries 'agent_session_active or vector(0)' via " +
+            "the Dashboard's Pulse page queries 'agent_orchestration_runs_active or vector(0)' via " +
             "/api/metrics/range — this must return data for the page to render");
     }
 

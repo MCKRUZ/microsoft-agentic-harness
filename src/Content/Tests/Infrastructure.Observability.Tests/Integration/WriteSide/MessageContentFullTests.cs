@@ -1,3 +1,4 @@
+using Domain.AI.Observability.Models;
 using Infrastructure.Observability.Persistence;
 using Npgsql;
 using Xunit;
@@ -27,7 +28,7 @@ public sealed class MessageContentFullTests
 
         using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);
         var builder = new TestDataBuilder(_fixture);
-        var session = await builder.CreateSessionAsync(status: "active");
+        var session = await builder.CreateSessionAsync(status: SessionStatus.Active);
 
         var fullBody = new string('a', 2000); // exceeds 500-char preview cap
         var messageId = await store.RecordMessageAsync(
@@ -54,7 +55,7 @@ public sealed class MessageContentFullTests
 
         using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);
         var builder = new TestDataBuilder(_fixture);
-        var session = await builder.CreateSessionAsync(status: "active");
+        var session = await builder.CreateSessionAsync(status: SessionStatus.Active);
 
         var messageId = await store.RecordMessageAsync(
             session.Id, turnIndex: 1, role: "user", source: "user_message",
@@ -77,8 +78,8 @@ public sealed class MessageContentFullTests
 
         using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);
         var builder = new TestDataBuilder(_fixture);
-        var ownerSession = await builder.CreateSessionAsync(status: "active");
-        var otherSession = await builder.CreateSessionAsync(status: "active");
+        var ownerSession = await builder.CreateSessionAsync(status: SessionStatus.Active);
+        var otherSession = await builder.CreateSessionAsync(status: SessionStatus.Active);
 
         var messageId = await store.RecordMessageAsync(
             ownerSession.Id, turnIndex: 1, role: "user", source: "user_message",
@@ -101,7 +102,7 @@ public sealed class MessageContentFullTests
 
         using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);
         var builder = new TestDataBuilder(_fixture);
-        var session = await builder.CreateSessionAsync(status: "active");
+        var session = await builder.CreateSessionAsync(status: SessionStatus.Active);
 
         _ = await store.RecordMessageAsync(
             session.Id, turnIndex: 1, role: "user", source: "user_message",

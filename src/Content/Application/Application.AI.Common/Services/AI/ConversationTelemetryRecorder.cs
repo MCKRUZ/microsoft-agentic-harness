@@ -92,6 +92,18 @@ public sealed class ConversationTelemetryRecorder : IConversationTelemetryRecord
 
         if (existing.SessionId != Guid.Empty)
         {
+            // Adopting a session is an assertion that the conversation is live, so the row has to say
+            // so. It may not: the session row is keyed one per conversation, but the decision to end
+            // one is taken per connection — the hub ends a session when the connection holding it
+            // disconnects or switches conversation, which says nothing about whether the conversation
+            // is over. Without this, coming back to it wrote every further turn into a row marked
+            // finished, with a past end time and a duration that kept climbing (issue #289).
+            //
+            // Un-ending belongs here rather than to a transport for the same reason adoption does: it
+            // is the same rule for all three, and the store's own no-op-when-already-open guard means
+            // the ordinary case — a session that was never ended — costs nothing but the statement.
+            await _observabilityStore.ResumeSessionAsync(existing.SessionId, cancellationToken);
+
             return new ConversationTelemetryState(
                 conversationId, callerId, existing.SessionId, existing.Totals, SessionOpened: false);
         }

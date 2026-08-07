@@ -6,6 +6,7 @@ using Application.AI.Common.Models.Conversations;
 using Application.AI.Common.OpenTelemetry.Metrics;
 using Application.Core.CQRS.Agents.ExecuteAgentTurn;
 using Domain.AI.Governance;
+using Domain.AI.Observability.Models;
 using Domain.AI.Telemetry.Conventions;
 using Domain.Common.Config.AI.Conversations;
 using MediatR;
@@ -203,9 +204,10 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 		var runBaseline = conversationTotals;
 
 		var agentTag = new KeyValuePair<string, object?>(AgentConventions.Name, request.AgentName);
-		var sessionTags = new TagList { { AgentConventions.Name, request.AgentName } };
 
-		SessionMetrics.ActiveSessions.Add(1, sessionTags);
+		// A run in flight, not a session: the session belongs to the conversation and outlives this run
+		// whenever the conversation is durable. Paired with the decrement in the finally below.
+		OrchestrationMetrics.RunsActive.Add(1, agentTag);
 
 		// A run is not the conversation. Only a self-contained run may end the session, because only
 		// there are the two the same thing; ending it on a durable run would mark a conversation
@@ -227,7 +229,7 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 		// a bookkeeping failure must not turn a conversation that completed into one that reports an
 		// error, and it must never mask an exception already on its way out. Cleanup runs on an
 		// uncancelled token so it still completes when the caller's token is the reason we are here.
-		async Task EndRunSessionAsync(string status, string? reason)
+		async Task EndRunSessionAsync(SessionStatus status, string? reason)
 		{
 			if (sessionEnded || !ownsSession)
 				return;
@@ -309,16 +311,16 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 
 				if (!lastResult.Success)
 				{
-					// A cancelled turn (e.g. caller disconnect) is routine, not a failure:
-					// route it into the OperationCanceledException handler below so the session
-					// ends "cancelled" rather than "error", consistent with the other transports.
+					// A cancelled turn (e.g. caller disconnect) is routine, not a failure: route it into
+					// the OperationCanceledException handler below, which rethrows rather than returning
+					// a failed result and records the cancellation in the session's reason.
 					if (lastResult.ErrorKind == AgentTurnErrorKind.Cancelled)
 						throw new OperationCanceledException(cancellationToken);
 
 					_logger.LogError("Conversation turn {Turn} failed for {AgentName}: {Error}",
 						index + 1, request.AgentName, lastResult.Error);
 
-					await EndRunSessionAsync("error", lastResult.Error);
+					await EndRunSessionAsync(SessionStatus.Error, lastResult.Error);
 
 					var partialShare = conversationTotals.Since(runBaseline);
 
@@ -438,7 +440,7 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 			if (runShare.CostUsd > 0)
 				SessionMetrics.SessionCost.Record((double)runShare.CostUsd, agentTag);
 
-			await EndRunSessionAsync("completed", null);
+			await EndRunSessionAsync(SessionStatus.Completed, null);
 
 			return new ConversationResult
 			{
@@ -453,10 +455,15 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 		}
 		catch (OperationCanceledException)
 		{
-			// Caller cancellation (e.g. client disconnect) is routine, not exceptional — so the session
-			// closes as "cancelled" rather than "error", and the exception is rethrown rather than
-			// turned into a failed result, because a caller that walked away is not a run that failed.
-			await EndRunSessionAsync("cancelled", null);
+			// Caller cancellation (e.g. client disconnect) is routine, not exceptional, and the exception
+			// is rethrown rather than turned into a failed result: a caller that walked away is not a run
+			// that failed.
+			//
+			// It nevertheless closes as Error. This path is where the string "cancelled" came from; see
+			// SessionStatus for what the database did with it, and why cancellation is carried in the
+			// reason rather than given a state of its own. The visible cost is local and worth naming
+			// here: a cancelled run is counted among the errors on the dashboard.
+			await EndRunSessionAsync(SessionStatus.Error, "conversation.cancelled");
 			throw;
 		}
 		catch (Exception ex)
@@ -466,14 +473,14 @@ public class RunConversationCommandHandler : IRequestHandler<RunConversationComm
 			// session with a stable scrubbed status code and rethrow.
 			_logger.LogError(ex, "Conversation with {AgentName} failed with an unhandled exception",
 				request.AgentName);
-			await EndRunSessionAsync("error", "conversation.unhandled_exception");
+			await EndRunSessionAsync(SessionStatus.Error, "conversation.unhandled_exception");
 			throw;
 		}
 		finally
 		{
-			// Decrement the up-down gauge exactly once on every exit path so the
-			// ActiveSessions metric cannot skew permanently when the try block throws.
-			SessionMetrics.ActiveSessions.Add(-1, sessionTags);
+			// Decrement the up-down gauge exactly once on every exit path so the runs-in-flight
+			// metric cannot skew permanently when the try block throws.
+			OrchestrationMetrics.RunsActive.Add(-1, agentTag);
 			_agentCache.Evict(request.ConversationId);
 
 			// The conversation budget is deliberately NOT released here. This handler used to, on the

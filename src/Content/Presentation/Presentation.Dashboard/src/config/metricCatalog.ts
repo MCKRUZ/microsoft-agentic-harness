@@ -4,7 +4,11 @@ import { costTotalQuery, costRateQuery, costByQuery } from './costQueries';
 export const metricCatalog: Record<string, MetricCatalogEntry> = {
   // --- Overview ---
   tokens_per_minute: { id: 'tokens_per_minute', title: 'Tokens / Minute', description: 'Rate of total token consumption', query: 'rate(agentic_harness_agent_tokens_total_sum[5m]) * 60', chartType: 'stat', unit: 'tokens/min', category: 'overview', refreshIntervalSeconds: 15 },
-  active_sessions: { id: 'active_sessions', title: 'Active Sessions', description: 'Sessions with recent activity', query: 'sum(agentic_harness_agent_session_active) or vector(0)', chartType: 'stat', unit: 'sessions', category: 'overview', refreshIntervalSeconds: 15 },
+  // The single source for the "Active Runs" KPI description wherever it renders. Read it via
+  // `useMetric(...).entry.description`; never restate it at a call site. It was hand-written in
+  // three places and had already drifted between them by the time #289 split this gauge away
+  // from connections_active — which is the very confusion the wording exists to prevent.
+  active_runs: { id: 'active_runs', title: 'Active Runs', description: 'Units of agent work executing right now — a background run or a streamed run. Returns to zero when the agent is idle.', query: 'sum(agentic_harness_agent_orchestration_runs_active) or vector(0)', chartType: 'stat', unit: 'runs', category: 'overview', refreshIntervalSeconds: 15 },
   cost_today: { id: 'cost_today', title: 'Cost Today', description: 'LLM cost since midnight UTC (provider-reported where available, else estimated)', query: costTotalQuery, chartType: 'stat', unit: 'usd', category: 'overview', refreshIntervalSeconds: 30 },
   cache_hit_rate: { id: 'cache_hit_rate', title: 'Cache Hit Rate', description: 'Prompt cache hit ratio', query: 'agentic_harness_agent_tokens_cache_hit_rate_sum / agentic_harness_agent_tokens_cache_hit_rate_count or vector(0)', chartType: 'gauge', unit: 'percent', category: 'overview', refreshIntervalSeconds: 30 },
   safety_violations: { id: 'safety_violations', title: 'Safety Evaluations', description: 'Content safety evaluations performed', query: 'sum(agentic_harness_agent_safety_evaluations_total) or vector(0)', chartType: 'stat', unit: 'count', category: 'overview', refreshIntervalSeconds: 30 },
@@ -31,10 +35,11 @@ export const metricCatalog: Record<string, MetricCatalogEntry> = {
 
   // --- Sessions ---
   sessions_total: { id: 'sessions_total', title: 'Total Sessions', description: 'Lifetime session count', query: 'sum(agentic_harness_agent_session_started_total) or vector(0)', chartType: 'stat', unit: 'count', category: 'sessions', refreshIntervalSeconds: 30 },
-  sessions_active: { id: 'sessions_active', title: 'Active Sessions', description: 'Currently active sessions', query: 'sum(agentic_harness_agent_session_active) or vector(0)', chartType: 'stat', unit: 'count', category: 'sessions', refreshIntervalSeconds: 15 },
+  sessions_runs_active: { id: 'sessions_runs_active', title: 'Active Runs', description: 'Units of agent work executing right now — a background run or a streamed run. Returns to zero when the agent is idle.', query: 'sum(agentic_harness_agent_orchestration_runs_active) or vector(0)', chartType: 'stat', unit: 'count', category: 'sessions', refreshIntervalSeconds: 15 },
+  sessions_connections_active: { id: 'sessions_connections_active', title: 'Live Connections', description: 'Interactive connections attached to a conversation', query: 'sum(agentic_harness_agent_orchestration_connections_active) or vector(0)', chartType: 'stat', unit: 'count', category: 'sessions', refreshIntervalSeconds: 15 },
   sessions_turns_avg: { id: 'sessions_turns_avg', title: 'Avg Turns/Session', description: 'Average conversation turns per session', query: 'agentic_harness_agent_orchestration_turns_per_conversation_sum / agentic_harness_agent_orchestration_turns_per_conversation_count or vector(0)', chartType: 'stat', unit: 'turns', category: 'sessions', refreshIntervalSeconds: 30 },
   sessions_duration_avg: { id: 'sessions_duration_avg', title: 'Avg Duration', description: 'Average session duration', query: 'agentic_harness_agent_orchestration_conversation_duration_sum / agentic_harness_agent_orchestration_conversation_duration_count or vector(0)', chartType: 'stat', unit: 'ms', category: 'sessions', refreshIntervalSeconds: 30 },
-  sessions_active_ts: { id: 'sessions_active_ts', title: 'Active Sessions Over Time', description: 'Session concurrency over time', query: 'agentic_harness_agent_session_active or vector(0)', chartType: 'timeseries', unit: 'count', category: 'sessions', refreshIntervalSeconds: 15 },
+  sessions_runs_active_ts: { id: 'sessions_runs_active_ts', title: 'Active Runs Over Time', description: 'Run concurrency over time', query: 'agentic_harness_agent_orchestration_runs_active or vector(0)', chartType: 'timeseries', unit: 'count', category: 'sessions', refreshIntervalSeconds: 15 },
   sessions_turns_ts: { id: 'sessions_turns_ts', title: 'Turns Over Time', description: 'Conversation turns per minute', query: 'rate(agentic_harness_agent_orchestration_turns_total[5m]) * 60', chartType: 'timeseries', unit: 'turns/min', category: 'sessions', refreshIntervalSeconds: 15 },
 
   // --- Tools (instrumented via AgentFrameworkSpanProcessor — emits on tool execution) ---

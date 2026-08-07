@@ -46,7 +46,8 @@
 
 | Panel | Prometheus Metric | Code Metric | Recorded By | Status |
 |-------|-------------------|-------------|-------------|--------|
-| Active Sessions | `agentic_harness_agent_session_active` | `agent.session.active` | `SessionMetrics.ActiveSessions` | **LIVE** |
+| Active Runs | `agentic_harness_agent_orchestration_runs_active` | `agent.orchestration.runs_active` | `RunConversationCommandHandler` + `AgUiRunHandler` | **LIVE** |
+| Live Connections | `agentic_harness_agent_orchestration_connections_active` | `agent.orchestration.connections_active` | `ConversationOrchestrator` + `SessionIdleCleanupService` | **LIVE** |
 | LLM Calls | `agentic_harness_agent_tokens_total_count` | `agent.tokens.total` | `LlmTokenTrackingProcessor` | **LIVE** |
 | Total Tokens | `agentic_harness_agent_tokens_total_sum` | `agent.tokens.total` | `LlmTokenTrackingProcessor` | **LIVE** |
 | Tool Calls | `agentic_harness_agent_orchestration_tool_call_count_total` | `agent.orchestration.tool_call_count` | `AgentTelemetryHub` (added this session) + `RunConversationCommandHandler` | **LIVE** (after fix) |
@@ -169,10 +170,16 @@ Caveat on Tools Schema Tokens: the value is an estimate, not a measurement — `
 
 | Panel | Prometheus Metric | Code Metric | Recorded By | Status |
 |-------|-------------------|-------------|-------------|--------|
-| Active Sessions | `agentic_harness_agent_session_active` | `agent.session.active` | `SessionMetrics` | **LIVE** |
+| Active Runs | `agentic_harness_agent_orchestration_runs_active` | `agent.orchestration.runs_active` | `RunConversationCommandHandler` + `AgUiRunHandler` | **LIVE** |
+| Live Connections | `agentic_harness_agent_orchestration_connections_active` | `agent.orchestration.connections_active` | `ConversationOrchestrator` + `SessionIdleCleanupService` | **LIVE** |
 | Session Health | `agentic_harness_agent_session_health_score` | `agent.session.health_score` | Observable gauge (registered externally) | **DEAD** |
 
-**Verdict: PARTIALLY WORKING.** Active sessions fires. Health score gauge name is defined in `SessionConventions` but no observable gauge registration was found in the codebase — the callback that would yield measurements doesn't exist.
+**Verdict: PARTIALLY WORKING.** Both activity gauges fire. Health score gauge name is defined in `SessionConventions` but no observable gauge registration was found in the codebase — the callback that would yield measurements doesn't exist.
+
+> `agent.session.active` was removed in issue #289. Three transports incremented it while meaning three
+> different things — runs in flight, live connections, and (from AG-UI, which had no decrement it could
+> reach) conversations ever started — so its sum was not a quantity. The two gauges above each answer
+> exactly one of those questions.
 
 ---
 

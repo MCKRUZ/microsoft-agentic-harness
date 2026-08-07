@@ -20,7 +20,7 @@ const COST_RATE_QUERY = costRateQuery;
 
 export function HealthTab() {
   const tokensPerMin = useMetric('tokens_per_minute');
-  const activeSessions = useMetric('active_sessions');
+  const activeRuns = useMetric('active_runs');
   const avgTurn = usePromQuery(AVG_TURN_QUERY);
   const errorRate = usePromQuery(ERROR_RATE_QUERY);
   const costRate = usePromQuery(COST_RATE_QUERY);
@@ -28,7 +28,7 @@ export function HealthTab() {
 
   const anyLoading =
     tokensPerMin.isLoading ||
-    activeSessions.isLoading ||
+    activeRuns.isLoading ||
     avgTurn.isLoading ||
     errorRate.isLoading;
 
@@ -48,13 +48,13 @@ export function HealthTab() {
   const errorRateVal = Math.min(latestValue(errorRate.data), 1);
   const avgTurnVal = latestValue(avgTurn.data);
   const safetyBlocksVal = latestValue(safetyBlocks.data);
-  const activeVal = latestValue(activeSessions.data);
+  const activeVal = latestValue(activeRuns.data);
   const tokVal = latestValue(tokensPerMin.data);
   const costRateVal = latestValue(costRate.data);
   const isHealthy = errorRateVal < 0.05 && safetyBlocksVal < 10;
 
   const tokensDelta = computeDelta(primarySeries(tokensPerMin.data)?.dataPoints);
-  const sessionsDelta = computeDelta(primarySeries(activeSessions.data)?.dataPoints);
+  const runsDelta = computeDelta(primarySeries(activeRuns.data)?.dataPoints);
 
   return (
     <div className="space-y-6">
@@ -135,12 +135,12 @@ export function HealthTab() {
             sparklineData={primarySeries(tokensPerMin.data)?.dataPoints}
           />
           <KpiCard
-            title="Active Sessions"
-            description="Number of agent sessions currently open. A session stays active until explicitly ended or timed out."
+            title={activeRuns.entry.title}
+            description={activeRuns.entry.description}
             value={formatKpi(activeVal, 'count')}
-            delta={sessionsDelta?.text}
-            trend={sessionsDelta?.trend}
-            sparklineData={primarySeries(activeSessions.data)?.dataPoints}
+            delta={runsDelta?.text}
+            trend={runsDelta?.trend}
+            sparklineData={primarySeries(activeRuns.data)?.dataPoints}
           />
           <KpiCard
             title="Avg Turn"

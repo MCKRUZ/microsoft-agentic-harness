@@ -10,10 +10,6 @@ namespace Application.AI.Common.OpenTelemetry.Metrics;
 /// </summary>
 public static class SessionMetrics
 {
-    /// <summary>Currently active sessions. Tags: agent.name.</summary>
-    public static UpDownCounter<int> ActiveSessions { get; } =
-        AppInstrument.Meter.CreateUpDownCounter<int>(SessionConventions.Active, "{session}", "Currently active agent sessions");
-
     /// <summary>Session health score metric name (registered as ObservableGauge via callback).</summary>
     public static string HealthScoreName => SessionConventions.HealthScore;
 

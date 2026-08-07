@@ -6,6 +6,7 @@ using Application.Core.CQRS.Agents.ExecuteAgentTurn;
 using Application.Core.CQRS.Agents.RunConversation;
 using Application.AI.Common.Services.AI;
 using Domain.AI.Budget;
+using Domain.AI.Observability.Models;
 using Domain.Common.Config.AI.Conversations;
 using FluentAssertions;
 using MediatR;
@@ -492,7 +493,7 @@ public sealed class RunConversationDurableTests
 
         await act.Should().ThrowAsync<InvalidOperationException>();
         _observability.Verify(o => o.EndSessionAsync(
-            It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()),
+            It.IsAny<Guid>(), It.IsAny<SessionStatus>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()),
             Times.Never);
     }
 
@@ -509,7 +510,7 @@ public sealed class RunConversationDurableTests
 
         await act.Should().ThrowAsync<InvalidOperationException>();
         _observability.Verify(o => o.EndSessionAsync(
-            NewSessionId, "error", "conversation.unhandled_exception", It.IsAny<CancellationToken>()),
+            NewSessionId, SessionStatus.Error, "conversation.unhandled_exception", It.IsAny<CancellationToken>()),
             Times.Once);
     }
 
@@ -592,7 +593,7 @@ public sealed class RunConversationDurableTests
         await BuildSut().Handle(Durable(), CancellationToken.None);
 
         _observability.Verify(o => o.EndSessionAsync(
-            It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()),
+            It.IsAny<Guid>(), It.IsAny<SessionStatus>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()),
             Times.Never);
     }
 
@@ -607,7 +608,7 @@ public sealed class RunConversationDurableTests
         await BuildSut().Handle(SelfContained(), CancellationToken.None);
 
         _observability.Verify(o => o.EndSessionAsync(
-            NewSessionId, "completed", null, It.IsAny<CancellationToken>()), Times.Once);
+            NewSessionId, SessionStatus.Completed, null, It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]

@@ -81,7 +81,8 @@ function routeMetricsQuery(query: string): MetricsQueryResponse {
   if (query.includes('cost')) return makeTimeSeries(0.0523);
   if (query.includes('safety_blocks')) return makeTimeSeries(3);
   if (query.includes('safety')) return makeTimeSeries(15);
-  if (query.includes('session_active')) return makeTimeSeries(3);
+  if (query.includes('runs_active')) return makeTimeSeries(3);
+  if (query.includes('connections_active')) return makeTimeSeries(2);
   if (query.includes('sessions_started')) return makeTimeSeries(25);
   if (query.includes('turns_per_conversation')) return makeTimeSeries(8.5);
   if (query.includes('conversation_duration')) return makeTimeSeries(180000);

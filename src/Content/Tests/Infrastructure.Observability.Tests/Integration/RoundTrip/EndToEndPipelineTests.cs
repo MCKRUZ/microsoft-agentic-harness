@@ -1,3 +1,4 @@
+using Domain.AI.Observability.Models;
 using Infrastructure.Observability.Persistence;
 using Npgsql;
 using Xunit;
@@ -28,7 +29,7 @@ public class EndToEndPipelineTests
             totalCacheRead: 400, totalCacheWrite: 200,
             totalCostUsd: 0.50m, cacheHitRate: 0.30m, model: "gpt-4o");
 
-        await store.EndSessionAsync(sessionId, "completed", null);
+        await store.EndSessionAsync(sessionId, SessionStatus.Completed, null);
 
         var from = DateTime.UtcNow.AddHours(-1);
         var to = DateTime.UtcNow.AddMinutes(1);
@@ -322,7 +323,7 @@ public class EndToEndPipelineTests
                 "claude-sonnet-4-6");
         }
 
-        await store.EndSessionAsync(sessionId, "completed", null);
+        await store.EndSessionAsync(sessionId, SessionStatus.Completed, null);
 
         // ── Read back via store methods (same path as SessionsController) ──
 
@@ -403,7 +404,7 @@ public class EndToEndPipelineTests
         await store.RecordToolExecutionAsync(sessionId, null, "web_search", "mcp", 200, "success", null, 1024);
         await store.UpdateSessionMetricsAsync(sessionId, 2, 1, 0, 900, 450, 210, 80, 0.10m, 0.23m, "claude-sonnet-4-6");
 
-        await store.EndSessionAsync(sessionId, "completed", null);
+        await store.EndSessionAsync(sessionId, SessionStatus.Completed, null);
 
         var sessionIdParam = new NpgsqlParameter("@session_id", convId);
 

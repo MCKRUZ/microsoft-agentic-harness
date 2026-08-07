@@ -120,7 +120,8 @@ public sealed class CollectorContractTests
         var criticalMetrics = new[]
         {
             "agentic_harness_agent_session_started_total",
-            "agentic_harness_agent_session_active",
+            "agentic_harness_agent_orchestration_runs_active",
+            "agentic_harness_agent_orchestration_connections_active",
             "agentic_harness_agent_orchestration_turn_duration_sum",
             "agentic_harness_agent_tokens_input_sum",
             "agentic_harness_agent_safety_evaluations_total",

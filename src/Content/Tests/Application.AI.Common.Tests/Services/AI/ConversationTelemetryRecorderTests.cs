@@ -92,6 +92,58 @@ public sealed class ConversationTelemetryRecorderTests
     }
 
     [Fact]
+    public async Task BeginAsync_AdoptingASession_UnEndsItSoTheRowStopsClaimingTheConversationFinished()
+    {
+        // The session row is keyed one per conversation, but the decision to end one is taken per
+        // connection: the hub ends a session when the connection holding it disconnects or switches
+        // away, which says nothing about whether the conversation is over. Coming back to it wrote every
+        // further turn into a row marked finished, with a past end time and a climbing duration (#289).
+        //
+        // Adoption is the assertion that the conversation is live, so this is its counterpart. It runs
+        // unconditionally because the recorder cannot tell an ended row from a live one without a read,
+        // and the store's WHERE clause makes the live case a no-op.
+        _conversations
+            .Setup(s => s.GetAsync(ConversationId, Owner, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Record(ExistingSession, TelemetryAccumulator.Zero));
+
+        await Sut().BeginAsync(ConversationId, Owner, "agent");
+
+        _observability.Verify(
+            o => o.ResumeSessionAsync(ExistingSession, It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task BeginAsync_AdoptingFromASuppliedRecord_UnEndsItToo()
+    {
+        // The AG-UI path supplies the record it already read under its lease rather than letting the
+        // recorder read a third time, so it reaches adoption by a different branch. A fix applied to one
+        // branch and not the other is the shape of mistake this codebase has shipped four times.
+        await Sut().BeginAsync(
+            ConversationId, Owner, "agent", knownRecord: Record(ExistingSession, TelemetryAccumulator.Zero));
+
+        _observability.Verify(
+            o => o.ResumeSessionAsync(ExistingSession, It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task BeginAsync_OpeningTheFirstSession_HasNothingToUnEnd()
+    {
+        _conversations
+            .Setup(s => s.GetAsync(ConversationId, Owner, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Record(session: null));
+
+        await Sut().BeginAsync(ConversationId, Owner, "agent");
+
+        _observability.Verify(
+            o => o.ResumeSessionAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()),
+            Times.Never,
+            "a session opened moments ago is already active; resuming it would be a write with nothing "
+            + "to say");
+    }
+
+    [Fact]
     public async Task BeginAsync_TurnNumberContinuesTheConversation()
     {
         _conversations

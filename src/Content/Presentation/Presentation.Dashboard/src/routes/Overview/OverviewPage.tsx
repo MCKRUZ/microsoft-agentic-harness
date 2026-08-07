@@ -31,7 +31,7 @@ function formatKpi(value: number, unit: string): string {
 
 export default function OverviewPage() {
   const tokensPerMin = useMetric('tokens_per_minute');
-  const activeSessions = useMetric('active_sessions');
+  const activeRuns = useMetric('active_runs');
   const costToday = useMetric('cost_today');
   const cacheHitRate = useMetric('cache_hit_rate');
   const safetyViolations = useMetric('safety_violations');
@@ -40,7 +40,7 @@ export default function OverviewPage() {
   const tokenRate = usePromQuery('rate(agentic_harness_agent_tokens_total_sum[5m]) * 60');
   const costRate = usePromQuery(costRateQuery);
 
-  const anyLoading = tokensPerMin.isLoading || activeSessions.isLoading || costToday.isLoading || cacheHitRate.isLoading;
+  const anyLoading = tokensPerMin.isLoading || activeRuns.isLoading || costToday.isLoading || cacheHitRate.isLoading;
 
   if (anyLoading) {
     return (
@@ -66,10 +66,10 @@ export default function OverviewPage() {
           sparklineData={tokensPerMin.data?.series[0]?.dataPoints}
         />
         <KpiCard
-          title={activeSessions.entry.title}
-          description="Number of agent sessions currently open and accepting messages."
-          value={formatKpi(latestValue(activeSessions.data), activeSessions.entry.unit)}
-          sparklineData={activeSessions.data?.series[0]?.dataPoints}
+          title={activeRuns.entry.title}
+          description="Units of agent work executing right now — a background run, a streamed run, or an interactive turn. Returns to zero when the agent is idle."
+          value={formatKpi(latestValue(activeRuns.data), activeRuns.entry.unit)}
+          sparklineData={activeRuns.data?.series[0]?.dataPoints}
         />
         <KpiCard
           title={costToday.entry.title}

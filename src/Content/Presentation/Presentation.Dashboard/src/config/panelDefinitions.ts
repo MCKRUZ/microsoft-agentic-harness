@@ -25,7 +25,7 @@ export const routeLayouts: Record<string, RouteLayout> = {
     description: 'High-level agent telemetry summary',
     panels: [
       panel('tokens_per_minute', 'kpi'),
-      panel('active_sessions', 'kpi'),
+      panel('active_runs', 'kpi'),
       panel('cost_today', 'kpi'),
       panel('cache_hit_rate', 'kpi'),
       panel('safety_violations', 'kpi'),
@@ -62,10 +62,11 @@ export const routeLayouts: Record<string, RouteLayout> = {
     description: 'Conversation sessions, turns, and duration',
     panels: [
       panel('sessions_total', 'kpi'),
-      panel('sessions_active', 'kpi'),
+      panel('sessions_runs_active', 'kpi'),
+      panel('sessions_connections_active', 'kpi'),
       panel('sessions_turns_avg', 'kpi'),
       panel('sessions_duration_avg', 'kpi'),
-      panel('sessions_active_ts', 'half'),
+      panel('sessions_runs_active_ts', 'half'),
       panel('sessions_turns_ts', 'half'),
     ],
   },

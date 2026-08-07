@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Domain.AI.Observability.Models;
 using Microsoft.Extensions.Logging;
 using Npgsql;
 using NpgsqlTypes;
@@ -12,10 +13,34 @@ public sealed partial class PostgresObservabilityStore
         string conversationId, string agentName, string? model,
         CancellationToken cancellationToken = default)
     {
+        // The conflict branch is reached when a conversation that already has a row opens a session
+        // again — the record that would have been adopted lost its session id, or was rebuilt. Its
+        // start is being restamped, so the row is describing a session that is beginning; leaving the
+        // end markers in place would have it beginning and already over at the same time.
+        //
+        // The totals go back to zero with it, and must. Reaching here means the recorder had nothing to
+        // adopt, so its accumulator restarts from zero and the next UpdateSessionMetricsAsync — which
+        // SETs absolute values, not deltas — would overwrite them from zero anyway. Leaving them would
+        // publish a row claiming a brand-new session had already spent the previous one's tokens, for
+        // as long as it took the first turn to land, and for good if it never did.
         const string sql = """
             INSERT INTO sessions (conversation_id, agent_name, model)
             VALUES ($1, $2, $3)
-            ON CONFLICT (conversation_id) DO UPDATE SET started_at = NOW()
+            ON CONFLICT (conversation_id) DO UPDATE
+                SET started_at = NOW(),
+                    ended_at = NULL,
+                    duration_ms = NULL,
+                    status = 'active',
+                    error_message = NULL,
+                    turn_count = 0,
+                    tool_call_count = 0,
+                    subagent_count = 0,
+                    total_input_tokens = 0,
+                    total_output_tokens = 0,
+                    total_cache_read = 0,
+                    total_cache_write = 0,
+                    total_cost_usd = 0,
+                    cache_hit_rate = 0
             RETURNING id
             """;
 
@@ -38,7 +63,7 @@ public sealed partial class PostgresObservabilityStore
 
     /// <inheritdoc />
     public async Task EndSessionAsync(
-        Guid sessionId, string status, string? errorMessage,
+        Guid sessionId, SessionStatus status, string? errorMessage,
         CancellationToken cancellationToken = default)
     {
         if (sessionId == Guid.Empty) return;
@@ -53,7 +78,38 @@ public sealed partial class PostgresObservabilityStore
             """;
 
         await ExecuteNonQuerySafe(sql, cancellationToken,
-            sessionId, status, errorMessage ?? (object)DBNull.Value);
+            sessionId, status.ToDbValue(), errorMessage ?? (object)DBNull.Value);
+    }
+
+    /// <inheritdoc />
+    public async Task ResumeSessionAsync(Guid sessionId, CancellationToken cancellationToken = default)
+    {
+        if (sessionId == Guid.Empty) return;
+
+        // The WHERE clause is what makes this idempotent, and it is why no read is needed first: on a
+        // session that is already open the statement matches nothing and the row — including its start
+        // time, which must never be restamped — is untouched. Called on every turn that adopts an
+        // existing session, so the common case has to cost one indexed no-op, not a round trip and a
+        // conditional write.
+        // duration_ms is recomputed rather than cleared. It means "how long so far" on a live session —
+        // that is what UpdateSessionMetricsAsync writes on every turn — so blanking it would leave the
+        // row with no duration at all until the next turn lands, and permanently if that write fails.
+        //
+        // error_message is cleared, including when the session had ended with an error. The row states
+        // what the conversation is now, and "active, and by the way it failed" is not a state: the
+        // dashboard's status badge reads this row, and a live conversation carrying a stale failure
+        // reads as broken. The failure itself is not lost — it stays in the turn's own message row and
+        // in the audit log, which is where a history of what went wrong belongs.
+        const string sql = """
+            UPDATE sessions
+            SET ended_at = NULL,
+                duration_ms = EXTRACT(EPOCH FROM (NOW() - started_at))::INT * 1000,
+                status = 'active',
+                error_message = NULL
+            WHERE id = $1 AND ended_at IS NOT NULL
+            """;
+
+        await ExecuteNonQuerySafe(sql, cancellationToken, sessionId);
     }
 
     /// <inheritdoc />

@@ -1,3 +1,4 @@
+using Domain.AI.Observability.Models;
 using Npgsql;
 using Xunit;
 
@@ -19,8 +20,8 @@ public sealed class OverviewDashboardTests
         _fixture.SkipIfUnavailable();
 
         var builder = new TestDataBuilder(_fixture);
-        await builder.CreateSessionAsync(agentName: "OverviewAgentA", status: "completed");
-        await builder.CreateSessionAsync(agentName: "OverviewAgentB", status: "error");
+        await builder.CreateSessionAsync(agentName: "OverviewAgentA", status: SessionStatus.Completed);
+        await builder.CreateSessionAsync(agentName: "OverviewAgentB", status: SessionStatus.Error);
 
         var from = DateTime.UtcNow.AddHours(-1);
         var to = DateTime.UtcNow.AddMinutes(1);
@@ -98,8 +99,8 @@ public sealed class OverviewDashboardTests
         _fixture.SkipIfUnavailable();
 
         var builder = new TestDataBuilder(_fixture);
-        await builder.CreateSessionAsync(agentName: "OverviewErrOk", status: "completed");
-        await builder.CreateSessionAsync(agentName: "OverviewErrFail", status: "error");
+        await builder.CreateSessionAsync(agentName: "OverviewErrOk", status: SessionStatus.Completed);
+        await builder.CreateSessionAsync(agentName: "OverviewErrFail", status: SessionStatus.Error);
 
         var from = DateTime.UtcNow.AddHours(-1);
         var to = DateTime.UtcNow.AddMinutes(1);

@@ -5,6 +5,7 @@ using Application.AI.Common.Interfaces.AI;
 using Application.AI.Common.OpenTelemetry.Metrics;
 using Application.AI.Common.Services;
 using Application.Core.CQRS.Agents.ExecuteAgentTurn;
+using Domain.AI.Observability.Models;
 using Domain.AI.Telemetry.Conventions;
 using MediatR;
 using Microsoft.Extensions.AI;
@@ -197,7 +198,7 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
         var info = _connectionTracker.Untrack(sessionKey);
         if (info is null) return;
 
-        SessionMetrics.ActiveSessions.Add(-1, new TagList { { AgentConventions.Name, info.AgentName } });
+        OrchestrationMetrics.ConnectionsActive.Add(-1, new TagList { { AgentConventions.Name, info.AgentName } });
 
         if (info.TurnCount > 0)
         {
@@ -207,11 +208,32 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
             OrchestrationMetrics.TurnsPerConversation.Record(info.TurnCount, agentTag);
         }
 
-        var status = exception is null ? "completed" : "errored";
+        // This path is where the string "errored" came from; see SessionStatus for what the database
+        // did with it and why the parameter is typed now.
+        var status = exception is null ? SessionStatus.Completed : SessionStatus.Error;
+
+        // The reason is a stable code, never the exception's own text, and fixing the status above is
+        // exactly why that matters now: while the write was being rejected nothing reached the row, so
+        // making it land would otherwise have started putting arbitrary exception messages — connection
+        // strings, tokens, internal paths — into sessions.error_message, which is read back out and
+        // served to clients on the session list. The full exception goes to the log, where it belongs.
+        // Same rule, and the same stable-code shape, as RunConversationCommandHandler's error path.
+        if (exception is not null)
+        {
+            _logger.LogError(
+                exception,
+                "Connection for conversation {ConversationId} dropped with an exception; the session is "
+                    + "recorded as errored",
+                info.ConversationId);
+        }
+
         try
         {
             await _observabilityStore.EndSessionAsync(
-                info.ObservabilitySessionId, status, exception?.Message, ct);
+                info.ObservabilitySessionId,
+                status,
+                exception is null ? null : "connection.dropped_with_exception",
+                ct);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -325,6 +347,14 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
         var previousSink = AgentTurnStreamSink.Current;
         if (onChunk is not null)
             AgentTurnStreamSink.Current = new AgentTurnStreamSink(onChunk);
+
+        // A hub turn is agent work in flight, so it belongs on the same gauge as a bundle run and an
+        // AG-UI run. Counting it only on those two would leave "Active Runs" reading zero on a
+        // SignalR-only deployment while the agent is generating — the same defect the split was for,
+        // pointing the other way. It sits around the dispatch rather than the whole method because the
+        // budget-exhausted return above never reaches a model.
+        var runTag = new TagList { { AgentConventions.Name, agentName } };
+        OrchestrationMetrics.RunsActive.Add(1, runTag);
         try
         {
             result = await _mediator.Send(command, ct);
@@ -347,6 +377,7 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
         }
         finally
         {
+            OrchestrationMetrics.RunsActive.Add(-1, runTag);
             AgentTurnStreamSink.Current = previousSink;
         }
 
@@ -438,11 +469,16 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
         // that conversation writes further turns into a row already marked completed. That is the
         // session lifetime being per-connection while the session row is per-conversation, which is a
         // design gap this change surfaces rather than creates — tracked separately.
-        if (tracked is not null && tracked.ConversationId != conversationId)
+
+        // The conversation this connection is leaving, or null when it is not leaving one. Held as the
+        // entry rather than a bool so both uses below read it off the same non-null reference — the
+        // bool version needed `tracked!` at each use, which asserts a fact the compiler could not see
+        // and the second use is fifty lines from the check that establishes it.
+        var leaving = tracked is not null && tracked.ConversationId != conversationId ? tracked : null;
+        if (leaving is not null)
         {
-            SessionMetrics.ActiveSessions.Add(-1, new TagList { { AgentConventions.Name, tracked.AgentName } });
             await _observabilityStore.EndSessionAsync(
-                tracked.ObservabilitySessionId, "completed", cancellationToken: ct);
+                leaving.ObservabilitySessionId, SessionStatus.Completed, cancellationToken: ct);
         }
 
         var state = await _telemetryRecorder.BeginAsync(
@@ -457,6 +493,19 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
         if (tracked?.ConversationId == conversationId)
             return state;
 
+        // The gauge counts entries in the tracker, so it moves where entries move — here, next to the
+        // Track that replaces one, and not a moment earlier. Decrementing up beside EndSessionAsync
+        // reads more naturally and is wrong: BeginAsync above can throw (a cancelled token as the user
+        // navigates away, a store that refuses the new conversation), and then Track never runs, the
+        // tracker still holds the OLD entry, and the disconnect that eventually arrives decrements it a
+        // second time. Two decrements for one increment, on an up-down counter that never recovers —
+        // the exact defect this split exists to remove, reintroduced by the split.
+        if (leaving is not null)
+        {
+            OrchestrationMetrics.ConnectionsActive.Add(
+                -1, new TagList { { AgentConventions.Name, leaving.AgentName } });
+        }
+
         _connectionTracker.Track(sessionKey, new ActiveConversationInfo(
             conversationId, agentName, callerId, DateTimeOffset.UtcNow,
             state.Totals.TurnCount, state.SessionId,
@@ -464,7 +513,9 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
             state.Totals.CacheRead, state.Totals.CacheWrite,
             state.Totals.CostUsd, state.Totals.ToolCallCount));
 
-        SessionMetrics.ActiveSessions.Add(1, new TagList { { AgentConventions.Name, agentName } });
+        // A connection, not a session and not a conversation: this is the moment one starts watching a
+        // conversation, and every decrement is a moment one stops.
+        OrchestrationMetrics.ConnectionsActive.Add(1, new TagList { { AgentConventions.Name, agentName } });
         return state;
     }
 

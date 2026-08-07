@@ -1,3 +1,4 @@
+using Domain.AI.Observability.Models;
 using Infrastructure.Observability.Persistence;
 using Npgsql;
 
@@ -14,11 +15,21 @@ public sealed class TestDataBuilder
         _store = new PostgresObservabilityStore(fixture.ConnectionString, fixture.StoreLogger);
     }
 
+    /// <summary>
+    /// Seeds one session row and leaves it in <paramref name="status"/>.
+    /// </summary>
+    /// <remarks>
+    /// <paramref name="status"/> is the enum rather than a string on purpose. It used to be a string,
+    /// and any word outside <c>"completed"</c> or <c>"error"</c> silently skipped
+    /// <see cref="PostgresObservabilityStore.EndSessionAsync"/> — a fixture that claimed to seed an
+    /// ended session but seeded an open one. That is the same failure #289 fixed in production code,
+    /// surviving in the helper that seeds the fixtures which prove the schema accepts what we write.
+    /// </remarks>
     public async Task<SeededSession> CreateSessionAsync(
         string? conversationId = null,
         string agentName = "TestAgent",
         string model = "gpt-4o",
-        string status = "completed",
+        SessionStatus status = SessionStatus.Completed,
         int turnCount = 3,
         int toolCallCount = 2,
         int subagentCount = 0,
@@ -37,11 +48,21 @@ public sealed class TestDataBuilder
             inputTokens, outputTokens, cacheRead, cacheWrite,
             costUsd, cacheHitRate, model);
 
-        if (status is "completed" or "error")
+        // Active means "leave the row open" — there is nothing to end. The switch is exhaustive over
+        // the enum, so a new member cannot slip through as a silently-skipped end.
+        switch (status)
         {
-            await _store.EndSessionAsync(
-                sessionId, status,
-                status == "error" ? "Test error" : null);
+            case SessionStatus.Active:
+                break;
+            case SessionStatus.Error:
+                await _store.EndSessionAsync(sessionId, SessionStatus.Error, "Test error");
+                break;
+            case SessionStatus.Completed:
+                await _store.EndSessionAsync(sessionId, SessionStatus.Completed, null);
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(
+                    nameof(status), status, "TestDataBuilder cannot seed this session status.");
         }
 
         return new SeededSession(sessionId, conversationId, agentName, model);

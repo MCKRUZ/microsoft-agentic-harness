@@ -1,3 +1,4 @@
+using Domain.AI.Observability.Models;
 using Npgsql;
 using Xunit;
 
@@ -40,7 +41,7 @@ public sealed class SessionsDashboardTests
         _fixture.SkipIfUnavailable();
 
         var builder = new TestDataBuilder(_fixture);
-        await builder.CreateSessionAsync(status: "completed");
+        await builder.CreateSessionAsync(status: SessionStatus.Completed);
 
         var from = DateTime.UtcNow.AddHours(-1);
         var to = DateTime.UtcNow.AddMinutes(1);

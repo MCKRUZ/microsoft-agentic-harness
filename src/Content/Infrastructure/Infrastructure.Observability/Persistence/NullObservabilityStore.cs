@@ -19,8 +19,12 @@ public sealed class NullObservabilityStore : IObservabilityStore
 
     /// <inheritdoc />
     public Task EndSessionAsync(
-        Guid sessionId, string status, string? errorMessage,
+        Guid sessionId, SessionStatus status, string? errorMessage,
         CancellationToken cancellationToken = default)
+        => Task.CompletedTask;
+
+    /// <inheritdoc />
+    public Task ResumeSessionAsync(Guid sessionId, CancellationToken cancellationToken = default)
         => Task.CompletedTask;
 
     /// <inheritdoc />
@@ -64,7 +68,7 @@ public sealed class NullObservabilityStore : IObservabilityStore
 
     /// <inheritdoc />
     public Task<IReadOnlyList<SessionRecord>> GetSessionsAsync(
-        int limit = 50, int offset = 0, string? status = null,
+        int limit = 50, int offset = 0, SessionStatus? status = null,
         DateTimeOffset? since = null, DateTimeOffset? until = null,
         CancellationToken cancellationToken = default)
         => Task.FromResult<IReadOnlyList<SessionRecord>>(Array.Empty<SessionRecord>());

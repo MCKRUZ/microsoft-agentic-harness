@@ -8,7 +8,7 @@ public sealed partial class PostgresObservabilityStore
 {
     /// <inheritdoc />
     public async Task<IReadOnlyList<SessionRecord>> GetSessionsAsync(
-        int limit = 50, int offset = 0, string? status = null,
+        int limit = 50, int offset = 0, SessionStatus? status = null,
         DateTimeOffset? since = null, DateTimeOffset? until = null,
         CancellationToken cancellationToken = default)
     {
@@ -23,7 +23,7 @@ public sealed partial class PostgresObservabilityStore
         var clauses = new List<string>();
         var paramIndex = 3;
 
-        if (!string.IsNullOrWhiteSpace(status))
+        if (status.HasValue)
             clauses.Add($"status = ${paramIndex++}");
         if (since.HasValue)
             clauses.Add($"started_at >= ${paramIndex++}");
@@ -38,8 +38,8 @@ public sealed partial class PostgresObservabilityStore
             await using var cmd = _dataSource.CreateCommand(sql);
             cmd.Parameters.AddWithValue(limit);
             cmd.Parameters.AddWithValue(offset);
-            if (!string.IsNullOrWhiteSpace(status))
-                cmd.Parameters.AddWithValue(status!);
+            if (status.HasValue)
+                cmd.Parameters.AddWithValue(status.Value.ToDbValue());
             if (since.HasValue)
                 cmd.Parameters.AddWithValue(since.Value);
             if (until.HasValue)

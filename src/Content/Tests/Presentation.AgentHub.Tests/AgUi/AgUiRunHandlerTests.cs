@@ -7,6 +7,7 @@ using Application.AI.Common.Services.AI;
 using Application.Common.Exceptions.ExceptionTypes;
 using Application.Core.CQRS.Agents.ExecuteAgentTurn;
 using Domain.AI.Budget;
+using Domain.AI.Telemetry.Conventions;
 using FluentAssertions;
 using Infrastructure.AI.Conversations;
 using MediatR;
@@ -16,6 +17,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using Presentation.AgentHub.AgUi;
+using Presentation.AgentHub.Tests.Telemetry;
 using Xunit;
 using Application.AI.Common.Models.Conversations;
 
@@ -100,8 +102,12 @@ public sealed class AgUiRunHandlerTests
             ErrorKind = AgentTurnErrorKind.Configuration
         };
 
-    private static (Mock<IMediator> Mediator, Mock<IConversationStore> Store) SetupFailingTurn(
-        string threadId, string userId, AgentTurnResult failure)
+    /// <summary>
+    /// Wires a store that resolves <paramref name="threadId"/> for <paramref name="userId"/> and a
+    /// mediator whose turn returns <paramref name="result"/> — success or failure alike.
+    /// </summary>
+    private static (Mock<IMediator> Mediator, Mock<IConversationStore> Store) SetupTurn(
+        string threadId, string userId, AgentTurnResult result)
     {
         var mediator = new Mock<IMediator>();
         var store = new Mock<IConversationStore>();
@@ -112,8 +118,50 @@ public sealed class AgUiRunHandlerTests
         store.Setup(s => s.AppendMessageAsync(threadId, userId, It.IsAny<ConversationMessage>(), It.IsAny<CancellationToken>()))
              .Returns(Task.CompletedTask);
         mediator.Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
-                .ReturnsAsync(failure);
+                .ReturnsAsync(result);
         return (mediator, store);
+    }
+
+    /// <summary>
+    /// The run gauge must return to zero however the run ends.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// What this transport can honestly count is a run. It used to increment the shared active-sessions
+    /// gauge when a session was opened, and there is no moment here that could ever decrement it — a
+    /// stateless request leaves the conversation's session open for the next one — so its contribution
+    /// was "conversations this transport has ever started", climbing forever and summed with two other
+    /// transports answering two other questions (issue #289).
+    /// </para>
+    /// <para>
+    /// The failing case is why the decrement lives in a <c>finally</c>. An up-down counter skipped on
+    /// the failure path does not merely under-report; it never recovers, because nothing ever subtracts
+    /// the run that errored, and the floor it leaves behind is permanent.
+    /// </para>
+    /// <para>
+    /// Both halves of each assertion earn their place. A gauge nobody touches also nets to zero, so the
+    /// measurement count is what proves the instrument was reached at all — every unit test over this
+    /// path passed while the leak was live precisely because none of them could see it.
+    /// </para>
+    /// </remarks>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task HandleRunAsync_RunEnds_GivesTheRunCountBack(bool turnSucceeds)
+    {
+        var threadId = turnSucceeds ? "conv-gauge" : "conv-gauge-fail";
+        const string userId = "user-1";
+
+        var result = turnSucceeds ? MakeSuccessResult("ok") : MakeFailureResult("boom");
+        var (mediator, store) = SetupTurn(threadId, userId, result);
+        var handler = BuildHandler(mediator, store);
+
+        using var probe = new GaugeProbe(OrchestrationConventions.RunsActive);
+        using var ms = new MemoryStream();
+        await handler.HandleRunAsync(MakeInput(threadId, "Hi"), new AgUiEventWriter(ms), MakeUser(userId));
+
+        probe.Measurements.Should().Be(2, "the run must be counted up when it starts and down when it ends");
+        probe.Net.Should().Be(0, "a finished run is not a run in flight");
     }
 
     [Fact]
@@ -574,7 +622,7 @@ public sealed class AgUiRunHandlerTests
         const string actionable =
             "Anthropic client is not configured. Set AppConfig:AI:AgentFramework:Endpoint and ApiKey.";
 
-        var (mediator, store) = SetupFailingTurn(threadId, userId, MakeConfigFailureResult(actionable));
+        var (mediator, store) = SetupTurn(threadId, userId, MakeConfigFailureResult(actionable));
         var handler = BuildHandler(mediator, store, environmentName: "Development");
 
         using var ms = new MemoryStream();
@@ -591,7 +639,7 @@ public sealed class AgUiRunHandlerTests
         const string actionable =
             "Anthropic client is not configured. Set AppConfig:AI:AgentFramework:Endpoint and ApiKey.";
 
-        var (mediator, store) = SetupFailingTurn(threadId, userId, MakeConfigFailureResult(actionable));
+        var (mediator, store) = SetupTurn(threadId, userId, MakeConfigFailureResult(actionable));
         var handler = BuildHandler(mediator, store, environmentName: "Production");
 
         using var ms = new MemoryStream();
@@ -617,7 +665,7 @@ public sealed class AgUiRunHandlerTests
             ErrorKind = AgentTurnErrorKind.Cancelled,
         };
 
-        var (mediator, store) = SetupFailingTurn(threadId, userId, cancelled);
+        var (mediator, store) = SetupTurn(threadId, userId, cancelled);
         var handler = BuildHandler(mediator, store);
 
         using var ms = new MemoryStream();

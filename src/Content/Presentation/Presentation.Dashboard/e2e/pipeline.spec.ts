@@ -44,9 +44,14 @@ test.describe('Stage 1 — OTel counters exported to /metrics', () => {
     expect(val).toBeGreaterThan(0);
   });
 
-  test('session_active gauge exists', () => {
-    const val = sumMetricValues(metricsText, 'agentic_harness_agent_session_active');
-    expect(val, 'Metric not found — SessionMetrics.ActiveSessions never registered').not.toBe(-1);
+  test('runs_active gauge exists', () => {
+    const val = sumMetricValues(metricsText, 'agentic_harness_agent_orchestration_runs_active');
+    expect(val, 'Metric not found — OrchestrationMetrics.RunsActive never registered').not.toBe(-1);
+  });
+
+  test('connections_active gauge exists', () => {
+    const val = sumMetricValues(metricsText, 'agentic_harness_agent_orchestration_connections_active');
+    expect(val, 'Metric not found — OrchestrationMetrics.ConnectionsActive never registered').not.toBe(-1);
   });
 
   test('tokens_input histogram has data', () => {

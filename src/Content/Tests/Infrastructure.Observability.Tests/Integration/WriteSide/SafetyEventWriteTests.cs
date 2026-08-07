@@ -1,3 +1,4 @@
+using Domain.AI.Observability.Models;
 using Infrastructure.Observability.Persistence;
 using Npgsql;
 using Xunit;
@@ -21,7 +22,7 @@ public sealed class SafetyEventWriteTests
 
         using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);
         var builder = new TestDataBuilder(_fixture);
-        var session = await builder.CreateSessionAsync(status: "active");
+        var session = await builder.CreateSessionAsync(status: SessionStatus.Active);
 
         await store.RecordSafetyEventAsync(
             session.Id,
@@ -51,7 +52,7 @@ public sealed class SafetyEventWriteTests
 
         using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);
         var builder = new TestDataBuilder(_fixture);
-        var session = await builder.CreateSessionAsync(status: "active");
+        var session = await builder.CreateSessionAsync(status: SessionStatus.Active);
 
         await store.RecordSafetyEventAsync(
             session.Id,
@@ -76,7 +77,7 @@ public sealed class SafetyEventWriteTests
 
         using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);
         var builder = new TestDataBuilder(_fixture);
-        var session = await builder.CreateSessionAsync(status: "active");
+        var session = await builder.CreateSessionAsync(status: SessionStatus.Active);
 
         await store.RecordSafetyEventAsync(
             session.Id,
@@ -100,7 +101,7 @@ public sealed class SafetyEventWriteTests
 
         using var store = new PostgresObservabilityStore(_fixture.ConnectionString, _fixture.StoreLogger);
         var builder = new TestDataBuilder(_fixture);
-        var session = await builder.CreateSessionAsync(status: "active");
+        var session = await builder.CreateSessionAsync(status: SessionStatus.Active);
 
         await store.RecordSafetyEventAsync(
             session.Id,
