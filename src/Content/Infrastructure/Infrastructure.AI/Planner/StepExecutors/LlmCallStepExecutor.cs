@@ -63,8 +63,7 @@ public sealed class LlmCallStepExecutor : IPlanStepExecutor
 {
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly IPlanProgressNotifier _notifier;
-    private readonly IToolInvocationGovernor _toolInvocationGovernor;
-    private readonly IToolCallObserverChain _observers;
+    private readonly IToolCallAdmissionPipeline _admissionPipeline;
     private readonly IConversationBudgetTracker _conversationBudget;
     private readonly IAgentExecutionContext _agentContext;
     private readonly PlanExecutionContext _executionContext;
@@ -73,8 +72,10 @@ public sealed class LlmCallStepExecutor : IPlanStepExecutor
     /// <summary>Initializes a new instance of the <see cref="LlmCallStepExecutor"/> class.</summary>
     /// <param name="scopeFactory">Creates the per-step scope the conversation is dispatched in.</param>
     /// <param name="notifier">Plan progress notifier.</param>
-    /// <param name="toolInvocationGovernor">Authorizes inference against the ambient capability envelope.</param>
-    /// <param name="observers">The host's own tool-call rules, consulted after the governor allows the step.</param>
+    /// <param name="admissionPipeline">
+    /// Admits the inference call against the ambient capability envelope, the host's own rules, and
+    /// every other gate the agent's conversational path runs.
+    /// </param>
     /// <param name="conversationBudget">Lifetime token budget shared across the plan run's inference.</param>
     /// <param name="agentContext">Supplies the run's conversation identity for budget keying.</param>
     /// <param name="executionContext">Current plan execution context.</param>
@@ -82,8 +83,7 @@ public sealed class LlmCallStepExecutor : IPlanStepExecutor
     public LlmCallStepExecutor(
         IServiceScopeFactory scopeFactory,
         IPlanProgressNotifier notifier,
-        IToolInvocationGovernor toolInvocationGovernor,
-        IToolCallObserverChain observers,
+        IToolCallAdmissionPipeline admissionPipeline,
         IConversationBudgetTracker conversationBudget,
         IAgentExecutionContext agentContext,
         PlanExecutionContext executionContext,
@@ -91,8 +91,7 @@ public sealed class LlmCallStepExecutor : IPlanStepExecutor
     {
         _scopeFactory = scopeFactory;
         _notifier = notifier;
-        _toolInvocationGovernor = toolInvocationGovernor;
-        _observers = observers;
+        _admissionPipeline = admissionPipeline;
         _conversationBudget = conversationBudget;
         _agentContext = agentContext;
         _executionContext = executionContext;
@@ -208,22 +207,26 @@ public sealed class LlmCallStepExecutor : IPlanStepExecutor
     }
 
     /// <summary>
-    /// Authorizes the step as <see cref="PlanCapabilities.LlmCall"/> and, when denied, produces the
+    /// Admits the step as <see cref="PlanCapabilities.LlmCall"/> and, when refused, produces the
     /// failed step result. Returns null when inference may proceed.
     /// </summary>
+    /// <remarks>
+    /// No arguments are supplied: the capability being admitted is "may this run call a model at all",
+    /// and the deployment key, system prompt and messages are not what any gate here decides on.
+    /// </remarks>
     private async Task<StepExecutionResult?> AuthorizeAsync(PlanStep step, CancellationToken ct)
     {
-        var decision = await _toolInvocationGovernor
-            .AuthorizeWithObserversAsync(_observers, PlanCapabilities.LlmCall, arguments: null, ct);
-        if (decision.IsAllowed)
+        var admission = await _admissionPipeline
+            .AdmitAsync(new ToolCallAdmissionRequest(PlanCapabilities.LlmCall), ct);
+        if (admission.IsAllowed)
             return null;
 
-        _logger.LogWarning("LlmCall step {Step} denied by invocation governor", step.Name);
+        _logger.LogWarning("LlmCall step {Step} refused by the admission chain", step.Name);
         return new StepExecutionResult
         {
             Status = StepExecutionStatus.Failed,
             Duration = TimeSpan.Zero,
-            ErrorMessage = decision.DeniedMessage ?? GovernanceDenials.NotPermitted(PlanCapabilities.LlmCall),
+            ErrorMessage = admission.DeniedMessage!,
             IsPolicyDenial = true
         };
     }

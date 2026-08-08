@@ -50,18 +50,10 @@ public sealed class ToolUseStepExecutorSolutionReviewFixTests
         services.AddKeyedSingleton<ISandboxExecutor>(SandboxIsolationLevel.Container, new Mock<ISandboxExecutor>().Object);
         var sp = services.BuildServiceProvider();
 
-        // Ungoverned default: no envelope armed and enforcement off means the governor allows.
-        var toolGovernor = new Mock<IToolInvocationGovernor>();
-        toolGovernor.Setup(g => g.AuthorizeAsync(
-                It.IsAny<string>(),
-                It.IsAny<CancellationToken>(),
-                It.IsAny<IReadOnlyDictionary<string, object?>?>()))
-            .Returns(ValueTask.FromResult(ToolInvocationDecision.Allow()));
-
         _sut = new ToolUseStepExecutor(
             _capabilityEnforcer.Object,
-            toolGovernor.Object,
-            Mock.Of<IToolCallObserverChain>(),
+            // Ungoverned default: no envelope armed and every gate off means the chain admits.
+            PermissiveAdmission.Pipeline(),
             sp,
             _attestationService.Object,
             _responseSanitizer.Object,

@@ -26,26 +26,20 @@ public class RunOrchestratedTaskCommandHandler : IRequestHandler<RunOrchestrated
 	private readonly IAgentFactory _agentFactory;
 	private readonly IServiceScopeFactory _scopeFactory;
 	private readonly IAgentExecutionContext _executionContext;
-	private readonly IToolInvocationGovernor _governor;
-	private readonly IToolClassificationGate _classificationGate;
-	private readonly IToolCallObserverChain _observerChain;
+	private readonly IToolCallAdmissionPipeline _admissionPipeline;
 	private readonly ILogger<RunOrchestratedTaskCommandHandler> _logger;
 
 	public RunOrchestratedTaskCommandHandler(
 		IAgentFactory agentFactory,
 		IServiceScopeFactory scopeFactory,
 		IAgentExecutionContext executionContext,
-		IToolInvocationGovernor governor,
-		IToolClassificationGate classificationGate,
-		IToolCallObserverChain observerChain,
+		IToolCallAdmissionPipeline admissionPipeline,
 		ILogger<RunOrchestratedTaskCommandHandler> logger)
 	{
 		_agentFactory = agentFactory;
 		_scopeFactory = scopeFactory;
 		_executionContext = executionContext;
-		_governor = governor;
-		_classificationGate = classificationGate;
-		_observerChain = observerChain;
+		_admissionPipeline = admissionPipeline;
 		_logger = logger;
 	}
 
@@ -191,22 +185,16 @@ public class RunOrchestratedTaskCommandHandler : IRequestHandler<RunOrchestrated
 	private async Task<object?> RunOrchestratorGovernedAsync(
 		AIAgent orchestrator, List<ChatMessage> messages, CancellationToken cancellationToken)
 	{
-		// Expose this scope's governor, classification gate, and consumer observers to the governed
-		// tool wrappers for the orchestrator's own RunAsync. Set/clear tightly around the call so
-		// interleaved sub-agent turns (which set their own ambient gates in their child scope) are
-		// unaffected.
-		ToolGovernanceAccessor.Current = _governor;
-		ClassificationGateAccessor.Current = _classificationGate;
-		ToolCallObserverAccessor.Current = _observerChain;
-		try
+		// Expose this scope's admission chain to the governed tool wrappers for the orchestrator's own
+		// RunAsync, scoped tightly around the call so interleaved sub-agent turns (which arm their own
+		// chain in a child scope) are unaffected.
+		//
+		// This used to arm the governor, the classification gate and the observer chain individually —
+		// and never armed the loop guard, so the orchestrator was the one agent that could spin on a
+		// repeated tool call unchecked. There is now one value to publish and no subset to get wrong.
+		using (ToolAdmissionAccessor.Begin(_admissionPipeline))
 		{
 			return await orchestrator.RunAsync(messages, cancellationToken: cancellationToken);
-		}
-		finally
-		{
-			ToolGovernanceAccessor.Current = null;
-			ClassificationGateAccessor.Current = null;
-			ToolCallObserverAccessor.Current = null;
 		}
 	}
 

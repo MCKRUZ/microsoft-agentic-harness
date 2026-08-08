@@ -18,22 +18,22 @@ namespace Infrastructure.AI.Planner.StepExecutors;
 /// and enforcing capability-based permissions with never-downgrade isolation.
 /// </summary>
 /// <remarks>
-/// Before any sandbox resource is resolved, the tool call is authorized through
-/// <see cref="IToolInvocationGovernor"/> — the same choke point the live agent tool path uses. With no
-/// ambient capability envelope and per-invocation enforcement off, that authorization is a pure
-/// pass-through, so direct in-process <c>IPlanExecutor</c> callers behave exactly as before. Under an
-/// enveloped run (armed by <c>PlanRunExecutor</c>) the governor enforces the per-caller grant fail-closed:
-/// out-of-envelope tools, autonomy-ceiling violations, and identity-less calls all deny before execution.
+/// Before any sandbox resource is resolved, the tool call goes through
+/// <see cref="IToolCallAdmissionPipeline"/> — the same chain, in the same order, that the live agent
+/// tool path and the Execution API use. With no ambient capability envelope and every gate off, that
+/// is a pure pass-through, so direct in-process <c>IPlanExecutor</c> callers behave exactly as before.
+/// Under an enveloped run (armed by <c>PlanRunExecutor</c>) the chain enforces the per-caller grant
+/// fail-closed: out-of-envelope tools, autonomy-ceiling violations, and identity-less calls all deny
+/// before execution.
 /// </remarks>
 public sealed class ToolUseStepExecutor : IPlanStepExecutor
 {
     private readonly ICapabilityEnforcer _capabilityEnforcer;
-    private readonly IToolInvocationGovernor _toolInvocationGovernor;
-    // Required, not optional-with-a-null-default, and deliberately so. An omitted observer chain is
-    // indistinguishable at runtime from a host that registered no rules, so a default would let a
-    // composition that forgot to wire the seam run silently unguarded — the exact defect this
-    // dependency exists to close. Absent registration should fail at resolution, loudly.
-    private readonly IToolCallObserverChain _observers;
+    // Required, not optional-with-a-null-default, and deliberately so. An omitted admission chain is
+    // indistinguishable at runtime from a host whose gates are all off, so a default would let a
+    // composition that forgot to wire it run silently unguarded — the exact defect this dependency
+    // exists to close. Absent registration should fail at resolution, loudly.
+    private readonly IToolCallAdmissionPipeline _admissionPipeline;
     private readonly IServiceProvider _serviceProvider;
     private readonly IAttestationService _attestationService;
     private readonly ICompositeResponseSanitizer _responseSanitizer;
@@ -43,8 +43,7 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
 
     public ToolUseStepExecutor(
         ICapabilityEnforcer capabilityEnforcer,
-        IToolInvocationGovernor toolInvocationGovernor,
-        IToolCallObserverChain observers,
+        IToolCallAdmissionPipeline admissionPipeline,
         IServiceProvider serviceProvider,
         IAttestationService attestationService,
         ICompositeResponseSanitizer responseSanitizer,
@@ -53,8 +52,7 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
         ILogger<ToolUseStepExecutor> logger)
     {
         _capabilityEnforcer = capabilityEnforcer;
-        _toolInvocationGovernor = toolInvocationGovernor;
-        _observers = observers;
+        _admissionPipeline = admissionPipeline;
         _serviceProvider = serviceProvider;
         _attestationService = attestationService;
         _responseSanitizer = responseSanitizer;
@@ -191,16 +189,16 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
     }
 
     /// <summary>
-    /// Authorizes the tool call through the invocation governor and the host's observer chain and,
-    /// when denied, produces the failed step result. Returns null when the call is allowed. The
-    /// denial message is already scrubbed for model/caller consumption (rule ids and policy internals
-    /// stay in the governance trace and structured log), so it is safe to surface as the step error.
+    /// Runs the tool call through the admission chain and, when refused, produces the failed step
+    /// result. Returns null when the call is allowed. The refusal message is already scrubbed for
+    /// model/caller consumption (rule ids and policy internals stay in the governance trace and
+    /// structured log), so it is safe to surface as the step error.
     /// </summary>
     /// <remarks>
-    /// A plan step is a tool call like any other. Authorizing through the governor alone would let a
-    /// plan reach a tool that the host's own rules refuse on the agent's conversational path — the
-    /// agent could bypass a consumer's rule simply by emitting a plan step instead of calling the
-    /// tool directly.
+    /// A plan step is a tool call like any other, and runs the same chain the agent's conversational
+    /// path runs. Anything less would let a plan reach a tool the harness refuses in a chat turn — the
+    /// agent could bypass a control simply by emitting a plan step instead of calling the tool
+    /// directly, which is exactly the gap this chain exists to close.
     /// </remarks>
     private async Task<StepExecutionResult?> AuthorizeToolAsync(
         string toolName,
@@ -209,18 +207,18 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
         Stopwatch sw,
         CancellationToken ct)
     {
-        var decision = await _toolInvocationGovernor
-            .AuthorizeWithObserversAsync(_observers, toolName, arguments, ct);
-        if (decision.IsAllowed)
+        var admission = await _admissionPipeline
+            .AdmitAsync(new ToolCallAdmissionRequest(toolName, arguments), ct);
+        if (admission.IsAllowed)
             return null;
 
         sw.Stop();
         _logger.LogWarning(
-            "Tool {Tool} denied by invocation governor in step {Step}", toolName, stepName);
+            "Tool {Tool} refused by the admission chain in step {Step}", toolName, stepName);
         return new StepExecutionResult
         {
             Status = StepExecutionStatus.Failed,
-            ErrorMessage = decision.DeniedMessage ?? GovernanceDenials.NotPermitted(toolName),
+            ErrorMessage = admission.DeniedMessage!,
             Duration = sw.Elapsed,
             IsPolicyDenial = true
         };

@@ -55,7 +55,7 @@ public sealed partial class DirectToolInvoker
     private DirectToolInvocationOutcome Shape(
         ToolResult result,
         ArmedInvocation armed,
-        ClassificationVerdict? classification,
+        ToolCallAdmission admission,
         TimeSpan duration)
     {
         var ceiling = armed.Config.MaxOutputCharacters;
@@ -73,21 +73,18 @@ public sealed partial class DirectToolInvoker
 
         var raw = result.Output ?? string.Empty;
 
-        if (classification?.Outcome == ClassificationGateOutcome.RedactOutput && armed.ClassificationGate is not null)
+        if (admission.RedactsOutput && !TryRedact(armed, admission, raw, out raw))
         {
-            if (!TryRedact(armed, raw, out raw))
-            {
-                // Fail closed. The gate decided this asset must not be emitted as-is and we could not
-                // apply its redaction, so the one thing we must not do is fall back to the original —
-                // which is precisely what `RedactResult(...) as string ?? output` would have done for
-                // any gate that returns a non-string. The shipped gate always answers with a string
-                // here, so this is a guard against a consumer-supplied one; it is exactly the sort of
-                // fallback that reads as harmless and silently defeats the control.
-                return DirectToolInvocationOutcome.Refused(
-                    DirectToolInvocationStatus.Denied,
-                    GovernanceDenials.NotPermitted(armed.ToolName),
-                    duration);
-            }
+            // Fail closed. The gate decided this asset must not be emitted as-is and we could not
+            // apply its redaction, so the one thing we must not do is fall back to the original —
+            // which is precisely what `ApplyOutputPolicy(...) as string ?? output` would have done for
+            // any gate that returns a non-string. The shipped gate always answers with a string
+            // here, so this is a guard against a consumer-supplied one; it is exactly the sort of
+            // fallback that reads as harmless and silently defeats the control.
+            return DirectToolInvocationOutcome.Refused(
+                DirectToolInvocationStatus.Denied,
+                GovernanceDenials.NotPermitted(armed.ToolName),
+                duration);
         }
 
         var (output, truncated) = ScrubAndBound(raw, ceiling, armed.ToolName);
@@ -109,14 +106,15 @@ public sealed partial class DirectToolInvoker
     /// <see langword="false"/> when it returned anything else — the caller must not emit the original.
     /// </returns>
     /// <remarks>
-    /// <c>IToolClassificationGate.RedactResult</c> is typed <c>object? → object?</c> because the agent
-    /// path passes it structured results it deliberately leaves alone. This path only ever hands it a
-    /// string, so a non-string answer means a gate that did something unexpected — and on a redaction
-    /// path an unexpected answer is a reason to withhold, not to shrug.
+    /// The chain's output policy is typed <c>object? → object?</c> because the agent path passes it
+    /// structured results it deliberately leaves alone. This path only ever hands it a string, so a
+    /// non-string answer means a gate that did something unexpected — and on a redaction path an
+    /// unexpected answer is a reason to withhold, not to shrug.
     /// </remarks>
-    private bool TryRedact(ArmedInvocation armed, string content, out string redacted)
+    private bool TryRedact(
+        ArmedInvocation armed, ToolCallAdmission admission, string content, out string redacted)
     {
-        var result = armed.ClassificationGate!.RedactResult(armed.ToolName, content);
+        var result = armed.AdmissionPipeline.ApplyOutputPolicy(admission, armed.ToolName, content);
 
         if (result is string text)
         {

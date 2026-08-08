@@ -157,6 +157,12 @@ public static class DependencyInjection
         // agent identity and shares the approval router's lifetime.
         services.AddScoped<Interfaces.Governance.IToolCallObserverChain, Services.Governance.ToolCallObserverChain>();
 
+        // The composed admission chain over the four gates above. Every execution path that can reach
+        // a tool — the agent turn, the Execution API, and the plan engine's tool, LLM and retrieval
+        // steps — calls this and nothing else, so a gate added here reaches all five at once. Scoped:
+        // it holds the four scoped gates and is reset once per turn.
+        services.AddScoped<Interfaces.Governance.IToolCallAdmissionPipeline, Services.Governance.ToolCallAdmissionPipeline>();
+
         // AI telemetry configurator — registers AI SDK OTel sources and processors
         services.AddSingleton<ITelemetryConfigurator, AiTelemetryConfigurator>();
 

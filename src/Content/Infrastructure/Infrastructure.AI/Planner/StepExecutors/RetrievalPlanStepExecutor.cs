@@ -43,8 +43,7 @@ public sealed class RetrievalPlanStepExecutor : IPlanStepExecutor
     private readonly ITaskComplexityClassifier _complexityClassifier;
     private readonly IRetrievalCostTracker _costTracker;
     private readonly IPlanProgressNotifier _notifier;
-    private readonly IToolInvocationGovernor _toolInvocationGovernor;
-    private readonly IToolCallObserverChain _observers;
+    private readonly IToolCallAdmissionPipeline _admissionPipeline;
     private readonly PlanExecutionContext _executionContext;
     private readonly ILogger<RetrievalPlanStepExecutor> _logger;
 
@@ -56,8 +55,10 @@ public sealed class RetrievalPlanStepExecutor : IPlanStepExecutor
     /// <param name="complexityClassifier">Task complexity classifier for multi-source routing.</param>
     /// <param name="costTracker">Tracks token usage and latency per retrieval call.</param>
     /// <param name="notifier">Plan progress notifier for real-time status updates.</param>
-    /// <param name="toolInvocationGovernor">Authorizes retrieval against the ambient capability envelope.</param>
-    /// <param name="observers">The host's own tool-call rules, consulted after the governor allows the step.</param>
+    /// <param name="admissionPipeline">
+    /// Admits retrieval against the ambient capability envelope, the host's own rules, and every other
+    /// gate the agent's conversational path runs.
+    /// </param>
     /// <param name="executionContext">Current plan execution context with depth tracking.</param>
     /// <param name="logger">Logger instance.</param>
     public RetrievalPlanStepExecutor(
@@ -66,8 +67,7 @@ public sealed class RetrievalPlanStepExecutor : IPlanStepExecutor
         ITaskComplexityClassifier complexityClassifier,
         IRetrievalCostTracker costTracker,
         IPlanProgressNotifier notifier,
-        IToolInvocationGovernor toolInvocationGovernor,
-        IToolCallObserverChain observers,
+        IToolCallAdmissionPipeline admissionPipeline,
         PlanExecutionContext executionContext,
         ILogger<RetrievalPlanStepExecutor> logger)
     {
@@ -76,8 +76,7 @@ public sealed class RetrievalPlanStepExecutor : IPlanStepExecutor
         _complexityClassifier = complexityClassifier;
         _costTracker = costTracker;
         _notifier = notifier;
-        _toolInvocationGovernor = toolInvocationGovernor;
-        _observers = observers;
+        _admissionPipeline = admissionPipeline;
         _executionContext = executionContext;
         _logger = logger;
     }
@@ -98,18 +97,19 @@ public sealed class RetrievalPlanStepExecutor : IPlanStepExecutor
             };
         }
 
-        var decision = await _toolInvocationGovernor
-            .AuthorizeWithObserversAsync(_observers, PlanCapabilities.Retrieval, arguments: null, ct);
-        if (!decision.IsAllowed)
+        // No arguments: the capability being admitted is "may this run retrieve at all". The query,
+        // TopK and collection are not what any gate here decides on.
+        var admission = await _admissionPipeline
+            .AdmitAsync(new ToolCallAdmissionRequest(PlanCapabilities.Retrieval), ct);
+        if (!admission.IsAllowed)
         {
             _logger.LogWarning(
-                "Retrieval step {Step} denied by invocation governor", step.Name);
+                "Retrieval step {Step} refused by the admission chain", step.Name);
             return new StepExecutionResult
             {
                 Status = StepExecutionStatus.Failed,
                 Duration = TimeSpan.Zero,
-                ErrorMessage = decision.DeniedMessage
-                    ?? Domain.AI.Governance.GovernanceDenials.NotPermitted(PlanCapabilities.Retrieval),
+                ErrorMessage = admission.DeniedMessage!,
                 IsPolicyDenial = true
             };
         }

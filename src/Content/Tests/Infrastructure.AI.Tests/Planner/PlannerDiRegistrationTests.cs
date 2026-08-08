@@ -4,6 +4,7 @@ using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Planner;
 using Application.AI.Common.Interfaces.Sandbox;
 using Application.AI.Common.Prompts.Interfaces;
+using Application.AI.Common.Services.Governance;
 using Docker.DotNet;
 using Domain.AI.Planner;
 using Domain.AI.Sandbox;
@@ -171,6 +172,29 @@ public sealed class PlannerDiRegistrationTests : IDisposable
     }
 
     [Fact]
+    public void DependencyInjection_EveryPlanPathResolvesTheAdmissionChain()
+    {
+        // The three plan step executors that can reach a tool take the chain as a REQUIRED dependency,
+        // so a composition that failed to register it fails here at resolution rather than running the
+        // plan path unguarded. That is the whole point of it being required: the four times a gate was
+        // added to one execution path and forgotten on the others, every isolated unit test still
+        // passed, because nothing bound the paths to a shared contract.
+        using var scope = _provider.CreateScope();
+        var sp = scope.ServiceProvider;
+
+        sp.GetRequiredService<IToolCallAdmissionPipeline>().Should().BeOfType<ToolCallAdmissionPipeline>();
+
+        // ToolUse and LlmCall are the tool-reaching step types this assembly registers. The retrieval
+        // executor is registered by Infrastructure.AI.RAG and depends on that layer's orchestrators, so
+        // its equivalent proof lives with its own composition rather than being half-asserted here.
+        foreach (var stepType in new[] { StepType.ToolUse, StepType.LlmCall })
+        {
+            var act = () => sp.GetRequiredKeyedService<IPlanStepExecutor>(stepType);
+            act.Should().NotThrow($"{stepType} must construct against the real admission chain");
+        }
+    }
+
+    [Fact]
     public void DependencyInjection_KeyedSandboxExecutors_ResolveBothTiers()
     {
         using var scope = _provider.CreateScope();
@@ -236,12 +260,17 @@ public sealed class PlannerDiRegistrationTests : IDisposable
         // delegates agent identity to it.
         services.AddScoped(_ => new Mock<Application.AI.Common.Interfaces.Agent.IAgentExecutionContext>().Object);
         services.AddScoped(_ => new Mock<IToolInvocationGovernor>().Object);
-        // Step executors take the observer chain as a required dependency, deliberately: an omitted
-        // chain is indistinguishable at runtime from a host that registered no rules, so a nullable
+        services.AddScoped(_ => new Mock<IToolCallObserverChain>().Object);
+        services.AddScoped(_ => new Mock<IToolClassificationGate>().Object);
+        services.AddScoped(_ => new Mock<IProgressEvaluator>().Object);
+        // Step executors take the admission chain as a required dependency, deliberately: an omitted
+        // chain is indistinguishable at runtime from a host whose gates are all off, so a nullable
         // default would let a composition silently run the plan path unguarded. The real composition
         // registers it in Application.AI.Common (see ToolCallObserverCompositionTests, which resolves
-        // it from the actual root); this fixture hand-rolls its container, so it stubs it here.
-        services.AddScoped(_ => new Mock<IToolCallObserverChain>().Object);
+        // it from the actual root); this fixture hand-rolls its container, so it registers the real
+        // chain over stubbed gates here — a mock of the chain would not prove the executors can be
+        // constructed against the type the production graph supplies.
+        services.AddScoped<IToolCallAdmissionPipeline, ToolCallAdmissionPipeline>();
         services.AddSingleton(new Mock<Application.AI.Common.Interfaces.AI.IConversationBudgetTracker>().Object);
         services.AddSingleton<ISender>(new Mock<ISender>().Object);
         services.AddSingleton<IPlanProgressNotifier>(new Mock<IPlanProgressNotifier>().Object);

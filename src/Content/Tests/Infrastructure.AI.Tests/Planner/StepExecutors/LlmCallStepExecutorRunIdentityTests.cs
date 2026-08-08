@@ -102,8 +102,7 @@ public sealed class LlmCallStepExecutorRunIdentityTests : IDisposable
         return new LlmCallStepExecutor(
             provider.GetRequiredService<IServiceScopeFactory>(),
             Mock.Of<IPlanProgressNotifier>(),
-            governor.Object,
-            Mock.Of<IToolCallObserverChain>(),
+            PermissiveAdmission.PipelineOver(governor.Object),
             budget,
             _agentContext.Object,
             new PlanExecutionContext { CurrentPlanId = currentPlanId },

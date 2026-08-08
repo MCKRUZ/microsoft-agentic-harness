@@ -19,8 +19,9 @@ namespace Application.AI.Common.Services.Governance;
 /// </summary>
 /// <remarks>
 /// Scoped per turn (it reads the ambient <see cref="IAgentExecutionContext"/> for the audit identity), and
-/// exposed to the tool chokepoint via <see cref="ClassificationGateAccessor"/>. Stateless across calls: every
-/// decision is emitted immediately to audit and OTel, so no per-turn reset is required.
+/// reached only as the second stage of <see cref="IToolCallAdmissionPipeline"/> — never called directly by
+/// an execution path. Stateless across calls: every decision is emitted immediately to audit and OTel, so
+/// no per-turn reset is required.
 /// </remarks>
 public sealed class DefaultToolClassificationGate : IToolClassificationGate
 {

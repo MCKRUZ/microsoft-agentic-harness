@@ -1,4 +1,3 @@
-using System.Text.Json;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Services.Governance;
 using Microsoft.Extensions.AI;
@@ -6,48 +5,32 @@ using Microsoft.Extensions.AI;
 namespace Application.AI.Common.Services.Tools;
 
 /// <summary>
-/// Wraps an agent tool function so governance and progress checks run immediately before the tool executes.
+/// Wraps an agent tool function so the admission chain runs immediately before the tool executes.
 /// </summary>
 /// <remarks>
 /// <para>
 /// Derives from <see cref="DelegatingAIFunction"/> so the wrapped function's name, description, and
-/// JSON schema are preserved unchanged — only invocation is intercepted. On invoke it consults, in order:
-/// the ambient <c>IToolInvocationGovernor</c> (via <see cref="ToolGovernanceAccessor"/>) — a denial
-/// returns the governor's model-facing message in place of the tool result and the inner function is
-/// never called; then the ambient <c>IToolClassificationGate</c> (via <see cref="ClassificationGateAccessor"/>)
-/// — a block returns its model-facing message in place of the tool result, while a redact verdict lets the
-/// call run and scrubs its output afterward; then the ambient <c>IToolCallObserverChain</c> (via
-/// <see cref="ToolCallObserverAccessor"/>) — the host's own rules, whose block returns the generic
-/// not-permitted message; and finally the ambient <c>IProgressEvaluator</c> (via
-/// <see cref="ProgressGuardAccessor"/>) — a spin verdict returns its halt message in place of the tool
-/// result. Each stage is evaluated only for calls the previous stages permitted, so a blocked call never
-/// executed and must not count toward progress. When none are ambient (a tool invoked outside a governed
-/// turn), the call passes straight through.
+/// JSON schema are preserved unchanged — only invocation is intercepted. On invoke it consults the
+/// ambient <see cref="IToolCallAdmissionPipeline"/> (via <see cref="ToolAdmissionAccessor"/>): a
+/// refusal returns the chain's model-facing message in place of the tool result and the inner function
+/// is never called, and an allow may still require the tool's output to be scrubbed on the way back.
+/// When no chain is ambient — a tool invoked outside a governed turn — the call passes straight
+/// through.
 /// </para>
 /// <para>
-/// <strong>Consumer observers run last of the access gates, and that is deliberate.</strong> By the time
-/// they are consulted every question about whether the agent may use the tool at all has been settled by
-/// the built-in gates, so an observer can only make the outcome stricter — it cannot resurrect a call the
-/// governor denied, overrule the capability envelope, or bypass a plugin's deny list.
+/// <strong>This is the only stage sequence-aware caller.</strong> It sets
+/// <c>CountsTowardLoopDetection</c>, because the agent turn is the one caller that issues a repeatable
+/// series of tool calls within a single unit of work. Which gates run, and in which order, is the
+/// admission chain's business and is documented there — deliberately not restated here, because a
+/// second copy of that reasoning is how the five execution paths drifted apart in the first place.
 /// </para>
 /// <para>
-/// <strong>The progress guard runs after the observers, because it is the only stage that records
-/// state.</strong> It is not an access decision — it is the turn's loop-detection accounting, and it must
-/// only ever count calls that actually reached the tool. Placing it ahead of the observers let blocked
-/// calls reset the no-progress counter, which defeated the guard for an agent spinning against an
-/// observer's own rule.
-/// </para>
-/// <para>
-/// This is the single invocation-time chokepoint for the agent's autonomous tool calls, applied to
-/// every converted tool regardless of source (keyed-DI, MCP, or skill-provided).
+/// This is the invocation-time chokepoint for the agent's autonomous tool calls, applied to every
+/// converted tool regardless of source (keyed-DI, MCP, or skill-provided).
 /// </para>
 /// </remarks>
 internal sealed class GovernedAIFunction : DelegatingAIFunction
 {
-    // Unit-separator (U+001F) cannot appear in a JSON-serialised value, so distinct argument sets
-    // cannot collide into the same joined signature. Built from a char code to keep the source ASCII.
-    private static readonly string ArgPairSeparator = ((char)0x1F).ToString();
-
     public GovernedAIFunction(AIFunction innerFunction)
         : base(innerFunction)
     {
@@ -57,98 +40,21 @@ internal sealed class GovernedAIFunction : DelegatingAIFunction
         AIFunctionArguments arguments,
         CancellationToken cancellationToken)
     {
-        var governor = ToolGovernanceAccessor.Current;
-        if (governor is not null)
-        {
-            // Arguments are passed so an approval verdict can describe the specific invocation to a
-            // human, and so argument-conditioned YAML policy rules can match. Every other check the
-            // governor runs keys off the tool name alone.
-            var decision = await governor
-                .AuthorizeAsync(Name, cancellationToken, arguments)
-                .ConfigureAwait(false);
-            if (!decision.IsAllowed)
-                return decision.DeniedMessage ?? $"Error: tool '{Name}' was blocked by governance policy.";
-        }
+        var admissionPipeline = ToolAdmissionAccessor.Current;
+        if (admissionPipeline is null)
+            return await base.InvokeCoreAsync(arguments, cancellationToken).ConfigureAwait(false);
 
-        // Classification gate runs after authorization (a denied call never reaches it). A block returns a
-        // model-facing message in place of the result; a redact verdict lets the call run and scrubs its
-        // output below. Inert unless the gate is ambient and classification is opt-in enabled.
-        var classificationGate = ClassificationGateAccessor.Current;
-        ClassificationVerdict? classification = null;
-        if (classificationGate is not null)
-        {
-            classification = await classificationGate
-                .EvaluateAsync(Name, arguments, cancellationToken).ConfigureAwait(false);
-            if (classification.Outcome == ClassificationGateOutcome.Block)
-                return classification.BlockedMessage
-                    ?? $"Error: tool '{Name}' was blocked by data-classification policy.";
-        }
+        var admission = await admissionPipeline
+            .AdmitAsync(
+                new ToolCallAdmissionRequest(Name, arguments, CountsTowardLoopDetection: true),
+                cancellationToken)
+            .ConfigureAwait(false);
 
-        // Consumer-authored observers run LAST of the access gates, after every built-in one has
-        // permitted the call. That ordering is the whole safety argument for the seam: an observer
-        // only ever sees a call the harness was already willing to make, so its verdict can tighten
-        // the outcome but never widen access. Inert unless the host registered observers.
-        var observers = ToolCallObserverAccessor.Current;
-        if (observers is { HasObservers: true })
-        {
-            var observed = await observers
-                .EvaluateAsync(Name, arguments, cancellationToken).ConfigureAwait(false);
-            if (!observed.IsAllowed)
-                return observed.DeniedMessage ?? $"Error: tool '{Name}' was blocked by an observer.";
-        }
-
-        // Progress / spin guard runs last of all, because it is the only stage that MUTATES state:
-        // it records the call's signature and resets the no-progress counter whenever it sees a new
-        // one. Running it ahead of the observers counted calls that the observers then blocked, so an
-        // agent retrying a blocked call with a slightly different argument each time (10000, 10001,
-        // 10002 …) presented a new signature on every attempt, reset the counter on every attempt,
-        // and never tripped the guard it was spinning against. Only calls that reach the tool are
-        // counted. Inert unless an evaluator is ambient and the guard is opt-in enabled.
-        var progress = ProgressGuardAccessor.Current;
-        if (progress is not null)
-        {
-            var verdict = progress.Evaluate(Name, () => ComputeArgumentsSignature(arguments));
-            if (verdict.ShouldHalt)
-                return verdict.HaltMessage
-                    ?? $"Error: tool '{Name}' was stopped because the agent is not making progress.";
-        }
+        if (!admission.IsAllowed)
+            return admission.DeniedMessage;
 
         var result = await base.InvokeCoreAsync(arguments, cancellationToken).ConfigureAwait(false);
 
-        // A redact-classified asset: scrub the tool's output before the model sees it.
-        if (classification?.Outcome == ClassificationGateOutcome.RedactOutput && classificationGate is not null)
-            return classificationGate.RedactResult(Name, result);
-
-        return result;
-    }
-
-    /// <summary>
-    /// Builds a stable, deterministic signature of the call arguments so the progress evaluator can
-    /// recognise identical calls. Keys are ordered; each value is JSON-serialised, falling back to its
-    /// type name if serialisation throws — the signature is always computable and never throws on the
-    /// agent's hot path.
-    /// </summary>
-    private static string? ComputeArgumentsSignature(AIFunctionArguments? arguments)
-    {
-        if (arguments is null || arguments.Count == 0)
-            return string.Empty;
-
-        var parts = new List<string>(arguments.Count);
-        foreach (var kvp in arguments.OrderBy(a => a.Key, StringComparer.Ordinal))
-        {
-            string value;
-            try
-            {
-                value = kvp.Value is null ? "null" : JsonSerializer.Serialize(kvp.Value);
-            }
-            catch
-            {
-                value = kvp.Value?.GetType().FullName ?? "null";
-            }
-
-            parts.Add(string.Concat(kvp.Key, "=", value));
-        }
-
-        return string.Join(ArgPairSeparator, parts);
+        return admissionPipeline.ApplyOutputPolicy(admission, Name, result);
     }
 }

@@ -34,10 +34,8 @@ public class ExecuteAgentTurnCommandHandlerTests
 
         _handler = new ExecuteAgentTurnCommandHandler(
             _agentCache.Object,
-            new Mock<Application.AI.Common.Interfaces.Governance.IToolInvocationGovernor>().Object,
-            new Mock<Application.AI.Common.Interfaces.Governance.IProgressEvaluator>().Object,
-            new Mock<Application.AI.Common.Interfaces.Governance.IToolClassificationGate>().Object,
-            new Mock<Application.AI.Common.Interfaces.Governance.IToolCallObserverChain>().Object,
+            Mock.Of<Application.AI.Common.Interfaces.Governance.IToolCallAdmissionPipeline>(
+                p => p.GetTrace() == Domain.AI.Governance.GovernanceTrace.Empty),
             _agentRegistry.Object,
             new Mock<ISkillMetadataRegistry>().Object,
             new Application.AI.Common.Services.Context.ConversationRegistrationTracker(),

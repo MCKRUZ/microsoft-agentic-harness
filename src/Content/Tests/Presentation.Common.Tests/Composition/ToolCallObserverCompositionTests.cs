@@ -48,6 +48,21 @@ public sealed class ToolCallObserverCompositionTests : IDisposable
     };
 
     [Fact]
+    public void AdmissionChain_IsRegisteredOnTheProductionGraph_WithEveryStageResolvable()
+    {
+        // Every execution path depends on this one type, so a composition that fails to register it —
+        // or registers it without one of its four stages — takes every path down at resolution rather
+        // than running any of them unguarded. Resolved from the real root, not a hand-rolled
+        // container, because "registered but never wired" is exactly the failure this suite exists for.
+        using var provider = CompositionRootTestHost.BuildProvider(Settings("Allow"));
+        using var scope = provider.CreateScope();
+
+        var act = () => scope.ServiceProvider.GetRequiredService<IToolCallAdmissionPipeline>();
+
+        act.Should().NotThrow().Which.Should().BeOfType<ToolCallAdmissionPipeline>();
+    }
+
+    [Fact]
     public void ObserverChain_IsRegisteredAndEmptyOnTheDefaultComposition()
     {
         // Registration is the opt-in: a host that adds no rules must pay nothing on the hot path.

@@ -41,9 +41,8 @@ public class RunOrchestratedTaskCommandHandler_EdgeCaseTests
             _agentFactory.Object,
             _scopeFactory.Object,
             new Application.AI.Common.Services.Agent.AgentExecutionContext(),
-            new Mock<Application.AI.Common.Interfaces.Governance.IToolInvocationGovernor>().Object,
-            new Mock<Application.AI.Common.Interfaces.Governance.IToolClassificationGate>().Object,
-            new Mock<Application.AI.Common.Interfaces.Governance.IToolCallObserverChain>().Object,
+            Mock.Of<Application.AI.Common.Interfaces.Governance.IToolCallAdmissionPipeline>(
+                p => p.GetTrace() == Domain.AI.Governance.GovernanceTrace.Empty),
             NullLogger<RunOrchestratedTaskCommandHandler>.Instance);
     }
 

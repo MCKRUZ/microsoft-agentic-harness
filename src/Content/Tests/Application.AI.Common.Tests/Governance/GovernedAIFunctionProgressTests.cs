@@ -8,20 +8,23 @@ using Xunit;
 namespace Application.AI.Common.Tests.Governance;
 
 /// <summary>
-/// Verifies the governed tool-function wrapper consults the ambient progress evaluator after
-/// authorization: it halts on a spin verdict without invoking the inner tool, proceeds on a continue
-/// verdict, skips progress evaluation entirely when the governor already denied the call, and passes
-/// through when no evaluator is ambient.
+/// Verifies the loop guard as the agent turn actually reaches it: through the real admission chain,
+/// armed ambiently, from the governed tool-function wrapper.
 /// </summary>
-public sealed class GovernedAIFunctionProgressTests : IDisposable
+/// <remarks>
+/// <para>
+/// The chain is real in every test here, not a mock. The agent turn is the only caller that asks for
+/// loop detection, so "does the guard run, and only for calls that reached the tool" is a property of
+/// the wrapper and the chain <em>together</em> — a mocked chain would move the assertion off the thing
+/// that can break.
+/// </para>
+/// <para>
+/// No teardown is needed: <see cref="ToolAdmissionAccessor.Begin"/> restores the previous ambient value
+/// on dispose, so a test cannot leak its chain into the next one.
+/// </para>
+/// </remarks>
+public sealed class GovernedAIFunctionProgressTests
 {
-    public void Dispose()
-    {
-        ToolGovernanceAccessor.Current = null;
-        ProgressGuardAccessor.Current = null;
-        ToolCallObserverAccessor.Current = null;
-    }
-
     private static (AIFunction inner, Func<bool> wasInvoked) MakeInner()
     {
         var invoked = false;
@@ -29,6 +32,12 @@ public sealed class GovernedAIFunctionProgressTests : IDisposable
             () => { invoked = true; return "inner-result"; },
             new AIFunctionFactoryOptions { Name = "file_system", Description = "test tool" });
         return (inner, () => invoked);
+    }
+
+    private static async Task<object?> InvokeUnder(IToolCallAdmissionPipeline pipeline, AIFunction inner)
+    {
+        using var armed = ToolAdmissionAccessor.Begin(pipeline);
+        return await new GovernedAIFunction(inner).InvokeAsync(new AIFunctionArguments(), CancellationToken.None);
     }
 
     [Fact]
@@ -39,10 +48,8 @@ public sealed class GovernedAIFunctionProgressTests : IDisposable
         progress
             .Setup(p => p.Evaluate(It.IsAny<string>(), It.IsAny<Func<string?>>()))
             .Returns(ProgressVerdict.Halt("Error: tool 'file_system' was stopped — repeating without progress."));
-        ProgressGuardAccessor.Current = progress.Object;
 
-        var governed = new GovernedAIFunction(inner);
-        var result = await governed.InvokeAsync(new AIFunctionArguments(), CancellationToken.None);
+        var result = await InvokeUnder(AdmissionHarness.Pipeline(progressEvaluator: progress.Object), inner);
 
         Assert.False(wasInvoked(), "inner tool must not run when the progress guard halts");
         Assert.Contains("repeating without progress", result?.ToString());
@@ -52,28 +59,21 @@ public sealed class GovernedAIFunctionProgressTests : IDisposable
     public async Task InvokeAsync_ProgressContinues_InvokesInner()
     {
         var (inner, wasInvoked) = MakeInner();
-        var progress = new Mock<IProgressEvaluator>();
-        progress
-            .Setup(p => p.Evaluate(It.IsAny<string>(), It.IsAny<Func<string?>>()))
-            .Returns(ProgressVerdict.Continue());
-        ProgressGuardAccessor.Current = progress.Object;
 
-        var governed = new GovernedAIFunction(inner);
-        await governed.InvokeAsync(new AIFunctionArguments(), CancellationToken.None);
+        await InvokeUnder(AdmissionHarness.Pipeline(), inner);
 
         Assert.True(wasInvoked(), "inner tool must run when the progress guard allows");
     }
 
     [Fact]
-    public async Task InvokeAsync_NoAmbientEvaluator_PassesThrough()
+    public async Task InvokeAsync_NoAmbientChain_PassesThrough()
     {
+        // A tool invoked outside a governed turn — nothing is armed, so the wrapper is transparent.
         var (inner, wasInvoked) = MakeInner();
-        ProgressGuardAccessor.Current = null;
 
-        var governed = new GovernedAIFunction(inner);
-        await governed.InvokeAsync(new AIFunctionArguments(), CancellationToken.None);
+        await new GovernedAIFunction(inner).InvokeAsync(new AIFunctionArguments(), CancellationToken.None);
 
-        Assert.True(wasInvoked(), "inner tool must run when no progress evaluator is ambient");
+        Assert.True(wasInvoked(), "inner tool must run when no admission chain is ambient");
     }
 
     [Fact]
@@ -84,13 +84,12 @@ public sealed class GovernedAIFunctionProgressTests : IDisposable
         governor
             .Setup(g => g.AuthorizeAsync(It.IsAny<string>(), It.IsAny<CancellationToken>(), It.IsAny<IReadOnlyDictionary<string, object?>?>()))
             .ReturnsAsync(ToolInvocationDecision.Deny("Error: tool 'file_system' is not permitted."));
-        ToolGovernanceAccessor.Current = governor.Object;
 
+        // Strict: any call to Evaluate at all is the defect, not just a particular verdict.
         var progress = new Mock<IProgressEvaluator>(MockBehavior.Strict);
-        ProgressGuardAccessor.Current = progress.Object;
 
-        var governed = new GovernedAIFunction(inner);
-        await governed.InvokeAsync(new AIFunctionArguments(), CancellationToken.None);
+        await InvokeUnder(
+            AdmissionHarness.Pipeline(governor: governor.Object, progressEvaluator: progress.Object), inner);
 
         // A denied call never executed, so it must not count toward progress: Evaluate is never called.
         progress.Verify(p => p.Evaluate(It.IsAny<string>(), It.IsAny<Func<string?>>()), Times.Never);
@@ -104,10 +103,8 @@ public sealed class GovernedAIFunctionProgressTests : IDisposable
         progress
             .Setup(p => p.Evaluate(It.IsAny<string>(), It.IsAny<Func<string?>>()))
             .Returns(ProgressVerdict.Continue());
-        ProgressGuardAccessor.Current = progress.Object;
 
-        var governed = new GovernedAIFunction(inner);
-        await governed.InvokeAsync(new AIFunctionArguments(), CancellationToken.None);
+        await InvokeUnder(AdmissionHarness.Pipeline(progressEvaluator: progress.Object), inner);
 
         progress.Verify(p => p.Evaluate("file_system", It.IsAny<Func<string?>>()), Times.Once);
     }
@@ -122,23 +119,14 @@ public sealed class GovernedAIFunctionProgressTests : IDisposable
         // presents a brand-new signature on every attempt, so every attempt would reset the counter
         // and the spin against the observer's own rule would run to the iteration ceiling.
         var (inner, wasInvoked) = MakeInner();
-
-        var observers = new Mock<IToolCallObserverChain>();
-        observers.SetupGet(o => o.HasObservers).Returns(true);
-        observers
-            .Setup(o => o.EvaluateAsync(
-                It.IsAny<string>(),
-                It.IsAny<IReadOnlyDictionary<string, object?>>(),
-                It.IsAny<CancellationToken>()))
-            .Returns(ValueTask.FromResult(ToolInvocationDecision.Deny("Error: tool 'file_system' is not permitted.")));
-        ToolCallObserverAccessor.Current = observers.Object;
+        var observers = AdmissionHarness.ObserverChain(
+            ToolInvocationDecision.Deny("Error: tool 'file_system' is not permitted."));
 
         // Strict: any call to Evaluate at all is the defect, not just a particular verdict.
         var progress = new Mock<IProgressEvaluator>(MockBehavior.Strict);
-        ProgressGuardAccessor.Current = progress.Object;
 
-        var governed = new GovernedAIFunction(inner);
-        await governed.InvokeAsync(new AIFunctionArguments(), CancellationToken.None);
+        await InvokeUnder(
+            AdmissionHarness.Pipeline(observers: observers.Object, progressEvaluator: progress.Object), inner);
 
         Assert.False(wasInvoked(), "inner tool must not run when an observer blocks");
         progress.Verify(p => p.Evaluate(It.IsAny<string>(), It.IsAny<Func<string?>>()), Times.Never);
@@ -147,28 +135,18 @@ public sealed class GovernedAIFunctionProgressTests : IDisposable
     [Fact]
     public async Task InvokeAsync_ObserverAllows_ProgressStillCountsTheCall()
     {
-        // The mirror of the test above: moving the guard behind the observers must not stop it
+        // The mirror of the test above: keeping the guard behind the observers must not stop it
         // counting the calls that do execute, or the spin detector would never fire at all.
         var (inner, wasInvoked) = MakeInner();
-
-        var observers = new Mock<IToolCallObserverChain>();
-        observers.SetupGet(o => o.HasObservers).Returns(true);
-        observers
-            .Setup(o => o.EvaluateAsync(
-                It.IsAny<string>(),
-                It.IsAny<IReadOnlyDictionary<string, object?>>(),
-                It.IsAny<CancellationToken>()))
-            .Returns(ValueTask.FromResult(ToolInvocationDecision.Allow()));
-        ToolCallObserverAccessor.Current = observers.Object;
+        var observers = AdmissionHarness.ObserverChain(ToolInvocationDecision.Allow());
 
         var progress = new Mock<IProgressEvaluator>();
         progress
             .Setup(p => p.Evaluate(It.IsAny<string>(), It.IsAny<Func<string?>>()))
             .Returns(ProgressVerdict.Continue());
-        ProgressGuardAccessor.Current = progress.Object;
 
-        var governed = new GovernedAIFunction(inner);
-        await governed.InvokeAsync(new AIFunctionArguments(), CancellationToken.None);
+        await InvokeUnder(
+            AdmissionHarness.Pipeline(observers: observers.Object, progressEvaluator: progress.Object), inner);
 
         Assert.True(wasInvoked());
         progress.Verify(p => p.Evaluate("file_system", It.IsAny<Func<string?>>()), Times.Once);
