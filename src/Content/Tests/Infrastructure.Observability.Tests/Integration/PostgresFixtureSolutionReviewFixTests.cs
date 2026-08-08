@@ -1,4 +1,5 @@
 using FluentAssertions;
+using Tests.Common;
 using Xunit;
 
 namespace Infrastructure.Observability.Tests.Integration;
@@ -16,7 +17,10 @@ namespace Infrastructure.Observability.Tests.Integration;
 [Collection("PostgresFixtureFix")]
 public sealed class PostgresFixtureSolutionReviewFixTests
 {
-    private const string EnvVar = "OBSERVABILITY_TEST_CONN";
+    // From the shared policy, not re-typed. This test is the one that exercises the variable for
+    // real, so a copy here would have falsified the extraction's whole claim — "stated once, nothing
+    // to notice the two drifting apart" — on the day it was made.
+    private const string EnvVar = PostgresAvailability.ConnectionVariable;
 
     /// <summary>
     /// A localhost endpoint on a port nothing listens on yields a connection-refused

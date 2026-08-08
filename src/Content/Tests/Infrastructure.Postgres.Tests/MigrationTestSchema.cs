@@ -1,9 +1,9 @@
-using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
 using Infrastructure.Postgres.Migrations;
 using Microsoft.Extensions.Logging.Abstractions;
 using Npgsql;
+using Tests.Common;
 using Xunit;
 
 namespace Infrastructure.Postgres.Tests;
@@ -29,9 +29,6 @@ namespace Infrastructure.Postgres.Tests;
 /// </remarks>
 public sealed class MigrationTestSchema : IAsyncDisposable
 {
-    private const string DefaultConnectionString =
-        "Host=localhost;Port=5432;Database=observability;Username=observability;Password=observability";
-
     /// <summary>
     /// Ledger table used by tests that do not care which ledger they write to.
     /// </summary>
@@ -69,12 +66,6 @@ public sealed class MigrationTestSchema : IAsyncDisposable
     /// </remarks>
     private long AdvisoryLockKey { get; }
 
-    private static string ConnectionString =>
-        Environment.GetEnvironmentVariable("OBSERVABILITY_TEST_CONN") ?? DefaultConnectionString;
-
-    private static bool IsConnectionExplicitlyConfigured =>
-        !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("OBSERVABILITY_TEST_CONN"));
-
     /// <summary>
     /// Creates an empty schema and returns a data source scoped to it, or skips the calling test when
     /// no Postgres is provisioned. Callers must be <c>[SkippableFact]</c>.
@@ -85,7 +76,7 @@ public sealed class MigrationTestSchema : IAsyncDisposable
         NpgsqlDataSource? probe = null;
         try
         {
-            probe = NpgsqlDataSource.Create(ConnectionString);
+            probe = NpgsqlDataSource.Create(PostgresAvailability.ConnectionString);
 
             await using (var ping = probe.CreateCommand("SELECT 1"))
                 await ping.ExecuteScalarAsync();
@@ -101,16 +92,13 @@ public sealed class MigrationTestSchema : IAsyncDisposable
             // each physical open landed in the throwaway schema and every command after it landed in
             // public. The tests still passed their early assertions and then failed on counts that had
             // collected every other test's rows, which is a good deal more confusing than an error.
-            var builder = new NpgsqlConnectionStringBuilder(ConnectionString) { SearchPath = schemaName };
+            var builder = new NpgsqlConnectionStringBuilder(PostgresAvailability.ConnectionString) { SearchPath = schemaName };
 
             return new MigrationTestSchema(NpgsqlDataSource.Create(builder.ConnectionString), schemaName);
         }
-        catch (Exception ex) when (!IsConnectionExplicitlyConfigured && IsServerAbsent(ex))
+        catch (Exception ex) when (PostgresAvailability.ShouldSkip(ex))
         {
-            Skip.If(true,
-                "Postgres is not provisioned for this run (set OBSERVABILITY_TEST_CONN or start a " +
-                "local Postgres on localhost:5432). The test is skipped rather than reported as a " +
-                "silent pass.");
+            Skip.If(true, PostgresAvailability.SkipReason);
             throw; // unreachable; Skip.If throws.
         }
         finally
@@ -189,30 +177,27 @@ public sealed class MigrationTestSchema : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Migration options scoped to this throwaway schema.
+    /// </summary>
+    /// <param name="name">Distinguishes ledgers when one test needs more than one.</param>
+    /// <returns>Options whose ledger is local to this schema and whose lock key is unique to it.</returns>
+    /// <remarks>
+    /// Use this rather than a hardcoded key in a test class. Postgres advisory locks are cluster-wide,
+    /// not schema-scoped, so a fixed key serializes every test that uses it against every other —
+    /// invisible while one process runs a class sequentially, and a real queue the moment two
+    /// processes share a cluster, which is exactly the second-worktree arrangement this repo
+    /// recommends for running work in parallel.
+    /// </remarks>
+    public PostgresMigrationOptions OptionsFor(string name) =>
+        new($"{name}_migrations", AdvisoryLockKey);
+
     /// <summary>Runs a statement against this schema.</summary>
     /// <param name="sql">The statement to run.</param>
     public async Task ExecuteAsync(string sql)
     {
         await using var cmd = DataSource.CreateCommand(sql);
         await cmd.ExecuteNonQueryAsync();
-    }
-
-    private static bool IsServerAbsent(Exception ex)
-    {
-        for (var current = ex; current is not null; current = current.InnerException)
-        {
-            if (current is SocketException socket &&
-                socket.SocketErrorCode is SocketError.ConnectionRefused
-                    or SocketError.HostNotFound
-                    or SocketError.HostUnreachable
-                    or SocketError.NetworkUnreachable
-                    or SocketError.TimedOut)
-            {
-                return true;
-            }
-        }
-
-        return false;
     }
 
     /// <inheritdoc />

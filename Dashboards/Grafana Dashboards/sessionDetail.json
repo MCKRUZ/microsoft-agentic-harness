@@ -177,21 +177,17 @@
                   "color": "green",
                   "index": 0
                 },
-                "failed": {
+                "error": {
                   "color": "red",
                   "index": 1
                 },
-                "running": {
+                "active": {
                   "color": "blue",
                   "index": 2
                 },
-                "timeout": {
-                  "color": "yellow",
-                  "index": 3
-                },
                 "cancelled": {
                   "color": "orange",
-                  "index": 4
+                  "index": 3
                 }
               },
               "type": "value"
