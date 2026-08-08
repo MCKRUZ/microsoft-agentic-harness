@@ -15,17 +15,23 @@ namespace Infrastructure.AI.Tests.A2A;
 /// <remarks>
 /// <para>
 /// This is the one conversion in the #300 sweep that a caller can reach from outside the process.
-/// <c>CallerKind</c> is a wire field, and the kind it produces is read as a deny condition:
-/// <c>EntraAgentIdentityValidator.CanInvoke</c> refuses any identity whose
-/// <see cref="AgentIdentityKind"/> is <see cref="AgentIdentityKind.Unspecified"/>.
+/// <c>CallerKind</c> is a wire field, and <see cref="AgentIdentityKind.Unspecified"/> is the value
+/// every reader treats as "identity not established".
 /// </para>
 /// <para>
 /// A bare <c>Enum.TryParse</c> accepts <c>"99"</c> and returns a kind that is not a defined member —
-/// and, decisively, not <c>Unspecified</c> either. The unresolved-identity deny therefore stopped
-/// firing on precisely the envelopes it exists to catch: ones whose declared kind means nothing.
-/// The final authorization still keys off the authenticated caller id rather than this field, so
-/// this is a defence-in-depth layer rather than a standalone bypass — which is the reason to keep it
-/// working, not a reason to shrug at it.
+/// and, decisively, not <c>Unspecified</c> either, so it looks resolved to anything testing for
+/// Unspecified. <c>EntraAgentIdentityValidator.CanInvoke</c> is written to deny on exactly that
+/// condition.
+/// </para>
+/// <para>
+/// <strong>Measured 8 Aug 2026: that validator has no production caller.</strong>
+/// <c>IAgentIdentityValidator</c> is registered in DI and injected nowhere, so the tool
+/// authorization control is inert today and nothing live was being bypassed. These tests pin the
+/// contract the wire field must honour regardless — an unrecognised kind resolves to Unspecified —
+/// so the day that control is wired up it is not wired onto a parser that already lost the
+/// distinction. Stated plainly because the first version of this file claimed a live gate was
+/// bypassed, which was wrong.
 /// </para>
 /// </remarks>
 public sealed class A2AIdentityPropagatorKindParsingTests
