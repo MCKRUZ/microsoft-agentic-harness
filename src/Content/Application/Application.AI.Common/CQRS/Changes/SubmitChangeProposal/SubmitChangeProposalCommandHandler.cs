@@ -1,6 +1,7 @@
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Changes;
 using Application.AI.Common.Interfaces.Governance;
+using Application.Common.Helpers;
 using Domain.AI.Agents;
 using Domain.AI.Changes;
 using Domain.AI.Governance;
@@ -199,13 +200,18 @@ public sealed class SubmitChangeProposalCommandHandler
             return AutonomyLevel.Supervised;
         }
 
-        if (Enum.TryParse<SubagentType>(identity.Id, ignoreCase: true, out var subagentType))
+        // Name-only, and deliberately the same rule AutonomyTierRuleProvider.ResolveTier applies —
+        // these two methods resolve the same tier from the same identity and the same config key, so
+        // they must agree on what a value means. A bare Enum.TryParse accepts any integer string, so
+        // "2" would name a subagent type positionally and an out-of-range number would produce a
+        // tier that is not a member of AutonomyLevel at all.
+        if (EnumNameHelper.TryParseName<SubagentType>(identity.Id, out var subagentType))
         {
             return _tierResolver.Resolve(subagentType);
         }
 
         var permissions = _config.CurrentValue.AI.Permissions;
-        if (Enum.TryParse<AutonomyLevel>(permissions.DefaultAutonomyLevel, ignoreCase: true, out var configured))
+        if (EnumNameHelper.TryParseName<AutonomyLevel>(permissions.DefaultAutonomyLevel, out var configured))
         {
             return configured;
         }

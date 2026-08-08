@@ -22,12 +22,14 @@ public sealed class ChangeProposalBackgroundServiceTests
     private sealed class RecordingOrchestrator : IChangeProposalOrchestrator
     {
         public List<string> Calls { get; } = new();
+        public List<OrchestratorMode> Modes { get; } = new();
         public Func<string, ChangeProposal?>? ResultFor { get; set; }
         public Func<string, Exception>? ThrowFor { get; set; }
 
         public Task<ChangeProposal?> ProcessAsync(string proposalId, OrchestratorMode mode, CancellationToken ct)
         {
             Calls.Add(proposalId);
+            Modes.Add(mode);
             var ex = ThrowFor?.Invoke(proposalId);
             if (ex is not null) throw ex;
             return Task.FromResult(ResultFor?.Invoke(proposalId));
@@ -65,6 +67,50 @@ public sealed class ChangeProposalBackgroundServiceTests
             config ?? Monitor(),
             NullLogger<ChangeProposalBackgroundService>.Instance);
         return (service, queue, orchestrator);
+    }
+
+    [Theory]
+    [InlineData("99")]                  // outside the defined range
+    [InlineData(" 99")]                 // and behind a stray space
+    [InlineData("Shadow,Live")]         // comma-composite — notably NOT equal to Shadow
+    [InlineData("Nonsense")]
+    public async Task ExecuteAsync_NonNameDefaultMode_FallsBackToShadow(string configured)
+    {
+        // #300, and the sharpest consequence in the whole sweep. MergeGate short-circuits its real
+        // apply on `Mode == Shadow`, so ANY value that is not exactly Shadow performs a production
+        // write. A bare Enum.TryParse accepted "99" and "Shadow,Live" — neither of which equals
+        // Shadow — so a config typo silently converted a dry run into real applies, while the
+        // documented fallback for an unparseable value is Shadow precisely to prevent that.
+        var (service, queue, orchestrator) = BuildSut(Monitor(configured));
+        await queue.EnqueueAsync("p1", CancellationToken.None);
+
+        await service.StartAsync(CancellationToken.None);
+        await WaitForCallsAsync(orchestrator, 1);
+        await service.StopAsync(CancellationToken.None);
+
+        orchestrator.Modes.Should().ContainSingle().Which.Should().Be(OrchestratorMode.Shadow);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_NamedDefaultMode_IsStillHonoured()
+    {
+        // The control: refusing non-names must not mean pinning everything to Shadow. A real apply
+        // must still be reachable when the operator names Live.
+        var (service, queue, orchestrator) = BuildSut(Monitor(nameof(OrchestratorMode.Live)));
+        await queue.EnqueueAsync("p1", CancellationToken.None);
+
+        await service.StartAsync(CancellationToken.None);
+        await WaitForCallsAsync(orchestrator, 1);
+        await service.StopAsync(CancellationToken.None);
+
+        orchestrator.Modes.Should().ContainSingle().Which.Should().Be(OrchestratorMode.Live);
+    }
+
+    private static async Task WaitForCallsAsync(RecordingOrchestrator orchestrator, int count)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (orchestrator.Calls.Count < count && DateTime.UtcNow < deadline)
+            await Task.Delay(10);
     }
 
     [Fact]

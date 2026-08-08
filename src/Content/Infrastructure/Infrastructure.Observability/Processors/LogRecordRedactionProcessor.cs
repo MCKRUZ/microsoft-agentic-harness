@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces.Telemetry;
+using Application.Common.Helpers;
 using Domain.AI.Telemetry.Redaction;
 using Domain.Common.Config.Observability;
 using Microsoft.Extensions.Logging;
@@ -152,7 +153,10 @@ public sealed class LogRecordRedactionProcessor : BaseProcessor<LogRecord>
         var parsed = new List<RedactionCategory>(names.Count);
         foreach (var name in names)
         {
-            if (Enum.TryParse<RedactionCategory>(name?.Trim(), ignoreCase: true, out var category))
+            // Name-only, matching LogsConfigValidator exactly (the helper trims, so the local Trim
+            // is no longer needed). The two sides disagreed before: the validator refused "2" while
+            // this accepted it as a category, which is the boot-vs-runtime divergence #296 was.
+            if (EnumNameHelper.TryParseName<RedactionCategory>(name, out var category))
             {
                 parsed.Add(category);
             }

@@ -151,6 +151,25 @@ public sealed class LlmQueryClassifierTests
         result.Reasoning.Should().Contain("JSON parse failure");
     }
 
+    [Theory]
+    [InlineData("99")]                      // outside the defined range
+    [InlineData(" 99")]                     // and behind a stray space
+    [InlineData("1")]                       // the numeric form of a real member
+    [InlineData("SimpleLookup,MultiHop")]   // comma-composite
+    public async Task ClassifyAsync_NonNameQueryType_FallsBackToSimpleLookup(string type)
+    {
+        // #300. The type is whatever the model emitted, so it is untrusted by definition. A bare
+        // Enum.TryParse accepts all of these and produces a QueryType that then misses every entry
+        // in DefaultStrategyMap — so the retrieval strategy is chosen by the map's fallback rather
+        // than by the logged SimpleLookup default, and the log line saying so never prints.
+        SetupChatResponse($$"""{"type": "{{type}}", "confidence": 0.9, "reasoning": "r"}""");
+
+        var result = await _sut.ClassifyAsync("any");
+
+        result.Type.Should().Be(QueryType.SimpleLookup);
+        result.Strategy.Should().Be(RetrievalStrategy.HybridVectorBm25);
+    }
+
     private void SetupChatResponse(string body)
     {
         _chat

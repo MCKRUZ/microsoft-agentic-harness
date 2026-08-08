@@ -1,3 +1,4 @@
+using Application.Common.Helpers;
 using Domain.AI.Governance;
 using Domain.Common.Config;
 using Domain.Common.Config.AI.IncidentResponse;
@@ -161,8 +162,17 @@ public sealed class IncidentResponsePlanValidator : IHostedService
                     "config; flagging at boot.");
             }
 
+            // Name-only. This is a boot validator for a tier override, and a bare Enum.TryParse
+            // accepted "2" and "Restricted,Autonomous" — so the one check standing between a typo
+            // and a widened autonomy tier passed the two forms most likely to widen it. The switch
+            // also makes this case-insensitive, matching how AutonomyLevel is read everywhere else.
+            //
+            // Note this setting is currently validated and never applied: AutonomyTierOverride is
+            // read by nothing outside this validator and the config POCO, despite the plan model
+            // documenting it as forcing the tier for the incident's duration. Validating it is still
+            // right — it must not start meaning something different the day it IS wired up.
             if (plan.AutonomyTierOverride is not null
-                && !Enum.TryParse<AutonomyLevel>(plan.AutonomyTierOverride, ignoreCase: false, out _))
+                && !EnumNameHelper.TryParseName<AutonomyLevel>(plan.AutonomyTierOverride, out _))
             {
                 var known = string.Join(", ", Enum.GetNames<AutonomyLevel>());
                 throw new InvalidOperationException(

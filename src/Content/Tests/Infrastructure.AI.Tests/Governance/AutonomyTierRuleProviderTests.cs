@@ -199,4 +199,125 @@ public sealed class AutonomyTierRuleProviderTests
         var rule = rules[0];
         rule.Behavior.Should().Be(PermissionBehaviorType.Ask);
     }
+
+    [Theory]
+    [InlineData("99")]
+    [InlineData(" 99")]
+    [InlineData("1")]                       // the numeric form of a real subagent type
+    [InlineData("Explore,General")]
+    public async Task GetRulesAsync_NonNameAgentId_IsNotTreatedAsASubagentType(string agentId)
+    {
+        // #300. agentId reaches this provider from the caller, and a bare Enum.TryParse would let
+        // "1" address a subagent type positionally — resolving that agent's tier for a caller who
+        // never named it. The tier resolver must not be consulted at all for a non-name.
+        var permissions = new PermissionsConfig
+        {
+            DefaultAutonomyLevel = "Supervised",
+            DefaultBehavior = "Ask",
+            TierPolicies = new Dictionary<string, AutonomyTierPolicyConfig>
+            {
+                ["Supervised"] = new() { DefaultBehavior = "Ask" }
+            }
+        };
+
+        var provider = CreateProvider(permissions);
+
+        var rules = await provider.GetRulesAsync(agentId);
+
+        rules.Should().ContainSingle();
+        rules[0].Behavior.Should().Be(PermissionBehaviorType.Ask);
+        _resolverMock.Verify(r => r.Resolve(It.IsAny<SubagentType>()), Times.Never);
+    }
+
+    [Theory]
+    [InlineData("99")]
+    [InlineData("0")]                       // the numeric form of a real behaviour
+    [InlineData("Allow,Deny")]
+    public async Task GetRulesAsync_NonNameDefaultBehavior_FallsBackToAsk(string behavior)
+    {
+        // The baseline behaviour for every tool the agent can reach. A permissive parse turns a typo
+        // into a behaviour nobody declared — and PermissionBehaviorType.Allow is one value away, so
+        // the failure direction is "silently permit", not "silently break".
+        _resolverMock
+            .Setup(r => r.Resolve(SubagentType.Explore))
+            .Returns(AutonomyLevel.Restricted);
+
+        var permissions = new PermissionsConfig
+        {
+            TierPolicies = new Dictionary<string, AutonomyTierPolicyConfig>
+            {
+                ["Restricted"] = new() { DefaultBehavior = behavior }
+            }
+        };
+
+        var provider = CreateProvider(permissions);
+
+        var rules = await provider.GetRulesAsync("Explore");
+
+        rules.Should().ContainSingle();
+        rules[0].Behavior.Should().Be(PermissionBehaviorType.Ask);
+    }
+
+    [Theory]
+    [InlineData("99")]
+    [InlineData("0")]
+    [InlineData("Allow,Deny")]
+    public async Task GetRulesAsync_NonNameToolOverrideBehavior_SkipsTheOverrideRow(string behavior)
+    {
+        // A per-tool override that cannot be parsed must be dropped, leaving only the baseline rule.
+        _resolverMock
+            .Setup(r => r.Resolve(SubagentType.Explore))
+            .Returns(AutonomyLevel.Restricted);
+
+        var permissions = new PermissionsConfig
+        {
+            TierPolicies = new Dictionary<string, AutonomyTierPolicyConfig>
+            {
+                ["Restricted"] = new()
+                {
+                    DefaultBehavior = "Ask",
+                    ToolOverrides = new Dictionary<string, string> { ["file_system"] = behavior }
+                }
+            }
+        };
+
+        var provider = CreateProvider(permissions);
+
+        var rules = await provider.GetRulesAsync("Explore");
+
+        rules.Should().ContainSingle();
+        rules[0].ToolPattern.Should().Be("*");
+    }
+
+    [Fact]
+    public async Task GetRulesAsync_NamedToolOverrideBehavior_IsStillEmitted()
+    {
+        // The control for the theory above: refusing non-names must not mean dropping real overrides.
+        _resolverMock
+            .Setup(r => r.Resolve(SubagentType.Explore))
+            .Returns(AutonomyLevel.Restricted);
+
+        var permissions = new PermissionsConfig
+        {
+            TierPolicies = new Dictionary<string, AutonomyTierPolicyConfig>
+            {
+                ["Restricted"] = new()
+                {
+                    DefaultBehavior = "Ask",
+                    ToolOverrides = new Dictionary<string, string>
+                    {
+                        ["file_system"] = nameof(PermissionBehaviorType.Deny)
+                    }
+                }
+            }
+        };
+
+        var provider = CreateProvider(permissions);
+
+        var rules = await provider.GetRulesAsync("Explore");
+
+        rules.Should().HaveCount(2);
+        rules.Should().ContainSingle(r => r.ToolPattern == "file_system"
+            && r.Behavior == PermissionBehaviorType.Deny);
+    }
 }

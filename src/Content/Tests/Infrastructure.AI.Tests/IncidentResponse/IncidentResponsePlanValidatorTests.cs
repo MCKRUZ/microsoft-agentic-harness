@@ -66,6 +66,48 @@ public sealed class IncidentResponsePlanValidatorTests
         ex.Which.Message.Should().Contain("Restricted"); // expected to list known tiers
     }
 
+    [Theory]
+    [InlineData("2")]                       // the numeric form of Autonomous
+    [InlineData(" 2")]                      // and behind a stray space
+    [InlineData("99")]                      // outside the defined range
+    [InlineData("Restricted,Autonomous")]   // comma-composite, OR'd to Autonomous
+    public async Task StartAsync_NonNameAutonomyTier_Throws(string tier)
+    {
+        // #300. StartAsync_UnknownAutonomyTier_Throws above proves a nonsense NAME is refused, but a
+        // bare Enum.TryParse accepted every value here — so the one boot check standing between a
+        // typo and a widened autonomy tier passed exactly the forms most likely to widen it.
+        var cfg = new AppConfig();
+        cfg.AI.IncidentResponse.Plans =
+        [
+            new() { Name = "Bogus", IncidentType = "Whatever", AutonomyTierOverride = tier }
+        ];
+        var sut = NewSut(cfg);
+
+        var ex = await sut.Invoking(s => s.StartAsync(CancellationToken.None))
+            .Should().ThrowAsync<InvalidOperationException>();
+        ex.Which.Message.Should().Contain("AutonomyTierOverride");
+    }
+
+    [Theory]
+    [InlineData("restricted")]
+    [InlineData("SUPERVISED")]
+    public async Task StartAsync_DifferentlyCasedAutonomyTier_AllowsBoot(string tier)
+    {
+        // The switch to the shared reader also made this case-insensitive, where it was previously
+        // case-sensitive. Pinned deliberately rather than left implicit: AutonomyLevel is read
+        // case-insensitively everywhere else, and a config value must not mean different things to
+        // different readers.
+        var cfg = new AppConfig();
+        cfg.AI.IncidentResponse.Plans =
+        [
+            new() { Name = "Plan", IncidentType = "Whatever", AutonomyTierOverride = tier }
+        ];
+        var sut = NewSut(cfg);
+
+        await sut.Invoking(s => s.StartAsync(CancellationToken.None))
+            .Should().NotThrowAsync();
+    }
+
     [Fact]
     public async Task StartAsync_DuplicatePlanNames_Throws()
     {

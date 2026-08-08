@@ -242,6 +242,102 @@ public sealed class AutonomyConfigValidatorTests
         await act.Should().NotThrowAsync();
     }
 
+    [Theory]
+    [InlineData("99")]                          // outside the defined range
+    [InlineData(" 99")]                         // and behind a stray space
+    [InlineData("2")]                           // the numeric form of Autonomous
+    [InlineData("Restricted,Autonomous")]       // comma-composite, OR'd to Autonomous
+    public async Task StartAsync_NonNameDefaultAutonomyLevel_RefusesToBoot(string configured)
+    {
+        // #300. This is the value ToolInvocationGovernor's risk gate parses on the live tool path.
+        // A bare Enum.TryParse accepts all of these, and because the tier ordering is
+        // Restricted < Supervised < Autonomous an out-of-range number reads as looser than the
+        // loosest real tier — so a typo widens governance rather than breaking it. This validator is
+        // what turns that into a failed startup, and it only can if the parse rejects.
+        var cfg = GradedEnabled(_ => { });
+        cfg.AI.Permissions.DefaultAutonomyLevel = configured;
+
+        var sut = Build(cfg);
+
+        var act = async () => await sut.StartAsync(CancellationToken.None);
+
+        (await act.Should().ThrowAsync<InvalidOperationException>())
+            .WithMessage("*DefaultAutonomyLevel*");
+    }
+
+    [Theory]
+    [InlineData("99")]
+    [InlineData("4")]                           // the numeric form of Critical
+    [InlineData("High,Trivial")]                // comma-composite
+    public async Task StartAsync_NonNameBlastRadiusRowKey_RefusesToBoot(string rowKey)
+    {
+        // The consequence a numeric row key has at runtime is worse than an outright error: the
+        // evaluator keys its policy map by the parsed radius, so a row under an out-of-range number
+        // is stored where nothing can ever match it. The operator reads a config declaring Critical
+        // as Forbidden and the runtime behaves as though they wrote nothing. Rejecting at boot is
+        // the only place that difference is visible.
+        var cfg = GradedEnabled(g =>
+        {
+            g.PerEnvironment["Development"] = new EnvironmentAutonomyConfig
+            {
+                PerBlastRadius =
+                {
+                    [rowKey] = new BlastRadiusRuleConfig { Decision = "Forbidden" }
+                }
+            };
+        });
+
+        var sut = Build(cfg);
+
+        var act = async () => await sut.StartAsync(CancellationToken.None);
+
+        (await act.Should().ThrowAsync<InvalidOperationException>())
+            .WithMessage("*BlastRadius*");
+    }
+
+    [Theory]
+    [InlineData("99")]
+    [InlineData("0")]                           // the numeric form of a real decision
+    [InlineData("AutoApprove,Forbidden")]
+    public async Task StartAsync_NonNameDecision_RefusesToBoot(string decision)
+    {
+        var cfg = GradedEnabled(g =>
+        {
+            g.PerEnvironment["Development"] = new EnvironmentAutonomyConfig
+            {
+                PerBlastRadius =
+                {
+                    ["Low"] = new BlastRadiusRuleConfig { Decision = decision }
+                }
+            };
+        });
+
+        var sut = Build(cfg);
+
+        var act = async () => await sut.StartAsync(CancellationToken.None);
+
+        (await act.Should().ThrowAsync<InvalidOperationException>())
+            .WithMessage("*Decision*");
+    }
+
+    [Theory]
+    [InlineData("99")]
+    [InlineData("0")]                           // the numeric form of Restricted
+    public async Task StartAsync_NonNamePerSkillTier_RefusesToBoot(string tier)
+    {
+        var cfg = GradedEnabled(g =>
+        {
+            g.PerSkill["some-skill"] = new SkillAutonomyConfig { Tier = tier };
+        });
+
+        var sut = Build(cfg);
+
+        var act = async () => await sut.StartAsync(CancellationToken.None);
+
+        (await act.Should().ThrowAsync<InvalidOperationException>())
+            .WithMessage("*Tier*");
+    }
+
     private sealed class StaticOptionsMonitor<T> : IOptionsMonitor<T>
     {
         public StaticOptionsMonitor(T value) { CurrentValue = value; }

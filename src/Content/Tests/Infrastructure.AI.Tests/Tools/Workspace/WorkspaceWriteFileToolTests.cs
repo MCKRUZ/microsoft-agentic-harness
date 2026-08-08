@@ -160,6 +160,37 @@ public sealed class WorkspaceWriteFileToolTests
             .Which.BlastRadius.Should().Be(BlastRadius.High);
     }
 
+    [Theory]
+    [InlineData("3")]                       // the numeric form of High
+    [InlineData(" 3")]                      // and behind a stray space
+    [InlineData("99")]                      // outside the defined range
+    [InlineData("Trivial,High")]            // comma-composite, OR'd to High
+    public async Task Write_NonNameBlastRadius_FallsBackToLowRatherThanTheParsedValue(string blastRadius)
+    {
+        // #300. blast_radius is authored by the model, and it is the input the graded-autonomy
+        // policy keys its auto-approve decision on — the most consequential model-supplied enum on
+        // this path. A bare Enum.TryParse accepts all of these; an out-of-range value then has no
+        // row in the policy map and resolves by falling through rather than by the rule the operator
+        // wrote for that radius. The documented fallback is Low, and it only applies if the parse
+        // can reject.
+        using var fx = new WorkspaceTestFixture();
+        var mediator = new RecordingMediator(SuccessProposal());
+        var sut = new WorkspaceWriteFileTool(fx.Accessor, TestScopeFactory.For(mediator));
+
+        await sut.ExecuteAsync(
+            "submit",
+            new Dictionary<string, object?>
+            {
+                ["path"] = "ok.txt",
+                ["content"] = "data",
+                ["summary"] = "summary",
+                ["blast_radius"] = blastRadius
+            });
+
+        mediator.DispatchedSubmits.Should().ContainSingle()
+            .Which.BlastRadius.Should().Be(BlastRadius.Low);
+    }
+
     private static Result<ChangeProposal> SuccessProposal()
     {
         var proposal = ChangeProposal.Create(

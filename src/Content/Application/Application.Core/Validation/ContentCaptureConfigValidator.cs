@@ -1,3 +1,4 @@
+using Application.Common.Helpers;
 using Domain.AI.Telemetry.Redaction;
 using Domain.Common.Config.AI.Telemetry;
 using FluentValidation;
@@ -21,9 +22,6 @@ namespace Application.Core.Validation;
 /// </remarks>
 public sealed class ContentCaptureConfigValidator : AbstractValidator<ContentCaptureConfig>
 {
-    private static readonly HashSet<string> KnownCategories =
-        new(Enum.GetNames<RedactionCategory>(), StringComparer.OrdinalIgnoreCase);
-
     /// <summary>Initializes a new instance of the <see cref="ContentCaptureConfigValidator"/> class.</summary>
     public ContentCaptureConfigValidator()
     {
@@ -45,6 +43,11 @@ public sealed class ContentCaptureConfigValidator : AbstractValidator<ContentCap
         });
     }
 
+    // Shared name-only reader rather than a local set of Enum.GetNames. The summary above promises
+    // this validator mirrors ContentCapturePolicy's parsing, and that promise was not being kept:
+    // the local set refused "2" while the runtime parse accepted it as a category. Both sides were
+    // moved onto this reader together — converting only the validator would have left the divergence
+    // exactly where it was, since the runtime side is the one that decides what gets redacted.
     private static bool BeKnownCategory(string category)
-        => !string.IsNullOrWhiteSpace(category) && KnownCategories.Contains(category.Trim());
+        => EnumNameHelper.TryParseName<RedactionCategory>(category, out _);
 }
