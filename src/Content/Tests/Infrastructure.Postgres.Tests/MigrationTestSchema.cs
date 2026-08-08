@@ -1,9 +1,9 @@
-using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
 using Infrastructure.Postgres.Migrations;
 using Microsoft.Extensions.Logging.Abstractions;
 using Npgsql;
+using Tests.Common;
 using Xunit;
 
 namespace Infrastructure.Postgres.Tests;
@@ -29,9 +29,6 @@ namespace Infrastructure.Postgres.Tests;
 /// </remarks>
 public sealed class MigrationTestSchema : IAsyncDisposable
 {
-    private const string DefaultConnectionString =
-        "Host=localhost;Port=5432;Database=observability;Username=observability;Password=observability";
-
     /// <summary>
     /// Ledger table used by tests that do not care which ledger they write to.
     /// </summary>
@@ -69,11 +66,11 @@ public sealed class MigrationTestSchema : IAsyncDisposable
     /// </remarks>
     private long AdvisoryLockKey { get; }
 
-    private static string ConnectionString =>
-        Environment.GetEnvironmentVariable("OBSERVABILITY_TEST_CONN") ?? DefaultConnectionString;
-
-    private static bool IsConnectionExplicitlyConfigured =>
-        !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("OBSERVABILITY_TEST_CONN"));
+    // Connection string, the environment override, what counts as an absent server, and the skip
+    // wording all come from PostgresAvailability, which Infrastructure.Observability.Tests' fixture
+    // also uses. Both suites had their own copy; that made the rule for when a Postgres suite may
+    // skip a thing stated twice, with nothing to notice the two drifting apart.
+    private static string ConnectionString => PostgresAvailability.ConnectionString;
 
     /// <summary>
     /// Creates an empty schema and returns a data source scoped to it, or skips the calling test when
@@ -105,12 +102,9 @@ public sealed class MigrationTestSchema : IAsyncDisposable
 
             return new MigrationTestSchema(NpgsqlDataSource.Create(builder.ConnectionString), schemaName);
         }
-        catch (Exception ex) when (!IsConnectionExplicitlyConfigured && IsServerAbsent(ex))
+        catch (Exception ex) when (PostgresAvailability.ShouldSkip(ex))
         {
-            Skip.If(true,
-                "Postgres is not provisioned for this run (set OBSERVABILITY_TEST_CONN or start a " +
-                "local Postgres on localhost:5432). The test is skipped rather than reported as a " +
-                "silent pass.");
+            Skip.If(true, PostgresAvailability.SkipReason);
             throw; // unreachable; Skip.If throws.
         }
         finally
@@ -195,24 +189,6 @@ public sealed class MigrationTestSchema : IAsyncDisposable
     {
         await using var cmd = DataSource.CreateCommand(sql);
         await cmd.ExecuteNonQueryAsync();
-    }
-
-    private static bool IsServerAbsent(Exception ex)
-    {
-        for (var current = ex; current is not null; current = current.InnerException)
-        {
-            if (current is SocketException socket &&
-                socket.SocketErrorCode is SocketError.ConnectionRefused
-                    or SocketError.HostNotFound
-                    or SocketError.HostUnreachable
-                    or SocketError.NetworkUnreachable
-                    or SocketError.TimedOut)
-            {
-                return true;
-            }
-        }
-
-        return false;
     }
 
     /// <inheritdoc />
