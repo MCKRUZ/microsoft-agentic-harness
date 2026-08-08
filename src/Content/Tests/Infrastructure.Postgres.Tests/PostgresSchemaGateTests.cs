@@ -15,21 +15,25 @@ namespace Infrastructure.Postgres.Tests;
 /// </remarks>
 public sealed class PostgresSchemaGateTests
 {
-    private static MigrationScript[] Working() =>
-        [new("001_ok", "CREATE TABLE IF NOT EXISTS gate_probe (id INT)")];
+    /// <summary>
+    /// Creates the probe table, and fails if something already created it.
+    /// </summary>
+    /// <remarks>
+    /// Plain <c>CREATE TABLE</c> rather than the <c>IF NOT EXISTS</c> form, because that is what lets
+    /// the recovery test fail for a reason outside the script and then stop failing: pre-create the
+    /// table, the script collides, drop it, and the same gate instance succeeds. It is equally safe in
+    /// the run-once test, where the ready flag means the script executes exactly once anyway.
+    /// <para>
+    /// This was briefly two helpers — an idempotent one and this one — which existed only to justify
+    /// each other and cost a paragraph explaining a distinction with no behavioural consequence.
+    /// </para>
+    /// </remarks>
+    private static MigrationScript[] CreatesProbe() =>
+        [new("001_probe", "CREATE TABLE gate_probe (id INT)")];
 
     private static MigrationScript[] Broken() =>
         [new("001_broken", "CREATE TABLE gate_broken (id NOT_A_TYPE)")];
 
-    /// <summary>
-    /// Valid SQL that fails only if <c>gate_probe</c> already exists.
-    /// </summary>
-    /// <remarks>
-    /// Plain <c>CREATE TABLE</c>, deliberately not the <c>IF NOT EXISTS</c> form <see cref="Working"/>
-    /// uses. The recovery test needs a script that fails for a reason outside itself and then stops
-    /// failing, so that one gate instance can do both; with <c>IF NOT EXISTS</c> the pre-created table
-    /// is a no-op and nothing ever throws.
-    /// </remarks>
     /// <summary>
     /// Sleeps server-side long enough to be cancelled mid-flight, then creates the probe table.
     /// </summary>
@@ -37,12 +41,15 @@ public sealed class PostgresSchemaGateTests
     /// The sleep is what gives a test a window in which the migration is genuinely running, so a
     /// cancellation arrives from Postgres rather than being rejected by the gate before it starts.
     /// The table creation after it is the evidence a later, uncancelled run actually completed.
+    /// <para>
+    /// Kept short. The cancelled attempt rolls back, so the caller that must succeed afterwards sits
+    /// through the sleep a second time for no benefit — at a full second that was most of the class's
+    /// wall-clock. 400ms leaves an ample margin over the 150ms cancellation without paying for it
+    /// twice. <c>IF NOT EXISTS</c> here because this script is deliberately run twice.
+    /// </para>
     /// </remarks>
     private static MigrationScript[] SlowThenCreatesProbe() =>
-        [new("001_slow", "SELECT pg_sleep(1); CREATE TABLE IF NOT EXISTS gate_probe (id INT)")];
-
-    private static MigrationScript[] FailsIfProbeExists() =>
-        [new("001_probe", "CREATE TABLE gate_probe (id INT)")];
+        [new("001_slow", "SELECT pg_sleep(0.4); CREATE TABLE IF NOT EXISTS gate_probe (id INT)")];
 
     [SkippableFact]
     public async Task TheMigrationsRunOnce_HoweverManyConnectionsAsk()
@@ -50,7 +57,7 @@ public sealed class PostgresSchemaGateTests
         await using var schema = await MigrationTestSchema.CreateAsync();
 
         var options = schema.OptionsFor("once");
-        var gate = new PostgresSchemaGate(options, Working(), NullLogger.Instance);
+        var gate = new PostgresSchemaGate(options, CreatesProbe(), NullLogger.Instance);
 
         for (var i = 0; i < 5; i++)
         {
@@ -161,7 +168,7 @@ public sealed class PostgresSchemaGateTests
 
         var clock = new FakeTimeProvider();
         var gate = new PostgresSchemaGate(
-            schema.OptionsFor("recover"), FailsIfProbeExists(), NullLogger.Instance, clock);
+            schema.OptionsFor("recover"), CreatesProbe(), NullLogger.Instance, clock);
         await using var connection = await schema.OpenAsync();
 
         // Make the working script fail for a reason outside itself.
@@ -203,7 +210,7 @@ public sealed class PostgresSchemaGateTests
         // is how the first version of this test managed to pass with the guard deleted. The failure
         // has to come back from Postgres for the caching decision to be exercised at all.
         await using (var slow = await schema.OpenAsync())
-        using (var cancelling = new CancellationTokenSource(TimeSpan.FromMilliseconds(250)))
+        using (var cancelling = new CancellationTokenSource(TimeSpan.FromMilliseconds(150)))
         {
             await Assert.ThrowsAnyAsync<Exception>(() => gate.EnsureAsync(slow, cancelling.Token));
         }

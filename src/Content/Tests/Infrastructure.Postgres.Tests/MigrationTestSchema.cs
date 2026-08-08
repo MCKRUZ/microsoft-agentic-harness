@@ -66,12 +66,6 @@ public sealed class MigrationTestSchema : IAsyncDisposable
     /// </remarks>
     private long AdvisoryLockKey { get; }
 
-    // Connection string, the environment override, what counts as an absent server, and the skip
-    // wording all come from PostgresAvailability, which Infrastructure.Observability.Tests' fixture
-    // also uses. Both suites had their own copy; that made the rule for when a Postgres suite may
-    // skip a thing stated twice, with nothing to notice the two drifting apart.
-    private static string ConnectionString => PostgresAvailability.ConnectionString;
-
     /// <summary>
     /// Creates an empty schema and returns a data source scoped to it, or skips the calling test when
     /// no Postgres is provisioned. Callers must be <c>[SkippableFact]</c>.
@@ -82,7 +76,7 @@ public sealed class MigrationTestSchema : IAsyncDisposable
         NpgsqlDataSource? probe = null;
         try
         {
-            probe = NpgsqlDataSource.Create(ConnectionString);
+            probe = NpgsqlDataSource.Create(PostgresAvailability.ConnectionString);
 
             await using (var ping = probe.CreateCommand("SELECT 1"))
                 await ping.ExecuteScalarAsync();
@@ -98,7 +92,7 @@ public sealed class MigrationTestSchema : IAsyncDisposable
             // each physical open landed in the throwaway schema and every command after it landed in
             // public. The tests still passed their early assertions and then failed on counts that had
             // collected every other test's rows, which is a good deal more confusing than an error.
-            var builder = new NpgsqlConnectionStringBuilder(ConnectionString) { SearchPath = schemaName };
+            var builder = new NpgsqlConnectionStringBuilder(PostgresAvailability.ConnectionString) { SearchPath = schemaName };
 
             return new MigrationTestSchema(NpgsqlDataSource.Create(builder.ConnectionString), schemaName);
         }

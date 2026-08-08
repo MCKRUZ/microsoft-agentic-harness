@@ -1,5 +1,4 @@
 using System.Text.Json;
-using Domain.AI.Observability.Models;
 using Tests.Common;
 using Xunit;
 
@@ -11,9 +10,9 @@ namespace Infrastructure.Observability.Tests.Schema;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <see cref="SessionStatusSchemaAgreementTests"/> binds the enum to the migration SQL, and
-/// <c>StatusBadge.tsx</c> is keyed by a union type so the compiler catches a missing case. The
-/// dashboards had neither, and it showed: <c>sessionDetail.json</c> was colouring
+/// <see cref="SessionStatusSchemaAgreementTests"/> binds the enum to the migration SQL and
+/// <see cref="SessionStatusFrontendAgreementTests"/> binds it to the dashboard's TypeScript union.
+/// The Grafana dashboards had neither, and it showed: <c>sessionDetail.json</c> was colouring
 /// <c>failed</c>, <c>running</c> and <c>timeout</c> — three values this system has never once
 /// written — while <c>active</c> and <c>error</c> had no mapping at all. The state an operator most
 /// needs to spot rendered as plain uncoloured text, and had done for at least two status changes.
@@ -38,28 +37,42 @@ public sealed class SessionStatusDashboardAgreementTests
     private static readonly string DashboardDirectory =
         RepoRoot.Combine("Dashboards", "Grafana Dashboards");
 
-    private static HashSet<string> WritableStatuses() =>
-        Enum.GetValues<SessionStatus>().Select(s => s.ToDbValue()).ToHashSet(StringComparer.Ordinal);
-
-    [Theory]
-    [InlineData("sessions.json")]
-    [InlineData("sessionDetail.json")]
-    public void EveryDashboardStatusMapping_CoversExactlyTheStatusesTheCodeCanWrite(string dashboard)
+    /// <summary>
+    /// Every session-status mapping in every dashboard uses exactly the statuses the code can write.
+    /// </summary>
+    /// <remarks>
+    /// Scans the whole dashboard directory rather than naming the two files that carry a mapping
+    /// today. Binding to filenames is the same coupling this class already refuses at the panel level
+    /// — the reader finds mappings by content precisely so rearranging a dashboard cannot turn it
+    /// into a no-op, and hardcoding which files to open would have reintroduced that one level up.
+    /// Seven dashboards exist; the day an eighth grows a session panel it is covered without anyone
+    /// remembering to add it here.
+    /// </remarks>
+    [Fact]
+    public void EveryDashboardStatusMapping_CoversExactlyTheStatusesTheCodeCanWrite()
     {
-        var mappings = ReadSessionStatusMappings(dashboard);
+        var dashboards = Directory.GetFiles(DashboardDirectory, "*.json");
+        Assert.NotEmpty(dashboards);
+
+        var mappings = dashboards.SelectMany(ReadSessionStatusMappings).ToArray();
+
+        // The reader's own guard, and the reason it names a floor rather than just "not empty": two
+        // dashboards carry a session-status mapping today, so if a change to their shape stopped the
+        // reader recognising them, this class would otherwise pass while checking nothing.
+        Assert.True(mappings.Length >= 2,
+            $"Expected at least two session-status mappings across {dashboards.Length} dashboards, " +
+            $"found {mappings.Length}. The reader is probably no longer recognising them.");
 
         // Set equality both ways, for the same reasons the schema agreement test gives. A missing
         // value renders uncoloured, which reads as "nothing notable here" for a status that may be
         // the most notable thing on the page. An extra value is dead configuration that looks
         // maintained — it is exactly how 'failed'/'running'/'timeout' survived being fictional.
-        Assert.NotEmpty(mappings);
-
         foreach (var (path, values) in mappings)
         {
             Assert.Equal(
-                WritableStatuses().OrderBy(v => v, StringComparer.Ordinal),
-                values.OrderBy(v => v, StringComparer.Ordinal));
-            Assert.True(values.Count > 0, path);
+                SessionStatusVocabulary.Writable,
+                SessionStatusVocabulary.Ordered(values).ToArray());
+            Assert.NotEmpty(path);
         }
     }
 
@@ -84,19 +97,8 @@ public sealed class SessionStatusDashboardAgreementTests
             .ToHashSet(StringComparer.Ordinal);
 
         Assert.Equal(
-            WritableStatuses().OrderBy(v => v, StringComparer.Ordinal),
-            offered.OrderBy(v => v, StringComparer.Ordinal));
-    }
-
-    /// <summary>
-    /// Guards the reader: if the dashboards are reshaped so no session-status mapping is recognised,
-    /// this class must fail rather than assert nothing across two green tests.
-    /// </summary>
-    [Fact]
-    public void BothDashboards_DeclareASessionStatusMapping()
-    {
-        Assert.NotEmpty(ReadSessionStatusMappings("sessions.json"));
-        Assert.NotEmpty(ReadSessionStatusMappings("sessionDetail.json"));
+            SessionStatusVocabulary.Writable,
+            SessionStatusVocabulary.Ordered(offered).ToArray());
     }
 
     /// <summary>
@@ -112,12 +114,21 @@ public sealed class SessionStatusDashboardAgreementTests
     /// and a looser rule would drag those mappings in and fail on correct configuration. The overlap
     /// is real — both vocabularies contain the word <c>timeout</c> at some point in their history —
     /// so the discriminator is the values unique to sessions, not the values they share.
+    /// <para>
+    /// It therefore stays a hand-written list rather than being derived from
+    /// <see cref="SessionStatusVocabulary.Writable"/>, which looks like a fifth copy and was raised as
+    /// one. Deriving it would break the discrimination the moment a session status shares a word with
+    /// the tool vocabulary — <c>timeout</c> is the obvious candidate — at which point this reader
+    /// would start dragging in tool-result mappings and failing on correct configuration. The floor
+    /// assertion above is what stops the list silently weakening instead.
+    /// </para>
     /// </remarks>
-    private static List<(string Path, HashSet<string> Values)> ReadSessionStatusMappings(string dashboard)
+    private static List<(string Path, HashSet<string> Values)> ReadSessionStatusMappings(string dashboardPath)
     {
         var discriminators = new[] { "active", "completed", "cancelled", "error" };
-        using var document = JsonDocument.Parse(File.ReadAllText(Path.Combine(DashboardDirectory, dashboard)));
+        using var document = JsonDocument.Parse(File.ReadAllText(dashboardPath));
 
+        var dashboard = Path.GetFileName(dashboardPath);
         var found = new List<(string, HashSet<string>)>();
         Walk(document.RootElement, "$");
         return found;

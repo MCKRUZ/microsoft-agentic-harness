@@ -56,8 +56,13 @@ public static class PostgresAvailability
     /// The caller has asserted Postgres is present, so a connectivity failure is a real defect and
     /// must surface rather than silently disabling a hundred tests. This is what keeps CI honest:
     /// CI always sets the variable, so CI can never skip its way to green.
+    /// <para>
+    /// Private on purpose. It is half of <see cref="ShouldSkip"/>, and a public half is an invitation
+    /// to re-derive the skip decision at a call site — which is the exact duplication this type was
+    /// extracted to end.
+    /// </para>
     /// </remarks>
-    public static bool IsExplicitlyConfigured =>
+    private static bool IsExplicitlyConfigured =>
         !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(ConnectionVariable));
 
     /// <summary>

@@ -161,6 +161,12 @@ public sealed class PostgresSchemaGate
             {
                 await _runner.ApplyAsync(connection, cancellationToken);
                 _ready = true;
+
+                // Releases the reference; it is NOT observable behaviour, and saying so matters
+                // because it reads like state management. Once _ready is set, both checks above
+                // short-circuit before the cooldown is ever consulted, so a stale cached failure is
+                // unreachable by construction — deleting this line fails no test, and a test claiming
+                // to cover it was removed rather than propped up.
                 _lastFailure = null;
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
@@ -194,5 +200,4 @@ public sealed class PostgresSchemaGate
             _gate.Release();
         }
     }
-
 }
