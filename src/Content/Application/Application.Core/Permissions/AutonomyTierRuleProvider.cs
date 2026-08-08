@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Permissions;
+using Application.Common.Helpers;
 using Domain.AI.Agents;
 using Domain.AI.Governance;
 using Domain.AI.Permissions;
@@ -61,10 +62,14 @@ public sealed class AutonomyTierRuleProvider : IPermissionRuleProvider
 
     private AutonomyLevel ResolveTier(string agentId, Domain.Common.Config.AI.Permissions.PermissionsConfig config)
     {
-        if (Enum.TryParse<SubagentType>(agentId, ignoreCase: true, out var subagentType))
+        // Name-only on both: agentId arrives from the caller and DefaultAutonomyLevel from config,
+        // and a bare Enum.TryParse accepts any integer string — so "2" would name a subagent type or
+        // an autonomy tier positionally, and an out-of-range number would produce a tier that is not
+        // a member at all. Either way this method returns a tier that no operator ever wrote.
+        if (EnumNameHelper.TryParseName<SubagentType>(agentId, out var subagentType))
             return _tierResolver.Resolve(subagentType);
 
-        if (Enum.TryParse<AutonomyLevel>(config.DefaultAutonomyLevel, ignoreCase: true, out var level))
+        if (EnumNameHelper.TryParseName<AutonomyLevel>(config.DefaultAutonomyLevel, out var level))
             return level;
 
         _logger.LogWarning(
@@ -83,7 +88,7 @@ public sealed class AutonomyTierRuleProvider : IPermissionRuleProvider
 
         var defaultBehaviorString = policy?.DefaultBehavior ?? config.DefaultBehavior;
 
-        if (!Enum.TryParse<PermissionBehaviorType>(defaultBehaviorString, ignoreCase: true, out var defaultBehavior))
+        if (!EnumNameHelper.TryParseName<PermissionBehaviorType>(defaultBehaviorString, out var defaultBehavior))
         {
             _logger.LogWarning(
                 "Invalid default behavior '{Behavior}' for tier '{Tier}', falling back to Ask",
@@ -102,7 +107,7 @@ public sealed class AutonomyTierRuleProvider : IPermissionRuleProvider
 
         foreach (var (toolName, behaviorString) in policy.ToolOverrides)
         {
-            if (!Enum.TryParse<PermissionBehaviorType>(behaviorString, ignoreCase: true, out var overrideBehavior))
+            if (!EnumNameHelper.TryParseName<PermissionBehaviorType>(behaviorString, out var overrideBehavior))
             {
                 _logger.LogWarning(
                     "Invalid tool override behavior '{Behavior}' for tool '{Tool}' in tier '{Tier}', skipping",

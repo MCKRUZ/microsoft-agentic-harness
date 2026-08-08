@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Reflection;
+using Application.Common.Helpers;
 using Domain.AI.Sandbox;
 using Domain.Common.Config.AI.Sandbox;
 using Microsoft.Extensions.Options;
@@ -62,8 +63,8 @@ public sealed class ToolPermissionProfileResolver
         var deniedCaps = ParseCapabilities(overrideConfig.DeniedCapabilities);
         var effectiveCapabilities = baseCapabilities & ~deniedCaps;
 
-        var overrideIsolation = Enum.TryParse<SandboxIsolationLevel>(
-            overrideConfig.MinimumIsolation, ignoreCase: true, out var parsed)
+        var overrideIsolation = EnumNameHelper.TryParseName<SandboxIsolationLevel>(
+            overrideConfig.MinimumIsolation, out var parsed)
             ? parsed
             : SandboxIsolationLevel.None;
         var effectiveIsolation = (SandboxIsolationLevel)Math.Max(
@@ -82,14 +83,24 @@ public sealed class ToolPermissionProfileResolver
 
     /// <summary>
     /// Parses capability names (e.g., "FileRead", "NetworkAccess") into a combined
-    /// <see cref="ToolCapability"/> flags value. Invalid names are silently ignored.
+    /// <see cref="ToolCapability"/> flags value. Invalid entries are silently ignored.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Each entry must name exactly one capability. Numeric forms and comma-composites are refused
+    /// rather than accepted: <c>Enum.TryParse&lt;ToolCapability&gt;("255", …)</c> succeeds and sets
+    /// every bit including undefined ones, which on the granting side
+    /// (<c>SandboxConfig.DefaultGrantedCapabilities</c>) hands a tool every capability the sandbox
+    /// model has. The combination is still expressible — as separate list entries, which is the
+    /// shape the config already uses.
+    /// </para>
+    /// </remarks>
     public static ToolCapability ParseCapabilities(IEnumerable<string> names)
     {
         var result = ToolCapability.None;
         foreach (var name in names)
         {
-            if (Enum.TryParse<ToolCapability>(name, ignoreCase: true, out var cap))
+            if (EnumNameHelper.TryParseName<ToolCapability>(name, out var cap))
                 result |= cap;
         }
         return result;

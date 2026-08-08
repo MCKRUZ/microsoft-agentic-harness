@@ -167,4 +167,57 @@ public sealed class ToolPermissionProfileResolverTests
 
         caps.Should().Be(ToolCapability.None);
     }
+
+    [Theory]
+    [InlineData("255")]                     // every bit, including undefined ones
+    [InlineData(" 255")]                    // and behind a stray space
+    [InlineData("4")]                       // the numeric form of NetworkAccess
+    [InlineData("FileRead,Subprocess")]     // a combination smuggled into one entry
+    public void ParseCapabilities_NonNameEntry_IsIgnored(string entry)
+    {
+        // #300. ToolCapability is a [Flags] enum, so a permissive parse is worse here than
+        // elsewhere: Enum.TryParse accepts "255" and sets every bit at once. On the granting side
+        // (SandboxConfig.DefaultGrantedCapabilities, read by ToolInvocationGovernor) that hands a
+        // tool every capability the sandbox model defines and makes the capability check unfailable.
+        // Combinations remain expressible as separate list entries, which is the shape the config
+        // and every test above already use.
+        var caps = ToolPermissionProfileResolver.ParseCapabilities(["FileRead", entry]);
+
+        caps.Should().Be(ToolCapability.FileRead);
+    }
+
+    [Fact]
+    public void ParseCapabilities_NumericEntry_WouldOtherwiseGrantEveryCapability()
+    {
+        // Proof the guard is load-bearing rather than decorative: the framework call this replaces
+        // accepts "255" and produces a value carrying every defined capability.
+        Enum.TryParse<ToolCapability>("255", ignoreCase: true, out var viaFramework).Should().BeTrue();
+        viaFramework.Should().HaveFlag(ToolCapability.Subprocess);
+        viaFramework.Should().HaveFlag(ToolCapability.NetworkAccess);
+
+        ToolPermissionProfileResolver.ParseCapabilities(["255"]).Should().Be(ToolCapability.None);
+    }
+
+    [Theory]
+    [InlineData("99")]
+    [InlineData("2")]                       // the numeric form of a real isolation level
+    [InlineData("None,Container")]
+    public void Resolve_NonNameMinimumIsolation_IsIgnoredAndTheAttributeFloorStands(string configured)
+    {
+        // The override may only elevate isolation, so an unparseable value must land on None and
+        // leave the tool's compile-time floor untouched — not on an isolation level that is not a
+        // member, which Math.Max would then treat as higher than Container.
+        _resolver.RegisterToolType("file_system", typeof(FileToolType));
+        _config = new SandboxConfig
+        {
+            ToolOverrides = new()
+            {
+                ["file_system"] = new ToolOverrideConfig { MinimumIsolation = configured }
+            }
+        };
+
+        var profile = _resolver.Resolve("file_system");
+
+        profile.MinimumIsolation.Should().Be(SandboxIsolationLevel.Process);
+    }
 }

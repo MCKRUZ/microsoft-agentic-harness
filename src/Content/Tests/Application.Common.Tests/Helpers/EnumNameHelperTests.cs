@@ -90,6 +90,33 @@ public class EnumNameHelperTests
     }
 
     [Theory]
+    [InlineData(" 2")]
+    [InlineData("2 ")]
+    [InlineData("\t2")]
+    [InlineData(" -1")]
+    public void TryParseName_NumericValuePaddedWithWhitespace_IsStillRejected(string value)
+    {
+        // Found by this test failing on its first run (#300). The leading-character guard inspects
+        // value[0], so a single leading space is not a digit and the guard waves the value through —
+        // and Enum.TryParse trims before parsing, so " 2" then parses as the numeric form of High.
+        // Configuration files carry stray whitespace routinely, so this is not a contrived input: it
+        // is the numeric-form hole the helper exists to close, reachable with one space.
+        EnumNameHelper.TryParseName<Severity>(value, out _).Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData(" Low")]
+    [InlineData("Low ")]
+    [InlineData("  Low  ")]
+    public void TryParseName_NamePaddedWithWhitespace_IsAccepted(string value)
+    {
+        // The whitespace rejection above must be about the numeric form, not about being fussy with
+        // hand-edited config. A padded member NAME still parses.
+        EnumNameHelper.TryParseName<Severity>(value, out var parsed).Should().BeTrue();
+        parsed.Should().Be(Severity.Low);
+    }
+
+    [Theory]
     [InlineData(null)]
     [InlineData("")]
     [InlineData("   ")]

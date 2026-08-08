@@ -103,6 +103,27 @@ public sealed class PluginPermissionRuleProviderTests : IDisposable
         rule.IsAuthoritativeBaseline.Should().BeTrue();
     }
 
+    [Theory]
+    [InlineData("2")]                       // the numeric form of Autonomous
+    [InlineData(" 2")]                      // and behind a stray space
+    [InlineData("99")]                      // outside the defined range
+    [InlineData("Restricted,Autonomous")]   // comma-composite, OR'd to Autonomous
+    public async Task GetRulesAsync_NonNamePluginAutonomyLevel_EmitsNoBaselineRule(string autonomyLevel)
+    {
+        // #300. The declaration is authored in a plugin manifest, outside this repo, and the tier it
+        // names is converted straight into a permission behaviour — where Autonomous means Allow. A
+        // bare Enum.TryParse accepts every value here and would grant a manifest full autonomy off a
+        // number. Skipping the rule is the documented behaviour for an invalid level; it only
+        // applies if the parse can reject.
+        var declaration = new PluginDeclaration { Name = "untrusted", AutonomyLevel = autonomyLevel };
+        _registryMock.Setup(r => r.GetLoadedPlugins()).Returns(new List<LoadedPlugin> { Loaded(declaration) });
+        GivenPluginSkillDeclaresTools("untrusted", "run_x");
+
+        var rules = await CreateProvider().GetRulesAsync("any-agent");
+
+        rules.Should().BeEmpty();
+    }
+
     [Fact]
     public async Task GetRulesAsync_AutonomousPlugin_EmitsAuthoritativeAllowRulesForDeclaredTools()
     {

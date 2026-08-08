@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces.Agents;
 using Application.AI.Common.Interfaces.Governance;
+using Application.Common.Helpers;
 using Domain.AI.Agents;
 using Domain.AI.Governance;
 using Domain.Common.Config;
@@ -74,7 +75,7 @@ public sealed class DefaultAutonomyTierResolver : IAutonomyTierResolver
     {
         var configValue = _options.CurrentValue.AI.Permissions.DefaultAutonomyLevel;
 
-        if (Enum.TryParse<AutonomyLevel>(configValue, ignoreCase: true, out var level))
+        if (EnumNameHelper.TryParseName<AutonomyLevel>(configValue, out var level))
             return level;
 
         _logger.LogWarning(

@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces.Changes;
+using Application.Common.Helpers;
 using Domain.AI.Changes;
 using Domain.Common.Config;
 using Microsoft.Extensions.Logging;
@@ -121,7 +122,11 @@ public sealed class PolicyGate : IChangeProposalGate
 
     private static PolicyFindingSeverity ParseThreshold(string raw)
     {
-        if (Enum.TryParse<PolicyFindingSeverity>(raw, ignoreCase: true, out var parsed))
+        // Name-only. This is the #296 defect shape verbatim: the threshold drives
+        // `f.Severity >= threshold`, so a numeric "99" parses cleanly, exceeds every real severity,
+        // and the gate keeps reporting "evaluated, N findings below threshold" while blocking
+        // nothing. Failing to a strict default is only meaningful if the parse can actually fail.
+        if (EnumNameHelper.TryParseName<PolicyFindingSeverity>(raw, out var parsed))
         {
             return parsed;
         }

@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces.Agents;
 using Application.AI.Common.Interfaces.Tools;
+using Application.Common.Helpers;
 using Domain.AI.Changes;
 using Domain.AI.Governance;
 using Domain.AI.Models;
@@ -160,8 +161,11 @@ public sealed class DelegateToSubagentTool : ITool
             .ToList();
     }
 
+    // Name-only: minimum_tier is a tool argument, so the model authors it. A numeric value would
+    // parse to a tier that is not a member and be passed to the supervisor as the delegation
+    // floor — where the fallback to DefaultMinimumTier is the behaviour actually wanted.
     private static AutonomyLevel ParseTier(string? raw)
-        => Enum.TryParse<AutonomyLevel>(raw, ignoreCase: true, out var tier)
+        => EnumNameHelper.TryParseName<AutonomyLevel>(raw, out var tier)
             ? tier
             : DefaultMinimumTier;
 }

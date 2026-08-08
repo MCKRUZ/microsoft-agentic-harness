@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces.Agent;
+using Application.Common.Helpers;
 using Domain.AI.A2A;
 using Domain.AI.Identity;
 
@@ -62,7 +63,12 @@ public sealed class A2AIdentityPropagator
         if (string.IsNullOrEmpty(authoritativeCallerId))
             throw new ArgumentException("Caller id is required.", nameof(authoritativeCallerId));
 
-        var kind = Enum.TryParse<AgentIdentityKind>(envelope.CallerKind, out var parsed)
+        // Name-only, and this one is load-bearing rather than tidy. CallerKind arrives on the wire
+        // from the caller, and EntraAgentIdentityValidator.CanInvoke denies any identity whose Kind
+        // is Unspecified. A bare Enum.TryParse accepts "99" and yields a Kind that is not a member —
+        // and crucially not Unspecified either, so the unresolved-identity deny stops firing on
+        // exactly the envelopes it exists to catch. An unrecognised kind must land on Unspecified.
+        var kind = EnumNameHelper.TryParseName<AgentIdentityKind>(envelope.CallerKind, out var parsed)
             ? parsed
             : AgentIdentityKind.Unspecified;
 

@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using Application.AI.Common.Interfaces.Governance;
+using Application.Common.Helpers;
 using Domain.AI.Bundles;
 using Domain.AI.Governance;
 using Domain.Common.Config;
@@ -170,10 +171,10 @@ public sealed class CapabilityEnvelopeResolver : ICapabilityEnvelopeResolver
         // Match only against the defined tier NAMES, case-insensitively. Enum.TryParse would also accept a
         // numeric string ("2") or a comma-composite ("Restricted,Autonomous" -> 2) — either of which would
         // silently WIDEN a config typo to full autonomy. An unrecognised value must degrade closed, so we
-        // reject anything that is not an exact tier name.
-        foreach (var name in Enum.GetNames<AutonomyLevel>())
-            if (string.Equals(name, value?.Trim(), StringComparison.OrdinalIgnoreCase))
-                return Enum.Parse<AutonomyLevel>(name);
+        // reject anything that is not an exact tier name. This was hand-rolled here before the shared
+        // helper existed; it now defers to EnumNameHelper so every governance parse enforces one rule.
+        if (EnumNameHelper.TryParseName<AutonomyLevel>(value, out var ceiling))
+            return ceiling;
 
         _logger.LogWarning(
             "Capability envelope: invalid AutonomyCeiling '{Ceiling}', falling back to the most restrictive tier (Restricted)",
