@@ -17,6 +17,14 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\Application\Application.AI.Common\Application.AI.Common.csproj" />
+    <ProjectReference Include="..\Infrastructure.Postgres\Infrastructure.Postgres.csproj" />
+  </ItemGroup>
+
+  <!-- Explicit LogicalName; see the note in Infrastructure.Observability.csproj. -->
+  <ItemGroup>
+    <EmbeddedResource Include="Migrations\*.sql">
+      <LogicalName>Migrations.%(Filename)%(Extension)</LogicalName>
+    </EmbeddedResource>
   </ItemGroup>
 
 </Project>

@@ -1,0 +1,44 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <RootNamespace>Infrastructure.Postgres.Tests</RootNamespace>
+    <NuGetPackagePruning>false</NuGetPackagePruning>
+    <Configurations>Debug;Release;Debug-AgentHub-All;Debug-AgentHub-WebUI;Debug-AgentHub-Dashboard</Configurations>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="Npgsql" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="Xunit.SkippableFact" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../Infrastructure/Infrastructure.Postgres/Infrastructure.Postgres.csproj" />
+    <!--
+      The observability assembly is referenced so the upgrade-path test can run the real shipped
+      migration set rather than a set written for the test. A test that invented its own scripts
+      would prove the runner works and prove nothing about whether this product's schema can
+      actually be delivered to an existing database, which is the claim #301 is about.
+    -->
+    <ProjectReference Include="../../Infrastructure/Infrastructure.Observability/Infrastructure.Observability.csproj" />
+  </ItemGroup>
+
+  <!--
+    Fixture scripts for the tests that need a deliberately malformed migration set. Each file name
+    carries its own resource prefix (e.g. "DuplicateOrdinal.001_first.sql"), so the logical name is
+    just the file name and a test can ask for one broken set without seeing the others.
+  -->
+  <ItemGroup>
+    <EmbeddedResource Include="Fixtures\*.sql">
+      <LogicalName>%(Filename)%(Extension)</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
+</Project>

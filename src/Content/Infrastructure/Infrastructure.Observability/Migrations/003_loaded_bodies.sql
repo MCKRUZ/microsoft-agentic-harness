@@ -7,9 +7,12 @@
 -- carries metadata + token counts only, keeping SignalR / HTTP wire payloads
 -- small.
 --
--- Loaded after 02-context-snapshots.sql via the alphabetical Docker entrypoint
--- order. For an existing observability database, apply manually:
---   psql -d observability -f 03-loaded-bodies.sql
+-- Applied by PostgresMigrationRunner after 002_context_snapshots.sql.
+--
+-- This and 004 both used to be numbered 03-, so their order was decided by the
+-- shell glob that fed them to the Docker entrypoint. They are independent — this
+-- one creates a new table, 004 alters tables from 001 — so the split is safe;
+-- the numbering exists so nobody has to establish that again.
 -- =============================================================================
 
 CREATE TABLE IF NOT EXISTS context_snapshot_loaded_bodies (
@@ -29,4 +32,4 @@ CREATE TABLE IF NOT EXISTS context_snapshot_loaded_bodies (
 CREATE INDEX IF NOT EXISTS idx_loaded_bodies_conv_turn
     ON context_snapshot_loaded_bodies (conversation_id, turn_index);
 
-GRANT SELECT ON context_snapshot_loaded_bodies TO grafana_reader;
+-- No GRANT here; see the note in 002_context_snapshots.sql.

@@ -48,7 +48,18 @@ services:
 
     volumes:
       - postgres-data:/var/lib/postgresql/data
-      - ./init-db:/docker-entrypoint-initdb.d:ro
+      # Cluster bootstrap only — the grafana_reader role and its default
+      # privileges. The observability SCHEMA is no longer delivered here.
+      #
+      # It used to be: ./init-db held the tables, and Postgres runs everything in
+      # this directory exactly once, when it initialises an empty data directory.
+      # That made a schema change undeliverable to any database that already held
+      # data — a consumer running the harness for a month could not receive one at
+      # all, and CI could not see the problem because it built a fresh database
+      # every run (#301). Tables, columns and constraints now come from the
+      # application's migration runner, which records what it has applied and can
+      # therefore bring an existing database forward.
+      - ./postgres-bootstrap:/docker-entrypoint-initdb.d:ro
 
     ports:
       - "127.0.0.1:5432:5432"

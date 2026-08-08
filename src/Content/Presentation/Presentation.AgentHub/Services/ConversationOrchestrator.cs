@@ -210,7 +210,29 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
 
         // This path is where the string "errored" came from; see SessionStatus for what the database
         // did with it and why the parameter is typed now.
-        var status = exception is null ? SessionStatus.Completed : SessionStatus.Error;
+        //
+        // A deliberate stop is separated out from the other exceptions rather than lumped in with
+        // them: a client that navigated away or a host shutting down is the single most common way a
+        // conversation ends and is not a failure, and `status` is what the sessions list and the
+        // Grafana $status filter show an operator. (An earlier version of this comment justified the
+        // change by claiming the dashboards compute an error rate from `status = 'error'`. They do
+        // not — the error-rate tiles are Prometheus counters over tool errors, and no panel in
+        // Dashboards/ filters on that literal. The change stands on its own; the invented cost did
+        // not, and repeating it five times across this file and its tests did not make it true.)
+        //
+        // On the token check: it is the same rule RunConversationCommandHandler applies, where it
+        // genuinely discriminates. Here it does not, and that is worth stating rather than implying
+        // otherwise — the only production caller is AgentTelemetryHub.OnDisconnectedAsync passing
+        // Context.ConnectionAborted, which SignalR has already cancelled before dispatching (see the
+        // note on the write below). So today this reduces to the type test. It is kept because the
+        // classification rule is "a stop that was asked for", not "an exception that looks like one",
+        // and because a caller that is not the hub would otherwise silently get the wrong answer.
+        var status = exception switch
+        {
+            null => SessionStatus.Completed,
+            OperationCanceledException when ct.IsCancellationRequested => SessionStatus.Cancelled,
+            _ => SessionStatus.Error,
+        };
 
         // The reason is a stable code, never the exception's own text, and fixing the status above is
         // exactly why that matters now: while the write was being rejected nothing reached the row, so
@@ -218,7 +240,7 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
         // strings, tokens, internal paths — into sessions.error_message, which is read back out and
         // served to clients on the session list. The full exception goes to the log, where it belongs.
         // Same rule, and the same stable-code shape, as RunConversationCommandHandler's error path.
-        if (exception is not null)
+        if (status == SessionStatus.Error)
         {
             _logger.LogError(
                 exception,
@@ -226,14 +248,47 @@ public sealed class ConversationOrchestrator : IConversationOrchestrator
                     + "recorded as errored",
                 info.ConversationId);
         }
+        else if (status is SessionStatus.Cancelled)
+        {
+            // A deliberate stop still gets a record, at a level that does not cry wolf. Routing the
+            // Error log through a status check alone would have made this branch log nothing at all
+            // and drop the exception on the floor — trading an over-reported failure for an
+            // unreported one, which is the worse of the two.
+            //
+            // Branching on `status` in both arms rather than on `exception is not null` here: the two
+            // are equivalent, since Cancelled is unreachable with a null exception, but only one of
+            // them makes that obvious without re-deriving it.
+            _logger.LogDebug(
+                exception,
+                "Connection for conversation {ConversationId} was cancelled; the session is recorded "
+                    + "as cancelled rather than errored",
+                info.ConversationId);
+        }
+
+        var reason = status switch
+        {
+            SessionStatus.Error => "connection.dropped_with_exception",
+            SessionStatus.Cancelled => "connection.cancelled",
+            _ => null,
+        };
 
         try
         {
+            // CancellationToken.None, deliberately, and this is load-bearing: `ct` here is
+            // Context.ConnectionAborted, and SignalR aborts the connection BEFORE it dispatches
+            // disconnect ("Ensure the connection is aborted before firing disconnect", in its own
+            // source). So `ct` is already cancelled every single time this method runs. Passing it
+            // to the write meant the UPDATE was refused before it was sent — and because the
+            // observability store catches every exception on a telemetry write, cancellation
+            // included, and logs a warning, nothing surfaced. Every ordinary disconnect left its row
+            // status='active' with no ended_at, for ever. Choosing the right status word above is
+            // worth nothing if the write that carries it cannot run: cleanup after a cancellation is
+            // not itself cancellable. Same rule as RunConversationCommandHandler.EndRunSessionAsync.
             await _observabilityStore.EndSessionAsync(
                 info.ObservabilitySessionId,
                 status,
-                exception is null ? null : "connection.dropped_with_exception",
-                ct);
+                reason,
+                CancellationToken.None);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

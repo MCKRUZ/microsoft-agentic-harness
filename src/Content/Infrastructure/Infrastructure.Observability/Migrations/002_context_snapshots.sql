@@ -1,8 +1,8 @@
 -- =============================================================================
 -- Foresight context snapshots — one row per turn per conversation.
--- Loaded after 01-schema.sql via the alphabetical Docker entrypoint order, so
--- the table is available in fresh deployments. For an existing observability
--- database, apply this file manually:  psql -d observability -f 02-context-snapshots.sql
+-- Applied by PostgresMigrationRunner after 001_baseline_schema.sql. The manual
+-- "apply this file yourself with psql" instruction this header used to carry is
+-- gone: that workaround is the thing the migration runner replaced.
 -- =============================================================================
 
 CREATE TABLE IF NOT EXISTS context_snapshots (
@@ -39,4 +39,7 @@ CREATE INDEX IF NOT EXISTS idx_context_snapshots_conv
 CREATE INDEX IF NOT EXISTS idx_context_snapshots_captured
     ON context_snapshots (captured_at DESC);
 
-GRANT SELECT ON context_snapshots TO grafana_reader;
+-- No GRANT here. Dashboards/postgres-bootstrap/ sets ALTER DEFAULT PRIVILEGES
+-- for grafana_reader, so every table a migration creates is readable already. A
+-- grant in a migration would also fail outright on a database where that role
+-- was never provisioned, taking the whole schema upgrade down with it.

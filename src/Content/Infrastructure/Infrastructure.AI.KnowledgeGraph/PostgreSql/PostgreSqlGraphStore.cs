@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text.Json;
 using Application.AI.Common.Interfaces.KnowledgeGraph;
+using Infrastructure.Postgres.Migrations;
 using Domain.AI.KnowledgeGraph.Models;
 using Domain.AI.KnowledgeGraph.Scoping;
 using Microsoft.Extensions.Logging;
@@ -32,40 +33,9 @@ public sealed class PostgreSqlGraphStore : IKnowledgeGraphStore
     private static readonly ActivitySource ActivitySource = new("Infrastructure.AI.KnowledgeGraph.PostgreSql");
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
 
-    private const string SchemaDdl = """
-        CREATE TABLE IF NOT EXISTS kg_nodes (
-            id          TEXT PRIMARY KEY,
-            name        TEXT NOT NULL,
-            type        TEXT NOT NULL,
-            properties  JSONB,
-            chunk_ids   TEXT[],
-            provenance  JSONB,
-            owner_id    TEXT,
-            tenant_id   TEXT,
-            created_at  TIMESTAMPTZ,
-            expires_at  TIMESTAMPTZ
-        );
-        CREATE TABLE IF NOT EXISTS kg_edges (
-            id              TEXT PRIMARY KEY,
-            source_node_id  TEXT NOT NULL,
-            target_node_id  TEXT NOT NULL,
-            predicate       TEXT NOT NULL,
-            properties      JSONB,
-            chunk_id        TEXT,
-            provenance      JSONB,
-            owner_id        TEXT,
-            tenant_id       TEXT,
-            created_at      TIMESTAMPTZ,
-            expires_at      TIMESTAMPTZ
-        );
-        CREATE INDEX IF NOT EXISTS idx_kg_nodes_owner ON kg_nodes (owner_id);
-        CREATE INDEX IF NOT EXISTS idx_kg_nodes_tenant ON kg_nodes (tenant_id);
-        """;
-
     private readonly string _connectionString;
     private readonly ILogger<PostgreSqlGraphStore> _logger;
-    private readonly SemaphoreSlim _schemaLock = new(1, 1);
-    private volatile bool _schemaReady;
+    private readonly PostgresSchemaGate _schema;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="PostgreSqlGraphStore"/> class.
@@ -83,6 +53,11 @@ public sealed class PostgreSqlGraphStore : IKnowledgeGraphStore
             ?? throw new InvalidOperationException(
                 "GraphRag.ConnectionString must be configured when using the 'postgresql' graph provider.");
         _logger = logger;
+
+        _schema = new PostgresSchemaGate(
+            KnowledgeGraphMigrations.Options,
+            KnowledgeGraphMigrations.Load(),
+            logger);
     }
 
     /// <inheritdoc />
@@ -447,44 +422,16 @@ public sealed class PostgreSqlGraphStore : IKnowledgeGraphStore
     {
         var conn = new NpgsqlConnection(_connectionString);
         await conn.OpenAsync(ct);
-        await EnsureSchemaAsync(conn, ct);
+        // Brings kg_nodes/kg_edges up to date on the first connection, then costs a bool read. This
+        // used to be a DDL string constant executed here, which could create the tables but never
+        // change them: a consumer whose database already held a graph kept the original shape for
+        // ever. The DDL is now 001_baseline_kg_schema.sql behind a versioned runner, so the next
+        // column can actually reach an existing installation. The advisory-lock and lazy-once
+        // behaviour is unchanged — it moved into PostgresSchemaGate, which the observability store
+        // shares. (There was a private one-line wrapper here holding this note. It read as a policy
+        // hook and was not one.)
+        await _schema.EnsureAsync(conn, ct);
         return conn;
-    }
-
-    /// <summary>
-    /// Creates the <c>kg_nodes</c>/<c>kg_edges</c> tables (with the full isolation/temporal column
-    /// set) if they do not already exist. Runs once per store instance — the backend is a singleton —
-    /// guarded so concurrent callers initialize the schema exactly once.
-    /// </summary>
-    private async Task EnsureSchemaAsync(NpgsqlConnection conn, CancellationToken ct)
-    {
-        if (_schemaReady) return;
-        await _schemaLock.WaitAsync(ct);
-        try
-        {
-            if (_schemaReady) return;
-
-            // Serialize DDL across processes/replicas: concurrent CREATE TABLE/INDEX IF NOT EXISTS
-            // on a fresh database can race and throw ("tuple concurrently updated" / duplicate
-            // object). A transaction-scoped advisory lock (auto-released on commit) makes first-use
-            // safe in a scaled-out deployment; the in-process semaphore + flag handle the common case.
-            await using var tx = await conn.BeginTransactionAsync(ct);
-            await using (var lockCmd = new NpgsqlCommand("SELECT pg_advisory_xact_lock(@key)", conn, tx))
-            {
-                lockCmd.Parameters.AddWithValue("key", 0x6B675F736368656DL); // "kg_schem"
-                await lockCmd.ExecuteNonQueryAsync(ct);
-            }
-            await using (var cmd = new NpgsqlCommand(SchemaDdl, conn, tx))
-            {
-                await cmd.ExecuteNonQueryAsync(ct);
-            }
-            await tx.CommitAsync(ct);
-            _schemaReady = true;
-        }
-        finally
-        {
-            _schemaLock.Release();
-        }
     }
 
     private static GraphNode ReadNode(NpgsqlDataReader reader) => ReadNodeAt(reader, 0);

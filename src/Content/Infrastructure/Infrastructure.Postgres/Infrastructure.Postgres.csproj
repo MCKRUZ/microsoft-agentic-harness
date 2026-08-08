@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>Infrastructure.Postgres</RootNamespace>
+    <Configurations>Debug;Release;Debug-AgentHub-All;Debug-AgentHub-WebUI;Debug-AgentHub-Dashboard</Configurations>
+  </PropertyGroup>
+
+  <!--
+    Deliberately narrow. This project is plumbing shared by every Postgres-backed store, so it
+    references Npgsql and logging and nothing else. Infrastructure.Common would have been the
+    obvious home, but it carries a FrameworkReference to Microsoft.AspNetCore.App: referencing it
+    would drag ASP.NET Core into Infrastructure.Observability and Infrastructure.AI.KnowledgeGraph,
+    both of which are currently framework-free and should stay that way.
+  -->
+  <ItemGroup>
+    <PackageReference Include="Npgsql" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+  </ItemGroup>
+
+</Project>

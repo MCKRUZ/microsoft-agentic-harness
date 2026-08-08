@@ -58,6 +58,11 @@ public sealed class SessionsControllerStatusFilterTests
     [InlineData("error")]
     [InlineData("Error")]
     [InlineData("ERROR")]
+    // 'cancelled' moved here from the rejected set when #301 gave it a state. The controller needed
+    // no change to accept it: the filter is parsed out of SessionStatus, so widening the enum widened
+    // the API. That is the design working, and it is why this case is worth keeping on both sides of
+    // the move rather than deleting — a regression to a hardcoded list would land right here.
+    [InlineData("cancelled")]
     public async Task GetSessions_StatusTheSchemaCanHold_Returns200(string status)
     {
         using var client = CreateObserverClient();
@@ -68,13 +73,17 @@ public sealed class SessionsControllerStatusFilterTests
     }
 
     /// <summary>
-    /// <c>errored</c> and <c>cancelled</c> are named explicitly rather than covered by a generic
-    /// "garbage" case: they are the two words #289's callers were actually writing, so a regression
-    /// that reinstated string passthrough would show up here by name.
+    /// <c>errored</c> is named explicitly rather than covered by a generic "garbage" case: it is one
+    /// of the two words #289's callers were actually writing, so a regression that reinstated string
+    /// passthrough would show up here by name.
     /// </summary>
+    /// <remarks>
+    /// Its companion, <c>cancelled</c>, has moved to the accepted set. It was rejected here only
+    /// because the schema had no word for it and the template could not deliver one to an existing
+    /// database; #301 fixed that, and this is the seam where the change becomes visible to a caller.
+    /// </remarks>
     [Theory]
     [InlineData("errored")]
-    [InlineData("cancelled")]
     [InlineData("nonsense")]
     [InlineData("1")]
     [InlineData("-1")]

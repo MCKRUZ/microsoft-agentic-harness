@@ -115,6 +115,50 @@ public class RunConversationCommandHandlerSolutionReviewFixTests
             Times.Once);
     }
 
+    /// <summary>
+    /// A model call that times out is a failure, not a cancellation, even though it arrives as the
+    /// same exception type.
+    /// </summary>
+    /// <remarks>
+    /// <c>TaskCanceledException</c> derives from <c>OperationCanceledException</c> and is what an
+    /// HTTP client throws when a request exceeds its timeout — with nobody having cancelled anything.
+    /// While the cancellation arm caught the base type unfiltered, a timed-out turn closed as
+    /// <c>Cancelled</c>: absent from the error rate, and silent, because only the general handler
+    /// logs. That traded an over-reported failure for an unreported one. The token, not the exception
+    /// type, is what says whether a stop was asked for.
+    /// </remarks>
+    [Fact]
+    public async Task Handle_TurnTimesOutRatherThanBeingCancelled_EndsSessionAsErrorNotCancelled()
+    {
+        _mediator
+            .Setup(m => m.Send(It.IsAny<ExecuteAgentTurnCommand>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new TaskCanceledException("The request was canceled due to the configured " +
+                                                  "HttpClient.Timeout of 100 seconds elapsing."));
+
+        var command = new RunConversationCommand
+        {
+            AgentName = "TestAgent",
+            UserMessages = ["hello"]
+        };
+
+        // No cancellation requested — this is the whole point of the case.
+        var act = () => _handler.Handle(command, CancellationToken.None);
+
+        await act.Should().ThrowAsync<TaskCanceledException>();
+
+        _observabilityStore.Verify(
+            s => s.EndSessionAsync(
+                SessionId, SessionStatus.Error, "conversation.unhandled_exception",
+                It.IsAny<CancellationToken>()),
+            Times.Once);
+
+        _observabilityStore.Verify(
+            s => s.EndSessionAsync(
+                It.IsAny<Guid>(), SessionStatus.Cancelled, It.IsAny<string?>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
     [Fact]
     public async Task Handle_Cancelled_EndsSessionWithAStatusTheSchemaAcceptsAndNamesTheCancellation()
     {
@@ -132,13 +176,17 @@ public class RunConversationCommandHandlerSolutionReviewFixTests
         // Act
         var act = () => _handler.Handle(command, new CancellationToken(canceled: true));
 
-        // Assert — this used to end the session with the literal "cancelled", which the sessions table
-        // does not accept; Postgres rejected the write, the store logged and swallowed it, and every
-        // cancelled run left its session open forever. The distinction survives in the reason instead.
+        // Assert — cancellation is its own terminal state again (#301). It has been three things:
+        // the raw literal "cancelled", which the sessions table rejected, so the store swallowed the
+        // write and the session stayed open forever; then Error, because no schema change could
+        // reach a database that already held data; and now Cancelled, delivered by the migration
+        // runner. Asserting the state and not just the reason is the point: the reason is a free-text
+        // column nothing filters on, while the status is the column the sessions list and the Grafana
+        // $status variable both read.
         await act.Should().ThrowAsync<OperationCanceledException>();
         _observabilityStore.Verify(
             s => s.EndSessionAsync(
-                SessionId, SessionStatus.Error, "conversation.cancelled", It.IsAny<CancellationToken>()),
+                SessionId, SessionStatus.Cancelled, "conversation.cancelled", It.IsAny<CancellationToken>()),
             Times.Once);
     }
 
@@ -164,7 +212,7 @@ public class RunConversationCommandHandlerSolutionReviewFixTests
         await act.Should().ThrowAsync<OperationCanceledException>();
         _observabilityStore.Verify(
             s => s.EndSessionAsync(
-                SessionId, SessionStatus.Error, It.IsAny<string?>(),
+                SessionId, SessionStatus.Cancelled, It.IsAny<string?>(),
                 It.Is<CancellationToken>(ct => !ct.IsCancellationRequested)),
             Times.Once);
     }

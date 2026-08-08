@@ -41,7 +41,6 @@
       "Edit(./**/Identity/**)",
       "Edit(./**/Security/**)",
       "Edit(./**/SecurityAttributes/**)",
-      "Edit(./**/Migrations/**)",
       "Edit(./infra/**)"
     ],
     "deny": [
