@@ -1,0 +1,39 @@
+<Project>
+
+  <!--
+    Embeds a project's Migrations\*.sql so PostgresMigrationRunner can read them from the built
+    assembly rather than from disk. Import this from any project that ships a migration set:
+
+      <Import Project="..\Infrastructure.Postgres\PostgresMigrations.props" />
+
+    It sits at the project root and not in a build\ folder, which is the usual home for shared MSBuild
+    files, because .gitignore excludes [Bb]uild\ — it was written there first and git silently refused
+    to track it, which would have left every other clone importing a file that does not exist. The
+    NuGet build\ convention buys nothing here anyway: this is consumed by ProjectReference and an
+    explicit Import, not by package restore.
+
+    LogicalName is set explicitly so the resource names are exactly "Migrations.<file>.sql".
+    MSBuild's default naming derives from the root namespace and the folder path and rewrites
+    characters it considers invalid, which would make the resource name something to be verified
+    rather than known. That matters more here than it usually would: a migration set that silently
+    resolves to empty reads as "the schema is already up to date". EmbeddedSqlMigrationSource throws
+    on an empty set for exactly that reason, so the failure is loud — but it is a runtime failure on
+    first connection, in whichever environment connects first, so it is worth not causing.
+
+    Owned here rather than copy-pasted into each store, which is how it started: two identical item
+    groups, and the paragraph above living in only one of them while the other pointed at it.
+
+    An explicit import, not an automatic rule in Directory.Build.props keyed on the presence of a
+    Migrations folder. Automatic would make it impossible to forget, which is the tempting part, but
+    it would also silently embed .sql from any project that happens to grow a folder of that name —
+    EF Core uses the same folder name by convention — and a project file that says nothing about
+    embedding resources while embedding them is harder to reason about than one line of import.
+  -->
+
+  <ItemGroup>
+    <EmbeddedResource Include="Migrations\*.sql">
+      <LogicalName>Migrations.%(Filename)%(Extension)</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
+</Project>
