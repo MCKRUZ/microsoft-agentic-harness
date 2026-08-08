@@ -506,8 +506,7 @@ public sealed class ToolInvocationGovernorTests
     [InlineData("255")]                     // every bit, including undefined ones
     [InlineData(" 255")]                    // and behind a stray space
     [InlineData("4")]                       // the numeric form of NetworkAccess
-    [InlineData("FileRead,Subprocess")]     // a combination smuggled into one entry
-    public async Task AuthorizeAsync_NonNameGrantedCapability_IsNotGrantedToTheEnforcer(string entry)
+    public async Task AuthorizeAsync_NumericGrantedCapability_IsNotGrantedToTheEnforcer(string entry)
     {
         // #300. DefaultGrantedCapabilities is a GRANT list on the live tool path, so a permissive
         // parse fails open. ToolCapability is [Flags], and Enum.TryParse accepts "255" and sets

@@ -83,25 +83,40 @@ public sealed class ToolPermissionProfileResolver
 
     /// <summary>
     /// Parses capability names (e.g., "FileRead", "NetworkAccess") into a combined
-    /// <see cref="ToolCapability"/> flags value. Invalid entries are silently ignored.
+    /// <see cref="ToolCapability"/> flags value. Unrecognised names are ignored.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Each entry must name exactly one capability. Numeric forms and comma-composites are refused
-    /// rather than accepted: <c>Enum.TryParse&lt;ToolCapability&gt;("255", …)</c> succeeds and sets
+    /// <strong>Names only — but a comma-separated entry is still a list of names.</strong> Numeric
+    /// forms are refused: <c>Enum.TryParse&lt;ToolCapability&gt;("255", …)</c> succeeds and sets
     /// every bit including undefined ones, which on the granting side
-    /// (<c>SandboxConfig.DefaultGrantedCapabilities</c>) hands a tool every capability the sandbox
-    /// model has. The combination is still expressible — as separate list entries, which is the
-    /// shape the config already uses.
+    /// (<c>SandboxConfig.DefaultGrantedCapabilities</c>, read by <c>ToolInvocationGovernor</c>) hands
+    /// a tool every capability the sandbox model has.
+    /// </para>
+    /// <para>
+    /// A comma inside one entry is split and each token parsed by name, rather than rejected. The
+    /// distinction matters because this method also feeds a <em>deny</em> list
+    /// (<c>ToolOverrideConfig.DeniedCapabilities</c>), where dropping an entry fails <em>open</em>:
+    /// the capability stays granted, and <c>DockerSandboxExecutor</c> reads those same bits to decide
+    /// container network access and whether the bind mount is read-only. Refusing
+    /// <c>"NetworkAccess,FileWrite"</c> outright would silently convert a working deny into a live
+    /// grant on upgrade. Splitting keeps every name the operator wrote meaningful while still
+    /// refusing the numeric form, which is the shape that actually loses information.
     /// </para>
     /// </remarks>
     public static ToolCapability ParseCapabilities(IEnumerable<string> names)
     {
         var result = ToolCapability.None;
-        foreach (var name in names)
+        foreach (var entry in names)
         {
-            if (EnumNameHelper.TryParseName<ToolCapability>(name, out var cap))
-                result |= cap;
+            if (string.IsNullOrWhiteSpace(entry))
+                continue;
+
+            foreach (var token in entry.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                if (EnumNameHelper.TryParseName<ToolCapability>(token, out var cap))
+                    result |= cap;
+            }
         }
         return result;
     }

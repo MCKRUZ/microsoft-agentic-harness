@@ -68,6 +68,14 @@ public sealed class A2AIdentityPropagator
         // is Unspecified. A bare Enum.TryParse accepts "99" and yields a Kind that is not a member —
         // and crucially not Unspecified either, so the unresolved-identity deny stops firing on
         // exactly the envelopes it exists to catch. An unrecognised kind must land on Unspecified.
+        //
+        // One deliberate WIDENING comes with this: the previous call omitted ignoreCase, so it was
+        // case-sensitive, and "managedidentity" landed on Unspecified and was denied. The shared
+        // reader is case-insensitive, so that envelope now resolves. Accepted on purpose — every
+        // other governance enum in the harness reads case-insensitively, and a value meaning
+        // different things in different readers is the divergence this sweep exists to remove. The
+        // exposure is bounded: Kind is defence in depth, and CanInvoke still authorizes against the
+        // authenticated caller id, never the envelope's.
         var kind = EnumNameHelper.TryParseName<AgentIdentityKind>(envelope.CallerKind, out var parsed)
             ? parsed
             : AgentIdentityKind.Unspecified;

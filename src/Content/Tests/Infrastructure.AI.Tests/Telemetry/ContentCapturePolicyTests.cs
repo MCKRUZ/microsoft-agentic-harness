@@ -135,6 +135,28 @@ public sealed class ContentCapturePolicyTests
         });
     }
 
+    [Theory]
+    [InlineData("2")]                   // the numeric form of a real category
+    [InlineData(" 2")]                  // and behind a stray space
+    [InlineData("99")]                  // outside the defined range
+    [InlineData("Email,Ssn")]           // comma-composite
+    public void Categories_SkipsNonNameEntry(string entry)
+    {
+        // #300. This list decides what is redacted before content leaves the domain, and the boot
+        // validator and this reader had drifted: ContentCaptureConfigValidator refused "2" while
+        // this accepted it. A numeric entry that parses here maps to no redactor, so content the
+        // operator asked to be redacted would be exported. Both sides now apply the same rule.
+        var capture = new ContentCaptureConfig
+        {
+            Enabled = true,
+            RedactionCategories = ["Email", entry],
+        };
+
+        var policy = Build(capture);
+
+        policy.Categories.Should().BeEquivalentTo(new[] { RedactionCategory.Email });
+    }
+
     [Fact]
     public void Categories_SkipsUnknownNameWithoutThrowing()
     {

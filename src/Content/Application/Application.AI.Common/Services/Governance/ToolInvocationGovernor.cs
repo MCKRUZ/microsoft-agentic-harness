@@ -3,6 +3,7 @@ using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Permissions;
 using Application.AI.Common.Interfaces.Sandbox;
 using Application.AI.Common.Interfaces.Tools;
+using Application.AI.Common.Services.Sandbox;
 using Application.Common.Helpers;
 using Domain.AI.Bundles;
 using Domain.AI.Changes;
@@ -277,14 +278,12 @@ public sealed partial class ToolInvocationGovernor : IToolInvocationGovernor
         }
 
         // Capability enforcement: the rule layer cleared the tool, now confirm the granted sandbox
-        // capabilities satisfy what the tool needs.
-        // Name-only. This is a GRANT list, so a permissive parse fails open: Enum.TryParse accepts
-        // "255" and sets every bit, handing the tool every capability the sandbox model defines and
-        // making the check below unfailable.
-        var grantedCapabilities = ToolCapability.None;
-        foreach (var name in _sandboxConfig.CurrentValue.DefaultGrantedCapabilities)
-            if (EnumNameHelper.TryParseName<ToolCapability>(name, out var cap))
-                grantedCapabilities |= cap;
+        // capabilities satisfy what the tool needs. Parsing goes through the shared reader rather
+        // than a local loop — this is a GRANT list, so the name-only rule it enforces is what stops
+        // a numeric entry setting every bit and making the check below unfailable, and two copies of
+        // that rule is exactly how one of them ends up not having it.
+        var grantedCapabilities = ToolPermissionProfileResolver.ParseCapabilities(
+            _sandboxConfig.CurrentValue.DefaultGrantedCapabilities);
 
         var capResult = await _capabilityEnforcer
             .EnforceAsync(toolName, grantedCapabilities, ct: cancellationToken)
@@ -392,8 +391,11 @@ public sealed partial class ToolInvocationGovernor : IToolInvocationGovernor
 
         // Name-only. A bare parse accepted "99" and ran the gate with a tier that is not a member —
         // and since the tier ordering is Restricted &lt; Supervised &lt; Autonomous, an out-of-range
-        // number reads as looser than the loosest real tier. AutonomyConfigValidator refuses the same
-        // value at boot under the same GradedAutonomy.Enabled condition, so the two agree.
+        // number reads as looser than the loosest real tier. AutonomyConfigValidator applies the same
+        // rule at boot, so the two agree on what a value means — but note this branch stays
+        // reachable: the validator runs once at StartAsync while this reads IOptionsMonitor, so an
+        // appsettings edit under reloadOnChange can invalidate the tier after boot. The branch below
+        // then skips the risk gate entirely, which is fail-open and pre-dates this change.
         if (!EnumNameHelper.TryParseName<AutonomyLevel>(permissions.DefaultAutonomyLevel, out var tier))
         {
             _logger.LogWarning(

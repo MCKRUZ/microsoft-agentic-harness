@@ -1,3 +1,4 @@
+using Application.Common.Helpers;
 using Domain.AI.Telemetry.Redaction;
 using Domain.Common.Config.Observability;
 using FluentValidation;
@@ -24,9 +25,6 @@ namespace Application.Core.Validation;
 /// </remarks>
 public sealed class LogsConfigValidator : AbstractValidator<LogsConfig>
 {
-    private static readonly HashSet<string> KnownCategories =
-        new(Enum.GetNames<RedactionCategory>(), StringComparer.OrdinalIgnoreCase);
-
     /// <summary>Initializes a new instance of the <see cref="LogsConfigValidator"/> class.</summary>
     public LogsConfigValidator()
     {
@@ -60,6 +58,11 @@ public sealed class LogsConfigValidator : AbstractValidator<LogsConfig>
         => !string.IsNullOrWhiteSpace(level)
             && Enum.TryParse<LogLevel>(level.Trim(), ignoreCase: true, out _);
 
+    // Shared name-only reader rather than a local set of Enum.GetNames. The summary above promises
+    // this validator mirrors LogRecordRedactionProcessor's parsing, and that promise was not being
+    // kept: the local set refused "2" while the runtime parse accepted it as a category. Both sides
+    // were moved onto this reader together — the runtime side is the one that decides what gets
+    // redacted before logs leave the process, so converting the validator alone would change nothing.
     private static bool BeKnownCategory(string category)
-        => !string.IsNullOrWhiteSpace(category) && KnownCategories.Contains(category.Trim());
+        => EnumNameHelper.TryParseName<RedactionCategory>(category, out _);
 }

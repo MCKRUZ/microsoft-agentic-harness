@@ -24,6 +24,8 @@
 
   <ItemGroup>
     <ProjectReference Include="../../Application/Application.Common/Application.Common.csproj" />
+    <!-- RepoRoot, for the source scan in GovernanceEnumParseChokepointTests. -->
+    <ProjectReference Include="../Tests.Common/Tests.Common.csproj" />
   </ItemGroup>
 
 </Project>

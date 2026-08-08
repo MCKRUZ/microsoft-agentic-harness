@@ -82,6 +82,29 @@ public class ContentCaptureConfigValidatorTests
         result.Errors.Should().Contain(e => e.PropertyName == "RedactionCategories");
     }
 
+    [Theory]
+    [InlineData("2")]                   // the numeric form of a real category
+    [InlineData(" 2")]                  // and behind a stray space
+    [InlineData("99")]                  // outside the defined range
+    [InlineData("Email,Ssn")]           // comma-composite
+    public async Task Validate_EnabledWithNonNameCategory_HasError(string entry)
+    {
+        // #300. This validator and ContentCapturePolicy now share one reader, so the boot check and
+        // the runtime read agree on what counts as a category. Both refuse these; before the sweep
+        // the validator refused them and the runtime accepted them, which meant a numeric entry
+        // passed silently wherever the validator was not wired.
+        var config = new ContentCaptureConfig
+        {
+            Enabled = true,
+            RedactionCategories = ["Email", entry],
+        };
+
+        var result = await _validator.ValidateAsync(config);
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName.StartsWith("RedactionCategories"));
+    }
+
     [Fact]
     public async Task Validate_EnabledWithUnknownCategory_HasError()
     {

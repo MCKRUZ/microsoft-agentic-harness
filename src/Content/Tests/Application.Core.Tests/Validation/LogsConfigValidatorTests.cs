@@ -102,6 +102,29 @@ public class LogsConfigValidatorTests
         result.Errors.Should().Contain(e => e.PropertyName == nameof(LogsConfig.RedactionCategories));
     }
 
+    [Theory]
+    [InlineData("2")]                   // the numeric form of a real category
+    [InlineData(" 2")]                  // and behind a stray space
+    [InlineData("99")]                  // outside the defined range
+    [InlineData("Email,Generic")]       // comma-composite
+    public async Task Validate_EnabledRedactionWithNonNameCategory_HasError(string entry)
+    {
+        // #300. This validator and LogRecordRedactionProcessor now share one reader, so the boot
+        // check and the runtime read agree. Before the sweep they did not: the validator refused
+        // these and the processor accepted them as categories.
+        var config = new LogsConfig
+        {
+            OtelExportEnabled = true,
+            RedactionEnabled = true,
+            RedactionCategories = ["Email", entry],
+        };
+
+        var result = await _validator.ValidateAsync(config);
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName.StartsWith(nameof(LogsConfig.RedactionCategories)));
+    }
+
     [Fact]
     public async Task Validate_EnabledRedactionWithUnknownCategory_HasError()
     {

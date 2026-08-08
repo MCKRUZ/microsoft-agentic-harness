@@ -170,6 +170,27 @@ public sealed class LogRecordRedactionProcessorTests
         capture.Records[0].Message.Should().Be($"token is {Redacted}");
     }
 
+    [Theory]
+    [InlineData("2")]                   // the numeric form of a real category
+    [InlineData(" 2")]                  // and behind a stray space
+    [InlineData("99")]                  // outside the defined range
+    [InlineData("Email,Generic")]       // comma-composite
+    public void OnEnd_NonNameCategory_IsIgnoredAndKnownOnesStillApply(string entry)
+    {
+        // #300. LogsConfigValidator and this processor had drifted: the validator refused "2" while
+        // this accepted it as a category. A numeric entry that parses here matches no redactor, so
+        // log content the operator asked to be redacted would be exported. Both now apply the same
+        // name-only rule, which is what makes the validator's "mirrors the runtime" claim true.
+        var config = EnabledConfig();
+        config.RedactionCategories = ["Email", entry];
+
+        var capture = RunPipeline(
+            CreateProcessor(config),
+            logger => logger.LogInformation("token is {Value}", Marker));
+
+        capture.Records[0].Message.Should().Be($"token is {Redacted}");
+    }
+
     [Fact]
     public void Constructor_NullFilter_Throws()
     {
