@@ -145,6 +145,15 @@ public sealed class PostgresSchemaGate
             // database again. The caller sees exactly what it would have seen; what it does not do is
             // make another round trip and take the cluster-wide advisory lock to be told the same
             // thing. The rethrown stack trace is the ORIGINAL attempt's, which is the useful one.
+            //
+            // Accepted, with eyes open: rethrowing restores dispatch state onto the one shared
+            // exception object, so a caller that was served a moment ago and is now formatting it for
+            // a log can see an interleaved stack trace. The alternative — wrapping a fresh exception
+            // per replay — was rejected because it changes the TYPE the caller sees between the first
+            // failure and the replays whenever the original was not a PostgresMigrationException, and
+            // a caller catching by type getting different answers for the same fault is a worse
+            // problem than an occasionally untidy log line during a five-second window on a system
+            // that is already broken.
             if (_lastFailure is not null && _time.GetElapsedTime(_failedAt) < FailureCooldown)
                 _lastFailure.Throw();
 
@@ -156,6 +165,25 @@ public sealed class PostgresSchemaGate
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
+                // Only a failure that belongs to the DATABASE is cached, and the filter on this catch
+                // is what ensures it. Caching one caller's cancellation would replay that client's
+                // disconnect to every other caller for the whole window — including callers whose
+                // connection is fine — turning a self-healing condition into five seconds of
+                // guaranteed failure, and in the observability store, whose writes are swallowed by
+                // design, five seconds of silently dropped telemetry.
+                //
+                // Review raised that the filter tests only the outermost type and would therefore
+                // miss a cancellation buried inside a driver exception. Measured against Npgsql
+                // rather than reasoned about: a command cancelled by its token throws
+                // OperationCanceledException on the OUTSIDE, wrapping PostgresException 57014. The
+                // outermost type is exactly the right thing to test, and the runner's filter excludes
+                // it too. A chain-walking guard was written for this, could not be made to fail under
+                // mutation, and was removed — an inert check that reads as protection is worse than
+                // none. ACancelledCaller_DoesNotPoisonTheCooldownForOthers pins the behaviour.
+                //
+                // Server-side faults that are NOT cancellations — a command timeout, a 57P01 admin
+                // shutdown — are cached, deliberately. They affect every caller equally, so bounded
+                // replay is exactly what this cooldown is for.
                 _lastFailure = ExceptionDispatchInfo.Capture(ex);
                 _failedAt = _time.GetTimestamp();
                 throw;
@@ -166,4 +194,5 @@ public sealed class PostgresSchemaGate
             _gate.Release();
         }
     }
+
 }

@@ -183,6 +183,21 @@ public sealed class MigrationTestSchema : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Migration options scoped to this throwaway schema.
+    /// </summary>
+    /// <param name="name">Distinguishes ledgers when one test needs more than one.</param>
+    /// <returns>Options whose ledger is local to this schema and whose lock key is unique to it.</returns>
+    /// <remarks>
+    /// Use this rather than a hardcoded key in a test class. Postgres advisory locks are cluster-wide,
+    /// not schema-scoped, so a fixed key serializes every test that uses it against every other —
+    /// invisible while one process runs a class sequentially, and a real queue the moment two
+    /// processes share a cluster, which is exactly the second-worktree arrangement this repo
+    /// recommends for running work in parallel.
+    /// </remarks>
+    public PostgresMigrationOptions OptionsFor(string name) =>
+        new($"{name}_migrations", AdvisoryLockKey);
+
     /// <summary>Runs a statement against this schema.</summary>
     /// <param name="sql">The statement to run.</param>
     public async Task ExecuteAsync(string sql)
