@@ -1,6 +1,7 @@
 using Application.AI.Common.CQRS.Changes.SubmitChangeProposal;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Interfaces.Workspace;
+using Application.Common.Helpers;
 using Domain.AI.Changes;
 using Domain.AI.Models;
 using Domain.AI.SkillTraining;
@@ -168,7 +169,12 @@ public sealed class WorkspaceWriteFileTool : ITool
         if (!parameters.TryGetValue("blast_radius", out var value) || value is not string s)
             return BlastRadius.Low;
 
-        return Enum.TryParse<BlastRadius>(s, ignoreCase: true, out var parsed)
+        // Name-only. blast_radius is supplied by the model and is the input the graded-autonomy
+        // policy keys its auto-approve decision on, so it is the single most consequential
+        // model-authored enum in the harness. A numeric value would parse to a radius with no row
+        // in the policy map, which resolves by falling through rather than by the rule the operator
+        // wrote for that radius.
+        return EnumNameHelper.TryParseName<BlastRadius>(s, out var parsed)
             ? parsed
             : BlastRadius.Low;
     }

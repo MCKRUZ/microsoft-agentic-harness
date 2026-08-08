@@ -167,4 +167,112 @@ public sealed class ToolPermissionProfileResolverTests
 
         caps.Should().Be(ToolCapability.None);
     }
+
+    [Theory]
+    [InlineData("255")]                     // every bit, including undefined ones
+    [InlineData(" 255")]                    // and behind a stray space
+    [InlineData("4")]                       // the numeric form of NetworkAccess
+    [InlineData("Bogus")]
+    public void ParseCapabilities_NumericOrUnknownEntry_IsIgnored(string entry)
+    {
+        // #300. ToolCapability is a [Flags] enum, so a permissive parse is worse here than
+        // elsewhere: Enum.TryParse accepts "255" and sets every bit at once. On the granting side
+        // (SandboxConfig.DefaultGrantedCapabilities, read by ToolInvocationGovernor) that hands a
+        // tool every capability the sandbox model defines and makes the capability check unfailable.
+        var caps = ToolPermissionProfileResolver.ParseCapabilities(["FileRead", entry]);
+
+        caps.Should().Be(ToolCapability.FileRead);
+    }
+
+    [Fact]
+    public void ParseCapabilities_CommaSeparatedNamesInOneEntry_AreAllHonoured()
+    {
+        // Deliberately NOT treated as a rejected composite, unlike every other enum in the #300
+        // sweep. This method also feeds ToolOverrideConfig.DeniedCapabilities, where dropping an
+        // entry fails OPEN — the capability stays granted, and DockerSandboxExecutor reads those
+        // same bits for container network access and read-only bind mounts. Refusing a comma entry
+        // would silently turn a working deny into a live grant on upgrade. Each token is still
+        // validated by name individually, so the numeric form gains nothing.
+        var caps = ToolPermissionProfileResolver.ParseCapabilities(["NetworkAccess, FileWrite"]);
+
+        caps.Should().Be(ToolCapability.NetworkAccess | ToolCapability.FileWrite);
+    }
+
+    [Fact]
+    public void Resolve_CommaSeparatedDeniedCapabilities_StillDeny()
+    {
+        // The regression this guards, stated where it actually bites: a deny that stops denying.
+        _resolver.RegisterToolType("full_tool", typeof(FullToolType));
+        _config = new SandboxConfig
+        {
+            ToolOverrides = new()
+            {
+                ["full_tool"] = new ToolOverrideConfig
+                {
+                    DeniedCapabilities = ["NetworkAccess,FileWrite"]
+                }
+            }
+        };
+
+        var profile = _resolver.Resolve("full_tool");
+
+        profile.RequiredCapabilities.Should().Be(ToolCapability.FileRead);
+        profile.RequiredCapabilities.Should().NotHaveFlag(ToolCapability.NetworkAccess);
+        profile.RequiredCapabilities.Should().NotHaveFlag(ToolCapability.FileWrite);
+    }
+
+    [Fact]
+    public void Resolve_NumericDeniedCapability_IsIgnoredAndDoesNotDenyEverything()
+    {
+        // The other half of the contract: a numeric deny entry is refused rather than expanded to
+        // every bit. "255" would otherwise strip all capabilities from the tool.
+        _resolver.RegisterToolType("full_tool", typeof(FullToolType));
+        _config = new SandboxConfig
+        {
+            ToolOverrides = new()
+            {
+                ["full_tool"] = new ToolOverrideConfig { DeniedCapabilities = ["255"] }
+            }
+        };
+
+        var profile = _resolver.Resolve("full_tool");
+
+        profile.RequiredCapabilities.Should().Be(
+            ToolCapability.FileRead | ToolCapability.FileWrite | ToolCapability.NetworkAccess);
+    }
+
+    [Fact]
+    public void ParseCapabilities_NumericEntry_WouldOtherwiseGrantEveryCapability()
+    {
+        // Proof the guard is load-bearing rather than decorative: the framework call this replaces
+        // accepts "255" and produces a value carrying every defined capability.
+        Enum.TryParse<ToolCapability>("255", ignoreCase: true, out var viaFramework).Should().BeTrue();
+        viaFramework.Should().HaveFlag(ToolCapability.Subprocess);
+        viaFramework.Should().HaveFlag(ToolCapability.NetworkAccess);
+
+        ToolPermissionProfileResolver.ParseCapabilities(["255"]).Should().Be(ToolCapability.None);
+    }
+
+    [Theory]
+    [InlineData("99")]
+    [InlineData("2")]                       // the numeric form of a real isolation level
+    [InlineData("None,Container")]
+    public void Resolve_NonNameMinimumIsolation_IsIgnoredAndTheAttributeFloorStands(string configured)
+    {
+        // The override may only elevate isolation, so an unparseable value must land on None and
+        // leave the tool's compile-time floor untouched — not on an isolation level that is not a
+        // member, which Math.Max would then treat as higher than Container.
+        _resolver.RegisterToolType("file_system", typeof(FileToolType));
+        _config = new SandboxConfig
+        {
+            ToolOverrides = new()
+            {
+                ["file_system"] = new ToolOverrideConfig { MinimumIsolation = configured }
+            }
+        };
+
+        var profile = _resolver.Resolve("file_system");
+
+        profile.MinimumIsolation.Should().Be(SandboxIsolationLevel.Process);
+    }
 }

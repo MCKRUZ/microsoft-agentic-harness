@@ -54,8 +54,10 @@ public static class EnumNameHelper
     /// A comma refuses a flag combination. <see cref="Enum.TryParse{TEnum}(string?, bool, out TEnum)"/>
     /// reads <c>"Low,High"</c> as a bitwise OR, and when that OR happens to land on a defined member
     /// it is indistinguishable from having named that member directly —
-    /// <see cref="Enum.IsDefined{TEnum}(TEnum)"/> cannot catch it. A <c>[Flags]</c> enum would need a
-    /// different helper; none is parsed this way, and none should silently become parseable here.
+    /// <see cref="Enum.IsDefined{TEnum}(TEnum)"/> cannot catch it. A <c>[Flags]</c> enum may still be
+    /// parsed here <em>one member at a time</em> (as <c>ToolCapability</c> is, from a list of names);
+    /// what this refuses is a combination smuggled into a single value, which is where the
+    /// indistinguishability bites.
     /// </description>
     /// </item>
     /// <item>
@@ -73,12 +75,18 @@ public static class EnumNameHelper
         if (string.IsNullOrWhiteSpace(value))
             return false;
 
-        if (char.IsAsciiDigit(value[0]) || value[0] is '-' or '+')
+        // Trim before the guards, not after. Enum.TryParse trims its own input, so an untrimmed
+        // guard inspects a different first character than the parser does: " 2" begins with a space,
+        // clears the digit check, and then parses as the numeric form of the member with value 2.
+        // One stray space in a config file was enough to reopen the hole this helper closes.
+        var candidate = value.Trim();
+
+        if (char.IsAsciiDigit(candidate[0]) || candidate[0] is '-' or '+')
             return false;
 
-        if (value.Contains(',', StringComparison.Ordinal))
+        if (candidate.Contains(',', StringComparison.Ordinal))
             return false;
 
-        return Enum.TryParse(value, ignoreCase: true, out parsed) && Enum.IsDefined(parsed);
+        return Enum.TryParse(candidate, ignoreCase: true, out parsed) && Enum.IsDefined(parsed);
     }
 }

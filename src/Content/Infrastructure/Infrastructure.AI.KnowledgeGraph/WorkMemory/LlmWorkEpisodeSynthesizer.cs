@@ -7,6 +7,7 @@ using Application.AI.Common.Interfaces.WorkMemory;
 using Application.AI.Common.Json;
 using Application.AI.Common.Prompts.Exceptions;
 using Application.AI.Common.Prompts.Interfaces;
+using Application.Common.Helpers;
 using Domain.AI.Learnings;
 using Domain.AI.Prompts;
 using Domain.AI.WorkMemory;
@@ -167,7 +168,9 @@ public sealed class LlmWorkEpisodeSynthesizer : IWorkEpisodeSynthesizer
         {
             if (string.IsNullOrWhiteSpace(raw.Content))
                 continue;
-            if (!Enum.TryParse<LearningCategory>(raw.Category, ignoreCase: true, out var category))
+            // Name-only: the category comes from the model. A numeric one would be persisted as a
+            // LearningCategory that no query filters on and no reader can display.
+            if (!EnumNameHelper.TryParseName<LearningCategory>(raw.Category, out var category))
                 continue;
 
             lessons.Add(new SynthesizedLesson

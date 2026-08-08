@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces.Agent;
+using Application.Common.Helpers;
 using Domain.AI.A2A;
 using Domain.AI.Identity;
 
@@ -62,7 +63,24 @@ public sealed class A2AIdentityPropagator
         if (string.IsNullOrEmpty(authoritativeCallerId))
             throw new ArgumentException("Caller id is required.", nameof(authoritativeCallerId));
 
-        var kind = Enum.TryParse<AgentIdentityKind>(envelope.CallerKind, out var parsed)
+        // Name-only. CallerKind arrives on the wire from the caller, so it is untrusted input, and an
+        // unrecognised kind must land on Unspecified — the value every reader treats as "identity not
+        // established". A bare Enum.TryParse accepts "99" and yields a Kind that is not a member and,
+        // decisively, not Unspecified either: it looks resolved to anything testing for Unspecified.
+        //
+        // On the intended consumer this would matter: EntraAgentIdentityValidator.CanInvoke denies on
+        // exactly that condition. Measured 8 Aug 2026 — CanInvoke has NO production caller.
+        // IAgentIdentityValidator is registered in DI and injected nowhere, so the tool-authorization
+        // control is currently inert. Do not read the paragraph above as "a live gate was bypassed";
+        // read it as the contract this field must honour for the day that control is wired up.
+        //
+        // One deliberate WIDENING comes with the switch: the previous call omitted ignoreCase, so it
+        // was case-sensitive and "managedidentity" landed on Unspecified. The shared reader is
+        // case-insensitive, so that envelope now resolves. Accepted on purpose — every other
+        // governance enum reads case-insensitively, and a value meaning different things to different
+        // readers is the divergence this sweep exists to remove. Note the Id is never taken from the
+        // envelope: it is the caller id the auth provider already confirmed.
+        var kind = EnumNameHelper.TryParseName<AgentIdentityKind>(envelope.CallerKind, out var parsed)
             ? parsed
             : AgentIdentityKind.Unspecified;
 

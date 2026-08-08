@@ -4,6 +4,7 @@ using Application.AI.Common.Interfaces.RAG;
 using Application.AI.Common.Interfaces.Routing;
 using Application.AI.Common.Prompts.Exceptions;
 using Application.AI.Common.Prompts.Interfaces;
+using Application.Common.Helpers;
 using Domain.AI.Prompts;
 using Domain.AI.RAG.Enums;
 using Domain.AI.RAG.Models;
@@ -175,7 +176,10 @@ public sealed class LlmQueryClassifier : IQueryClassifier
             return CreateFallback("JSON parse failure");
         }
 
-        if (!Enum.TryParse<QueryType>(dto.Type, ignoreCase: true, out var queryType))
+        // Name-only: dto.Type is whatever the model emitted. A numeric answer would parse to a
+        // QueryType that is not a member, then miss every entry in DefaultStrategyMap and silently
+        // take the map's fallback strategy instead of the logged SimpleLookup default below.
+        if (!EnumNameHelper.TryParseName<QueryType>(dto.Type, out var queryType))
         {
             _logger.LogWarning("Unknown query type '{Type}' in classification response; defaulting to SimpleLookup", dto.Type);
             queryType = QueryType.SimpleLookup;

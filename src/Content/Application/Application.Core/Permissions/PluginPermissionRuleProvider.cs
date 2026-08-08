@@ -2,6 +2,7 @@ using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Permissions;
 using Application.AI.Common.Interfaces.Plugins;
 using Application.AI.Common.Interfaces.Tools;
+using Application.Common.Helpers;
 using Domain.AI.Governance;
 using Domain.AI.Permissions;
 using Domain.AI.Skills;
@@ -117,7 +118,10 @@ public sealed class PluginPermissionRuleProvider : IPermissionRuleProvider
             if (string.IsNullOrEmpty(plugin.Declaration.AutonomyLevel))
                 continue;
 
-            if (!Enum.TryParse<AutonomyLevel>(plugin.Declaration.AutonomyLevel, ignoreCase: true, out var autonomyLevel))
+            // Name-only: the declaration is authored in a plugin manifest, outside this repo. A
+            // numeric AutonomyLevel would map straight into the tier-to-behavior conversion below
+            // and set the plugin's baseline to a tier nobody declared.
+            if (!EnumNameHelper.TryParseName<AutonomyLevel>(plugin.Declaration.AutonomyLevel, out var autonomyLevel))
             {
                 _logger.LogWarning(
                     "Plugin {Name}: invalid AutonomyLevel '{Level}', skipping baseline governance rule",

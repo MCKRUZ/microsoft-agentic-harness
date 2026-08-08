@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces.Changes;
+using Application.Common.Helpers;
 using Domain.AI.Changes;
 using Domain.Common;
 using Domain.Common.Config;
@@ -153,6 +154,11 @@ internal static class ChangeProposalCommandHelper
     /// <c>ChangeProposalBackgroundService.ParseMode</c>, so a human decision and the
     /// orchestrator-driven transitions around it record the same mode.
     /// </summary>
+    // Name-only. This is the highest-consequence parse in the harness: MergeGate short-circuits on
+    // `context.Mode == Shadow`, so ANY value that is not exactly Shadow performs a real apply. A bare
+    // Enum.TryParse accepted "99" and "Shadow,Enforce", neither of which equals Shadow — turning a
+    // dry run into production writes off a config typo, while the documented fallback for an
+    // unparseable value is Shadow precisely to prevent that.
     private static OrchestratorMode ParseMode(string raw) =>
-        Enum.TryParse<OrchestratorMode>(raw, ignoreCase: true, out var mode) ? mode : OrchestratorMode.Shadow;
+        EnumNameHelper.TryParseName<OrchestratorMode>(raw, out var mode) ? mode : OrchestratorMode.Shadow;
 }

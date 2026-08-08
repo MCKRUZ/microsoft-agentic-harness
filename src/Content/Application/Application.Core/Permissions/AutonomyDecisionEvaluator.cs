@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces.Governance;
+using Application.Common.Helpers;
 using Domain.AI.Changes;
 using Domain.AI.Governance;
 using Domain.AI.Permissions;
@@ -143,7 +144,7 @@ public sealed class AutonomyDecisionEvaluator : IAutonomyDecisionEvaluator
             return (baseline, $"using baseline tier {baseline}.");
         }
 
-        if (!Enum.TryParse<AutonomyLevel>(skillConfig.Tier, ignoreCase: true, out var skillTier))
+        if (!EnumNameHelper.TryParseName<AutonomyLevel>(skillConfig.Tier, out var skillTier))
         {
             _logger.LogWarning(
                 "Invalid PerSkill.Tier '{Tier}' for skill '{Skill}' — ignoring per-skill tier override.",
@@ -226,7 +227,11 @@ public sealed class AutonomyDecisionEvaluator : IAutonomyDecisionEvaluator
     {
         rule = default!;
 
-        if (!Enum.TryParse<BlastRadius>(radiusName, ignoreCase: true, out var radius))
+        // Name-only, and deliberately identical to what AutonomyConfigValidator accepts at boot. A
+        // numeric row key is the dangerous shape here: "5" is not a BlastRadius, so the row lands in
+        // the policy map under a radius nothing can ever match. The operator sees a rule declaring
+        // Critical as Forbidden; the runtime evaluates as though they had written nothing at all.
+        if (!EnumNameHelper.TryParseName<BlastRadius>(radiusName, out var radius))
         {
             _logger.LogWarning(
                 "Invalid BlastRadius name '{Radius}' in {Source} — skipping row.",
@@ -234,7 +239,7 @@ public sealed class AutonomyDecisionEvaluator : IAutonomyDecisionEvaluator
             return false;
         }
 
-        if (!Enum.TryParse<AutonomyDecision>(ruleConfig.Decision, ignoreCase: true, out var decision))
+        if (!EnumNameHelper.TryParseName<AutonomyDecision>(ruleConfig.Decision, out var decision))
         {
             _logger.LogWarning(
                 "Invalid AutonomyDecision '{Decision}' in {Source}[{Radius}] — defaulting to RequiresApproval.",

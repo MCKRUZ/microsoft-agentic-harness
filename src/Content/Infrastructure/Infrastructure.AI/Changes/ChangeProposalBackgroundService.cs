@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces.Changes;
+using Application.Common.Helpers;
 using Domain.AI.Changes;
 using Domain.Common.Config;
 using Microsoft.Extensions.DependencyInjection;
@@ -104,6 +105,9 @@ public sealed class ChangeProposalBackgroundService : BackgroundService
         }
     }
 
+    // Name-only, matching ChangeProposalCommandHelper.ParseMode exactly — see the reasoning there.
+    // MergeGate short-circuits on `Mode == Shadow`, so anything that is not exactly Shadow performs a
+    // real apply; the Shadow fallback only protects against a typo if the parse can reject one.
     private static OrchestratorMode ParseMode(string raw) =>
-        Enum.TryParse<OrchestratorMode>(raw, ignoreCase: true, out var mode) ? mode : OrchestratorMode.Shadow;
+        EnumNameHelper.TryParseName<OrchestratorMode>(raw, out var mode) ? mode : OrchestratorMode.Shadow;
 }

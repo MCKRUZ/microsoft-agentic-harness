@@ -164,6 +164,30 @@ public class LlmWorkEpisodeSynthesizerTests
         result[0].Category.Should().Be(LearningCategory.DomainKnowledge);
     }
 
+    [Theory]
+    [InlineData("99")]                                  // outside the defined range
+    [InlineData(" 99")]                                 // and behind a stray space
+    [InlineData("1")]                                   // the numeric form of a real member
+    [InlineData("DomainKnowledge,ToolUsagePattern")]    // comma-composite
+    public async Task SynthesizeAsync_NonNameCategory_SkipsLesson(string category)
+    {
+        // #300. The category comes from the model. SynthesizeAsync_UnknownCategory_SkipsLesson above
+        // proves an unparseable name is dropped; a bare Enum.TryParse accepted every value here
+        // instead, persisting a lesson under a LearningCategory that no query filters on and no
+        // reader can display.
+        SetupLlmResponse($$"""
+            [
+              {"content": "good lesson", "category": "DomainKnowledge", "confidence": 0.9},
+              {"content": "miscategorized", "category": "{{category}}", "confidence": 0.9}
+            ]
+            """);
+
+        var result = await _sut.SynthesizeAsync([Episode()], CancellationToken.None);
+
+        result.Should().ContainSingle();
+        result[0].Category.Should().Be(LearningCategory.DomainKnowledge);
+    }
+
     [Fact]
     public async Task SynthesizeAsync_BlankContent_SkipsLesson()
     {

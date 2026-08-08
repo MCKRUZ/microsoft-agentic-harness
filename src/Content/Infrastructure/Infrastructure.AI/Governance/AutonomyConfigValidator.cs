@@ -1,3 +1,4 @@
+using Application.Common.Helpers;
 using Domain.AI.Changes;
 using Domain.AI.Governance;
 using Domain.Common.Config;
@@ -128,7 +129,11 @@ public sealed class AutonomyConfigValidator : IHostedService
         // tier would silently disable the gate. Fail fast at boot instead — but only when graded
         // autonomy is enabled (this validator returns early otherwise), so a typo cannot quietly
         // weaken governance.
-        if (!Enum.TryParse<AutonomyLevel>(permissions.DefaultAutonomyLevel, ignoreCase: true, out _))
+        // Name-only, matching every runtime reader of this setting (ToolInvocationGovernor's risk
+        // gate, AutonomyTierRuleProvider, DefaultAutonomyTierResolver). Boot and runtime accepting
+        // different vocabularies is the #296 defect; this validator is the reason the numeric form
+        // now costs a failed startup instead of a silently disabled gate.
+        if (!EnumNameHelper.TryParseName<AutonomyLevel>(permissions.DefaultAutonomyLevel, out _))
         {
             errors.Add(
                 $"DefaultAutonomyLevel '{permissions.DefaultAutonomyLevel}' is not a valid AutonomyLevel. " +
@@ -145,7 +150,7 @@ public sealed class AutonomyConfigValidator : IHostedService
         {
             foreach (var (radiusName, ruleConfig) in envConfig.PerBlastRadius)
             {
-                if (!Enum.TryParse<BlastRadius>(radiusName, ignoreCase: true, out var radius))
+                if (!EnumNameHelper.TryParseName<BlastRadius>(radiusName, out var radius))
                 {
                     errors.Add(
                         $"PerEnvironment[{envName}] declares unknown BlastRadius '{radiusName}'. " +
@@ -153,7 +158,7 @@ public sealed class AutonomyConfigValidator : IHostedService
                     continue;
                 }
 
-                if (!Enum.TryParse<AutonomyDecision>(ruleConfig.Decision, ignoreCase: true, out var decision))
+                if (!EnumNameHelper.TryParseName<AutonomyDecision>(ruleConfig.Decision, out var decision))
                 {
                     errors.Add(
                         $"PerEnvironment[{envName}][{radiusName}] declares unknown Decision '{ruleConfig.Decision}'. " +
@@ -187,7 +192,7 @@ public sealed class AutonomyConfigValidator : IHostedService
         PermissionsConfig permissions,
         List<string> errors)
     {
-        if (!Enum.TryParse<AutonomyLevel>(permissions.DefaultAutonomyLevel, ignoreCase: true, out var baseline))
+        if (!EnumNameHelper.TryParseName<AutonomyLevel>(permissions.DefaultAutonomyLevel, out var baseline))
         {
             baseline = AutonomyLevel.Supervised;
         }
@@ -196,7 +201,7 @@ public sealed class AutonomyConfigValidator : IHostedService
         {
             if (skillConfig.Tier is not null)
             {
-                if (!Enum.TryParse<AutonomyLevel>(skillConfig.Tier, ignoreCase: true, out var skillTier))
+                if (!EnumNameHelper.TryParseName<AutonomyLevel>(skillConfig.Tier, out var skillTier))
                 {
                     errors.Add(
                         $"PerSkill[{skillKey}].Tier '{skillConfig.Tier}' is not a valid AutonomyLevel. " +
@@ -213,7 +218,7 @@ public sealed class AutonomyConfigValidator : IHostedService
 
             foreach (var (radiusName, ruleConfig) in skillConfig.PerBlastRadius)
             {
-                if (!Enum.TryParse<BlastRadius>(radiusName, ignoreCase: true, out var radius))
+                if (!EnumNameHelper.TryParseName<BlastRadius>(radiusName, out var radius))
                 {
                     errors.Add(
                         $"PerSkill[{skillKey}] declares unknown BlastRadius '{radiusName}'. " +
@@ -221,7 +226,7 @@ public sealed class AutonomyConfigValidator : IHostedService
                     continue;
                 }
 
-                if (!Enum.TryParse<AutonomyDecision>(ruleConfig.Decision, ignoreCase: true, out var decision))
+                if (!EnumNameHelper.TryParseName<AutonomyDecision>(ruleConfig.Decision, out var decision))
                 {
                     errors.Add(
                         $"PerSkill[{skillKey}][{radiusName}] declares unknown Decision '{ruleConfig.Decision}'.");

@@ -85,6 +85,32 @@ public class DelegateToSubagentToolTests
         capturedTier.Should().Be(AutonomyLevel.Supervised);
     }
 
+    [Theory]
+    [InlineData("2")]                       // the numeric form of Autonomous
+    [InlineData(" 2")]                      // and behind a stray space
+    [InlineData("99")]                      // outside the defined range
+    [InlineData("Restricted,Autonomous")]   // comma-composite, OR'd to Autonomous
+    public async Task ExecuteAsync_NonNameTier_DefaultsToSupervised(string tier)
+    {
+        // #300. minimum_tier is a tool argument, so the model authors it, and it becomes the
+        // delegation floor handed to the supervisor. A bare Enum.TryParse accepts every value here —
+        // "2" would let the model name the loosest tier positionally, and "99" would hand the
+        // supervisor a floor that is not a member at all. The existing "nonsense" test above proves
+        // the fallback exists; these prove it is reachable for the inputs that actually parse.
+        AutonomyLevel capturedTier = default;
+        _supervisor
+            .Setup(s => s.DelegateAsync(
+                It.IsAny<string>(), It.IsAny<IReadOnlyList<string>>(), It.IsAny<AutonomyLevel>(),
+                It.IsAny<int>(), It.IsAny<IReadOnlyList<string>?>(), It.IsAny<CancellationToken>()))
+            .Callback<string, IReadOnlyList<string>, AutonomyLevel, int, IReadOnlyList<string>?, CancellationToken>(
+                (_, _, t, _, _, _) => capturedTier = t)
+            .ReturnsAsync(DelegationResult.Success("ok", 1, 1));
+
+        await BuildTool().ExecuteAsync("delegate", Params(("task", "do it"), ("minimum_tier", tier)));
+
+        capturedTier.Should().Be(AutonomyLevel.Supervised);
+    }
+
     [Fact]
     public async Task ExecuteAsync_DelegationFails_SurfacesFailureReason()
     {

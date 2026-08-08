@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces.Telemetry;
+using Application.Common.Helpers;
 using Domain.AI.Telemetry.Redaction;
 using Domain.Common.Config;
 using Microsoft.Extensions.Logging;
@@ -53,7 +54,11 @@ public sealed class ContentCapturePolicy : IContentCapturePolicy
             var result = new List<RedactionCategory>(capture.RedactionCategories.Count);
             foreach (var name in capture.RedactionCategories)
             {
-                if (Enum.TryParse<RedactionCategory>(name, ignoreCase: true, out var category))
+                // Name-only, matching ContentCaptureConfigValidator exactly. This list decides what
+                // gets redacted before content leaves the domain, and the two sides disagreed: the
+                // validator refused "2" while this accepted it as a category, so a value could pass
+                // boot validation's intent and mean something else here.
+                if (EnumNameHelper.TryParseName<RedactionCategory>(name, out var category))
                 {
                     result.Add(category);
                 }

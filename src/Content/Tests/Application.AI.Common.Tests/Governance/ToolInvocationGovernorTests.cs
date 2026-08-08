@@ -501,4 +501,60 @@ public sealed class ToolInvocationGovernorTests
         Assert.False(record.ApprovalGranted);
         _denialTracker.Verify(x => x.RecordDenial(Agent, Tool, null), Times.Once);
     }
+
+    [Theory]
+    [InlineData("255")]                     // every bit, including undefined ones
+    [InlineData(" 255")]                    // and behind a stray space
+    [InlineData("4")]                       // the numeric form of NetworkAccess
+    public async Task AuthorizeAsync_NumericGrantedCapability_IsNotGrantedToTheEnforcer(string entry)
+    {
+        // #300. DefaultGrantedCapabilities is a GRANT list on the live tool path, so a permissive
+        // parse fails open. ToolCapability is [Flags], and Enum.TryParse accepts "255" and sets
+        // every bit — handing the enforcer every capability the sandbox model defines and making the
+        // check below it unfailable. The assertion is on what the enforcer was actually handed,
+        // because that is the value the check consumes.
+        Domain.AI.Sandbox.ToolCapability granted = default;
+        _capabilities
+            .Setup(x => x.EnforceAsync(It.IsAny<string>(), It.IsAny<Domain.AI.Sandbox.ToolCapability>(),
+                It.IsAny<IReadOnlyList<string>?>(), It.IsAny<IReadOnlyList<string>?>(), It.IsAny<CancellationToken>()))
+            .Callback<string, Domain.AI.Sandbox.ToolCapability, IReadOnlyList<string>?, IReadOnlyList<string>?, CancellationToken>(
+                (_, caps, _, _, _) => granted = caps)
+            .ReturnsAsync(Result.Success());
+
+        _sandbox.DefaultGrantedCapabilities.Clear();
+        _sandbox.DefaultGrantedCapabilities.Add("FileRead");
+        _sandbox.DefaultGrantedCapabilities.Add(entry);
+
+        var governor = Build();
+
+        await governor.AuthorizeAsync(Tool, CancellationToken.None);
+
+        Assert.Equal(Domain.AI.Sandbox.ToolCapability.FileRead, granted);
+    }
+
+    [Fact]
+    public async Task AuthorizeAsync_NamedGrantedCapabilities_AreStillGranted()
+    {
+        // The control for the theory above: refusing non-names must not mean granting nothing.
+        // Combinations stay expressible — as separate entries, which is the shape the config uses.
+        Domain.AI.Sandbox.ToolCapability granted = default;
+        _capabilities
+            .Setup(x => x.EnforceAsync(It.IsAny<string>(), It.IsAny<Domain.AI.Sandbox.ToolCapability>(),
+                It.IsAny<IReadOnlyList<string>?>(), It.IsAny<IReadOnlyList<string>?>(), It.IsAny<CancellationToken>()))
+            .Callback<string, Domain.AI.Sandbox.ToolCapability, IReadOnlyList<string>?, IReadOnlyList<string>?, CancellationToken>(
+                (_, caps, _, _, _) => granted = caps)
+            .ReturnsAsync(Result.Success());
+
+        _sandbox.DefaultGrantedCapabilities.Clear();
+        _sandbox.DefaultGrantedCapabilities.Add("FileRead");
+        _sandbox.DefaultGrantedCapabilities.Add("Subprocess");
+
+        var governor = Build();
+
+        await governor.AuthorizeAsync(Tool, CancellationToken.None);
+
+        Assert.Equal(
+            Domain.AI.Sandbox.ToolCapability.FileRead | Domain.AI.Sandbox.ToolCapability.Subprocess,
+            granted);
+    }
 }
