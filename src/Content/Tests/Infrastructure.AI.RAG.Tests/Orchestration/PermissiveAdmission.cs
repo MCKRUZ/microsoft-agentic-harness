@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Services.Governance;
+using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 
 namespace Infrastructure.AI.RAG.Tests.Orchestration;
@@ -38,6 +39,7 @@ internal static class PermissiveAdmission
             governor.Object,
             classificationGate.Object,
             Mock.Of<IToolCallObserverChain>(),
-            Mock.Of<IProgressEvaluator>());
+            Mock.Of<IProgressEvaluator>(),
+            NullLogger<ToolCallAdmissionPipeline>.Instance);
     }
 }

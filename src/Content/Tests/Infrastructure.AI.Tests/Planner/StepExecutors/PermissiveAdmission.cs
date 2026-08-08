@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Services.Governance;
+using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 
 namespace Infrastructure.AI.Tests.Planner.StepExecutors;
@@ -45,7 +46,8 @@ internal static class PermissiveAdmission
         new(governor,
             ClassificationGate(),
             observers ?? Mock.Of<IToolCallObserverChain>(),
-            Mock.Of<IProgressEvaluator>());
+            Mock.Of<IProgressEvaluator>(),
+            NullLogger<ToolCallAdmissionPipeline>.Instance);
 
     /// <summary>
     /// A classification gate with nothing to classify — the default, off, composition.

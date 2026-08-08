@@ -340,6 +340,61 @@ public sealed class ToolUseStepExecutorTests
     }
 
     [Fact]
+    public async Task ExecuteAsync_ClassificationRedacts_TheStepOutputIsScrubbed()
+    {
+        // The failure this guards is worse than not classifying at all: the gate writes its audit line
+        // and increments its metric for a redaction, and the step then returns the raw content — so
+        // the trail asserts a protection that did not happen. The other two execution paths apply the
+        // verdict; a plan step that obtained one and discarded it would be the only liar.
+        _classificationGate.Setup(g => g.EvaluateAsync(
+                "file_system", It.IsAny<IReadOnlyDictionary<string, object?>>(), It.IsAny<CancellationToken>()))
+            .Returns(ValueTask.FromResult(ClassificationVerdict.RedactOutput()));
+        _classificationGate.Setup(g => g.RedactResult("file_system", It.IsAny<object?>()))
+            .Returns("[redacted]");
+
+        _sandboxExecutor.Setup(s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new SandboxExecutionResult
+            {
+                Success = true, Output = "SSN 123-45-6789", ResourceUsage = new ResourceUsage()
+            });
+
+        var step = CreateStep(new ToolUseConfig { ToolName = "file_system" });
+
+        var result = await _sut.ExecuteAsync(step, new Dictionary<PlanStepId, string>(), CancellationToken.None);
+
+        Assert.Equal(StepExecutionStatus.Completed, result.Status);
+        Assert.Equal("[redacted]", result.Output);
+        Assert.DoesNotContain("123-45-6789", result.Output);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_RedactionThatCannotBeApplied_WithholdsTheResult()
+    {
+        // Fails closed. The gate decided this asset must not be emitted as-is and the redaction did
+        // not produce usable text, so the one thing that must not happen is falling back to the
+        // original — the harmless-looking default that silently defeats the control.
+        _classificationGate.Setup(g => g.EvaluateAsync(
+                "file_system", It.IsAny<IReadOnlyDictionary<string, object?>>(), It.IsAny<CancellationToken>()))
+            .Returns(ValueTask.FromResult(ClassificationVerdict.RedactOutput()));
+        _classificationGate.Setup(g => g.RedactResult("file_system", It.IsAny<object?>()))
+            .Returns(new object());
+
+        _sandboxExecutor.Setup(s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new SandboxExecutionResult
+            {
+                Success = true, Output = "SSN 123-45-6789", ResourceUsage = new ResourceUsage()
+            });
+
+        var step = CreateStep(new ToolUseConfig { ToolName = "file_system" });
+
+        var result = await _sut.ExecuteAsync(step, new Dictionary<PlanStepId, string>(), CancellationToken.None);
+
+        Assert.Equal(StepExecutionStatus.Failed, result.Status);
+        Assert.True(result.IsPolicyDenial);
+        Assert.Null(result.Output);
+    }
+
+    [Fact]
     public async Task ExecuteAsync_ClassificationSeesTheEffectiveArguments_NotJustTheDeclaredOnes()
     {
         // The gate resolves which asset a call touches from its arguments, so it must see what the
@@ -424,7 +479,8 @@ public sealed class ToolUseStepExecutorTests
         new(_toolGovernor.Object,
             _classificationGate.Object,
             observers,
-            Mock.Of<IProgressEvaluator>());
+            Mock.Of<IProgressEvaluator>(),
+            NullLogger<ToolCallAdmissionPipeline>.Instance);
 
     [Fact]
     public async Task ExecuteAsync_GovernorAllows_AuthorizesExactToolName()

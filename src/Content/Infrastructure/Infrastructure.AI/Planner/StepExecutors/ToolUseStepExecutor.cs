@@ -84,9 +84,9 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
         // parameters alone would hide anything an upstream step fed into this one.
         var arguments = BuildToolArguments(config, upstreamOutputs);
 
-        var denial = await AuthorizeToolAsync(config.ToolName, step.Name, arguments, sw, ct);
-        if (denial is not null)
-            return denial;
+        var (admission, refusal) = await AdmitToolAsync(config.ToolName, step.Name, arguments, sw, ct);
+        if (refusal is not null)
+            return refusal;
 
         var profile = await _capabilityEnforcer.ResolveProfileAsync(config.ToolName, ct);
         var isolationLevel = DetermineIsolation(config, profile, step);
@@ -156,17 +156,31 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
 
         if (sandboxResult.Success)
         {
-            var sanitizedOutput = sandboxResult.Output;
-            if (!string.IsNullOrEmpty(sanitizedOutput))
+            // Admission is not finished when the tool returns: a classified asset can be allowed
+            // through and have its output scrubbed instead of being refused outright. Skipping this
+            // would leave the gate's audit line and metric asserting a redaction that never happened,
+            // while the raw content went back to the caller — a worse failure than not classifying at
+            // all, because it reports itself as safe.
+            if (!_admissionPipeline.TryApplyTextOutputPolicy(
+                    admission, config.ToolName, sandboxResult.Output, out var content))
             {
-                var sanitizationResult = _responseSanitizer.Sanitize(sanitizedOutput, config.ToolName);
-                sanitizedOutput = sanitizationResult.SanitizedContent;
+                return new StepExecutionResult
+                {
+                    Status = StepExecutionStatus.Failed,
+                    ErrorMessage = GovernanceDenials.NotPermitted(config.ToolName),
+                    Duration = sw.Elapsed,
+                    IsPolicyDenial = true,
+                    Attestation = sandboxResult.Attestation
+                };
             }
+
+            if (!string.IsNullOrEmpty(content))
+                content = _responseSanitizer.Sanitize(content, config.ToolName).SanitizedContent;
 
             return new StepExecutionResult
             {
                 Status = StepExecutionStatus.Completed,
-                Output = sanitizedOutput,
+                Output = content,
                 Duration = sw.Elapsed,
                 Attestation = sandboxResult.Attestation
             };
@@ -200,7 +214,7 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
     /// agent could bypass a control simply by emitting a plan step instead of calling the tool
     /// directly, which is exactly the gap this chain exists to close.
     /// </remarks>
-    private async Task<StepExecutionResult?> AuthorizeToolAsync(
+    private async Task<(ToolCallAdmission Admission, StepExecutionResult? Refusal)> AdmitToolAsync(
         string toolName,
         string stepName,
         IReadOnlyDictionary<string, object?> arguments,
@@ -210,19 +224,20 @@ public sealed class ToolUseStepExecutor : IPlanStepExecutor
         var admission = await _admissionPipeline
             .AdmitAsync(new ToolCallAdmissionRequest(toolName, arguments), ct);
         if (admission.IsAllowed)
-            return null;
+            return (admission, null);
 
         sw.Stop();
         _logger.LogWarning(
             "Tool {Tool} refused by the admission chain in step {Step}", toolName, stepName);
-        return new StepExecutionResult
+        return (admission, new StepExecutionResult
         {
             Status = StepExecutionStatus.Failed,
-            ErrorMessage = admission.DeniedMessage!,
+            ErrorMessage = admission.DeniedMessage ?? GovernanceDenials.NotPermitted(toolName),
             Duration = sw.Elapsed,
             IsPolicyDenial = true
-        };
+        });
     }
+
 
     private static SandboxIsolationLevel DetermineIsolation(
         ToolUseConfig config,

@@ -693,6 +693,7 @@ public sealed class DirectToolInvokerTests
         // before, during and after a tool call, and that is now the chain's behaviour plus this type's
         // response shaping — mocking the chain would move every governance assertion here off the code
         // that actually runs.
+        services.AddSingleton(typeof(Microsoft.Extensions.Logging.ILogger<>), typeof(NullLogger<>));
         services.AddScoped<IToolCallAdmissionPipeline, ToolCallAdmissionPipeline>();
 
         var provider = services.BuildServiceProvider();

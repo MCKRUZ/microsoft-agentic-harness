@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.Text.Json;
 using Application.AI.Common.Interfaces.Governance;
 using Domain.AI.Governance;
+using Microsoft.Extensions.Logging;
 
 namespace Application.AI.Common.Services.Governance;
 
@@ -46,6 +47,7 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
     private readonly IToolClassificationGate _classificationGate;
     private readonly IToolCallObserverChain _observers;
     private readonly IProgressEvaluator _progressEvaluator;
+    private readonly ILogger<ToolCallAdmissionPipeline> _logger;
 
     /// <summary>Initializes a new instance of the <see cref="ToolCallAdmissionPipeline"/> class.</summary>
     /// <param name="governor">Stage 1 — permission, capability, envelope and declarative policy.</param>
@@ -59,21 +61,25 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
     /// nothing in it are indistinguishable at runtime.
     /// </param>
     /// <param name="progressEvaluator">Stage 4 — the loop guard.</param>
+    /// <param name="logger">Records a redaction that could not be applied.</param>
     public ToolCallAdmissionPipeline(
         IToolInvocationGovernor governor,
         IToolClassificationGate classificationGate,
         IToolCallObserverChain observers,
-        IProgressEvaluator progressEvaluator)
+        IProgressEvaluator progressEvaluator,
+        ILogger<ToolCallAdmissionPipeline> logger)
     {
         ArgumentNullException.ThrowIfNull(governor);
         ArgumentNullException.ThrowIfNull(classificationGate);
         ArgumentNullException.ThrowIfNull(observers);
         ArgumentNullException.ThrowIfNull(progressEvaluator);
+        ArgumentNullException.ThrowIfNull(logger);
 
         _governor = governor;
         _classificationGate = classificationGate;
         _observers = observers;
         _progressEvaluator = progressEvaluator;
+        _logger = logger;
     }
 
     /// <inheritdoc />
@@ -95,13 +101,30 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         if (!decision.IsAllowed)
             return Refuse(decision.DeniedMessage, toolName);
 
-        // 2 — data classification. A block refuses the call outright; a redact verdict lets it run and
-        // scrubs the output afterwards, which is why the verdict survives past this stage.
-        var classification = await _classificationGate
-            .EvaluateAsync(toolName, arguments, cancellationToken)
-            .ConfigureAwait(false);
-        if (classification.Outcome == ClassificationGateOutcome.Block)
-            return Refuse(classification.BlockedMessage, toolName);
+        // 2 — data classification, for calls that have a data surface to classify. A block refuses the
+        // call outright; a redact verdict lets it run and scrubs the output afterwards, which is why
+        // the verdict survives past this stage.
+        //
+        // A request carrying NO arguments is a capability gate, not a tool call — "may this run call a
+        // model at all", "may it retrieve at all" — and there is nothing for an asset resolver to
+        // resolve. Running the gate anyway would not classify anything; it would resolve to Unknown
+        // and hand the decision to the host's unknown-asset policy, which is a verdict about the
+        // absence of information rather than about the call. A host that hardens that policy to Block
+        // would then fail every LLM-call and retrieval step in every plan.
+        //
+        // This is a property of the REQUEST, not of the calling path, so it stays uniform: every
+        // caller with arguments is classified and every caller without is not. A tool call always has
+        // an argument dictionary even when it is empty — only the two plan capability gates pass null
+        // — so no real tool call can slip through this.
+        var classification = ClassificationVerdict.Allow();
+        if (request.Arguments is not null)
+        {
+            classification = await _classificationGate
+                .EvaluateAsync(toolName, arguments, cancellationToken)
+                .ConfigureAwait(false);
+            if (classification.Outcome == ClassificationGateOutcome.Block)
+                return Refuse(classification.BlockedMessage, toolName);
+        }
 
         // 3 — the host's own rules, last of the access gates.
         if (_observers.HasObservers)
@@ -138,6 +161,39 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
     }
 
     /// <inheritdoc />
+    public bool TryApplyTextOutputPolicy(
+        ToolCallAdmission admission, string toolName, string? content, out string? result)
+    {
+        ArgumentNullException.ThrowIfNull(admission);
+
+        if (!admission.RedactsOutput)
+        {
+            result = content;
+            return true;
+        }
+
+        var redacted = _classificationGate.RedactResult(toolName, content);
+        if (redacted is string text)
+        {
+            result = text;
+            return true;
+        }
+
+        // Fail closed. The gate decided this asset must not be emitted as-is, so falling back to the
+        // original is precisely the harmless-looking default that would defeat the control — which is
+        // what `RedactResult(...) as string ?? content` would have done. The shipped gate always
+        // answers with a string here, so this guards against a consumer-supplied one.
+        _logger.LogWarning(
+            "Classification gate returned a {ResultType} rather than a string when redacting output of "
+            + "{ToolName}; the result is withheld rather than returned unredacted.",
+            redacted?.GetType().Name ?? "null",
+            toolName);
+
+        result = null;
+        return false;
+    }
+
+    /// <inheritdoc />
     public GovernanceTrace GetTrace()
     {
         var trace = _governor.GetTrace();
@@ -161,9 +217,11 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         _progressEvaluator.Reset();
     }
 
+    // Blank counts as absent, not just null: whitespace reaches a model as indistinguishable from an
+    // empty result, which reads as the tool having run and returned nothing rather than as a refusal.
     private static ToolCallAdmission Refuse(string? stageMessage, string toolName) =>
         ToolCallAdmission.Deny(
-            string.IsNullOrEmpty(stageMessage) ? GovernanceDenials.NotPermitted(toolName) : stageMessage);
+            string.IsNullOrWhiteSpace(stageMessage) ? GovernanceDenials.NotPermitted(toolName) : stageMessage);
 
     /// <summary>
     /// Builds a stable, deterministic signature of the call arguments so the loop guard can recognise

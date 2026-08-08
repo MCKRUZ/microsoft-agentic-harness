@@ -1,6 +1,7 @@
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Services.Governance;
 using Domain.AI.Governance;
+using Microsoft.Extensions.Logging.Abstractions;
 using FluentAssertions;
 using Moq;
 using Xunit;
@@ -144,6 +145,48 @@ public sealed class ToolCallAdmissionPipelineTests
     }
 
     [Fact]
+    public async Task AdmitAsync_NoArguments_ClassificationIsNotConsulted()
+    {
+        // A request with no arguments is a capability gate — "may this run call a model at all" — and
+        // has no data surface. Running the gate would not classify anything: it would resolve to
+        // Unknown and hand the decision to the host's unknown-asset policy, a verdict about the
+        // absence of information rather than about the call. A host that hardened that policy to
+        // Block would otherwise fail every LLM-call and retrieval step in every plan.
+        var gate = new Mock<IToolClassificationGate>(MockBehavior.Strict);
+
+        var admission = await AdmissionHarness
+            .Pipeline(classificationGate: gate.Object)
+            .AdmitAsync(new ToolCallAdmissionRequest("llm_call"), CancellationToken.None);
+
+        admission.IsAllowed.Should().BeTrue();
+        gate.Verify(
+            g => g.EvaluateAsync(
+                It.IsAny<string>(), It.IsAny<IReadOnlyDictionary<string, object?>>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task AdmitAsync_EmptyArguments_ClassificationStillRuns()
+    {
+        // The other half of the rule above, and the reason it is safe: a tool call always carries an
+        // argument dictionary even when it is empty, so "no arguments at all" cleanly separates a
+        // capability gate from a tool call. A zero-argument tool that reads a fixed classified file
+        // must still be classified.
+        var gate = new Mock<IToolClassificationGate>();
+        gate
+            .Setup(g => g.EvaluateAsync(
+                It.IsAny<string>(), It.IsAny<IReadOnlyDictionary<string, object?>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ClassificationVerdict.Block("restricted"));
+
+        var admission = await AdmissionHarness
+            .Pipeline(classificationGate: gate.Object)
+            .AdmitAsync(
+                new ToolCallAdmissionRequest(Tool, new Dictionary<string, object?>()), CancellationToken.None);
+
+        admission.IsAllowed.Should().BeFalse("a tool call with an empty argument set is still a tool call");
+    }
+
+    [Fact]
     public async Task AdmitAsync_RedactVerdict_AllowsTheCallAndMarksTheOutput()
     {
         var gate = new Mock<IToolClassificationGate>();
@@ -190,6 +233,21 @@ public sealed class ToolCallAdmissionPipelineTests
 
         admission.IsAllowed.Should().BeFalse();
         admission.DeniedMessage.Should().Be(GovernanceDenials.NotPermitted(Tool));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void Deny_RefusesARefusalWithNothingToSay(string? message)
+    {
+        // Callers act on DeniedMessage directly — the agent turn returns it to the model in place of
+        // the tool result — so a blank refusal reaches the model as an empty successful result, which
+        // it reads as the tool having run and returned nothing. There is no public constructor, so
+        // this factory is the only way to build a refusal and therefore the only place to enforce it.
+        var act = () => ToolCallAdmission.Deny(message!);
+
+        act.Should().Throw<ArgumentException>();
     }
 
     [Fact]
@@ -280,6 +338,7 @@ public sealed class ToolCallAdmissionPipelineTests
             .Returns(ProgressVerdict.Continue());
 
         return new ToolCallAdmissionPipeline(
-            governor.Object, classificationGate.Object, observers.Object, progress.Object);
+            governor.Object, classificationGate.Object, observers.Object, progress.Object,
+            NullLogger<ToolCallAdmissionPipeline>.Instance);
     }
 }

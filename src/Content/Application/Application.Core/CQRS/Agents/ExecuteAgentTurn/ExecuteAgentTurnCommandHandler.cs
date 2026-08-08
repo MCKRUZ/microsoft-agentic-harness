@@ -364,7 +364,7 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 		return builder.ToString();
 	}
 
-private static void RecordTurnError(string agentName)
+	private static void RecordTurnError(string agentName)
 	{
 		var errorTag = new TagList { { AgentConventions.Name, agentName } };
 		OrchestrationMetrics.TurnsTotal.Add(1, errorTag);

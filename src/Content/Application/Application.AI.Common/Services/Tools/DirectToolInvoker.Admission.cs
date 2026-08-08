@@ -76,7 +76,7 @@ public sealed partial class DirectToolInvoker
     /// Clamping would be friendlier-looking and worse: a caller silently given less time than they
     /// asked for experiences a timeout with nothing in the response that accounts for it.
     /// </remarks>
-    private static Preflight?TimeoutRefusal(
+    private static Preflight? TimeoutRefusal(
         DirectToolInvocationRequest request, DirectToolInvocationConfig config)
     {
         if (request.RequestedTimeout is not { } requested)
@@ -99,7 +99,7 @@ public sealed partial class DirectToolInvoker
     /// trip. Matched case-insensitively, as tool and operation names are everywhere else in the
     /// harness — a stricter check here would refuse invocations every other layer accepts.
     /// </remarks>
-    private static Preflight?OperationRefusal(
+    private static Preflight? OperationRefusal(
         DirectToolInvocationRequest request, ToolDescriptor descriptor)
     {
         if (descriptor.SupportedOperations.Contains(request.Operation, StringComparer.OrdinalIgnoreCase))

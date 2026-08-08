@@ -79,6 +79,33 @@ public interface IToolCallAdmissionPipeline
     object? ApplyOutputPolicy(ToolCallAdmission admission, string toolName, object? result);
 
     /// <summary>
+    /// Applies the admission's output policy to a result that must leave as <em>text</em>, reporting
+    /// whether it produced usable text.
+    /// </summary>
+    /// <param name="admission">The verdict returned by <see cref="AdmitAsync"/> for this same call.</param>
+    /// <param name="toolName">The tool that produced <paramref name="content"/>.</param>
+    /// <param name="content">The tool's raw text.</param>
+    /// <param name="result">
+    /// The text to emit: <paramref name="content"/> unchanged when no redaction was required, or the
+    /// scrubbed text. Null when the method returns <see langword="false"/>.
+    /// </param>
+    /// <returns>
+    /// <see langword="false"/> when a redaction was required but did not produce text, in which case
+    /// the caller must <strong>withhold</strong> the result rather than emit the original.
+    /// </returns>
+    /// <remarks>
+    /// Separate from <see cref="ApplyOutputPolicy"/> because the two callers want different things
+    /// from the same verdict. The agent turn hands the model structured results and passes them
+    /// through untouched, so it wants the object form. The plan step and the Execution API emit text
+    /// across a boundary, and for them a non-text answer means a gate did something unexpected — on a
+    /// redaction path that is a reason to withhold, not to shrug. Both used to implement that
+    /// fail-closed rule themselves, in two copies, which is one copy more than a rule like this
+    /// survives.
+    /// </remarks>
+    bool TryApplyTextOutputPolicy(
+        ToolCallAdmission admission, string toolName, string? content, out string? result);
+
+    /// <summary>
     /// The turn's governance trace: every decision the chain's stages recorded, as one record.
     /// </summary>
     /// <remarks>
@@ -129,19 +156,41 @@ public sealed record ToolCallAdmissionRequest(
 /// <summary>
 /// The admission chain's verdict for one tool call.
 /// </summary>
-/// <param name="IsAllowed">Whether the call may proceed to the tool.</param>
-/// <param name="DeniedMessage">
-/// The caller-facing refusal text, never null when <paramref name="IsAllowed"/> is false and always
-/// null when it is true. Deliberately uninformative about which stage refused — see
-/// <see cref="Domain.AI.Governance.GovernanceDenials"/>.
-/// </param>
-/// <param name="RedactsOutput">
-/// Whether the tool's output must be scrubbed before it leaves. Only ever true on an allow.
-/// </param>
-public sealed record ToolCallAdmission(bool IsAllowed, string? DeniedMessage = null, bool RedactsOutput = false)
+/// <remarks>
+/// <strong>Constructible only through the factories below, and that is load-bearing.</strong> Every
+/// caller acts on <see cref="DeniedMessage"/> directly — the agent turn returns it to the model in
+/// place of the tool result — so a refusal carrying no text would surface as an <em>empty successful
+/// result</em>, which an agent reads as the tool having run and returned nothing. A public
+/// constructor would let a consumer's own <see cref="IToolCallAdmissionPipeline"/> produce exactly
+/// that. Keeping the shape unreachable is cheaper than five defensive fallbacks that each have to
+/// remember why they exist.
+/// </remarks>
+public sealed record ToolCallAdmission
 {
-    private static readonly ToolCallAdmission AllowedDecision = new(true);
+    private static readonly ToolCallAdmission AllowedDecision = new(true, null, false);
     private static readonly ToolCallAdmission AllowedRedactingDecision = new(true, null, true);
+
+    private ToolCallAdmission(bool isAllowed, string? deniedMessage, bool redactsOutput)
+    {
+        IsAllowed = isAllowed;
+        DeniedMessage = deniedMessage;
+        RedactsOutput = redactsOutput;
+    }
+
+    /// <summary>Whether the call may proceed to the tool.</summary>
+    public bool IsAllowed { get; }
+
+    /// <summary>
+    /// The caller-facing refusal text: never null or blank when <see cref="IsAllowed"/> is false, and
+    /// always null when it is true. Deliberately uninformative about which stage refused — see
+    /// <see cref="Domain.AI.Governance.GovernanceDenials"/>.
+    /// </summary>
+    public string? DeniedMessage { get; }
+
+    /// <summary>
+    /// Whether the tool's output must be scrubbed before it leaves. Only ever true on an allow.
+    /// </summary>
+    public bool RedactsOutput { get; }
 
     /// <summary>The call may proceed and its output is returned as-is.</summary>
     public static ToolCallAdmission Allow() => AllowedDecision;
@@ -150,10 +199,13 @@ public sealed record ToolCallAdmission(bool IsAllowed, string? DeniedMessage = n
     public static ToolCallAdmission AllowWithOutputRedaction() => AllowedRedactingDecision;
 
     /// <summary>The call is refused, carrying the caller-facing text.</summary>
-    /// <param name="deniedMessage">The refusal text. Must not be null or empty.</param>
+    /// <param name="deniedMessage">
+    /// The refusal text. Must contain something a caller can surface — blank is rejected as well as
+    /// null, because whitespace reaches a model as indistinguishable from an empty result.
+    /// </param>
     public static ToolCallAdmission Deny(string deniedMessage)
     {
-        ArgumentException.ThrowIfNullOrEmpty(deniedMessage);
-        return new ToolCallAdmission(false, deniedMessage);
+        ArgumentException.ThrowIfNullOrWhiteSpace(deniedMessage);
+        return new ToolCallAdmission(false, deniedMessage, false);
     }
 }

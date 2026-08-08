@@ -50,6 +50,13 @@ public class RunOrchestratedTaskCommandHandler : IRequestHandler<RunOrchestrated
 
 		try
 		{
+			// Clear any prior turn's governance decisions and loop-guard history before this task's
+			// first phase. Nested MediatR sends within a conversation share one scope, so without this
+			// an orchestrated task inherits the state of whatever ran before it in the same
+			// conversation — and can be halted by the loop guard for calls it never made. This handler
+			// previously never armed the loop guard at all, so it never needed the reset either.
+			_admissionPipeline.Reset();
+
 			// Phase 1: Create orchestrator and get task decomposition
 			var agentCatalog = BuildAgentCatalog(request.AvailableAgents);
 			var orchestrator = await _agentFactory.CreateAgentFromSkillAsync(
@@ -192,6 +199,12 @@ public class RunOrchestratedTaskCommandHandler : IRequestHandler<RunOrchestrated
 		// This used to arm the governor, the classification gate and the observer chain individually —
 		// and never armed the loop guard, so the orchestrator was the one agent that could spin on a
 		// repeated tool call unchecked. There is now one value to publish and no subset to get wrong.
+		//
+		// Deliberately NOT reset here: this method runs once for planning and once for synthesis, and
+		// they are two phases of one unit of work. The loop guard should see the orchestrator's calls
+		// across both — repeating in synthesis what it already did while planning is exactly the spin
+		// worth catching — and the governance trace should accumulate across both rather than losing
+		// the planning phase. The single reset lives at the top of Handle.
 		using (ToolAdmissionAccessor.Begin(_admissionPipeline))
 		{
 			return await orchestrator.RunAsync(messages, cancellationToken: cancellationToken);

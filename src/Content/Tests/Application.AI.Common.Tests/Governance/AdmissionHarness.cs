@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Services.Governance;
+using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 
 namespace Application.AI.Common.Tests.Governance;
@@ -25,7 +26,8 @@ internal static class AdmissionHarness
         new(governor ?? PermissiveGovernor(),
             classificationGate ?? PermissiveClassificationGate(),
             observers ?? Mock.Of<IToolCallObserverChain>(),
-            progressEvaluator ?? PermissiveProgressEvaluator());
+            progressEvaluator ?? PermissiveProgressEvaluator(),
+            NullLogger<ToolCallAdmissionPipeline>.Instance);
 
     /// <summary>A governor that authorizes everything — the ungoverned default composition.</summary>
     public static IToolInvocationGovernor PermissiveGovernor()
