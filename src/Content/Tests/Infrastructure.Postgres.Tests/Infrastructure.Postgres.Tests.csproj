@@ -22,6 +22,8 @@
   <ItemGroup>
     <ProjectReference Include="../../Infrastructure/Infrastructure.Postgres/Infrastructure.Postgres.csproj" />
     <ProjectReference Include="../Tests.Common/Tests.Common.csproj" />
+    <!-- FakeTimeProvider, so the schema gate's failure cooldown is tested without a sleeping test. -->
+    <PackageReference Include="Microsoft.Extensions.TimeProvider.Testing" />
     <!--
       The observability assembly is referenced so the upgrade-path test can run the real shipped
       migration set rather than a set written for the test. A test that invented its own scripts

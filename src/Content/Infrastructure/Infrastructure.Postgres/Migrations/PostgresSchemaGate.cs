@@ -1,3 +1,4 @@
+using System.Runtime.ExceptionServices;
 using Microsoft.Extensions.Logging;
 using Npgsql;
 
@@ -20,6 +21,15 @@ namespace Infrastructure.Postgres.Migrations;
 /// restart to recover from a condition that fixes itself.
 /// </para>
 /// <para>
+/// It does, however, cool down for <see cref="FailureCooldown"/>. Not latching is right for a
+/// transient fault and wrong for a permanent one, and the runner now has a permanent one it can
+/// report: a migration whose checksum no longer matches what this database applied will fail every
+/// time until a human intervenes. Without a cooldown that failure is re-attempted on every physical
+/// connection for the life of the process, each attempt taking the cluster-wide advisory lock to be
+/// told the same thing. The cooldown keeps the recovery property — the next request after the window
+/// tries again — while making a hopeless failure cheap.
+/// </para>
+/// <para>
 /// Deliberately NOT <see cref="IDisposable"/>. It was, briefly, because it holds a
 /// <see cref="SemaphoreSlim"/> — and the ceremony was immediately skipped by one of its two
 /// consumers, which is the tell that it was never needed. A <see cref="SemaphoreSlim"/> only needs
@@ -37,9 +47,27 @@ namespace Infrastructure.Postgres.Migrations;
 /// </remarks>
 public sealed class PostgresSchemaGate
 {
+    /// <summary>
+    /// How long a failed attempt is reused before the database is asked again.
+    /// </summary>
+    /// <remarks>
+    /// Short enough that a database which was briefly unreachable is picked up on the next request
+    /// rather than needing a restart, long enough that a failure which will not fix itself — a
+    /// migration whose checksum no longer matches, a missing privilege — is not re-attempted once per
+    /// physical connection for the life of the process. Not configurable: nothing about a consumer's
+    /// deployment makes a different number right, and an option here would be one more thing to get
+    /// wrong for no gain.
+    /// </remarks>
+    private static readonly TimeSpan FailureCooldown = TimeSpan.FromSeconds(5);
+
     private readonly PostgresMigrationRunner _runner;
     private readonly SemaphoreSlim _gate = new(1, 1);
+    private readonly TimeProvider _time;
     private volatile bool _ready;
+
+    // Both written and read only while holding _gate, so neither needs to be volatile.
+    private ExceptionDispatchInfo? _lastFailure;
+    private long _failedAt;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="PostgresSchemaGate"/> class.
@@ -47,6 +75,10 @@ public sealed class PostgresSchemaGate
     /// <param name="options">Ledger table and advisory lock key for this migration set.</param>
     /// <param name="scripts">The migration set, in any order.</param>
     /// <param name="logger">Logger recording which migrations were applied.</param>
+    /// <param name="timeProvider">
+    /// Clock used for the failure cooldown; defaults to the system clock. Injectable so the cooldown
+    /// can be tested without a test that sleeps.
+    /// </param>
     /// <remarks>
     /// The gate builds its own runner rather than taking one, because both consumers were otherwise
     /// writing the same nested double-construction. There was briefly a second, runner-taking
@@ -59,9 +91,11 @@ public sealed class PostgresSchemaGate
     public PostgresSchemaGate(
         PostgresMigrationOptions options,
         IReadOnlyList<MigrationScript> scripts,
-        ILogger logger)
+        ILogger logger,
+        TimeProvider? timeProvider = null)
     {
         _runner = new PostgresMigrationRunner(options, scripts, logger);
+        _time = timeProvider ?? TimeProvider.System;
     }
 
     /// <summary>
@@ -79,8 +113,25 @@ public sealed class PostgresSchemaGate
         {
             if (_ready) return;
 
-            await _runner.ApplyAsync(connection, cancellationToken);
-            _ready = true;
+            // Within the cooldown, hand back the failure that is already known rather than asking the
+            // database again. The caller sees exactly what it would have seen; what it does not do is
+            // make another round trip and take the cluster-wide advisory lock to be told the same
+            // thing. The rethrown stack trace is the ORIGINAL attempt's, which is the useful one.
+            if (_lastFailure is not null && _time.GetElapsedTime(_failedAt) < FailureCooldown)
+                _lastFailure.Throw();
+
+            try
+            {
+                await _runner.ApplyAsync(connection, cancellationToken);
+                _ready = true;
+                _lastFailure = null;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _lastFailure = ExceptionDispatchInfo.Capture(ex);
+                _failedAt = _time.GetTimestamp();
+                throw;
+            }
         }
         finally
         {
