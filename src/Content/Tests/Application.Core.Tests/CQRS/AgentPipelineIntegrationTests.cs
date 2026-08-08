@@ -79,6 +79,14 @@ public class AgentPipelineIntegrationTests
         observerChainMock.SetupGet(c => c.HasObservers).Returns(false);
         services.AddScoped(_ => observerChainMock.Object);
 
+        // The REAL admission chain over the four permissive gates above, not a mock of it. The handler
+        // depends only on the chain now, and registering the real one keeps this an end-to-end proof
+        // that the four gates are reachable from the turn — a mocked chain would prove nothing about
+        // whether they are wired at all.
+        services.AddScoped<
+            Application.AI.Common.Interfaces.Governance.IToolCallAdmissionPipeline,
+            Application.AI.Common.Services.Governance.ToolCallAdmissionPipeline>();
+
         // Conversation-lifetime budget — not under test here; permissive mock (disabled) so the
         // RunConversation handler resolves and never reports exhaustion.
         var budgetMock = new Mock<Application.AI.Common.Interfaces.AI.IConversationBudgetTracker>();

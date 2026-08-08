@@ -4,6 +4,7 @@ using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Services.Agent;
 using Application.AI.Common.Services.Governance;
 using Application.AI.Common.Services.Tools;
+using Application.AI.Common.Tests.Governance;
 using Domain.AI.Bundles;
 using Domain.AI.Changes;
 using Domain.AI.Governance;
@@ -675,15 +676,25 @@ public sealed class DirectToolInvokerTests
         services.AddScoped<IToolInvocationGovernor>(sp =>
             new RecordingGovernor(sp.GetRequiredService<IAgentExecutionContext>(), _governor));
         services.AddKeyedSingleton<ITool>(tool.Name, tool);
-        if (_classificationGate is not null)
-            services.AddSingleton<IToolClassificationGate>(_classificationGate);
-        // Always registered, never conditionally: the invoker resolves this as a REQUIRED service,
-        // because an absent chain and a chain with no rules are indistinguishable at runtime and only
-        // one of them is safe. A test that omitted it would be asserting against a composition that
-        // cannot exist in production. When a test supplies no chain of its own, it gets an empty one —
-        // which is exactly what a host that registered no rules has.
+
+        // Every gate below is registered unconditionally, never conditionally: the invoker resolves
+        // the admission chain as a REQUIRED service, and the chain requires all four. An absent gate
+        // and a gate that permits everything are indistinguishable at runtime and only one of them is
+        // safe, so a test that omitted one would be asserting against a composition that cannot exist
+        // in production. When a test supplies none of its own, it gets permissive ones — exactly what
+        // a host with every feature off has.
+        services.AddSingleton<IToolClassificationGate>(
+            _classificationGate ?? AdmissionHarness.PermissiveClassificationGate());
         services.AddSingleton<IToolCallObserverChain>(
             _observerChain ?? new FakeObserverChain(ToolInvocationDecision.Allow()) { HasObservers = false });
+        services.AddSingleton(AdmissionHarness.PermissiveProgressEvaluator());
+
+        // The real chain, not a mock of it. This suite's whole subject is what the Execution API does
+        // before, during and after a tool call, and that is now the chain's behaviour plus this type's
+        // response shaping — mocking the chain would move every governance assertion here off the code
+        // that actually runs.
+        services.AddSingleton(typeof(Microsoft.Extensions.Logging.ILogger<>), typeof(NullLogger<>));
+        services.AddScoped<IToolCallAdmissionPipeline, ToolCallAdmissionPipeline>();
 
         var provider = services.BuildServiceProvider();
 

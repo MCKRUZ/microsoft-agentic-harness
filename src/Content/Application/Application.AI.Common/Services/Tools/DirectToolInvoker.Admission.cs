@@ -6,10 +6,10 @@ using Microsoft.Extensions.Logging;
 namespace Application.AI.Common.Services.Tools;
 
 /// <summary>
-/// Admission: everything decidable about an invocation before any scope, governor, or tool exists.
+/// Pre-flight: everything decidable about an invocation before any scope, governor, or tool exists.
 /// </summary>
 /// <remarks>
-/// Split out because it changes for different reasons than the arming path does — admission answers
+/// Split out because it changes for different reasons than the arming path does — pre-flight answers
 /// "is this request well formed and is this tool reachable by this caller", while the other partial
 /// answers "how is a reachable tool run safely". Keeping the checks ahead of scope creation is also
 /// what makes a malformed or ungranted request cost a dictionary lookup rather than a DI scope and a
@@ -28,14 +28,14 @@ public sealed partial class DirectToolInvoker
     /// Validates the request, resolves the tool against the caller's grant, and mints the identity the
     /// invocation will run under.
     /// </summary>
-    private Admission Admit(DirectToolInvocationRequest request, DirectToolInvocationConfig config)
+    private Preflight RunPreflight(DirectToolInvocationRequest request, DirectToolInvocationConfig config)
     {
         if (string.IsNullOrWhiteSpace(request.ToolName) || string.IsNullOrWhiteSpace(request.Operation))
-            return Admission.Refuse(DirectToolInvocationStatus.Invalid, "A tool name and an operation are required.");
+            return Preflight.Refuse(DirectToolInvocationStatus.Invalid, "A tool name and an operation are required.");
 
         if (request.Parameters.Count > config.MaxParameterCount)
         {
-            return Admission.Refuse(
+            return Preflight.Refuse(
                 DirectToolInvocationStatus.Invalid,
                 $"An invocation may pass at most {config.MaxParameterCount} parameters.");
         }
@@ -51,7 +51,7 @@ public sealed partial class DirectToolInvoker
             _logger.LogWarning(
                 "Direct invocation rejected: caller identity is unusable as a permission subject (length {Length})",
                 request.OwnerId?.Length ?? 0);
-            return Admission.Refuse(
+            return Preflight.Refuse(
                 DirectToolInvocationStatus.IdentityUnusable,
                 "The authenticated principal carries no usable identity.");
         }
@@ -61,12 +61,12 @@ public sealed partial class DirectToolInvoker
         // that set keeps the disclosure boundary at exactly one bit: reachable, or not.
         var descriptor = _catalog.FindGranted(request.ToolName, request.Envelope);
         if (descriptor is null || !descriptor.IsDirectlyInvocable)
-            return Admission.Refuse(DirectToolInvocationStatus.NotFound, DirectToolInvocationErrors.NoSuchTool);
+            return Preflight.Refuse(DirectToolInvocationStatus.NotFound, DirectToolInvocationErrors.NoSuchTool);
 
         if (OperationRefusal(request, descriptor) is { } operationRefusal)
             return operationRefusal;
 
-        return Admission.Accept(descriptor.Name, agentId);
+        return Preflight.Accept(descriptor.Name, agentId);
     }
 
     /// <summary>
@@ -76,7 +76,7 @@ public sealed partial class DirectToolInvoker
     /// Clamping would be friendlier-looking and worse: a caller silently given less time than they
     /// asked for experiences a timeout with nothing in the response that accounts for it.
     /// </remarks>
-    private static Admission? TimeoutRefusal(
+    private static Preflight? TimeoutRefusal(
         DirectToolInvocationRequest request, DirectToolInvocationConfig config)
     {
         if (request.RequestedTimeout is not { } requested)
@@ -85,7 +85,7 @@ public sealed partial class DirectToolInvoker
         if (requested > TimeSpan.Zero && requested <= config.InvocationTimeout)
             return null;
 
-        return Admission.Refuse(
+        return Preflight.Refuse(
             DirectToolInvocationStatus.Invalid,
             $"Requested timeout must be positive and no greater than {config.InvocationTimeout}.");
     }
@@ -99,13 +99,13 @@ public sealed partial class DirectToolInvoker
     /// trip. Matched case-insensitively, as tool and operation names are everywhere else in the
     /// harness — a stricter check here would refuse invocations every other layer accepts.
     /// </remarks>
-    private static Admission? OperationRefusal(
+    private static Preflight? OperationRefusal(
         DirectToolInvocationRequest request, ToolDescriptor descriptor)
     {
         if (descriptor.SupportedOperations.Contains(request.Operation, StringComparer.OrdinalIgnoreCase))
             return null;
 
-        return Admission.Refuse(
+        return Preflight.Refuse(
             DirectToolInvocationStatus.Invalid,
             descriptor.SupportedOperations.Count == 0
                 ? $"Tool '{descriptor.Name}' declares no operations."
@@ -113,17 +113,23 @@ public sealed partial class DirectToolInvoker
     }
 
     /// <summary>
-    /// The result of pre-execution admission: either a refusal to return as-is, or the resolved tool
-    /// name and caller identity to run with.
+    /// The result of pre-flight: either a refusal to return as-is, or the resolved tool name and
+    /// caller identity to run with.
     /// </summary>
-    private readonly record struct Admission(
+    /// <remarks>
+    /// Named for the stage rather than for "admission", which in this codebase means the governance
+    /// chain every execution path runs (<c>IToolCallAdmissionPipeline</c>). Pre-flight decides whether
+    /// there is a well-formed request and a reachable tool at all; admission decides whether the caller
+    /// may use it. Pre-flight runs first, and cheaply — before any DI scope exists.
+    /// </remarks>
+    private readonly record struct Preflight(
         DirectToolInvocationOutcome? Refusal, string? ToolName, string? AgentId)
     {
-        /// <summary>An admission that refuses, carrying the outcome to return unchanged.</summary>
-        public static Admission Refuse(DirectToolInvocationStatus status, string error) =>
+        /// <summary>A pre-flight that refuses, carrying the outcome to return unchanged.</summary>
+        public static Preflight Refuse(DirectToolInvocationStatus status, string error) =>
             new(DirectToolInvocationOutcome.Refused(status, error), null, null);
 
-        /// <summary>An admission that proceeds, carrying the resolved tool name and caller identity.</summary>
-        public static Admission Accept(string toolName, string agentId) => new(null, toolName, agentId);
+        /// <summary>A pre-flight that proceeds, carrying the resolved tool name and caller identity.</summary>
+        public static Preflight Accept(string toolName, string agentId) => new(null, toolName, agentId);
     }
 }

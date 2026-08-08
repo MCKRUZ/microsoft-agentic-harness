@@ -33,16 +33,23 @@ public sealed class ToolCallObserverChain : IToolCallObserverChain
     private readonly IToolRiskClassifier _riskClassifier;
     private readonly IAgentExecutionContext _executionContext;
     private readonly IGovernanceAuditService _auditService;
+    private readonly IToolInvocationGovernor _governor;
     private readonly IOptionsMonitor<GovernanceConfig> _governanceConfig;
     private readonly ILogger<ToolCallObserverChain> _logger;
 
     /// <summary>Initializes a new instance of the <see cref="ToolCallObserverChain"/> class.</summary>
+    /// <param name="governor">
+    /// The governor whose trace this chain corrects when it blocks a call the governor allowed. Taken
+    /// as a dependency rather than read from an ambient accessor: both are scoped and resolve to the
+    /// same instance, but a dependency cannot be silently absent because a caller forgot to arm it.
+    /// </param>
     public ToolCallObserverChain(
         IEnumerable<IToolCallObserver> observers,
         IToolApprovalRouter approvalRouter,
         IToolRiskClassifier riskClassifier,
         IAgentExecutionContext executionContext,
         IGovernanceAuditService auditService,
+        IToolInvocationGovernor governor,
         IOptionsMonitor<GovernanceConfig> governanceConfig,
         ILogger<ToolCallObserverChain> logger)
     {
@@ -51,6 +58,7 @@ public sealed class ToolCallObserverChain : IToolCallObserverChain
         ArgumentNullException.ThrowIfNull(riskClassifier);
         ArgumentNullException.ThrowIfNull(executionContext);
         ArgumentNullException.ThrowIfNull(auditService);
+        ArgumentNullException.ThrowIfNull(governor);
         ArgumentNullException.ThrowIfNull(governanceConfig);
         ArgumentNullException.ThrowIfNull(logger);
 
@@ -59,6 +67,7 @@ public sealed class ToolCallObserverChain : IToolCallObserverChain
         _riskClassifier = riskClassifier;
         _executionContext = executionContext;
         _auditService = auditService;
+        _governor = governor;
         _governanceConfig = governanceConfig;
         _logger = logger;
     }
@@ -206,7 +215,7 @@ public sealed class ToolCallObserverChain : IToolCallObserverChain
         // (bundle-run reporting, the dashboard, the audit) is wrong for precisely the calls a
         // consumer's safety rule stopped. It corrects the trace only; the audit line above is the one
         // and only audit record for this block.
-        ToolGovernanceAccessor.Current?.RecordDownstreamBlock(
+        _governor.RecordDownstreamBlock(
             toolName, $"blocked by observer '{observerName}': {reason}");
 
         return ToolInvocationDecision.Deny(GovernanceDenials.NotPermitted(toolName));

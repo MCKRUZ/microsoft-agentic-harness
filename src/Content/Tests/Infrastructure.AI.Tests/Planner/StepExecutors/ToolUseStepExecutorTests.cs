@@ -2,6 +2,7 @@ using Application.AI.Common.Interfaces.Attestation;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Planner;
 using Application.AI.Common.Interfaces.Sandbox;
+using Application.AI.Common.Services.Governance;
 using Domain.AI.Attestation;
 using Domain.AI.Governance;
 using Domain.AI.Planner;
@@ -19,6 +20,7 @@ public sealed class ToolUseStepExecutorTests
 {
     private readonly Mock<ICapabilityEnforcer> _capabilityEnforcer = new();
     private readonly Mock<IToolInvocationGovernor> _toolGovernor = new();
+    private readonly Mock<IToolClassificationGate> _classificationGate = new();
     private readonly Mock<IAttestationService> _attestationService = new();
     private readonly Mock<ICompositeResponseSanitizer> _responseSanitizer = new();
     private readonly Mock<IPlanProgressNotifier> _notifier = new();
@@ -31,6 +33,11 @@ public sealed class ToolUseStepExecutorTests
         // Ungoverned default: no envelope armed and enforcement off means the governor allows.
         _toolGovernor.Setup(g => g.AuthorizeAsync(It.IsAny<string>(), It.IsAny<CancellationToken>(), It.IsAny<IReadOnlyDictionary<string, object?>?>()))
             .Returns(ValueTask.FromResult(ToolInvocationDecision.Allow()));
+
+        // Classification off is the default composition: nothing to resolve, so nothing to block.
+        _classificationGate.Setup(g => g.EvaluateAsync(
+                It.IsAny<string>(), It.IsAny<IReadOnlyDictionary<string, object?>>(), It.IsAny<CancellationToken>()))
+            .Returns(ValueTask.FromResult(ClassificationVerdict.Allow()));
 
         _notifier.Setup(n => n.NotifyStepStartedAsync(
             It.IsAny<PlanId>(), It.IsAny<PlanStepId>(), It.IsAny<string>(), It.IsAny<StepType>(), It.IsAny<CancellationToken>()))
@@ -53,8 +60,7 @@ public sealed class ToolUseStepExecutorTests
 
         _sut = new ToolUseStepExecutor(
             _capabilityEnforcer.Object,
-            _toolGovernor.Object,
-            Mock.Of<IToolCallObserverChain>(),
+            BuildAdmissionPipeline(Mock.Of<IToolCallObserverChain>()),
             sp,
             _attestationService.Object,
             _responseSanitizer.Object,
@@ -311,6 +317,116 @@ public sealed class ToolUseStepExecutorTests
     }
 
     [Fact]
+    public async Task ExecuteAsync_ClassificationBlocks_FailsStepWithoutTouchingSandbox()
+    {
+        // A plan step now runs the data-classification gate, which it did not before. Until this
+        // change a plan could hand a classified document to a tool where the identical call in a chat
+        // turn was blocked or redacted — an agent could route around a data-loss control simply by
+        // emitting a ToolUse step instead of calling the tool directly.
+        const string classificationDenial = "Error: tool 'file_system' is not permitted: restricted data.";
+        _classificationGate.Setup(g => g.EvaluateAsync(
+                "file_system", It.IsAny<IReadOnlyDictionary<string, object?>>(), It.IsAny<CancellationToken>()))
+            .Returns(ValueTask.FromResult(ClassificationVerdict.Block(classificationDenial)));
+
+        var step = CreateStep(new ToolUseConfig { ToolName = "file_system" });
+
+        var result = await _sut.ExecuteAsync(step, new Dictionary<PlanStepId, string>(), CancellationToken.None);
+
+        Assert.Equal(StepExecutionStatus.Failed, result.Status);
+        Assert.Equal(classificationDenial, result.ErrorMessage);
+        Assert.True(result.IsPolicyDenial);
+        _sandboxExecutor.Verify(
+            s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_ClassificationRedacts_TheStepOutputIsScrubbed()
+    {
+        // The failure this guards is worse than not classifying at all: the gate writes its audit line
+        // and increments its metric for a redaction, and the step then returns the raw content — so
+        // the trail asserts a protection that did not happen. The other two execution paths apply the
+        // verdict; a plan step that obtained one and discarded it would be the only liar.
+        _classificationGate.Setup(g => g.EvaluateAsync(
+                "file_system", It.IsAny<IReadOnlyDictionary<string, object?>>(), It.IsAny<CancellationToken>()))
+            .Returns(ValueTask.FromResult(ClassificationVerdict.RedactOutput()));
+        _classificationGate.Setup(g => g.RedactResult("file_system", It.IsAny<object?>()))
+            .Returns("[redacted]");
+
+        _sandboxExecutor.Setup(s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new SandboxExecutionResult
+            {
+                Success = true, Output = "SSN 123-45-6789", ResourceUsage = new ResourceUsage()
+            });
+
+        var step = CreateStep(new ToolUseConfig { ToolName = "file_system" });
+
+        var result = await _sut.ExecuteAsync(step, new Dictionary<PlanStepId, string>(), CancellationToken.None);
+
+        Assert.Equal(StepExecutionStatus.Completed, result.Status);
+        Assert.Equal("[redacted]", result.Output);
+        Assert.DoesNotContain("123-45-6789", result.Output);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_RedactionThatCannotBeApplied_WithholdsTheResult()
+    {
+        // Fails closed. The gate decided this asset must not be emitted as-is and the redaction did
+        // not produce usable text, so the one thing that must not happen is falling back to the
+        // original — the harmless-looking default that silently defeats the control.
+        _classificationGate.Setup(g => g.EvaluateAsync(
+                "file_system", It.IsAny<IReadOnlyDictionary<string, object?>>(), It.IsAny<CancellationToken>()))
+            .Returns(ValueTask.FromResult(ClassificationVerdict.RedactOutput()));
+        _classificationGate.Setup(g => g.RedactResult("file_system", It.IsAny<object?>()))
+            .Returns(new object());
+
+        _sandboxExecutor.Setup(s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new SandboxExecutionResult
+            {
+                Success = true, Output = "SSN 123-45-6789", ResourceUsage = new ResourceUsage()
+            });
+
+        var step = CreateStep(new ToolUseConfig { ToolName = "file_system" });
+
+        var result = await _sut.ExecuteAsync(step, new Dictionary<PlanStepId, string>(), CancellationToken.None);
+
+        Assert.Equal(StepExecutionStatus.Failed, result.Status);
+        Assert.True(result.IsPolicyDenial);
+        Assert.Null(result.Output);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_ClassificationSeesTheEffectiveArguments_NotJustTheDeclaredOnes()
+    {
+        // The gate resolves which asset a call touches from its arguments, so it must see what the
+        // tool will actually receive. A path an upstream step produced is exactly the kind a plan
+        // author did not write down, and exactly the kind a data-loss control needs to catch.
+        IReadOnlyDictionary<string, object?>? seen = null;
+        _classificationGate.Setup(g => g.EvaluateAsync(
+                It.IsAny<string>(), It.IsAny<IReadOnlyDictionary<string, object?>>(), It.IsAny<CancellationToken>()))
+            .Callback<string, IReadOnlyDictionary<string, object?>, CancellationToken>((_, args, _) => seen = args)
+            .Returns(ValueTask.FromResult(ClassificationVerdict.Allow()));
+
+        _sandboxExecutor.Setup(s => s.ExecuteAsync(It.IsAny<SandboxExecutionRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new SandboxExecutionResult { Success = true, Output = "ok", ResourceUsage = new ResourceUsage() });
+
+        var step = CreateStep(new ToolUseConfig
+        {
+            ToolName = "file_system",
+            InputParameters = new Dictionary<string, object?> { ["declared"] = "yes" }
+        });
+        var upstream = new Dictionary<PlanStepId, string>
+        {
+            [new PlanStepId(Guid.NewGuid())] = """{"fromUpstream": "/classified/report.docx"}"""
+        };
+
+        await _sut.ExecuteAsync(step, upstream, CancellationToken.None);
+
+        Assert.NotNull(seen);
+        Assert.Equal("yes", seen!["declared"]);
+        Assert.True(seen.ContainsKey("fromUpstream"));
+    }
+
+    [Fact]
     public async Task ExecuteAsync_GovernorDenies_NeverConsultsObservers()
     {
         // Observers run only for calls the built-in gates already permitted. That ordering is what
@@ -344,8 +460,7 @@ public sealed class ToolUseStepExecutorTests
 
         return new ToolUseStepExecutor(
             _capabilityEnforcer.Object,
-            _toolGovernor.Object,
-            observers,
+            BuildAdmissionPipeline(observers),
             services.BuildServiceProvider(),
             _attestationService.Object,
             _responseSanitizer.Object,
@@ -353,6 +468,19 @@ public sealed class ToolUseStepExecutorTests
             _context,
             NullLogger<ToolUseStepExecutor>.Instance);
     }
+
+    /// <summary>
+    /// Builds the REAL admission chain over this fixture's gate mocks, rather than mocking the chain
+    /// itself. Every gate assertion below therefore also proves that this execution path reaches the
+    /// gates through the chain, in the chain's order — which is the property that used to be
+    /// maintained by hand in five places and kept being broken in one of them.
+    /// </summary>
+    private ToolCallAdmissionPipeline BuildAdmissionPipeline(IToolCallObserverChain observers) =>
+        new(_toolGovernor.Object,
+            _classificationGate.Object,
+            observers,
+            Mock.Of<IProgressEvaluator>(),
+            NullLogger<ToolCallAdmissionPipeline>.Instance);
 
     [Fact]
     public async Task ExecuteAsync_GovernorAllows_AuthorizesExactToolName()

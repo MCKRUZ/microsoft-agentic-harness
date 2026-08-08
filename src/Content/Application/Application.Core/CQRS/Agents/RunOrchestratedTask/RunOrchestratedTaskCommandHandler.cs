@@ -26,26 +26,20 @@ public class RunOrchestratedTaskCommandHandler : IRequestHandler<RunOrchestrated
 	private readonly IAgentFactory _agentFactory;
 	private readonly IServiceScopeFactory _scopeFactory;
 	private readonly IAgentExecutionContext _executionContext;
-	private readonly IToolInvocationGovernor _governor;
-	private readonly IToolClassificationGate _classificationGate;
-	private readonly IToolCallObserverChain _observerChain;
+	private readonly IToolCallAdmissionPipeline _admissionPipeline;
 	private readonly ILogger<RunOrchestratedTaskCommandHandler> _logger;
 
 	public RunOrchestratedTaskCommandHandler(
 		IAgentFactory agentFactory,
 		IServiceScopeFactory scopeFactory,
 		IAgentExecutionContext executionContext,
-		IToolInvocationGovernor governor,
-		IToolClassificationGate classificationGate,
-		IToolCallObserverChain observerChain,
+		IToolCallAdmissionPipeline admissionPipeline,
 		ILogger<RunOrchestratedTaskCommandHandler> logger)
 	{
 		_agentFactory = agentFactory;
 		_scopeFactory = scopeFactory;
 		_executionContext = executionContext;
-		_governor = governor;
-		_classificationGate = classificationGate;
-		_observerChain = observerChain;
+		_admissionPipeline = admissionPipeline;
 		_logger = logger;
 	}
 
@@ -56,6 +50,13 @@ public class RunOrchestratedTaskCommandHandler : IRequestHandler<RunOrchestrated
 
 		try
 		{
+			// Clear any prior turn's governance decisions and loop-guard history before this task's
+			// first phase. Nested MediatR sends within a conversation share one scope, so without this
+			// an orchestrated task inherits the state of whatever ran before it in the same
+			// conversation — and can be halted by the loop guard for calls it never made. This handler
+			// previously never armed the loop guard at all, so it never needed the reset either.
+			_admissionPipeline.Reset();
+
 			// Phase 1: Create orchestrator and get task decomposition
 			var agentCatalog = BuildAgentCatalog(request.AvailableAgents);
 			var orchestrator = await _agentFactory.CreateAgentFromSkillAsync(
@@ -191,22 +192,22 @@ public class RunOrchestratedTaskCommandHandler : IRequestHandler<RunOrchestrated
 	private async Task<object?> RunOrchestratorGovernedAsync(
 		AIAgent orchestrator, List<ChatMessage> messages, CancellationToken cancellationToken)
 	{
-		// Expose this scope's governor, classification gate, and consumer observers to the governed
-		// tool wrappers for the orchestrator's own RunAsync. Set/clear tightly around the call so
-		// interleaved sub-agent turns (which set their own ambient gates in their child scope) are
-		// unaffected.
-		ToolGovernanceAccessor.Current = _governor;
-		ClassificationGateAccessor.Current = _classificationGate;
-		ToolCallObserverAccessor.Current = _observerChain;
-		try
+		// Expose this scope's admission chain to the governed tool wrappers for the orchestrator's own
+		// RunAsync, scoped tightly around the call so interleaved sub-agent turns (which arm their own
+		// chain in a child scope) are unaffected.
+		//
+		// This used to arm the governor, the classification gate and the observer chain individually —
+		// and never armed the loop guard, so the orchestrator was the one agent that could spin on a
+		// repeated tool call unchecked. There is now one value to publish and no subset to get wrong.
+		//
+		// Deliberately NOT reset here: this method runs once for planning and once for synthesis, and
+		// they are two phases of one unit of work. The loop guard should see the orchestrator's calls
+		// across both — repeating in synthesis what it already did while planning is exactly the spin
+		// worth catching — and the governance trace should accumulate across both rather than losing
+		// the planning phase. The single reset lives at the top of Handle.
+		using (ToolAdmissionAccessor.Begin(_admissionPipeline))
 		{
 			return await orchestrator.RunAsync(messages, cancellationToken: cancellationToken);
-		}
-		finally
-		{
-			ToolGovernanceAccessor.Current = null;
-			ClassificationGateAccessor.Current = null;
-			ToolCallObserverAccessor.Current = null;
 		}
 	}
 

@@ -55,7 +55,7 @@ public sealed partial class DirectToolInvoker
     private DirectToolInvocationOutcome Shape(
         ToolResult result,
         ArmedInvocation armed,
-        ClassificationVerdict? classification,
+        ToolCallAdmission admission,
         TimeSpan duration)
     {
         var ceiling = armed.Config.MaxOutputCharacters;
@@ -73,24 +73,18 @@ public sealed partial class DirectToolInvoker
 
         var raw = result.Output ?? string.Empty;
 
-        if (classification?.Outcome == ClassificationGateOutcome.RedactOutput && armed.ClassificationGate is not null)
+        // Fails closed: when a redaction was required and could not be applied, the chain returns
+        // false and the original must be withheld rather than emitted. See the chain's own remarks
+        // for why falling back to the raw content is the trap.
+        if (!armed.AdmissionPipeline.TryApplyTextOutputPolicy(admission, armed.ToolName, raw, out var admitted))
         {
-            if (!TryRedact(armed, raw, out raw))
-            {
-                // Fail closed. The gate decided this asset must not be emitted as-is and we could not
-                // apply its redaction, so the one thing we must not do is fall back to the original —
-                // which is precisely what `RedactResult(...) as string ?? output` would have done for
-                // any gate that returns a non-string. The shipped gate always answers with a string
-                // here, so this is a guard against a consumer-supplied one; it is exactly the sort of
-                // fallback that reads as harmless and silently defeats the control.
-                return DirectToolInvocationOutcome.Refused(
-                    DirectToolInvocationStatus.Denied,
-                    GovernanceDenials.NotPermitted(armed.ToolName),
-                    duration);
-            }
+            return DirectToolInvocationOutcome.Refused(
+                DirectToolInvocationStatus.Denied,
+                GovernanceDenials.NotPermitted(armed.ToolName),
+                duration);
         }
 
-        var (output, truncated) = ScrubAndBound(raw, ceiling, armed.ToolName);
+        var (output, truncated) = ScrubAndBound(admitted ?? string.Empty, ceiling, armed.ToolName);
 
         return new DirectToolInvocationOutcome
         {
@@ -99,39 +93,6 @@ public sealed partial class DirectToolInvoker
             OutputTruncated = truncated,
             Duration = duration
         };
-    }
-
-    /// <summary>
-    /// Applies the classification gate's redaction, reporting whether it produced usable text.
-    /// </summary>
-    /// <returns>
-    /// <see langword="true"/> when the gate returned a string, which is then the redacted content.
-    /// <see langword="false"/> when it returned anything else — the caller must not emit the original.
-    /// </returns>
-    /// <remarks>
-    /// <c>IToolClassificationGate.RedactResult</c> is typed <c>object? → object?</c> because the agent
-    /// path passes it structured results it deliberately leaves alone. This path only ever hands it a
-    /// string, so a non-string answer means a gate that did something unexpected — and on a redaction
-    /// path an unexpected answer is a reason to withhold, not to shrug.
-    /// </remarks>
-    private bool TryRedact(ArmedInvocation armed, string content, out string redacted)
-    {
-        var result = armed.ClassificationGate!.RedactResult(armed.ToolName, content);
-
-        if (result is string text)
-        {
-            redacted = text;
-            return true;
-        }
-
-        _logger.LogWarning(
-            "Classification gate returned a {ResultType} rather than a string when redacting output of "
-            + "{ToolName}; the result is withheld rather than returned unredacted.",
-            result?.GetType().Name ?? "null",
-            armed.ToolName);
-
-        redacted = string.Empty;
-        return false;
     }
 
     /// <summary>

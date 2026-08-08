@@ -47,8 +47,7 @@ public sealed class LlmCallStepExecutorTests : IDisposable
         _sut = new LlmCallStepExecutor(
             _rootProvider.GetRequiredService<IServiceScopeFactory>(),
             _notifier.Object,
-            _governor.Object,
-            Mock.Of<IToolCallObserverChain>(),
+            PermissiveAdmission.PipelineOver(_governor.Object),
             _budget.Object,
             _agentContext.Object,
             _context,

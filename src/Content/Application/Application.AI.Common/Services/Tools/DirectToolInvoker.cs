@@ -18,14 +18,13 @@ namespace Application.AI.Common.Services.Tools;
 /// <remarks>
 /// <para>
 /// <strong>The invariant: identity and envelope must both be established before
-/// <c>AuthorizeAsync</c>.</strong> <c>ToolInvocationGovernor</c> reads the ambient envelope to decide
-/// whether enforcement is active at all, and reads the execution context's agent id as the subject to
-/// resolve permissions against — it denies outright when an envelope is armed and that subject is
-/// missing. Both reads happen when the governor is <em>called</em>, not when either value is
-/// published, so what matters is that neither is skipped and that both precede the authorization
-/// call. A refactor that moved either one past <c>AuthorizeAsync</c> — into the tool-resolution
-/// branch, say — would produce a surface that denies every invocation, or one the governor cannot
-/// attribute.
+/// <c>AdmitAsync</c>.</strong> <c>ToolInvocationGovernor</c>, the chain's first stage, reads the
+/// ambient envelope to decide whether enforcement is active at all, and reads the execution context's
+/// agent id as the subject to resolve permissions against — it denies outright when an envelope is
+/// armed and that subject is missing. Both reads happen when the stage <em>runs</em>, not when either
+/// value is published, so what matters is that neither is skipped and that both precede the admission
+/// call. A refactor that moved either one past <c>AdmitAsync</c> — into the tool-resolution branch,
+/// say — would produce a surface that denies every invocation, or one the governor cannot attribute.
 /// </para>
 /// <para>
 /// <strong>The synthetic agent identity is not decoration.</strong> It is the subject permission rules
@@ -34,10 +33,11 @@ namespace Application.AI.Common.Services.Tools;
 /// or worse, inherits permission rules written for a named agent.
 /// </para>
 /// <para>
-/// <strong>The deadline covers all three gates, not just the tool.</strong> Authorization can consult
-/// a policy engine and the classification gate can call a model, so a deadline scoped to the tool call
-/// alone would leave total request time unbounded by configuration — a caller could be held
-/// indefinitely by an invocation that never reached a tool at all.
+/// <strong>The deadline covers the whole admission chain, not just the tool.</strong> Authorization
+/// can consult a policy engine, the classification gate can call a model, and a consumer's rule can
+/// escalate to a human — so a deadline scoped to the tool call alone would leave total request time
+/// unbounded by configuration, and a caller could be held indefinitely by an invocation that never
+/// reached a tool at all.
 /// </para>
 /// <para>
 /// <strong>No sandbox routing, deliberately.</strong> Direct invocation has agent-path parity: it runs
@@ -101,15 +101,15 @@ public sealed partial class DirectToolInvoker : IDirectToolInvoker
                 DirectToolInvocationStatus.Disabled, "Direct tool invocation is not enabled on this host.");
         }
 
-        var admission = Admit(request, config);
-        if (admission.Refusal is { } refusal)
+        var preflight = RunPreflight(request, config);
+        if (preflight.Refusal is { } refusal)
             return refusal;
 
         // Unpacked here rather than threaded onward as a nullable pair: the accepted branch has both
         // values by construction, and passing them explicitly keeps the null-suppression to this one
         // line instead of scattering it through the arming path.
         return await RunArmedAsync(
-            request, admission.ToolName!, admission.AgentId!, config, cancellationToken)
+            request, preflight.ToolName!, preflight.AgentId!, config, cancellationToken)
             .ConfigureAwait(false);
     }
 
@@ -134,43 +134,30 @@ public sealed partial class DirectToolInvoker : IDirectToolInvoker
             var executionContext = scope.ServiceProvider.GetRequiredService<IAgentExecutionContext>();
             executionContext.Initialize(agentId, agentId, turnNumber: 1);
 
-            var governor = scope.ServiceProvider.GetRequiredService<IToolInvocationGovernor>();
-            var classificationGate = scope.ServiceProvider.GetService<IToolClassificationGate>();
-            governor.Reset();
-
-            // All three ambient values are published with restoring scopes rather than assigned and
-            // nulled. The difference only shows under nesting, where it is the whole game: nulling on
-            // teardown disarms whatever an enclosing flow had armed, leaving the outer call ungoverned
-            // for the rest of its life. Restoring cannot do that.
-            //
-            // The progress guard is deliberately NOT armed at all. It detects an agent repeating
-            // identical calls across a turn, and a single invocation has no sequence to evaluate —
-            // a fresh evaluator that could only ever see one call is machinery that cannot fire.
-            //
-            // Consumer observers ARE armed, for the opposite reason: a domain rule ("never wire over
-            // 10k") judges one call on its own arguments and applies exactly as much to a single
-            // direct invocation as to a call inside an agent turn. Leaving them unarmed here would
-            // mean a consumer's safety rule silently stops applying on the Execution API path — the
-            // registered-but-inert failure this codebase keeps paying for.
             // Required, not GetService: the chain is registered unconditionally, and an absent one is
-            // indistinguishable at runtime from a host that registered no rules — so tolerating null
-            // here would let a broken composition run this path silently unguarded. Same reasoning as
-            // the plan step executors, which take it as a required constructor dependency.
-            var observerChain = scope.ServiceProvider.GetRequiredService<IToolCallObserverChain>();
+            // indistinguishable at runtime from a host whose gates all happen to be off — so tolerating
+            // null here would let a broken composition run this path silently unguarded.
+            var admissionPipeline = scope.ServiceProvider.GetRequiredService<IToolCallAdmissionPipeline>();
+            admissionPipeline.Reset();
 
+            // Both ambient values are published with restoring scopes rather than assigned and nulled.
+            // The difference only shows under nesting, where it is the whole game: nulling on teardown
+            // disarms whatever an enclosing flow had armed, leaving the outer call ungoverned for the
+            // rest of its life. Restoring cannot do that.
+            //
+            // The chain is armed as well as called directly, because a tool that spawns an agent turn
+            // beneath it must reach the same chain rather than run unadmitted.
             using var grantedEnvelope = CapabilityEnvelopeAccessor.Begin(request.Envelope);
-            using var armedGovernor = ToolGovernanceAccessor.Begin(governor);
-            using var armedGate = ClassificationGateAccessor.Begin(classificationGate);
-            using var armedObservers = ToolCallObserverAccessor.Begin(observerChain);
+            using var armedAdmission = ToolAdmissionAccessor.Begin(admissionPipeline);
 
             try
             {
-                var armed = new ArmedInvocation(request, toolName, governor, classificationGate, observerChain, scope, config);
+                var armed = new ArmedInvocation(request, toolName, admissionPipeline, scope, config);
                 return await AuthorizeAndRunAsync(armed, sw, cancellationToken).ConfigureAwait(false);
             }
             finally
             {
-                LogTrace(toolName, agentId, governor.GetTrace);
+                LogTrace(toolName, agentId, admissionPipeline.GetTrace);
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -201,60 +188,40 @@ public sealed partial class DirectToolInvoker : IDirectToolInvoker
     }
 
     /// <summary>
-    /// Runs the three gates the agent path runs — governance, classification, then the tool itself —
-    /// all under one deadline, and shapes the result for a caller outside the process.
+    /// Runs the admission chain and then the tool itself, all under one deadline, and shapes the
+    /// result for a caller outside the process.
     /// </summary>
+    /// <remarks>
+    /// The chain is called rather than reproduced. This path once ran its own copy of the gate
+    /// sequence, which is how it came to run three of the four gates the agent path ran, in an order
+    /// maintained by hand in two places at once.
+    /// <para>
+    /// The loop guard does not apply here and the request says so: it detects an agent repeating
+    /// identical calls across a turn, and a single invocation has no sequence to evaluate.
+    /// </para>
+    /// </remarks>
     private async Task<DirectToolInvocationOutcome> AuthorizeAndRunAsync(
         ArmedInvocation armed, Stopwatch sw, CancellationToken cancellationToken)
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(armed.Request.RequestedTimeout ?? armed.Config.InvocationTimeout);
 
-        // Parameters are passed for the same reason the agent path passes them: if this verdict is
-        // routed to a human, approving a bare tool name tells them nothing. This is the surface most
-        // exposed to external callers, so it is the one where an approver most needs to see what
-        // they are signing off on.
-        var decision = await armed.Governor
-            .AuthorizeAsync(armed.ToolName, deadline.Token, armed.Request.Parameters)
+        // Parameters are passed for the same reason the agent path passes them: if a verdict is routed
+        // to a human, approving a bare tool name tells them nothing. This is the surface most exposed
+        // to external callers, so it is the one where an approver most needs to see what they are
+        // signing off on.
+        var admission = await armed.AdmissionPipeline
+            .AdmitAsync(
+                new ToolCallAdmissionRequest(
+                    armed.ToolName, armed.Request.Parameters, CountsTowardLoopDetection: false),
+                deadline.Token)
             .ConfigureAwait(false);
 
-        if (!decision.IsAllowed)
+        if (!admission.IsAllowed)
         {
-            // The governor's message is already scrubbed for consumption outside the host — rule ids,
+            // The chain's message is already scrubbed for consumption outside the host — rule ids,
             // paths and policy internals stay in the trace and the structured log.
-            return Refused(
-                DirectToolInvocationStatus.Denied,
-                decision.DeniedMessage ?? GovernanceDenials.NotPermitted(armed.ToolName),
-                sw);
-        }
-
-        var classification = await ClassifyAsync(armed, deadline.Token).ConfigureAwait(false);
-        if (classification?.Outcome == ClassificationGateOutcome.Block)
-        {
-            return Refused(
-                DirectToolInvocationStatus.Denied,
-                classification.BlockedMessage ?? GovernanceDenials.NotPermitted(armed.ToolName),
-                sw);
-        }
-
-        // Consumer observers, consulted explicitly for the same reason the classification gate is:
-        // this path never builds the AIFunction wrapper that calls them on the agent path, so an
-        // armed-but-unconsulted chain would be a host safety rule that silently did not apply to the
-        // surface most exposed to external callers. Last, exactly as on the agent path, so an observer
-        // still only ever sees a call the built-in gates already permitted.
-        if (armed.Observers is { HasObservers: true } observers)
-        {
-            var observed = await observers
-                .EvaluateAsync(armed.ToolName, armed.Request.Parameters, deadline.Token)
-                .ConfigureAwait(false);
-
-            if (!observed.IsAllowed)
-            {
-                return Refused(
-                    DirectToolInvocationStatus.Denied,
-                    observed.DeniedMessage ?? GovernanceDenials.NotPermitted(armed.ToolName),
-                    sw);
-            }
+            return Refused(DirectToolInvocationStatus.Denied, admission.DeniedMessage!, sw);
         }
 
         var tool = armed.Scope.ServiceProvider.GetKeyedService<ITool>(armed.ToolName);
@@ -272,27 +239,7 @@ public sealed partial class DirectToolInvoker : IDirectToolInvoker
             .ConfigureAwait(false);
 
         sw.Stop();
-        return Shape(result, armed, classification, sw.Elapsed);
-    }
-
-    /// <summary>
-    /// Consults the data-classification gate, when the host registers one.
-    /// </summary>
-    /// <remarks>
-    /// Called explicitly rather than inherited. On the agent path <c>GovernedAIFunction</c> calls the
-    /// gate, but that wrapper sits on the <c>AIFunction</c> the model invokes and this path never
-    /// builds one — so an armed-but-unconsulted gate would be a data-loss control that silently did
-    /// not apply to the surface most exposed to external callers.
-    /// </remarks>
-    private static async Task<ClassificationVerdict?> ClassifyAsync(
-        ArmedInvocation armed, CancellationToken cancellationToken)
-    {
-        if (armed.ClassificationGate is null)
-            return null;
-
-        return await armed.ClassificationGate
-            .EvaluateAsync(armed.ToolName, armed.Request.Parameters, cancellationToken)
-            .ConfigureAwait(false);
+        return Shape(result, armed, admission, sw.Elapsed);
     }
 
     /// <summary>
@@ -332,17 +279,13 @@ public sealed partial class DirectToolInvoker : IDirectToolInvoker
     /// </summary>
     /// <param name="Request">The caller's request.</param>
     /// <param name="ToolName">The catalog's name for the tool, which is also its keyed-DI key.</param>
-    /// <param name="Governor">This invocation's scoped governor.</param>
-    /// <param name="ClassificationGate">The data-classification gate, or null when the host registers none.</param>
-    /// <param name="Observers">The host's tool-call observer chain. Empty when no rules are registered.</param>
+    /// <param name="AdmissionPipeline">This invocation's scoped admission chain.</param>
     /// <param name="Scope">The invocation's DI scope, from which the tool itself is resolved.</param>
     /// <param name="Config">The host settings this invocation was admitted under.</param>
     private readonly record struct ArmedInvocation(
         DirectToolInvocationRequest Request,
         string ToolName,
-        IToolInvocationGovernor Governor,
-        IToolClassificationGate? ClassificationGate,
-        IToolCallObserverChain Observers,
+        IToolCallAdmissionPipeline AdmissionPipeline,
         AsyncServiceScope Scope,
         DirectToolInvocationConfig Config);
 }

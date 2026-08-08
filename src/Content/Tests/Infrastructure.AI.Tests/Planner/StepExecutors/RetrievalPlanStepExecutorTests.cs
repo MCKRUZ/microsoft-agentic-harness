@@ -59,8 +59,7 @@ public sealed class RetrievalPlanStepExecutorTests
             _mockComplexityClassifier.Object,
             _mockCostTracker.Object,
             _mockNotifier.Object,
-            _governor.Object,
-            Mock.Of<IToolCallObserverChain>(),
+            PermissiveAdmission.PipelineOver(_governor.Object),
             _context,
             NullLogger<RetrievalPlanStepExecutor>.Instance);
     }

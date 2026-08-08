@@ -29,10 +29,10 @@ namespace Presentation.Common.Tests.Composition;
 /// tests even when each component's isolated unit tests stay green.
 /// </para>
 /// <para>
-/// The only test-supplied step is publishing the scoped governor to
-/// <see cref="ToolGovernanceAccessor"/> — the single line
-/// <c>ExecuteAgentTurnCommandHandler</c> performs at the start of a governed turn (and clears
-/// in its finally). The tests mirror that exact pattern.
+/// The only test-supplied step is publishing the scoped admission chain to
+/// <see cref="ToolAdmissionAccessor"/> — the single line
+/// <c>ExecuteAgentTurnCommandHandler</c> performs at the start of a governed turn. The tests mirror
+/// that exact pattern.
 /// </para>
 /// </remarks>
 public sealed class PluginGovernanceCompositionTests : IDisposable
@@ -280,9 +280,9 @@ public sealed class PluginGovernanceCompositionTests : IDisposable
     /// <summary>
     /// Invokes the given governed functions inside a governed turn shaped exactly like
     /// <c>ExecuteAgentTurnCommandHandler</c>'s: scoped execution context initialized with an
-    /// agent identity, the scope's governor published to <see cref="ToolGovernanceAccessor"/>,
-    /// and the accessor cleared in a finally. Returns each invocation's result (in call order)
-    /// plus the governor's recorded trace.
+    /// agent identity, and the scope's admission chain published to
+    /// <see cref="ToolAdmissionAccessor"/> for the duration. Returns each invocation's result (in
+    /// call order) plus the recorded governance trace.
     /// </summary>
     private static async Task<(IReadOnlyList<object?> Results, GovernanceTrace Trace)> InvokeUnderGovernedTurn(
         IServiceScope scope, params AIFunction[] functions)
@@ -290,19 +290,13 @@ public sealed class PluginGovernanceCompositionTests : IDisposable
         scope.ServiceProvider.GetRequiredService<IAgentExecutionContext>()
             .Initialize("composition-test-agent", "conv-gov", turnNumber: 1);
 
-        var governor = scope.ServiceProvider.GetRequiredService<IToolInvocationGovernor>();
-        ToolGovernanceAccessor.Current = governor;
-        try
-        {
-            var results = new List<object?>();
-            foreach (var function in functions)
-                results.Add(await function.InvokeAsync(new AIFunctionArguments(), CancellationToken.None));
+        var admissionPipeline = scope.ServiceProvider.GetRequiredService<IToolCallAdmissionPipeline>();
+        using var armed = ToolAdmissionAccessor.Begin(admissionPipeline);
 
-            return (results, governor.GetTrace());
-        }
-        finally
-        {
-            ToolGovernanceAccessor.Current = null;
-        }
+        var results = new List<object?>();
+        foreach (var function in functions)
+            results.Add(await function.InvokeAsync(new AIFunctionArguments(), CancellationToken.None));
+
+        return (results, admissionPipeline.GetTrace());
     }
 }

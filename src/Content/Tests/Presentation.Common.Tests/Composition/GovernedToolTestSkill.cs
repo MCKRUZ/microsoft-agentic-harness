@@ -99,14 +99,15 @@ internal sealed class GovernedToolTestSkill : IDisposable
         scope.ServiceProvider.GetRequiredService<IAgentExecutionContext>()
             .Initialize($"composition-{_label}-agent", $"conv-{_label}", turnNumber: 1);
 
-        var governor = scope.ServiceProvider.GetRequiredService<IToolInvocationGovernor>();
-        var chain = scope.ServiceProvider.GetRequiredService<IToolCallObserverChain>();
+        // One value to arm, resolved from the production graph. This used to arm the governor and the
+        // observer chain by hand and leave the classification gate and loop guard unarmed — so a
+        // composition test could not have caught a turn that skipped either of them.
+        var admissionPipeline = scope.ServiceProvider.GetRequiredService<IToolCallAdmissionPipeline>();
 
-        using var armedGovernor = ToolGovernanceAccessor.Begin(governor);
-        using var armedObservers = ToolCallObserverAccessor.Begin(chain);
+        using var armed = ToolAdmissionAccessor.Begin(admissionPipeline);
 
         var result = await function.InvokeAsync(new AIFunctionArguments(), CancellationToken.None);
-        return (result, governor.GetTrace());
+        return (result, admissionPipeline.GetTrace());
     }
 
     /// <summary>

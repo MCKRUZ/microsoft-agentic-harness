@@ -30,10 +30,7 @@ namespace Application.Core.CQRS.Agents.ExecuteAgentTurn;
 public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCommand, AgentTurnResult>
 {
 	private readonly IAgentConversationCache _agentCache;
-	private readonly IToolInvocationGovernor _governor;
-	private readonly IProgressEvaluator _progressEvaluator;
-	private readonly IToolClassificationGate _classificationGate;
-	private readonly IToolCallObserverChain _observerChain;
+	private readonly IToolCallAdmissionPipeline _admissionPipeline;
 	private readonly IAgentMetadataRegistry _agentRegistry;
 	private readonly ISkillMetadataRegistry _skillRegistry;
 	private readonly IConversationRegistrationTracker _registrationTracker;
@@ -46,10 +43,7 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 
 	public ExecuteAgentTurnCommandHandler(
 		IAgentConversationCache agentCache,
-		IToolInvocationGovernor governor,
-		IProgressEvaluator progressEvaluator,
-		IToolClassificationGate classificationGate,
-		IToolCallObserverChain observerChain,
+		IToolCallAdmissionPipeline admissionPipeline,
 		IAgentMetadataRegistry agentRegistry,
 		ISkillMetadataRegistry skillRegistry,
 		IConversationRegistrationTracker registrationTracker,
@@ -61,10 +55,7 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 		ILogger<ExecuteAgentTurnCommandHandler> logger)
 	{
 		_agentCache = agentCache;
-		_governor = governor;
-		_progressEvaluator = progressEvaluator;
-		_classificationGate = classificationGate;
-		_observerChain = observerChain;
+		_admissionPipeline = admissionPipeline;
 		_agentRegistry = agentRegistry;
 		_skillRegistry = skillRegistry;
 		_registrationTracker = registrationTracker;
@@ -127,51 +118,39 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 			// records to this handler's scoped ILlmUsageCapture instance.
 			LlmUsageCapture.Current = _usageCapture;
 
-			// Same bridge for tool governance: the agent (and its cached tool functions) outlive
-			// this scope, so expose this turn's scoped governor ambiently for the governed tool
+			// Same bridge for tool admission: the agent (and its cached tool functions) outlive this
+			// scope, so expose this turn's scoped admission chain ambiently for the governed tool
 			// wrapper to consult at invocation time. Reset first: nested MediatR sends within a
-			// conversation share one scope (one governor), so clear prior turns' decisions so this
-			// turn's trace reflects only this turn — mirrors the _usageCapture clear above.
-			_governor.Reset();
-			ToolGovernanceAccessor.Current = _governor;
-
-			// Same per-turn lifecycle for the spin / no-progress guard: reset prior turns' call
-			// history and expose this turn's scoped evaluator ambiently so the governed tool wrapper
-			// consults it at invocation time. Cleared in the finally below alongside the governor.
-			_progressEvaluator.Reset();
-			ProgressGuardAccessor.Current = _progressEvaluator;
-
-			// Same per-turn bridge for the classification DLP gate. It is stateless across calls (each
-			// decision is emitted to audit/OTel immediately), so unlike the governor and progress guard it
-			// needs no reset — only the ambient exposure for the governed tool wrapper to consult.
-			ClassificationGateAccessor.Current = _classificationGate;
-
-			// Same per-turn bridge for the host's own tool-call observers. Stateless across calls and
-			// inert when the host registered none, so this costs nothing on the default composition.
-			ToolCallObserverAccessor.Current = _observerChain;
+			// conversation share one scope (one chain), so clear prior turns' governance decisions and
+			// loop-guard call history so this turn reflects only this turn — mirrors the _usageCapture
+			// clear above. One reset covers every stateful stage; there is no longer a second one to
+			// forget.
+			_admissionPipeline.Reset();
 
 			object? response;
 			var turnSw = Stopwatch.StartNew();
-			try
+
+			// Begin rather than assign-and-null: nulling on teardown would disarm whatever an
+			// enclosing flow had armed, leaving the outer call ungoverned for the rest of its life.
+			using (ToolAdmissionAccessor.Begin(_admissionPipeline))
 			{
-				// When a transport has attached a streaming sink, stream assistant text
-				// deltas as the model generates them (real perceived-latency win). Usage
-				// and tool capture still flow through the chat-client middleware, so the
-				// post-turn accounting below is identical to the blocking path. With no
-				// sink (tests, batch callers) fall back to a single blocking call.
-				var streamSink = AgentTurnStreamSink.Current;
-				response = streamSink is not null
-					? await RunStreamingTurnAsync(agent, messages, streamSink, cancellationToken)
-					: await agent.RunAsync(messages, cancellationToken: cancellationToken);
-				turnSw.Stop();
-			}
-			finally
-			{
-				LlmUsageCapture.Current = null;
-				ToolGovernanceAccessor.Current = null;
-				ProgressGuardAccessor.Current = null;
-				ClassificationGateAccessor.Current = null;
-				ToolCallObserverAccessor.Current = null;
+				try
+				{
+					// When a transport has attached a streaming sink, stream assistant text
+					// deltas as the model generates them (real perceived-latency win). Usage
+					// and tool capture still flow through the chat-client middleware, so the
+					// post-turn accounting below is identical to the blocking path. With no
+					// sink (tests, batch callers) fall back to a single blocking call.
+					var streamSink = AgentTurnStreamSink.Current;
+					response = streamSink is not null
+						? await RunStreamingTurnAsync(agent, messages, streamSink, cancellationToken)
+						: await agent.RunAsync(messages, cancellationToken: cancellationToken);
+					turnSw.Stop();
+				}
+				finally
+				{
+					LlmUsageCapture.Current = null;
+				}
 			}
 
 			// Capture accumulated token usage from all LLM calls during this turn
@@ -300,7 +279,7 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 				CacheWrite = usage.CacheWrite,
 				CostUsd = usage.CostUsd,
 				Model = usage.Model,
-				Governance = BuildGovernanceTrace()
+				Governance = _admissionPipeline.GetTrace()
 			};
 		}
 		catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -383,28 +362,6 @@ public class ExecuteAgentTurnCommandHandler : IRequestHandler<ExecuteAgentTurnCo
 		}
 
 		return builder.ToString();
-	}
-
-	/// <summary>
-	/// Composes the turn's governance trace: the per-invocation governor's decisions, with any
-	/// escalation reason codes the spin / no-progress guard raised this turn folded into
-	/// <see cref="GovernanceTrace.EscalationReasonCodes"/>. When the guard raised nothing (the common
-	/// case — Stop mode or no spin) the governor's trace is returned unchanged.
-	/// </summary>
-	private GovernanceTrace BuildGovernanceTrace()
-	{
-		var trace = _governor.GetTrace();
-		var spinEscalations = _progressEvaluator.EscalationReasonCodes;
-		if (spinEscalations is null or { Count: 0 })
-			return trace;
-
-		// Dedup case-insensitively to honour GovernanceTrace.EscalationReasonCodes' "distinct" contract
-		// and stay aligned with GovernanceTrace.Merge's OrdinalIgnoreCase union.
-		return trace with
-		{
-			EscalationReasonCodes =
-				[.. trace.EscalationReasonCodes.Concat(spinEscalations).Distinct(StringComparer.OrdinalIgnoreCase)]
-		};
 	}
 
 	private static void RecordTurnError(string agentName)

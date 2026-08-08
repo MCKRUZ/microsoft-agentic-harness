@@ -9,7 +9,7 @@ namespace Application.AI.Common.Services.Governance;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Follows the same pattern as the host's other per-flow accessors (<c>ToolGovernanceAccessor</c>,
+/// Follows the same pattern as the host's other per-flow accessors (<c>ToolAdmissionAccessor</c>,
 /// <c>EphemeralAgentOverlayAccessor</c>, <c>KnowledgeScopeAccessor</c>): an <see cref="AsyncLocal{T}"/>
 /// the run path sets at the start of a bundle run and clears in a <c>finally</c>, read at enforcement
 /// time. When unset — every non-bundle code path — the gate chain and tool builder see no envelope and

@@ -27,8 +27,8 @@ namespace Application.AI.Common.Services.Agent;
 /// cannot reach the model down either route, and the two enforcement points cannot drift.
 /// </para>
 /// <para>
-/// The governance wrapper is inert unless a governor is ambient for the turn (see
-/// <see cref="Governance.ToolGovernanceAccessor"/>), so wrapping only adds enforcement. The reserved-name
+/// The governance wrapper is inert unless an admission chain is ambient for the turn (see
+/// <see cref="Governance.ToolAdmissionAccessor"/>), so wrapping only adds enforcement. The reserved-name
 /// drop is the one case where this provider changes which tools exist, and only for names that must never
 /// have been publishable in the first place.
 /// </para>
