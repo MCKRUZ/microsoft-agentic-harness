@@ -30,6 +30,34 @@ namespace Infrastructure.Postgres.Migrations;
 /// tries again — while making a hopeless failure cheap.
 /// </para>
 /// <para>
+/// <strong>Where to call it from.</strong> There are two shapes in this repo and the choice is not
+/// arbitrary, so a third Postgres-backed store should copy the one that matches its own structure
+/// rather than whichever it read first.
+/// </para>
+/// <list type="bullet">
+/// <item>
+/// <description>
+/// <em>A store with one place it opens connections</em> — <c>PostgreSqlGraphStore</c> — calls
+/// <see cref="EnsureAsync"/> there. Simplest, and the preferred shape when the seam exists.
+/// </description>
+/// </item>
+/// <item>
+/// <description>
+/// <em>A store with no such seam</em> — <c>PostgresObservabilityStore</c>, where eighteen call sites
+/// take commands straight off an <c>NpgsqlDataSource</c> — hooks
+/// <c>NpgsqlDataSourceBuilder.UsePhysicalConnectionInitializer</c> instead. That reaches every one of
+/// them without threading a call through all eighteen, and it runs before the first query rather
+/// than racing it. Note that it needs both the sync and async initializer; the sync one should throw,
+/// because a synchronous <c>Open()</c> would skip the migration entirely.
+/// </description>
+/// </item>
+/// </list>
+/// <para>
+/// A factory to unify the two was considered and is the wrong shape: what differs is not how the
+/// data source is built but whether the store has a single point at which a connection becomes
+/// available, which is a property of the store, not of its configuration.
+/// </para>
+/// <para>
 /// Deliberately NOT <see cref="IDisposable"/>. It was, briefly, because it holds a
 /// <see cref="SemaphoreSlim"/> — and the ceremony was immediately skipped by one of its two
 /// consumers, which is the tell that it was never needed. A <see cref="SemaphoreSlim"/> only needs
