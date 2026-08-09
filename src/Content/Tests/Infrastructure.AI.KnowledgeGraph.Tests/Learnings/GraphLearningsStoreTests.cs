@@ -456,9 +456,9 @@ public sealed class GraphLearningsStoreTests
 
         var properties = new Dictionary<string, string>(node.Properties);
         if (value is null)
-            properties.Remove("Trust");
+            properties.Remove(GraphNodeMemoryExtensions.TrustPropertyKey);
         else
-            properties["Trust"] = value;
+            properties[GraphNodeMemoryExtensions.TrustPropertyKey] = value;
 
         await _graphStore.AddNodesAsync([node with { Properties = properties }], CancellationToken.None);
     }

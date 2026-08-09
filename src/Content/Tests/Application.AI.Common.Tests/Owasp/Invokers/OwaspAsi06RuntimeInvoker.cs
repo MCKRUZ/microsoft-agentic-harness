@@ -5,6 +5,7 @@ using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Application.AI.Common.Interfaces.Learnings;
 using Application.AI.Common.Interfaces.RAG;
+using Application.AI.Common.Tests.Fakes;
 using Application.Core.CQRS.Learnings;
 using Domain.AI.Evaluation;
 using Domain.AI.Governance;
@@ -146,14 +147,7 @@ public sealed class OwaspAsi06RuntimeInvoker : IAgentInvoker
         CancellationToken cancellationToken)
     {
         var store = new InMemoryLearningsStore();
-
-        var remember = new RememberCommandHandler(
-            store,
-            Mock.Of<ILearningNotificationChannel>(),
-            gate,
-            config,
-            TimeProvider.System,
-            NullLogger<RememberCommandHandler>.Instance);
+        var remember = LearningsChannelHarness.BuildRememberHandler(store, gate, config);
 
         await remember.Handle(
             new RememberCommand
@@ -177,18 +171,7 @@ public sealed class OwaspAsi06RuntimeInvoker : IAgentInvoker
             },
             cancellationToken);
 
-        var recall = new RecallQueryHandler(
-            store,
-            new DefaultLearningDecayService(
-                store,
-                OptionsMonitorOf(new LearningsConfig()),
-                TimeProvider.System,
-                NullLogger<DefaultLearningDecayService>.Instance),
-            new ConstantEmbeddingService(),
-            new ServiceCollection().BuildServiceProvider().GetRequiredService<IServiceScopeFactory>(),
-            config,
-            TimeProvider.System,
-            NullLogger<RecallQueryHandler>.Instance);
+        var recall = LearningsChannelHarness.BuildRecallHandler(store, config);
 
         var recalled = await recall.Handle(
             new RecallQuery
@@ -225,26 +208,7 @@ public sealed class OwaspAsi06RuntimeInvoker : IAgentInvoker
             }
         };
 
-        return OptionsMonitorOf(appConfig);
-    }
-
-    private static IOptionsMonitor<T> OptionsMonitorOf<T>(T value) where T : class =>
-        Mock.Of<IOptionsMonitor<T>>(m => m.CurrentValue == value);
-
-    /// <summary>
-    /// Returns one fixed vector for every input, so relevance is identical for every candidate and
-    /// cannot be what withholds the poisoned lesson. Only the trust filter can.
-    /// </summary>
-    private sealed class ConstantEmbeddingService : IEmbeddingService
-    {
-        private static readonly ReadOnlyMemory<float> Vector = new([1f, 0f, 0f]);
-
-        public Task<ReadOnlyMemory<float>> EmbedQueryAsync(string text, CancellationToken ct = default) =>
-            Task.FromResult(Vector);
-
-        public Task<IReadOnlyList<DocumentChunk>> EmbedAsync(
-            IReadOnlyList<DocumentChunk> chunks, CancellationToken ct = default) =>
-            throw new NotSupportedException("Learnings recall does not embed document chunks.");
+        return LearningsChannelHarness.OptionsMonitorOf(appConfig);
     }
 
     /// <summary>

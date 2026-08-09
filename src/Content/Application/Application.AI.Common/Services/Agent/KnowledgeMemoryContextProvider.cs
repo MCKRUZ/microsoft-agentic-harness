@@ -116,9 +116,20 @@ public sealed class KnowledgeMemoryContextProvider : AIContextProvider
         if (recalled.Count == 0)
             return null;
 
-        _logger.LogDebug("Injected {Count} recalled fact(s) into agent context", recalled.Count);
+        // Logged after formatting, not before: formatting can fail closed (see
+        // RecalledContextEnvelope), and the one case worth reporting accurately is the one where
+        // facts were recalled but deliberately not injected.
+        var block = FormatRecalledFacts(recalled);
+        if (block is null)
+        {
+            _logger.LogWarning(
+                "Withheld {Count} recalled fact(s): no unambiguous data envelope could be built",
+                recalled.Count);
+            return null;
+        }
 
-        return FormatRecalledFacts(recalled);
+        _logger.LogDebug("Injected {Count} recalled fact(s) into agent context", recalled.Count);
+        return block;
     }
 
     private static string? ExtractQuery(AIContext aiContext)

@@ -7,10 +7,13 @@ namespace Domain.AI.Learnings;
 /// stored learning may be replayed back into an agent's context.
 /// </summary>
 /// <remarks>
-/// The mirror of <c>KnowledgeMemoryService.IsRecallable</c> for the other memory channel, and named
-/// to match it. It exists as one shared predicate rather than an inline comparison at each read site
-/// for the reason the conversation-ownership check was consolidated: a trust rule hand-written at
-/// several call sites is a trust rule that eventually differs at one of them.
+/// The mirror of <c>KnowledgeMemoryService.IsRecallable</c> for the other memory channel, named to
+/// match it so the two read alike. It has a single production caller today —
+/// <c>RecallQueryHandler</c>, the recall chokepoint — and is named rather than inlined there for two
+/// reasons: an inline <c>Trust == Trusted</c> at a read site reads as a filter, whereas a named
+/// predicate reads as a rule, and the sibling channel arrived at three call sites by starting with
+/// one. This is not the six-site consolidation the conversation-ownership check needed; it is the
+/// cheaper habit of naming the invariant before it spreads.
 /// </remarks>
 public static class LearningEntryTrustExtensions
 {

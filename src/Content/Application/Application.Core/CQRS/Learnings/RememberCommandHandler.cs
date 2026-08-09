@@ -19,12 +19,19 @@ namespace Application.Core.CQRS.Learnings;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <strong>This is the learnings channel's write chokepoint, and the memory write gate belongs
-/// here (issue #338).</strong> A learning is model- or conversation-derived text that
+/// <strong>This is where learning content is created, and the memory write gate belongs here
+/// (issue #338).</strong> A learning is model- or conversation-derived text that
 /// <c>LearningsRecallContextProvider</c> later replays verbatim into the <em>instruction</em> channel
-/// of a future turn — the same loop the knowledge-memory gate was built to close. Both writers of
-/// note (drift-escalation resolutions and the work-memory synthesis pass) reach the store through
-/// this handler, so gating here covers the channel; gating at either caller would not.
+/// of a future turn — the same loop the knowledge-memory gate was built to close. Every writer of
+/// note (drift-escalation resolutions and the work-memory synthesis pass) creates learnings through
+/// this handler, so gating here covers creation; gating at either caller would not.
+/// </para>
+/// <para>
+/// Creation is not the only way content enters the channel:
+/// <see cref="ImproveLearningCommandHandler"/> can <em>replace</em> a stored learning's text, and it
+/// gates the replacement for the same reason. Two handlers, one gate — the classification ladder
+/// lives only inside <see cref="IMemoryWriteGate"/>, and <c>LearningsWriteGateCoverageTests</c>
+/// fails if a third handler ever writes learning content without consulting it.
 /// </para>
 /// <para>
 /// Only the gate's <c>Persist</c> and <c>Trust</c> verdicts are applied here. Its graph-provenance
@@ -42,20 +49,6 @@ namespace Application.Core.CQRS.Learnings;
 /// </remarks>
 public sealed class RememberCommandHandler : IRequestHandler<RememberCommand, Result<LearningEntry>>
 {
-    /// <summary>
-    /// Stable, scrubbed failure code returned when the gate refuses a write. The gate's own reason
-    /// string is deliberately <em>not</em> surfaced: it names the injection classification, and this
-    /// result travels to callers that log it.
-    /// </summary>
-    internal const string RejectedErrorCode = "learnings.write_rejected";
-
-    /// <summary>
-    /// Entity type reported to the gate. The gate's optional intent check asks "does this content
-    /// match its claimed entity type", so naming the channel — not the learning's category — is what
-    /// makes that question answerable.
-    /// </summary>
-    private const string GateEntityType = "Learning";
-
     private readonly ILearningsStore _store;
     private readonly ILearningNotificationChannel _notifications;
     private readonly IMemoryWriteGate _writeGate;
@@ -102,11 +95,13 @@ public sealed class RememberCommandHandler : IRequestHandler<RememberCommand, Re
         var now = _timeProvider.GetUtcNow();
         var learningId = Guid.NewGuid();
 
-        // Gate before anything is persisted: scan for injection and classify trust. Rejected content
-        // is never written; quarantined content is written but withheld from recall, so it stays
-        // available for audit and incident response without ever reaching an agent's instructions.
+        // Gate before anything is persisted — see the remarks for why this is the right place, and
+        // LearningsWriteGateContract for why the key is scope+category rather than the learning id.
         var decision = await _writeGate.EvaluateAsync(
-            learningId.ToString(), request.Content, GateEntityType, cancellationToken);
+            LearningsWriteGateContract.KeyFor(request.Scope, request.Category),
+            request.Content,
+            LearningsWriteGateContract.EntityType,
+            cancellationToken);
 
         if (!decision.Persist)
         {
@@ -114,7 +109,7 @@ public sealed class RememberCommandHandler : IRequestHandler<RememberCommand, Re
                 "Learning write blocked for {LearningId} from {SourceType}: {Reason}",
                 learningId, request.Source.SourceType, decision.Reason);
 
-            return Result<LearningEntry>.Fail(RejectedErrorCode);
+            return Result<LearningEntry>.Fail(LearningsWriteGateContract.RejectedErrorCode);
         }
 
         if (decision.Trust == MemoryTrust.Untrusted)

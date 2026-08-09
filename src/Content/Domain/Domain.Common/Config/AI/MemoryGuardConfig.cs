@@ -31,8 +31,18 @@ public sealed class MemoryGuardConfig
     /// Whether the memory write gate is active. <strong>Defaults to <see langword="true"/></strong>:
     /// the parent <see cref="KnowledgeBridgeConfig.Enabled"/> already gates memory as a whole, so once
     /// a consumer deliberately turns memory on, the protection is on by default (defense-by-default).
-    /// When false, writes pass through unguarded and unclassified, preserving legacy behavior.
+    /// When false, writes pass through unguarded and unclassified on <strong>both</strong> memory
+    /// channels.
     /// </summary>
+    /// <remarks>
+    /// The blast radius of turning this off grew with issue #338, and that is worth stating rather
+    /// than discovering. The work-memory synthesis pass used to run its own injection scan
+    /// unconditionally, so this flag had no bearing on it; that duplicate ladder was removed in
+    /// favour of the shared gate, which means switching this off now also stops scanning
+    /// model-synthesized lessons on their way into the Learnings channel. The trade was deliberate —
+    /// one ladder that cannot drift, against a flag that reaches further — but an operator disabling
+    /// this is disabling more than they were before.
+    /// </remarks>
     public bool Enabled { get; set; } = true;
 
     /// <summary>

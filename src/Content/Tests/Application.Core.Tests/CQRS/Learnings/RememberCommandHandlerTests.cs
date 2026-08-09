@@ -233,6 +233,26 @@ public sealed class RememberCommandHandlerTests
     }
 
     [Fact]
+    public async Task Handle_GateKeyIsBoundedSoItCannotInflateMetricCardinality()
+    {
+        // The gate composes this key into an audit action string that the audit adapter uses as an
+        // OpenTelemetry metric tag. A per-write unique value there mints a permanent time series per
+        // learning written. Two writes of the same shape must therefore produce the same key.
+        var keys = new List<string>();
+        _writeGate
+            .Setup(g => g.EvaluateAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Callback<string, string, string, CancellationToken>((key, _, _, _) => keys.Add(key))
+            .ReturnsAsync(MemoryWriteDecision.Allow());
+
+        await _handler.Handle(CreateCommand(), CancellationToken.None);
+        await _handler.Handle(CreateCommand(), CancellationToken.None);
+
+        keys.Should().HaveCount(2);
+        keys.Distinct().Should().ContainSingle();
+    }
+
+    [Fact]
     public async Task Handle_GatesTheContentThatIsActuallyStored()
     {
         // Guards against the gate being handed a summary, a truncation, or the wrong field: the

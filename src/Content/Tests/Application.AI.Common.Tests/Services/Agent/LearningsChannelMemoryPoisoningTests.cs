@@ -4,6 +4,7 @@ using Application.AI.Common.Interfaces.KnowledgeGraph;
 using Application.AI.Common.Interfaces.Learnings;
 using Application.AI.Common.Interfaces.RAG;
 using Application.AI.Common.Services.Agent;
+using Application.AI.Common.Tests.Fakes;
 using Application.Core.CQRS.Learnings;
 using Application.Core.Learnings;
 using Domain.AI.Governance;
@@ -58,6 +59,9 @@ public sealed class LearningsChannelMemoryPoisoningTests
     private const string Query = "how do I deploy?";
 
     private readonly InMemoryLearningsStore _store = new();
+    private readonly IOptionsMonitor<AppConfig> _options = LearningsChannelHarness.DefaultOptions();
+    private readonly IMemoryWriteGate _gate =
+        LearningsChannelHarness.BuildWriteGate(new AttackOnlyInjectionScanner(), LearningsChannelHarness.DefaultOptions());
 
     [Fact]
     public async Task PoisonedLesson_IsNeverInjectedIntoAgentInstructions()
@@ -107,13 +111,7 @@ public sealed class LearningsChannelMemoryPoisoningTests
 
     private async Task RememberAsync(string content)
     {
-        var handler = new RememberCommandHandler(
-            _store,
-            Mock.Of<ILearningNotificationChannel>(),
-            BuildRealWriteGate(),
-            AppOptions(),
-            TimeProvider.System,
-            NullLogger<RememberCommandHandler>.Instance);
+        var handler = LearningsChannelHarness.BuildRememberHandler(_store, _gate, _options);
 
         await handler.Handle(
             new RememberCommand
@@ -140,18 +138,7 @@ public sealed class LearningsChannelMemoryPoisoningTests
 
     private async ValueTask<string?> RecallBlockAsync()
     {
-        var recallHandler = new RecallQueryHandler(
-            _store,
-            new DefaultLearningDecayService(
-                _store,
-                MonitorOf(new LearningsConfig()),
-                TimeProvider.System,
-                NullLogger<DefaultLearningDecayService>.Instance),
-            new IdenticalEmbeddingService(),
-            EmptyScopeFactory(),
-            AppOptions(),
-            TimeProvider.System,
-            NullLogger<RecallQueryHandler>.Instance);
+        var recallHandler = LearningsChannelHarness.BuildRecallHandler(_store, _options);
 
         // The recaller dispatches through MediatR; forwarding the one query it sends keeps the real
         // recaller and the real handler in the chain without standing up a mediator pipeline.
@@ -169,67 +156,13 @@ public sealed class LearningsChannelMemoryPoisoningTests
 
         var provider = new LearningsRecallContextProvider(
             Mock.Of<IAmbientRequestScope>(a => a.Current == (IServiceProvider)scopeProvider),
-            AppOptions(),
+            _options,
             NullLogger<LearningsRecallContextProvider>.Instance);
 
         return await provider.RecallBlockAsync(new AIContext
         {
             Messages = new List<ChatMessage> { new(ChatRole.User, Query) }
         });
-    }
-
-    /// <summary>
-    /// The production <see cref="ProvenanceMemoryWriteGate"/> on its default thresholds
-    /// (quarantine at Medium, reject at Critical), with only the scanner stubbed.
-    /// </summary>
-    private static IMemoryWriteGate BuildRealWriteGate()
-    {
-        var config = AppOptions();
-
-        return new ProvenanceMemoryWriteGate(
-            new DefaultProvenanceStamper(config, TimeProvider.System),
-            new NoOpMemoryIntentClassifier(),
-            config,
-            NullLogger<ProvenanceMemoryWriteGate>.Instance,
-            scanner: new AttackOnlyInjectionScanner(),
-            audit: null);
-    }
-
-    private static IOptionsMonitor<AppConfig> AppOptions() => MonitorOf(new AppConfig
-    {
-        AI = new AIConfig
-        {
-            // MemoryGuard defaults apply: enabled, quarantine at Medium, reject at Critical.
-            KnowledgeBridge = new KnowledgeBridgeConfig(),
-            Learnings = new LearningsConfig(),
-            // MinRelevance 0 so ranking cannot be what withholds the poisoned lesson.
-            LearningsRecall = new LearningsRecallConfig { Enabled = true, MaxResults = 5, MinRelevance = 0 }
-        }
-    });
-
-    private static IOptionsMonitor<T> MonitorOf<T>(T value) where T : class =>
-        Mock.Of<IOptionsMonitor<T>>(m => m.CurrentValue == value);
-
-    /// <summary>Scope factory for the fire-and-forget access-reinforcement write, which is not under test.</summary>
-    private static IServiceScopeFactory EmptyScopeFactory() =>
-        new ServiceCollection().BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
-
-    /// <summary>
-    /// Returns the same vector for every input, so every candidate scores an identical relevance of
-    /// 1.0. Relevance is then incapable of separating the poisoned lesson from the clean one, leaving
-    /// the trust filter as the only thing that can.
-    /// </summary>
-    private sealed class IdenticalEmbeddingService : IEmbeddingService
-    {
-        private static readonly ReadOnlyMemory<float> Vector = new([1f, 0f, 0f]);
-
-        public Task<ReadOnlyMemory<float>> EmbedQueryAsync(string text, CancellationToken ct = default) =>
-            Task.FromResult(Vector);
-
-        // Not on the recall path; recall embeds one string at a time through EmbedQueryAsync.
-        public Task<IReadOnlyList<DocumentChunk>> EmbedAsync(
-            IReadOnlyList<DocumentChunk> chunks, CancellationToken ct = default) =>
-            throw new NotSupportedException("Learnings recall does not embed document chunks.");
     }
 
     /// <summary>

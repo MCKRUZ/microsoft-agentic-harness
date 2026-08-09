@@ -15,10 +15,21 @@ namespace Application.AI.Common.Services.Agent;
 /// passes it still must not arrive wearing the harness's own authority.
 /// </para>
 /// <para>
-/// The shape is deliberately the one already proven for untrusted judge input in
+/// The shape follows the one already proven for untrusted judge input in
 /// <c>JudgeCallCore.TryBuildPrompt</c>: a random per-invocation tag the recalled content cannot have
 /// been written to anticipate, a directive naming that exact tag, and a refusal — rather than a
 /// guess — if the content turns out to contain the tag anyway.
+/// </para>
+/// <para>
+/// <strong>It is a sibling of that code, not a candidate to be merged with it, and the difference is
+/// the interesting part.</strong> The judge HTML-encodes every value it envelopes
+/// (<c>PromptTemplateRenderer</c>), so an injected angle bracket cannot reconstruct a closing tag at
+/// all and its nonce is a second layer behind that encoding. Recalled memory is <em>not</em> encoded
+/// — encoding it would corrupt the very text the agent is meant to read — so here the nonce is the
+/// only layer. That is why this collision check is case-insensitive and the judge's is not, and why
+/// this one fails closed rather than continuing: the same defence carrying different weight in the
+/// two places. Unifying them would have to erase that difference or parameterise it, and a shared
+/// helper whose behaviour is entirely determined by a flag is two implementations wearing one name.
 /// </para>
 /// </remarks>
 internal static class RecalledContextEnvelope

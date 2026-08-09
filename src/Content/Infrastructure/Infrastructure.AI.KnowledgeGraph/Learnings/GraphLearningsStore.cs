@@ -317,7 +317,13 @@ public sealed class GraphLearningsStore : ILearningsStore
         ["ScopeIsGlobal"] = entry.Scope.IsGlobal.ToString().ToLowerInvariant(),
         ["IsDeleted"] = entry.IsDeleted.ToString().ToLowerInvariant(),
         ["DeleteReason"] = entry.DeleteReason ?? "",
-        ["Trust"] = entry.Trust.ToString().ToLowerInvariant()
+        // Deliberately the SAME property key the knowledge channel uses for the same concept, rather
+        // than a "Trust" key alongside it. Both channels persist their trust marker on a GraphNode,
+        // so a second key would make a quarantined learning read as trusted to anything inspecting
+        // it as a node — today nothing does (every graph-side trust reader filters to memory: ids
+        // first), which is exactly the kind of correctness-by-luck that stops holding the moment
+        // someone adds a graph-wide sweep.
+        [GraphNodeMemoryExtensions.TrustPropertyKey] = entry.Trust.ToString().ToLowerInvariant()
     };
 
     private LearningEntry? DeserializeLearningEntry(Guid learningId, GraphNode node)
@@ -396,7 +402,7 @@ public sealed class GraphLearningsStore : ILearningsStore
     /// </remarks>
     private static MemoryTrust ReadTrust(IReadOnlyDictionary<string, string> props)
     {
-        if (!props.TryGetValue("Trust", out var raw) || string.IsNullOrEmpty(raw))
+        if (!props.TryGetValue(GraphNodeMemoryExtensions.TrustPropertyKey, out var raw) || string.IsNullOrEmpty(raw))
             return MemoryTrust.Trusted;
 
         return EnumNameHelper.TryParseName<MemoryTrust>(raw, out var trust)

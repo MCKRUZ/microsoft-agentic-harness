@@ -114,9 +114,20 @@ public sealed class LearningsRecallContextProvider : AIContextProvider
         if (recalled.Count == 0)
             return null;
 
-        _logger.LogDebug("Injected {Count} recalled lesson(s) into agent context", recalled.Count);
+        // Logged after formatting, not before: formatting can fail closed (see
+        // RecalledContextEnvelope), and the one case worth reporting accurately is the one where
+        // lessons were recalled but deliberately not injected.
+        var block = FormatRecalledLessons(recalled);
+        if (block is null)
+        {
+            _logger.LogWarning(
+                "Withheld {Count} recalled lesson(s): no unambiguous data envelope could be built",
+                recalled.Count);
+            return null;
+        }
 
-        return FormatRecalledLessons(recalled);
+        _logger.LogDebug("Injected {Count} recalled lesson(s) into agent context", recalled.Count);
+        return block;
     }
 
     private static string? ExtractQuery(AIContext aiContext)
