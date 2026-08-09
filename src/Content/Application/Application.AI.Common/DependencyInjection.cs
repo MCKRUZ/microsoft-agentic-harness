@@ -124,9 +124,15 @@ public static class DependencyInjection
         // Scoped agent execution context — carries agent identity through the pipeline
         services.AddScoped<IAgentExecutionContext, AgentExecutionContext>();
 
+        // The turn's governance audit trail. Every stage that can stop a tool call writes here and the
+        // admission chain snapshots it, which is what lets the governor below stay stateless and lets a
+        // test assert on the trail without constructing one. Scoped: one trail per agent turn, reset by
+        // the chain between turns.
+        services.AddScoped<Interfaces.Governance.IGovernanceTraceRecorder, Services.Governance.GovernanceTraceRecorder>();
+
         // Per-invocation tool governor — runs the permission / graded-autonomy / capability / policy
         // checks on the agent's live tool-call path (opt-in via GovernanceConfig.EnforceToolInvocation)
-        // and records the per-turn governance trace. Scoped: one per agent turn.
+        // and writes every decision to the trace recorder above. Scoped: one per agent turn.
         services.AddScoped<Interfaces.Governance.IToolInvocationGovernor, Services.Governance.ToolInvocationGovernor>();
 
         // Human approval routing for the governor's "requires approval" verdict (opt-in via

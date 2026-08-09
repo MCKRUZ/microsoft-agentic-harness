@@ -68,13 +68,25 @@ public sealed class ToolInvocationGovernorEnvelopeTests
             .ReturnsAsync(ToolApprovalResult.NotRouted("tool approval routing is disabled"));
     }
 
-    private ToolInvocationGovernor Build() => new(
-        _context.Object, _permissions.Object, _riskClassifier, _autonomy.Object, _policyEngine.Object,
-        Mock.Of<IGovernanceAuditService>(), _denialTracker.Object, _capabilities.Object, _approvalRouter.Object,
-        Mock.Of<IOptionsMonitor<GovernanceConfig>>(m => m.CurrentValue == _governanceOff),
-        Mock.Of<IOptionsMonitor<PermissionsConfig>>(m => m.CurrentValue == _permissionsConfig),
-        Mock.Of<IOptionsMonitor<SandboxConfig>>(m => m.CurrentValue == _sandbox),
-        NullLogger<ToolInvocationGovernor>.Instance);
+    /// <summary>
+    /// The turn's governance trail, assigned by <see cref="Build"/> so it reads the governor's config —
+    /// the ambient bundle envelope these tests arm has to mean the same thing to both.
+    /// </summary>
+    private GovernanceTraceRecorder _trace = null!;
+
+    private ToolInvocationGovernor Build()
+    {
+        var governanceMonitor = Mock.Of<IOptionsMonitor<GovernanceConfig>>(m => m.CurrentValue == _governanceOff);
+        _trace = new GovernanceTraceRecorder(governanceMonitor);
+
+        return new ToolInvocationGovernor(
+            _context.Object, _permissions.Object, _riskClassifier, _autonomy.Object, _policyEngine.Object,
+            Mock.Of<IGovernanceAuditService>(), _denialTracker.Object, _capabilities.Object, _approvalRouter.Object,
+            _trace, governanceMonitor,
+            Mock.Of<IOptionsMonitor<PermissionsConfig>>(m => m.CurrentValue == _permissionsConfig),
+            Mock.Of<IOptionsMonitor<SandboxConfig>>(m => m.CurrentValue == _sandbox),
+            NullLogger<ToolInvocationGovernor>.Instance);
+    }
 
     private static CapabilityEnvelope Envelope() => new() { AllowedTools = [Tool] };
 
@@ -133,7 +145,7 @@ public sealed class ToolInvocationGovernorEnvelopeTests
             await governor.AuthorizeAsync(Tool, CancellationToken.None);
 
         // Scope disposed — the ambient envelope is gone, but the trace must still say the turn was enforced.
-        Assert.True(governor.GetTrace().EnforcementEnabled);
+        Assert.True(_trace.Snapshot().EnforcementEnabled);
     }
 
     [Fact]
@@ -144,7 +156,7 @@ public sealed class ToolInvocationGovernorEnvelopeTests
         using (CapabilityEnvelopeAccessor.Begin(Envelope()))
             await governor.AuthorizeAsync(Tool, CancellationToken.None);
 
-        governor.Reset();
+        _trace.Reset();
         _permissions.Invocations.Clear();
         var decision = await governor.AuthorizeAsync(Tool, CancellationToken.None);
 

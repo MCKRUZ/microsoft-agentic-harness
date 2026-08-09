@@ -1,4 +1,3 @@
-using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Services.Governance;
 using Domain.Common.Config.AI;
 using Domain.Common.Config.AI.Governance;
@@ -12,16 +11,27 @@ namespace Application.AI.Common.Tests.Governance;
 /// <summary>
 /// Verifies the deterministic spin / no-progress detector: it is inert when disabled, trips on
 /// consecutive repetition and on a no-progress window, resets the no-progress counter when a genuinely
-/// new call appears, raises an escalation code only in Escalate mode, and clears cleanly on reset.
+/// new call appears, raises an escalation code onto the turn's trace only in Escalate mode, and clears
+/// cleanly on reset.
 /// </summary>
+/// <remarks>
+/// Behaviour under concurrent tool calls — which is how the agent actually issues them — lives in
+/// <see cref="ProgressEvaluatorConcurrencyTests"/>. Everything here is single-threaded and would stay
+/// green against an implementation that is broken in a batch, which is exactly why that file exists.
+/// </remarks>
 public sealed class ProgressEvaluatorTests
 {
-    private static ProgressEvaluator Create(ProgressGuardConfig guard)
+    private readonly GovernanceTraceRecorder _trace = AdmissionHarness.TraceRecorder();
+
+    private ProgressEvaluator Create(ProgressGuardConfig guard)
     {
         var governance = new GovernanceConfig { ProgressGuard = guard };
         var monitor = Mock.Of<IOptionsMonitor<GovernanceConfig>>(m => m.CurrentValue == governance);
-        return new ProgressEvaluator(monitor, NullLogger<ProgressEvaluator>.Instance);
+        return new ProgressEvaluator(monitor, _trace, NullLogger<ProgressEvaluator>.Instance);
     }
+
+    /// <summary>The escalation codes as the turn handler reads them — off the shared trail.</summary>
+    private IReadOnlyList<string> Escalations => _trace.Snapshot().EscalationReasonCodes;
 
     [Fact]
     public void Evaluate_GuardDisabled_AlwaysContinues()
@@ -31,7 +41,20 @@ public sealed class ProgressEvaluatorTests
         for (var i = 0; i < 10; i++)
             Assert.False(evaluator.Evaluate("file_system", () => "{\"path\":\"a\"}").ShouldHalt);
 
-        Assert.Empty(evaluator.EscalationReasonCodes);
+        Assert.Empty(Escalations);
+    }
+
+    [Fact]
+    public void Evaluate_GuardDisabled_NeverInvokesTheSignatureFactory()
+    {
+        // The factory serialises the call arguments. Off the enabled path — the default composition —
+        // the agent's hot tool-call path must not pay for that.
+        var evaluator = Create(new ProgressGuardConfig { Enabled = false });
+        var invoked = false;
+
+        evaluator.Evaluate("read", () => { invoked = true; return "x"; });
+
+        Assert.False(invoked);
     }
 
     [Fact]
@@ -137,11 +160,11 @@ public sealed class ProgressEvaluatorTests
         var halt = evaluator.Evaluate("read", () => "x");
 
         Assert.True(halt.ShouldHalt);
-        Assert.Empty(evaluator.EscalationReasonCodes);
+        Assert.Empty(Escalations);
     }
 
     [Fact]
-    public void Evaluate_EscalateMode_RaisesEscalationCode()
+    public void Evaluate_EscalateMode_RaisesEscalationCodeOntoTheTurnTrace()
     {
         var evaluator = Create(new ProgressGuardConfig
         {
@@ -154,7 +177,9 @@ public sealed class ProgressEvaluatorTests
         var halt = evaluator.Evaluate("read", () => "x");
 
         Assert.True(halt.ShouldHalt);
-        Assert.Equal([ProgressEvaluator.SpinEscalationReasonCode], evaluator.EscalationReasonCodes);
+        // On the shared trail, which is where the turn handler reads escalations from — not on a
+        // property of the evaluator that the admission chain then has to remember to fold in.
+        Assert.Equal([ProgressEvaluator.SpinEscalationReasonCode], Escalations);
     }
 
     [Fact]
@@ -170,12 +195,14 @@ public sealed class ProgressEvaluatorTests
         for (var i = 0; i < 5; i++)
             evaluator.Evaluate("read", () => "x");
 
-        Assert.Single(evaluator.EscalationReasonCodes);
+        Assert.Single(Escalations);
     }
 
     [Fact]
-    public void Reset_ClearsHistoryAndEscalations()
+    public void Reset_ClearsHistoryButNotTheTurnTrace()
     {
+        // Two different owners clear two different things. The guard's call history is its own; the
+        // escalation codes belong to the governance trail, which the admission chain resets.
         var evaluator = Create(new ProgressGuardConfig
         {
             Enabled = true,
@@ -185,13 +212,17 @@ public sealed class ProgressEvaluatorTests
 
         evaluator.Evaluate("read", () => "x");
         evaluator.Evaluate("read", () => "x"); // trips + escalates
-        Assert.NotEmpty(evaluator.EscalationReasonCodes);
+        Assert.NotEmpty(Escalations);
 
         evaluator.Reset();
 
-        Assert.Empty(evaluator.EscalationReasonCodes);
+        Assert.NotEmpty(Escalations);
         // History cleared: the next identical call starts a fresh consecutive run, so it must not halt.
         Assert.False(evaluator.Evaluate("read", () => "x").ShouldHalt);
+
+        _trace.Reset();
+
+        Assert.Empty(Escalations);
     }
 
     [Theory]

@@ -65,25 +65,44 @@ public sealed class ToolInvocationGovernorTests
     }
 
     /// <summary>
+    /// The turn's governance trail, which the governor writes to and this fixture reads. Assigned by
+    /// <see cref="Build"/>, because it reads the governor's config: whether a turn counts as governed
+    /// is derived from the same switch, so a recorder built from a different config would disagree with
+    /// the governor it is recording for.
+    /// </summary>
+    private GovernanceTraceRecorder _trace = null!;
+
+    /// <summary>The trail as the turn handler reads it. Real, not mocked — it is the assertion target.</summary>
+    private GovernanceTrace Trace => _trace.Snapshot();
+
+    /// <summary>
     /// Builds the governor under test. Pass <paramref name="governance"/> to override the default
     /// config — the only thing the per-test constructions ever varied, which is why they were folded
     /// back into this helper: each was an 8-line copy that had to be edited whenever the constructor
     /// gained a parameter.
     /// </summary>
-    private ToolInvocationGovernor Build(GovernanceConfig? governance = null) => new(
-        _context.Object,
-        _permissions.Object,
-        _riskClassifier,
-        _autonomy.Object,
-        _policyEngine.Object,
-        Mock.Of<IGovernanceAuditService>(),
-        _denialTracker.Object,
-        _capabilities.Object,
-        _approvalRouter.Object,
-        Mock.Of<IOptionsMonitor<GovernanceConfig>>(m => m.CurrentValue == (governance ?? _governance)),
-        Mock.Of<IOptionsMonitor<PermissionsConfig>>(m => m.CurrentValue == _permissionsConfig),
-        Mock.Of<IOptionsMonitor<SandboxConfig>>(m => m.CurrentValue == _sandbox),
-        NullLogger<ToolInvocationGovernor>.Instance);
+    private ToolInvocationGovernor Build(GovernanceConfig? governance = null)
+    {
+        var governanceMonitor =
+            Mock.Of<IOptionsMonitor<GovernanceConfig>>(m => m.CurrentValue == (governance ?? _governance));
+        _trace = new GovernanceTraceRecorder(governanceMonitor);
+
+        return new ToolInvocationGovernor(
+            _context.Object,
+            _permissions.Object,
+            _riskClassifier,
+            _autonomy.Object,
+            _policyEngine.Object,
+            Mock.Of<IGovernanceAuditService>(),
+            _denialTracker.Object,
+            _capabilities.Object,
+            _approvalRouter.Object,
+            _trace,
+            governanceMonitor,
+            Mock.Of<IOptionsMonitor<PermissionsConfig>>(m => m.CurrentValue == _permissionsConfig),
+            Mock.Of<IOptionsMonitor<SandboxConfig>>(m => m.CurrentValue == _sandbox),
+            NullLogger<ToolInvocationGovernor>.Instance);
+    }
 
     [Fact]
     public async Task AuthorizeAsync_EnforcementDisabled_AllowsAndDoesNotEvaluate()
@@ -94,7 +113,7 @@ public sealed class ToolInvocationGovernorTests
         var decision = await governor.AuthorizeAsync(Tool, CancellationToken.None);
 
         Assert.True(decision.IsAllowed);
-        Assert.Same(GovernanceTrace.Empty, governor.GetTrace());
+        Assert.Same(GovernanceTrace.Empty, Trace);
         _permissions.Verify(x => x.ResolvePermissionAsync(It.IsAny<string>(), It.IsAny<string>(),
             It.IsAny<string?>(), It.IsAny<IReadOnlyDictionary<string, object?>?>(), It.IsAny<CancellationToken>()), Times.Never);
     }
@@ -118,7 +137,7 @@ public sealed class ToolInvocationGovernorTests
         var decision = await governor.AuthorizeAsync(Tool, CancellationToken.None);
 
         Assert.True(decision.IsAllowed);
-        var trace = governor.GetTrace();
+        var trace = Trace;
         Assert.True(trace.EnforcementEnabled);
         var record = Assert.Single(trace.ToolDecisions);
         Assert.Equal(ToolDecisionOutcome.Allowed, record.Outcome);
@@ -138,7 +157,7 @@ public sealed class ToolInvocationGovernorTests
 
         Assert.False(decision.IsAllowed);
         Assert.NotNull(decision.DeniedMessage);
-        var record = Assert.Single(governor.GetTrace().ToolDecisions);
+        var record = Assert.Single(Trace.ToolDecisions);
         Assert.Equal(ToolDecisionOutcome.Denied, record.Outcome);
         Assert.True(record.Enforced);
         _denialTracker.Verify(x => x.RecordDenial(Agent, Tool, null), Times.Once);
@@ -156,7 +175,7 @@ public sealed class ToolInvocationGovernorTests
         var decision = await governor.AuthorizeAsync(Tool, CancellationToken.None);
 
         Assert.False(decision.IsAllowed);
-        var trace = governor.GetTrace();
+        var trace = Trace;
         var record = Assert.Single(trace.ToolDecisions);
         Assert.Equal(ToolDecisionOutcome.PendingApproval, record.Outcome);
         Assert.True(record.RequiredApproval);
@@ -180,7 +199,7 @@ public sealed class ToolInvocationGovernorTests
         var decision = await governor.AuthorizeAsync(Tool, CancellationToken.None);
 
         Assert.False(decision.IsAllowed);
-        var record = Assert.Single(governor.GetTrace().ToolDecisions);
+        var record = Assert.Single(Trace.ToolDecisions);
         Assert.Equal(ToolDecisionOutcome.PendingApproval, record.Outcome);
         Assert.True(record.RequiredApproval);
     }
@@ -197,7 +216,7 @@ public sealed class ToolInvocationGovernorTests
         var decision = await governor.AuthorizeAsync(Tool, CancellationToken.None);
 
         Assert.False(decision.IsAllowed);
-        var record = Assert.Single(governor.GetTrace().ToolDecisions);
+        var record = Assert.Single(Trace.ToolDecisions);
         Assert.Equal(ToolDecisionOutcome.Denied, record.Outcome);
         Assert.Contains("capability", record.Reason, StringComparison.OrdinalIgnoreCase);
     }
@@ -205,20 +224,21 @@ public sealed class ToolInvocationGovernorTests
     [Fact]
     public async Task Reset_ClearsPriorTurnDecisions_NoCrossTurnDoubleCount()
     {
-        // The governor is scoped but shared across turns of a conversation (nested MediatR sends
-        // share one DI scope), so each turn must Reset() or the trace accumulates and the merged
+        // The trail is scoped but shared across turns of a conversation (nested MediatR sends share
+        // one DI scope), so each turn must reset it or the trace accumulates and the merged
         // conversation trace double-counts. This guards that regression.
         var governor = Build();
 
         // Turn 1
         await governor.AuthorizeAsync(Tool, CancellationToken.None);
-        Assert.Equal(1, governor.GetTrace().ToolInvocationCount);
+        Assert.Equal(1, Trace.ToolInvocationCount);
 
-        // Turn 2 begins
-        governor.Reset();
+        // Turn 2 begins. The reset is on the trail now, not the governor — the governor keeps nothing
+        // to clear.
+        _trace.Reset();
         await governor.AuthorizeAsync(Tool, CancellationToken.None);
 
-        var trace = governor.GetTrace();
+        var trace = Trace;
         Assert.Equal(1, trace.ToolInvocationCount); // this turn only, not cumulative
         Assert.Equal(1, trace.AllowedCount);
     }
@@ -238,7 +258,7 @@ public sealed class ToolInvocationGovernorTests
         var decision = await governor.AuthorizeAsync(Tool, CancellationToken.None);
 
         Assert.False(decision.IsAllowed);
-        Assert.Equal(ToolDecisionOutcome.Denied, Assert.Single(governor.GetTrace().ToolDecisions).Outcome);
+        Assert.Equal(ToolDecisionOutcome.Denied, Assert.Single(Trace.ToolDecisions).Outcome);
     }
 
     [Fact]
@@ -288,7 +308,7 @@ public sealed class ToolInvocationGovernorTests
         var decision = await governor.AuthorizeAsync(Tool, CancellationToken.None);
 
         Assert.True(decision.IsAllowed);
-        var record = Assert.Single(governor.GetTrace().ToolDecisions);
+        var record = Assert.Single(Trace.ToolDecisions);
         Assert.Equal(ToolDecisionOutcome.Allowed, record.Outcome);
         Assert.True(record.RequiredApproval);
         Assert.True(record.ApprovalGranted);
@@ -312,7 +332,7 @@ public sealed class ToolInvocationGovernorTests
         var decision = await governor.AuthorizeAsync(Tool, CancellationToken.None);
 
         Assert.False(decision.IsAllowed);
-        Assert.Equal(ToolDecisionOutcome.Denied, Assert.Single(governor.GetTrace().ToolDecisions).Outcome);
+        Assert.Equal(ToolDecisionOutcome.Denied, Assert.Single(Trace.ToolDecisions).Outcome);
     }
 
     [Fact]
@@ -329,7 +349,7 @@ public sealed class ToolInvocationGovernorTests
         var decision = await governor.AuthorizeAsync(Tool, CancellationToken.None);
 
         Assert.False(decision.IsAllowed);
-        Assert.Equal(ToolDecisionOutcome.Denied, Assert.Single(governor.GetTrace().ToolDecisions).Outcome);
+        Assert.Equal(ToolDecisionOutcome.Denied, Assert.Single(Trace.ToolDecisions).Outcome);
     }
 
     [Fact]
@@ -405,7 +425,7 @@ public sealed class ToolInvocationGovernorTests
 
         governor.RecordDownstreamBlock(Tool, "blocked by observer 'wire-limit'");
 
-        var decisions = governor.GetTrace().ToolDecisions;
+        var decisions = Trace.ToolDecisions;
         Assert.Contains(decisions, d => d.Outcome == ToolDecisionOutcome.Allowed);
         Assert.Contains(decisions, d => d.Outcome == ToolDecisionOutcome.Denied);
     }
@@ -424,7 +444,7 @@ public sealed class ToolInvocationGovernorTests
 
         governor.RecordDownstreamBlock(Tool, "blocked by observer 'wire-limit'");
 
-        Assert.Empty(governor.GetTrace().ToolDecisions);
+        Assert.Empty(Trace.ToolDecisions);
     }
 
     [Fact]
@@ -439,7 +459,7 @@ public sealed class ToolInvocationGovernorTests
 
         governor.RecordDownstreamBlock(Tool, "denied by per-agent tool authorization");
 
-        var decisions = governor.GetTrace().ToolDecisions;
+        var decisions = Trace.ToolDecisions;
         Assert.Contains(decisions, d => d.Outcome == ToolDecisionOutcome.Denied);
     }
 
@@ -453,7 +473,7 @@ public sealed class ToolInvocationGovernorTests
         var decision = await governor.AuthorizeAsync(Tool, CancellationToken.None);
 
         Assert.False(decision.IsAllowed);
-        var record = Assert.Single(governor.GetTrace().ToolDecisions);
+        var record = Assert.Single(Trace.ToolDecisions);
         Assert.Equal(ToolDecisionOutcome.PendingApproval, record.Outcome);
         Assert.False(record.ApprovalGranted);
         _denialTracker.Verify(x => x.RecordDenial(Agent, Tool, null), Times.Once);
@@ -501,7 +521,7 @@ public sealed class ToolInvocationGovernorTests
         var decision = await governor.AuthorizeAsync(Tool, CancellationToken.None);
 
         Assert.True(decision.IsAllowed);
-        Assert.True(Assert.Single(governor.GetTrace().ToolDecisions).ApprovalGranted);
+        Assert.True(Assert.Single(Trace.ToolDecisions).ApprovalGranted);
     }
 
     [Fact]
@@ -516,7 +536,7 @@ public sealed class ToolInvocationGovernorTests
         var decision = await governor.AuthorizeAsync(Tool, CancellationToken.None);
 
         Assert.False(decision.IsAllowed);
-        var record = Assert.Single(governor.GetTrace().ToolDecisions);
+        var record = Assert.Single(Trace.ToolDecisions);
         Assert.Equal(ToolDecisionOutcome.PendingApproval, record.Outcome);
         Assert.True(record.RequiredApproval);
         Assert.False(record.ApprovalGranted);

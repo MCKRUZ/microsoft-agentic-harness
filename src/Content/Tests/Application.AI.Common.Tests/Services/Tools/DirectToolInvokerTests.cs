@@ -689,6 +689,11 @@ public sealed class DirectToolInvokerTests
             _observerChain ?? new FakeObserverChain(ToolInvocationDecision.Allow()) { HasObservers = false });
         services.AddSingleton(AdmissionHarness.PermissiveProgressEvaluator());
 
+        // The turn's governance trail. Real rather than mocked, and registered for the same reason as
+        // the gates above: the chain requires it, so a container without it is a composition that
+        // cannot exist in production.
+        services.AddSingleton<IGovernanceTraceRecorder>(AdmissionHarness.TraceRecorder());
+
         // Per-agent RBAC, permitting — the answer the real gate gives when tool authorization is off,
         // which is this fixture's composition. Registered because the chain requires it: an absent
         // gate and a switched-off one must never be confusable at runtime.

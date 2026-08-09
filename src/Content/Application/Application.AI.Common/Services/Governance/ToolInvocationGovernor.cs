@@ -50,6 +50,13 @@ namespace Application.AI.Common.Services.Governance;
 /// sandbox never granted the capability for), and once by letting an approval obtained for one
 /// gate's reason satisfy a later gate whose reason the approver was never shown.
 /// </para>
+/// <para>
+/// <strong>Stateless.</strong> Every decision is written to the turn-scoped
+/// <see cref="IGovernanceTraceRecorder"/> and nothing is kept here. That is deliberate: accumulating
+/// the audit trail was this type's second job and the only reason it held mutable state, and the two
+/// jobs have different consumers — this one only writes, while diagnostics, reporting and tests only
+/// read. Reading the trail therefore no longer requires constructing a governor.
+/// </para>
 /// </remarks>
 public sealed partial class ToolInvocationGovernor : IToolInvocationGovernor
 {
@@ -62,17 +69,11 @@ public sealed partial class ToolInvocationGovernor : IToolInvocationGovernor
     private readonly IDenialTracker _denialTracker;
     private readonly ICapabilityEnforcer _capabilityEnforcer;
     private readonly IToolApprovalRouter _approvalRouter;
+    private readonly IGovernanceTraceRecorder _trace;
     private readonly IOptionsMonitor<GovernanceConfig> _governanceConfig;
     private readonly IOptionsMonitor<PermissionsConfig> _permissionsConfig;
     private readonly IOptionsMonitor<SandboxConfig> _sandboxConfig;
     private readonly ILogger<ToolInvocationGovernor> _logger;
-
-    private readonly object _lock = new();
-    private readonly List<ToolDecisionRecord> _decisions = [];
-
-    // Set true the first time a tool is authorized under active enforcement this turn, so GetTrace reports
-    // the turn as enforced even if it is called after the bundle run's ambient scope has torn down.
-    private bool _enforcedObserved;
 
     public ToolInvocationGovernor(
         IAgentExecutionContext executionContext,
@@ -84,6 +85,7 @@ public sealed partial class ToolInvocationGovernor : IToolInvocationGovernor
         IDenialTracker denialTracker,
         ICapabilityEnforcer capabilityEnforcer,
         IToolApprovalRouter approvalRouter,
+        IGovernanceTraceRecorder trace,
         IOptionsMonitor<GovernanceConfig> governanceConfig,
         IOptionsMonitor<PermissionsConfig> permissionsConfig,
         IOptionsMonitor<SandboxConfig> sandboxConfig,
@@ -98,6 +100,7 @@ public sealed partial class ToolInvocationGovernor : IToolInvocationGovernor
         _denialTracker = denialTracker;
         _capabilityEnforcer = capabilityEnforcer;
         _approvalRouter = approvalRouter;
+        _trace = trace;
         _governanceConfig = governanceConfig;
         _permissionsConfig = permissionsConfig;
         _sandboxConfig = sandboxConfig;
@@ -106,9 +109,9 @@ public sealed partial class ToolInvocationGovernor : IToolInvocationGovernor
 
     /// <summary>
     /// Whether the current flow is a bundle run — i.e. a per-caller <see cref="CapabilityEnvelope"/> has been
-    /// published for it. A bundle executes an externally-authored agent, so its whole flow must be governed
-    /// and fail closed; this is the single ambient fact the enforcement decision derives from, so there is no
-    /// way to publish an envelope without also arming the governor.
+    /// published for it. Read here only to decide how a <em>missing agent identity</em> is treated, which is
+    /// stricter inside a bundle than outside one. It is a narrower question than "should this flow be
+    /// governed", which is <see cref="GovernanceEnforcement.IsActive"/>'s and is answered there alone.
     /// </summary>
     private static bool BundleRunActive => CapabilityEnvelopeAccessor.Current is not null;
 
@@ -142,16 +145,6 @@ public sealed partial class ToolInvocationGovernor : IToolInvocationGovernor
     private static bool EnvelopeGrantsToolWhenArmed(string toolName)
         => CapabilityEnvelopeAccessor.Current is not { } envelope || envelope.GrantsTool(toolName);
 
-    /// <summary>
-    /// Whether per-invocation enforcement is active for the current flow. True when the host has opted in
-    /// globally (<c>GovernanceConfig.EnforceToolInvocation</c>) <em>or</em> a bundle run is active
-    /// (<see cref="BundleRunActive"/>) — bundle runs must always be governed so the per-caller capability
-    /// envelope is never inert. Off both paths this is false and the governor is a pure pass-through,
-    /// unchanged for existing deployments.
-    /// </summary>
-    private bool EnforcementActive =>
-        _governanceConfig.CurrentValue.EnforceToolInvocation || BundleRunActive;
-
     /// <inheritdoc />
     public async ValueTask<ToolInvocationDecision> AuthorizeAsync(
         string toolName,
@@ -159,13 +152,14 @@ public sealed partial class ToolInvocationGovernor : IToolInvocationGovernor
         IReadOnlyDictionary<string, object?>? arguments = null)
     {
         // Opt-in: when enforcement is off the governor never engages — pure pass-through, no record,
-        // no behaviour change for existing deployments.
-        if (!EnforcementActive)
+        // no behaviour change for existing deployments. Read live rather than from the trace's sticky
+        // form, so a bundle run stops being enforced the moment its envelope scope disposes.
+        if (!GovernanceEnforcement.IsActive(_governanceConfig.CurrentValue))
             return ToolInvocationDecision.Allow();
 
-        // Enforcement ran this turn; remember it so the trace reports the turn as governed even if GetTrace
-        // is called after a bundle run's ambient envelope scope has already disposed.
-        _enforcedObserved = true;
+        // Enforcement ran this turn; remember it so the trace reports the turn as governed even if it
+        // is assembled after a bundle run's ambient envelope scope has already disposed.
+        _trace.MarkEnforced();
 
         var profile = _toolRiskClassifier.Classify(toolName);
 
@@ -181,7 +175,7 @@ public sealed partial class ToolInvocationGovernor : IToolInvocationGovernor
                 _logger.LogWarning(
                     "Tool governance: no AgentId in execution context for {ToolName} during a bundle run — denied (fail-closed)",
                     toolName);
-                Record(new ToolDecisionRecord(toolName, ToolDecisionOutcome.Denied,
+                _trace.Record(new ToolDecisionRecord(toolName, ToolDecisionOutcome.Denied,
                     "no agent identity in a bundle run", profile.Radius,
                     RequiredApproval: false, ApprovalGranted: false, Enforced: true));
                 return ToolInvocationDecision.Deny(GovernanceDenials.NotPermitted(toolName));
@@ -189,7 +183,7 @@ public sealed partial class ToolInvocationGovernor : IToolInvocationGovernor
 
             _logger.LogWarning(
                 "Tool governance: no AgentId in execution context for {ToolName} — allowed ungoverned and recorded", toolName);
-            Record(new ToolDecisionRecord(toolName, ToolDecisionOutcome.Allowed,
+            _trace.Record(new ToolDecisionRecord(toolName, ToolDecisionOutcome.Allowed,
                 "no agent identity in execution context", profile.Radius,
                 RequiredApproval: false, ApprovalGranted: false, Enforced: false));
             return ToolInvocationDecision.Allow();
@@ -338,7 +332,7 @@ public sealed partial class ToolInvocationGovernor : IToolInvocationGovernor
             approvedBy = gate.Reason;
         }
 
-        Record(new ToolDecisionRecord(toolName, ToolDecisionOutcome.Allowed,
+        _trace.Record(new ToolDecisionRecord(toolName, ToolDecisionOutcome.Allowed,
             approvedBy is null ? "allowed" : $"approved by human: {approvedBy}",
             profile.Radius,
             RequiredApproval: approvedBy is not null,
@@ -358,7 +352,7 @@ public sealed partial class ToolInvocationGovernor : IToolInvocationGovernor
         string toolName, ToolDecisionOutcome outcome, string reason, BlastRadius radius,
         bool requiredApproval, string agentId)
     {
-        Record(new ToolDecisionRecord(toolName, outcome, reason, radius,
+        _trace.Record(new ToolDecisionRecord(toolName, outcome, reason, radius,
             RequiredApproval: requiredApproval, ApprovalGranted: false, Enforced: true));
 
         if (_governanceConfig.CurrentValue.EnableAudit)
@@ -418,29 +412,22 @@ public sealed partial class ToolInvocationGovernor : IToolInvocationGovernor
         };
     }
 
-    private void Record(ToolDecisionRecord record)
-    {
-        lock (_lock)
-            _decisions.Add(record);
-    }
-
     /// <inheritdoc />
     public void RecordDownstreamBlock(string toolName, string reason)
     {
         // Only meaningful on an enforced turn. Off that path the governor recorded nothing, so there
         // is no allow to correct and nothing to add.
         //
-        // EnforcementActive is consulted as well as _enforcedObserved, and the difference is
-        // load-bearing: the authorization gate runs BEFORE this governor, so on the first tool call
-        // of a turn nothing has set _enforcedObserved yet. Keying only on that flag silently dropped
-        // every RBAC refusal that arrived first — which is most of them, since a refused call never
-        // goes on to reach the governor at all. This matches how GetTrace already decides whether a
-        // turn was enforced.
-        if (!_enforcedObserved && !EnforcementActive)
+        // The recorder's EnforcementEnabled is the sticky-OR-live form, and both halves are
+        // load-bearing here: the authorization gate runs BEFORE this governor, so on the first tool
+        // call of a turn nothing has marked the turn enforced yet. Keying only on what was observed
+        // silently dropped every RBAC refusal that arrived first — which is most of them, since a
+        // refused call never goes on to reach the governor at all.
+        if (!_trace.EnforcementEnabled)
             return;
 
         var radius = _toolRiskClassifier.Classify(toolName).Radius;
-        Record(new ToolDecisionRecord(toolName, ToolDecisionOutcome.Denied, reason, radius,
+        _trace.Record(new ToolDecisionRecord(toolName, ToolDecisionOutcome.Denied, reason, radius,
             RequiredApproval: false, ApprovalGranted: false, Enforced: true));
 
         // Deliberately no audit write. This method corrects the trace on behalf of a gate that has
@@ -448,35 +435,5 @@ public sealed partial class ToolInvocationGovernor : IToolInvocationGovernor
         // every downstream block count twice for anyone tallying denials from the audit stream. The
         // caller audits because it always can — this method is inert off the enforced path, and a host
         // may register observers with governance enforcement switched off.
-    }
-
-    /// <inheritdoc />
-    public void Reset()
-    {
-        lock (_lock)
-        {
-            _decisions.Clear();
-            _enforcedObserved = false;
-        }
-    }
-
-    /// <inheritdoc />
-    public GovernanceTrace GetTrace()
-    {
-        // Prefer the snapshot taken while authorizing: a bundle run's ambient enforcement signal may have
-        // torn down by the time the trace is assembled, but a turn that authorized under enforcement is
-        // still an enforced turn.
-        var enforced = _enforcedObserved || EnforcementActive;
-        lock (_lock)
-        {
-            if (!enforced && _decisions.Count == 0)
-                return GovernanceTrace.Empty;
-
-            return new GovernanceTrace
-            {
-                EnforcementEnabled = enforced,
-                ToolDecisions = _decisions.ToList()
-            };
-        }
     }
 }

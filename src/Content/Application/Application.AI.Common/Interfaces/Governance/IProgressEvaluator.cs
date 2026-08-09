@@ -6,10 +6,28 @@ namespace Application.AI.Common.Interfaces.Governance;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Complements <see cref="IToolInvocationGovernor"/> at the same invocation chokepoint
-/// (<c>GovernedAIFunction</c>): the governor answers "may this tool run?" while the evaluator answers
-/// "is the agent still making progress?". Detection is pure call-signature counting — no model
-/// involvement — so it is cheap, deterministic, and unit-testable.
+/// Complements <see cref="IToolInvocationGovernor"/> at the same invocation chokepoint: the governor
+/// answers "may this tool run?" while the evaluator answers "is the agent still making progress?".
+/// Detection is pure call-signature counting — no model involvement — so it is cheap, deterministic,
+/// and unit-testable.
+/// </para>
+/// <para>
+/// <strong>Deciding and recording are ONE operation, and separating them is a defect.</strong> This
+/// looks like poor separation of concerns and has been proposed as a cleanup; it is neither. The
+/// harness invokes an assistant message's tool calls <em>in parallel</em>
+/// (<c>AllowConcurrentInvocation</c> is set by the agent factory), against the one turn-scoped
+/// evaluator. Answering and recording inside a single critical section is what makes a batch of
+/// identical calls serialise, so the second one sees the first. Split into "ask now, record later" —
+/// even with nothing at all between the two calls — every member of the batch asks before any of them
+/// has been recorded, they are all told they are the first, and <strong>the entire batch is
+/// admitted</strong>. <c>ProgressEvaluatorConcurrencyTests</c> carries the measurement and is the
+/// control that fails if anyone tries it again.
+/// </para>
+/// <para>
+/// The property that separating them was meant to buy — that a call refused by some other gate is
+/// never counted — is instead a property of <em>where</em> the chain calls this: at the single point
+/// where a call has cleared every stage, below every path that returns a refusal. See
+/// <see cref="IToolCallAdmissionPipeline"/>.
 /// </para>
 /// <para>
 /// Scoped to one agent turn. Nested MediatR sends within a conversation share one DI scope (and thus
@@ -22,7 +40,7 @@ namespace Application.AI.Common.Interfaces.Governance;
 public interface IProgressEvaluator
 {
     /// <summary>
-    /// Records a tool call and decides whether the agent is spinning.
+    /// Records a tool call and decides whether the agent is spinning, as one atomic operation.
     /// </summary>
     /// <param name="toolName">The tool the agent is invoking.</param>
     /// <param name="argumentsSignatureFactory">
@@ -37,16 +55,22 @@ public interface IProgressEvaluator
     /// evaluator records nothing, never invokes the factory, and always returns
     /// <see cref="ProgressVerdict.Continue"/>.
     /// </returns>
+    /// <remarks>
+    /// Call this only for a call that is going to run. It counts what it is given, so a caller that
+    /// consults it before the other gates have finished would have it count calls that are then
+    /// blocked — which is not a bookkeeping nicety but defeats the guard outright. An agent retrying a
+    /// blocked call with one argument changed each time presents a fresh signature every attempt,
+    /// resetting the no-progress counter every attempt, and never trips the guard it is spinning
+    /// against. That shipped once.
+    /// </remarks>
     ProgressVerdict Evaluate(string toolName, Func<string?> argumentsSignatureFactory);
 
-    /// <summary>
-    /// The distinct escalation reason codes the guard raised this turn. Empty unless a spin was
-    /// detected while configured for <c>ProgressGuardAction.Escalate</c>. The turn handler folds these
-    /// into the turn's <c>GovernanceTrace.EscalationReasonCodes</c>.
-    /// </summary>
-    IReadOnlyList<string> EscalationReasonCodes { get; }
-
-    /// <summary>Clears the recorded call history and escalations so the next turn starts clean.</summary>
+    /// <summary>Clears the recorded call history so the next turn starts clean.</summary>
+    /// <remarks>
+    /// Escalation reason codes are <em>not</em> cleared here — they live on
+    /// <see cref="IGovernanceTraceRecorder"/> with the rest of the turn's governance trail, and are
+    /// cleared when that is reset.
+    /// </remarks>
     void Reset();
 }
 

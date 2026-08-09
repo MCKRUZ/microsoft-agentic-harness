@@ -40,15 +40,21 @@ namespace Application.AI.Common.Interfaces.Governance;
 /// </description></item>
 /// <item><description>
 /// <see cref="IProgressEvaluator"/> — the loop guard, last of all because it is the only stage that
-/// <strong>mutates</strong> state. It records the call's signature and resets the no-progress counter,
-/// so it must only ever count calls that actually reached the tool. Running it earlier let blocked
-/// calls reset the counter, and an agent retrying a blocked call with a slightly different argument
-/// each time never tripped the guard it was spinning against.
+/// <strong>mutates</strong> state. Asking it about a call is also what records that call, so it must
+/// only ever be asked about calls that have cleared everything else. Running it earlier let blocked
+/// calls reset the no-progress counter, and an agent retrying a blocked call with a slightly different
+/// argument each time never tripped the guard it was spinning against.
 /// </description></item>
 /// </list>
 /// <para>
 /// Any change that does not preserve that order is wrong, and
 /// <c>ToolCallAdmissionPipelineTests</c> pins it in a single assertion.
+/// </para>
+/// <para>
+/// <strong>Do not try to fix the loop guard's coupling by splitting it.</strong> Making it answer
+/// without recording, so its position here stopped mattering, is an obvious-looking cleanup and has
+/// been proposed as one. It is a defect — see <see cref="IProgressEvaluator"/>. The coupling is what
+/// makes the guard work; this position is what makes the coupling safe.
 /// </para>
 /// </remarks>
 public interface IToolCallAdmissionPipeline
@@ -116,21 +122,22 @@ public interface IToolCallAdmissionPipeline
     /// The turn's governance trace: every decision the chain's stages recorded, as one record.
     /// </summary>
     /// <remarks>
-    /// Composed here rather than at each caller. The trace is the governor's decision list with any
-    /// escalation reason codes the loop guard raised folded in, and knowing that those two belong in
-    /// one record is knowledge about how the stages compose — which is this type's job and nobody
-    /// else's. Two callers previously assembled it by hand from two injected stages.
+    /// Surfaced here rather than at each caller. Every stage writes its own decisions and escalation
+    /// codes to one shared <see cref="IGovernanceTraceRecorder"/>, so this is a single snapshot rather
+    /// than a composition — but knowing that the turn has exactly one trail, and which type holds it,
+    /// is knowledge about how the stages fit together, which is this type's job and nobody else's. Two
+    /// callers previously assembled the trace by hand from two injected stages.
     /// </remarks>
     Domain.AI.Governance.GovernanceTrace GetTrace();
 
     /// <summary>
-    /// Clears the per-turn state the chain's stages accumulate — the governor's decision trace and the
-    /// loop guard's call history.
+    /// Clears the per-turn state the chain accumulates — the governance trail and the loop guard's
+    /// call history.
     /// </summary>
     /// <remarks>
     /// Called once at the start of a turn or a single invocation. Resetting the whole chain in one call
-    /// is deliberate: the two stateful stages were previously reset independently at each arming site,
-    /// and a site that reset one but not the other carried a turn's history into the next.
+    /// is deliberate: the stateful parts were previously reset independently at each arming site, and a
+    /// site that reset one but not the other carried a turn's history into the next.
     /// </remarks>
     void Reset();
 }

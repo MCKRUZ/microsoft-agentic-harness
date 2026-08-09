@@ -35,6 +35,13 @@ namespace Application.AI.Common.Services.Governance;
 /// A previously-seen signature the agent abandons in favour of a genuinely new call resets the
 /// no-progress counter, so the guard never blocks an agent that is still exploring.
 /// </para>
+/// <para>
+/// <strong>The lock spans reading the counters and updating them, and must keep doing so.</strong>
+/// Tool calls arrive in parallel batches, so a version that read them, released, and wrote back later
+/// would let every member of a batch decide against the same stale state and admit the lot. See
+/// <see cref="IProgressEvaluator"/>. Publishing a detected spin happens outside the lock — that is
+/// observability, not detection state.
+/// </para>
 /// </remarks>
 public sealed class ProgressEvaluator : IProgressEvaluator
 {
@@ -50,36 +57,38 @@ public sealed class ProgressEvaluator : IProgressEvaluator
     private static readonly string ToolArgsSeparator = ((char)0x1F).ToString();
 
     private readonly IOptionsMonitor<GovernanceConfig> _governanceConfig;
+    private readonly IGovernanceTraceRecorder _trace;
     private readonly ILogger<ProgressEvaluator> _logger;
 
     private readonly object _lock = new();
     private readonly HashSet<string> _seenSignatures = new(StringComparer.Ordinal);
-    private bool _escalated;
     private string? _lastSignature;
     private int _consecutiveCount;
     private int _callsSinceNewSignature;
 
+    /// <summary>Initializes a new instance of the <see cref="ProgressEvaluator"/> class.</summary>
+    /// <param name="governanceConfig">Supplies the guard's opt-in switch and its two thresholds.</param>
+    /// <param name="trace">Receives the escalation reason code when a spin is detected in escalate mode.</param>
+    /// <param name="logger">Records a broken loop for operators.</param>
     public ProgressEvaluator(
         IOptionsMonitor<GovernanceConfig> governanceConfig,
+        IGovernanceTraceRecorder trace,
         ILogger<ProgressEvaluator> logger)
     {
-        _governanceConfig = governanceConfig;
-        _logger = logger;
-    }
+        ArgumentNullException.ThrowIfNull(governanceConfig);
+        ArgumentNullException.ThrowIfNull(trace);
+        ArgumentNullException.ThrowIfNull(logger);
 
-    /// <inheritdoc />
-    public IReadOnlyList<string> EscalationReasonCodes
-    {
-        get
-        {
-            lock (_lock)
-                return _escalated ? [SpinEscalationReasonCode] : [];
-        }
+        _governanceConfig = governanceConfig;
+        _trace = trace;
+        _logger = logger;
     }
 
     /// <inheritdoc />
     public ProgressVerdict Evaluate(string toolName, Func<string?> argumentsSignatureFactory)
     {
+        ArgumentNullException.ThrowIfNull(argumentsSignatureFactory);
+
         var guard = _governanceConfig.CurrentValue.ProgressGuard;
         if (!guard.Enabled)
             return ProgressVerdict.Continue();
@@ -87,6 +96,9 @@ public sealed class ProgressEvaluator : IProgressEvaluator
         // Factory invoked only past the enabled-gate, so the disabled (default) path never pays the
         // argument-serialisation cost on the hot tool-call path.
         var signature = string.Concat(toolName, ToolArgsSeparator, argumentsSignatureFactory() ?? string.Empty);
+
+        // Set inside the lock, acted on outside it. Null means no spin.
+        string? spinReason = null;
 
         lock (_lock)
         {
@@ -109,28 +121,37 @@ public sealed class ProgressEvaluator : IProgressEvaluator
 
             // Repetition is the more specific / faster signal, so check it first.
             if (guard.RepetitionThreshold >= 2 && _consecutiveCount >= guard.RepetitionThreshold)
-                return RecordSpin(GovernanceConventions.SpinReasonValues.Repetition, toolName, guard.OnSpin);
-
-            if (guard.NoProgressWindow >= 2 && _callsSinceNewSignature >= guard.NoProgressWindow)
-                return RecordSpin(GovernanceConventions.SpinReasonValues.NoProgress, toolName, guard.OnSpin);
-
-            return ProgressVerdict.Continue();
+                spinReason = GovernanceConventions.SpinReasonValues.Repetition;
+            else if (guard.NoProgressWindow >= 2 && _callsSinceNewSignature >= guard.NoProgressWindow)
+                spinReason = GovernanceConventions.SpinReasonValues.NoProgress;
         }
+
+        // Publishing a spin happens outside the lock on purpose. It writes to the shared governance
+        // trail, which has a lock of its own, and this critical section is the one a whole parallel
+        // batch of tool calls queues behind — nesting another component's lock inside it lengthens the
+        // section for every waiting call and couples two lock orders for no benefit. Nothing here
+        // touches the counters.
+        return spinReason is null
+            ? ProgressVerdict.Continue()
+            : PublishSpin(spinReason, toolName, guard.OnSpin);
     }
 
     /// <summary>
-    /// Records a detected spin (metric + structured log, and an escalation reason code when configured
-    /// for <see cref="ProgressGuardAction.Escalate"/>) and returns the halt verdict. Called while
-    /// holding <see cref="_lock"/>.
+    /// Publishes a detected spin (metric + structured log, and an escalation reason code on the turn's
+    /// governance trace when configured for <see cref="ProgressGuardAction.Escalate"/>) and returns the
+    /// halt verdict. Called <em>without</em> holding <see cref="_lock"/> — it touches none of the
+    /// counters, and it writes to a component with a lock of its own.
     /// </summary>
-    private ProgressVerdict RecordSpin(string reason, string toolName, ProgressGuardAction action)
+    private ProgressVerdict PublishSpin(string reason, string toolName, ProgressGuardAction action)
     {
         var mode = action == ProgressGuardAction.Escalate
             ? GovernanceConventions.SpinModeValues.Escalate
             : GovernanceConventions.SpinModeValues.Stop;
 
+        // Onto the shared turn trail, which is where the turn handler reads escalations from. It used
+        // to be a property of this type that the admission chain had to remember to fold in.
         if (action == ProgressGuardAction.Escalate)
-            _escalated = true;
+            _trace.RecordEscalation(SpinEscalationReasonCode);
 
         GovernanceMetrics.SpinInterventions.Add(1, new TagList
         {
@@ -156,7 +177,6 @@ public sealed class ProgressEvaluator : IProgressEvaluator
         lock (_lock)
         {
             _seenSignatures.Clear();
-            _escalated = false;
             _lastSignature = null;
             _consecutiveCount = 0;
             _callsSinceNewSignature = 0;

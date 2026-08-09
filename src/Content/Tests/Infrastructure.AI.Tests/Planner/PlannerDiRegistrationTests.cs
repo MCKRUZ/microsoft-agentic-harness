@@ -262,7 +262,8 @@ public sealed class PlannerDiRegistrationTests : IDisposable
         services.AddScoped(_ => new Mock<IToolInvocationGovernor>().Object);
         services.AddScoped(_ => new Mock<IToolCallObserverChain>().Object);
         services.AddScoped(_ => new Mock<IToolClassificationGate>().Object);
-        services.AddScoped(_ => new Mock<IProgressEvaluator>().Object);
+        services.AddScoped(_ => StepExecutors.PermissiveAdmission.ProgressGuard());
+        services.AddScoped(_ => StepExecutors.PermissiveAdmission.TraceRecorder());
         services.AddScoped(_ => new Mock<IAgentToolAuthorizationGate>().Object);
         // Step executors take the admission chain as a required dependency, deliberately: an omitted
         // chain is indistinguishable at runtime from a host whose gates are all off, so a nullable

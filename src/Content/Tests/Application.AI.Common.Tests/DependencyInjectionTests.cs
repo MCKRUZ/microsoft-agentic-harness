@@ -95,6 +95,22 @@ public class DependencyInjectionTests
     }
 
     [Fact]
+    public void AddApplicationAIDependencies_RegistersGovernanceTraceRecorder_AsScoped()
+    {
+        // Scoped, and it matters which: the trail is per turn. A singleton would accumulate every
+        // turn of every conversation in the process into one trace, and a transient would give each
+        // stage of the same turn a private trail nobody else could read — the governor's decisions
+        // and the loop guard's escalations would each land somewhere the turn handler never looks.
+        var services = CreateServicesWithAIDependencies();
+
+        var descriptor = services.FirstOrDefault(d => d.ServiceType == typeof(IGovernanceTraceRecorder));
+        descriptor.Should().NotBeNull();
+        descriptor!.Lifetime.Should().Be(ServiceLifetime.Scoped);
+        descriptor.ImplementationType.Should().Be(typeof(GovernanceTraceRecorder));
+    }
+
+
+    [Fact]
     public void AddApplicationAIDependencies_RegistersToolConverter_AsSingleton()
     {
         var services = CreateServicesWithAIDependencies();

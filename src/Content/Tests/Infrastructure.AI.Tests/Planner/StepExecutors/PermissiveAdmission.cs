@@ -1,6 +1,8 @@
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Services.Governance;
+using Domain.Common.Config.AI;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Moq;
 
 namespace Infrastructure.AI.Tests.Planner.StepExecutors;
@@ -47,8 +49,32 @@ internal static class PermissiveAdmission
             governor,
             ClassificationGate(),
             observers ?? Mock.Of<IToolCallObserverChain>(),
-            Mock.Of<IProgressEvaluator>(),
+            ProgressGuard(),
+            TraceRecorder(),
             NullLogger<ToolCallAdmissionPipeline>.Instance);
+
+    /// <summary>A loop guard that never halts — what the real one answers while switched off.</summary>
+    /// <remarks>
+    /// Not <c>Mock.Of&lt;IProgressEvaluator&gt;()</c>: that returns null from <c>Evaluate</c>, and the
+    /// chain is entitled to assume a verdict exists. These fixtures pass either way today only because
+    /// no plan path opts into loop detection, which is a coincidence rather than a guarantee.
+    /// </remarks>
+    public static IProgressEvaluator ProgressGuard()
+    {
+        var progress = new Mock<IProgressEvaluator>();
+        progress
+            .Setup(p => p.Evaluate(It.IsAny<string>(), It.IsAny<Func<string?>>()))
+            .Returns(ProgressVerdict.Continue());
+        return progress.Object;
+    }
+
+    /// <summary>
+    /// A real, ungoverned trace recorder, so the chain reports the empty trace rather than the null a
+    /// loose mock would return.
+    /// </summary>
+    public static IGovernanceTraceRecorder TraceRecorder() =>
+        new GovernanceTraceRecorder(
+            Mock.Of<IOptionsMonitor<GovernanceConfig>>(m => m.CurrentValue == new GovernanceConfig()));
 
     /// <summary>
     /// An authorization gate that admits everything — the answer the real gate gives when

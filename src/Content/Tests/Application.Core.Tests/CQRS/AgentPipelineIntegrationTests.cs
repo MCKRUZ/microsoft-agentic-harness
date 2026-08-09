@@ -59,11 +59,19 @@ public class AgentPipelineIntegrationTests
         services.AddScoped(_ => governorMock.Object);
 
         // Progress / spin guard — not under test here; permissive mock so the handler resolves.
+        // Evaluate is set up explicitly because a loose mock would return null and the chain assumes
+        // a verdict exists.
         var progressMock = new Mock<Application.AI.Common.Interfaces.Governance.IProgressEvaluator>();
         progressMock
             .Setup(p => p.Evaluate(It.IsAny<string>(), It.IsAny<Func<string?>>()))
             .Returns(Application.AI.Common.Interfaces.Governance.ProgressVerdict.Continue());
         services.AddScoped(_ => progressMock.Object);
+
+        // The turn's governance trail — real, and required by the admission chain the handler resolves.
+        services.AddScoped<Application.AI.Common.Interfaces.Governance.IGovernanceTraceRecorder>(_ =>
+            new Application.AI.Common.Services.Governance.GovernanceTraceRecorder(
+                Mock.Of<Microsoft.Extensions.Options.IOptionsMonitor<Domain.Common.Config.AI.GovernanceConfig>>(
+                    m => m.CurrentValue == new Domain.Common.Config.AI.GovernanceConfig())));
 
         // Classification DLP gate — not under test here; permissive mock so the handler resolves.
         var classificationMock = new Mock<Application.AI.Common.Interfaces.Governance.IToolClassificationGate>();
