@@ -35,6 +35,37 @@ public class ToolAuthorizationConfig
     public const string WildcardToken = "*";
 
     /// <summary>
+    /// Master switch for per-agent tool authorization. <c>false</c> by default: the
+    /// admission chain's authorization stage reports itself off and admits every call,
+    /// which is the harness's behaviour for every release before this switch existed.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Deliberately separate from <see cref="AgentIdentityConfig.Enabled"/>. That switch
+    /// answers "does this agent carry an Entra-bound workload identity for outbound
+    /// calls"; this one answers "is that identity used to decide which tools the agent
+    /// may invoke here". A consumer may want the first without the second — acquiring a
+    /// managed identity to call Azure is not a statement about local tool policy — so
+    /// coupling them would force an allowlist on consumers who only wanted a token.
+    /// </para>
+    /// <para>
+    /// Turning this on has hard prerequisites, all enforced at startup by
+    /// <c>ToolAuthorizationConfigValidator</c> rather than discovered as a silent
+    /// total denial at the first tool call: <see cref="AgentIdentityConfig.Enabled"/>
+    /// must also be on (with it off there is no identity to authorize, and every call
+    /// would be refused), and <see cref="AllowedToolsByAgentId"/> must name at least
+    /// one agent.
+    /// </para>
+    /// <para>
+    /// The allowlist is keyed by tool key, and the plan engine's capability gates
+    /// (<c>llm_call</c>, <c>rag_retrieval</c>) pass through the same chain under those
+    /// names. An agent that runs plans needs them listed — or the wildcard — alongside
+    /// its real tools.
+    /// </para>
+    /// </remarks>
+    public bool Enabled { get; set; }
+
+    /// <summary>
     /// Per-agent allowlists keyed by <c>AgentIdentity.Id</c>. AgentId matching is
     /// case-insensitive; tool-key matching is case-sensitive.
     /// </summary>

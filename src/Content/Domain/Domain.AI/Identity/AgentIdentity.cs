@@ -23,7 +23,14 @@ namespace Domain.AI.Identity;
 /// not in constructors. This record accepts any non-null <see cref="Id"/> and any
 /// <see cref="AgentIdentityKind"/>; <c>IAgentIdentityValidator</c> enforces the
 /// real invariants (no <see cref="AgentIdentityKind.Unspecified"/>, kind-specific required
-/// fields, etc.).
+/// fields, etc.) when it is consulted.
+/// </para>
+/// <para>
+/// It is consulted on the live tool path through <c>IAgentToolAuthorizationGate</c>, stage 1 of
+/// the tool-call admission chain, and only while
+/// <c>AppConfig.AI.Identity.ToolAuthorization.Enabled</c> is set — the feature is opt-in, and with
+/// it off no invariant on this record is enforced at all. Treat an <see cref="AgentIdentity"/>
+/// obtained from anywhere as unvalidated data until that gate has passed it.
 /// </para>
 /// </remarks>
 public sealed record AgentIdentity

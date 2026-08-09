@@ -35,7 +35,15 @@ internal static class PermissiveAdmission
                 It.IsAny<CancellationToken>()))
             .Returns(ValueTask.FromResult(ClassificationVerdict.Allow()));
 
+        // Admits everything, matching the real gate's answer when tool authorization is switched off
+        // — which is the default composition these retrieval fixtures run under.
+        var authorizationGate = new Mock<IAgentToolAuthorizationGate>();
+        authorizationGate
+            .Setup(g => g.EvaluateAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns(ValueTask.FromResult(AgentToolAuthorizationVerdict.Allow()));
+
         return new ToolCallAdmissionPipeline(
+            authorizationGate.Object,
             governor.Object,
             classificationGate.Object,
             Mock.Of<IToolCallObserverChain>(),

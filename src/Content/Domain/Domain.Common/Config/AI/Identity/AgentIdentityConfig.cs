@@ -70,9 +70,15 @@ public class AgentIdentityConfig
     public ClientSecretProviderConfig ClientSecret { get; set; } = new();
 
     /// <summary>
-    /// Per-agent tool-invocation allowlist consumed by
-    /// <c>IAgentIdentityValidator</c>. Fail-closed by default — an agent not present
-    /// in the allowlist is denied every tool. Wildcard <c>"*"</c> grants all tools.
+    /// Per-agent tool-invocation allowlist consumed by <c>IAgentIdentityValidator</c>,
+    /// and the switch that decides whether it is consulted at all. Off by default; when
+    /// on, it is fail-closed — an agent not present in the allowlist is denied every
+    /// tool, and wildcard <c>"*"</c> grants all tools.
     /// </summary>
+    /// <remarks>
+    /// <see cref="ToolAuthorizationConfig.Enabled"/> is separate from <see cref="Enabled"/>
+    /// on purpose, and turning it on requires this one to be on too — see the remarks on
+    /// <see cref="ToolAuthorizationConfig"/>.
+    /// </remarks>
     public ToolAuthorizationConfig ToolAuthorization { get; set; } = new();
 }

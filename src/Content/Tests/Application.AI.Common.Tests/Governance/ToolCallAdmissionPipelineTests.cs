@@ -46,13 +46,17 @@ public sealed class ToolCallAdmissionPipelineTests
             new ToolCallAdmissionRequest(Tool, Args, CountsTowardLoopDetection: true), CancellationToken.None);
 
         order.Should().Equal(
-            ["governor", "classification", "host-rules", "loop-guard"],
-            "permission and policy settle whether the agent may use the tool at all; the host's own "
-            + "rules run after them so they can only tighten; and the loop guard runs last because it "
-            + "is the only stage that records state, so it must count only calls that reached the tool");
+            ["agent-authorization", "governor", "classification", "host-rules", "loop-guard"],
+            "agent RBAC runs first because it is the cheapest and most fundamental access question, "
+            + "and because the governor can escalate to a human — nobody should be asked to approve a "
+            + "call that RBAC refuses anyway; permission and policy then settle whether the agent may "
+            + "use the tool at all; the host's own rules run after them so they can only tighten; and "
+            + "the loop guard runs last because it is the only stage that records state, so it must "
+            + "count only calls that reached the tool");
     }
 
     [Theory]
+    [InlineData("agent-authorization")]
     [InlineData("governor")]
     [InlineData("classification")]
     [InlineData("host-rules")]
@@ -303,6 +307,14 @@ public sealed class ToolCallAdmissionPipelineTests
     /// <param name="refusingStage">The stage that refuses, or null when every stage permits.</param>
     private static ToolCallAdmissionPipeline Recording(List<string> order, string? refusingStage = null)
     {
+        var authorizationGate = new Mock<IAgentToolAuthorizationGate>();
+        authorizationGate
+            .Setup(g => g.EvaluateAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Callback(() => order.Add("agent-authorization"))
+            .ReturnsAsync(refusingStage == "agent-authorization"
+                ? AgentToolAuthorizationVerdict.Deny("no")
+                : AgentToolAuthorizationVerdict.Allow());
+
         var governor = new Mock<IToolInvocationGovernor>();
         governor
             .Setup(g => g.AuthorizeAsync(
@@ -338,7 +350,7 @@ public sealed class ToolCallAdmissionPipelineTests
             .Returns(ProgressVerdict.Continue());
 
         return new ToolCallAdmissionPipeline(
-            governor.Object, classificationGate.Object, observers.Object, progress.Object,
-            NullLogger<ToolCallAdmissionPipeline>.Instance);
+            authorizationGate.Object, governor.Object, classificationGate.Object, observers.Object,
+            progress.Object, NullLogger<ToolCallAdmissionPipeline>.Instance);
     }
 }

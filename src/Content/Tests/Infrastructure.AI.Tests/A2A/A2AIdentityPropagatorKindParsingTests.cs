@@ -25,13 +25,12 @@ namespace Infrastructure.AI.Tests.A2A;
 /// condition.
 /// </para>
 /// <para>
-/// <strong>Measured 8 Aug 2026: that validator has no production caller.</strong>
-/// <c>IAgentIdentityValidator</c> is registered in DI and injected nowhere, so the tool
-/// authorization control is inert today and nothing live was being bypassed. These tests pin the
-/// contract the wire field must honour regardless — an unrecognised kind resolves to Unspecified —
-/// so the day that control is wired up it is not wired onto a parser that already lost the
-/// distinction. Stated plainly because the first version of this file claimed a live gate was
-/// bypassed, which was wrong.
+/// <strong>That validator had no production caller when these tests were written (measured 8 Aug
+/// 2026), and has one now.</strong> #311 wired it onto the tool-call admission chain as stage 1,
+/// so from an enabled host every tool call reaches it. These tests pinned the contract the wire
+/// field must honour before the control existed — an unrecognised kind resolves to Unspecified —
+/// which is precisely why wiring it up did not land it on a parser that had already lost the
+/// distinction.
 /// </para>
 /// </remarks>
 public sealed class A2AIdentityPropagatorKindParsingTests

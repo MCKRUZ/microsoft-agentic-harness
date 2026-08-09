@@ -263,6 +263,7 @@ public sealed class PlannerDiRegistrationTests : IDisposable
         services.AddScoped(_ => new Mock<IToolCallObserverChain>().Object);
         services.AddScoped(_ => new Mock<IToolClassificationGate>().Object);
         services.AddScoped(_ => new Mock<IProgressEvaluator>().Object);
+        services.AddScoped(_ => new Mock<IAgentToolAuthorizationGate>().Object);
         // Step executors take the admission chain as a required dependency, deliberately: an omitted
         // chain is indistinguishable at runtime from a host whose gates are all off, so a nullable
         // default would let a composition silently run the plan path unguarded. The real composition

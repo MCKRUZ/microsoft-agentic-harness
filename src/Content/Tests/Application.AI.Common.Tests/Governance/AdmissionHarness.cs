@@ -22,12 +22,39 @@ internal static class AdmissionHarness
         IToolInvocationGovernor? governor = null,
         IToolClassificationGate? classificationGate = null,
         IToolCallObserverChain? observers = null,
-        IProgressEvaluator? progressEvaluator = null) =>
-        new(governor ?? PermissiveGovernor(),
+        IProgressEvaluator? progressEvaluator = null,
+        IAgentToolAuthorizationGate? authorizationGate = null) =>
+        new(authorizationGate ?? PermissiveAuthorizationGate(),
+            governor ?? PermissiveGovernor(),
             classificationGate ?? PermissiveClassificationGate(),
             observers ?? Mock.Of<IToolCallObserverChain>(),
             progressEvaluator ?? PermissiveProgressEvaluator(),
             NullLogger<ToolCallAdmissionPipeline>.Instance);
+
+    /// <summary>
+    /// An authorization gate that admits everything — what the real gate answers when
+    /// <c>AI.Identity.ToolAuthorization.Enabled</c> is unset, which is the default composition.
+    /// </summary>
+    public static IAgentToolAuthorizationGate PermissiveAuthorizationGate()
+    {
+        var gate = new Mock<IAgentToolAuthorizationGate>();
+        gate
+            .Setup(g => g.EvaluateAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(AgentToolAuthorizationVerdict.Allow());
+        return gate.Object;
+    }
+
+    /// <summary>An authorization gate that refuses every call, as an enabled gate does for an
+    /// agent the allowlist does not cover.</summary>
+    /// <param name="deniedMessage">The refusal text the gate returns.</param>
+    public static Mock<IAgentToolAuthorizationGate> DenyingAuthorizationGate(string deniedMessage)
+    {
+        var gate = new Mock<IAgentToolAuthorizationGate>();
+        gate
+            .Setup(g => g.EvaluateAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(AgentToolAuthorizationVerdict.Deny(deniedMessage));
+        return gate;
+    }
 
     /// <summary>A governor that authorizes everything — the ungoverned default composition.</summary>
     public static IToolInvocationGovernor PermissiveGovernor()

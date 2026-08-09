@@ -43,11 +43,25 @@ internal static class PermissiveAdmission
     /// <param name="observers">The host-rule stage, or an empty chain when it is not the subject.</param>
     public static ToolCallAdmissionPipeline PipelineOver(
         IToolInvocationGovernor governor, IToolCallObserverChain? observers = null) =>
-        new(governor,
+        new(AuthorizationGate(),
+            governor,
             ClassificationGate(),
             observers ?? Mock.Of<IToolCallObserverChain>(),
             Mock.Of<IProgressEvaluator>(),
             NullLogger<ToolCallAdmissionPipeline>.Instance);
+
+    /// <summary>
+    /// An authorization gate that admits everything — the answer the real gate gives when
+    /// <c>AI.Identity.ToolAuthorization.Enabled</c> is unset, which is the default composition.
+    /// </summary>
+    public static IAgentToolAuthorizationGate AuthorizationGate()
+    {
+        var gate = new Mock<IAgentToolAuthorizationGate>();
+        gate
+            .Setup(g => g.EvaluateAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns(ValueTask.FromResult(AgentToolAuthorizationVerdict.Allow()));
+        return gate.Object;
+    }
 
     /// <summary>
     /// A classification gate with nothing to classify — the default, off, composition.

@@ -689,6 +689,11 @@ public sealed class DirectToolInvokerTests
             _observerChain ?? new FakeObserverChain(ToolInvocationDecision.Allow()) { HasObservers = false });
         services.AddSingleton(AdmissionHarness.PermissiveProgressEvaluator());
 
+        // Per-agent RBAC, permitting — the answer the real gate gives when tool authorization is off,
+        // which is this fixture's composition. Registered because the chain requires it: an absent
+        // gate and a switched-off one must never be confusable at runtime.
+        services.AddSingleton(AdmissionHarness.PermissiveAuthorizationGate());
+
         // The real chain, not a mock of it. This suite's whole subject is what the Execution API does
         // before, during and after a tool call, and that is now the chain's behaviour plus this type's
         // response shaping — mocking the chain would move every governance assertion here off the code

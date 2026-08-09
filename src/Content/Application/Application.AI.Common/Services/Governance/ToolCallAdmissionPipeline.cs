@@ -43,6 +43,7 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
     private static readonly IReadOnlyDictionary<string, object?> EmptyArguments =
         ReadOnlyDictionary<string, object?>.Empty;
 
+    private readonly IAgentToolAuthorizationGate _authorizationGate;
     private readonly IToolInvocationGovernor _governor;
     private readonly IToolClassificationGate _classificationGate;
     private readonly IToolCallObserverChain _observers;
@@ -50,31 +51,39 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
     private readonly ILogger<ToolCallAdmissionPipeline> _logger;
 
     /// <summary>Initializes a new instance of the <see cref="ToolCallAdmissionPipeline"/> class.</summary>
-    /// <param name="governor">Stage 1 — permission, capability, envelope and declarative policy.</param>
+    /// <param name="authorizationGate">
+    /// Stage 1 — whether the executing agent identity is permitted this tool. Required rather than
+    /// optional, on the same argument as the two stages below: it reports its own off state by
+    /// admitting, so an absent gate and a switched-off gate would be indistinguishable at runtime.
+    /// </param>
+    /// <param name="governor">Stage 2 — permission, capability, envelope and declarative policy.</param>
     /// <param name="classificationGate">
-    /// Stage 2 — data sensitivity. Required rather than optional: it is registered unconditionally and
+    /// Stage 3 — data sensitivity. Required rather than optional: it is registered unconditionally and
     /// reports its own off state internally, so an absent one would be indistinguishable at runtime from
     /// a host that turned classification off, and only one of those is safe.
     /// </param>
     /// <param name="observers">
-    /// Stage 3 — the host's own rules. Required for the same reason: an absent chain and a chain with
+    /// Stage 4 — the host's own rules. Required for the same reason: an absent chain and a chain with
     /// nothing in it are indistinguishable at runtime.
     /// </param>
-    /// <param name="progressEvaluator">Stage 4 — the loop guard.</param>
+    /// <param name="progressEvaluator">Stage 5 — the loop guard.</param>
     /// <param name="logger">Records a redaction that could not be applied.</param>
     public ToolCallAdmissionPipeline(
+        IAgentToolAuthorizationGate authorizationGate,
         IToolInvocationGovernor governor,
         IToolClassificationGate classificationGate,
         IToolCallObserverChain observers,
         IProgressEvaluator progressEvaluator,
         ILogger<ToolCallAdmissionPipeline> logger)
     {
+        ArgumentNullException.ThrowIfNull(authorizationGate);
         ArgumentNullException.ThrowIfNull(governor);
         ArgumentNullException.ThrowIfNull(classificationGate);
         ArgumentNullException.ThrowIfNull(observers);
         ArgumentNullException.ThrowIfNull(progressEvaluator);
         ArgumentNullException.ThrowIfNull(logger);
 
+        _authorizationGate = authorizationGate;
         _governor = governor;
         _classificationGate = classificationGate;
         _observers = observers;
@@ -92,7 +101,25 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         var toolName = request.ToolName;
         var arguments = request.Arguments ?? EmptyArguments;
 
-        // 1 — the built-in governor. Arguments are passed through as the caller supplied them,
+        // 1 — per-agent tool authorization, ahead of everything else. It is the cheapest stage (a
+        // dictionary lookup once an identity is in hand) and the most fundamental question — whether
+        // this agent may use this tool at all — so nothing more expensive should run before it. The
+        // ordering is load-bearing rather than merely tidy: the governor below can escalate to a human
+        // for approval, and asking a person to approve a call that RBAC refuses anyway is both a wasted
+        // interruption and a way to train operators to approve calls that were never permitted.
+        //
+        // Applied to capability gates (null arguments) as well as real tool calls. Unlike the
+        // classification gate below, there is nothing here that degrades without arguments: the
+        // question is about the caller's identity and the operation's name, both of which are always
+        // present. Exempting the plan engine's llm_call and rag_retrieval would leave an agent barred
+        // from a tool able to reach equivalent capability through a plan step.
+        var authorization = await _authorizationGate
+            .EvaluateAsync(toolName, cancellationToken)
+            .ConfigureAwait(false);
+        if (!authorization.IsAllowed)
+            return Refuse(authorization.DeniedMessage, toolName);
+
+        // 2 — the built-in governor. Arguments are passed through as the caller supplied them,
         // null included: the governor distinguishes "no arguments were available" from "the call had
         // none", and narrows its argument-conditioned rules accordingly.
         var decision = await _governor
@@ -101,7 +128,7 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         if (!decision.IsAllowed)
             return Refuse(decision.DeniedMessage, toolName);
 
-        // 2 — data classification, for calls that have a data surface to classify. A block refuses the
+        // 3 — data classification, for calls that have a data surface to classify. A block refuses the
         // call outright; a redact verdict lets it run and scrubs the output afterwards, which is why
         // the verdict survives past this stage.
         //
@@ -126,7 +153,7 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
                 return Refuse(classification.BlockedMessage, toolName);
         }
 
-        // 3 — the host's own rules, last of the access gates.
+        // 4 — the host's own rules, last of the access gates.
         if (_observers.HasObservers)
         {
             var observed = await _observers
@@ -136,7 +163,7 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
                 return Refuse(observed.DeniedMessage, toolName);
         }
 
-        // 4 — the loop guard, last of all, and only for callers that issue a sequence.
+        // 5 — the loop guard, last of all, and only for callers that issue a sequence.
         if (request.CountsTowardLoopDetection)
         {
             var verdict = _progressEvaluator.Evaluate(
