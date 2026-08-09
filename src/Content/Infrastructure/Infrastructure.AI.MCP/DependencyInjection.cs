@@ -1,9 +1,11 @@
 using Application.AI.Common.Interfaces;
+using Application.AI.Common.Interfaces.Governance;
 using Domain.Common.Config.AI;
 using Infrastructure.AI.Egress;
 using Infrastructure.AI.MCP.Resources;
 using Infrastructure.AI.MCP.Services;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace Infrastructure.AI.MCP;
@@ -42,8 +44,21 @@ public static class DependencyInjection
             return new McpConnectionManager(logger, loggerFactory, antiSsrfHandlerFactory, aiConfig.CurrentValue.McpServers);
         });
 
-        // Tool provider — singleton wrapping connection manager
-        services.AddSingleton<IMcpToolProvider, McpToolProvider>();
+        // Tool provider — singleton wrapping connection manager. Only the scanning decorator is
+        // published as IMcpToolProvider, so every consumer sees screened tools; the transport
+        // implementation stays resolvable by its concrete type for the decorator to wrap.
+        services.AddSingleton<McpToolProvider>();
+
+        // Resolving IMcpSecurityScanner makes the tool-definition scan a mandatory dependency, on the
+        // same reasoning as AntiSsrfHandlerFactory above: if the governance layer was not wired, this
+        // throws rather than silently publishing unscanned tool descriptions into the model's context.
+        // The governance layer registers a no-op scanner when governance is switched off, so an
+        // intentionally ungoverned host still composes.
+        services.AddSingleton<IMcpToolProvider>(sp => new ScanningMcpToolProvider(
+            sp.GetRequiredService<McpToolProvider>(),
+            sp.GetRequiredService<IMcpSecurityScanner>(),
+            sp.GetRequiredService<IOptionsMonitor<AIConfig>>(),
+            sp.GetRequiredService<ILogger<ScanningMcpToolProvider>>()));
 
         // Trace resource provider — exposes optimization run trace files at trace:// URIs.
         // Auth-gated and feature-flagged via MetaHarnessConfig.EnableMcpTraceResources.

@@ -149,7 +149,8 @@ Infrastructure.AI.MCP/
 | Type | Purpose | Implements | Lifetime |
 |------|---------|-----------|----------|
 | `McpConnectionManager` | Connection lifecycle management | `IAsyncDisposable` | Singleton |
-| `McpToolProvider` | Tool discovery across MCP servers | `IMcpToolProvider` | Singleton |
+| `McpToolProvider` | Tool discovery across MCP servers | `IMcpToolProvider` (concrete type only) | Singleton |
+| `ScanningMcpToolProvider` | Screens discovered tool definitions, withholding poisoned ones | `IMcpToolProvider` (what consumers resolve) | Singleton |
 | `TraceResourceProvider` | trace:// resource exposure | `IMcpResourceProvider` | Singleton |
 
 ## Configuration

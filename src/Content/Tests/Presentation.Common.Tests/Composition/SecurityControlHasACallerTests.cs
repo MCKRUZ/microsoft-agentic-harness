@@ -62,13 +62,12 @@ public sealed class SecurityControlHasACallerTests
         // Its consumer is IToolCallObserverChain, which resolves IEnumerable<IToolCallObserver> —
         // so it does in fact have a caller, and this entry exists only to document that the
         // zero-implementations state is intended rather than an oversight.
-        ["IToolCallObserver"] = "consumer extension point; consumed as a collection by IToolCallObserverChain",
+        ["IToolCallObserver"] = "consumer extension point; consumed as a collection by IToolCallObserverChain"
 
-        // NOT a justified exemption — a known defect with a deadline. This guard's first run found
-        // it: the MCP tool-poisoning scanner is registered twice and called nowhere, which is the
-        // fifth instance of the pattern this test exists to catch. Tracked in #313. Delete this
-        // entry when it is wired; do not treat it as precedent for exempting anything else.
-        ["IMcpSecurityScanner"] = "KNOWN DEFECT, tracked in #313 — registered but never invoked"
+        // IMcpSecurityScanner was carried here as a known defect — this guard's first run found it
+        // registered twice and called nowhere, the fifth instance of the pattern. It is now consumed
+        // by ScanningMcpToolProvider, which screens every tool definition an external MCP server
+        // advertises before it can reach the model (#313), so the entry is gone rather than renewed.
     };
 
     [Fact]

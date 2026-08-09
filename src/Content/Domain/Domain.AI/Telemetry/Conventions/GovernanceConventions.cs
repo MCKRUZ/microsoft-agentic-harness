@@ -17,6 +17,13 @@ public static class GovernanceConventions
     public const string InjectionDetections = "agent.governance.injection_detections";
     public const string McpScans = "agent.governance.mcp_scans";
     public const string McpThreats = "agent.governance.mcp_threats";
+    public const string McpToolsWithheld = "agent.governance.mcp_tools_withheld";
+
+    /// <summary>
+    /// Highest severity found on a withheld MCP tool. Bounded by the <c>ThreatLevel</c> enum, unlike
+    /// the tool name, which an untrusted server controls and which therefore stays out of tag space.
+    /// </summary>
+    public const string McpThreatSeverityTag = "agent.governance.mcp.severity";
 
     public const string ResponseSanitizations = "agent.governance.response.sanitizations";
     public const string ResponseBlocks = "agent.governance.response.blocks";

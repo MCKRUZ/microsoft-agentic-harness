@@ -52,6 +52,28 @@ public class GovernanceConfigValidatorTests
         result.Errors.Should().BeEmpty();
     }
 
+    /// <summary>
+    /// An out-of-range threshold is the worst failure shape available to this setting: the scan
+    /// still runs and still logs, but no finding is ever at or above an undefined level, so nothing
+    /// is withheld while the config reads <c>EnableMcpSecurity: true</c>. The two sibling thresholds
+    /// have carried this rule since they were added; this one did not until it was caught in review.
+    /// </summary>
+    [Fact]
+    public async Task Validate_McpToolBlockThresholdOutOfRange_HasError()
+    {
+        var config = new GovernanceConfig
+        {
+            Enabled = true,
+            EnableMcpSecurity = true,
+            McpToolBlockThreshold = (ThreatLevel)99
+        };
+
+        var result = await _validator.ValidateAsync(config);
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName == nameof(GovernanceConfig.McpToolBlockThreshold));
+    }
+
     [Fact]
     public async Task Validate_DisabledWithInjectionDetectionOn_HasError()
     {
