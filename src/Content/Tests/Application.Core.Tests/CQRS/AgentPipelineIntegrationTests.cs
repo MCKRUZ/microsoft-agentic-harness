@@ -79,9 +79,17 @@ public class AgentPipelineIntegrationTests
         observerChainMock.SetupGet(c => c.HasObservers).Returns(false);
         services.AddScoped(_ => observerChainMock.Object);
 
-        // The REAL admission chain over the four permissive gates above, not a mock of it. The handler
+        // Per-agent tool RBAC — admits, which is what the real gate answers when
+        // AI.Identity.ToolAuthorization.Enabled is unset, i.e. the default composition this suite runs.
+        var authorizationMock = new Mock<Application.AI.Common.Interfaces.Governance.IAgentToolAuthorizationGate>();
+        authorizationMock
+            .Setup(g => g.EvaluateAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Application.AI.Common.Interfaces.Governance.ToolInvocationDecision.Allow());
+        services.AddScoped(_ => authorizationMock.Object);
+
+        // The REAL admission chain over the five permissive gates above, not a mock of it. The handler
         // depends only on the chain now, and registering the real one keeps this an end-to-end proof
-        // that the four gates are reachable from the turn — a mocked chain would prove nothing about
+        // that the five gates are reachable from the turn — a mocked chain would prove nothing about
         // whether they are wired at all.
         services.AddScoped<
             Application.AI.Common.Interfaces.Governance.IToolCallAdmissionPipeline,

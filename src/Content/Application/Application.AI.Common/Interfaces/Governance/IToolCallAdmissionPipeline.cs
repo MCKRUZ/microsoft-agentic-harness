@@ -19,6 +19,13 @@ namespace Application.AI.Common.Interfaces.Governance;
 /// </para>
 /// <list type="number">
 /// <item><description>
+/// <see cref="IAgentToolAuthorizationGate"/> — whether the executing agent's workload identity is
+/// permitted this tool at all. First because it is the most fundamental access question and the
+/// cheapest to answer, and because the next stage can escalate to a human: asking a person to
+/// approve a call that RBAC refuses anyway is a wasted interruption that also teaches operators to
+/// approve calls which were never permitted.
+/// </description></item>
+/// <item><description>
 /// <see cref="IToolInvocationGovernor"/> — permission, capability, envelope and declarative policy.
 /// </description></item>
 /// <item><description>

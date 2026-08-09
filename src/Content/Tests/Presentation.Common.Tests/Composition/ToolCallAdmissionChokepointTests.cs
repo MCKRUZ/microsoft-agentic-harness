@@ -38,6 +38,7 @@ public sealed class ToolCallAdmissionChokepointTests
     /// <summary>The gates that must only ever be invoked from inside the chain.</summary>
     private static readonly string[] GateInterfaces =
     [
+        "IAgentToolAuthorizationGate",
         "IToolInvocationGovernor",
         "IToolClassificationGate",
         "IToolCallObserverChain",
@@ -51,6 +52,7 @@ public sealed class ToolCallAdmissionChokepointTests
     private static readonly HashSet<string> Allowed = new(StringComparer.OrdinalIgnoreCase)
     {
         // The contracts themselves.
+        "IAgentToolAuthorizationGate.cs",
         "IToolInvocationGovernor.cs",
         "IToolClassificationGate.cs",
         "IToolCallObserverChain.cs",
@@ -64,6 +66,7 @@ public sealed class ToolCallAdmissionChokepointTests
 
         // The implementations. ToolCallObserverChain names the governor because it corrects the
         // governor's trace when it blocks a call the governor allowed.
+        "DefaultAgentToolAuthorizationGate.cs",
         "ToolInvocationGovernor.cs",
         "ToolInvocationGovernor.Approval.cs",
         "DefaultToolClassificationGate.cs",

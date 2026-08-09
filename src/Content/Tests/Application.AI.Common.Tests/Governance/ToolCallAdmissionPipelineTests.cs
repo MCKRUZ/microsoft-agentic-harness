@@ -46,13 +46,17 @@ public sealed class ToolCallAdmissionPipelineTests
             new ToolCallAdmissionRequest(Tool, Args, CountsTowardLoopDetection: true), CancellationToken.None);
 
         order.Should().Equal(
-            ["governor", "classification", "host-rules", "loop-guard"],
-            "permission and policy settle whether the agent may use the tool at all; the host's own "
-            + "rules run after them so they can only tighten; and the loop guard runs last because it "
-            + "is the only stage that records state, so it must count only calls that reached the tool");
+            ["agent-authorization", "governor", "classification", "host-rules", "loop-guard"],
+            "agent RBAC runs first because it is the cheapest and most fundamental access question, "
+            + "and because the governor can escalate to a human — nobody should be asked to approve a "
+            + "call that RBAC refuses anyway; permission and policy then settle whether the agent may "
+            + "use the tool at all; the host's own rules run after them so they can only tighten; and "
+            + "the loop guard runs last because it is the only stage that records state, so it must "
+            + "count only calls that reached the tool");
     }
 
     [Theory]
+    [InlineData("agent-authorization")]
     [InlineData("governor")]
     [InlineData("classification")]
     [InlineData("host-rules")]
@@ -66,6 +70,33 @@ public sealed class ToolCallAdmissionPipelineTests
 
         admission.IsAllowed.Should().BeFalse();
         order.Should().Equal(order.TakeWhile(s => s != refusingStage).Append(refusingStage));
+    }
+
+    [Fact]
+    public async Task AdmitAsync_AuthorizationRefuses_TheRefusalIsRecordedOnTheTrace()
+    {
+        // The authorization stage runs ahead of the governor, so the governor never sees a call this
+        // stage refuses and records nothing for it. Without an explicit record, a turn in which an
+        // agent was refused every tool it attempted reports zero denials to governance reporting,
+        // the dashboard and the audit — which for an access-control decision is indistinguishable
+        // from not having enforced it.
+        var governor = new Mock<IToolInvocationGovernor>();
+        governor
+            .Setup(g => g.AuthorizeAsync(
+                It.IsAny<string>(), It.IsAny<CancellationToken>(), It.IsAny<IReadOnlyDictionary<string, object?>?>()))
+            .ReturnsAsync(ToolInvocationDecision.Allow());
+
+        var pipeline = AdmissionHarness.Pipeline(
+            governor: governor.Object,
+            authorizationGate: AdmissionHarness.DenyingAuthorizationGate("nope").Object);
+
+        var admission = await pipeline.AdmitAsync(
+            new ToolCallAdmissionRequest(Tool, Args), CancellationToken.None);
+
+        admission.IsAllowed.Should().BeFalse();
+        governor.Verify(
+            g => g.RecordDownstreamBlock(Tool, It.Is<string>(r => r.Contains("authorization"))),
+            Times.Once);
     }
 
     [Fact]
@@ -303,6 +334,14 @@ public sealed class ToolCallAdmissionPipelineTests
     /// <param name="refusingStage">The stage that refuses, or null when every stage permits.</param>
     private static ToolCallAdmissionPipeline Recording(List<string> order, string? refusingStage = null)
     {
+        var authorizationGate = new Mock<IAgentToolAuthorizationGate>();
+        authorizationGate
+            .Setup(g => g.EvaluateAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Callback(() => order.Add("agent-authorization"))
+            .ReturnsAsync(refusingStage == "agent-authorization"
+                ? ToolInvocationDecision.Deny("no")
+                : ToolInvocationDecision.Allow());
+
         var governor = new Mock<IToolInvocationGovernor>();
         governor
             .Setup(g => g.AuthorizeAsync(
@@ -338,7 +377,7 @@ public sealed class ToolCallAdmissionPipelineTests
             .Returns(ProgressVerdict.Continue());
 
         return new ToolCallAdmissionPipeline(
-            governor.Object, classificationGate.Object, observers.Object, progress.Object,
-            NullLogger<ToolCallAdmissionPipeline>.Instance);
+            authorizationGate.Object, governor.Object, classificationGate.Object, observers.Object,
+            progress.Object, NullLogger<ToolCallAdmissionPipeline>.Instance);
     }
 }

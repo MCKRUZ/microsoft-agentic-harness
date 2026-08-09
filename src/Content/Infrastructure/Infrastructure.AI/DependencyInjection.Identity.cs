@@ -1,6 +1,7 @@
 using Application.AI.Common.Interfaces.Identity;
 using Infrastructure.AI.Identity;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 
 namespace Infrastructure.AI;
 
@@ -43,7 +44,13 @@ public static partial class DependencyInjection
         services.AddSingleton<IAgentIdentityResolver, EntraAgentIdResolver>();
 
         // Tool-level RBAC validator — consults the static per-agent allowlist in
-        // AppConfig.AI.Identity.ToolAuthorization.
+        // AppConfig.AI.Identity.ToolAuthorization. Reached on the live tool path through
+        // IAgentToolAuthorizationGate, which is stage 1 of the tool-call admission chain; this
+        // stays a pure policy oracle and holds neither the feature switch nor identity acquisition.
         services.AddSingleton<IAgentIdentityValidator, EntraAgentIdentityValidator>();
+
+        // Refuses to boot when tool authorization is switched on but is configured such that every
+        // call would be denied. Registered unconditionally and no-ops when the feature is off.
+        services.AddSingleton<IHostedService, ToolAuthorizationConfigValidator>();
     }
 }

@@ -68,11 +68,11 @@ public sealed class A2AIdentityPropagator
         // established". A bare Enum.TryParse accepts "99" and yields a Kind that is not a member and,
         // decisively, not Unspecified either: it looks resolved to anything testing for Unspecified.
         //
-        // On the intended consumer this would matter: EntraAgentIdentityValidator.CanInvoke denies on
-        // exactly that condition. Measured 8 Aug 2026 — CanInvoke has NO production caller.
-        // IAgentIdentityValidator is registered in DI and injected nowhere, so the tool-authorization
-        // control is currently inert. Do not read the paragraph above as "a live gate was bypassed";
-        // read it as the contract this field must honour for the day that control is wired up.
+        // That matters on a live path: EntraAgentIdentityValidator.CanInvoke denies on exactly that
+        // condition, and since #311 it is reached for every tool call through stage 1 of the
+        // tool-call admission chain (IAgentToolAuthorizationGate) whenever
+        // AI.Identity.ToolAuthorization.Enabled is set. An "identity" carrying a non-member kind
+        // would otherwise satisfy the Unspecified check and be authorized as though established.
         //
         // One deliberate WIDENING comes with the switch: the previous call omitted ignoreCase, so it
         // was case-sensitive and "managedidentity" landed on Unspecified. The shared reader is

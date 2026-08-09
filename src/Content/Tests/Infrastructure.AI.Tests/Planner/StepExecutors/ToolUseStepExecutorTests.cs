@@ -476,11 +476,26 @@ public sealed class ToolUseStepExecutorTests
     /// maintained by hand in five places and kept being broken in one of them.
     /// </summary>
     private ToolCallAdmissionPipeline BuildAdmissionPipeline(IToolCallObserverChain observers) =>
-        new(_toolGovernor.Object,
+        new(PermissiveAuthorizationGate(),
+            _toolGovernor.Object,
             _classificationGate.Object,
             observers,
             Mock.Of<IProgressEvaluator>(),
             NullLogger<ToolCallAdmissionPipeline>.Instance);
+
+    /// <summary>
+    /// Admits everything, matching what the real gate answers with
+    /// <c>AI.Identity.ToolAuthorization.Enabled</c> unset — the composition this fixture runs under,
+    /// since its subject is the governor and classification stages rather than agent RBAC.
+    /// </summary>
+    private static IAgentToolAuthorizationGate PermissiveAuthorizationGate()
+    {
+        var gate = new Mock<IAgentToolAuthorizationGate>();
+        gate
+            .Setup(g => g.EvaluateAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ToolInvocationDecision.Allow());
+        return gate.Object;
+    }
 
     [Fact]
     public async Task ExecuteAsync_GovernorAllows_AuthorizesExactToolName()
