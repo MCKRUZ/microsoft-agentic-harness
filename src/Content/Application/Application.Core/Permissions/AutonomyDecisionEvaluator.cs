@@ -1,5 +1,5 @@
 using Application.AI.Common.Interfaces.Governance;
-using Application.Common.Helpers;
+using Domain.Common.Helpers;
 using Domain.AI.Changes;
 using Domain.AI.Governance;
 using Domain.AI.Permissions;

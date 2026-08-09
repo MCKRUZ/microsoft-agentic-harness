@@ -4,7 +4,7 @@ using Application.AI.Common.Interfaces.RAG;
 using Application.AI.Common.Interfaces.Routing;
 using Application.AI.Common.Prompts.Exceptions;
 using Application.AI.Common.Prompts.Interfaces;
-using Application.Common.Helpers;
+using Domain.Common.Helpers;
 using Domain.AI.Prompts;
 using Domain.AI.RAG.Enums;
 using Domain.AI.RAG.Models;

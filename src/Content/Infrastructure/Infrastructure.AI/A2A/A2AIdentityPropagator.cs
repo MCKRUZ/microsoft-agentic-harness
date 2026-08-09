@@ -1,5 +1,5 @@
 using Application.AI.Common.Interfaces.Agent;
-using Application.Common.Helpers;
+using Domain.Common.Helpers;
 using Domain.AI.A2A;
 using Domain.AI.Identity;
 

@@ -1,4 +1,4 @@
-namespace Application.Common.Helpers;
+namespace Domain.Common.Helpers;
 
 /// <summary>
 /// Parses enum values supplied as configuration or wire data, by <em>name</em> only.
@@ -18,10 +18,17 @@ namespace Application.Common.Helpers;
 /// changes a safety comparison.
 /// </para>
 /// <para>
-/// This helper lives in <c>Application.Common</c> deliberately: it is the layer both
-/// <c>Application.Core</c> (which validates these values at boot) and <c>Application.AI.Common</c>
-/// (which parses them again at runtime) can reference. Before #296 the two had separate rules, so
-/// the boot validator rejected <c>"3"</c> while the runtime parser accepted it as <c>High</c>.
+/// This helper lives in <c>Domain.Common</c> deliberately: it is the innermost layer, referenced by
+/// every other one, so <em>every</em> layer that reads an enum by name can reach the same rule.
+/// Before #296 the boot validator and the runtime parser had separate rules, so the validator
+/// rejected <c>"3"</c> while the parser accepted it as <c>High</c>.
+/// </para>
+/// <para>
+/// It sat in <c>Application.Common</c> until #312 moved it here. That placement was one ring too far
+/// out to be reachable from the Domain, and the Domain — unable to reference it — had hand-rolled two
+/// weaker copies of the same rule rather than go without. <c>Domain.Common</c> has no project
+/// references of its own, so the move adds no dependency anywhere and bends no arrows: the body uses
+/// only <see cref="Enum"/>, <see cref="char"/> and <see cref="string"/>.
 /// </para>
 /// </remarks>
 public static class EnumNameHelper

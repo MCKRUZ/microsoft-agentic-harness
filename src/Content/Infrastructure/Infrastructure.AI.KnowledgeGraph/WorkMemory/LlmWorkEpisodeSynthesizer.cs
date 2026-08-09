@@ -7,7 +7,7 @@ using Application.AI.Common.Interfaces.WorkMemory;
 using Application.AI.Common.Json;
 using Application.AI.Common.Prompts.Exceptions;
 using Application.AI.Common.Prompts.Interfaces;
-using Application.Common.Helpers;
+using Domain.Common.Helpers;
 using Domain.AI.Learnings;
 using Domain.AI.Prompts;
 using Domain.AI.WorkMemory;

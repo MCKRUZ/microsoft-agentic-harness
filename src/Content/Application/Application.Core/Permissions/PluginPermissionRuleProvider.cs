@@ -2,7 +2,7 @@ using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Permissions;
 using Application.AI.Common.Interfaces.Plugins;
 using Application.AI.Common.Interfaces.Tools;
-using Application.Common.Helpers;
+using Domain.Common.Helpers;
 using Domain.AI.Governance;
 using Domain.AI.Permissions;
 using Domain.AI.Skills;

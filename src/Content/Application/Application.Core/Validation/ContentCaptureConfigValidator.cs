@@ -1,4 +1,4 @@
-using Application.Common.Helpers;
+using Domain.Common.Helpers;
 using Domain.AI.Telemetry.Redaction;
 using Domain.Common.Config.AI.Telemetry;
 using FluentValidation;

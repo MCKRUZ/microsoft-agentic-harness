@@ -1,4 +1,4 @@
-using Application.Common.Helpers;
+using Domain.Common.Helpers;
 using Domain.AI.Changes;
 
 namespace Application.Core.CQRS.Autonomy;

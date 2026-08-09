@@ -1,7 +1,7 @@
 using System.Diagnostics;
 using Application.AI.Common.OpenTelemetry.Metrics;
 using Application.AI.Common.Services;
-using Application.Common.Helpers;
+using Domain.Common.Helpers;
 using Domain.AI.Agents;
 using Domain.AI.Escalation;
 using Domain.AI.Governance;

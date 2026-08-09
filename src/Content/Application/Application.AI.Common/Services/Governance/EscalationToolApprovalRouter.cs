@@ -1,7 +1,7 @@
 using System.Text.Json;
 using Application.AI.Common.Interfaces.Escalation;
 using Application.AI.Common.Interfaces.Governance;
-using Application.Common.Helpers;
+using Domain.Common.Helpers;
 using Domain.AI.Changes;
 using Domain.AI.Escalation;
 using Domain.AI.Governance;

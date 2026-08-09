@@ -4,7 +4,7 @@ using Application.AI.Common.Interfaces.Permissions;
 using Application.AI.Common.Interfaces.Sandbox;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Services.Sandbox;
-using Application.Common.Helpers;
+using Domain.Common.Helpers;
 using Domain.AI.Bundles;
 using Domain.AI.Changes;
 using Domain.AI.Governance;
