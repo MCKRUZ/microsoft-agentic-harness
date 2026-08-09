@@ -41,6 +41,13 @@ public sealed class GovernanceConfigValidator : AbstractValidator<GovernanceConf
             .IsInEnum()
             .WithMessage("ResponseBlockThreshold must be a defined ThreatLevel value.");
 
+        // Without this rule an out-of-range value degrades MCP scanning to report-only in the worst
+        // possible way: the scan still runs and still logs, but "highest >= threshold" is false for
+        // every finding, so nothing is ever withheld while the config says EnableMcpSecurity=true.
+        RuleFor(x => x.McpToolBlockThreshold)
+            .IsInEnum()
+            .WithMessage("McpToolBlockThreshold must be a defined ThreatLevel value.");
+
         // A blank policy path can never resolve to a file — the DI registration filters it out via
         // File.Exists, so it never loads. Surface it as a typo rather than silently dropping it.
         RuleForEach(x => x.PolicyPaths)

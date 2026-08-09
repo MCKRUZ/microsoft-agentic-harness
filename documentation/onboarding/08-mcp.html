@@ -224,10 +224,20 @@ app.MapMcp()
                     <h2>Security scanning of MCP tools</h2>
                     <p>
                         Tools coming from external servers are not trusted by default. When
-                        <code>AppConfig.AI.Governance.EnableMcpSecurity</code> is on, every tool schema is scanned at
-                        registration time for dangerous patterns — overly-broad parameter types, suspicious operation
-                        names, schema mismatches. Tools that fail the scan are logged and skipped rather than wired
-                        into the agent.
+                        <code>AppConfig.AI.Governance.EnableMcpSecurity</code> is on, every tool's <strong>name,
+                        description and parameter schema</strong> is scanned at discovery time — before the model ever
+                        sees it — for tool poisoning, hidden instructions, description injection and homoglyph
+                        typosquatting. That text is the attack surface: the harness copies it into the model's context
+                        so the model knows the tool exists, which means a poisoned description works whether or not the
+                        tool is ever called.
+                    </p>
+                    <p>
+                        A finding at or above <code>AppConfig.AI.Governance.McpToolBlockThreshold</code> (default
+                        <code>High</code>) causes the tool to be <strong>withheld</strong> — it is never published to the
+                        model. Findings below that threshold are logged and counted, and the tool is still published.
+                        Full detail, including how the detection rules were calibrated against live MCP servers, is in
+                        the <a href="../security/mcp-tool-definition-scanning.md">MCP tool-definition scanning</a>
+                        security guide.
                     </p>
 
                     <div class="callout callout-warn">

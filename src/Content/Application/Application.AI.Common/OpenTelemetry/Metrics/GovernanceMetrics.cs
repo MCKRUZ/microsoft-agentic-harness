@@ -51,6 +51,14 @@ public static class GovernanceMetrics
     public static Counter<long> McpThreats { get; } =
         AppInstrument.Meter.CreateCounter<long>(GovernanceConventions.McpThreats, "{threat}", "MCP tool threats detected");
 
+    /// <summary>
+    /// MCP tools withheld from the model because a scan finding met the configured block threshold.
+    /// Tags: agent.governance.mcp.severity. Deliberately not tagged with the tool name — that string
+    /// comes from an untrusted server and would put unbounded cardinality in the metric backend.
+    /// </summary>
+    public static Counter<long> McpToolsWithheld { get; } =
+        AppInstrument.Meter.CreateCounter<long>(GovernanceConventions.McpToolsWithheld, "{tool}", "MCP tools withheld after a security scan");
+
     /// <summary>Response sanitization actions taken. Tags: agent.governance.sanitization.category, agent.governance.tool.</summary>
     public static Counter<long> ResponseSanitizations { get; } =
         AppInstrument.Meter.CreateCounter<long>(GovernanceConventions.ResponseSanitizations, "{sanitization}", "Response sanitization actions");

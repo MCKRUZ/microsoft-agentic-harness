@@ -37,7 +37,18 @@ public sealed class GovernanceConfig
     /// <summary>Whether deterministic prompt injection detection is enabled.</summary>
     public bool EnablePromptInjectionDetection { get; init; }
 
-    /// <summary>Whether MCP tool security scanning is enabled on tool registration.</summary>
+    /// <summary>
+    /// Whether MCP tool security scanning is enabled on tool registration. When true, every tool
+    /// definition discovered on an external MCP server is scanned for tool poisoning, hidden
+    /// instructions, description injection and homoglyph typosquatting before it can be published to
+    /// the model, and a finding at or above <see cref="McpToolBlockThreshold"/> withholds that tool.
+    /// </summary>
+    /// <remarks>
+    /// Scanning happens at discovery rather than at call time because the attack surface is the tool's
+    /// name, description and parameter schema — text the harness copies into the model's context so
+    /// the model knows the tool exists. That text does its work the moment it is in context, whether
+    /// or not the tool is ever invoked, so refusing the call later would be too late.
+    /// </remarks>
     public bool EnableMcpSecurity { get; init; }
 
     /// <summary>Whether tamper-evident governance audit logging is enabled.</summary>
@@ -51,6 +62,21 @@ public sealed class GovernanceConfig
     /// Detections below this level are logged but not blocked.
     /// </summary>
     public ThreatLevel InjectionBlockThreshold { get; init; } = ThreatLevel.High;
+
+    /// <summary>
+    /// Minimum threat level on an MCP tool definition that withholds the tool from the model.
+    /// Findings below this level are logged and counted, and the tool is still published.
+    /// Only consulted when <see cref="EnableMcpSecurity"/> is true.
+    /// </summary>
+    /// <remarks>
+    /// The default withholds instruction-override and role-injection findings while leaving the two
+    /// lower-confidence heuristics — encoded blocks and unusual name characters — as reports.
+    /// Raising this to <see cref="ThreatLevel.Critical"/> withholds only invisible-character
+    /// findings, the narrowest rule; note it still carries one known false positive, since the
+    /// zero-width non-joiner it looks for is load-bearing in Persian, Arabic and several Indic
+    /// scripts.
+    /// </remarks>
+    public ThreatLevel McpToolBlockThreshold { get; init; } = ThreatLevel.High;
 
     /// <summary>Whether MCP tool response sanitization is enabled.</summary>
     public bool EnableResponseSanitization { get; init; } = true;
