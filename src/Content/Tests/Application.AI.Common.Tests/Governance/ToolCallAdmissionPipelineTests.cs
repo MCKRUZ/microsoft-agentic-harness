@@ -73,6 +73,33 @@ public sealed class ToolCallAdmissionPipelineTests
     }
 
     [Fact]
+    public async Task AdmitAsync_AuthorizationRefuses_TheRefusalIsRecordedOnTheTrace()
+    {
+        // The authorization stage runs ahead of the governor, so the governor never sees a call this
+        // stage refuses and records nothing for it. Without an explicit record, a turn in which an
+        // agent was refused every tool it attempted reports zero denials to governance reporting,
+        // the dashboard and the audit — which for an access-control decision is indistinguishable
+        // from not having enforced it.
+        var governor = new Mock<IToolInvocationGovernor>();
+        governor
+            .Setup(g => g.AuthorizeAsync(
+                It.IsAny<string>(), It.IsAny<CancellationToken>(), It.IsAny<IReadOnlyDictionary<string, object?>?>()))
+            .ReturnsAsync(ToolInvocationDecision.Allow());
+
+        var pipeline = AdmissionHarness.Pipeline(
+            governor: governor.Object,
+            authorizationGate: AdmissionHarness.DenyingAuthorizationGate("nope").Object);
+
+        var admission = await pipeline.AdmitAsync(
+            new ToolCallAdmissionRequest(Tool, Args), CancellationToken.None);
+
+        admission.IsAllowed.Should().BeFalse();
+        governor.Verify(
+            g => g.RecordDownstreamBlock(Tool, It.Is<string>(r => r.Contains("authorization"))),
+            Times.Once);
+    }
+
+    [Fact]
     public async Task AdmitAsync_LoopDetectionNotRequested_TheGuardIsNotConsulted()
     {
         // Every caller but the agent turn. A single Execution API call has no sequence to evaluate,

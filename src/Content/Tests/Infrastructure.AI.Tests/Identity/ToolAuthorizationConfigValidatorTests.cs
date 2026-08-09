@@ -77,6 +77,22 @@ public sealed class ToolAuthorizationConfigValidatorTests
     }
 
     [Fact]
+    public async Task StartAsync_EnabledWithNullToolList_ReportsItRatherThanCrashing()
+    {
+        // `"agent-1": null` in appsettings.json binds to a null list. A NullReferenceException out of
+        // the validator whose entire purpose is to replace unexplained failures with an actionable
+        // sentence would be the least useful outcome available.
+        var config = new ToolAuthorizationConfig { Enabled = true };
+        config.AllowedToolsByAgentId["agent-1"] = null!;
+        var validator = Build(config, identityEnabled: true);
+
+        var act = async () => await validator.StartAsync(CancellationToken.None);
+
+        (await act.Should().ThrowAsync<InvalidOperationException>())
+            .WithMessage("*is null*");
+    }
+
+    [Fact]
     public async Task StartAsync_EnabledButValidatorNotRegistered_Throws()
     {
         var validator = Build(Allowlist(enabled: true), identityEnabled: true, registerServices: false);

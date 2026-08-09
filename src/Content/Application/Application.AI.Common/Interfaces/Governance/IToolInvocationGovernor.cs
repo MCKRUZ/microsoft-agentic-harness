@@ -72,6 +72,16 @@ public interface IToolInvocationGovernor
     /// downstream did not, and an audit trail that shows only one of those facts is telling half the
     /// story.
     /// </para>
+    /// <para>
+    /// <strong>Also used by the one stage that runs <em>before</em> the governor</strong> — the
+    /// per-agent authorization gate. "Downstream" describes the common case rather than a
+    /// restriction: what this method does is record a refusal the governor did not itself make, and
+    /// that is equally true of a stage ahead of it. The only difference is that there is no earlier
+    /// <see cref="ToolDecisionOutcome.Allowed"/> record to correct, so the denial stands alone. A
+    /// refusal that never reaches the trace is invisible to bundle-run governance reporting, the
+    /// dashboard, and the audit, which for an access-control decision is the reporting equivalent of
+    /// not enforcing it.
+    /// </para>
     /// </remarks>
     void RecordDownstreamBlock(string toolName, string reason);
 

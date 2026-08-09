@@ -3,6 +3,7 @@ using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Identity;
 using Domain.AI.Governance;
 using Domain.AI.Identity;
+using Domain.Common;
 using Domain.Common.Config;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -52,6 +53,7 @@ public sealed class DefaultAgentToolAuthorizationGate : IAgentToolAuthorizationG
     // Scoped service, so this caches for one turn / one plan step / one direct invocation.
     private AgentIdentity? _resolvedIdentity;
     private bool _resolutionAttempted;
+    private bool _warnedEmptyAllowlist;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="DefaultAgentToolAuthorizationGate"/> class.
@@ -97,8 +99,23 @@ public sealed class DefaultAgentToolAuthorizationGate : IAgentToolAuthorizationG
         CancellationToken cancellationToken)
     {
         var identityConfig = _appConfig.CurrentValue.AI?.Identity;
-        if (identityConfig?.ToolAuthorization is not { Enabled: true })
+        if (identityConfig?.ToolAuthorization is not { Enabled: true } toolAuthorization)
             return AgentToolAuthorizationVerdict.Allow();
+
+        // ToolAuthorizationConfigValidator refuses to boot on this, but configuration is monitored
+        // rather than snapshotted: flipping Enabled to true in appsettings.json on a running host
+        // activates enforcement without passing through startup at all. The verdict is the same
+        // either way — an empty allowlist denies everyone — so what is missing at runtime is not
+        // safety but the explanation, and a blanket denial with no stated cause is the hardest
+        // possible thing to diagnose from the outside. Logged once per scope rather than per call.
+        if (toolAuthorization.AllowedToolsByAgentId.Count == 0 && !_warnedEmptyAllowlist)
+        {
+            _warnedEmptyAllowlist = true;
+            _logger.LogError(
+                "Tool authorization is enabled with an empty AllowedToolsByAgentId, so every tool "
+                + "call is refused. If this host did not fail at startup, the setting was changed on "
+                + "a running host and never validated.");
+        }
 
         if (_validator is null)
         {
@@ -136,10 +153,9 @@ public sealed class DefaultAgentToolAuthorizationGate : IAgentToolAuthorizationG
         if (_resolutionAttempted)
             return _resolvedIdentity;
 
-        _resolutionAttempted = true;
-
         if (_resolver is null)
         {
+            _resolutionAttempted = true;
             _logger.LogError(
                 "Tool authorization is enabled but no IAgentIdentityResolver is registered, so an "
                 + "identity cannot be established outside an agent turn.");
@@ -153,9 +169,37 @@ public sealed class DefaultAgentToolAuthorizationGate : IAgentToolAuthorizationG
             Scopes = [.. identityConfig.DefaultScopes]
         };
 
-        var resolution = await _resolver
-            .ResolveAsync(credentialContext, cancellationToken)
-            .ConfigureAwait(false);
+        Result<AgentIdentity> resolution;
+        try
+        {
+            resolution = await _resolver
+                .ResolveAsync(credentialContext, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // Deliberately NOT latched, and deliberately not converted to a denial. An abandoned call
+            // is not a policy decision, and this scope outlives the call: a DI scope spans every turn
+            // of a conversation, so latching here would let one cancelled acquisition deny every tool
+            // call for the rest of that conversation — with the wording of a policy refusal.
+            throw;
+        }
+        catch (Exception ex)
+        {
+            // A consumer-supplied IAgentCredentialProvider that throws rather than returning a failed
+            // Result must still fail closed. Letting this escape would surface on the tool path as an
+            // unhandled fault instead of the refusal this class promises. Latched, because a provider
+            // that throws is a misconfiguration rather than a blip, and retrying it once per tool call
+            // would hammer a credential endpoint.
+            _resolutionAttempted = true;
+            _logger.LogError(
+                ex,
+                "Agent identity resolution threw while authorizing a tool call; refusing the call. "
+                + "The credential provider is responsible for the detail behind this.");
+            return null;
+        }
+
+        _resolutionAttempted = true;
 
         if (!resolution.IsSuccess || resolution.Value is null)
         {

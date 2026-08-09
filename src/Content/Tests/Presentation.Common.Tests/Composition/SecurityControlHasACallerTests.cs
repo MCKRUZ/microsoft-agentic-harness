@@ -127,6 +127,17 @@ public sealed class SecurityControlHasACallerTests
             "IAgentToolAuthorizationGate")
             .Should().BeTrue("registering a service is not calling it — that is the whole defect");
 
+        // The shape this repo actually writes. The first version of this control asserted only the
+        // unqualified form above, so it passed while the classifier matched none of the eight
+        // namespace-qualified registrations in Application.AI.Common — the guard was blind and its
+        // own mutation test said otherwise. A control that does not exercise the real input is not
+        // a control.
+        IsRegistrationOnly(
+            "services.AddScoped<Interfaces.Governance.IAgentToolAuthorizationGate, "
+            + "Services.Governance.DefaultAgentToolAuthorizationGate>();",
+            "IAgentToolAuthorizationGate")
+            .Should().BeTrue("registrations here are namespace-qualified, and are still registrations");
+
         Implements("private readonly IAgentToolAuthorizationGate _gate;", "IAgentToolAuthorizationGate")
             .Should().BeFalse("a field of the interface type is exactly what a consumer looks like");
         IsRegistrationOnly("private readonly IAgentToolAuthorizationGate _gate;", "IAgentToolAuthorizationGate")
@@ -172,11 +183,19 @@ public sealed class SecurityControlHasACallerTests
     /// Whether the only mention of the contract in this file is a DI registration. Registering a
     /// service is precisely what every one of the four dead controls did have.
     /// </summary>
+    /// <remarks>
+    /// The optional <c>(?:[\w.]+\.)?</c> qualifier is load-bearing, not defensive. Every governance
+    /// contract in <c>Application.AI.Common/DependencyInjection.cs</c> is registered namespace-
+    /// qualified — <c>AddScoped&lt;Interfaces.Governance.IToolInvocationGovernor, …&gt;</c> — so a
+    /// pattern anchored directly on the bare interface name matched none of them. That made the DI
+    /// file look like a <em>consumer</em> of all eight, and the guard structurally unable to report
+    /// any of them: exactly the blind spot it exists to remove.
+    /// </remarks>
     private static bool IsRegistrationOnly(string code, string contract)
     {
         var mentions = Regex.Matches(code, $@"\b{contract}\b").Count;
         var registrations = Regex.Matches(
-            code, $@"Add(?:Scoped|Singleton|Transient|Keyed\w+)\s*<\s*{contract}\b").Count;
+            code, $@"Add(?:Scoped|Singleton|Transient|Keyed\w+)\s*<\s*(?:[\w.]+\.)?{contract}\b").Count;
         return mentions > 0 && mentions == registrations;
     }
 

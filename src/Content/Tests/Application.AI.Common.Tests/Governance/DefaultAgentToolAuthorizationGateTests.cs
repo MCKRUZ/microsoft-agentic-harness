@@ -232,6 +232,57 @@ public sealed class DefaultAgentToolAuthorizationGateTests
         await act.Should().ThrowAsync<OperationCanceledException>();
     }
 
+    [Fact]
+    public async Task EvaluateAsync_FeatureOn_ACancelledAcquisitionDoesNotPoisonTheRestOfTheScope()
+    {
+        // The scope outlives the call — a DI scope spans every turn of a conversation — so latching
+        // the "already tried" flag on a cancellation would turn one abandoned call into a blanket
+        // denial for the remainder of that conversation, wearing the wording of a policy refusal.
+        var resolver = new Mock<IAgentIdentityResolver>();
+        var calls = 0;
+        resolver
+            .Setup(r => r.ResolveAsync(It.IsAny<CredentialContext>(), It.IsAny<CancellationToken>()))
+            .Returns(() => ++calls == 1
+                ? throw new OperationCanceledException()
+                : Task.FromResult(Result<AgentIdentity>.Success(ResolvedIdentity)));
+
+        var validator = Validator(ResolvedIdentity, Tool, allowed: true);
+        var gate = Build(
+            enabled: true, contextIdentity: null, validator: validator.Object, resolver: resolver.Object);
+
+        var cancelled = async () => await gate.EvaluateAsync(Tool, CancellationToken.None);
+        await cancelled.Should().ThrowAsync<OperationCanceledException>();
+
+        var verdict = await gate.EvaluateAsync(Tool, CancellationToken.None);
+
+        verdict.IsAllowed.Should().BeTrue(
+            "the next call in this scope carried a healthy token and an allowed tool, so it must be "
+            + "authorized on its own merits rather than inheriting the abandoned call's outcome");
+    }
+
+    [Fact]
+    public async Task EvaluateAsync_FeatureOn_AThrowingCredentialProvider_DeniesRatherThanFaulting()
+    {
+        // IAgentCredentialProvider is a consumer extension point, and the resolver does not wrap
+        // provider calls. An exception escaping here would reach the tool path as an unhandled fault
+        // instead of the refusal this class promises.
+        var resolver = new Mock<IAgentIdentityResolver>();
+        resolver
+            .Setup(r => r.ResolveAsync(It.IsAny<CredentialContext>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("certificate store unavailable"));
+
+        var gate = Build(
+            enabled: true,
+            contextIdentity: null,
+            validator: Mock.Of<IAgentIdentityValidator>(),
+            resolver: resolver.Object);
+
+        var verdict = await gate.EvaluateAsync(Tool, CancellationToken.None);
+
+        verdict.IsAllowed.Should().BeFalse();
+        verdict.DeniedMessage.Should().NotBeNullOrWhiteSpace();
+    }
+
     private static DefaultAgentToolAuthorizationGate Build(
         bool enabled,
         AgentIdentity? contextIdentity = null,

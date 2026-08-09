@@ -414,12 +414,33 @@ public sealed class ToolInvocationGovernorTests
     public void RecordDownstreamBlock_OnAnUngovernedTurn_RecordsNothing()
     {
         // Off the enforced path the governor recorded no allow, so there is nothing to correct and
-        // a bare denial would invent a decision the governor never made.
-        var governor = Build();
+        // a bare denial would invent a decision on a turn governance was never applied to.
+        //
+        // "Ungoverned" means enforcement is switched off, which is what this now builds. It
+        // previously built an ENFORCING governor and relied on nothing having been authorized yet —
+        // a different condition wearing the same name, and one that stopped being safe to conflate
+        // once a stage began running ahead of the governor.
+        var governor = Build(new GovernanceConfig { EnforceToolInvocation = false });
 
         governor.RecordDownstreamBlock(Tool, "blocked by observer 'wire-limit'");
 
         Assert.Empty(governor.GetTrace().ToolDecisions);
+    }
+
+    [Fact]
+    public void RecordDownstreamBlock_EnforcedTurnBeforeAnyAuthorize_StillRecords()
+    {
+        // The per-agent authorization gate is stage 1 of the admission chain and runs BEFORE this
+        // governor, so a call it refuses never reaches AuthorizeAsync at all. Keying the record on
+        // "this governor has already evaluated something" dropped exactly those refusals — and since
+        // a refused call never goes on to be authorized, that is most of them. The turn is enforced;
+        // that is what makes the record meaningful, not whether the governor happened to run first.
+        var governor = Build();
+
+        governor.RecordDownstreamBlock(Tool, "denied by per-agent tool authorization");
+
+        var decisions = governor.GetTrace().ToolDecisions;
+        Assert.Contains(decisions, d => d.Outcome == ToolDecisionOutcome.Denied);
     }
 
     [Fact]

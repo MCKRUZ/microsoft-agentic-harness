@@ -427,9 +427,16 @@ public sealed partial class ToolInvocationGovernor : IToolInvocationGovernor
     /// <inheritdoc />
     public void RecordDownstreamBlock(string toolName, string reason)
     {
-        // Only meaningful for a turn this governor actually evaluated. Off the enforced path the
-        // governor recorded nothing, so there is no allow to correct and nothing to add.
-        if (!_enforcedObserved)
+        // Only meaningful on an enforced turn. Off that path the governor recorded nothing, so there
+        // is no allow to correct and nothing to add.
+        //
+        // EnforcementActive is consulted as well as _enforcedObserved, and the difference is
+        // load-bearing: the authorization gate runs BEFORE this governor, so on the first tool call
+        // of a turn nothing has set _enforcedObserved yet. Keying only on that flag silently dropped
+        // every RBAC refusal that arrived first — which is most of them, since a refused call never
+        // goes on to reach the governor at all. This matches how GetTrace already decides whether a
+        // turn was enforced.
+        if (!_enforcedObserved && !EnforcementActive)
             return;
 
         var radius = _toolRiskClassifier.Classify(toolName).Radius;

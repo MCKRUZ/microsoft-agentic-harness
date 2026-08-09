@@ -107,7 +107,7 @@ public sealed class ToolAuthorizationConfigValidator : IHostedService
                 + string.Join("\n - ", errors));
         }
 
-        var emptyAllowlists = toolAuthorization.AllowedToolsByAgentId.Count(a => a.Value.Count == 0);
+        var emptyAllowlists = toolAuthorization.AllowedToolsByAgentId.Count(a => a.Value is { Count: 0 });
         if (emptyAllowlists > 0)
         {
             _logger.LogWarning(
@@ -145,6 +145,18 @@ public sealed class ToolAuthorizationConfigValidator : IHostedService
                 errors.Add(
                     "AllowedToolsByAgentId contains a blank agent id, which can never match a "
                     + "resolved identity.");
+                continue;
+            }
+
+            // `"agent-1": null` in appsettings.json binds to a null list. Reported rather than
+            // dereferenced: the whole point of this validator is to replace an unexplained crash with
+            // a sentence naming the setting, and an NullReferenceException out of the config validator
+            // is the least helpful of all possible outcomes.
+            if (tools is null)
+            {
+                errors.Add(
+                    $"AllowedToolsByAgentId['{agentId}'] is null. Use an empty array to grant nothing, "
+                    + "or list the tool keys this agent may invoke.");
                 continue;
             }
 
