@@ -1,6 +1,6 @@
 using Application.AI.Common.Interfaces.Agents;
 using Application.AI.Common.Interfaces.Tools;
-using Application.Common.Helpers;
+using Domain.Common.Helpers;
 using Domain.AI.Changes;
 using Domain.AI.Governance;
 using Domain.AI.Models;

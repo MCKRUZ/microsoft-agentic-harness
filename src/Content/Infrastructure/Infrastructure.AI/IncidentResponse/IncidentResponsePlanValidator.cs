@@ -1,4 +1,4 @@
-using Application.Common.Helpers;
+using Domain.Common.Helpers;
 using Domain.AI.Governance;
 using Domain.Common.Config;
 using Domain.Common.Config.AI.IncidentResponse;

@@ -1,5 +1,5 @@
 using Application.AI.Common.Interfaces;
-using Application.Common.Helpers;
+using Domain.Common.Helpers;
 using Domain.AI.Context;
 using Domain.AI.Observability.Models;
 using Microsoft.AspNetCore.Authorization;

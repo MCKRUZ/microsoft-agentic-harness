@@ -1,3 +1,5 @@
+using Domain.Common.Helpers;
+
 namespace Domain.AI.KnowledgeGraph.Models;
 
 /// <summary>
@@ -35,12 +37,24 @@ public static class GraphNodeMemoryExtensions
     /// <see cref="MemoryTrust.Trusted"/> when no marker is present (legacy nodes, or nodes written
     /// while the memory guard was disabled), so unmarked facts remain recallable.
     /// </summary>
+    /// <remarks>
+    /// This is a round-trip of a value this system wrote itself, which is the category #300 left
+    /// alone on the grounds that tightening a parse can reject data already on disk. It is converted
+    /// here because that was checked rather than assumed: <see cref="WithTrust"/> is the only writer
+    /// and it persists <c>trust.ToString().ToLowerInvariant()</c>, so no numeric or composite form
+    /// has ever been stored and nothing existing is refused.
+    /// <para>
+    /// The check mattered because the fallback is <see cref="MemoryTrust.Untrusted"/>'s opposite: a
+    /// marker that fails to parse reads as recallable. Had numeric markers existed, refusing them
+    /// would have turned quarantined facts back into recallable ones — a tightening that fails open.
+    /// </para>
+    /// </remarks>
     public static MemoryTrust GetTrust(this GraphNode node)
     {
         ArgumentNullException.ThrowIfNull(node);
 
         return node.Properties.TryGetValue(TrustPropertyKey, out var raw)
-            && Enum.TryParse<MemoryTrust>(raw, ignoreCase: true, out var trust)
+            && EnumNameHelper.TryParseName<MemoryTrust>(raw, out var trust)
                 ? trust
                 : MemoryTrust.Trusted;
     }

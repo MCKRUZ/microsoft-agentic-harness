@@ -1,5 +1,5 @@
 using Application.AI.Common.Interfaces.Changes;
-using Application.Common.Helpers;
+using Domain.Common.Helpers;
 using Domain.AI.Changes;
 using Domain.Common.Config;
 using Microsoft.Extensions.Logging;

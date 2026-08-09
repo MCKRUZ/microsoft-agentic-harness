@@ -1,5 +1,5 @@
 using Application.AI.Common.Interfaces.Telemetry;
-using Application.Common.Helpers;
+using Domain.Common.Helpers;
 using Domain.AI.Telemetry.Redaction;
 using Domain.Common.Config.Observability;
 using Microsoft.Extensions.Logging;

@@ -1,8 +1,8 @@
-using Application.Common.Helpers;
+using Domain.Common.Helpers;
 using FluentAssertions;
 using Xunit;
 
-namespace Application.Common.Tests.Helpers;
+namespace Domain.Common.Tests.Helpers;
 
 /// <summary>
 /// Tests for <see cref="EnumNameHelper"/>.

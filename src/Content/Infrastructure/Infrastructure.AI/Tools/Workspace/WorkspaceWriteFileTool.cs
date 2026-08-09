@@ -1,7 +1,7 @@
 using Application.AI.Common.CQRS.Changes.SubmitChangeProposal;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Interfaces.Workspace;
-using Application.Common.Helpers;
+using Domain.Common.Helpers;
 using Domain.AI.Changes;
 using Domain.AI.Models;
 using Domain.AI.SkillTraining;

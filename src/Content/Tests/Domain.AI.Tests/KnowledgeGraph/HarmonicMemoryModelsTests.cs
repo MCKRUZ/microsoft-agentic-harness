@@ -81,6 +81,43 @@ public sealed class HarmonicMemoryModelsTests
         stamped.GetAbstraction().Should().Be("kept");
     }
 
+    /// <summary>
+    /// The marker is read by name only, since #312. <c>WithTrust</c> is the only writer and it
+    /// persists the lowercase name, so no stored marker is refused by this — but a hand-written or
+    /// tampered numeric marker no longer resolves to a member by accident.
+    /// </summary>
+    [Theory]
+    [InlineData("1")]
+    [InlineData(" 1")]
+    [InlineData("99")]
+    [InlineData("Trusted,Untrusted")]
+    public void GetTrust_NonNameMarker_FallsBackToTrustedRatherThanResolvingByNumber(string raw)
+    {
+        var node = BareNode() with
+        {
+            Properties = new Dictionary<string, string> { [GraphNodeMemoryExtensions.TrustPropertyKey] = raw }
+        };
+
+        node.GetTrust().Should().Be(
+            MemoryTrust.Trusted,
+            "a marker that is not a member name is not a marker, and an unreadable marker reads as "
+            + "recallable — the documented fallback");
+    }
+
+    [Theory]
+    [InlineData("untrusted", MemoryTrust.Untrusted)]
+    [InlineData("UNTRUSTED", MemoryTrust.Untrusted)]
+    [InlineData("trusted", MemoryTrust.Trusted)]
+    public void GetTrust_NamedMarker_RoundTrips(string raw, MemoryTrust expected)
+    {
+        var node = BareNode() with
+        {
+            Properties = new Dictionary<string, string> { [GraphNodeMemoryExtensions.TrustPropertyKey] = raw }
+        };
+
+        node.GetTrust().Should().Be(expected);
+    }
+
     [Fact]
     public void GetAbstraction_OnNodeWithoutAbstraction_ReturnsNull()
     {

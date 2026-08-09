@@ -73,10 +73,13 @@ public static partial class TfsecParser
                 continue;
             }
 
+            // A reported-but-unreadable severity resolves to Critical rather than leaving severity
+            // null, which made Flush drop the finding outright — see
+            // IacScanSeverityParser.ParseFindingSeverity.
             var sevMatch = SeverityLine().Match(line);
-            if (sevMatch.Success && IacScanSeverityParser.TryParse(sevMatch.Groups["sev"].Value, out var parsed))
+            if (sevMatch.Success)
             {
-                severity = parsed;
+                severity = IacScanSeverityParser.ParseFindingSeverity(sevMatch.Groups["sev"].Value);
                 continue;
             }
 

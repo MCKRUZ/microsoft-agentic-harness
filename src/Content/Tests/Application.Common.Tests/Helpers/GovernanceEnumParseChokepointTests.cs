@@ -62,7 +62,22 @@ public sealed class GovernanceEnumParseChokepointTests
         // MergeGate short-circuits its real apply on `Mode == Shadow`, so any value that is not
         // exactly Shadow writes for real. A numeric config value turned a dry run into production
         // writes — the sharpest consequence found anywhere in this sweep.
-        "OrchestratorMode"
+        "OrchestratorMode",
+
+        // Domain-layer enums, reachable only since #312 moved the helper into Domain.Common. Both
+        // were parsed by hand-rolled weaker copies of this rule before that.
+        //
+        // IacScanSeverity decides whether an infrastructure scan blocks a proposal. It is read from
+        // two directions with opposite failure semantics: the configured blocking threshold, where
+        // refusing fails closed, and each finding's severity as scraped from Checkov / tfsec /
+        // ARM-TTK output, where refusing failed open until #312 gave that path its own reader.
+        // Those scrapers capture `\w+`, which includes digits, so the numeric form is reachable from
+        // tool output and not just from config.
+        "IacScanSeverity",
+
+        // MemoryTrust marks a fact as quarantined. Its reader falls back to Trusted — recallable —
+        // so anything that makes the marker unreadable fails open.
+        "MemoryTrust"
     ];
 
     /// <summary>
@@ -74,6 +89,14 @@ public sealed class GovernanceEnumParseChokepointTests
         "EnumNameHelper.cs"
     };
 
+    /// <summary>
+    /// Files exempt from the <em>inferred</em> matcher only, because its file-level attribution can
+    /// name an enum the file merely mentions. Deliberately separate from <see cref="Allowed"/>:
+    /// silencing a heuristic false positive must not also switch off <see cref="BareParseOf"/> for
+    /// that file, which is the precise check the guard was built for. Empty today.
+    /// </summary>
+    private static readonly HashSet<string> AllowedInferred = new(StringComparer.OrdinalIgnoreCase);
+
     private const string SourceGlob = "*.cs";
 
     /// <summary>
@@ -82,6 +105,31 @@ public sealed class GovernanceEnumParseChokepointTests
     /// </summary>
     private static Regex BareParseOf(string enumName)
         => new($@"\bEnum\.(TryParse|Parse)\s*<\s*{enumName}\s*>", RegexOptions.None, TimeSpan.FromSeconds(5));
+
+    /// <summary>
+    /// Matches a framework parse whose enum type is <em>inferred</em> from the <c>out</c> variable
+    /// rather than written as a type argument — <c>Enum.TryParse(raw, true, out severity)</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>This shape was invisible to the guard until #312, and it is the shape the offender
+    /// used.</strong> <c>IacScanSeverityParser</c> parsed a severity that decides whether an
+    /// infrastructure scan blocks a proposal, with two of the four guards and no type argument, so
+    /// <see cref="BareParseOf"/> could not see it however many enums the array listed. Adding an
+    /// enum name to a matcher that cannot match the call shape is a test that only looks like a
+    /// control — which is the failure this whole family of guards exists to prevent.
+    /// </para>
+    /// <para>
+    /// The call text alone cannot say which enum an inferred parse targets, so a file is an offender
+    /// when it contains one <em>and</em> names a governance enum. That is a heuristic and could flag
+    /// a file that parses something else while merely mentioning a governance enum; measured across
+    /// production source it flags nothing beyond the two files that should be flagged, and the
+    /// existing one-entry allowlist absorbs the helper itself. A future false positive is a
+    /// reviewer's decision, which the guard's design already treats as the point.
+    /// </para>
+    /// </remarks>
+    private static readonly Regex InferredParse =
+        new(@"\bEnum\.(TryParse|Parse)\s*\(", RegexOptions.None, TimeSpan.FromSeconds(5));
 
     [Fact]
     public void GovernanceEnumsAreParsedOnlyThroughEnumNameHelper()
@@ -95,9 +143,19 @@ public sealed class GovernanceEnumParseChokepointTests
                 continue;
 
             var code = StripCommentsAndStrings(File.ReadAllText(file));
+
             var named = GovernanceEnums.Where(e => BareParseOf(e).IsMatch(code)).ToArray();
-            if (named.Length > 0)
-                offenders.Add($"{Path.GetRelativePath(contentRoot, file)} → {string.Join(", ", named)}");
+
+            // An inferred parse names no type, so attribute it to whichever governance enums the
+            // file mentions — see the remarks on InferredParse for why that heuristic is the only
+            // thing a source scan can do here, and what it measured.
+            var inferred = InferredParse.IsMatch(code) && !AllowedInferred.Contains(Path.GetFileName(file))
+                ? GovernanceEnums.Where(e => Regex.IsMatch(code, $@"\b{e}\b")).ToArray()
+                : [];
+
+            var offending = named.Union(inferred, StringComparer.Ordinal).ToArray();
+            if (offending.Length > 0)
+                offenders.Add($"{Path.GetRelativePath(contentRoot, file)} → {string.Join(", ", offending)}");
         }
 
         offenders.Should().BeEmpty(
@@ -134,6 +192,32 @@ public sealed class GovernanceEnumParseChokepointTests
 
         GovernanceEnums.Any(e => BareParseOf(e).IsMatch(otherEnum)).Should().BeFalse(
             "round-trips of values this system wrote itself are deliberately out of scope");
+    }
+
+    /// <summary>
+    /// The inferred form, which the guard could not see until #312. This is the control for that
+    /// gap: the exact source line <c>IacScanSeverityParser</c> carried, which listed
+    /// <c>IacScanSeverity</c> in the array above and still went unreported, because the matcher
+    /// required a type argument the call does not have.
+    /// </summary>
+    [Fact]
+    public void TheGuardCatchesAParseWhoseEnumTypeIsInferred()
+    {
+        var theOffendingLine = StripCommentsAndStrings(
+            "public static bool TryParse(string? value, out IacScanSeverity severity)"
+            + " => Enum.TryParse(value?.Trim(), ignoreCase: true, out severity) && Enum.IsDefined(severity);");
+
+        InferredParse.IsMatch(theOffendingLine).Should().BeTrue(
+            "an inferred parse is the same defect wearing different syntax");
+        GovernanceEnums.Any(e => BareParseOf(e).IsMatch(theOffendingLine)).Should().BeFalse(
+            "and the type-argument matcher alone genuinely cannot see it — that is why this exists");
+
+        // The explicit form must not be double-reported by the inferred matcher's own call paren.
+        InferredParse.IsMatch(StripCommentsAndStrings("Enum.TryParse<AutonomyLevel>(raw, out var t);"))
+            .Should().BeFalse("a type argument means the enum is named, and BareParseOf owns that case");
+
+        InferredParse.IsMatch(StripCommentsAndStrings("var ok = int.TryParse(raw, out var n);"))
+            .Should().BeFalse("only Enum.TryParse / Enum.Parse are in scope");
     }
 
     [Fact]
