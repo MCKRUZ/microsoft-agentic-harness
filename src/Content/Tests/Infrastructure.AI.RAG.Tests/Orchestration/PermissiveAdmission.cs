@@ -1,6 +1,8 @@
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Services.Governance;
+using Domain.Common.Config.AI;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Moq;
 
 namespace Infrastructure.AI.RAG.Tests.Orchestration;
@@ -42,12 +44,24 @@ internal static class PermissiveAdmission
             .Setup(g => g.EvaluateAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .Returns(ValueTask.FromResult(ToolInvocationDecision.Allow()));
 
+        // Never halts, and never returns null from Evaluate the way a loose mock would — the chain is
+        // entitled to assume a verdict exists.
+        var progress = new Mock<IProgressEvaluator>();
+        progress
+            .Setup(p => p.Evaluate(It.IsAny<string>(), It.IsAny<Func<string?>>()))
+            .Returns(ProgressVerdict.Continue());
+
+        // A real, ungoverned recorder, so the chain reports the empty trace.
+        var trace = new GovernanceTraceRecorder(
+            Mock.Of<IOptionsMonitor<GovernanceConfig>>(m => m.CurrentValue == new GovernanceConfig()));
+
         return new ToolCallAdmissionPipeline(
             authorizationGate.Object,
             governor.Object,
             classificationGate.Object,
             Mock.Of<IToolCallObserverChain>(),
-            Mock.Of<IProgressEvaluator>(),
+            progress.Object,
+            trace,
             NullLogger<ToolCallAdmissionPipeline>.Instance);
     }
 }

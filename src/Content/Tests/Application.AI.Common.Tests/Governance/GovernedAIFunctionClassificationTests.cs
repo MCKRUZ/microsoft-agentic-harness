@@ -100,7 +100,8 @@ public sealed class GovernedAIFunctionClassificationTests
             AdmissionHarness.Pipeline(classificationGate: gate.Object, progressEvaluator: progress.Object), inner);
 
         progress.Verify(p => p.Evaluate(It.IsAny<string>(), It.IsAny<Func<string?>>()), Times.Never,
-            "a classification-blocked call must not reach the progress guard");
+            "a classification-blocked call must not reach the progress guard — asking it is also what "
+            + "counts the call, and a blocked call never executed");
     }
 
     [Fact]

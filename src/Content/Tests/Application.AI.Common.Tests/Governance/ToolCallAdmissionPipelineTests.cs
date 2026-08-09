@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Services.Governance;
+using Domain.AI.Changes;
 using Domain.AI.Governance;
 using Microsoft.Extensions.Logging.Abstractions;
 using FluentAssertions;
@@ -24,9 +25,14 @@ namespace Application.AI.Common.Tests.Governance;
 /// Two orderings are safety properties rather than preferences. The host's own rules run <em>last of
 /// the access gates</em>, so consumer-authored code can only ever tighten an outcome the built-in
 /// gates already permitted. And the loop guard runs <em>last of all</em>, because it is the only stage
-/// that mutates: it records the call's signature, and counting a call that was then blocked let an
-/// agent reset the no-progress counter on every retry and spin indefinitely against the very rule
-/// blocking it.
+/// that mutates: asking it about a call is also what records that call, and counting a call that was
+/// then blocked let an agent reset the no-progress counter on every retry and spin indefinitely
+/// against the very rule blocking it.
+/// </para>
+/// <para>
+/// The guard's coupling is not a defect to be refactored away — see
+/// <c>ProgressEvaluatorConcurrencyTests</c>, which is the control showing that splitting it admits a
+/// whole parallel batch. This position is what makes the coupling safe.
 /// </para>
 /// </remarks>
 public sealed class ToolCallAdmissionPipelineTests
@@ -51,8 +57,8 @@ public sealed class ToolCallAdmissionPipelineTests
             + "and because the governor can escalate to a human — nobody should be asked to approve a "
             + "call that RBAC refuses anyway; permission and policy then settle whether the agent may "
             + "use the tool at all; the host's own rules run after them so they can only tighten; and "
-            + "the loop guard runs last because it is the only stage that records state, so it must "
-            + "count only calls that reached the tool");
+            + "the loop guard runs last because asking it is also what records the call, so it must "
+            + "only ever be asked about calls that reached the tool");
     }
 
     [Theory]
@@ -60,6 +66,7 @@ public sealed class ToolCallAdmissionPipelineTests
     [InlineData("governor")]
     [InlineData("classification")]
     [InlineData("host-rules")]
+    [InlineData("loop-guard")]
     public async Task AdmitAsync_AStageRefuses_NothingAfterItRuns(string refusingStage)
     {
         var order = new List<string>();
@@ -282,49 +289,48 @@ public sealed class ToolCallAdmissionPipelineTests
     }
 
     [Fact]
-    public void Reset_ClearsEveryStatefulStage_NotJustTheGovernor()
+    public void Reset_ClearsEveryStatefulPartOfTheChain()
     {
         // These were reset independently at each arming site, and a site that reset one but not the
-        // other carried a turn's history into the next. One call now covers both.
-        var governor = new Mock<IToolInvocationGovernor>();
+        // other carried a turn's history into the next. One call now covers both — the shared
+        // governance trail, and the loop guard's own call history, which is the only per-turn state
+        // that does not live on the trail.
+        var trace = AdmissionHarness.TraceRecorder();
+        trace.Record(new ToolDecisionRecord(Tool, ToolDecisionOutcome.Denied, "nope", BlastRadius.Low,
+            RequiredApproval: false, ApprovalGranted: false, Enforced: true));
+        trace.RecordEscalation("progress.spin_detected");
         var progress = new Mock<IProgressEvaluator>();
 
-        AdmissionHarness.Pipeline(governor: governor.Object, progressEvaluator: progress.Object).Reset();
+        AdmissionHarness.Pipeline(progressEvaluator: progress.Object, trace: trace).Reset();
 
-        governor.Verify(g => g.Reset(), Times.Once);
+        trace.Snapshot().Should().BeSameAs(GovernanceTrace.Empty);
         progress.Verify(p => p.Reset(), Times.Once);
     }
 
     [Fact]
-    public void GetTrace_FoldsTheLoopGuardsEscalationsIntoTheGovernorsTrace()
+    public void GetTrace_ReportsWhatEveryStageRecorded_AsOneRecord()
     {
-        var governor = new Mock<IToolInvocationGovernor>();
-        governor.Setup(g => g.GetTrace()).Returns(new GovernanceTrace { EscalationReasonCodes = ["from_governor"] });
-        var progress = new Mock<IProgressEvaluator>();
-        progress.SetupGet(p => p.EscalationReasonCodes).Returns(["spin_detected", "FROM_GOVERNOR"]);
+        // The governor's decisions and the loop guard's escalation codes arrive at the trail
+        // independently, and the turn wants them as one record. This used to be composed by hand here
+        // — and, before the chain existed, by hand at two separate callers.
+        var trace = AdmissionHarness.TraceRecorder();
+        trace.Record(new ToolDecisionRecord(Tool, ToolDecisionOutcome.Denied, "policy", BlastRadius.Low,
+            RequiredApproval: false, ApprovalGranted: false, Enforced: true));
+        trace.RecordEscalation("progress.spin_detected");
+        trace.RecordEscalation("PROGRESS.SPIN_DETECTED");
 
-        var trace = AdmissionHarness
-            .Pipeline(governor: governor.Object, progressEvaluator: progress.Object)
-            .GetTrace();
+        var snapshot = AdmissionHarness.Pipeline(trace: trace).GetTrace();
 
-        trace.EscalationReasonCodes.Should().BeEquivalentTo(
-            ["from_governor", "spin_detected"],
+        snapshot.ToolDecisions.Should().ContainSingle().Which.Reason.Should().Be("policy");
+        snapshot.EscalationReasonCodes.Should().BeEquivalentTo(
+            ["progress.spin_detected"],
             "codes are unioned case-insensitively to honour the trace's distinct contract");
     }
 
     [Fact]
-    public void GetTrace_NoEscalations_ReturnsTheGovernorsTraceUnchanged()
+    public void GetTrace_NothingRecordedAndNothingEnforced_IsTheEmptyTrace()
     {
-        var expected = new GovernanceTrace { EnforcementEnabled = true };
-        var governor = new Mock<IToolInvocationGovernor>();
-        governor.Setup(g => g.GetTrace()).Returns(expected);
-        var progress = new Mock<IProgressEvaluator>();
-        progress.SetupGet(p => p.EscalationReasonCodes).Returns([]);
-
-        AdmissionHarness
-            .Pipeline(governor: governor.Object, progressEvaluator: progress.Object)
-            .GetTrace()
-            .Should().BeSameAs(expected);
+        AdmissionHarness.Pipeline().GetTrace().Should().BeSameAs(GovernanceTrace.Empty);
     }
 
     /// <summary>
@@ -374,10 +380,13 @@ public sealed class ToolCallAdmissionPipelineTests
         progress
             .Setup(p => p.Evaluate(It.IsAny<string>(), It.IsAny<Func<string?>>()))
             .Callback(() => order.Add("loop-guard"))
-            .Returns(ProgressVerdict.Continue());
+            .Returns(refusingStage == "loop-guard"
+                ? ProgressVerdict.Halt("no")
+                : ProgressVerdict.Continue());
 
         return new ToolCallAdmissionPipeline(
             authorizationGate.Object, governor.Object, classificationGate.Object, observers.Object,
-            progress.Object, NullLogger<ToolCallAdmissionPipeline>.Instance);
+            progress.Object, AdmissionHarness.TraceRecorder(),
+            NullLogger<ToolCallAdmissionPipeline>.Instance);
     }
 }

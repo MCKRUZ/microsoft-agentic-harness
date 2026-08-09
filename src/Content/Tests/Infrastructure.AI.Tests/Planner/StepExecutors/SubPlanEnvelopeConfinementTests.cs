@@ -188,6 +188,9 @@ public sealed class SubPlanEnvelopeConfinementTests
                 It.IsAny<Domain.AI.Changes.BlastRadius>(), It.IsAny<IReadOnlyDictionary<string, object?>?>(),
                 It.IsAny<CancellationToken>())
             == new ValueTask<ToolApprovalResult>(ToolApprovalResult.NotRouted("routing disabled"))));
+        // Resolved from this container rather than stubbed, so the real governor writes its decisions
+        // to a real trail reading the same governance config the envelope arms.
+        services.AddScoped<IGovernanceTraceRecorder, GovernanceTraceRecorder>();
         services.AddScoped<IToolInvocationGovernor, ToolInvocationGovernor>();
         services.AddScoped<IPlanExecutor, GovernorProbePlanExecutor>();
 

@@ -153,7 +153,8 @@ public sealed class PlanRunLlmCallScopeTests
         services.AddSingleton(Mock.Of<IToolCallObserverChain>());
         services.AddSingleton(StepExecutors.PermissiveAdmission.ClassificationGate());
         services.AddSingleton(StepExecutors.PermissiveAdmission.AuthorizationGate());
-        services.AddSingleton(Mock.Of<IProgressEvaluator>());
+        services.AddSingleton(StepExecutors.PermissiveAdmission.ProgressGuard());
+        services.AddSingleton(StepExecutors.PermissiveAdmission.TraceRecorder());
         // Step executors require the admission chain rather than defaulting it to null, so that a
         // composition which forgets it fails at resolution instead of running unguarded. The real
         // chain over the gates above — a mock of the chain would not exercise the code an enveloped

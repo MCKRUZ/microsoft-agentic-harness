@@ -48,6 +48,7 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
     private readonly IToolClassificationGate _classificationGate;
     private readonly IToolCallObserverChain _observers;
     private readonly IProgressEvaluator _progressEvaluator;
+    private readonly IGovernanceTraceRecorder _trace;
     private readonly ILogger<ToolCallAdmissionPipeline> _logger;
 
     /// <summary>Initializes a new instance of the <see cref="ToolCallAdmissionPipeline"/> class.</summary>
@@ -67,6 +68,7 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
     /// nothing in it are indistinguishable at runtime.
     /// </param>
     /// <param name="progressEvaluator">Stage 5 — the loop guard.</param>
+    /// <param name="trace">The turn's governance trail, which the stages write to and this type snapshots.</param>
     /// <param name="logger">Records a redaction that could not be applied.</param>
     public ToolCallAdmissionPipeline(
         IAgentToolAuthorizationGate authorizationGate,
@@ -74,6 +76,7 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         IToolClassificationGate classificationGate,
         IToolCallObserverChain observers,
         IProgressEvaluator progressEvaluator,
+        IGovernanceTraceRecorder trace,
         ILogger<ToolCallAdmissionPipeline> logger)
     {
         ArgumentNullException.ThrowIfNull(authorizationGate);
@@ -81,6 +84,7 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         ArgumentNullException.ThrowIfNull(classificationGate);
         ArgumentNullException.ThrowIfNull(observers);
         ArgumentNullException.ThrowIfNull(progressEvaluator);
+        ArgumentNullException.ThrowIfNull(trace);
         ArgumentNullException.ThrowIfNull(logger);
 
         _authorizationGate = authorizationGate;
@@ -88,6 +92,7 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
         _classificationGate = classificationGate;
         _observers = observers;
         _progressEvaluator = progressEvaluator;
+        _trace = trace;
         _logger = logger;
     }
 
@@ -170,7 +175,10 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
                 return Refuse(observed.DeniedMessage, toolName);
         }
 
-        // 5 — the loop guard, last of all, and only for callers that issue a sequence.
+        // 5 — the loop guard, and only for callers that issue a sequence. Asking it about a call is
+        // also what records that call, so it must be asked LAST, below every path above that returns
+        // a refusal. Splitting it so that stopped mattering is a defect, not a cleanup — see
+        // IProgressEvaluator for why, and ProgressEvaluatorConcurrencyTests for the measurement.
         if (request.CountsTowardLoopDetection)
         {
             var verdict = _progressEvaluator.Evaluate(
@@ -228,26 +236,12 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
     }
 
     /// <inheritdoc />
-    public GovernanceTrace GetTrace()
-    {
-        var trace = _governor.GetTrace();
-        var spinEscalations = _progressEvaluator.EscalationReasonCodes;
-        if (spinEscalations is null or { Count: 0 })
-            return trace;
-
-        // Dedup case-insensitively to honour GovernanceTrace.EscalationReasonCodes' "distinct" contract
-        // and stay aligned with GovernanceTrace.Merge's OrdinalIgnoreCase union.
-        return trace with
-        {
-            EscalationReasonCodes =
-                [.. trace.EscalationReasonCodes.Concat(spinEscalations).Distinct(StringComparer.OrdinalIgnoreCase)]
-        };
-    }
+    public GovernanceTrace GetTrace() => _trace.Snapshot();
 
     /// <inheritdoc />
     public void Reset()
     {
-        _governor.Reset();
+        _trace.Reset();
         _progressEvaluator.Reset();
     }
 

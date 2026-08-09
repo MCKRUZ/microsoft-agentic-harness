@@ -1,6 +1,8 @@
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Services.Governance;
+using Domain.Common.Config.AI;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Moq;
 
 namespace Application.AI.Common.Tests.Governance;
@@ -23,13 +25,28 @@ internal static class AdmissionHarness
         IToolClassificationGate? classificationGate = null,
         IToolCallObserverChain? observers = null,
         IProgressEvaluator? progressEvaluator = null,
-        IAgentToolAuthorizationGate? authorizationGate = null) =>
+        IAgentToolAuthorizationGate? authorizationGate = null,
+        IGovernanceTraceRecorder? trace = null) =>
         new(authorizationGate ?? PermissiveAuthorizationGate(),
             governor ?? PermissiveGovernor(),
             classificationGate ?? PermissiveClassificationGate(),
             observers ?? Mock.Of<IToolCallObserverChain>(),
             progressEvaluator ?? PermissiveProgressEvaluator(),
+            trace ?? TraceRecorder(),
             NullLogger<ToolCallAdmissionPipeline>.Instance);
+
+    /// <summary>
+    /// A real trace recorder, ungoverned by default — the shipped composition, where nothing is
+    /// enforced and the turn's trace comes back empty.
+    /// </summary>
+    /// <remarks>
+    /// Real rather than mocked because the recorder is the thing the chain's <c>GetTrace</c> now
+    /// answers from, and a mock of it would make every trace assertion a test of the mock.
+    /// </remarks>
+    /// <param name="governance">Governance config to run under; defaults to everything off.</param>
+    public static GovernanceTraceRecorder TraceRecorder(GovernanceConfig? governance = null) =>
+        new(Mock.Of<IOptionsMonitor<GovernanceConfig>>(
+            m => m.CurrentValue == (governance ?? new GovernanceConfig())));
 
     /// <summary>
     /// An authorization gate that admits everything — what the real gate answers when
@@ -82,7 +99,11 @@ internal static class AdmissionHarness
         return gate.Object;
     }
 
-    /// <summary>A loop guard that never halts.</summary>
+    /// <summary>A loop guard that never halts — what the real one answers while switched off.</summary>
+    /// <remarks>
+    /// Set up explicitly rather than left to <c>Mock.Of</c>: a loose mock returns null from
+    /// <c>Evaluate</c>, and the chain is entitled to assume a verdict exists.
+    /// </remarks>
     public static IProgressEvaluator PermissiveProgressEvaluator()
     {
         var progress = new Mock<IProgressEvaluator>();

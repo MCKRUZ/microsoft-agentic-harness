@@ -2,14 +2,14 @@ namespace Domain.AI.Governance;
 
 /// <summary>
 /// An immutable snapshot of the governance decisions an agent's tool calls passed through
-/// during a turn or conversation. Produced by <c>IToolInvocationGovernor</c> and surfaced on
-/// the agent-turn and conversation results so an evaluation can grade the agent's governance
-/// behaviour <em>independently of whether the task succeeded</em> — the core anti-"governance
-/// theater" instrument from Loop Engineering.
+/// during a turn or conversation. Surfaced on the agent-turn and conversation results so an
+/// evaluation can grade the agent's governance behaviour <em>independently of whether the task
+/// succeeded</em> — the core anti-"governance theater" instrument from Loop Engineering.
 /// </summary>
 /// <remarks>
-/// This is a read-only projection. The governor accumulates decisions in a mutable, thread-safe
-/// collector as the agent runs, then emits this snapshot at the boundary.
+/// This is a read-only projection. Every stage that can stop a tool call writes into one mutable,
+/// thread-safe per-turn collector (<c>IGovernanceTraceRecorder</c>) as the agent runs, and the
+/// admission chain emits this snapshot from it at the boundary.
 /// </remarks>
 public sealed record GovernanceTrace
 {

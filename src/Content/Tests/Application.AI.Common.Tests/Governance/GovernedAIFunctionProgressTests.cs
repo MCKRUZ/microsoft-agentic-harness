@@ -85,7 +85,8 @@ public sealed class GovernedAIFunctionProgressTests
             .Setup(g => g.AuthorizeAsync(It.IsAny<string>(), It.IsAny<CancellationToken>(), It.IsAny<IReadOnlyDictionary<string, object?>?>()))
             .ReturnsAsync(ToolInvocationDecision.Deny("Error: tool 'file_system' is not permitted."));
 
-        // Strict: any call to Evaluate at all is the defect, not just a particular verdict.
+        // Strict: any call to Evaluate at all is the defect, not just a particular verdict — asking
+        // the guard is also what records the call.
         var progress = new Mock<IProgressEvaluator>(MockBehavior.Strict);
 
         await InvokeUnder(
@@ -112,12 +113,12 @@ public sealed class GovernedAIFunctionProgressTests
     [Fact]
     public async Task InvokeAsync_ObserverBlocks_ProgressNotConsulted()
     {
-        // The progress evaluator is the only stage on this path that RECORDS state: it remembers the
-        // call's signature and resets the no-progress counter whenever it sees a new one. Counting a
-        // call an observer blocked is not a bookkeeping nicety — it defeats the guard outright. An
-        // agent retrying a blocked call with one value changed each time (10000, 10001, 10002 …)
-        // presents a brand-new signature on every attempt, so every attempt would reset the counter
-        // and the spin against the observer's own rule would run to the iteration ceiling.
+        // The progress evaluator is the only stage on this path that RECORDS state: asking it about a
+        // call is also what remembers that call. Counting a call an observer blocked is not a
+        // bookkeeping nicety — it defeats the guard outright. An agent retrying a blocked call with one
+        // value changed each time (10000, 10001, 10002 …) presents a brand-new signature on every
+        // attempt, so every attempt would reset the counter and the spin against the observer's own
+        // rule would run to the iteration ceiling.
         var (inner, wasInvoked) = MakeInner();
         var observers = AdmissionHarness.ObserverChain(
             ToolInvocationDecision.Deny("Error: tool 'file_system' is not permitted."));

@@ -480,7 +480,8 @@ public sealed class ToolUseStepExecutorTests
             _toolGovernor.Object,
             _classificationGate.Object,
             observers,
-            Mock.Of<IProgressEvaluator>(),
+            PermissiveAdmission.ProgressGuard(),
+            PermissiveAdmission.TraceRecorder(),
             NullLogger<ToolCallAdmissionPipeline>.Instance);
 
     /// <summary>

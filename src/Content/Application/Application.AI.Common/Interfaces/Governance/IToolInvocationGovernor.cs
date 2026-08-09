@@ -17,7 +17,8 @@ namespace Application.AI.Common.Interfaces.Governance;
 /// </para>
 /// <para>
 /// Scoped to one agent turn. The implementation reads the ambient <c>IAgentExecutionContext</c> for
-/// the agent identity and accumulates a per-turn decision trace exposed via <see cref="GetTrace"/>.
+/// the agent identity and writes every decision to the turn's <see cref="IGovernanceTraceRecorder"/>,
+/// which is where the trail is read from and reset. This type decides; it does not remember.
 /// </para>
 /// </remarks>
 public interface IToolInvocationGovernor
@@ -49,9 +50,6 @@ public interface IToolInvocationGovernor
         CancellationToken cancellationToken,
         IReadOnlyDictionary<string, object?>? arguments = null);
 
-    /// <summary>Snapshots the governance decisions recorded so far for this turn.</summary>
-    GovernanceTrace GetTrace();
-
     /// <summary>
     /// Records that a gate running <em>after</em> this governor refused a call the governor had
     /// already allowed, so the turn's trace reflects what happened rather than what was authorized.
@@ -82,17 +80,15 @@ public interface IToolInvocationGovernor
     /// dashboard, and the audit, which for an access-control decision is the reporting equivalent of
     /// not enforcing it.
     /// </para>
+    /// <para>
+    /// Routed through the governor rather than written straight to
+    /// <see cref="IGovernanceTraceRecorder"/> because of the blast radius: the record carries one, the
+    /// governor already holds the risk classifier that resolves it, and a stage that classified the
+    /// tool itself would be a second opinion on how dangerous it is. The recorder can answer the other
+    /// question the record needs — whether the turn is governed at all — on its own.
+    /// </para>
     /// </remarks>
     void RecordDownstreamBlock(string toolName, string reason);
-
-    /// <summary>
-    /// Clears the recorded decisions so the next turn starts clean. The governor is registered
-    /// scoped, but nested MediatR sends within a conversation share one DI scope (and thus one
-    /// governor instance), so a multi-turn conversation must reset between turns — otherwise
-    /// <see cref="GetTrace"/> returns the cumulative list and per-turn traces double-count when
-    /// aggregated. Mirrors the per-turn reset of the adjacent scoped <c>ILlmUsageCapture</c>.
-    /// </summary>
-    void Reset();
 }
 
 /// <summary>
