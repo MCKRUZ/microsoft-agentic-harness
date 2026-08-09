@@ -84,7 +84,7 @@ public class AgentPipelineIntegrationTests
         var authorizationMock = new Mock<Application.AI.Common.Interfaces.Governance.IAgentToolAuthorizationGate>();
         authorizationMock
             .Setup(g => g.EvaluateAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(Application.AI.Common.Interfaces.Governance.AgentToolAuthorizationVerdict.Allow());
+            .ReturnsAsync(Application.AI.Common.Interfaces.Governance.ToolInvocationDecision.Allow());
         services.AddScoped(_ => authorizationMock.Object);
 
         // The REAL admission chain over the five permissive gates above, not a mock of it. The handler

@@ -5,6 +5,7 @@ using Domain.AI.Governance;
 using Domain.AI.Identity;
 using Domain.Common;
 using Domain.Common.Config;
+using Domain.Common.Config.AI.Identity;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -94,13 +95,13 @@ public sealed class DefaultAgentToolAuthorizationGate : IAgentToolAuthorizationG
     }
 
     /// <inheritdoc />
-    public async ValueTask<AgentToolAuthorizationVerdict> EvaluateAsync(
+    public async ValueTask<ToolInvocationDecision> EvaluateAsync(
         string toolKey,
         CancellationToken cancellationToken)
     {
         var identityConfig = _appConfig.CurrentValue.AI?.Identity;
         if (identityConfig?.ToolAuthorization is not { Enabled: true } toolAuthorization)
-            return AgentToolAuthorizationVerdict.Allow();
+            return ToolInvocationDecision.Allow();
 
         // ToolAuthorizationConfigValidator refuses to boot on this, but configuration is monitored
         // rather than snapshotted: flipping Enabled to true in appsettings.json on a running host
@@ -127,7 +128,7 @@ public sealed class DefaultAgentToolAuthorizationGate : IAgentToolAuthorizationG
             return Deny(toolKey);
         }
 
-        var identity = await GetIdentityAsync(cancellationToken).ConfigureAwait(false);
+        var identity = await GetIdentityAsync(identityConfig, cancellationToken).ConfigureAwait(false);
         if (identity is null)
         {
             _logger.LogWarning(
@@ -138,11 +139,16 @@ public sealed class DefaultAgentToolAuthorizationGate : IAgentToolAuthorizationG
         }
 
         return _validator.CanInvoke(identity, toolKey)
-            ? AgentToolAuthorizationVerdict.Allow()
+            ? ToolInvocationDecision.Allow()
             : Deny(toolKey);
     }
 
-    private async ValueTask<AgentIdentity?> GetIdentityAsync(CancellationToken cancellationToken)
+    // Takes the config the caller already resolved rather than reading CurrentValue again: a second
+    // read is a second snapshot, and it previously needed two null-forgiving operators to assert a
+    // shape the caller had in fact just checked.
+    private async ValueTask<AgentIdentity?> GetIdentityAsync(
+        AgentIdentityConfig identityConfig,
+        CancellationToken cancellationToken)
     {
         // The context wins when it has one: on the agent-turn path the resolution behaviour has
         // already paid for acquisition, and re-resolving would both waste a round trip and risk
@@ -162,7 +168,6 @@ public sealed class DefaultAgentToolAuthorizationGate : IAgentToolAuthorizationG
             return null;
         }
 
-        var identityConfig = _appConfig.CurrentValue.AI!.Identity!;
         var credentialContext = new CredentialContext
         {
             Audience = identityConfig.DefaultAudience,
@@ -176,21 +181,19 @@ public sealed class DefaultAgentToolAuthorizationGate : IAgentToolAuthorizationG
                 .ResolveAsync(credentialContext, cancellationToken)
                 .ConfigureAwait(false);
         }
-        catch (OperationCanceledException)
-        {
-            // Deliberately NOT latched, and deliberately not converted to a denial. An abandoned call
-            // is not a policy decision, and this scope outlives the call: a DI scope spans every turn
-            // of a conversation, so latching here would let one cancelled acquisition deny every tool
-            // call for the rest of that conversation — with the wording of a policy refusal.
-            throw;
-        }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             // A consumer-supplied IAgentCredentialProvider that throws rather than returning a failed
             // Result must still fail closed. Letting this escape would surface on the tool path as an
             // unhandled fault instead of the refusal this class promises. Latched, because a provider
             // that throws is a misconfiguration rather than a blip, and retrying it once per tool call
             // would hammer a credential endpoint.
+            //
+            // Cancellation is excluded by the filter rather than rethrown from a second catch block,
+            // so that it is never latched either: an abandoned call is not a policy decision, and this
+            // scope outlives the call — a DI scope spans every turn of a conversation, so latching
+            // here would let one cancelled acquisition deny every tool call for the rest of that
+            // conversation, in the wording of a policy refusal.
             _resolutionAttempted = true;
             _logger.LogError(
                 ex,
@@ -218,6 +221,6 @@ public sealed class DefaultAgentToolAuthorizationGate : IAgentToolAuthorizationG
 
     // Routed through the shared factory so this stage's refusal is textually identical to every
     // other gate's: a denied caller must not be able to infer which gate fired.
-    private static AgentToolAuthorizationVerdict Deny(string toolKey) =>
-        AgentToolAuthorizationVerdict.Deny(GovernanceDenials.NotPermitted(toolKey));
+    private static ToolInvocationDecision Deny(string toolKey) =>
+        ToolInvocationDecision.Deny(GovernanceDenials.NotPermitted(toolKey));
 }

@@ -40,7 +40,7 @@ internal static class AdmissionHarness
         var gate = new Mock<IAgentToolAuthorizationGate>();
         gate
             .Setup(g => g.EvaluateAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(AgentToolAuthorizationVerdict.Allow());
+            .ReturnsAsync(ToolInvocationDecision.Allow());
         return gate.Object;
     }
 
@@ -52,7 +52,7 @@ internal static class AdmissionHarness
         var gate = new Mock<IAgentToolAuthorizationGate>();
         gate
             .Setup(g => g.EvaluateAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(AgentToolAuthorizationVerdict.Deny(deniedMessage));
+            .ReturnsAsync(ToolInvocationDecision.Deny(deniedMessage));
         return gate;
     }
 

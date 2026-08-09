@@ -493,7 +493,7 @@ public sealed class ToolUseStepExecutorTests
         var gate = new Mock<IAgentToolAuthorizationGate>();
         gate
             .Setup(g => g.EvaluateAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(AgentToolAuthorizationVerdict.Allow());
+            .ReturnsAsync(ToolInvocationDecision.Allow());
         return gate.Object;
     }
 

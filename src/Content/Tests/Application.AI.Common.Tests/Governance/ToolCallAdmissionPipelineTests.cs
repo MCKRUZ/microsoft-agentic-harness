@@ -339,8 +339,8 @@ public sealed class ToolCallAdmissionPipelineTests
             .Setup(g => g.EvaluateAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .Callback(() => order.Add("agent-authorization"))
             .ReturnsAsync(refusingStage == "agent-authorization"
-                ? AgentToolAuthorizationVerdict.Deny("no")
-                : AgentToolAuthorizationVerdict.Allow());
+                ? ToolInvocationDecision.Deny("no")
+                : ToolInvocationDecision.Allow());
 
         var governor = new Mock<IToolInvocationGovernor>();
         governor

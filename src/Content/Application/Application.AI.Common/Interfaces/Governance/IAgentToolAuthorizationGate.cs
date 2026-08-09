@@ -48,47 +48,11 @@ public interface IAgentToolAuthorizationGate
     /// is on is a <em>denial</em>: it is the case where the harness cannot tell who is asking,
     /// which is the one case a permissive answer would be indefensible.
     /// </returns>
-    ValueTask<AgentToolAuthorizationVerdict> EvaluateAsync(string toolKey, CancellationToken cancellationToken);
-}
-
-/// <summary>
-/// The authorization stage's verdict for one tool call.
-/// </summary>
-/// <remarks>
-/// Constructible only through the factories, matching <c>ToolCallAdmission</c>: a refusal
-/// that carried no text would reach a model as an empty successful result, which reads as
-/// the tool having run and returned nothing rather than as a refusal.
-/// </remarks>
-public sealed record AgentToolAuthorizationVerdict
-{
-    private static readonly AgentToolAuthorizationVerdict AllowedVerdict = new(true, null);
-
-    private AgentToolAuthorizationVerdict(bool isAllowed, string? deniedMessage)
-    {
-        IsAllowed = isAllowed;
-        DeniedMessage = deniedMessage;
-    }
-
-    /// <summary>Whether the agent may invoke the tool.</summary>
-    public bool IsAllowed { get; }
-
-    /// <summary>
-    /// Caller-facing refusal text: never null or blank on a denial, always null on an allow.
-    /// Deliberately uninformative about <em>why</em> — see <c>GovernanceDenials</c>.
-    /// </summary>
-    public string? DeniedMessage { get; }
-
-    /// <summary>The agent may invoke the tool, or the feature is switched off.</summary>
-    public static AgentToolAuthorizationVerdict Allow() => AllowedVerdict;
-
-    /// <summary>The agent may not invoke the tool.</summary>
-    /// <param name="deniedMessage">
-    /// The refusal text. Blank is rejected as well as null, because whitespace reaches a
-    /// model as indistinguishable from an empty result.
-    /// </param>
-    public static AgentToolAuthorizationVerdict Deny(string deniedMessage)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(deniedMessage);
-        return new AgentToolAuthorizationVerdict(false, deniedMessage);
-    }
+    /// <remarks>
+    /// Returns <see cref="ToolInvocationDecision"/> rather than a verdict type of its own. The
+    /// answer is exactly that type's shape — permitted, or refused with caller-facing text — and
+    /// <see cref="IToolCallObserverChain"/>, the other access gate in this chain, already reports
+    /// in it. A second identical record would only give the pipeline two vocabularies for one idea.
+    /// </remarks>
+    ValueTask<ToolInvocationDecision> EvaluateAsync(string toolKey, CancellationToken cancellationToken);
 }

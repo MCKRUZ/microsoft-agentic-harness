@@ -40,7 +40,7 @@ internal static class PermissiveAdmission
         var authorizationGate = new Mock<IAgentToolAuthorizationGate>();
         authorizationGate
             .Setup(g => g.EvaluateAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .Returns(ValueTask.FromResult(AgentToolAuthorizationVerdict.Allow()));
+            .Returns(ValueTask.FromResult(ToolInvocationDecision.Allow()));
 
         return new ToolCallAdmissionPipeline(
             authorizationGate.Object,
