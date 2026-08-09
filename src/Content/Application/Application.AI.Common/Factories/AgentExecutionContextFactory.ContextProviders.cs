@@ -51,8 +51,8 @@ public partial class AgentExecutionContextFactory
     /// <param name="disclosableSkills">The skills the framework provider is given, built once by the caller.</param>
     /// <param name="baseline">What the agent was already charged for; see <see cref="PerTurnBudgetBaseline"/>.</param>
     /// <returns>
-    /// The ordered rail as a read-only list, or <see langword="null"/> when this agent needs no
-    /// providers at all.
+    /// The ordered rail as a read-only list. Never empty: the governance wrapper is on every agent's
+    /// rail (see the attachment site below), so there is no such thing as an agent with no providers.
     /// </returns>
     /// <remarks>
     /// The rail is returned read-only, so appending to it throws rather than silently displacing the
@@ -62,7 +62,7 @@ public partial class AgentExecutionContextFactory
     /// which is why the guard has to be the instance's own behaviour: no type on that path can express
     /// "this list is finished".
     /// </remarks>
-    private IList<AIContextProvider>? BuildMergedAIContextProviders(
+    private IList<AIContextProvider> BuildMergedAIContextProviders(
         int skillCount,
         IReadOnlyList<string>? effectiveAllowlist,
         IReadOnlyList<DisclosableSkill> disclosableSkills,
@@ -120,21 +120,27 @@ public partial class AgentExecutionContextFactory
         }
 
         // Governance wrapper — added after the recall providers so it wraps the final, filtered tool
-        // set. When tool-invocation enforcement is on, this guarantees the governor gates every tool the
-        // agent can call, including framework progressive-disclosure tools that bypass ToolChainBuilder.
-        // Inert (and skipped entirely) when enforcement is off, so default behaviour is unchanged.
-        if (_appConfig.CurrentValue.AI?.Governance?.EnforceToolInvocation == true)
-        {
-            providers.Add(new Services.Agent.GoverningToolContextProvider(
-                _loggerFactory.CreateLogger<Services.Agent.GoverningToolContextProvider>()));
-            _logger.LogDebug("Wired GoverningToolContextProvider (tool-invocation enforcement enabled)");
-        }
+        // set, guaranteeing the governor gates every tool the agent can call including the framework
+        // progressive-disclosure tools that bypass ToolChainBuilder.
+        //
+        // ATTACHED UNCONDITIONALLY, AND THAT IS THE FIX, NOT AN OVERSIGHT (issue #347). Whether
+        // governance is on cannot be decided here: this rail is built once, at agent construction, and
+        // agents are cached — while a bundle run arms enforcement later and per run, through the ambient
+        // capability envelope that GovernanceEnforcement.IsActive reads. Any condition evaluated at this
+        // point therefore answers for the wrong moment, and the one that used to be here (the global
+        // switch alone) published a bundle's disclosure tools unwrapped on the default composition. The
+        // provider is transparent unless an admission chain is ambient for the turn, so what an
+        // ungoverned host pays is one list entry plus, on an agent that has skills, a bounded re-wrap of
+        // the three framework disclosure tools once per turn — orders of magnitude under the LLM call it
+        // rides along with.
+        providers.Add(new Services.Agent.GoverningToolContextProvider(
+            _loggerFactory.CreateLogger<Services.Agent.GoverningToolContextProvider>()));
 
         AppendPerTurnBudgetProvider(providers, baseline);
 
         // AsReadOnly wraps rather than copies, so the returned list is a live view of a list nothing
         // else holds a reference to — the local goes out of scope here.
-        return providers.Count > 0 ? providers.AsReadOnly() : null;
+        return providers.AsReadOnly();
     }
 
     /// <summary>
@@ -180,10 +186,7 @@ public partial class AgentExecutionContextFactory
     /// Appends the measurer that charges whatever <paramref name="providers"/> inject into each turn to
     /// the budget of the agent named by <paramref name="baseline"/>.
     /// </summary>
-    /// <param name="providers">
-    /// The rail built for this agent, mutated in place. An empty rail means the agent has no providers, so
-    /// there is nothing per-turn to charge and nothing is appended.
-    /// </param>
+    /// <param name="providers">The rail built for this agent, mutated in place.</param>
     /// <param name="baseline">What the agent was already charged for, which the measurer subtracts.</param>
     /// <remarks>
     /// <strong>This is the canonical statement of the lastness rule.</strong> The measurer must be last:

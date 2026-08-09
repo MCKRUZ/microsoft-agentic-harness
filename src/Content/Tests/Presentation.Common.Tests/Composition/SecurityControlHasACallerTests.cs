@@ -27,6 +27,15 @@ namespace Presentation.Common.Tests.Composition;
 /// registered control at all.
 /// </para>
 /// <para>
+/// <strong>What this file does and does not cover.</strong> The consumer scan reads
+/// <em>interfaces</em> declared under the guarded folders, so of the four defects named above it could
+/// only ever have caught the last. The other three are concrete classes implementing no guarded
+/// contract, and no exemption list can be curated into covering them without becoming the very smell
+/// this test warns about. <see cref="NoFactoryDecidesAPerRunFactAtConstructionTime"/> covers the
+/// second failure mode those three shared — a control wired correctly but decided at the wrong moment
+/// — by reading source shape rather than contracts.
+/// </para>
+/// <para>
 /// <strong>What counts as a consumer.</strong> Any production file that names the interface and is
 /// not its own declaration, not a type that implements it, and not a DI registration. That covers
 /// constructor injection, <c>GetRequiredService</c>, and an ambient static — the three ways a
@@ -69,6 +78,16 @@ public sealed class SecurityControlHasACallerTests
         // by ScanningMcpToolProvider, which screens every tool definition an external MCP server
         // advertises before it can reach the model (#313), so the entry is gone rather than renewed.
     };
+
+    /// <summary>
+    /// Reads that mean a factory is answering a question whose answer belongs to one run, not to the
+    /// lifetime of a cached object. See <see cref="NoFactoryDecidesAPerRunFactAtConstructionTime"/>.
+    /// </summary>
+    private static readonly (string Pattern, string What)[] PerRunFactPatterns =
+    [
+        (@"\bEnforceToolInvocation\b", "the global tool-invocation enforcement switch"),
+        (@"\b\w*Accessor\s*\.\s*Current\b", "an ambient per-run accessor")
+    ];
 
     [Fact]
     public void EveryRegisteredGovernanceContractHasAProductionConsumer()
@@ -151,6 +170,78 @@ public sealed class SecurityControlHasACallerTests
         Directory.EnumerateFiles(contentRoot, "*.cs", SearchOption.AllDirectories)
             .Count(f => !IsExcluded(f, contentRoot))
             .Should().BeGreaterThan(500);
+    }
+
+    /// <summary>
+    /// Asserts that no factory answers a question whose answer is only true for the duration of one
+    /// run — the second way a security control ends up not running, and the one the consumer scan
+    /// above is structurally blind to.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>The defect this exists to catch (#347).</strong> A factory builds an agent once and the
+    /// agent is cached. Enforcement, though, can be armed per run: a bundle executes an
+    /// externally-authored agent under a per-caller capability envelope published ambiently for that
+    /// run only. <c>GoverningToolContextProvider</c> was attached behind the host's global enforcement
+    /// switch, read at construction — a moment that cannot see the envelope — so on the default
+    /// composition a bundle's progressive-disclosure tools reached the model ungoverned. The control
+    /// was registered, wired and consumed; it simply answered the question at the wrong moment.
+    /// </para>
+    /// <para>
+    /// The rule the harness already follows everywhere else is stated on
+    /// <c>ToolAdmissionAccessor</c>: wire unconditionally, decide at invocation.
+    /// <c>ToolChainBuilder</c> — the other channel tools reach the model by — has always wrapped for
+    /// governance with no config read anywhere near it. This makes that rule structural for factories
+    /// rather than a comment at each site.
+    /// </para>
+    /// <para>
+    /// <strong>If this fails,</strong> the fix is not an exemption: move the decision to the moment it
+    /// can be answered. A gate belongs at invocation, where the ambient state it depends on is live.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void NoFactoryDecidesAPerRunFactAtConstructionTime()
+    {
+        var contentRoot = Path.Combine(RepoRoot.Path, "src", "Content");
+
+        var factoryFiles = Directory
+            .EnumerateFiles(contentRoot, "*.cs", SearchOption.AllDirectories)
+            .Where(f => !IsExcluded(f, contentRoot))
+            .Where(f => (Path.GetDirectoryName(f) ?? string.Empty)
+                .Contains(Path.DirectorySeparatorChar + "Factories", StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+
+        // Control: a scan that found no factories would pass while reading nothing.
+        factoryFiles.Should().NotBeEmpty("the folders this reads must exist for its verdict to mean anything");
+
+        // Control: each pattern must fire on the shape it is written for. Without this the assertion
+        // below is satisfied equally by a rule that matches nothing — the blind-guard failure this
+        // file's other classifiers already had once.
+        Regex.IsMatch("if (config.AI?.Governance?.EnforceToolInvocation == true)", PerRunFactPatterns[0].Pattern)
+            .Should().BeTrue("control: the enforcement-switch pattern must match the read it forbids");
+        Regex.IsMatch("var envelope = CapabilityEnvelopeAccessor.Current;", PerRunFactPatterns[1].Pattern)
+            .Should().BeTrue("control: the ambient-accessor pattern must match the read it forbids");
+
+        var offenders = new List<string>();
+
+        foreach (var file in factoryFiles)
+        {
+            // Comments are stripped first on purpose: this file's own explanation of why the condition
+            // was removed names the switch, and a guard that flagged its own rationale would be useless.
+            var code = StripCommentsAndStrings(File.ReadAllText(file));
+
+            foreach (var (pattern, what) in PerRunFactPatterns)
+            {
+                if (Regex.IsMatch(code, pattern))
+                    offenders.Add($"{Path.GetRelativePath(contentRoot, file)} reads {what}");
+            }
+        }
+
+        offenders.Should().BeEmpty(
+            "a factory runs once and its output is cached, so anything it decides is frozen before the "
+            + "run that needs it exists. Reading per-run state there produces a control that looks wired "
+            + "and does not fire — #347, where a bundle's disclosure tools reached the model ungoverned. "
+            + "Attach unconditionally and gate at invocation instead. Found: " + string.Join("; ", offenders));
     }
 
     /// <summary>
