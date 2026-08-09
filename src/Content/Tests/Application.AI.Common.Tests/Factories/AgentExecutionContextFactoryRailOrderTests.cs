@@ -146,10 +146,18 @@ public sealed class AgentExecutionContextFactoryRailOrderTests : IDisposable
 
     // ── The whole rail, in order ──────────────────────────────────────────────
 
-    [Fact]
-    public async Task MapToAgentContext_EveryOptionalProviderEnabled_RailIsExactlyThisSequence()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task MapToAgentContext_EveryOptionalProviderEnabled_RailIsThisSequenceWhicheverWayEnforcementIsSet(
+        bool globalEnforcement)
     {
-        var context = await CreateFactory().MapToAgentContextAsync([MakeSkill()], new SkillAgentOptions());
+        // Run both ways because the governance wrapper is attached unconditionally (issue #347). Whether
+        // enforcement is active is a per-run fact — a bundle run arms it through its capability envelope,
+        // long after this rail was built and cached — so a rail that varied with the host's global switch
+        // would be answering for the wrong moment. Both rows assert the same sequence on purpose.
+        var context = await CreateFactory(governance: globalEnforcement)
+            .MapToAgentContextAsync([MakeSkill()], new SkillAgentOptions());
 
         RailTypes(context).Should().Equal(
             [
@@ -235,9 +243,11 @@ public sealed class AgentExecutionContextFactoryRailOrderTests : IDisposable
 
         var rail = context.AIContextProviders!;
 
-        // Control: the configurations really do differ, so this is four cases and not the same one asserted
-        // four times. Without it, a factory that ignored both flags would satisfy every row.
-        rail.Count.Should().Be(3 + (recall ? 2 : 0) + (governance ? 1 : 0));
+        // Control: the recall rows really do differ, so this is not the same case asserted four times.
+        // Without it, a factory that ignored the flag would satisfy every row. The governance flag is
+        // deliberately absent from the arithmetic — the wrapper is attached whichever way it is set
+        // (issue #347), so a rail whose length moved with it would be the defect, not the expectation.
+        rail.Count.Should().Be(4 + (recall ? 2 : 0));
 
         rail[^1].Should().BeOfType<PerTurnBudgetContextProvider>(
             "the measurer charges the difference between what it is handed and the baseline it was built "

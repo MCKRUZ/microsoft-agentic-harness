@@ -120,15 +120,19 @@ public partial class AgentExecutionContextFactory
         }
 
         // Governance wrapper — added after the recall providers so it wraps the final, filtered tool
-        // set. When tool-invocation enforcement is on, this guarantees the governor gates every tool the
-        // agent can call, including framework progressive-disclosure tools that bypass ToolChainBuilder.
-        // Inert (and skipped entirely) when enforcement is off, so default behaviour is unchanged.
-        if (_appConfig.CurrentValue.AI?.Governance?.EnforceToolInvocation == true)
-        {
-            providers.Add(new Services.Agent.GoverningToolContextProvider(
-                _loggerFactory.CreateLogger<Services.Agent.GoverningToolContextProvider>()));
-            _logger.LogDebug("Wired GoverningToolContextProvider (tool-invocation enforcement enabled)");
-        }
+        // set, guaranteeing the governor gates every tool the agent can call including the framework
+        // progressive-disclosure tools that bypass ToolChainBuilder.
+        //
+        // ATTACHED UNCONDITIONALLY, AND THAT IS THE FIX, NOT AN OVERSIGHT (issue #347). Whether
+        // governance is on cannot be decided here: this rail is built once, at agent construction, and
+        // agents are cached — while a bundle run arms enforcement later and per run, through the ambient
+        // capability envelope that GovernanceEnforcement.IsActive reads. Any condition evaluated at this
+        // point therefore answers for the wrong moment, and the one that used to be here (the global
+        // switch alone) published a bundle's disclosure tools unwrapped on the default composition. The
+        // provider is transparent unless an admission chain is ambient for the turn, so attaching it
+        // always costs an ungoverned host one inert list entry and nothing else.
+        providers.Add(new Services.Agent.GoverningToolContextProvider(
+            _loggerFactory.CreateLogger<Services.Agent.GoverningToolContextProvider>()));
 
         AppendPerTurnBudgetProvider(providers, baseline);
 

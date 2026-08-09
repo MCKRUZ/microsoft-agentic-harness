@@ -33,6 +33,17 @@ namespace Application.AI.Common.Services.Agent;
 /// have been publishable in the first place.
 /// </para>
 /// <para>
+/// <strong>That inertness is what licenses attaching this provider unconditionally, and it must stay
+/// unconditional (issue #347).</strong> The rail is assembled once, when the agent is constructed, and
+/// agents are cached — but a bundle run arms enforcement afterwards and per run, by publishing a
+/// capability envelope (see <see cref="Governance.GovernanceEnforcement.IsActive"/>). A guard at
+/// construction therefore cannot see the flow that most needs governing: the earlier one read the host's
+/// global switch alone, and on the default composition a bundle's progressive-disclosure tools — two of
+/// which are exempt from <see cref="ToolPermissionFilter"/> by design, leaving this their only gate —
+/// reached the model unwrapped. Re-adding any condition here reopens that hole for a saving of one list
+/// entry on an ungoverned host.
+/// </para>
+/// <para>
 /// <b>This provider overrides <see cref="AIContextProvider.InvokingCoreAsync"/>, not
 /// <c>ProvideAIContextAsync</c>, and that choice is load-bearing.</b> <c>ProvideAIContextAsync</c> is
 /// contractually an <em>additive</em> hook: the base implementation merges whatever it returns into the
