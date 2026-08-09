@@ -122,7 +122,13 @@ public sealed class LearningsRecallContextProvider : AIContextProvider
     private static string? ExtractQuery(AIContext aiContext)
         => aiContext.Messages?.LastOrDefault(m => m.Role == ChatRole.User)?.Text;
 
-    private static string FormatRecalledLessons(IReadOnlyList<WeightedLearning> lessons)
-        => "## Lessons from past work\n" +
-            string.Join("\n", lessons.Select(l => $"- {l.Learning.Content}"));
+    /// <summary>
+    /// Renders the recalled lessons as an instructions block. Returns <see langword="null"/> when no
+    /// unambiguous data envelope can be built — see <see cref="RecalledContextEnvelope"/> for why
+    /// that fails closed rather than emitting the lessons unwrapped.
+    /// </summary>
+    private static string? FormatRecalledLessons(IReadOnlyList<WeightedLearning> lessons)
+        => RecalledContextEnvelope.Wrap(
+            "## Lessons from past work",
+            lessons.Select(l => l.Learning.Content));
 }

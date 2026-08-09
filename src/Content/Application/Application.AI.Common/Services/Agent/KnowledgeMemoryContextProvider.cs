@@ -124,14 +124,18 @@ public sealed class KnowledgeMemoryContextProvider : AIContextProvider
     private static string? ExtractQuery(AIContext aiContext)
         => aiContext.Messages?.LastOrDefault(m => m.Role == ChatRole.User)?.Text;
 
-    private static string FormatRecalledFacts(IReadOnlyList<GraphNode> nodes)
+    /// <summary>
+    /// Renders the recalled facts as an instructions block. Returns <see langword="null"/> when no
+    /// unambiguous data envelope can be built — see <see cref="RecalledContextEnvelope"/> for why
+    /// that fails closed rather than emitting the facts unwrapped.
+    /// </summary>
+    private static string? FormatRecalledFacts(IReadOnlyList<GraphNode> nodes)
     {
         var lines = nodes.Select(n =>
             n.Properties.TryGetValue("content", out var content) && !string.IsNullOrWhiteSpace(content)
                 ? content
                 : n.Name);
 
-        return "## Relevant remembered context\n" +
-            string.Join("\n", lines.Select(line => $"- {line}"));
+        return RecalledContextEnvelope.Wrap("## Relevant remembered context", lines);
     }
 }

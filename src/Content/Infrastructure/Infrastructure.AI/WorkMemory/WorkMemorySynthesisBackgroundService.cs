@@ -31,12 +31,21 @@ namespace Infrastructure.AI.WorkMemory;
 /// the same pattern <c>KnowledgeExtractionBehavior</c> uses for post-turn writes.
 /// </para>
 /// <para>
-/// <strong>Security:</strong> synthesized lessons are model-generated from raw session content, so each
-/// candidate is scanned by the deterministic <see cref="IPromptInjectionScanner"/> before it is stored
-/// where it will be auto-loaded into future prompts. The Learnings store has no "quarantine" tier, so a
-/// flagged lesson is <em>dropped</em> (the established knowledge-memory gate's quarantine and reject
-/// bands both collapse to drop here). This is the synthesis-local gate that satisfies the
-/// <em>Guarding AI memory</em> write-path requirement for this ingestion source.
+/// <strong>Security:</strong> synthesized lessons are model-generated from raw session content, and are
+/// stored where they will be auto-loaded into future prompts, so every candidate is scanned before it
+/// is persisted. That scan is <em>not</em> performed here: it happens inside <c>RememberCommandHandler</c>,
+/// the learnings write chokepoint, which runs the same <c>IMemoryWriteGate</c> as the knowledge-memory
+/// channel and can now quarantine as well as reject (issue #338).
+/// </para>
+/// <para>
+/// This service previously ran its own scan, because at the time the learnings store had no quarantine
+/// tier and a flagged lesson could only be dropped. Both bands are now available at the chokepoint, so
+/// the local copy was removed rather than left to drift: a duplicated threshold ladder is one that
+/// eventually disagrees with the original, and this one already did — it dropped at <c>High</c> where
+/// the gate quarantines from <c>Medium</c> and rejects at <c>Critical</c>. Quarantining is also the
+/// better outcome for this source: a flagged lesson is retained for incident response instead of
+/// vanishing, and is still never recalled. What remains here is the confidence floor, which is a
+/// synthesis-quality judgement and genuinely local.
 /// </para>
 /// <para>
 /// <strong>Tenant scope:</strong> like the sibling background jobs (<c>LearningsPruningBackgroundService</c>,
@@ -135,7 +144,6 @@ public sealed class WorkMemorySynthesisBackgroundService : BackgroundService
 
         var episodeStore = scope.ServiceProvider.GetRequiredService<IWorkEpisodeStore>();
         var synthesizer = scope.ServiceProvider.GetRequiredService<IWorkEpisodeSynthesizer>();
-        var scanner = scope.ServiceProvider.GetRequiredService<IPromptInjectionScanner>();
         var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
 
         var criteria = new WorkEpisodeSearchCriteria
@@ -164,7 +172,7 @@ public sealed class WorkMemorySynthesisBackgroundService : BackgroundService
         var stored = 0;
         foreach (var lesson in lessons)
         {
-            if (!ShouldPersist(lesson, cfg.MinConfidenceToStore, scanner))
+            if (!MeetsConfidenceFloor(lesson, cfg.MinConfidenceToStore))
                 continue;
 
             var remembered = await PersistLessonAsync(mediator, lesson, runId, ct);
@@ -180,30 +188,17 @@ public sealed class WorkMemorySynthesisBackgroundService : BackgroundService
     }
 
     /// <summary>
-    /// Applies the confidence floor and the security gate. A lesson is dropped when it falls below the
-    /// configured confidence or when the deterministic injection scanner flags it at
-    /// <see cref="ThreatLevel.High"/> or above — the Learnings store cannot quarantine, so a flagged
-    /// lesson is never persisted into auto-loaded context.
+    /// Applies the synthesis-quality floor: a lesson the synthesizer is not confident enough about is
+    /// not worth storing. Content safety is deliberately not decided here — see the class remarks.
     /// </summary>
-    private bool ShouldPersist(SynthesizedLesson lesson, double minConfidence, IPromptInjectionScanner scanner)
+    private bool MeetsConfidenceFloor(SynthesizedLesson lesson, double minConfidence)
     {
-        if (lesson.Confidence < minConfidence)
-        {
-            _logger.LogDebug("Dropping synthesized lesson below confidence floor ({Confidence} < {Floor})",
-                lesson.Confidence, minConfidence);
-            return false;
-        }
+        if (lesson.Confidence >= minConfidence)
+            return true;
 
-        var scan = scanner.Scan(lesson.Content);
-        if (scan.IsInjection && scan.ThreatLevel >= ThreatLevel.High)
-        {
-            _logger.LogWarning(
-                "Dropping synthesized lesson flagged by injection scan: {Threat}/{Type}",
-                scan.ThreatLevel, scan.InjectionType);
-            return false;
-        }
-
-        return true;
+        _logger.LogDebug("Dropping synthesized lesson below confidence floor ({Confidence} < {Floor})",
+            lesson.Confidence, minConfidence);
+        return false;
     }
 
     private async Task<bool> PersistLessonAsync(IMediator mediator, SynthesizedLesson lesson, string runId, CancellationToken ct)

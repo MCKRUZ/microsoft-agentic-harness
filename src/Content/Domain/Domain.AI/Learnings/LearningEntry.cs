@@ -1,3 +1,5 @@
+using Domain.AI.KnowledgeGraph.Models;
+
 namespace Domain.AI.Learnings;
 
 /// <summary>
@@ -35,6 +37,23 @@ public sealed record LearningEntry
 
     /// <summary>Pipeline provenance metadata.</summary>
     public required LearningProvenance Provenance { get; init; }
+
+    /// <summary>
+    /// Write-time trust classification, set by the memory write gate in
+    /// <c>RememberCommandHandler</c>. Only <see cref="MemoryTrust.Trusted"/> learnings are returned
+    /// by recall; an <see cref="MemoryTrust.Untrusted"/> learning is retained for audit but never
+    /// replayed into an agent's instructions (see <c>LearningEntryTrustExtensions.IsRecallable</c>).
+    /// </summary>
+    /// <remarks>
+    /// Deliberately the <em>same</em> <see cref="MemoryTrust"/> vocabulary the knowledge-memory
+    /// channel uses rather than a learnings-specific enum. Both channels persist model- or
+    /// conversation-derived text and replay it into the instruction channel later, so they face the
+    /// identical risk and are gated by the identical <c>IMemoryWriteGate</c>; two enums would be two
+    /// ladders to keep in sync, and the one that drifted would be the one nobody was watching.
+    /// Defaults to <see cref="MemoryTrust.Trusted"/> so entries written before this field existed,
+    /// and entries written while the guard is disabled, stay recallable.
+    /// </remarks>
+    public MemoryTrust Trust { get; init; } = MemoryTrust.Trusted;
 
     /// <summary>
     /// EMA-weighted feedback score. Default 1.0 (neutral). Updated by

@@ -33,9 +33,11 @@ public sealed class GraphLearningsStoreTests
         bool isGlobal = false,
         LearningCategory category = LearningCategory.DomainKnowledge,
         double feedbackWeight = 1.0,
-        string content = "Test learning content") => new()
+        string content = "Test learning content",
+        MemoryTrust trust = MemoryTrust.Trusted) => new()
     {
         LearningId = id ?? Guid.NewGuid(),
+        Trust = trust,
         Content = content,
         Category = category,
         DecayClass = DecayClass.Stable,
@@ -393,6 +395,72 @@ public sealed class GraphLearningsStoreTests
         var result = await _sut.UpdateAsync(entry, CancellationToken.None);
 
         result.IsSuccess.Should().BeFalse();
+    }
+
+    // --- Trust persistence (issue #338) -------------------------------------------------------
+    // Quarantine only holds if it survives the round trip. A trust marker that is written but not
+    // read back turns every quarantined learning recallable again on the next process start.
+
+    [Fact]
+    public async Task Get_RoundTripsTheQuarantineMarker()
+    {
+        var id = Guid.NewGuid();
+        await _sut.SaveAsync(BuildEntry(id: id, trust: MemoryTrust.Untrusted), CancellationToken.None);
+
+        var got = await _sut.GetAsync(id, CancellationToken.None);
+
+        got.Value!.Trust.Should().Be(MemoryTrust.Untrusted);
+        got.Value.IsRecallable().Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Get_EntryWrittenBeforeTheTrustFieldExisted_IsStillRecallable()
+    {
+        // Legacy nodes carry no marker. Reading those as quarantined would silently empty an
+        // existing deployment's recall on upgrade.
+        var id = Guid.NewGuid();
+        await _sut.SaveAsync(BuildEntry(id: id), CancellationToken.None);
+        await StripTrustPropertyAsync(id);
+
+        var got = await _sut.GetAsync(id, CancellationToken.None);
+
+        got.Value!.Trust.Should().Be(MemoryTrust.Trusted);
+    }
+
+    [Theory]
+    [InlineData("1")]              // the numeric form Enum.TryParse would have accepted
+    [InlineData("Trusted,Untrusted")] // the comma-list form Enum.TryParse would have accepted
+    [InlineData("garbage")]
+    public async Task Get_UnreadableTrustMarker_FailsClosedToQuarantined(string corrupted)
+    {
+        // A marker that is present but unparseable means the record was corrupted or tampered with.
+        // Defaulting that to trusted would make "quarantined" removable by damaging one property.
+        var id = Guid.NewGuid();
+        await _sut.SaveAsync(BuildEntry(id: id, trust: MemoryTrust.Untrusted), CancellationToken.None);
+        await SetTrustPropertyAsync(id, corrupted);
+
+        var got = await _sut.GetAsync(id, CancellationToken.None);
+
+        got.Value!.Trust.Should().Be(MemoryTrust.Untrusted);
+    }
+
+    private Task StripTrustPropertyAsync(Guid learningId) => MutateTrustPropertyAsync(learningId, null);
+
+    private Task SetTrustPropertyAsync(Guid learningId, string value) =>
+        MutateTrustPropertyAsync(learningId, value);
+
+    private async Task MutateTrustPropertyAsync(Guid learningId, string? value)
+    {
+        var node = (await _graphStore.GetAllNodesAsync(CancellationToken.None))
+            .Single(n => n.Id == $"learning:{learningId}");
+
+        var properties = new Dictionary<string, string>(node.Properties);
+        if (value is null)
+            properties.Remove("Trust");
+        else
+            properties["Trust"] = value;
+
+        await _graphStore.AddNodesAsync([node with { Properties = properties }], CancellationToken.None);
     }
 
     [Fact]

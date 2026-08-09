@@ -6,6 +6,7 @@ using Domain.AI.KnowledgeGraph.Models;
 using Domain.AI.KnowledgeGraph.Scoping;
 using Domain.AI.Learnings;
 using Domain.Common;
+using Domain.Common.Helpers;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
@@ -315,7 +316,8 @@ public sealed class GraphLearningsStore : ILearningsStore
         ["ScopeTeamId"] = entry.Scope.TeamId ?? "",
         ["ScopeIsGlobal"] = entry.Scope.IsGlobal.ToString().ToLowerInvariant(),
         ["IsDeleted"] = entry.IsDeleted.ToString().ToLowerInvariant(),
-        ["DeleteReason"] = entry.DeleteReason ?? ""
+        ["DeleteReason"] = entry.DeleteReason ?? "",
+        ["Trust"] = entry.Trust.ToString().ToLowerInvariant()
     };
 
     private LearningEntry? DeserializeLearningEntry(Guid learningId, GraphNode node)
@@ -369,7 +371,36 @@ public sealed class GraphLearningsStore : ILearningsStore
                 IsGlobal = props.GetValueOrDefault("ScopeIsGlobal", "false") == "true"
             },
             IsDeleted = props.GetValueOrDefault("IsDeleted", "false") == "true",
-            DeleteReason = string.IsNullOrEmpty(props.GetValueOrDefault("DeleteReason", "")) ? null : props["DeleteReason"]
+            DeleteReason = string.IsNullOrEmpty(props.GetValueOrDefault("DeleteReason", "")) ? null : props["DeleteReason"],
+            Trust = ReadTrust(props)
         };
+    }
+
+    /// <summary>
+    /// Reads the write-time trust classification, defaulting in the two directions that differ.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>Absent marker → <see cref="MemoryTrust.Trusted"/>.</strong> Learnings written before
+    /// the trust field existed carry no marker, and the memory guard writes none when it is disabled.
+    /// Treating those as quarantined would silently empty an existing deployment's recall.
+    /// </para>
+    /// <para>
+    /// <strong>Present but unparseable → <see cref="MemoryTrust.Untrusted"/>.</strong> The only
+    /// writer stores a lowercase enum name, so a value that fails to parse means the record was
+    /// corrupted or tampered with — exactly when a fact must not be replayed into an agent's
+    /// instructions. Defaulting an unreadable marker to trusted would make "quarantined" removable
+    /// by damaging one property. Parsed through <see cref="EnumNameHelper"/> rather than
+    /// <c>Enum.TryParse</c>, which would accept an out-of-range integer or a comma-separated list.
+    /// </para>
+    /// </remarks>
+    private static MemoryTrust ReadTrust(IReadOnlyDictionary<string, string> props)
+    {
+        if (!props.TryGetValue("Trust", out var raw) || string.IsNullOrEmpty(raw))
+            return MemoryTrust.Trusted;
+
+        return EnumNameHelper.TryParseName<MemoryTrust>(raw, out var trust)
+            ? trust
+            : MemoryTrust.Untrusted;
     }
 }

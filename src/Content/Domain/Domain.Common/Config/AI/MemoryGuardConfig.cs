@@ -12,9 +12,17 @@ namespace Domain.Common.Config.AI;
 /// (<c>KnowledgeExtractionBehavior</c> → <c>RememberAsync</c>), which otherwise bypasses the
 /// request pipeline's content-safety and prompt-injection behaviors.
 /// <para>
-/// Coverage boundary: the gate protects the <c>IKnowledgeMemory</c> path (the auto-extraction
-/// memory used by the agent). The separate <c>ICrossSessionMemoryStore</c> subsystem is not routed
-/// through this gate; secure it independently if a deployment feeds it back into agent context.
+/// Coverage boundary: the gate protects both channels that persist model- or conversation-derived
+/// text and replay it into an agent's instructions — the <c>IKnowledgeMemory</c> auto-extraction
+/// path, and the Learnings path through <c>RememberCommandHandler</c> (issue #338). One switch and
+/// one threshold ladder govern both, deliberately: a second ladder is a second thing to keep in
+/// sync. The separate <c>ICrossSessionMemoryStore</c> subsystem is not routed through this gate;
+/// secure it independently if a deployment feeds it back into agent context.
+/// </para>
+/// <para>
+/// The binding path names the knowledge bridge for compatibility, but the setting is not scoped to
+/// it: the gate reads only this section's own <see cref="Enabled"/> flag, so learnings stay guarded
+/// on a deployment that never turns the knowledge bridge on.
 /// </para>
 /// </remarks>
 public sealed class MemoryGuardConfig
