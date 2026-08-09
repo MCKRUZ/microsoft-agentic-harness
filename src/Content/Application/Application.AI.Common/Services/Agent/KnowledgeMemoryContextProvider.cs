@@ -116,22 +116,37 @@ public sealed class KnowledgeMemoryContextProvider : AIContextProvider
         if (recalled.Count == 0)
             return null;
 
-        _logger.LogDebug("Injected {Count} recalled fact(s) into agent context", recalled.Count);
+        // Logged after formatting, not before: formatting can fail closed (see
+        // RecalledContextEnvelope), and the one case worth reporting accurately is the one where
+        // facts were recalled but deliberately not injected.
+        var block = FormatRecalledFacts(recalled);
+        if (block is null)
+        {
+            _logger.LogWarning(
+                "Withheld {Count} recalled fact(s): no unambiguous data envelope could be built",
+                recalled.Count);
+            return null;
+        }
 
-        return FormatRecalledFacts(recalled);
+        _logger.LogDebug("Injected {Count} recalled fact(s) into agent context", recalled.Count);
+        return block;
     }
 
     private static string? ExtractQuery(AIContext aiContext)
         => aiContext.Messages?.LastOrDefault(m => m.Role == ChatRole.User)?.Text;
 
-    private static string FormatRecalledFacts(IReadOnlyList<GraphNode> nodes)
+    /// <summary>
+    /// Renders the recalled facts as an instructions block. Returns <see langword="null"/> when no
+    /// unambiguous data envelope can be built — see <see cref="RecalledContextEnvelope"/> for why
+    /// that fails closed rather than emitting the facts unwrapped.
+    /// </summary>
+    private static string? FormatRecalledFacts(IReadOnlyList<GraphNode> nodes)
     {
         var lines = nodes.Select(n =>
             n.Properties.TryGetValue("content", out var content) && !string.IsNullOrWhiteSpace(content)
                 ? content
                 : n.Name);
 
-        return "## Relevant remembered context\n" +
-            string.Join("\n", lines.Select(line => $"- {line}"));
+        return RecalledContextEnvelope.Wrap("## Relevant remembered context", lines);
     }
 }

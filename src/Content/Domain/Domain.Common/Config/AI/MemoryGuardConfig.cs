@@ -12,9 +12,17 @@ namespace Domain.Common.Config.AI;
 /// (<c>KnowledgeExtractionBehavior</c> → <c>RememberAsync</c>), which otherwise bypasses the
 /// request pipeline's content-safety and prompt-injection behaviors.
 /// <para>
-/// Coverage boundary: the gate protects the <c>IKnowledgeMemory</c> path (the auto-extraction
-/// memory used by the agent). The separate <c>ICrossSessionMemoryStore</c> subsystem is not routed
-/// through this gate; secure it independently if a deployment feeds it back into agent context.
+/// Coverage boundary: the gate protects both channels that persist model- or conversation-derived
+/// text and replay it into an agent's instructions — the <c>IKnowledgeMemory</c> auto-extraction
+/// path, and the Learnings path through <c>RememberCommandHandler</c> (issue #338). One switch and
+/// one threshold ladder govern both, deliberately: a second ladder is a second thing to keep in
+/// sync. The separate <c>ICrossSessionMemoryStore</c> subsystem is not routed through this gate;
+/// secure it independently if a deployment feeds it back into agent context.
+/// </para>
+/// <para>
+/// The binding path names the knowledge bridge for compatibility, but the setting is not scoped to
+/// it: the gate reads only this section's own <see cref="Enabled"/> flag, so learnings stay guarded
+/// on a deployment that never turns the knowledge bridge on.
 /// </para>
 /// </remarks>
 public sealed class MemoryGuardConfig
@@ -23,8 +31,18 @@ public sealed class MemoryGuardConfig
     /// Whether the memory write gate is active. <strong>Defaults to <see langword="true"/></strong>:
     /// the parent <see cref="KnowledgeBridgeConfig.Enabled"/> already gates memory as a whole, so once
     /// a consumer deliberately turns memory on, the protection is on by default (defense-by-default).
-    /// When false, writes pass through unguarded and unclassified, preserving legacy behavior.
+    /// When false, writes pass through unguarded and unclassified on <strong>both</strong> memory
+    /// channels.
     /// </summary>
+    /// <remarks>
+    /// The blast radius of turning this off grew with issue #338, and that is worth stating rather
+    /// than discovering. The work-memory synthesis pass used to run its own injection scan
+    /// unconditionally, so this flag had no bearing on it; that duplicate ladder was removed in
+    /// favour of the shared gate, which means switching this off now also stops scanning
+    /// model-synthesized lessons on their way into the Learnings channel. The trade was deliberate —
+    /// one ladder that cannot drift, against a flag that reaches further — but an operator disabling
+    /// this is disabling more than they were before.
+    /// </remarks>
     public bool Enabled { get; set; } = true;
 
     /// <summary>

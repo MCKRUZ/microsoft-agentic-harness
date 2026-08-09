@@ -68,7 +68,12 @@ public sealed class RecallQueryHandler : IRequestHandler<RecallQuery, Result<IRe
         if (!searchResult.IsSuccess)
             return Result<IReadOnlyList<WeightedLearning>>.Fail(searchResult.Errors.ToArray());
 
-        var candidates = searchResult.Value!;
+        // The single point at which the trust classification stamped at write time is enforced
+        // (issue #338). Every recall path — the per-turn LearningsRecallContextProvider, the HTTP
+        // RecallLearningsQuery surface, and MediatorLearningRecaller — funnels through this handler,
+        // so quarantined learnings cannot be reached by adding a read path that forgets to filter.
+        // Applied before scoring so a quarantined entry never costs an embedding call either.
+        var candidates = searchResult.Value!.Where(LearningEntryTrustExtensions.IsRecallable).ToList();
         if (candidates.Count == 0)
             return Result<IReadOnlyList<WeightedLearning>>.Success(Array.Empty<WeightedLearning>());
 

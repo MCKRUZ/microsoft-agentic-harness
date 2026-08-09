@@ -114,15 +114,32 @@ public sealed class LearningsRecallContextProvider : AIContextProvider
         if (recalled.Count == 0)
             return null;
 
-        _logger.LogDebug("Injected {Count} recalled lesson(s) into agent context", recalled.Count);
+        // Logged after formatting, not before: formatting can fail closed (see
+        // RecalledContextEnvelope), and the one case worth reporting accurately is the one where
+        // lessons were recalled but deliberately not injected.
+        var block = FormatRecalledLessons(recalled);
+        if (block is null)
+        {
+            _logger.LogWarning(
+                "Withheld {Count} recalled lesson(s): no unambiguous data envelope could be built",
+                recalled.Count);
+            return null;
+        }
 
-        return FormatRecalledLessons(recalled);
+        _logger.LogDebug("Injected {Count} recalled lesson(s) into agent context", recalled.Count);
+        return block;
     }
 
     private static string? ExtractQuery(AIContext aiContext)
         => aiContext.Messages?.LastOrDefault(m => m.Role == ChatRole.User)?.Text;
 
-    private static string FormatRecalledLessons(IReadOnlyList<WeightedLearning> lessons)
-        => "## Lessons from past work\n" +
-            string.Join("\n", lessons.Select(l => $"- {l.Learning.Content}"));
+    /// <summary>
+    /// Renders the recalled lessons as an instructions block. Returns <see langword="null"/> when no
+    /// unambiguous data envelope can be built — see <see cref="RecalledContextEnvelope"/> for why
+    /// that fails closed rather than emitting the lessons unwrapped.
+    /// </summary>
+    private static string? FormatRecalledLessons(IReadOnlyList<WeightedLearning> lessons)
+        => RecalledContextEnvelope.Wrap(
+            "## Lessons from past work",
+            lessons.Select(l => l.Learning.Content));
 }

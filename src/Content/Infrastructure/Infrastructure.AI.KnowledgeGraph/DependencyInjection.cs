@@ -146,10 +146,15 @@ public static class DependencyInjection
                 sp.GetRequiredService<Application.AI.Common.Interfaces.Routing.IModelRouter>(),
                 sp.GetRequiredService<ILogger<LlmFeedbackDetector>>()));
 
-        // Memory write gate — scans, classifies, and stamps provenance on facts before persistence,
-        // closing the unattended auto-extraction write path. The intent ("Task Adherence") seam
-        // ships fail-open via TryAdd so a consumer's real classifier wins. The scanner and audit
-        // chain are resolved optionally: the gate degrades gracefully (and logs) when absent.
+        // Memory write gate — scans, classifies, and stamps provenance on remembered text before
+        // persistence. It serves BOTH channels that replay stored text into an agent's instructions:
+        // the unattended knowledge auto-extraction path, and the learnings path via
+        // RememberCommandHandler, which takes it as a required dependency (issue #338). That is why
+        // this registration is not optional: dropping it makes the learnings handler unconstructible,
+        // which ValidateOnBuildSweepTests turns into a CI failure rather than a silent ungating.
+        // The intent ("Task Adherence") seam ships fail-open via TryAdd so a consumer's real
+        // classifier wins. The scanner and audit chain are resolved optionally: the gate degrades
+        // gracefully (and logs) when absent.
         services.TryAddSingleton<IMemoryIntentClassifier, NoOpMemoryIntentClassifier>();
         services.AddSingleton<IMemoryWriteGate>(sp =>
             new ProvenanceMemoryWriteGate(

@@ -151,10 +151,21 @@ public sealed class DriftEscalationBridge : IEscalationNotificationChannel
             },
         };
 
-        await _sender.Send(command, ct);
+        // Report the outcome the command actually had. The learnings write chokepoint now runs the
+        // memory write gate, so a refusal is a real result rather than an impossible one, and logging
+        // "Created learning" regardless would hide exactly the case an operator needs to see.
+        var result = await _sender.Send(command, ct);
 
-        _logger.LogInformation("Created learning from drift escalation {EscalationId} with {ReasonCount} corrections.",
-            outcome.EscalationId, reasons.Count);
+        if (result.IsSuccess)
+        {
+            _logger.LogInformation("Created learning from drift escalation {EscalationId} with {ReasonCount} corrections.",
+                outcome.EscalationId, reasons.Count);
+        }
+        else
+        {
+            _logger.LogWarning("Learning from drift escalation {EscalationId} was not stored: {Errors}",
+                outcome.EscalationId, string.Join(", ", result.Errors));
+        }
     }
 
     private static DriftScore BuildMinimalDriftScore(EscalationRequest request) => new()

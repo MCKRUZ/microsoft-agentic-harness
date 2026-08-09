@@ -6,6 +6,7 @@ using Domain.AI.KnowledgeGraph.Models;
 using Domain.AI.KnowledgeGraph.Scoping;
 using Domain.AI.Learnings;
 using Domain.Common;
+using Domain.Common.Helpers;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
@@ -315,7 +316,14 @@ public sealed class GraphLearningsStore : ILearningsStore
         ["ScopeTeamId"] = entry.Scope.TeamId ?? "",
         ["ScopeIsGlobal"] = entry.Scope.IsGlobal.ToString().ToLowerInvariant(),
         ["IsDeleted"] = entry.IsDeleted.ToString().ToLowerInvariant(),
-        ["DeleteReason"] = entry.DeleteReason ?? ""
+        ["DeleteReason"] = entry.DeleteReason ?? "",
+        // Deliberately the SAME property key the knowledge channel uses for the same concept, rather
+        // than a "Trust" key alongside it. Both channels persist their trust marker on a GraphNode,
+        // so a second key would make a quarantined learning read as trusted to anything inspecting
+        // it as a node — today nothing does (every graph-side trust reader filters to memory: ids
+        // first), which is exactly the kind of correctness-by-luck that stops holding the moment
+        // someone adds a graph-wide sweep.
+        [GraphNodeMemoryExtensions.TrustPropertyKey] = entry.Trust.ToString().ToLowerInvariant()
     };
 
     private LearningEntry? DeserializeLearningEntry(Guid learningId, GraphNode node)
@@ -369,7 +377,36 @@ public sealed class GraphLearningsStore : ILearningsStore
                 IsGlobal = props.GetValueOrDefault("ScopeIsGlobal", "false") == "true"
             },
             IsDeleted = props.GetValueOrDefault("IsDeleted", "false") == "true",
-            DeleteReason = string.IsNullOrEmpty(props.GetValueOrDefault("DeleteReason", "")) ? null : props["DeleteReason"]
+            DeleteReason = string.IsNullOrEmpty(props.GetValueOrDefault("DeleteReason", "")) ? null : props["DeleteReason"],
+            Trust = ReadTrust(props)
         };
+    }
+
+    /// <summary>
+    /// Reads the write-time trust classification, defaulting in the two directions that differ.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>Absent marker → <see cref="MemoryTrust.Trusted"/>.</strong> Learnings written before
+    /// the trust field existed carry no marker, and the memory guard writes none when it is disabled.
+    /// Treating those as quarantined would silently empty an existing deployment's recall.
+    /// </para>
+    /// <para>
+    /// <strong>Present but unparseable → <see cref="MemoryTrust.Untrusted"/>.</strong> The only
+    /// writer stores a lowercase enum name, so a value that fails to parse means the record was
+    /// corrupted or tampered with — exactly when a fact must not be replayed into an agent's
+    /// instructions. Defaulting an unreadable marker to trusted would make "quarantined" removable
+    /// by damaging one property. Parsed through <see cref="EnumNameHelper"/> rather than
+    /// <c>Enum.TryParse</c>, which would accept an out-of-range integer or a comma-separated list.
+    /// </para>
+    /// </remarks>
+    private static MemoryTrust ReadTrust(IReadOnlyDictionary<string, string> props)
+    {
+        if (!props.TryGetValue(GraphNodeMemoryExtensions.TrustPropertyKey, out var raw) || string.IsNullOrEmpty(raw))
+            return MemoryTrust.Trusted;
+
+        return EnumNameHelper.TryParseName<MemoryTrust>(raw, out var trust)
+            ? trust
+            : MemoryTrust.Untrusted;
     }
 }
