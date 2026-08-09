@@ -99,9 +99,15 @@ public sealed class AgentExecutionContextFactoryRailOrderTests : IDisposable
     /// Builds the factory with the optional providers switched on or off individually, so the tests can
     /// assert what holds across configurations rather than only in the fully-loaded one.
     /// </summary>
+    /// <remarks>
+    /// Governance is deliberately left unconfigured, which means the host's <c>EnforceToolInvocation</c>
+    /// switch is off — the default composition, and the one that carried the #347 defect. The factory
+    /// reads that switch nowhere, because whether governance is active is a per-run fact a rail built
+    /// once at construction cannot know; so the rail below is the rail every host gets. Re-adding a
+    /// condition on the switch would drop the governance wrapper from these expectations and fail.
+    /// </remarks>
     private AgentExecutionContextFactory CreateFactory(
         bool recall = true,
-        bool governance = true,
         bool budgetTracker = true)
     {
         var appConfig = new AppConfig
@@ -111,8 +117,7 @@ public sealed class AgentExecutionContextFactoryRailOrderTests : IDisposable
                 AgentFramework = new AgentFrameworkConfig { DefaultDeployment = "gpt-4o" },
                 Skills = new SkillsConfig { BasePath = _skillsRoot },
                 KnowledgeBridge = new KnowledgeBridgeConfig { Enabled = recall },
-                LearningsRecall = new LearningsRecallConfig { Enabled = recall },
-                Governance = new GovernanceConfig { EnforceToolInvocation = governance }
+                LearningsRecall = new LearningsRecallConfig { Enabled = recall }
             }
         };
 
@@ -146,18 +151,10 @@ public sealed class AgentExecutionContextFactoryRailOrderTests : IDisposable
 
     // ── The whole rail, in order ──────────────────────────────────────────────
 
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public async Task MapToAgentContext_EveryOptionalProviderEnabled_RailIsThisSequenceWhicheverWayEnforcementIsSet(
-        bool globalEnforcement)
+    [Fact]
+    public async Task MapToAgentContext_EveryOptionalProviderEnabled_RailIsExactlyThisSequence()
     {
-        // Run both ways because the governance wrapper is attached unconditionally (issue #347). Whether
-        // enforcement is active is a per-run fact — a bundle run arms it through its capability envelope,
-        // long after this rail was built and cached — so a rail that varied with the host's global switch
-        // would be answering for the wrong moment. Both rows assert the same sequence on purpose.
-        var context = await CreateFactory(governance: globalEnforcement)
-            .MapToAgentContextAsync([MakeSkill()], new SkillAgentOptions());
+        var context = await CreateFactory().MapToAgentContextAsync([MakeSkill()], new SkillAgentOptions());
 
         RailTypes(context).Should().Equal(
             [
@@ -232,21 +229,17 @@ public sealed class AgentExecutionContextFactoryRailOrderTests : IDisposable
     // ── Rule 2 continued: the measurer is last, in every configuration ────────
 
     [Theory]
-    [InlineData(true, true)]
-    [InlineData(true, false)]
-    [InlineData(false, true)]
-    [InlineData(false, false)]
-    public async Task MapToAgentContext_AnyOptionalProviderCombination_BudgetMeasurerIsLast(bool recall, bool governance)
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task MapToAgentContext_AnyOptionalProviderCombination_BudgetMeasurerIsLast(bool recall)
     {
-        var context = await CreateFactory(recall, governance)
+        var context = await CreateFactory(recall)
             .MapToAgentContextAsync([MakeSkill()], new SkillAgentOptions());
 
         var rail = context.AIContextProviders!;
 
-        // Control: the recall rows really do differ, so this is not the same case asserted four times.
-        // Without it, a factory that ignored the flag would satisfy every row. The governance flag is
-        // deliberately absent from the arithmetic — the wrapper is attached whichever way it is set
-        // (issue #347), so a rail whose length moved with it would be the defect, not the expectation.
+        // Control: the two rows really do differ, so this is not the same case asserted twice. Without
+        // it, a factory that ignored the flag would satisfy both.
         rail.Count.Should().Be(4 + (recall ? 2 : 0));
 
         rail[^1].Should().BeOfType<PerTurnBudgetContextProvider>(
@@ -264,9 +257,9 @@ public sealed class AgentExecutionContextFactoryRailOrderTests : IDisposable
         // Run fully loaded on purpose. Asserting this against a two-provider rail would pass for any
         // factory that merely omits the measurer, including one that also dropped or reordered the
         // providers that only appear when the optional features are on — the case with something to break.
-        var tracked = await CreateFactory(recall: true, governance: true, budgetTracker: true)
+        var tracked = await CreateFactory(recall: true, budgetTracker: true)
             .MapToAgentContextAsync([MakeSkill()], new SkillAgentOptions());
-        var untracked = await CreateFactory(recall: true, governance: true, budgetTracker: false)
+        var untracked = await CreateFactory(recall: true, budgetTracker: false)
             .MapToAgentContextAsync([MakeSkill()], new SkillAgentOptions());
 
         // Control: "minus the measurer" is only meaningful if the tracked rail ends with one. Without

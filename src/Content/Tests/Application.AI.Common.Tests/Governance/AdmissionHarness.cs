@@ -73,6 +73,27 @@ internal static class AdmissionHarness
         return gate;
     }
 
+    /// <summary>
+    /// A governor that refuses every call, as the real one does for a tool outside the caller's grant.
+    /// </summary>
+    /// <param name="deniedMessage">The refusal text the governor returns.</param>
+    /// <remarks>
+    /// The mirror of <see cref="DenyingAuthorizationGate"/>, and here for the same reason: the
+    /// <c>AuthorizeAsync</c> setup carries a trailing optional argument, so every hand-rolled copy is
+    /// another place to get the matcher shape wrong when that signature moves.
+    /// </remarks>
+    public static Mock<IToolInvocationGovernor> DenyingGovernor(string deniedMessage)
+    {
+        var governor = new Mock<IToolInvocationGovernor>();
+        governor
+            .Setup(g => g.AuthorizeAsync(
+                It.IsAny<string>(),
+                It.IsAny<CancellationToken>(),
+                It.IsAny<IReadOnlyDictionary<string, object?>?>()))
+            .ReturnsAsync(ToolInvocationDecision.Deny(deniedMessage));
+        return governor;
+    }
+
     /// <summary>A governor that authorizes everything — the ungoverned default composition.</summary>
     public static IToolInvocationGovernor PermissiveGovernor()
     {

@@ -136,9 +136,34 @@ public sealed class GoverningToolContextProvider : AIContextProvider
 
     /// <summary>
     /// Returns <paramref name="tool"/> wrapped in a <see cref="GovernedAIFunction"/> when it is an
-    /// unwrapped callable function, or the tool unchanged when it is already governed or is not a
-    /// function. Extracted for unit testing of the wrapping decision.
+    /// unwrapped callable function, or the tool unchanged when it is already governed, is not a
+    /// function, or is one of the two skill-content transport tools. Extracted for unit testing of the
+    /// wrapping decision.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>Why <c>load_skill</c> and <c>read_skill_resource</c> are not governed.</strong> They are
+    /// not capabilities an agent is granted — they are how the agent reads the instructions for skills it
+    /// has <em>already</em> been assigned, and the provider that publishes them is built from this agent's
+    /// own skills, so neither can name a skill the agent was not given. Gating them on a tool grant asks
+    /// the wrong question: on a bundle run the ambient capability envelope lists the domain tools the
+    /// caller may invoke, would never list a framework transport tool, and the governor refuses anything
+    /// the envelope does not name — so wrapping these would leave a bundle agent unable to load the
+    /// instructions of the skills it shipped with, silently, with a refusal string where its own skill
+    /// body should be.
+    /// </para>
+    /// <para>
+    /// The exemption reuses <see cref="ToolPermissionFilter.SkillDisclosureToolNames"/> rather than
+    /// restating the pair, because that filter already exempts exactly these two for exactly this reason.
+    /// Two copies of "which tools are content transport" is how one of them ends up out of date.
+    /// <c>run_skill_script</c> is deliberately <em>not</em> in that set and is governed here: executing a
+    /// skill's script is a capability, and on a bundle run it is one the caller's envelope must grant.
+    /// </para>
+    /// </remarks>
     internal static AITool Govern(AITool tool)
-        => tool is AIFunction fn and not GovernedAIFunction ? new GovernedAIFunction(fn) : tool;
+        => tool is AIFunction fn
+           && tool is not GovernedAIFunction
+           && !ToolPermissionFilter.SkillDisclosureToolNames.Contains(fn.Name)
+            ? new GovernedAIFunction(fn)
+            : tool;
 }
