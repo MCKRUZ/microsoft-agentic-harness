@@ -186,7 +186,7 @@ public sealed class ResilientChatClientTests : IDisposable
 
     private ResilientChatClient CreateClient(IReadOnlyList<ResilientChatClient.ProviderEntry> providers)
     {
-        return new ResilientChatClient(providers, _healthMonitor.Object);
+        return new ResilientChatClient(providers, _healthMonitor.Object, ResilienceTestSupport.CreateClassifier());
     }
 
     private static ResilientChatClient.ProviderEntry Entry(string name, IChatClient client)

@@ -51,11 +51,15 @@ public sealed class ResilientChatClientProviderTests : IAsyncDisposable
         client.Should().NotBeNull();
         client.Should().BeOfType<ResilientChatClient>();
         _chatClientFactory.Verify(
-            f => f.GetChatClientAsync(AIAgentFrameworkClientType.AzureOpenAI, "gpt-4o", It.IsAny<CancellationToken>()),
+            f => f.GetChatClientWithoutProviderRetryAsync(AIAgentFrameworkClientType.AzureOpenAI, "gpt-4o", It.IsAny<CancellationToken>()),
             Times.Once);
         _chatClientFactory.Verify(
-            f => f.GetChatClientAsync(AIAgentFrameworkClientType.AzureOpenAI, "gpt-35-turbo", It.IsAny<CancellationToken>()),
+            f => f.GetChatClientWithoutProviderRetryAsync(AIAgentFrameworkClientType.AzureOpenAI, "gpt-35-turbo", It.IsAny<CancellationToken>()),
             Times.Once);
+        _chatClientFactory.Verify(
+            f => f.GetChatClientAsync(It.IsAny<AIAgentFrameworkClientType>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Never,
+            "chain members must not carry the SDK's own retry — the Polly pipeline is the single retry authority");
     }
 
     [Fact]
@@ -70,7 +74,7 @@ public sealed class ResilientChatClientProviderTests : IAsyncDisposable
 
         ReferenceEquals(first, second).Should().BeTrue();
         _chatClientFactory.Verify(
-            f => f.GetChatClientAsync(It.IsAny<AIAgentFrameworkClientType>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            f => f.GetChatClientWithoutProviderRetryAsync(It.IsAny<AIAgentFrameworkClientType>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
             Times.Once);
     }
 
@@ -91,7 +95,7 @@ public sealed class ResilientChatClientProviderTests : IAsyncDisposable
     {
         var config = CreateEnabledConfig(("AzureOpenAI", "gpt-4o"));
         _chatClientFactory
-            .Setup(f => f.GetChatClientAsync(It.IsAny<AIAgentFrameworkClientType>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Setup(f => f.GetChatClientWithoutProviderRetryAsync(It.IsAny<AIAgentFrameworkClientType>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new InvalidOperationException("Provider not configured"));
 
         var sut = CreateProvider(config);
@@ -131,6 +135,10 @@ public sealed class ResilientChatClientProviderTests : IAsyncDisposable
             f => f.GetChatClientAsync(AIAgentFrameworkClientType.AzureOpenAI, It.IsAny<string>(), It.IsAny<CancellationToken>()),
             Times.Never,
             "Disabled path must not resolve FallbackChain[0] — that's a resilience-only concern.");
+        _chatClientFactory.Verify(
+            f => f.GetChatClientWithoutProviderRetryAsync(It.IsAny<AIAgentFrameworkClientType>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Never,
+            "With resilience off there is no Polly pipeline, so stripping the SDK's own retry would leave nothing retrying at all.");
     }
 
     [Fact]
@@ -175,6 +183,7 @@ public sealed class ResilientChatClientProviderTests : IAsyncDisposable
             configMonitor,
             appConfigMonitor,
             _healthMonitor,
+            ResilienceTestSupport.CreateClassifier(config),
             _loggerFactory,
             _logger);
     }
@@ -194,10 +203,19 @@ public sealed class ResilientChatClientProviderTests : IAsyncDisposable
         };
     }
 
+    /// <remarks>
+    /// Both factory methods are stubbed so a test that asserts which one the chain used is
+    /// measuring a real choice — if only the expected one were stubbed, the assertion would
+    /// pass because the alternative returned null rather than because the chain preferred it.
+    /// </remarks>
     private void SetupFactoryDefaults()
     {
         _chatClientFactory
             .Setup(f => f.GetChatClientAsync(It.IsAny<AIAgentFrameworkClientType>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() => CreateMockChatClient());
+
+        _chatClientFactory
+            .Setup(f => f.GetChatClientWithoutProviderRetryAsync(It.IsAny<AIAgentFrameworkClientType>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(() => CreateMockChatClient());
     }
 

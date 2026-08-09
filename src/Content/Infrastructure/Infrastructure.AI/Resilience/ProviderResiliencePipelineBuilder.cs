@@ -1,3 +1,4 @@
+using Application.AI.Common.Interfaces.Resilience;
 using Application.AI.Common.OpenTelemetry.Metrics;
 using Domain.AI.Resilience;
 using Domain.AI.Telemetry.Conventions;
@@ -29,6 +30,15 @@ namespace Infrastructure.AI.Resilience;
 /// the failure. If retries remain, the retry strategy tries again (going back through
 /// circuit breaker and timeout).
 /// </para>
+/// <para>
+/// <b>What gets retried is decided by <see cref="IProviderErrorClassifier"/>, not by exception
+/// type.</b> Provider SDKs throw different exception types for the same HTTP status, so a
+/// type-based predicate covers only whichever provider happens to match it and silently
+/// ignores the rest. The classifier reads the status out of any of them, which lets retry and
+/// the circuit breaker disagree deliberately: a rejected credential is neither retried nor
+/// counted against the provider's health, because an auth failure is not evidence the provider
+/// is down.
+/// </para>
 /// </remarks>
 public static class ProviderResiliencePipelineBuilder
 {
@@ -38,6 +48,7 @@ public static class ProviderResiliencePipelineBuilder
     /// </summary>
     /// <param name="providerName">Logical name for this provider (used in OTel tags and circuit breaker isolation).</param>
     /// <param name="config">Resilience configuration from Options pattern.</param>
+    /// <param name="classifier">Decides which failures are retried and which count toward the circuit breaker.</param>
     /// <param name="circuitBreakerStateProvider">Output: the Polly state provider for this pipeline, used by health monitor to query circuit state.</param>
     /// <param name="onCircuitStateChanged">Optional callback invoked on circuit state transitions (Opened→Unavailable, Closed→Healthy, HalfOpened→Degraded).</param>
     /// <param name="logger">Logger for retry/circuit events.</param>
@@ -45,16 +56,19 @@ public static class ProviderResiliencePipelineBuilder
     public static ResiliencePipeline<ChatResponse> Build(
         string providerName,
         ResilienceConfig config,
+        IProviderErrorClassifier classifier,
         out CircuitBreakerStateProvider circuitBreakerStateProvider,
         Action<ProviderHealthState>? onCircuitStateChanged = null,
         ILogger? logger = null)
     {
+        ArgumentNullException.ThrowIfNull(classifier);
+
         var stateProvider = new CircuitBreakerStateProvider();
         circuitBreakerStateProvider = stateProvider;
 
         var pipeline = new ResiliencePipelineBuilder<ChatResponse>()
-            .AddRetry(CreateRetryOptions(providerName, config.Retry, logger))
-            .AddCircuitBreaker(CreateCircuitBreakerOptions(providerName, config.CircuitBreaker, stateProvider, onCircuitStateChanged, logger))
+            .AddRetry(CreateRetryOptions(providerName, config.Retry, classifier, logger))
+            .AddCircuitBreaker(CreateCircuitBreakerOptions(providerName, config.CircuitBreaker, classifier, stateProvider, onCircuitStateChanged, logger))
             .AddTimeout(CreateTimeoutOptions(config.Timeout))
             .Build();
 
@@ -75,6 +89,7 @@ public static class ProviderResiliencePipelineBuilder
     /// </remarks>
     /// <param name="providerName">Logical name for this provider.</param>
     /// <param name="config">Resilience configuration.</param>
+    /// <param name="classifier">Decides which failures are retried and which count toward the circuit breaker.</param>
     /// <param name="sharedStateProvider">State provider for read-only health queries. Does not synchronize circuit state across pipelines.</param>
     /// <param name="onCircuitStateChanged">Optional callback invoked on circuit state transitions.</param>
     /// <param name="logger">Logger for retry/circuit events.</param>
@@ -82,10 +97,13 @@ public static class ProviderResiliencePipelineBuilder
     public static ResiliencePipeline BuildForStreamInitiation(
         string providerName,
         ResilienceConfig config,
+        IProviderErrorClassifier classifier,
         CircuitBreakerStateProvider sharedStateProvider,
         Action<ProviderHealthState>? onCircuitStateChanged = null,
         ILogger? logger = null)
     {
+        ArgumentNullException.ThrowIfNull(classifier);
+
         var pipeline = new ResiliencePipelineBuilder()
             .AddRetry(new RetryStrategyOptions
             {
@@ -93,7 +111,7 @@ public static class ProviderResiliencePipelineBuilder
                 Delay = TimeSpan.FromSeconds(config.Retry.BaseDelaySeconds),
                 BackoffType = ParseBackoffType(config.Retry.BackoffType),
                 UseJitter = true,
-                ShouldHandle = new PredicateBuilder().Handle<HttpRequestException>().Handle<TaskCanceledException>().Handle<TimeoutRejectedException>(),
+                ShouldHandle = args => new ValueTask<bool>(ShouldRetry(classifier, args.Outcome.Exception)),
                 OnRetry = args =>
                 {
                     RecordRetry(providerName, args.AttemptNumber, args.Outcome.Exception, logger);
@@ -107,7 +125,7 @@ public static class ProviderResiliencePipelineBuilder
                 MinimumThroughput = config.CircuitBreaker.MinimumThroughput,
                 BreakDuration = TimeSpan.FromSeconds(config.CircuitBreaker.BreakDurationSeconds),
                 StateProvider = sharedStateProvider,
-                ShouldHandle = new PredicateBuilder().Handle<HttpRequestException>().Handle<TaskCanceledException>().Handle<TimeoutRejectedException>(),
+                ShouldHandle = args => new ValueTask<bool>(ShouldCountTowardBreaker(classifier, args.Outcome.Exception)),
                 OnOpened = args =>
                 {
                     if (onCircuitStateChanged is not null)
@@ -138,7 +156,7 @@ public static class ProviderResiliencePipelineBuilder
     }
 
     private static RetryStrategyOptions<ChatResponse> CreateRetryOptions(
-        string providerName, RetryConfig retryConfig, ILogger? logger)
+        string providerName, RetryConfig retryConfig, IProviderErrorClassifier classifier, ILogger? logger)
     {
         return new RetryStrategyOptions<ChatResponse>
         {
@@ -146,10 +164,7 @@ public static class ProviderResiliencePipelineBuilder
             Delay = TimeSpan.FromSeconds(retryConfig.BaseDelaySeconds),
             BackoffType = ParseBackoffType(retryConfig.BackoffType),
             UseJitter = true,
-            ShouldHandle = new PredicateBuilder<ChatResponse>()
-                .Handle<HttpRequestException>()
-                .Handle<TaskCanceledException>()
-                .Handle<TimeoutRejectedException>(),
+            ShouldHandle = args => new ValueTask<bool>(ShouldRetry(classifier, args.Outcome.Exception)),
             OnRetry = args =>
             {
                 RecordRetry(providerName, args.AttemptNumber, args.Outcome.Exception, logger);
@@ -159,7 +174,7 @@ public static class ProviderResiliencePipelineBuilder
     }
 
     private static CircuitBreakerStrategyOptions<ChatResponse> CreateCircuitBreakerOptions(
-        string providerName, CircuitBreakerConfig cbConfig, CircuitBreakerStateProvider stateProvider, Action<ProviderHealthState>? onCircuitStateChanged, ILogger? logger)
+        string providerName, CircuitBreakerConfig cbConfig, IProviderErrorClassifier classifier, CircuitBreakerStateProvider stateProvider, Action<ProviderHealthState>? onCircuitStateChanged, ILogger? logger)
     {
         return new CircuitBreakerStrategyOptions<ChatResponse>
         {
@@ -168,10 +183,7 @@ public static class ProviderResiliencePipelineBuilder
             MinimumThroughput = cbConfig.MinimumThroughput,
             BreakDuration = TimeSpan.FromSeconds(cbConfig.BreakDurationSeconds),
             StateProvider = stateProvider,
-            ShouldHandle = new PredicateBuilder<ChatResponse>()
-                .Handle<HttpRequestException>()
-                .Handle<TaskCanceledException>()
-                .Handle<TimeoutRejectedException>(),
+            ShouldHandle = args => new ValueTask<bool>(ShouldCountTowardBreaker(classifier, args.Outcome.Exception)),
             OnOpened = args =>
             {
                 if (onCircuitStateChanged is not null)
@@ -196,6 +208,25 @@ public static class ProviderResiliencePipelineBuilder
             }
         };
     }
+
+    /// <summary>
+    /// Retry only what the classifier positively identifies as transient. An unrecognised
+    /// failure is not repeated: retrying something we cannot name is as likely to be a bug in
+    /// our own code as a provider blip, and repeating a non-idempotent call has a real cost.
+    /// </summary>
+    private static bool ShouldRetry(IProviderErrorClassifier classifier, Exception? exception)
+        => exception is not null
+           && classifier.Classify(exception).Kind == ProviderFailureKind.Transient;
+
+    /// <summary>
+    /// Count transient and unrecognised failures against the provider's health, but never a
+    /// fatal one. A rejected credential or an exhausted balance says nothing about whether the
+    /// provider is up, and letting it trip the breaker is exactly what buries the real cause
+    /// under "circuit open for provider X".
+    /// </summary>
+    private static bool ShouldCountTowardBreaker(IProviderErrorClassifier classifier, Exception? exception)
+        => exception is not null
+           && classifier.Classify(exception).Kind is ProviderFailureKind.Transient or ProviderFailureKind.Unknown;
 
     private static TimeoutStrategyOptions CreateTimeoutOptions(TimeoutConfig timeoutConfig)
     {

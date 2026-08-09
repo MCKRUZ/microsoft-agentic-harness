@@ -19,7 +19,7 @@ public sealed class ProviderResiliencePipelineTests
     public async Task Pipeline_TransientError_RetriesToConfiguredMax()
     {
         var config = CreateTestConfig(maxAttempts: 3);
-        var pipeline = ProviderResiliencePipelineBuilder.Build("test-provider", config, out _);
+        var pipeline = ProviderResiliencePipelineBuilder.Build("test-provider", config, ResilienceTestSupport.CreateClassifier(config), out _);
         var callCount = 0;
 
         var result = await pipeline.ExecuteAsync(async ct =>
@@ -38,7 +38,7 @@ public sealed class ProviderResiliencePipelineTests
     public async Task Pipeline_Http429_TriggersRetry()
     {
         var config = CreateTestConfig(maxAttempts: 2);
-        var pipeline = ProviderResiliencePipelineBuilder.Build("test-provider", config, out _);
+        var pipeline = ProviderResiliencePipelineBuilder.Build("test-provider", config, ResilienceTestSupport.CreateClassifier(config), out _);
         var callCount = 0;
 
         var result = await pipeline.ExecuteAsync(async ct =>
@@ -57,7 +57,7 @@ public sealed class ProviderResiliencePipelineTests
     public async Task Pipeline_Http500_TriggersRetry()
     {
         var config = CreateTestConfig(maxAttempts: 2);
-        var pipeline = ProviderResiliencePipelineBuilder.Build("test-provider", config, out _);
+        var pipeline = ProviderResiliencePipelineBuilder.Build("test-provider", config, ResilienceTestSupport.CreateClassifier(config), out _);
         var callCount = 0;
 
         var result = await pipeline.ExecuteAsync(async ct =>
@@ -76,7 +76,7 @@ public sealed class ProviderResiliencePipelineTests
     public async Task Pipeline_FailureRatioExceeded_OpensCircuit()
     {
         var config = CreateTestConfig(maxAttempts: 1, failureRatio: 0.5, minimumThroughput: 2, samplingDurationSeconds: 30);
-        var pipeline = ProviderResiliencePipelineBuilder.Build("test-provider", config, out var stateProvider);
+        var pipeline = ProviderResiliencePipelineBuilder.Build("test-provider", config, ResilienceTestSupport.CreateClassifier(config), out var stateProvider);
 
         for (var i = 0; i < 4; i++)
         {
@@ -96,7 +96,7 @@ public sealed class ProviderResiliencePipelineTests
     public async Task Pipeline_CircuitOpen_ThrowsBrokenCircuitExceptionWithoutInvokingDelegate()
     {
         var config = CreateTestConfig(maxAttempts: 1, failureRatio: 0.5, minimumThroughput: 2, samplingDurationSeconds: 30);
-        var pipeline = ProviderResiliencePipelineBuilder.Build("test-provider", config, out _);
+        var pipeline = ProviderResiliencePipelineBuilder.Build("test-provider", config, ResilienceTestSupport.CreateClassifier(config), out _);
 
         for (var i = 0; i < 4; i++)
         {
@@ -123,7 +123,7 @@ public sealed class ProviderResiliencePipelineTests
     public async Task Pipeline_SuccessAfterRetry_CircuitRemainsClosed()
     {
         var config = CreateTestConfig(maxAttempts: 2, failureRatio: 0.5, minimumThroughput: 4, samplingDurationSeconds: 30);
-        var pipeline = ProviderResiliencePipelineBuilder.Build("test-provider", config, out var stateProvider);
+        var pipeline = ProviderResiliencePipelineBuilder.Build("test-provider", config, ResilienceTestSupport.CreateClassifier(config), out var stateProvider);
         var callCount = 0;
 
         await pipeline.ExecuteAsync(async ct =>
@@ -144,7 +144,7 @@ public sealed class ProviderResiliencePipelineTests
     public async Task Pipeline_Timeout_CancelsAttempt()
     {
         var config = CreateTestConfig(maxAttempts: 1, perAttemptSeconds: 1);
-        var pipeline = ProviderResiliencePipelineBuilder.Build("test-provider", config, out _);
+        var pipeline = ProviderResiliencePipelineBuilder.Build("test-provider", config, ResilienceTestSupport.CreateClassifier(config), out _);
 
         var act = async () => await pipeline.ExecuteAsync(async ct =>
         {
@@ -159,7 +159,7 @@ public sealed class ProviderResiliencePipelineTests
     public async Task Pipeline_ConfigValues_AppliedCorrectly()
     {
         var config = CreateTestConfig(maxAttempts: 5);
-        var pipeline = ProviderResiliencePipelineBuilder.Build("test-provider", config, out _);
+        var pipeline = ProviderResiliencePipelineBuilder.Build("test-provider", config, ResilienceTestSupport.CreateClassifier(config), out _);
         var callCount = 0;
 
         var result = await pipeline.ExecuteAsync(async ct =>

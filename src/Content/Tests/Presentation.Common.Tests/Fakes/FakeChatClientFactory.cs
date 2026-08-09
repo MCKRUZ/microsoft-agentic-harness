@@ -25,6 +25,14 @@ public sealed class FakeChatClientFactory : IChatClientFactory
         => Task.FromResult<IChatClient>(_client);
 
     /// <inheritdoc />
+    /// <remarks>The fake has no SDK retry to disable, so this yields the same client.</remarks>
+    public Task<IChatClient> GetChatClientWithoutProviderRetryAsync(
+        AIAgentFrameworkClientType clientType,
+        string deploymentOrAgentId,
+        CancellationToken cancellationToken = default)
+        => Task.FromResult<IChatClient>(_client);
+
+    /// <inheritdoc />
     public IReadOnlyDictionary<AIAgentFrameworkClientType, bool> GetAvailableProviders() =>
         new Dictionary<AIAgentFrameworkClientType, bool>
         {

@@ -843,7 +843,27 @@
                             </tr>
                             <tr>
                                 <td><code>Retry</code></td>
-                                <td><code>MaxAttempts</code>, <code>BaseDelaySeconds</code>, <code>BackoffType</code> (<code>Exponential</code> | <code>Linear</code> | <code>Constant</code>).</td>
+                                <td>
+                                    <code>MaxAttempts</code>, <code>BaseDelaySeconds</code>, <code>BackoffType</code> (<code>Exponential</code> | <code>Linear</code> | <code>Constant</code>).
+                                    Applies only to failures classified as transient — see
+                                    <code>ErrorClassification</code> below. When resilience is on, chain providers are
+                                    built with their SDK's own retry disabled so this is the only layer retrying.
+                                </td>
+                            </tr>
+                            <tr>
+                                <td><code>ErrorClassification</code></td>
+                                <td>
+                                    Decides what is retried, what counts against a provider's health, and what stops the
+                                    fallback chain. HTTP status mapping is built in: 429 and 5xx are transient;
+                                    401/402/403 are fatal for the whole chain (retrying a rejected key or an exhausted
+                                    balance wastes time, and rotating providers cannot fix shared configuration); 404 is
+                                    fatal for that provider only, so the chain still rotates. Providers that report a
+                                    billing failure as a 400 are caught by wording instead — add your provider's phrasing
+                                    via <code>AdditionalChainFatalMessagePatterns</code> or
+                                    <code>AdditionalProviderFatalMessagePatterns</code>. Both <em>add to</em> the built-in
+                                    patterns. Wording is only ever consulted for 4xx or status-less failures, so a broad
+                                    pattern cannot turn a genuine rate limit into a hard stop.
+                                </td>
                             </tr>
                             <tr>
                                 <td><code>Timeout</code></td>

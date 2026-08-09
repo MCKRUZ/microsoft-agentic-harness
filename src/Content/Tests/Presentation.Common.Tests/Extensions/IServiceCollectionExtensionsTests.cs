@@ -268,6 +268,49 @@ public sealed class IServiceCollectionExtensionsTests
         resConfig.DegradedMode.MaxQueueSize.Should().Be(100);
     }
 
+    [Fact]
+    public void ResilienceConfig_ErrorClassificationPatterns_BindFromAppsettings()
+    {
+        // The whole point of this section is that a consumer can teach the harness their
+        // provider's wording without a rebuild, so the binding itself is the feature.
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["AppConfig:AI:Resilience:ErrorClassification:AdditionalChainFatalMessagePatterns:0"]
+                    = "tenant is not provisioned",
+                ["AppConfig:AI:Resilience:ErrorClassification:AdditionalProviderFatalMessagePatterns:0"]
+                    = "capability unavailable in this region",
+            })
+            .Build();
+
+        var resConfig = config.GetSection("AppConfig:AI:Resilience").Get<ResilienceConfig>();
+
+        resConfig.Should().NotBeNull();
+        resConfig!.ErrorClassification.AdditionalChainFatalMessagePatterns
+            .Should().ContainSingle().Which.Should().Be("tenant is not provisioned");
+        resConfig.ErrorClassification.AdditionalProviderFatalMessagePatterns
+            .Should().ContainSingle().Which.Should().Be("capability unavailable in this region");
+    }
+
+    [Fact]
+    public void ResilienceConfig_ErrorClassificationOmitted_BindsToEmptyPatternsNotNull()
+    {
+        // A null array here would throw inside the classifier's pattern loop on the very first
+        // failure it is asked to classify — i.e. only in production, only during an incident.
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["AppConfig:AI:Resilience:Enabled"] = "true",
+            })
+            .Build();
+
+        var resConfig = config.GetSection("AppConfig:AI:Resilience").Get<ResilienceConfig>();
+
+        resConfig!.ErrorClassification.Should().NotBeNull();
+        resConfig.ErrorClassification.AdditionalChainFatalMessagePatterns.Should().BeEmpty();
+        resConfig.ErrorClassification.AdditionalProviderFatalMessagePatterns.Should().BeEmpty();
+    }
+
     // -- DriftDetectionConfig and LearningsConfig bindings --
 
     [Fact]

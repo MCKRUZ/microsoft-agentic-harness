@@ -18,7 +18,8 @@ namespace Domain.Common.Config.AI.Resilience;
 /// ├── CircuitBreaker   — Failure ratio, sampling, break duration
 /// ├── Retry            — Max attempts, backoff
 /// ├── Timeout          — Per-attempt timeout
-/// └── DegradedMode     — Retry queue TTL and max size
+/// ├── DegradedMode     — Retry queue TTL and max size
+/// └── ErrorClassification — Extra message patterns marking a failure non-retryable
 /// </code>
 /// </para>
 /// </remarks>
@@ -47,4 +48,10 @@ public class ResilienceConfig
 
     /// <summary>Retry queue and degraded mode behavior when all providers are exhausted.</summary>
     public DegradedModeConfig DegradedMode { get; set; } = new();
+
+    /// <summary>
+    /// Consumer extensions to provider failure classification, which decides what is retried,
+    /// what counts toward the circuit breaker, and what stops the fallback chain.
+    /// </summary>
+    public ProviderErrorClassificationConfig ErrorClassification { get; set; } = new();
 }

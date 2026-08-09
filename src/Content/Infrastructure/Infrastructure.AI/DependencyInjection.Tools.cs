@@ -226,6 +226,14 @@ public static partial class DependencyInjection
     }
 
     /// <summary>Registers the chat-client SDK type based on the configured provider.</summary>
+    /// <remarks>
+    /// Each provider is registered twice: the default client, whose SDK-level retry stays on
+    /// because most callers have nothing wrapping them, and a keyed
+    /// <see cref="AgentFrameworkHelper.NoProviderRetryClientKey"/> variant with that retry
+    /// disabled, resolved only by the provider fallback chain so the Polly pipeline is the sole
+    /// retry authority there. The keyed variants use the factory overload so they are built
+    /// lazily — a host that never enables resilience never constructs them.
+    /// </remarks>
     private static void RegisterChatClient(IServiceCollection services, AgentFrameworkConfig framework)
     {
         switch (framework.ClientType)
@@ -238,6 +246,13 @@ public static partial class DependencyInjection
                         aoaiUri,
                         new Azure.AzureKeyCredential(framework.ApiKey!),
                         AgentFrameworkHelper.GetAzureOpenAIClientOptions()));
+
+                    services.AddKeyedSingleton(
+                        AgentFrameworkHelper.NoProviderRetryClientKey,
+                        (_, _) => new AzureOpenAIClient(
+                            aoaiUri,
+                            new Azure.AzureKeyCredential(framework.ApiKey!),
+                            AgentFrameworkHelper.GetAzureOpenAIClientOptions(disableProviderRetry: true)));
                 }
                 break;
 
@@ -248,6 +263,13 @@ public static partial class DependencyInjection
                     new System.ClientModel.ApiKeyCredential(framework.ApiKey!),
                     AgentFrameworkHelper.GetOpenAIClientOptions(
                         framework.Endpoint, framework.EnablePromptCaching)));
+
+                services.AddKeyedSingleton(
+                    AgentFrameworkHelper.NoProviderRetryClientKey,
+                    (_, _) => new OpenAIClient(
+                        new System.ClientModel.ApiKeyCredential(framework.ApiKey!),
+                        AgentFrameworkHelper.GetOpenAIClientOptions(
+                            framework.Endpoint, framework.EnablePromptCaching, disableProviderRetry: true)));
                 break;
 
             case AIAgentFrameworkClientType.AzureAIInference:

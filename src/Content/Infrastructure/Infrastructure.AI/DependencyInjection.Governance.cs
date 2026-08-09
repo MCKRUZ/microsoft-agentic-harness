@@ -88,6 +88,7 @@ public static partial class DependencyInjection
         services.AddSingleton<PollyProviderHealthMonitor>();
         services.AddSingleton<IProviderHealthMonitor>(sp => sp.GetRequiredService<PollyProviderHealthMonitor>());
         services.AddSingleton<ProviderCapabilityRegistry>();
+        services.AddSingleton<IProviderErrorClassifier, DefaultProviderErrorClassifier>();
         services.AddSingleton<IResilientChatClientProvider, ResilientChatClientProvider>();
 
         if (appConfig.AI.Resilience.Enabled)

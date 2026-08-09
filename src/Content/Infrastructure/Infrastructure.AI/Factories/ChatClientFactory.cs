@@ -150,17 +150,40 @@ public sealed partial class ChatClientFactory : IChatClientFactory, IDisposable
     }
 
     /// <inheritdoc />
-    public async Task<IChatClient> GetChatClientAsync(
+    public Task<IChatClient> GetChatClientAsync(
         AIAgentFrameworkClientType clientType,
         string deploymentOrAgentId,
         CancellationToken cancellationToken = default)
+        => CreateChatClientAsync(clientType, deploymentOrAgentId, disableProviderRetry: false, cancellationToken);
+
+    /// <inheritdoc />
+    public Task<IChatClient> GetChatClientWithoutProviderRetryAsync(
+        AIAgentFrameworkClientType clientType,
+        string deploymentOrAgentId,
+        CancellationToken cancellationToken = default)
+        => CreateChatClientAsync(clientType, deploymentOrAgentId, disableProviderRetry: true, cancellationToken);
+
+    /// <summary>
+    /// Creates a chat client for the given provider, optionally suppressing the SDK's own retry
+    /// policy.
+    /// </summary>
+    /// <remarks>
+    /// Anthropic and Echo ignore <paramref name="disableProviderRetry"/> because neither retries
+    /// internally — Anthropic.SDK throws on the first non-success status. PersistentAgents
+    /// honours it by delegating to the Azure OpenAI path, which does.
+    /// </remarks>
+    private async Task<IChatClient> CreateChatClientAsync(
+        AIAgentFrameworkClientType clientType,
+        string deploymentOrAgentId,
+        bool disableProviderRetry,
+        CancellationToken cancellationToken)
     {
         return clientType switch
         {
-            AIAgentFrameworkClientType.AzureOpenAI => await GetAzureOpenAIChatClientAsync(deploymentOrAgentId, cancellationToken),
-            AIAgentFrameworkClientType.OpenAI => await GetOpenAIChatClientAsync(deploymentOrAgentId, cancellationToken),
-            AIAgentFrameworkClientType.AzureAIInference => await GetAzureAIInferenceChatClientAsync(deploymentOrAgentId, cancellationToken),
-            AIAgentFrameworkClientType.PersistentAgents => await GetPersistentAgentChatClientAsync(deploymentOrAgentId, cancellationToken),
+            AIAgentFrameworkClientType.AzureOpenAI => await GetAzureOpenAIChatClientAsync(deploymentOrAgentId, disableProviderRetry, cancellationToken),
+            AIAgentFrameworkClientType.OpenAI => await GetOpenAIChatClientAsync(deploymentOrAgentId, disableProviderRetry, cancellationToken),
+            AIAgentFrameworkClientType.AzureAIInference => await GetAzureAIInferenceChatClientAsync(deploymentOrAgentId, disableProviderRetry, cancellationToken),
+            AIAgentFrameworkClientType.PersistentAgents => await GetPersistentAgentChatClientAsync(deploymentOrAgentId, disableProviderRetry, cancellationToken),
             AIAgentFrameworkClientType.Anthropic => GetAnthropicChatClient(deploymentOrAgentId),
             AIAgentFrameworkClientType.FoundryResponses => throw new InvalidOperationException(
                 "ClientType 'FoundryResponses' does not expose an IChatClient — it produces an AIAgent. " +
