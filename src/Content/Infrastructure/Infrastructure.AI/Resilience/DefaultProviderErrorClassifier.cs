@@ -1,6 +1,7 @@
 using System.ClientModel;
 using System.Net;
 using System.Net.Sockets;
+using System.Security.Authentication;
 using Application.AI.Common.Interfaces.Resilience;
 using Azure;
 using Domain.AI.Resilience;
@@ -24,13 +25,14 @@ namespace Infrastructure.AI.Resilience;
 /// make one decision for all of them.
 /// </para>
 /// <para>
-/// <b>Status wins over message text, in one direction only.</b> A status that positively
-/// indicates a transient failure (429, any 5xx) returns immediately and is never overridden by
-/// a message match. Message patterns are consulted only for client errors (4xx) and for
-/// failures carrying no status at all. This asymmetry is deliberate: a false "fatal" is far
-/// more damaging than a false "transient", because it both skips retries and stops the fallback
-/// chain, so a broad pattern such as <c>"expired"</c> must not be able to turn a genuine rate
-/// limit into a hard stop.
+/// <b>Positive evidence wins over message text, in one direction only.</b> A status that
+/// indicates a transient failure (429, any 5xx), or an unambiguous transport fault such as a
+/// failed TLS handshake, returns immediately and is never overridden by a message match.
+/// Message patterns are consulted only for client errors (4xx) and for failures that carry
+/// neither. This asymmetry is deliberate: a false "fatal" is far more damaging than a false
+/// "transient", because it both skips retries and stops the fallback chain, so a broad pattern
+/// such as <c>"expired"</c> must not be able to turn a genuine rate limit — or a network blip —
+/// into a hard stop.
 /// </para>
 /// <para>
 /// Anything not positively recognised is <see cref="ProviderFailureKind.Unknown"/>: not
@@ -122,6 +124,12 @@ public class DefaultProviderErrorClassifier : IProviderErrorClassifier
             return ProviderFailureClassification.Unknown;
         }
 
+        // A positively identified transport fault outranks message text, for the same reason a
+        // transient status does. The request never reached the provider, so nothing in the text
+        // can be a verdict on the credential, the balance, or the model.
+        if (facts.IsTransportFault)
+            return ProviderFailureClassification.Transient;
+
         return ClassifyByMessage(facts.Messages)
             ?? (facts.IsNetworkLevel
                 ? ProviderFailureClassification.Transient
@@ -142,12 +150,14 @@ public class DefaultProviderErrorClassifier : IProviderErrorClassifier
         var messages = new List<string>(MaxInnerExceptionDepth);
         int? status = null;
         var isNetworkLevel = false;
+        var isTransportFault = false;
         var current = exception;
 
         for (var depth = 0; current is not null && depth < MaxInnerExceptionDepth; depth++)
         {
             status ??= TryGetHttpStatus(current);
             isNetworkLevel |= IsNetworkLevelFailure(current);
+            isTransportFault |= IsTransportFault(current);
 
             if (!string.IsNullOrEmpty(current.Message))
                 messages.Add(current.Message);
@@ -157,12 +167,12 @@ public class DefaultProviderErrorClassifier : IProviderErrorClassifier
                 : current.InnerException;
         }
 
-        return new FailureFacts(status, messages, isNetworkLevel);
+        return new FailureFacts(status, messages, isNetworkLevel, isTransportFault);
     }
 
     /// <summary>What one walk of the exception chain yielded.</summary>
     private readonly record struct FailureFacts(
-        int? Status, IReadOnlyList<string> Messages, bool IsNetworkLevel);
+        int? Status, IReadOnlyList<string> Messages, bool IsNetworkLevel, bool IsTransportFault);
 
     /// <summary>
     /// Reads the HTTP status out of a single exception, whichever provider SDK shape it is.
@@ -253,6 +263,41 @@ public class DefaultProviderErrorClassifier : IProviderErrorClassifier
 
         return null;
     }
+
+    /// <summary>
+    /// Failure shapes that say, on their own evidence, that the request never completed a round
+    /// trip to the provider. Unlike <see cref="IsNetworkLevelFailure"/>, every shape here is
+    /// unambiguous, which is what earns it the right to outrank message text.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The distinction exists because <see cref="HttpRequestException"/> is overloaded: the HTTP
+    /// stack raises it for transport faults, and Anthropic's SDK also authors it by hand to report
+    /// ordinary API errors. Its <see cref="HttpRequestException.HttpRequestError"/> separates the
+    /// two — the stack sets a category such as <c>SecureConnectionError</c>, while a hand-built
+    /// instance leaves it <c>Unknown</c>. So the property, not the type, is the signal.
+    /// </para>
+    /// <para>
+    /// This exists because of a real misclassification: a failed TLS handshake surfaces as a
+    /// status-less <see cref="HttpRequestException"/> wrapping an
+    /// <see cref="AuthenticationException"/> reading "Authentication failed, see inner exception."
+    /// That text matches the credential pattern, so a connectivity blip was reported as a rejected
+    /// API key — skipping retries and halting the fallback chain, the exact outcome this class
+    /// calls its most damaging.
+    /// </para>
+    /// <para>
+    /// <see cref="OperationCanceledException"/> is deliberately absent: a cancellation is as
+    /// likely to be the caller withdrawing as the transport failing, so it keeps its existing
+    /// lower-precedence handling rather than gaining the power to overrule a message.
+    /// </para>
+    /// </remarks>
+    private static bool IsTransportFault(Exception exception) => exception switch
+    {
+        HttpRequestException { HttpRequestError: not HttpRequestError.Unknown } => true,
+        SocketException or AuthenticationException or IOException
+            or TimeoutException or TimeoutRejectedException => true,
+        _ => false
+    };
 
     /// <summary>
     /// Failure shapes that mean the request never reached the provider — a connection reset,

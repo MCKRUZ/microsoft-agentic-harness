@@ -1,6 +1,7 @@
 using System.ClientModel;
 using System.Net;
 using System.Net.Sockets;
+using System.Security.Authentication;
 using Domain.AI.Resilience;
 using Domain.Common.Config.AI.Resilience;
 using FluentAssertions;
@@ -117,6 +118,60 @@ public sealed class DefaultProviderErrorClassifierTests
             .Kind.Should().Be(ProviderFailureKind.Transient);
         sut.Classify(new SocketException(10054))
             .Kind.Should().Be(ProviderFailureKind.Transient);
+    }
+
+    [Fact]
+    public void Classify_TlsHandshakeFailure_IsTransient_NotARejectedCredential()
+    {
+        // The exact shape .NET raises when the TLS handshake fails: no HTTP status, and an inner
+        // AuthenticationException whose message is literally "Authentication failed, ...". That
+        // text matches the credential pattern, so consulting message text before the transport
+        // signal turned a connectivity blip into a chain-fatal "invalid API key" — skipping every
+        // retry and halting the fallback chain for a failure that never reached the provider.
+        var sut = ResilienceTestSupport.CreateClassifier();
+
+        var tlsFailure = new HttpRequestException(
+            HttpRequestError.SecureConnectionError,
+            "The SSL connection could not be established, see inner exception.",
+            new AuthenticationException("Authentication failed, see inner exception."));
+
+        var classification = sut.Classify(tlsFailure);
+
+        classification.Kind.Should().Be(
+            ProviderFailureKind.Transient,
+            "the request never reached the provider, so its credentials were never judged");
+        classification.ReasonCode.Should().NotBe(ProviderFatalReason.InvalidCredentials);
+    }
+
+    [Theory]
+    [InlineData(HttpRequestError.NameResolutionError)]
+    [InlineData(HttpRequestError.ConnectionError)]
+    [InlineData(HttpRequestError.SecureConnectionError)]
+    public void Classify_TransportFaultCarryingFatalWording_StaysTransient(HttpRequestError error)
+    {
+        // The same asymmetry the class already applies to a transient HTTP status, extended to a
+        // transport fault the HTTP stack itself categorised: a positive "never reached the
+        // provider" signal is never overridden by words found in the error text.
+        var sut = ResilienceTestSupport.CreateClassifier();
+
+        var failure = new HttpRequestException(error, "unauthorized: authentication failed");
+
+        sut.Classify(failure).Kind.Should().Be(ProviderFailureKind.Transient);
+    }
+
+    [Fact]
+    public void Classify_CredentialRejectionWithNoStatus_IsStillFatalForChain()
+    {
+        // The control for the two tests above. Anthropic reports API errors through the same
+        // exception type as a transport fault, but leaves HttpRequestError unset — so message
+        // text remains the only signal there and must keep working. Without this case, the fix
+        // could have classified every status-less failure as transient and still looked green.
+        var sut = ResilienceTestSupport.CreateClassifier();
+
+        var classification = sut.Classify(new HttpRequestException("invalid x-api-key"));
+
+        classification.Kind.Should().Be(ProviderFailureKind.FatalForChain);
+        classification.ReasonCode.Should().Be(ProviderFatalReason.InvalidCredentials);
     }
 
     [Fact]
