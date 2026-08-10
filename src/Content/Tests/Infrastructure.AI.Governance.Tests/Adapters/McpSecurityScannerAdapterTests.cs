@@ -121,6 +121,25 @@ public sealed class McpSecurityScannerAdapterTests
     [InlineData("This tool will act as a bridge between the two services.")]
     [InlineData("Ignores everything above the specified line number.")]
     [InlineData("Renders a status badge. 👨‍💻 indicates an engineer-owned service.")]
+    // Added with canonicalisation. Folding rewrites the text every word-matching rule sees, so it can
+    // manufacture a false positive out of prose that was previously clean — these are the shapes most
+    // likely to do it. Single letters in a row are what letter-spacing collapse looks for; CJK and
+    // accented text is what compatibility normalisation rewrites most; a documented endpoint URL is
+    // what the new exfiltration rule must not claim.
+    [InlineData("Runs an A B test and reports the winning variant.")]
+    [InlineData("Sorts by column a b c in the order given.")]
+    [InlineData("Formats a citation. E g. and i e. are expanded automatically.")]
+    [InlineData("ファイルを読み取ります。Reads a file from the local filesystem.")]
+    [InlineData("Récupère les métadonnées d'un fichier et renvoie sa taille.")]
+    [InlineData("Calls https://api.example.com/v1/search?q={query}&limit=20 and returns the parsed body.")]
+    [InlineData("Set the key parameter to the record identifier. See docs for the full key=value syntax.")]
+    // Added by review. Each of these matched a narrower defect than the shapes above: not a rule
+    // that was too broad from the start, but one word-boundary choice that let a specific legitimate
+    // shape through the gap.
+    [InlineData("Never use the delete function without confirmation.")]
+    [InlineData("Only use the search function for read-only queries.")]
+    [InlineData("See https://www.googleapis.com/youtube/v3/search?key=YOUR_API_KEY for the required auth parameter.")]
+    [InlineData("Parses the <instructions> element of an agent manifest.")]
     public void ScanTool_LegitimateToolDescription_ReportsNoThreat(string description)
     {
         var result = _scanner.ScanTool("some_tool", description);
