@@ -46,8 +46,7 @@ public sealed class DefaultProviderErrorClassifierTests
     [Theory]
     [InlineData(401, ProviderFatalReason.InvalidCredentials)]
     [InlineData(402, ProviderFatalReason.BillingExhausted)]
-    [InlineData(403, ProviderFatalReason.AccessDenied)]
-    public void Classify_CredentialClassStatus_AcrossAllThreeSdkShapes_IsFatalForChain(
+    public void Classify_SharedAccountStatus_AcrossAllThreeSdkShapes_IsFatalForChain(
         int status, string expectedReason)
     {
         var sut = ResilienceTestSupport.CreateClassifier();
@@ -308,6 +307,92 @@ public sealed class DefaultProviderErrorClassifierTests
             .Kind.Should().Be(
                 ProviderFailureKind.FatalForChain,
                 "adding one provider's wording must not silently drop coverage for every other provider");
+    }
+
+    [Fact]
+    public void Classify_ConsumerProviderFatalPattern_CannotSoftenABuiltInBillingFailure()
+    {
+        // The class documents that every chain-fatal wording is tested before any provider-fatal
+        // one. It was not: the consumer's provider-fatal list ran second, ahead of the built-in
+        // billing patterns. A consumer routing one regional wording onward with a broad "account"
+        // also caught "billing account", so a shared billing failure rotated through every
+        // provider and surfaced as "all providers exhausted".
+        var config = new ResilienceConfig
+        {
+            ErrorClassification = new ProviderErrorClassificationConfig
+            {
+                AdditionalProviderFatalMessagePatterns = ["account"]
+            }
+        };
+        var sut = ResilienceTestSupport.CreateClassifier(config);
+
+        var classification = sut.Classify(new HttpRequestException(
+            "Your billing account is not in good standing", null, HttpStatusCode.BadRequest));
+
+        classification.Kind.Should().Be(
+            ProviderFailureKind.FatalForChain,
+            "a billing failure is shared by every provider on the account, whatever the consumer added");
+        classification.ReasonCode.Should().Be(ProviderFatalReason.BillingExhausted);
+    }
+
+    [Fact]
+    public void Classify_ConsumerProviderFatalPattern_StillWorksOnItsOwnWording()
+    {
+        // The control for the test above — reordering must not make the consumer's list inert.
+        var config = new ResilienceConfig
+        {
+            ErrorClassification = new ProviderErrorClassificationConfig
+            {
+                AdditionalProviderFatalMessagePatterns = ["region is not enabled"]
+            }
+        };
+        var sut = ResilienceTestSupport.CreateClassifier(config);
+
+        sut.Classify(new HttpRequestException(
+                "This region is not enabled for the resource", null, HttpStatusCode.BadRequest))
+            .Kind.Should().Be(ProviderFailureKind.FatalForProvider);
+    }
+
+    [Fact]
+    public void Classify_Forbidden_RotatesTheChainRatherThanAbandoningIt()
+    {
+        // 403 is routinely scoped to one resource — a network ACL, a private endpoint, a role
+        // missing on one deployment — unlike 401 and 402, which are shared account config.
+        // Stopping the chain abandons a healthy secondary that would have served the request.
+        var sut = ResilienceTestSupport.CreateClassifier();
+
+        var classification = sut.Classify(new HttpRequestException(
+            "Public access is disabled for this resource", null, HttpStatusCode.Forbidden));
+
+        classification.StopsChain.Should().BeFalse(
+            "one endpoint refusing the caller says nothing about the next provider in the chain");
+        classification.ReasonCode.Should().Be(ProviderFatalReason.AccessDenied);
+    }
+
+    [Fact]
+    public void Classify_ForbiddenWording_AlsoRotatesTheChain()
+    {
+        // Without this, the status fix above is inert: a 403 body almost always contains
+        // "access denied", and message patterns are consulted before the status mapping — so the
+        // wording, not the status, is what actually decided the verdict.
+        var sut = ResilienceTestSupport.CreateClassifier();
+
+        sut.Classify(new HttpRequestException(
+                "Access denied due to Virtual Network/Firewall rules", null, HttpStatusCode.Forbidden))
+            .StopsChain.Should().BeFalse();
+    }
+
+    [Fact]
+    public void Classify_DisabledAccountWording_StillStopsTheWholeChain()
+    {
+        // The control for the two tests above. Splitting resource-scoped refusals out of the
+        // access patterns must not downgrade a genuinely account-wide shutdown, which every
+        // provider sharing the account would hit identically.
+        var sut = ResilienceTestSupport.CreateClassifier();
+
+        sut.Classify(new HttpRequestException(
+                "This account is disabled", null, HttpStatusCode.Forbidden))
+            .StopsChain.Should().BeTrue();
     }
 
     /// <summary>

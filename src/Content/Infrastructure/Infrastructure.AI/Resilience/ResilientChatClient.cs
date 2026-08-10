@@ -299,8 +299,16 @@ public sealed class ResilientChatClient : IChatClient
         if (!classification.StopsChain)
             return null;
 
+        // A replaced classifier can return a chain-fatal verdict with no reason code — the record
+        // struct's constructor defaults it to null. Null-forgiving it here would hand a consumer
+        // an exception whose non-nullable ReasonCode is null and whose sentence trails off at
+        // "non-retryable error ()", failing at the moment the real error is being reported.
+        var reasonCode = string.IsNullOrWhiteSpace(classification.ReasonCode)
+            ? ProviderFatalReason.Configuration
+            : classification.ReasonCode;
+
         var fatal = new ProviderFatalErrorException(
-            providerName, classification.ReasonCode!, exception, failedProviders);
+            providerName, reasonCode, exception, failedProviders);
 
         // Log the exception's own sentence rather than re-composing it. The operator-facing
         // wording then has exactly one author, and the log cannot drift from what the caller sees.

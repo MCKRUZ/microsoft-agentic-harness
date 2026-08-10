@@ -70,10 +70,27 @@ public class DefaultProviderErrorClassifier : IProviderErrorClassifier
         "subscription has been suspended", "subscription has expired"
     ];
 
-    /// <summary>Wordings that mean the credential is valid but not permitted.</summary>
-    private static readonly string[] AccessPatterns =
+    /// <summary>
+    /// Wordings that mean the whole account is shut off, which every provider sharing it hits.
+    /// </summary>
+    private static readonly string[] AccountDisabledPatterns =
     [
-        "account is disabled", "account has been disabled", "account deactivated",
+        "account is disabled", "account has been disabled", "account deactivated"
+    ];
+
+    /// <summary>
+    /// Wordings that mean this particular resource refused the caller.
+    /// </summary>
+    /// <remarks>
+    /// Split out from the account-level wordings above, which stop the chain. A refusal scoped to
+    /// one resource must not: Azure OpenAI returns 403 for a network ACL or disabled public
+    /// access on a single endpoint, and AI Foundry for a deployment the caller's role cannot
+    /// invoke. Treating those as chain-fatal abandons a healthy secondary that would have served
+    /// the request. A genuinely account-wide 403 still surfaces — it just costs one attempt per
+    /// chain member to establish, which is the cheap direction to be wrong in.
+    /// </remarks>
+    private static readonly string[] ResourceForbiddenPatterns =
+    [
         "permission denied", "access denied"
     ];
 
@@ -222,8 +239,11 @@ public class DefaultProviderErrorClassifier : IProviderErrorClassifier
             ProviderFailureClassification.FatalForChain(ProviderFatalReason.InvalidCredentials),
         (int)HttpStatusCode.PaymentRequired =>
             ProviderFailureClassification.FatalForChain(ProviderFatalReason.BillingExhausted),
+        // Provider-fatal, not chain-fatal: unlike 401 and 402, a 403 is routinely scoped to one
+        // resource — a network ACL, a private endpoint, a role missing on one deployment. See
+        // ResourceForbiddenPatterns.
         (int)HttpStatusCode.Forbidden =>
-            ProviderFailureClassification.FatalForChain(ProviderFatalReason.AccessDenied),
+            ProviderFailureClassification.FatalForProvider(ProviderFatalReason.AccessDenied),
         (int)HttpStatusCode.NotFound =>
             ProviderFailureClassification.FatalForProvider(ProviderFatalReason.ModelNotFound),
         _ => ProviderFailureClassification.FatalForProvider(ProviderFatalReason.RequestRejected)
@@ -243,11 +263,14 @@ public class DefaultProviderErrorClassifier : IProviderErrorClassifier
 
         var classification = _config.CurrentValue.ErrorClassification;
 
+        // Every chain-fatal wording — the consumer's own first, then the built-ins — is tested
+        // before any provider-fatal one. The consumer's provider-fatal list used to sit second,
+        // which inverted this for the built-ins: a consumer adding a broad wording such as
+        // "account" to route one regional message onward also caught "billing account", so a
+        // shared billing failure rotated through every provider and was reported as the whole
+        // chain being exhausted. That is the failure this class exists to prevent.
         if (ContainsAny(messages, classification.AdditionalChainFatalMessagePatterns))
             return ProviderFailureClassification.FatalForChain(ProviderFatalReason.Configuration);
-
-        if (ContainsAny(messages, classification.AdditionalProviderFatalMessagePatterns))
-            return ProviderFailureClassification.FatalForProvider(ProviderFatalReason.RequestRejected);
 
         if (ContainsAny(messages, BillingPatterns))
             return ProviderFailureClassification.FatalForChain(ProviderFatalReason.BillingExhausted);
@@ -255,8 +278,14 @@ public class DefaultProviderErrorClassifier : IProviderErrorClassifier
         if (ContainsAny(messages, CredentialPatterns))
             return ProviderFailureClassification.FatalForChain(ProviderFatalReason.InvalidCredentials);
 
-        if (ContainsAny(messages, AccessPatterns))
+        if (ContainsAny(messages, AccountDisabledPatterns))
             return ProviderFailureClassification.FatalForChain(ProviderFatalReason.AccessDenied);
+
+        if (ContainsAny(messages, classification.AdditionalProviderFatalMessagePatterns))
+            return ProviderFailureClassification.FatalForProvider(ProviderFatalReason.RequestRejected);
+
+        if (ContainsAny(messages, ResourceForbiddenPatterns))
+            return ProviderFailureClassification.FatalForProvider(ProviderFatalReason.AccessDenied);
 
         if (ContainsAny(messages, ModelNotFoundPatterns))
             return ProviderFailureClassification.FatalForProvider(ProviderFatalReason.ModelNotFound);
@@ -287,8 +316,13 @@ public class DefaultProviderErrorClassifier : IProviderErrorClassifier
     /// </para>
     /// <para>
     /// <see cref="OperationCanceledException"/> is deliberately absent: a cancellation is as
-    /// likely to be the caller withdrawing as the transport failing, so it keeps its existing
-    /// lower-precedence handling rather than gaining the power to overrule a message.
+    /// likely to be the caller withdrawing as the transport failing, so it does not gain the
+    /// power to overrule a message. Note what this does <i>not</i> do — a cancellation carrying
+    /// no recognised wording still reaches <see cref="IsNetworkLevelFailure"/> below and is
+    /// classified transient, so a caller pressing Stop is still counted against provider health.
+    /// Correcting that needs an outcome meaning "not evidence, not retryable, not worth failing
+    /// over", which this type does not have; it is tracked separately rather than smuggled in
+    /// here.
     /// </para>
     /// </remarks>
     private static bool IsTransportFault(Exception exception) => exception switch
