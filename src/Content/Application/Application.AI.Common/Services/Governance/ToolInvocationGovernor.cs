@@ -11,6 +11,7 @@ using Domain.AI.Governance;
 using Domain.AI.Permissions;
 using Domain.AI.Sandbox;
 using Domain.Common.Config.AI;
+using Domain.Common.Config.AI.Governance;
 using Domain.Common.Config.AI.Permissions;
 using Domain.Common.Config.AI.Sandbox;
 using Microsoft.Extensions.Logging;
@@ -63,6 +64,7 @@ public sealed partial class ToolInvocationGovernor : IToolInvocationGovernor
     private readonly IAgentExecutionContext _executionContext;
     private readonly IToolPermissionService _toolPermissionService;
     private readonly IToolRiskClassifier _toolRiskClassifier;
+    private readonly IToolBehaviorRegistry _toolBehaviorRegistry;
     private readonly IAutonomyDecisionEvaluator _autonomyEvaluator;
     private readonly IGovernancePolicyEngine _policyEngine;
     private readonly IGovernanceAuditService _auditService;
@@ -79,6 +81,7 @@ public sealed partial class ToolInvocationGovernor : IToolInvocationGovernor
         IAgentExecutionContext executionContext,
         IToolPermissionService toolPermissionService,
         IToolRiskClassifier toolRiskClassifier,
+        IToolBehaviorRegistry toolBehaviorRegistry,
         IAutonomyDecisionEvaluator autonomyEvaluator,
         IGovernancePolicyEngine policyEngine,
         IGovernanceAuditService auditService,
@@ -94,6 +97,7 @@ public sealed partial class ToolInvocationGovernor : IToolInvocationGovernor
         _executionContext = executionContext;
         _toolPermissionService = toolPermissionService;
         _toolRiskClassifier = toolRiskClassifier;
+        _toolBehaviorRegistry = toolBehaviorRegistry;
         _autonomyEvaluator = autonomyEvaluator;
         _policyEngine = policyEngine;
         _auditService = auditService;
@@ -235,6 +239,11 @@ public sealed partial class ToolInvocationGovernor : IToolInvocationGovernor
         string agentId, string toolName, PermissionDecision permission, ToolRiskProfile profile,
         IReadOnlyDictionary<string, object?>? arguments, CancellationToken cancellationToken)
     {
+        // One snapshot for the whole decision. Two stages read this config, and reading the monitor
+        // twice would let a reload land between them — deciding half the call under one policy and
+        // half under another, which is not a state any operator asked for.
+        var governance = _governanceConfig.CurrentValue;
+
         // Accumulates every reason a human must rule on this call, from whichever gate raised it.
         // Left null until a gate actually asks for one: the overwhelmingly common path is a call no
         // gate wants a human for, and this runs on every authorized tool call.
@@ -260,6 +269,13 @@ public sealed partial class ToolInvocationGovernor : IToolInvocationGovernor
                     $"unrecognized permission behaviour '{permission.Behavior}'", profile.Radius,
                     requiredApproval: false, agentId);
         }
+
+        // Behaviour posture: what the tool declared it does, rather than whether anyone listed it.
+        // Deliberately a third source of approval reasons rather than a sixth admission gate — a gate
+        // of its own would need its own route to a human, and two independent approval questions about
+        // one call is exactly the shape this method exists to prevent.
+        if (RequiresApprovalForDeclaredBehavior(toolName, governance.ToolBehaviorGating, out var behaviorReason))
+            (approvalReasons ??= []).Add(behaviorReason);
 
         // Independent envelope confirmation. Defence in depth against a resolver arbitration bug —
         // see EnvelopeGrantsToolWhenArmed's remarks for the two occasions that arbitration was wrong.
@@ -291,7 +307,6 @@ public sealed partial class ToolInvocationGovernor : IToolInvocationGovernor
         }
 
         // Declarative policy layer (YAML policies), only when configured.
-        var governance = _governanceConfig.CurrentValue;
         if (governance.Enabled && _policyEngine.HasPolicies)
         {
             // Arguments are forwarded. The policy engine builds its rule-evaluation context from them,
@@ -367,6 +382,86 @@ public sealed partial class ToolInvocationGovernor : IToolInvocationGovernor
         // to the LLM — avoids leaking operator-authored policy detail into model-visible content.
         return ToolInvocationDecision.Deny(GovernanceDenials.NotPermitted(toolName));
     }
+
+    /// <summary>
+    /// Whether the non-read-only approval posture wants a human for this call, and why.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>The default is inverted here and nowhere else.</strong> Every other check in this class
+    /// asks whether something forbids the call; this one asks whether anything permits it, and treats
+    /// silence as "no". That is the whole point: a name list can only refuse tools somebody thought of,
+    /// so a tool arriving at runtime from a server nobody on the team wrote is callable until it is
+    /// noticed. Reading the tool's own declaration means a new mutating tool is gated the moment it
+    /// appears, with no list to edit.
+    /// </para>
+    /// <para>
+    /// <strong>Off costs nothing.</strong> The posture is read first and returns immediately when
+    /// disabled, before the registry is consulted, so a host that has not opted in pays one boolean
+    /// read per tool call.
+    /// </para>
+    /// <para>
+    /// <strong>An exemption is honoured even for a self-declared destructive tool.</strong> That looks
+    /// wrong beside the rule that a destructive claim outranks a read-only one, and is a different
+    /// question: that rule arbitrates between two claims by the <em>same</em> party, while an exemption
+    /// is the operator overruling the party outright, in writing, with a reason. Silently ignoring some
+    /// entries in a list an operator maintains is how a control becomes untrustworthy.
+    /// </para>
+    /// </remarks>
+    /// <param name="toolName">The tool being authorized.</param>
+    /// <param name="gating">The posture, from the same config snapshot the rest of the decision uses.</param>
+    /// <param name="reason">The approver-facing reason, when one is needed.</param>
+    /// <returns>True when a human must rule on this call because of what the tool declared.</returns>
+    private bool RequiresApprovalForDeclaredBehavior(
+        string toolName, ToolBehaviorGatingConfig gating, out string reason)
+    {
+        reason = string.Empty;
+
+        if (!gating.RequireApprovalForNonReadOnlyTools)
+            return false;
+
+        var behavior = _toolBehaviorRegistry.Resolve(toolName);
+        if (behavior.NonExemptReason is not { } nonExempt)
+            return false;
+
+        var exemption = gating.Exemptions.FirstOrDefault(
+            entry => string.Equals(entry.Tool, toolName, StringComparison.OrdinalIgnoreCase)
+                     && ExemptionCoversSource(entry, behavior));
+
+        if (exemption is not null)
+        {
+            _logger.LogDebug(
+                "Tool behaviour posture: '{ToolName}' is exempt by configuration — {ExemptionReason} "
+                + "(it would otherwise be gated because {NonExemptReason})",
+                toolName, exemption.Reason, nonExempt);
+            return false;
+        }
+
+        reason = $"declared behaviour: {nonExempt}";
+        return true;
+    }
+
+    /// <summary>
+    /// Whether an exemption written for a tool name may be applied to <em>this</em> declaration of it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A tool name belongs to nobody. An operator exempts a name after checking one vendor's tool, and
+    /// any other configured server can advertise a tool by that name tomorrow. The behaviour registry
+    /// already refuses to let a shadowing server loosen a record it did not create; without this check
+    /// the exemption would hand that bypass straight back, because it matched on the name the attacker
+    /// chose.
+    /// </para>
+    /// <para>
+    /// So a bare name is accepted only for a declaration from somewhere the operator has already
+    /// vouched for — their own code, or a server marked trusted. For anything else the exemption must
+    /// name the server it was written for.
+    /// </para>
+    /// </remarks>
+    private static bool ExemptionCoversSource(ToolBehaviorExemption exemption, ToolBehavior behavior)
+        => behavior.IsVouchedFor
+           || (!string.IsNullOrWhiteSpace(exemption.Server)
+               && string.Equals(exemption.Server, behavior.ServerName, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>
     /// Applies the graded-autonomy risk gate to an Allow decision. Tightens Allow → Ask/Deny when the

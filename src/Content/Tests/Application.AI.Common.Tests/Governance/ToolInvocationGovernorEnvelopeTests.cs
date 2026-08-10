@@ -80,7 +80,9 @@ public sealed class ToolInvocationGovernorEnvelopeTests
         _trace = new GovernanceTraceRecorder(governanceMonitor);
 
         return new ToolInvocationGovernor(
-            _context.Object, _permissions.Object, _riskClassifier, _autonomy.Object, _policyEngine.Object,
+            _context.Object, _permissions.Object, _riskClassifier,
+            Mock.Of<IToolBehaviorRegistry>(r => r.Resolve(It.IsAny<string>()) == ToolBehavior.Unknown),
+            _autonomy.Object, _policyEngine.Object,
             Mock.Of<IGovernanceAuditService>(), _denialTracker.Object, _capabilities.Object, _approvalRouter.Object,
             _trace, governanceMonitor,
             Mock.Of<IOptionsMonitor<PermissionsConfig>>(m => m.CurrentValue == _permissionsConfig),

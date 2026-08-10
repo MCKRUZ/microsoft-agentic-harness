@@ -127,4 +127,14 @@ public sealed class GovernanceConfig
     /// the call is blocked, which is safe but silent.
     /// </summary>
     public ToolApprovalConfig ToolApproval { get; init; } = new();
+
+    /// <summary>
+    /// Gates tools by what they have declared they do rather than by name, requiring approval for
+    /// anything not declared read-only. Opt-in via
+    /// <see cref="Governance.ToolBehaviorGatingConfig.RequireApprovalForNonReadOnlyTools"/>; off by
+    /// default, and inert without <see cref="EnforceToolInvocation"/> — which is why a host that
+    /// enables one without the other fails validation rather than starting with a switch that does
+    /// nothing.
+    /// </summary>
+    public ToolBehaviorGatingConfig ToolBehaviorGating { get; init; } = new();
 }

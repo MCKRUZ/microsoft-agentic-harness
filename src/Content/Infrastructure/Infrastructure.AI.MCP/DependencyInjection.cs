@@ -1,5 +1,6 @@
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Governance;
+using Application.AI.Common.Interfaces.Tools;
 using Domain.Common.Config.AI;
 using Infrastructure.AI.Egress;
 using Infrastructure.AI.MCP.Resources;
@@ -54,11 +55,18 @@ public static class DependencyInjection
         // throws rather than silently publishing unscanned tool descriptions into the model's context.
         // The governance layer registers a no-op scanner when governance is switched off, so an
         // intentionally ungoverned host still composes.
-        services.AddSingleton<IMcpToolProvider>(sp => new ScanningMcpToolProvider(
-            sp.GetRequiredService<McpToolProvider>(),
-            sp.GetRequiredService<IMcpSecurityScanner>(),
+        // Two decorators, and the order is the argument. Recording sits OUTSIDE screening so only the
+        // tools that survived the definition scan get their declared behaviour put on file — a tool
+        // withheld for a poisoned description is never offered to the model and needs no entry.
+        services.AddSingleton<IMcpToolProvider>(sp => new BehaviorRecordingMcpToolProvider(
+            new ScanningMcpToolProvider(
+                sp.GetRequiredService<McpToolProvider>(),
+                sp.GetRequiredService<IMcpSecurityScanner>(),
+                sp.GetRequiredService<IOptionsMonitor<AIConfig>>(),
+                sp.GetRequiredService<ILogger<ScanningMcpToolProvider>>()),
+            sp.GetRequiredService<IToolBehaviorRegistry>(),
             sp.GetRequiredService<IOptionsMonitor<AIConfig>>(),
-            sp.GetRequiredService<ILogger<ScanningMcpToolProvider>>()));
+            sp.GetRequiredService<ILogger<BehaviorRecordingMcpToolProvider>>()));
 
         // Trace resource provider — exposes optimization run trace files at trace:// URIs.
         // Auth-gated and feature-flagged via MetaHarnessConfig.EnableMcpTraceResources.

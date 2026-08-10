@@ -195,6 +195,13 @@ public static class DependencyInjection
         // graded-autonomy gate and escalation-severity derivation.
         services.AddSingleton<Interfaces.Tools.IToolRiskClassifier, Services.Tools.ToolRiskClassifier>();
 
+        // Tool behaviour registry — what each tool declared it does, and who declared it. Singleton
+        // because an external MCP server's declaration arrives on a discovery call and must still be
+        // there for the tool call it governs, which happens later on a different scope. Registered
+        // unconditionally: recording costs nothing, and only the posture in
+        // GovernanceConfig.ToolBehaviorGating turns the recordings into a decision.
+        services.AddSingleton<Interfaces.Tools.IToolBehaviorRegistry, Services.Tools.ToolBehaviorRegistry>();
+
         // Tool catalog — enumerates the host's keyed ITool registrations for callers that need to
         // discover what they may invoke. Singleton because the registrations cannot change once the
         // container is built, and because resolving every tool per request would be pure waste.

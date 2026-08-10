@@ -1,5 +1,6 @@
 using Application.Core.Validation;
 using Domain.Common.Config.AI;
+using Domain.Common.Config.AI.Governance;
 using FluentAssertions;
 using Xunit;
 
@@ -142,5 +143,101 @@ public class GovernanceConfigValidatorTests
 
         result.IsValid.Should().BeFalse();
         result.Errors.Should().Contain(e => e.PropertyName == nameof(GovernanceConfig.InjectionBlockThreshold));
+    }
+
+    [Fact]
+    public async Task Validate_BehaviorPostureOnWithoutInvocationEnforcement_HasError()
+    {
+        // The dead-control guard. The posture is applied inside the tool governor, which does not
+        // engage at all while EnforceToolInvocation is off — so this combination is a security setting
+        // switched on in configuration and read by nothing at runtime. Refusing to boot is the only
+        // outcome that cannot be mistaken for protection.
+        var config = new GovernanceConfig
+        {
+            EnforceToolInvocation = false,
+            ToolBehaviorGating = new ToolBehaviorGatingConfig { RequireApprovalForNonReadOnlyTools = true },
+        };
+
+        var result = await _validator.ValidateAsync(config);
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName == nameof(GovernanceConfig.EnforceToolInvocation));
+    }
+
+    [Fact]
+    public async Task Validate_BehaviorPostureOnWithInvocationEnforcement_IsValid()
+    {
+        // The control: the rule must reject only the inert combination, not the working one.
+        var config = new GovernanceConfig
+        {
+            EnforceToolInvocation = true,
+            ToolBehaviorGating = new ToolBehaviorGatingConfig { RequireApprovalForNonReadOnlyTools = true },
+        };
+
+        var result = await _validator.ValidateAsync(config);
+
+        result.IsValid.Should().BeTrue();
+        result.Errors.Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task Validate_ExemptionWithNoStatedReason_HasError(string reason)
+    {
+        // An exemption is the one place the posture can be switched off for a named tool. Whoever reads
+        // this list a year from now needs to know why each entry is there, and a blank reason is
+        // indistinguishable from an entry added to silence a prompt.
+        var config = new GovernanceConfig
+        {
+            ToolBehaviorGating = new ToolBehaviorGatingConfig
+            {
+                Exemptions = [new ToolBehaviorExemption { Tool = "notion_search", Reason = reason }],
+            },
+        };
+
+        var result = await _validator.ValidateAsync(config);
+
+        result.IsValid.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Validate_ExemptionWithNoToolName_HasError()
+    {
+        var config = new GovernanceConfig
+        {
+            ToolBehaviorGating = new ToolBehaviorGatingConfig
+            {
+                Exemptions = [new ToolBehaviorExemption { Tool = "", Reason = "vendor confirmed it only reads" }],
+            },
+        };
+
+        var result = await _validator.ValidateAsync(config);
+
+        result.IsValid.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Validate_FullyStatedExemption_IsValid()
+    {
+        var config = new GovernanceConfig
+        {
+            ToolBehaviorGating = new ToolBehaviorGatingConfig
+            {
+                Exemptions =
+                [
+                    new ToolBehaviorExemption
+                    {
+                        Tool = "notion_search",
+                        Reason = "POST-based search endpoint; vendor confirmed it does not mutate",
+                    },
+                ],
+            },
+        };
+
+        var result = await _validator.ValidateAsync(config);
+
+        result.IsValid.Should().BeTrue();
+        result.Errors.Should().BeEmpty();
     }
 }
