@@ -1,14 +1,4 @@
 <Solution>
-  <Folder Name="/Content/" />
-  <Folder Name="/Content/Application/" />
-  <Folder Name="/Content/Domain/" />
-  <Folder Name="/Content/Presentation/">
-    <Project Path="Content/Presentation/Presentation.ExecutionApi/Presentation.ExecutionApi.csproj">
-      <BuildType Solution="Debug-AgentHub-All|*" Project="Debug" />
-      <BuildType Solution="Debug-AgentHub-Dashboard|*" Project="Debug" />
-      <BuildType Solution="Debug-AgentHub-WebUI|*" Project="Debug" />
-    </Project>
-  </Folder>
   <Folder Name="/Dashboards/">
     <File Path="../Dashboards/docker-compose.yml" />
     <File Path="../Dashboards/prometheus.yml" />
@@ -144,6 +134,11 @@
       <BuildType Solution="Debug-AgentHub-WebUI|*" Project="Debug" />
     </Project>
     <Project Path="Content/Presentation/Presentation.EvalRunner/Presentation.EvalRunner.csproj">
+      <BuildType Solution="Debug-AgentHub-All|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-Dashboard|*" Project="Debug" />
+      <BuildType Solution="Debug-AgentHub-WebUI|*" Project="Debug" />
+    </Project>
+    <Project Path="Content/Presentation/Presentation.ExecutionApi/Presentation.ExecutionApi.csproj">
       <BuildType Solution="Debug-AgentHub-All|*" Project="Debug" />
       <BuildType Solution="Debug-AgentHub-Dashboard|*" Project="Debug" />
       <BuildType Solution="Debug-AgentHub-WebUI|*" Project="Debug" />
