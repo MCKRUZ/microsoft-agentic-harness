@@ -30,5 +30,13 @@ internal static class InvisibleCharacters
     /// Regex character class matching the invisible/deceptive characters above. Consumed by
     /// <c>[GeneratedRegex]</c>, which requires a compile-time constant.
     /// </summary>
-    internal const string Pattern = @"[​‌‮⁠﻿]";
+    /// <remarks>
+    /// Written with Unicode escape sequences rather than the literal characters. A raw literal
+    /// zero-width character in source is invisible in any diff or PR view and indistinguishable
+    /// from a silently-corrupted one — an editor autosave, line-ending normalization, or a
+    /// copy-paste through a tool that treats invisible characters as noise could drop or reorder
+    /// one without producing a visible diff. The escaped form is the only version of this constant
+    /// a reviewer can actually verify by eye.
+    /// </remarks>
+    internal const string Pattern = "[​‌‮⁠﻿]";
 }

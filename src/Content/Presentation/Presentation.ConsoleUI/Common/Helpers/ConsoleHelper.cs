@@ -1,4 +1,6 @@
 using System.Text.RegularExpressions;
+using Application.AI.Common.Interfaces;
+using Domain.AI.Agents;
 using Spectre.Console;
 
 namespace Presentation.ConsoleUI.Common.Helpers;
@@ -39,6 +41,20 @@ public static partial class ConsoleHelper
 			Border = BoxBorder.Rounded
 		};
 		AnsiConsole.Write(panel);
+	}
+
+	/// <summary>
+	/// Looks up <paramref name="agentId"/> in the registry, displaying the standard "not found"
+	/// error and returning <c>null</c> if it isn't registered. Centralizes the lookup-or-error
+	/// pattern shared by every console demo that opens on a specific built-in agent.
+	/// </summary>
+	public static AgentDefinition? RequireAgent(IAgentMetadataRegistry agentRegistry, string agentId)
+	{
+		var agentDef = agentRegistry.TryGet(agentId);
+		if (agentDef is null)
+			DisplayError($"Agent '{agentId}' was not found. Check AGENT.md search paths in AppConfig.AI.Agents.");
+
+		return agentDef;
 	}
 
 	public static void DisplayAgentInfo(string name, string description, string agentType, IReadOnlyList<string>? tools = null)

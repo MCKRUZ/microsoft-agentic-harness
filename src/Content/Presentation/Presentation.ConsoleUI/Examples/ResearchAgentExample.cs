@@ -36,12 +36,8 @@ public class ResearchAgentExample
 	{
 		ConsoleHelper.DisplayHeader("Research Agent", Color.CornflowerBlue);
 
-		var agentDef = _agentRegistry.TryGet("research-agent");
-		if (agentDef is null)
-		{
-			ConsoleHelper.DisplayError("Agent 'research-agent' was not found. Check AGENT.md search paths in AppConfig.AI.Agents.");
-			return;
-		}
+		var agentDef = ConsoleHelper.RequireAgent(_agentRegistry, "research-agent");
+		if (agentDef is null) return;
 
 		ConsoleHelper.DisplayAgentInfo(
 			agentDef.Name,

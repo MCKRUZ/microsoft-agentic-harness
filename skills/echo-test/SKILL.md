@@ -6,6 +6,8 @@ skill_type: "agent"
 version: "1.0.0"
 tags: ["echo", "e2e", "testing", "deterministic"]
 allowed-tools: ["echo_lookup", "echo_calculate"]
+metadata:
+  framework_type: "Echo"
 ---
 
 ## Instructions

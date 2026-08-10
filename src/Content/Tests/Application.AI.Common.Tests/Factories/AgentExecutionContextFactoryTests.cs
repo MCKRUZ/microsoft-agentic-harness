@@ -162,6 +162,24 @@ public class AgentExecutionContextFactoryTests
     }
 
     [Fact]
+    public async Task MapToAgentContext_SkillMetadataFrameworkType_UsedWhenNoOverride()
+    {
+        // Middle precedence tier, between an explicit per-call override and the configured default.
+        // Regression coverage for issue #355: echo-test/SKILL.md shipped this key at the top level of
+        // its frontmatter, where SkillMetadataParser never reads it into SkillDefinition.Metadata —
+        // ResolveFrameworkTypeFromMetadata only ever sees the nested `metadata:` block, so the field
+        // silently never routed the agent to EchoChatClient. Pins the nested shape this method
+        // actually requires.
+        var factory = CreateFactory(AIAgentFrameworkClientType.AzureAIInference);
+        var skill = SimpleSkill();
+        skill.Metadata = new Dictionary<string, object> { ["framework_type"] = "Echo" };
+
+        var context = await factory.MapToAgentContextAsync(skill, new SkillAgentOptions());
+
+        context.AIAgentFrameworkType.Should().Be(AIAgentFrameworkClientType.Echo);
+    }
+
+    [Fact]
     public async Task MapToAgentContext_NoFrameworkTypeAnywhere_DefaultsToAzureOpenAI()
     {
         var appConfig = new AppConfig { AI = new AIConfig { AgentFramework = new AgentFrameworkConfig() } };

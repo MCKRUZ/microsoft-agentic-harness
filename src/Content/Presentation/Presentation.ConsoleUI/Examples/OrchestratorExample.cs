@@ -31,12 +31,8 @@ public class OrchestratorExample
 	{
 		ConsoleHelper.DisplayHeader("Orchestrator", Color.Yellow);
 
-		var agentDef = _agentRegistry.TryGet("orchestrator-agent");
-		if (agentDef is null)
-		{
-			ConsoleHelper.DisplayError("Agent 'orchestrator-agent' was not found. Check AGENT.md search paths in AppConfig.AI.Agents.");
-			return;
-		}
+		var agentDef = ConsoleHelper.RequireAgent(_agentRegistry, "orchestrator-agent");
+		if (agentDef is null) return;
 
 		ConsoleHelper.DisplayAgentInfo(
 			agentDef.Name,
