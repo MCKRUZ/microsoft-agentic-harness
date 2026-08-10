@@ -296,23 +296,23 @@ public sealed class ResilientChatClient : IChatClient
     {
         var classification = _errorClassifier.Classify(exception);
 
-        if (classification.Kind != ProviderFailureKind.FatalForChain)
+        if (!classification.StopsChain)
             return null;
 
-        _logger?.LogError(
-            exception,
-            "Provider {Provider} failed with a non-retryable error ({ReasonCode}). Abandoning the "
-            + "fallback chain — no other provider can resolve this cause. Providers that failed "
-            + "earlier: {FailedProviders}. Provider message: {ProviderMessage}",
-            providerName, classification.ReasonCode, failedProviders, exception.Message);
+        var fatal = new ProviderFatalErrorException(
+            providerName, classification.ReasonCode!, exception, failedProviders);
+
+        // Log the exception's own sentence rather than re-composing it. The operator-facing
+        // wording then has exactly one author, and the log cannot drift from what the caller sees.
+        _logger?.LogError(exception, "{FatalError} Provider message: {ProviderMessage}",
+            fatal.Message, exception.Message);
 
         // The request failed outright, exactly as it does when the chain is exhausted, so it
         // belongs in the same counter — otherwise a fleet-wide bad credential looks like zero
         // degradation on the dashboard.
         ResilienceMetrics.DegradationEvents.Add(1);
 
-        return new ProviderFatalErrorException(
-            providerName, classification.ReasonCode!, exception, failedProviders);
+        return fatal;
     }
 
     private void AttachMetadata(ChatResponse response, string activeProvider, List<string> failedProviders)

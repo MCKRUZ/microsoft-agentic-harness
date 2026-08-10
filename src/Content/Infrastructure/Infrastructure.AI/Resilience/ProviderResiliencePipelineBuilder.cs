@@ -210,23 +210,58 @@ public static class ProviderResiliencePipelineBuilder
     }
 
     /// <summary>
-    /// Retry only what the classifier positively identifies as transient. An unrecognised
-    /// failure is not repeated: retrying something we cannot name is as likely to be a bug in
-    /// our own code as a provider blip, and repeating a non-idempotent call has a real cost.
+    /// Whether this failure should consume a retry. Delegates to the classifier for anything the
+    /// provider actually said, having first excluded this pipeline's own rejections.
     /// </summary>
     private static bool ShouldRetry(IProviderErrorClassifier classifier, Exception? exception)
         => exception is not null
-           && classifier.Classify(exception).Kind == ProviderFailureKind.Transient;
+           && !IsOurOwnRejection(exception)
+           && classifier.Classify(exception).ShouldRetry;
 
     /// <summary>
-    /// Count transient and unrecognised failures against the provider's health, but never a
-    /// fatal one. A rejected credential or an exhausted balance says nothing about whether the
-    /// provider is up, and letting it trip the breaker is exactly what buries the real cause
-    /// under "circuit open for provider X".
+    /// Whether this failure is evidence about the provider's health. Same shape as
+    /// <see cref="ShouldRetry"/>: our own rejections are excluded, then the classifier decides.
     /// </summary>
     private static bool ShouldCountTowardBreaker(IProviderErrorClassifier classifier, Exception? exception)
         => exception is not null
-           && classifier.Classify(exception).Kind is ProviderFailureKind.Transient or ProviderFailureKind.Unknown;
+           && !IsOurOwnRejection(exception)
+           && classifier.Classify(exception).CountsTowardHealth;
+
+    /// <summary>
+    /// True when the failure is this pipeline refusing the call rather than a provider response —
+    /// the request never left the process.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This lives here, not in <see cref="IProviderErrorClassifier"/>, because it is a fact about
+    /// how <b>this pipeline</b> is composed rather than about any provider's errors — and because
+    /// the classifier is a seam consumers are invited to replace. A consumer who replaces it to
+    /// teach the harness a fourth SDK must not thereby lose this rule.
+    /// </para>
+    /// <para>
+    /// What makes it load-bearing is the retry strategy, which is composed <i>outside</i> the
+    /// breaker and so does see the rejection. An open breaker reports itself with a
+    /// <see cref="BrokenCircuitException"/> that <i>wraps the exception which broke the circuit</i>,
+    /// so any classifier that inspects inner exceptions finds the original 503, calls it transient,
+    /// and retries — sleeping through the entire backoff budget against a breaker guaranteed to
+    /// reject. Measured at 14 seconds for a single call before this guard existed.
+    /// </para>
+    /// <para>
+    /// The breaker's own predicate is a different matter: Polly does not evaluate a rejection it
+    /// generated itself, so <see cref="ShouldCountTowardBreaker"/> never actually receives one —
+    /// measured as zero predicate invocations while the circuit is open. The guard is applied
+    /// there anyway because both predicates share this one helper, so the symmetry is free, and
+    /// because a future change to the strategy order would otherwise let a breaker start counting
+    /// its own output. It is deliberately not covered by a test: there is no way to observe it
+    /// today, and a test that cannot fail is worse than none.
+    /// </para>
+    /// <para>
+    /// Matched on <see cref="BrokenCircuitException"/> specifically, <b>not</b> its base
+    /// <c>ExecutionRejectedException</c>: <see cref="TimeoutRejectedException"/> shares that base,
+    /// and a per-attempt timeout must stay retryable.
+    /// </para>
+    /// </remarks>
+    private static bool IsOurOwnRejection(Exception exception) => exception is BrokenCircuitException;
 
     private static TimeoutStrategyOptions CreateTimeoutOptions(TimeoutConfig timeoutConfig)
     {

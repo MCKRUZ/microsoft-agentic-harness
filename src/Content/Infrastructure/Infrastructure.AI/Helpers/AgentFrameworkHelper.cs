@@ -30,10 +30,10 @@ public static class AgentFrameworkHelper
     /// </summary>
     /// <param name="networkTimeoutSeconds">Network timeout in seconds. Default: 300.</param>
     /// <param name="disableProviderRetry">
-    /// When true, turns off the SDK's own retry policy. Measured default behaviour is four
-    /// requests for a single rate-limited call; underneath the resilience pipeline that
-    /// multiplies with Polly's own attempts and delays the circuit breaker's reaction, because
-    /// the breaker then only ever sees failures the SDK has already retried to exhaustion.
+    /// When true, turns off the SDK's own retry policy, leaving retry entirely to the caller.
+    /// Measured default behaviour is four requests for a single rate-limited call. Set this only
+    /// when something else is already retrying — see
+    /// <see cref="Application.AI.Common.Interfaces.IChatClientFactory.GetChatClientWithoutProviderRetryAsync"/>.
     /// </param>
     /// <returns>Configured <see cref="AzureOpenAIClientOptions"/>.</returns>
     public static AzureOpenAIClientOptions GetAzureOpenAIClientOptions(
@@ -53,6 +53,24 @@ public static class AgentFrameworkHelper
     }
 
     /// <summary>
+    /// Gets configured options for <see cref="Azure.AI.Inference.ChatCompletionsClient"/>.
+    /// </summary>
+    /// <param name="disableProviderRetry">
+    /// When true, turns off the SDK's own retry policy, leaving retry entirely to the caller.
+    /// </param>
+    /// <returns>Configured <see cref="Azure.AI.Inference.AzureAIInferenceClientOptions"/>.</returns>
+    public static Azure.AI.Inference.AzureAIInferenceClientOptions GetAzureAIInferenceClientOptions(
+        bool disableProviderRetry = false)
+    {
+        var options = new Azure.AI.Inference.AzureAIInferenceClientOptions();
+
+        if (disableProviderRetry)
+            options.Retry.MaxRetries = 0;
+
+        return options;
+    }
+
+    /// <summary>
     /// Gets configured options for <see cref="OpenAIClient"/>.
     /// </summary>
     /// <param name="endpoint">
@@ -67,9 +85,7 @@ public static class AgentFrameworkHelper
     /// </param>
     /// <param name="networkTimeoutSeconds">Network timeout in seconds. Default: 300.</param>
     /// <param name="disableProviderRetry">
-    /// When true, turns off the SDK's own retry policy so a caller that wraps this client in its
-    /// own retry strategy is the only layer retrying. See
-    /// <see cref="GetAzureOpenAIClientOptions(int, bool)"/> for why the two layers must not stack.
+    /// When true, turns off the SDK's own retry policy, leaving retry entirely to the caller.
     /// </param>
     /// <returns>Configured <see cref="OpenAIClientOptions"/>.</returns>
     public static OpenAIClientOptions GetOpenAIClientOptions(

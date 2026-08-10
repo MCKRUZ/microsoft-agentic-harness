@@ -202,40 +202,6 @@ public sealed class ResilientChatClientTests : IDisposable
         return (FallbackMetadata)raw!;
     }
 
-    private sealed class FakeChatClient : IChatClient
-    {
-        private readonly string? _responseText;
-        private readonly Exception? _exception;
-
-        public int CallCount { get; private set; }
-        public bool IsDisposed { get; private set; }
-
-        public FakeChatClient(string responseText) => _responseText = responseText;
-        public FakeChatClient(Exception exception) => _exception = exception;
-
-        public Task<ChatResponse> GetResponseAsync(
-            IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default)
-        {
-            CallCount++;
-            if (_exception is not null)
-                throw _exception;
-            return Task.FromResult(new ChatResponse([new ChatMessage(ChatRole.Assistant, _responseText)]));
-        }
-
-        public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
-            IEnumerable<ChatMessage> messages, ChatOptions? options = null,
-            [EnumeratorCancellation] CancellationToken cancellationToken = default)
-        {
-            CallCount++;
-            if (_exception is not null)
-                throw _exception;
-            yield return new ChatResponseUpdate { Role = ChatRole.Assistant, Contents = [new TextContent(_responseText)] };
-            await Task.CompletedTask;
-        }
-
-        public object? GetService(Type serviceType, object? serviceKey = null) => null;
-        public void Dispose() => IsDisposed = true;
-    }
 
     private sealed class FakeStreamingChatClient : IChatClient
     {

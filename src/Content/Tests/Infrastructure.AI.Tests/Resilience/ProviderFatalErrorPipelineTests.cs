@@ -23,18 +23,9 @@ public sealed class ProviderFatalErrorPipelineTests
     [Fact]
     public async Task Pipeline_Unauthorized_CallsTheProviderExactlyOnce()
     {
-        var config = CreateConfig(maxAttempts: 4);
-        var pipeline = ProviderResiliencePipelineBuilder.Build(
-            "test-provider", config, ResilienceTestSupport.CreateClassifier(config), out _);
-        var calls = 0;
+        var calls = await CountAttempts(
+            () => new HttpRequestException("Invalid API key", null, HttpStatusCode.Unauthorized));
 
-        var act = async () => await pipeline.ExecuteAsync<ChatResponse>(async _ =>
-        {
-            calls++;
-            throw new HttpRequestException("Invalid API key", null, HttpStatusCode.Unauthorized);
-        }, CancellationToken.None);
-
-        await act.Should().ThrowAsync<HttpRequestException>();
         calls.Should().Be(1, "a rejected credential never succeeds on repetition");
     }
 
@@ -42,18 +33,9 @@ public sealed class ProviderFatalErrorPipelineTests
     public async Task Pipeline_TooManyRequests_StillRetriesToConfiguredMax()
     {
         // The control for the test above: same pipeline, same attempt budget, transient status.
-        var config = CreateConfig(maxAttempts: 4);
-        var pipeline = ProviderResiliencePipelineBuilder.Build(
-            "test-provider", config, ResilienceTestSupport.CreateClassifier(config), out _);
-        var calls = 0;
+        var calls = await CountAttempts(
+            () => new HttpRequestException("Too many requests", null, HttpStatusCode.TooManyRequests));
 
-        var act = async () => await pipeline.ExecuteAsync<ChatResponse>(async _ =>
-        {
-            calls++;
-            throw new HttpRequestException("Too many requests", null, HttpStatusCode.TooManyRequests);
-        }, CancellationToken.None);
-
-        await act.Should().ThrowAsync<Exception>();
         calls.Should().BeGreaterThan(1, "a rate limit is the archetypal retryable failure");
     }
 
@@ -94,19 +76,9 @@ public sealed class ProviderFatalErrorPipelineTests
     {
         // The shipped fallback chain's primary provider throws ClientResultException, which the
         // pre-classifier predicate did not recognise — so nothing in the pipeline ever fired.
-        var config = CreateConfig(maxAttempts: 3);
-        var pipeline = ProviderResiliencePipelineBuilder.Build(
-            "test-provider", config, ResilienceTestSupport.CreateClassifier(config), out _);
-        var calls = 0;
+        var calls = await CountAttempts(
+            () => new System.ClientModel.ClientResultException("Rate limit reached", new StubPipelineResponse(429)));
 
-        var act = async () => await pipeline.ExecuteAsync<ChatResponse>(async _ =>
-        {
-            calls++;
-            throw new System.ClientModel.ClientResultException(
-                "Rate limit reached", new StubPipelineResponse(429));
-        }, CancellationToken.None);
-
-        await act.Should().ThrowAsync<Exception>();
         calls.Should().BeGreaterThan(1, "the primary provider's own exception type must reach the retry strategy");
     }
 
@@ -114,18 +86,8 @@ public sealed class ProviderFatalErrorPipelineTests
     public async Task Pipeline_AzureInferenceShapedRateLimit_IsRetried()
     {
         // Same defect, the fallback provider's exception type.
-        var config = CreateConfig(maxAttempts: 3);
-        var pipeline = ProviderResiliencePipelineBuilder.Build(
-            "test-provider", config, ResilienceTestSupport.CreateClassifier(config), out _);
-        var calls = 0;
+        var calls = await CountAttempts(() => new Azure.RequestFailedException(429, "Rate limit is exceeded"));
 
-        var act = async () => await pipeline.ExecuteAsync<ChatResponse>(async _ =>
-        {
-            calls++;
-            throw new Azure.RequestFailedException(429, "Rate limit is exceeded");
-        }, CancellationToken.None);
-
-        await act.Should().ThrowAsync<Exception>();
         calls.Should().BeGreaterThan(1, "the fallback provider's own exception type must reach the retry strategy");
     }
 
@@ -134,36 +96,18 @@ public sealed class ProviderFatalErrorPipelineTests
     {
         // The streaming pipeline is built separately and had its own copy of the predicate —
         // the kind of duplication where a fix lands on one path and not the other.
-        var config = CreateConfig(maxAttempts: 4);
-        var pipeline = ProviderResiliencePipelineBuilder.BuildForStreamInitiation(
-            "test-provider", config, ResilienceTestSupport.CreateClassifier(config), new CircuitBreakerStateProvider());
-        var calls = 0;
+        var calls = await CountStreamAttempts(
+            () => new HttpRequestException("Invalid API key", null, HttpStatusCode.Unauthorized));
 
-        var act = async () => await pipeline.ExecuteAsync(async _ =>
-        {
-            calls++;
-            throw new HttpRequestException("Invalid API key", null, HttpStatusCode.Unauthorized);
-        }, CancellationToken.None);
-
-        await act.Should().ThrowAsync<HttpRequestException>();
         calls.Should().Be(1);
     }
 
     [Fact]
     public async Task StreamPipeline_TooManyRequests_StillRetries()
     {
-        var config = CreateConfig(maxAttempts: 4);
-        var pipeline = ProviderResiliencePipelineBuilder.BuildForStreamInitiation(
-            "test-provider", config, ResilienceTestSupport.CreateClassifier(config), new CircuitBreakerStateProvider());
-        var calls = 0;
+        var calls = await CountStreamAttempts(
+            () => new HttpRequestException("Too many requests", null, HttpStatusCode.TooManyRequests));
 
-        var act = async () => await pipeline.ExecuteAsync(async _ =>
-        {
-            calls++;
-            throw new HttpRequestException("Too many requests", null, HttpStatusCode.TooManyRequests);
-        }, CancellationToken.None);
-
-        await act.Should().ThrowAsync<Exception>();
         calls.Should().BeGreaterThan(1);
     }
 
@@ -196,25 +140,6 @@ public sealed class ProviderFatalErrorPipelineTests
     }
 
     [Fact]
-    public async Task Pipeline_CircuitRejection_DoesNotFeedBackIntoTheFailureRatio()
-    {
-        // A breaker that counted its own rejections would hold itself open indefinitely.
-        var config = CreateConfig(maxAttempts: 1, failureRatio: 0.5, minimumThroughput: 2);
-        var classifier = ResilienceTestSupport.CreateClassifier(config);
-
-        var rejection = new BrokenCircuitException(
-            "circuit is open",
-            new HttpRequestException("Service Unavailable", null, HttpStatusCode.ServiceUnavailable));
-
-        var classification = classifier.Classify(rejection);
-
-        classification.Kind.Should().Be(
-            Domain.AI.Resilience.ProviderFailureKind.FatalForProvider,
-            "not retryable and not countable, but the next provider should still be tried");
-        classification.ReasonCode.Should().Be(Domain.AI.Resilience.ProviderFatalReason.CircuitOpen);
-    }
-
-    [Fact]
     public async Task Pipeline_PerAttemptTimeout_IsStillRetried()
     {
         // The control for the two tests above. TimeoutRejectedException shares a base class
@@ -238,6 +163,58 @@ public sealed class ProviderFatalErrorPipelineTests
         calls.Should().BeGreaterThan(1, "a per-attempt timeout must still consume retries");
     }
 
+    /// <summary>
+    /// Drives one always-failing call through a fresh typed pipeline and reports how many times
+    /// the provider was actually invoked. A generous attempt budget is configured so a result of
+    /// 1 means the failure was refused a retry, not that no budget existed.
+    /// </summary>
+    private static async Task<int> CountAttempts(Func<Exception> failure, int maxAttempts = 4)
+    {
+        var config = ResilienceTestSupport.CreateConfig(maxAttempts: maxAttempts);
+        var pipeline = ProviderResiliencePipelineBuilder.Build(
+            "test-provider", config, ResilienceTestSupport.CreateClassifier(config), out _);
+        var calls = 0;
+
+        try
+        {
+            await pipeline.ExecuteAsync<ChatResponse>(_ =>
+            {
+                calls++;
+                throw failure();
+            }, CancellationToken.None);
+        }
+        catch
+        {
+            // The failure is the point; the assertion is on the attempt count.
+        }
+
+        return calls;
+    }
+
+    /// <summary>The <see cref="CountAttempts"/> equivalent for the stream-initiation pipeline.</summary>
+    private static async Task<int> CountStreamAttempts(Func<Exception> failure, int maxAttempts = 4)
+    {
+        var config = ResilienceTestSupport.CreateConfig(maxAttempts: maxAttempts);
+        var pipeline = ProviderResiliencePipelineBuilder.BuildForStreamInitiation(
+            "test-provider", config, ResilienceTestSupport.CreateClassifier(config), new CircuitBreakerStateProvider());
+        var calls = 0;
+
+        try
+        {
+            await pipeline.ExecuteAsync(_ =>
+            {
+                calls++;
+                throw failure();
+            }, CancellationToken.None);
+        }
+        catch
+        {
+            // As above.
+        }
+
+        return calls;
+    }
+
     private static async Task RunFailures(
         Polly.ResiliencePipeline<ChatResponse> pipeline, int count, Func<Exception> failure)
     {
@@ -255,25 +232,6 @@ public sealed class ProviderFatalErrorPipelineTests
     }
 
     private static ResilienceConfig CreateConfig(
-        int maxAttempts = 2,
-        double failureRatio = 0.5,
-        int minimumThroughput = 5)
-        => new()
-        {
-            Enabled = true,
-            Retry = new RetryConfig
-            {
-                MaxAttempts = maxAttempts,
-                BaseDelaySeconds = 0.01,
-                BackoffType = "Exponential"
-            },
-            CircuitBreaker = new CircuitBreakerConfig
-            {
-                FailureRatio = failureRatio,
-                SamplingDurationSeconds = 30,
-                MinimumThroughput = minimumThroughput,
-                BreakDurationSeconds = 60
-            },
-            Timeout = new TimeoutConfig { PerAttemptSeconds = 30 }
-        };
+        int maxAttempts = 2, double failureRatio = 0.5, int minimumThroughput = 5)
+        => ResilienceTestSupport.CreateConfig(maxAttempts, failureRatio, minimumThroughput);
 }

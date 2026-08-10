@@ -32,8 +32,33 @@ public readonly record struct ProviderFailureClassification(
         => new(ProviderFailureKind.FatalForChain, reasonCode);
 
     /// <summary>
-    /// True when the failure must not be retried against the same provider —
-    /// either kind of fatal.
+    /// Whether the same provider should be asked again.
     /// </summary>
-    public bool IsFatal => Kind is ProviderFailureKind.FatalForProvider or ProviderFailureKind.FatalForChain;
+    /// <remarks>
+    /// Only a positively-recognised transient failure is repeated. An unrecognised one is not:
+    /// it is as likely to be a defect in our own code as a provider blip, and repeating a
+    /// non-idempotent call has a real cost.
+    /// </remarks>
+    public bool ShouldRetry => Kind is ProviderFailureKind.Transient;
+
+    /// <summary>
+    /// Whether this failure is evidence about the provider's health, and so should count
+    /// toward its circuit breaker's failure ratio.
+    /// </summary>
+    /// <remarks>
+    /// A rejected credential says nothing about whether the provider is up. Letting it trip the
+    /// breaker is precisely what buries the real cause under "circuit open for provider X".
+    /// An unrecognised failure does still count — it remains evidence something is wrong.
+    /// </remarks>
+    public bool CountsTowardHealth => Kind is ProviderFailureKind.Transient or ProviderFailureKind.Unknown;
+
+    /// <summary>
+    /// Whether the whole fallback chain should be abandoned rather than advancing to the next
+    /// provider.
+    /// </summary>
+    /// <remarks>
+    /// True only for causes that live in shared configuration, which every provider in the chain
+    /// would hit identically.
+    /// </remarks>
+    public bool StopsChain => Kind is ProviderFailureKind.FatalForChain;
 }

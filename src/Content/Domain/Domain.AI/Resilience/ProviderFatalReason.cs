@@ -5,7 +5,8 @@ namespace Domain.AI.Resilience;
 /// </summary>
 /// <remarks>
 /// <para>
-/// These codes are the operator-visible and caller-visible name for the cause. They are
+/// All codes share the <c>provider.fatal.</c> prefix. They are the operator-visible and
+/// caller-visible name for the cause. They are
 /// deliberately stable strings rather than an enum so downstream consumers can match on them
 /// across template versions, and deliberately scrubbed so nothing derived from the provider's
 /// own error text ever reaches a caller — provider messages have been observed to carry SAS
@@ -15,7 +16,7 @@ namespace Domain.AI.Resilience;
 /// </remarks>
 public static class ProviderFatalReason
 {
-    /// <summary>The provider rejected the supplied credential. Prefix shared by all fatal codes.</summary>
+    /// <summary>The provider rejected the supplied credential.</summary>
     public const string InvalidCredentials = "provider.fatal.invalid_credentials";
 
     /// <summary>The account has no remaining balance, credits, or an inactive billing state.</summary>
@@ -35,10 +36,4 @@ public static class ProviderFatalReason
     /// not the category. Used when the harness cannot attribute the failure more precisely.
     /// </summary>
     public const string Configuration = "provider.fatal.configuration";
-
-    /// <summary>
-    /// The harness itself refused the call because this provider's circuit breaker is open.
-    /// Not a provider response at all — the request never left the process.
-    /// </summary>
-    public const string CircuitOpen = "provider.fatal.circuit_open";
 }

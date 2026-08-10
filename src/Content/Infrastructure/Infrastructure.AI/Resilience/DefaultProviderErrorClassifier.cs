@@ -38,7 +38,7 @@ namespace Infrastructure.AI.Resilience;
 /// against the provider's health, because it remains evidence something is wrong.
 /// </para>
 /// </remarks>
-public sealed class DefaultProviderErrorClassifier : IProviderErrorClassifier
+public class DefaultProviderErrorClassifier : IProviderErrorClassifier
 {
     private const int MaxInnerExceptionDepth = 5;
 
@@ -103,67 +103,93 @@ public sealed class DefaultProviderErrorClassifier : IProviderErrorClassifier
     {
         ArgumentNullException.ThrowIfNull(exception);
 
-        // Checked before anything else, and deliberately not unwrapped. An open circuit rejects
-        // the call locally and reports it as a BrokenCircuitException *wrapping the exception
-        // that broke the circuit* — so unwrapping finds the original 503, calls it transient,
-        // and the retry strategy sleeps through its whole backoff budget hammering a breaker
-        // that is by definition not going to let anything through. Not retryable, and above all
-        // not countable: a breaker must never feed its own rejections back into its failure
-        // ratio. Falling back to the next provider is still right, which is exactly
-        // FatalForProvider.
-        //
-        // Matched on BrokenCircuitException, NOT its base ExecutionRejectedException:
-        // TimeoutRejectedException shares that base, and a timeout must stay retryable.
-        if (exception is BrokenCircuitException)
-            return ProviderFailureClassification.FatalForProvider(ProviderFatalReason.CircuitOpen);
+        // One bounded walk of the exception chain gathers everything the decision needs. It used
+        // to take three (status, then messages, then network shape), which meant three iterator
+        // allocations and three traversals on every failed attempt — on the path that only runs
+        // during an incident.
+        var facts = Inspect(exception);
 
-        if (TryGetHttpStatus(exception) is int status)
+        if (facts.Status is int status)
         {
             if (IsTransientStatus(status))
                 return ProviderFailureClassification.Transient;
 
             if (status is >= 400 and < 500)
-                return ClassifyByMessage(exception) ?? MapClientErrorStatus(status);
+                return ClassifyByMessage(facts.Messages) ?? MapClientErrorStatus(status);
 
             // A non-error status that still surfaced as an exception is not something we can
             // reason about — treat it as unrecognised rather than guessing.
             return ProviderFailureClassification.Unknown;
         }
 
-        return ClassifyByMessage(exception)
-            ?? (IsNetworkLevelFailure(exception)
+        return ClassifyByMessage(facts.Messages)
+            ?? (facts.IsNetworkLevel
                 ? ProviderFailureClassification.Transient
                 : ProviderFailureClassification.Unknown);
     }
 
     /// <summary>
-    /// Reads the HTTP status out of whichever provider exception shape arrived, walking inner
-    /// exceptions because SDKs and Polly both wrap.
+    /// Walks the exception and its inner exceptions once, collecting the status, the messages,
+    /// and whether any link is a network-level fault.
     /// </summary>
-    /// <returns>The status, or <see langword="null"/> when the failure carried none.</returns>
-    private static int? TryGetHttpStatus(Exception exception)
+    /// <remarks>
+    /// Bounded by <see cref="MaxInnerExceptionDepth"/> so a self-referencing or pathologically
+    /// deep chain cannot stall a predicate that runs on every failed attempt. SDKs and Polly both
+    /// wrap, so the status is often not on the outermost exception.
+    /// </remarks>
+    private FailureFacts Inspect(Exception exception)
     {
-        foreach (var current in Unwrap(exception))
+        var messages = new List<string>(MaxInnerExceptionDepth);
+        int? status = null;
+        var isNetworkLevel = false;
+        var current = exception;
+
+        for (var depth = 0; current is not null && depth < MaxInnerExceptionDepth; depth++)
         {
-            switch (current)
-            {
-                // Anthropic.SDK and any HttpClient-based provider.
-                case HttpRequestException { StatusCode: { } code }:
-                    return (int)code;
+            status ??= TryGetHttpStatus(current);
+            isNetworkLevel |= IsNetworkLevelFailure(current);
 
-                // Azure OpenAI and OpenAI (System.ClientModel). Status is 0 when no response
-                // was received, which is an absent status rather than a real one.
-                case ClientResultException { Status: > 0 } clientResult:
-                    return clientResult.Status;
+            if (!string.IsNullOrEmpty(current.Message))
+                messages.Add(current.Message);
 
-                // Azure AI Inference and other Azure.Core clients. Same zero-means-absent rule.
-                case RequestFailedException { Status: > 0 } requestFailed:
-                    return requestFailed.Status;
-            }
+            current = current is AggregateException { InnerExceptions.Count: > 0 } aggregate
+                ? aggregate.InnerExceptions[0]
+                : current.InnerException;
         }
 
-        return null;
+        return new FailureFacts(status, messages, isNetworkLevel);
     }
+
+    /// <summary>What one walk of the exception chain yielded.</summary>
+    private readonly record struct FailureFacts(
+        int? Status, IReadOnlyList<string> Messages, bool IsNetworkLevel);
+
+    /// <summary>
+    /// Reads the HTTP status out of a single exception, whichever provider SDK shape it is.
+    /// </summary>
+    /// <remarks>
+    /// This is the seam to override when adding a provider whose SDK carries the status somewhere
+    /// else. Everything below it — the status-to-classification mapping and the message patterns —
+    /// is shared, so teaching the harness a fourth SDK means overriding this one method rather
+    /// than reimplementing the classifier. Called once per link of the exception chain; return
+    /// <see langword="null"/> for shapes you do not recognise so the base cases still apply.
+    /// </remarks>
+    /// <param name="exception">A single exception from the chain, already unwrapped.</param>
+    /// <returns>The status, or <see langword="null"/> when this exception carries none.</returns>
+    protected virtual int? TryGetHttpStatus(Exception exception) => exception switch
+    {
+        // Anthropic.SDK and any HttpClient-based provider.
+        HttpRequestException { StatusCode: { } code } => (int)code,
+
+        // Azure OpenAI and OpenAI (System.ClientModel). Status is 0 when no response was
+        // received, which is an absent status rather than a real one.
+        ClientResultException { Status: > 0 } clientResult => clientResult.Status,
+
+        // Azure AI Inference and other Azure.Core clients. Same zero-means-absent rule.
+        RequestFailedException { Status: > 0 } requestFailed => requestFailed.Status,
+
+        _ => null
+    };
 
     /// <summary>
     /// Statuses that plausibly succeed on repetition. Every 5xx qualifies: a gateway or
@@ -198,31 +224,31 @@ public sealed class DefaultProviderErrorClassifier : IProviderErrorClassifier
     /// Chain-fatal wordings are tested before provider-fatal ones so a consumer can downgrade
     /// a status-derived hard stop but never accidentally soften a billing failure.
     /// </summary>
+    /// <param name="messages">The messages gathered from the exception chain.</param>
     /// <returns>A classification, or <see langword="null"/> when no pattern matched.</returns>
-    private ProviderFailureClassification? ClassifyByMessage(Exception exception)
+    private ProviderFailureClassification? ClassifyByMessage(IReadOnlyList<string> messages)
     {
-        var text = CollectMessages(exception);
-        if (text.Length == 0)
+        if (messages.Count == 0)
             return null;
 
         var classification = _config.CurrentValue.ErrorClassification;
 
-        if (ContainsAny(text, classification.AdditionalChainFatalMessagePatterns))
+        if (ContainsAny(messages, classification.AdditionalChainFatalMessagePatterns))
             return ProviderFailureClassification.FatalForChain(ProviderFatalReason.Configuration);
 
-        if (ContainsAny(text, classification.AdditionalProviderFatalMessagePatterns))
+        if (ContainsAny(messages, classification.AdditionalProviderFatalMessagePatterns))
             return ProviderFailureClassification.FatalForProvider(ProviderFatalReason.RequestRejected);
 
-        if (ContainsAny(text, BillingPatterns))
+        if (ContainsAny(messages, BillingPatterns))
             return ProviderFailureClassification.FatalForChain(ProviderFatalReason.BillingExhausted);
 
-        if (ContainsAny(text, CredentialPatterns))
+        if (ContainsAny(messages, CredentialPatterns))
             return ProviderFailureClassification.FatalForChain(ProviderFatalReason.InvalidCredentials);
 
-        if (ContainsAny(text, AccessPatterns))
+        if (ContainsAny(messages, AccessPatterns))
             return ProviderFailureClassification.FatalForChain(ProviderFatalReason.AccessDenied);
 
-        if (ContainsAny(text, ModelNotFoundPatterns))
+        if (ContainsAny(messages, ModelNotFoundPatterns))
             return ProviderFailureClassification.FatalForProvider(ProviderFatalReason.ModelNotFound);
 
         return null;
@@ -233,57 +259,46 @@ public sealed class DefaultProviderErrorClassifier : IProviderErrorClassifier
     /// a DNS failure, a timeout. These are transient by nature and carry no HTTP status.
     /// </summary>
     private static bool IsNetworkLevelFailure(Exception exception)
-        => Unwrap(exception).Any(e => e
+        => exception
             is HttpRequestException
             or SocketException
             or IOException
             or TimeoutException
             or TimeoutRejectedException
-            or OperationCanceledException);
-
-    /// <summary>Joins the messages of the exception and its inners into one searchable string.</summary>
-    private static string CollectMessages(Exception exception)
-        => string.Join(' ', Unwrap(exception).Select(e => e.Message).Where(m => !string.IsNullOrEmpty(m)));
+            or OperationCanceledException;
 
     /// <summary>
-    /// Walks the exception and its inner exceptions, bounded so a self-referencing or
-    /// pathologically deep chain cannot stall a predicate that runs on every failed attempt.
+    /// Whether any of the failure's messages contains any of the patterns, case-insensitively.
     /// </summary>
-    private static IEnumerable<Exception> Unwrap(Exception exception)
-    {
-        var current = exception;
-
-        for (var depth = 0; current is not null && depth < MaxInnerExceptionDepth; depth++)
-        {
-            yield return current;
-
-            if (current is AggregateException aggregate)
-            {
-                current = aggregate.InnerExceptions.Count > 0 ? aggregate.InnerExceptions[0] : null;
-                continue;
-            }
-
-            current = current.InnerException;
-        }
-    }
-
     /// <remarks>
+    /// <para>
+    /// Messages are scanned individually rather than joined into one string. The join allocated a
+    /// copy of the entire provider error text — commonly a verbose 4xx body — on every
+    /// classification, purely to give this method one argument. Scanning separately reads the same
+    /// characters and allocates nothing. It also stops a pattern from matching across a message
+    /// boundary, which was never intended and was only ever an artefact of the joining separator.
+    /// </para>
+    /// <para>
     /// The null check is not defensive padding. The configuration binder never yields null, but
     /// the property is a settable array, so a consumer's <c>services.Configure</c> can. This runs
     /// inside Polly's failure predicate, where a NullReferenceException would replace the real
     /// provider error with a meaningless one on every failed attempt — visible only mid-incident.
+    /// </para>
     /// </remarks>
-    private static bool ContainsAny(string text, string[]? patterns)
+    private static bool ContainsAny(IReadOnlyList<string> messages, string[]? patterns)
     {
         if (patterns is null)
             return false;
 
         foreach (var pattern in patterns)
         {
-            if (!string.IsNullOrWhiteSpace(pattern)
-                && text.Contains(pattern, StringComparison.OrdinalIgnoreCase))
+            if (string.IsNullOrWhiteSpace(pattern))
+                continue;
+
+            foreach (var message in messages)
             {
-                return true;
+                if (message.Contains(pattern, StringComparison.OrdinalIgnoreCase))
+                    return true;
             }
         }
 
