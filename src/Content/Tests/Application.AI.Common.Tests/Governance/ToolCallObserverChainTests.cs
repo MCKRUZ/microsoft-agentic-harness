@@ -39,7 +39,7 @@ public sealed class ToolCallObserverChainTests
             .ReturnsAsync(ToolApprovalResult.NotRouted("routing disabled"));
     }
 
-    private readonly Mock<IToolInvocationGovernor> _governor = new();
+    private readonly Mock<IGovernanceTraceRecorder> _trace = new();
 
     private ToolCallObserverChain Build(params IToolCallObserver[] observers) => new(
         observers,
@@ -47,7 +47,7 @@ public sealed class ToolCallObserverChainTests
         Mock.Of<IToolRiskClassifier>(c => c.Classify(It.IsAny<string>()) == new ToolRiskProfile(BlastRadius.High, false)),
         _context.Object,
         Mock.Of<IGovernanceAuditService>(),
-        _governor.Object,
+        _trace.Object,
         Mock.Of<IOptionsMonitor<GovernanceConfig>>(m => m.CurrentValue == new GovernanceConfig()),
         NullLogger<ToolCallObserverChain>.Instance);
 
@@ -59,14 +59,15 @@ public sealed class ToolCallObserverChainTests
         // executed, and every consumer of it (bundle reporting, the dashboard, the audit) is wrong for
         // precisely the calls a consumer's safety rule stopped.
         //
-        // The governor is a constructor dependency here. It used to be read from an ambient accessor,
-        // which meant this correction silently did not happen on any path that had not armed it.
+        // The trace recorder is a constructor dependency here. It used to be reached through the
+        // governor, which meant this correction silently did not happen on any path that had not
+        // armed a governor to reach it through.
         var chain = Build(new StubObserver("wire-limit", ToolCallVerdict.Block("over the limit")));
 
         await Evaluate(chain);
 
-        _governor.Verify(
-            g => g.RecordDownstreamBlock(Tool, It.Is<string>(r => r.Contains("wire-limit"))),
+        _trace.Verify(
+            t => t.RecordDownstreamBlock(Tool, It.Is<string>(r => r.Contains("wire-limit"))),
             Times.Once);
     }
 

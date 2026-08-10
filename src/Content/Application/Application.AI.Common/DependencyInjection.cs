@@ -25,6 +25,7 @@ using Domain.Common.Config.AI.Sandbox;
 using FluentValidation;
 using MediatR;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace Application.AI.Common;
 
@@ -124,56 +125,11 @@ public static class DependencyInjection
         // Scoped agent execution context — carries agent identity through the pipeline
         services.AddScoped<IAgentExecutionContext, AgentExecutionContext>();
 
-        // The turn's governance audit trail. Every stage that can stop a tool call writes here and the
-        // admission chain snapshots it, which is what lets the governor below stay stateless and lets a
-        // test assert on the trail without constructing one. Scoped: one trail per agent turn, reset by
-        // the chain between turns.
-        services.AddScoped<Interfaces.Governance.IGovernanceTraceRecorder, Services.Governance.GovernanceTraceRecorder>();
-
-        // Per-invocation tool governor — runs the permission / graded-autonomy / capability / policy
-        // checks on the agent's live tool-call path (opt-in via GovernanceConfig.EnforceToolInvocation)
-        // and writes every decision to the trace recorder above. Scoped: one per agent turn.
-        services.AddScoped<Interfaces.Governance.IToolInvocationGovernor, Services.Governance.ToolInvocationGovernor>();
-
-        // Human approval routing for the governor's "requires approval" verdict (opt-in via
-        // GovernanceConfig.ToolApproval.Enabled, additionally gated on Escalation.Enabled). Without
-        // this the verdict was recorded and the call blocked — nobody was ever asked. Scoped to match
-        // the governor that consults it.
-        services.AddScoped<Interfaces.Governance.IToolApprovalRouter, Services.Governance.EscalationToolApprovalRouter>();
-
-        // Deterministic spin / no-progress guard for the agent's live tool-call path (opt-in via
-        // GovernanceConfig.ProgressGuard.Enabled). Consulted at the same chokepoint as the governor;
-        // breaks the loop when the agent repeats an identical call or makes no progress. Scoped: one
-        // per agent turn, reset between turns alongside the governor.
-        services.AddScoped<Interfaces.Governance.IProgressEvaluator, Services.Governance.ProgressEvaluator>();
-
-        // Classification-aware DLP gate for the agent's live tool-call path (opt-in via
-        // GovernanceConfig.DataClassification.Mode). Consulted at the same chokepoint as the governor;
-        // resolves the asset a tool touches, classifies it via Purview, and blocks or redacts per policy.
-        // Scoped: reads the per-turn agent identity for audit. The asset resolvers are the per-tool adapter
-        // layer — the file-system reference resolver ships here; consumers register more for their tools.
-        services.AddScoped<Interfaces.Governance.IToolClassificationGate, Services.Governance.DefaultToolClassificationGate>();
-        services.AddSingleton<Interfaces.Governance.IAssetReferenceResolver, Services.Governance.FileSystemAssetReferenceResolver>();
-
-        // Consumer-authored tool-call observers. The harness registers NO IToolCallObserver
-        // implementations — registration is the opt-in, so the default composition resolves an empty
-        // chain that the chokepoint skips outright. Consumers add their own domain rules ("never wire
-        // over 10k") by registering IToolCallObserver in their host. The chain itself is always
-        // registered so the turn handler can depend on it unconditionally. Scoped: reads the per-turn
-        // agent identity and shares the approval router's lifetime.
-        services.AddScoped<Interfaces.Governance.IToolCallObserverChain, Services.Governance.ToolCallObserverChain>();
-
-        // Per-agent tool RBAC (opt-in via AI.Identity.ToolAuthorization.Enabled). Registered
-        // unconditionally and reports its own off state by admitting, so that an unregistered gate and
-        // a switched-off gate are never confusable at runtime. Scoped: it caches the workload identity
-        // it resolves for the lifetime of one turn, plan step, or direct invocation.
-        services.AddScoped<Interfaces.Governance.IAgentToolAuthorizationGate, Services.Governance.DefaultAgentToolAuthorizationGate>();
-
-        // The composed admission chain over the five gates above. Every execution path that can reach
-        // a tool — the agent turn, the Execution API, and the plan engine's tool, LLM and retrieval
-        // steps — calls this and nothing else, so a gate added here reaches all five at once. Scoped:
-        // it holds the five scoped gates and is reset once per turn.
-        services.AddScoped<Interfaces.Governance.IToolCallAdmissionPipeline, Services.Governance.ToolCallAdmissionPipeline>();
+        // The composed tool-call admission chain — the trace recorder, the five gates, and the
+        // pipeline that sequences them. Factored into its own registration method (below) so a test
+        // fixture can call it too and build the same wiring the production container does, instead of
+        // hand-rolling it.
+        services.AddToolCallAdmissionChain();
 
         // AI telemetry configurator — registers AI SDK OTel sources and processors
         services.AddSingleton<ITelemetryConfigurator, AiTelemetryConfigurator>();
@@ -291,6 +247,77 @@ public static class DependencyInjection
         services.AddSingleton<IEvalMetric>(sp => sp.GetRequiredService<GovernanceBehaviorMetric>());
         services.AddKeyedSingleton<IEvalMetric>(
             "governance.behavior", (sp, _) => sp.GetRequiredService<GovernanceBehaviorMetric>());
+
+        return services;
+    }
+
+    /// <summary>
+    /// Registers the composed tool-call admission chain: the turn's governance trace recorder, the
+    /// five gates it sequences, and the pipeline itself.
+    /// </summary>
+    /// <param name="services">The service collection to configure.</param>
+    /// <returns>The service collection for chaining.</returns>
+    /// <remarks>
+    /// <para>
+    /// Registers the turn's governance trace recorder, the five admission gates
+    /// (<see cref="Interfaces.Governance.IToolInvocationGovernor"/>,
+    /// <see cref="Interfaces.Governance.IToolClassificationGate"/>,
+    /// <see cref="Interfaces.Governance.IToolCallObserverChain"/>,
+    /// <see cref="Interfaces.Governance.IAgentToolAuthorizationGate"/>,
+    /// <see cref="Interfaces.Governance.IProgressEvaluator"/>), and the
+    /// <see cref="Interfaces.Governance.IToolCallAdmissionPipeline"/> that composes them, so both the
+    /// production composition root and a test fixture that wants a real chain build it from the one
+    /// place that knows the current wiring.
+    /// </para>
+    /// <para>
+    /// <strong>TryAdd, not Add — and the registration order that depends on it.</strong> A caller that
+    /// wants to control one gate (a mock governor, a classification gate that always redacts) must
+    /// register its own implementation for that interface <em>before</em> calling this method. Calling
+    /// this method first and registering the override after does not work: <c>TryAdd*</c> has already
+    /// claimed the slot, so the override is silently ignored and the caller gets the production default
+    /// instead — no compile error, no runtime error, just a fixture testing against the wrong collaborator.
+    /// </para>
+    /// <para>
+    /// Deliberately excludes the collaborators the governor itself depends on that are not chain-specific
+    /// — permission resolution, graded autonomy, the declarative policy engine, capability enforcement,
+    /// denial tracking, audit — because those are the actual subject under test in most fixtures that
+    /// build a real chain, not incidental wiring to get out of the way.
+    /// </para>
+    /// </remarks>
+    public static IServiceCollection AddToolCallAdmissionChain(this IServiceCollection services)
+    {
+        // The turn's governance audit trail every stage writes to. Scoped: one per agent turn, reset
+        // by the chain between turns.
+        services.TryAddScoped<Interfaces.Governance.IGovernanceTraceRecorder, Services.Governance.GovernanceTraceRecorder>();
+
+        // Gate 2 — permission / graded-autonomy / capability / policy (opt-in via
+        // GovernanceConfig.EnforceToolInvocation).
+        services.TryAddScoped<Interfaces.Governance.IToolInvocationGovernor, Services.Governance.ToolInvocationGovernor>();
+
+        // Human approval routing for the governor's "requires approval" verdict (opt-in via
+        // GovernanceConfig.ToolApproval.Enabled, additionally gated on Escalation.Enabled).
+        services.TryAddScoped<Interfaces.Governance.IToolApprovalRouter, Services.Governance.EscalationToolApprovalRouter>();
+
+        // Gate 5 — the loop guard (opt-in via GovernanceConfig.ProgressGuard.Enabled).
+        services.TryAddScoped<Interfaces.Governance.IProgressEvaluator, Services.Governance.ProgressEvaluator>();
+
+        // Gate 3 — classification-aware DLP (opt-in via GovernanceConfig.DataClassification.Mode). The
+        // file-system asset resolver ships here; consumers register more for their own tools.
+        services.TryAddScoped<Interfaces.Governance.IToolClassificationGate, Services.Governance.DefaultToolClassificationGate>();
+        services.TryAddSingleton<Interfaces.Governance.IAssetReferenceResolver, Services.Governance.FileSystemAssetReferenceResolver>();
+
+        // Gate 4 — the host's own rules. No IToolCallObserver implementations ship by default;
+        // registration of one is the opt-in. The chain itself is always registered so callers can
+        // depend on it unconditionally.
+        services.TryAddScoped<Interfaces.Governance.IToolCallObserverChain, Services.Governance.ToolCallObserverChain>();
+
+        // Gate 1 — per-agent tool RBAC (opt-in via AI.Identity.ToolAuthorization.Enabled). Registered
+        // unconditionally so an unregistered gate and a switched-off gate are never confusable.
+        services.TryAddScoped<Interfaces.Governance.IAgentToolAuthorizationGate, Services.Governance.DefaultAgentToolAuthorizationGate>();
+
+        // The composed chain over the five gates above. Every execution path that can reach a tool
+        // calls this and nothing else, so a gate added here reaches all of them at once.
+        services.TryAddScoped<Interfaces.Governance.IToolCallAdmissionPipeline, Services.Governance.ToolCallAdmissionPipeline>();
 
         return services;
     }

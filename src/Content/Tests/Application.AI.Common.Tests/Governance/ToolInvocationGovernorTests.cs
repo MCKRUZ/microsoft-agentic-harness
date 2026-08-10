@@ -93,7 +93,7 @@ public sealed class ToolInvocationGovernorTests
     {
         var governanceMonitor =
             Mock.Of<IOptionsMonitor<GovernanceConfig>>(m => m.CurrentValue == (governance ?? _governance));
-        _trace = new GovernanceTraceRecorder(governanceMonitor);
+        _trace = new GovernanceTraceRecorder(governanceMonitor, _riskClassifier);
 
         return new ToolInvocationGovernor(
             _context.Object,
@@ -421,6 +421,10 @@ public sealed class ToolInvocationGovernorTests
         Assert.Contains("DBA review", askedReason, StringComparison.Ordinal);
     }
 
+    // RecordDownstreamBlock's ungoverned-turn and enforced-before-any-authorize branches are pure
+    // GovernanceTraceRecorder behavior now — no governor involved — and are covered directly in
+    // GovernanceTraceRecorderTests. What stays here is the one case that genuinely needs a real
+    // governor: proving a governor's own Allowed record and a downstream Denied record coexist.
     [Fact]
     public async Task RecordDownstreamBlock_AfterAnAllow_MakesTheTraceTellTheTruth()
     {
@@ -432,43 +436,10 @@ public sealed class ToolInvocationGovernorTests
         var governor = Build();
         await governor.AuthorizeAsync(Tool, CancellationToken.None);
 
-        governor.RecordDownstreamBlock(Tool, "blocked by observer 'wire-limit'");
+        _trace.RecordDownstreamBlock(Tool, "blocked by observer 'wire-limit'");
 
         var decisions = Trace.ToolDecisions;
         Assert.Contains(decisions, d => d.Outcome == ToolDecisionOutcome.Allowed);
-        Assert.Contains(decisions, d => d.Outcome == ToolDecisionOutcome.Denied);
-    }
-
-    [Fact]
-    public void RecordDownstreamBlock_OnAnUngovernedTurn_RecordsNothing()
-    {
-        // Off the enforced path the governor recorded no allow, so there is nothing to correct and
-        // a bare denial would invent a decision on a turn governance was never applied to.
-        //
-        // "Ungoverned" means enforcement is switched off, which is what this now builds. It
-        // previously built an ENFORCING governor and relied on nothing having been authorized yet —
-        // a different condition wearing the same name, and one that stopped being safe to conflate
-        // once a stage began running ahead of the governor.
-        var governor = Build(new GovernanceConfig { EnforceToolInvocation = false });
-
-        governor.RecordDownstreamBlock(Tool, "blocked by observer 'wire-limit'");
-
-        Assert.Empty(Trace.ToolDecisions);
-    }
-
-    [Fact]
-    public void RecordDownstreamBlock_EnforcedTurnBeforeAnyAuthorize_StillRecords()
-    {
-        // The per-agent authorization gate is stage 1 of the admission chain and runs BEFORE this
-        // governor, so a call it refuses never reaches AuthorizeAsync at all. Keying the record on
-        // "this governor has already evaluated something" dropped exactly those refusals — and since
-        // a refused call never goes on to be authorized, that is most of them. The turn is enforced;
-        // that is what makes the record meaningful, not whether the governor happened to run first.
-        var governor = Build();
-
-        governor.RecordDownstreamBlock(Tool, "denied by per-agent tool authorization");
-
-        var decisions = Trace.ToolDecisions;
         Assert.Contains(decisions, d => d.Outcome == ToolDecisionOutcome.Denied);
     }
 

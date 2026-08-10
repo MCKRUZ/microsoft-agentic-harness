@@ -49,46 +49,6 @@ public interface IToolInvocationGovernor
         string toolName,
         CancellationToken cancellationToken,
         IReadOnlyDictionary<string, object?>? arguments = null);
-
-    /// <summary>
-    /// Records that a gate running <em>after</em> this governor refused a call the governor had
-    /// already allowed, so the turn's trace reflects what happened rather than what was authorized.
-    /// </summary>
-    /// <param name="toolName">The tool that was stopped.</param>
-    /// <param name="reason">Operator-facing explanation, for the trace and audit only.</param>
-    /// <remarks>
-    /// <para>
-    /// The governor is not the last word on a tool call — the classification gate, the progress
-    /// guard, and the host's own <see cref="IToolCallObserver"/> rules all run after it and can each
-    /// stop a call it permitted. Without this the trace would report such a call as
-    /// <see cref="ToolDecisionOutcome.Allowed"/>, because that is genuinely what the governor
-    /// decided, and every consumer of the trace — bundle-run governance reporting, the dashboard,
-    /// the audit — would be wrong for exactly the calls a safety rule stopped.
-    /// </para>
-    /// <para>
-    /// This does not revoke the earlier record; both are kept. The governor did allow it, something
-    /// downstream did not, and an audit trail that shows only one of those facts is telling half the
-    /// story.
-    /// </para>
-    /// <para>
-    /// <strong>Also used by the one stage that runs <em>before</em> the governor</strong> — the
-    /// per-agent authorization gate. "Downstream" describes the common case rather than a
-    /// restriction: what this method does is record a refusal the governor did not itself make, and
-    /// that is equally true of a stage ahead of it. The only difference is that there is no earlier
-    /// <see cref="ToolDecisionOutcome.Allowed"/> record to correct, so the denial stands alone. A
-    /// refusal that never reaches the trace is invisible to bundle-run governance reporting, the
-    /// dashboard, and the audit, which for an access-control decision is the reporting equivalent of
-    /// not enforcing it.
-    /// </para>
-    /// <para>
-    /// Routed through the governor rather than written straight to
-    /// <see cref="IGovernanceTraceRecorder"/> because of the blast radius: the record carries one, the
-    /// governor already holds the risk classifier that resolves it, and a stage that classified the
-    /// tool itself would be a second opinion on how dangerous it is. The recorder can answer the other
-    /// question the record needs — whether the turn is governed at all — on its own.
-    /// </para>
-    /// </remarks>
-    void RecordDownstreamBlock(string toolName, string reason);
 }
 
 /// <summary>

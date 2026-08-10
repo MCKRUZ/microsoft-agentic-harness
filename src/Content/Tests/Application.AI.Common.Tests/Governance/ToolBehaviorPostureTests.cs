@@ -305,7 +305,7 @@ public sealed class ToolBehaviorPostureTests
     private ToolCallAdmissionPipeline Pipeline(GovernanceConfig governance)
     {
         var monitor = Mock.Of<IOptionsMonitor<GovernanceConfig>>(m => m.CurrentValue == governance);
-        var trace = new GovernanceTraceRecorder(monitor);
+        var trace = new GovernanceTraceRecorder(monitor, _riskClassifier);
 
         var governor = new ToolInvocationGovernor(
             _context.Object,

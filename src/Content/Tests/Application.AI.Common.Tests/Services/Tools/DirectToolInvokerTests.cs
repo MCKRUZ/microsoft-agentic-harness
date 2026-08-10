@@ -1,3 +1,4 @@
+using Application.AI.Common;
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Tools;
@@ -699,12 +700,12 @@ public sealed class DirectToolInvokerTests
         // gate and a switched-off one must never be confusable at runtime.
         services.AddSingleton(AdmissionHarness.PermissiveAuthorizationGate());
 
-        // The real chain, not a mock of it. This suite's whole subject is what the Execution API does
-        // before, during and after a tool call, and that is now the chain's behaviour plus this type's
-        // response shaping — mocking the chain would move every governance assertion here off the code
-        // that actually runs.
+        // The real chain, not a mock of it, built the same way the production root builds it. This
+        // suite's whole subject is what the Execution API does before, during and after a tool call,
+        // and that is now the chain's behaviour plus this type's response shaping — mocking the chain
+        // would move every governance assertion here off the code that actually runs.
         services.AddSingleton(typeof(Microsoft.Extensions.Logging.ILogger<>), typeof(NullLogger<>));
-        services.AddScoped<IToolCallAdmissionPipeline, ToolCallAdmissionPipeline>();
+        services.AddToolCallAdmissionChain();
 
         var provider = services.BuildServiceProvider();
 
@@ -770,12 +771,6 @@ public sealed class DirectToolInvokerTests
 
             return record.Decision;
         }
-
-        public GovernanceTrace GetTrace() => GovernanceTrace.Empty;
-
-        public void RecordDownstreamBlock(string toolName, string reason) { }
-
-        public void Reset() { }
     }
 
     /// <summary>

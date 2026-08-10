@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces.Governance;
+using Application.AI.Common.Interfaces.Tools;
 using Domain.AI.Governance;
 using Domain.Common.Config.AI;
 using Microsoft.Extensions.Options;
@@ -11,10 +12,18 @@ namespace Application.AI.Common.Services.Governance;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Deliberately holds no judgement of its own. It does not decide what a decision means, which stage
-/// was entitled to record it, or whether a call should have been allowed — it stores what it is told
-/// and reports it back. That is what makes it constructible in a test with one argument, which is the
-/// point: asserting on an audit trail should not require standing up the machinery that produces one.
+/// Holds no judgement over what a caller reports through <see cref="Record"/> or
+/// <see cref="RecordEscalation"/> — it does not decide what a decision means, which stage was entitled
+/// to record it, or whether a call should have been allowed. It stores what it is told and reports it
+/// back, which is what lets a test assert on an audit trail without standing up the machinery that
+/// produces one.
+/// </para>
+/// <para>
+/// <see cref="RecordDownstreamBlock"/> is the one deliberate, scoped exception: it decides whether a
+/// call is worth recording (<see cref="EnforcementEnabled"/>) and resolves the tool's blast radius
+/// itself rather than taking it as a parameter — see its own remarks for why. A future addition that
+/// wants the same shape should stay equally narrow rather than turning this type into a second home for
+/// governance decisions.
 /// </para>
 /// <para>
 /// The lock covers the two collections only. The enforcement question is read outside it — it touches
@@ -25,6 +34,7 @@ namespace Application.AI.Common.Services.Governance;
 public sealed class GovernanceTraceRecorder : IGovernanceTraceRecorder
 {
     private readonly IOptionsMonitor<GovernanceConfig> _governanceConfig;
+    private readonly IToolRiskClassifier _riskClassifier;
 
     private readonly object _lock = new();
     private readonly List<ToolDecisionRecord> _decisions = [];
@@ -40,10 +50,18 @@ public sealed class GovernanceTraceRecorder : IGovernanceTraceRecorder
 
     /// <summary>Initializes a new instance of the <see cref="GovernanceTraceRecorder"/> class.</summary>
     /// <param name="governanceConfig">Supplies the live "is governance on for this flow" signal.</param>
-    public GovernanceTraceRecorder(IOptionsMonitor<GovernanceConfig> governanceConfig)
+    /// <param name="riskClassifier">
+    /// Resolves a tool's blast radius for <see cref="RecordDownstreamBlock"/>. The same singleton the
+    /// governor itself classifies with, so a downstream-block record and the governor's own records
+    /// agree on what a tool's radius is.
+    /// </param>
+    public GovernanceTraceRecorder(
+        IOptionsMonitor<GovernanceConfig> governanceConfig, IToolRiskClassifier riskClassifier)
     {
         ArgumentNullException.ThrowIfNull(governanceConfig);
+        ArgumentNullException.ThrowIfNull(riskClassifier);
         _governanceConfig = governanceConfig;
+        _riskClassifier = riskClassifier;
     }
 
     /// <inheritdoc />
@@ -104,5 +122,21 @@ public sealed class GovernanceTraceRecorder : IGovernanceTraceRecorder
             _decisions.Clear();
             _escalations.Clear();
         }
+    }
+
+    /// <inheritdoc />
+    public void RecordDownstreamBlock(string toolName, string reason)
+    {
+        // Only meaningful on an enforced turn. Off that path nothing upstream recorded an allow, so
+        // there is no decision to correct and nothing governance-relevant to add.
+        if (!EnforcementEnabled)
+            return;
+
+        var radius = _riskClassifier.Classify(toolName).Radius;
+        Record(new ToolDecisionRecord(toolName, ToolDecisionOutcome.Denied, reason, radius,
+            RequiredApproval: false, ApprovalGranted: false, Enforced: true));
+
+        // Deliberately no audit write here — see the interface remarks. The caller already audited
+        // its own refusal in its own vocabulary.
     }
 }

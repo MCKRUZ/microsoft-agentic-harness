@@ -64,8 +64,7 @@ public sealed class ToolCallAdmissionChokepointTests
         "ToolCallAdmissionPipeline.cs",
         "ToolAdmissionAccessor.cs",
 
-        // The implementations. ToolCallObserverChain names the governor because it corrects the
-        // governor's trace when it blocks a call the governor allowed.
+        // The implementations.
         "DefaultAgentToolAuthorizationGate.cs",
         "ToolInvocationGovernor.cs",
         "ToolInvocationGovernor.Approval.cs",

@@ -1,3 +1,4 @@
+using Application.AI.Common;
 using Application.AI.Common.Categorization;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Agent;
@@ -68,10 +69,12 @@ public class AgentPipelineIntegrationTests
         services.AddScoped(_ => progressMock.Object);
 
         // The turn's governance trail — real, and required by the admission chain the handler resolves.
-        services.AddScoped<Application.AI.Common.Interfaces.Governance.IGovernanceTraceRecorder>(_ =>
-            new Application.AI.Common.Services.Governance.GovernanceTraceRecorder(
-                Mock.Of<Microsoft.Extensions.Options.IOptionsMonitor<Domain.Common.Config.AI.GovernanceConfig>>(
-                    m => m.CurrentValue == new Domain.Common.Config.AI.GovernanceConfig())));
+        // Built via the shared registration below rather than by hand; it needs these two collaborators
+        // registered so DI can resolve it.
+        services.AddSingleton(Mock.Of<Microsoft.Extensions.Options.IOptionsMonitor<Domain.Common.Config.AI.GovernanceConfig>>(
+            m => m.CurrentValue == new Domain.Common.Config.AI.GovernanceConfig()));
+        services.AddSingleton(Mock.Of<Application.AI.Common.Interfaces.Tools.IToolRiskClassifier>(
+            c => c.Classify(It.IsAny<string>()) == Application.AI.Common.Interfaces.Tools.ToolRiskProfile.Default));
 
         // Classification DLP gate — not under test here; permissive mock so the handler resolves.
         var classificationMock = new Mock<Application.AI.Common.Interfaces.Governance.IToolClassificationGate>();
@@ -95,13 +98,11 @@ public class AgentPipelineIntegrationTests
             .ReturnsAsync(Application.AI.Common.Interfaces.Governance.ToolInvocationDecision.Allow());
         services.AddScoped(_ => authorizationMock.Object);
 
-        // The REAL admission chain over the five permissive gates above, not a mock of it. The handler
-        // depends only on the chain now, and registering the real one keeps this an end-to-end proof
-        // that the five gates are reachable from the turn — a mocked chain would prove nothing about
-        // whether they are wired at all.
-        services.AddScoped<
-            Application.AI.Common.Interfaces.Governance.IToolCallAdmissionPipeline,
-            Application.AI.Common.Services.Governance.ToolCallAdmissionPipeline>();
+        // The REAL admission chain over the five permissive gates above, not a mock of it, built the
+        // same way the production root builds it. The handler depends only on the chain now, and
+        // registering the real one keeps this an end-to-end proof that the five gates are reachable
+        // from the turn — a mocked chain would prove nothing about whether they are wired at all.
+        services.AddToolCallAdmissionChain();
 
         // Conversation-lifetime budget — not under test here; permissive mock (disabled) so the
         // RunConversation handler resolves and never reports exhaustion.

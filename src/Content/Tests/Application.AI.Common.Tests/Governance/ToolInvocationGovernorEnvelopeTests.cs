@@ -77,7 +77,7 @@ public sealed class ToolInvocationGovernorEnvelopeTests
     private ToolInvocationGovernor Build()
     {
         var governanceMonitor = Mock.Of<IOptionsMonitor<GovernanceConfig>>(m => m.CurrentValue == _governanceOff);
-        _trace = new GovernanceTraceRecorder(governanceMonitor);
+        _trace = new GovernanceTraceRecorder(governanceMonitor, _riskClassifier);
 
         return new ToolInvocationGovernor(
             _context.Object, _permissions.Object, _riskClassifier,

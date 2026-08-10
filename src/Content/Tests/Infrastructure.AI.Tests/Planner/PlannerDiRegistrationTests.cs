@@ -1,3 +1,4 @@
+using Application.AI.Common;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Attestation;
 using Application.AI.Common.Interfaces.Governance;
@@ -269,10 +270,11 @@ public sealed class PlannerDiRegistrationTests : IDisposable
         // chain is indistinguishable at runtime from a host whose gates are all off, so a nullable
         // default would let a composition silently run the plan path unguarded. The real composition
         // registers it in Application.AI.Common (see ToolCallObserverCompositionTests, which resolves
-        // it from the actual root); this fixture hand-rolls its container, so it registers the real
-        // chain over stubbed gates here — a mock of the chain would not prove the executors can be
-        // constructed against the type the production graph supplies.
-        services.AddScoped<IToolCallAdmissionPipeline, ToolCallAdmissionPipeline>();
+        // it from the actual root); this fixture hand-rolls the rest of its container, so it builds the
+        // real chain over the stubbed gates above via the same registration method the production root
+        // uses — TryAdd semantics mean the gates already registered above win, and only the pipeline
+        // itself (and the unused collaborators nothing here resolves) come from the shared default.
+        services.AddToolCallAdmissionChain();
         services.AddSingleton(new Mock<Application.AI.Common.Interfaces.AI.IConversationBudgetTracker>().Object);
         services.AddSingleton<ISender>(new Mock<ISender>().Object);
         services.AddSingleton<IPlanProgressNotifier>(new Mock<IPlanProgressNotifier>().Object);

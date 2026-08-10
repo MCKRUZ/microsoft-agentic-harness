@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces.Governance;
+using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Services.Governance;
 using Domain.Common.Config.AI;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -46,7 +47,8 @@ internal static class AdmissionHarness
     /// <param name="governance">Governance config to run under; defaults to everything off.</param>
     public static GovernanceTraceRecorder TraceRecorder(GovernanceConfig? governance = null) =>
         new(Mock.Of<IOptionsMonitor<GovernanceConfig>>(
-            m => m.CurrentValue == (governance ?? new GovernanceConfig())));
+                m => m.CurrentValue == (governance ?? new GovernanceConfig())),
+            Mock.Of<IToolRiskClassifier>(c => c.Classify(It.IsAny<string>()) == ToolRiskProfile.Default));
 
     /// <summary>
     /// An authorization gate that admits everything — what the real gate answers when
