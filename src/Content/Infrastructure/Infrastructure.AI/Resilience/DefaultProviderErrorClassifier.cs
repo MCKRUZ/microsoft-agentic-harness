@@ -334,17 +334,26 @@ public class DefaultProviderErrorClassifier : IProviderErrorClassifier
     };
 
     /// <summary>
-    /// Failure shapes that mean the request never reached the provider — a connection reset,
-    /// a DNS failure, a timeout. These are transient by nature and carry no HTTP status.
+    /// The shapes that suggest a network-level failure without proving one — the residual left
+    /// after <see cref="IsTransportFault"/> has claimed everything unambiguous.
     /// </summary>
+    /// <remarks>
+    /// Only two shapes qualify, and both are ambiguous for the same reason: something other than
+    /// the transport can raise them. A bare <see cref="HttpRequestException"/> is how Anthropic's
+    /// SDK reports an ordinary API error, and an <see cref="OperationCanceledException"/> is as
+    /// likely to be the caller withdrawing. So they are consulted only after message text, where
+    /// a recognised wording can still overrule them.
+    /// <para>
+    /// The genuinely unambiguous shapes — sockets, I/O, timeouts, TLS — are deliberately absent
+    /// rather than duplicated here. This list is read only on the path where
+    /// <see cref="IsTransportFault"/> matched nothing anywhere in the chain, so repeating them
+    /// could not change an outcome. That makes the two lists disjoint, which is the point: each
+    /// shape appears once, under the precedence it earns. It does mean the split depends on
+    /// <see cref="Classify"/> testing transport faults first.
+    /// </para>
+    /// </remarks>
     private static bool IsNetworkLevelFailure(Exception exception)
-        => exception
-            is HttpRequestException
-            or SocketException
-            or IOException
-            or TimeoutException
-            or TimeoutRejectedException
-            or OperationCanceledException;
+        => exception is HttpRequestException or OperationCanceledException;
 
     /// <summary>
     /// Whether any of the failure's messages contains any of the patterns, case-insensitively.
