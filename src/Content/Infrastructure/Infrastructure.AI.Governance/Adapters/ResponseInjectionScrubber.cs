@@ -53,7 +53,14 @@ internal sealed partial class ResponseInjectionScrubber : IResponseSanitizer
         return pattern.Replace(content, "[SANITIZED:injection]");
     }
 
-    [GeneratedRegex(@"[​‌‍⁠﻿]")]
+    /// <summary>
+    /// Invisible/deceptive characters that smuggle text past a human reader. See
+    /// <see cref="InvisibleCharacters"/> for the shared character set and the rationale for what it
+    /// includes and excludes. This scanner and <see cref="McpSecurityScannerAdapter"/> — which
+    /// scans tool <em>descriptions</em> rather than tool <em>output</em> — must not drift apart on
+    /// it a second time.
+    /// </summary>
+    [GeneratedRegex(InvisibleCharacters.Pattern)]
     private static partial Regex ZeroWidthPattern();
 
     [GeneratedRegex(@"<\s*/?\s*system\s*>", RegexOptions.IgnoreCase)]

@@ -1,4 +1,4 @@
-using Application.Core.Agents;
+using Application.AI.Common.Interfaces;
 using Application.Core.CQRS.Agents.ExecuteAgentTurn;
 using Application.Core.CQRS.Agents.RunConversation;
 using MediatR;
@@ -16,11 +16,16 @@ namespace Presentation.ConsoleUI.Examples;
 public class ResearchAgentExample
 {
 	private readonly IServiceScopeFactory _scopeFactory;
+	private readonly IAgentMetadataRegistry _agentRegistry;
 	private readonly ILogger<ResearchAgentExample> _logger;
 
-	public ResearchAgentExample(IServiceScopeFactory scopeFactory, ILogger<ResearchAgentExample> logger)
+	public ResearchAgentExample(
+		IServiceScopeFactory scopeFactory,
+		IAgentMetadataRegistry agentRegistry,
+		ILogger<ResearchAgentExample> logger)
 	{
 		_scopeFactory = scopeFactory;
+		_agentRegistry = agentRegistry;
 		_logger = logger;
 	}
 
@@ -31,12 +36,14 @@ public class ResearchAgentExample
 	{
 		ConsoleHelper.DisplayHeader("Research Agent", Color.CornflowerBlue);
 
-		var agentDef = AgentDefinitions.CreateResearchAgent();
+		var agentDef = ConsoleHelper.RequireAgent(_agentRegistry, "research-agent");
+		if (agentDef is null) return;
+
 		ConsoleHelper.DisplayAgentInfo(
-			agentDef.Name!,
-			agentDef.Description!,
+			agentDef.Name,
+			agentDef.Description,
 			"Standalone",
-			["file_system", "github_repos (optional)"]);
+			["file_system"]);
 
 		if (!AnsiConsole.Profile.Capabilities.Interactive)
 		{
@@ -75,7 +82,7 @@ public class ResearchAgentExample
 			]),
 			("Code analysis (tool use)", [
 				"Use the file_system tool to list the contents of the src/Content/Domain directory. Describe the project structure.",
-				"Use the file_system tool to read the file at src/Content/Application/Application.Core/Agents/AgentDefinitions.cs and explain what agents are defined."
+				"Use the file_system tool to read the file at agents/research-agent/AGENT.md and explain what agent is defined."
 			]),
 			("Mixed research", [
 				"What is Clean Architecture? Answer in 2 sentences.",

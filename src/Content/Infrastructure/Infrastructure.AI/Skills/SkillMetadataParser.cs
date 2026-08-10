@@ -1,5 +1,6 @@
 using Application.AI.Common.Exceptions;
 using Application.AI.Common.Interfaces.Skills;
+using Application.Common.Helpers;
 using Domain.AI.Egress;
 using Domain.AI.Skills;
 using Microsoft.Extensions.Logging;
@@ -59,8 +60,7 @@ public sealed partial class SkillMetadataParser
     public SkillDefinition ParseFromFile(string skillFilePath, string sourcePath, string? pluginSource = null)
     {
         var raw = _fileReader.ReadText(skillFilePath);
-        var rawFrontmatter = ExtractFrontmatter(raw);
-        var body = ExtractBody(raw, rawFrontmatter);
+        var (rawFrontmatter, body) = ExtractFrontmatterAndBody(raw);
 
         var frontmatter = SkillFrontmatter.Load(rawFrontmatter);
 
@@ -95,7 +95,7 @@ public sealed partial class SkillMetadataParser
             if (_fileReader.FileExists(skillFilePath))
             {
                 var raw = _fileReader.ReadText(skillFilePath);
-                rawFrontmatter = ExtractFrontmatter(raw);
+                rawFrontmatter = ExtractFrontmatterAndBody(raw).Frontmatter;
             }
         }
         catch (Exception ex) when (ex is not SkillPathRefusedException)
@@ -172,32 +172,27 @@ public sealed partial class SkillMetadataParser
     }
 
     /// <remarks>
+    /// Delegates the delimiter search to <see cref="YamlFrontmatterHelper"/>, which requires the
+    /// closing <c>---</c> to occupy its own line. A previous hand-rolled version of this method
+    /// searched with <c>raw.IndexOf("---", 3)</c>, which matches <c>---</c> anywhere — including
+    /// inside a YAML value such as <c>description: "compare A --- B"</c> — silently truncating the
+    /// frontmatter and leaking the remaining keys into the body.
+    /// <para>
     /// Line endings are normalised to LF for the benefit of readers downstream of this method, not
     /// of the YAML parse: YamlDotNet handles CRLF correctly on its own (checked). It is kept
     /// because the returned text is also what gets logged and compared, and mixed endings there
     /// are a nuisance rather than a defect. Every SKILL.md in this repository is CRLF on disk.
+    /// </para>
     /// </remarks>
-    private static string? ExtractFrontmatter(string raw)
+    private static (string? Frontmatter, string Body) ExtractFrontmatterAndBody(string raw)
     {
-        if (!raw.StartsWith("---", StringComparison.Ordinal))
-            return null;
+        var (yaml, body) = YamlFrontmatterHelper.ExtractFrontmatter(raw);
 
-        var end = raw.IndexOf("---", 3, StringComparison.Ordinal);
-        return end < 0 ? null : raw[3..end].Replace("\r\n", "\n", StringComparison.Ordinal);
-    }
+        var frontmatter = string.IsNullOrEmpty(yaml)
+            ? null
+            : yaml.Replace("\r\n", "\n", StringComparison.Ordinal);
 
-    private static string ExtractBody(string raw, string? frontmatter)
-    {
-        if (frontmatter == null)
-            return raw.Trim();
-
-        // Skip the opening ---, frontmatter block, and closing ---
-        var closingDelimiter = raw.IndexOf("---", 3, StringComparison.Ordinal);
-        if (closingDelimiter < 0)
-            return raw.Trim();
-
-        var bodyStart = closingDelimiter + 3;
-        return bodyStart >= raw.Length ? string.Empty : raw[bodyStart..].Trim();
+        return (frontmatter, body.Trim());
     }
 
     /// <summary>

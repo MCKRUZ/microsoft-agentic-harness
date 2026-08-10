@@ -249,24 +249,22 @@ public class ExecuteAgentTurnCommandValidator : AbstractValidator<ExecuteAgentTu
 
 Validators run automatically via `RequestValidationBehavior` before handlers execute. If validation fails, the handler is never called and a `Result.ValidationFailure(errors)` is returned.
 
-### Built-In Agent Definitions
+### Built-In Agents
 
-`AgentDefinitions.cs` is a static factory that creates pre-configured agents:
-
-- **ResearchAgent** -- Standalone agent with tool access for research tasks. Instructions loaded from an embedded `SKILL.md`.
-- **OrchestratorAgent** -- Coordination agent that decomposes tasks and delegates. Its SKILL.md is dynamically augmented with the available sub-agent catalog.
-
-Both load instructions from embedded resources (`.md` files in `Agents/Skills/` compiled into the assembly).
+Agents are defined on disk, not in this project: an `AGENT.md` under the repo-root `agents/`
+directory (discovered by `IAgentMetadataRegistry`) plus a companion `SKILL.md` under `skills/`
+(discovered by `ISkillMetadataRegistry`). `ResearchAgent` and `OrchestratorAgent` are both
+defined this way — see `agents/research-agent/AGENT.md` and `agents/orchestrator-agent/AGENT.md`.
+This project's CQRS handlers (`ExecuteAgentTurnCommandHandler`, `RunConversationCommandHandler`,
+`RunOrchestratedTaskCommandHandler`) resolve an agent by name through those registries; nothing
+in `Application.Core` hardcodes agent instructions.
 
 ## Project Structure
 
 ```
 Application.Core/
 ├── Agents/
-│   ├── AgentDefinitions.cs              # Static factory for built-in agent configurations
-│   └── Skills/                          # Embedded SKILL.md files (compiled into assembly)
-│       ├── research-agent/SKILL.md      # Research agent instructions
-│       └── orchestrator/SKILL.md        # Orchestrator agent instructions
+│   └── (agent definitions live in the repo-root agents/ and skills/ directories, not here)
 ├── CQRS/
 │   ├── Agents/
 │   │   ├── ExecuteAgentTurn/
@@ -351,7 +349,6 @@ Application.Core/
 | `IngestDocumentCommand` | Trigger document ingestion | Admin APIs, CLI |
 | `SearchDocumentsQuery` | Semantic document search | Agent tools, search APIs |
 | **Infrastructure** | | |
-| `AgentDefinitions` | Built-in agent creation | Demos, testing |
 | `DependencyInjection` | MediatR + validator registration | Presentation composition root |
 
 ## Common Tasks
@@ -404,22 +401,15 @@ public class YourCommandHandler : IRequestHandler<YourCommand, Result<YourResult
 
 All three files are auto-discovered by assembly scanning -- no manual registration needed.
 
-### How to Add a Built-In Agent Skill
+### How to Add a Built-In Agent
 
-1. Create a SKILL.md file under `Agents/Skills/your-agent/SKILL.md`
-2. Ensure the `.csproj` includes it as an embedded resource (already covered by the glob pattern):
-
-```xml
-<EmbeddedResource Include="Agents\Skills\**\*.md" />
-```
-
-3. Load it in `AgentDefinitions.cs`:
-
-```csharp
-var instructions = EmbeddedResourceHelper.ReadEmbeddedResource(
-    typeof(AgentDefinitions).Assembly,
-    "Application.Core.Agents.Skills.your_agent.SKILL.md");
-```
+1. Create `agents/your-agent/AGENT.md` at the repo root with `id`, `name`, `description`, and a
+   `skill: your-agent` reference (see `agents/research-agent/AGENT.md` for the shape).
+2. Create `skills/your-agent/SKILL.md` at the repo root with the agent's instructions and tool
+   declarations (see `skills/research-agent/SKILL.md`).
+3. Nothing else to wire up: `IAgentMetadataRegistry` and `ISkillMetadataRegistry` discover both
+   files on the next process start by walking the configured search paths (`AppConfig.AI.Agents`,
+   `AppConfig.AI.Skills`).
 
 ## Dependencies
 

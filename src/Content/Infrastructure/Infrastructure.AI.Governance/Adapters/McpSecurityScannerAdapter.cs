@@ -158,35 +158,18 @@ internal sealed partial class McpSecurityScannerAdapter : IMcpSecurityScanner
     private static partial Regex ToolPoisoningPattern();
 
     /// <summary>
-    /// Invisible characters used to smuggle text past a human reader: zero-width space (U+200B),
-    /// zero-width non-joiner (U+200C), word joiner (U+2060), the byte-order mark (U+FEFF) and the
-    /// right-to-left override (U+202E).
+    /// Invisible/deceptive characters that smuggle text past a human reader. See
+    /// <see cref="InvisibleCharacters"/> for the shared character set and the rationale for what it
+    /// includes and excludes — this scanner and <see cref="ResponseInjectionScrubber"/> must not
+    /// drift apart on it a second time.
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// <strong>U+202E is not invisible — it is worse.</strong> It reverses the display order of the
-    /// text that follows, so the reviewer reading the description and the model reading the string
-    /// see two different sentences. Every other character here hides something; this one shows the
-    /// human a different thing from what it shows the model, which defeats human review rather than
-    /// evading a pattern.
-    /// </para>
-    /// <para>
-    /// <strong>Zero-width joiner (U+200D) is deliberately excluded</strong>, though it is the
-    /// character most often listed alongside these. It is what builds every compound emoji — 👨‍💻,
-    /// the family and profession sequences, several flags — so a tool description containing one
-    /// ordinary emoji would raise a Critical finding and be withheld at every threshold. That was
-    /// harmless while this scanner had no caller; it withholds real tools now. The joiner also
-    /// carries no hidden text on its own: it joins visible glyphs rather than separating them, which
-    /// is the property the other four are abused for.
-    /// </para>
-    /// <para>
     /// Known residual false positive: U+200C is load-bearing in Persian, Arabic and several Indic
     /// scripts, so a tool described in one of those languages can raise a Critical finding. It is
     /// kept because it is also a standard text-hiding character, and the failure is visible and
     /// diagnosable — the tool is withheld with a logged reason — rather than silent.
-    /// </para>
     /// </remarks>
-    [GeneratedRegex(@"[\u200B\u200C\u202E\u2060\uFEFF]")]
+    [GeneratedRegex(InvisibleCharacters.Pattern)]
     private static partial Regex ZeroWidthPattern();
 
     [GeneratedRegex(@"[A-Za-z0-9+/]{40,}={0,2}")]
