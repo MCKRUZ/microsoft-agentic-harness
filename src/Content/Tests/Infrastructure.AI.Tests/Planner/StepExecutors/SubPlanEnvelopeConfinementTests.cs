@@ -170,6 +170,11 @@ public sealed class SubPlanEnvelopeConfinementTests
             NullLogger<ThreePhasePermissionResolver>.Instance));
         services.AddSingleton(Mock.Of<IToolRiskClassifier>(
             c => c.Classify(It.IsAny<string>()) == new ToolRiskProfile(BlastRadius.Low, true)));
+        // Nothing is known about the tools in this fixture, which is the fail-closed answer. It changes
+        // no outcome here — the behaviour posture is off in this config — but the governor resolves the
+        // registry regardless, and a container that cannot build one cannot build a governor.
+        services.AddSingleton(Mock.Of<IToolBehaviorRegistry>(
+            r => r.Resolve(It.IsAny<string>()) == ToolBehavior.Unknown));
         services.AddSingleton(new Mock<IAutonomyDecisionEvaluator>().Object);
         services.AddSingleton(Mock.Of<IGovernancePolicyEngine>(p => p.HasPolicies == false));
         services.AddSingleton(Mock.Of<IGovernanceAuditService>());

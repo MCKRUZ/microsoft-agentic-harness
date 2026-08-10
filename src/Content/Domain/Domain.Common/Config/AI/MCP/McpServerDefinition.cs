@@ -67,6 +67,34 @@ public class McpServerDefinition
     /// </summary>
     public McpServerAuthConfig? Auth { get; set; }
 
+    /// <summary>
+    /// Whether this server's tool behaviour annotations may be believed when they <em>reduce</em>
+    /// friction — specifically, whether a tool it marks read-only is exempt from the non-read-only
+    /// approval posture. Off by default.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>Why this is not simply on.</strong> A tool annotation is supplied by the party the
+    /// annotation is used to police. The MCP specification is explicit that annotations "are not
+    /// guaranteed to provide a faithful description of tool behavior" and that clients "should never
+    /// make tool use decisions based on <c>ToolAnnotations</c> received from untrusted servers": a
+    /// server wanting to escape an approval gate marks its destructive tool read-only and walks
+    /// through. Connecting a server is a decision about where its tools come from; this is the
+    /// separate decision about whether to take its word for what they do.
+    /// </para>
+    /// <para>
+    /// <strong>It only ever loosens.</strong> Annotations that make an outcome stricter — a tool
+    /// declaring itself destructive — are honoured from every server regardless of this flag, because
+    /// a server with an incentive to lie has no incentive to lie in that direction.
+    /// </para>
+    /// <para>
+    /// Set this true for servers whose code the operator controls or whose publisher they have
+    /// assessed. Leaving it false on a server means every tool it offers requires approval while the
+    /// posture is on, which is the correct cost of not knowing.
+    /// </para>
+    /// </remarks>
+    public bool TrustToolAnnotations { get; set; }
+
     /// <summary>Gets whether this server requires authentication.</summary>
     public bool RequiresAuth => Auth?.IsConfigured ?? false;
 

@@ -42,6 +42,13 @@ public sealed class ToolInvocationGovernorTests
     private readonly IToolRiskClassifier _riskClassifier =
         Mock.Of<IToolRiskClassifier>(c => c.Classify(It.IsAny<string>()) == new ToolRiskProfile(BlastRadius.Low, true));
 
+    /// <summary>
+    /// What the tool under test has declared about itself. Defaults to <see cref="ToolBehavior.Unknown"/>
+    /// — the fail-closed answer — so a test that forgets to arrange a declaration exercises the gated
+    /// case rather than the exempt one.
+    /// </summary>
+    private readonly Mock<IToolBehaviorRegistry> _behavior = new();
+
     private readonly GovernanceConfig _governance = new() { EnforceToolInvocation = true, Enabled = false, EnableAudit = true };
     private readonly PermissionsConfig _permissionsConfig = new();
     private readonly SandboxConfig _sandbox = new();
@@ -58,6 +65,7 @@ public sealed class ToolInvocationGovernorTests
                 It.IsAny<IReadOnlyList<string>?>(), It.IsAny<IReadOnlyList<string>?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result.Success());
         _policyEngine.SetupGet(x => x.HasPolicies).Returns(false);
+        _behavior.Setup(x => x.Resolve(It.IsAny<string>())).Returns(ToolBehavior.Unknown);
         _approvalRouter
             .Setup(x => x.RequestApprovalAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
                 It.IsAny<BlastRadius>(), It.IsAny<IReadOnlyDictionary<string, object?>?>(), It.IsAny<CancellationToken>()))
@@ -91,6 +99,7 @@ public sealed class ToolInvocationGovernorTests
             _context.Object,
             _permissions.Object,
             _riskClassifier,
+            _behavior.Object,
             _autonomy.Object,
             _policyEngine.Object,
             Mock.Of<IGovernanceAuditService>(),

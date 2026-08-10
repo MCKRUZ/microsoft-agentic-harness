@@ -80,5 +80,44 @@ public sealed class GovernanceConfigValidator : AbstractValidator<GovernanceConf
                     "composition root wires the no-op MCP scanner, so tool-registration scanning never " +
                     "runs — enable governance or clear this flag.");
         });
+
+        // The same landmine, for the behaviour posture — but stated precisely, because the imprecise
+        // version of this sentence is wrong. The posture is applied by IToolInvocationGovernor, and
+        // GovernanceEnforcement.IsActive arms that governor on EITHER EnforceToolInvocation OR an
+        // ambient capability envelope. So with enforcement off the posture is not inert everywhere: it
+        // still applies inside a bundle run and nowhere else, which is a worse outcome than either
+        // consistent answer — the same tool is gated or not depending on how the call arrived, and
+        // nothing in the configuration says so.
+        When(x => x.ToolBehaviorGating.RequireApprovalForNonReadOnlyTools, () =>
+        {
+            RuleFor(x => x.EnforceToolInvocation)
+                .Equal(true)
+                .WithMessage(
+                    "ToolBehaviorGating.RequireApprovalForNonReadOnlyTools requires " +
+                    "Governance.EnforceToolInvocation=true. The posture is applied by the tool " +
+                    "governor, which engages either when invocation enforcement is on or when a " +
+                    "bundle run publishes a capability envelope — so leaving enforcement off does not " +
+                    "switch the posture off, it applies it to bundle runs alone while every agent " +
+                    "turn and plan step goes ungated. Note also that reaching a human needs " +
+                    "Governance.ToolApproval.Enabled and Governance.Escalation.Enabled; without them " +
+                    "a gated tool call is refused rather than asked about, which is safe but will " +
+                    "present to users as tools failing for no stated reason.");
+        });
+
+        // Exemptions are checked whether or not the posture is on, because a malformed entry is a typo
+        // in either case and the list is read by operators long before it is read by the governor.
+        RuleForEach(x => x.ToolBehaviorGating.Exemptions)
+            .Must(entry => !string.IsNullOrWhiteSpace(entry.Tool))
+            .WithMessage(
+                "ToolBehaviorGating.Exemptions contains an entry with no tool name. A blank name " +
+                "matches nothing and exempts nothing — remove the entry or name the tool.");
+
+        RuleForEach(x => x.ToolBehaviorGating.Exemptions)
+            .Must(entry => !string.IsNullOrWhiteSpace(entry.Reason))
+            .WithMessage(
+                "ToolBehaviorGating.Exemptions contains an entry with no reason. Every exemption must " +
+                "say why the tool is safe despite not declaring itself read-only: this list is the " +
+                "first thing a reviewer reads when asking why a tool was never gated, and an entry " +
+                "with no justification is indistinguishable from one added to silence a prompt.");
     }
 }
