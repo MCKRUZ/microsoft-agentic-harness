@@ -27,19 +27,44 @@ public sealed class ProviderFatalErrorException : Exception
     /// <summary>A stable <see cref="ProviderFatalReason"/> constant naming the cause.</summary>
     public string ReasonCode { get; }
 
+    /// <summary>
+    /// Providers that failed earlier in the chain before this one stopped it, in the order they
+    /// were tried. Empty when the chain stopped on its first provider.
+    /// </summary>
+    /// <remarks>
+    /// Without this, a chain that is rate-limited on its primary and then rejected on its
+    /// fallback reports only the fallback, and the primary's failure never reaches the caller —
+    /// the operator sees a credential problem on a provider they were not even using by choice.
+    /// </remarks>
+    public IReadOnlyList<string> FailedProviders { get; }
+
     /// <summary>Creates a new instance for the given provider and reason.</summary>
     /// <param name="providerName">The provider whose failure was classified as fatal.</param>
     /// <param name="reasonCode">A <see cref="ProviderFatalReason"/> constant.</param>
     /// <param name="innerException">The original provider exception, preserved for logging.</param>
-    public ProviderFatalErrorException(string providerName, string reasonCode, Exception innerException)
-        : base(BuildMessage(providerName, reasonCode), innerException)
+    /// <param name="failedProviders">Providers that failed earlier in the chain, if any.</param>
+    public ProviderFatalErrorException(
+        string providerName,
+        string reasonCode,
+        Exception innerException,
+        IReadOnlyList<string>? failedProviders = null)
+        : base(BuildMessage(providerName, reasonCode, failedProviders), innerException)
     {
         ProviderName = providerName;
         ReasonCode = reasonCode;
+        FailedProviders = failedProviders?.ToArray() ?? [];
     }
 
-    private static string BuildMessage(string providerName, string reasonCode)
-        => $"Provider '{providerName}' failed with a non-retryable error ({reasonCode}). " +
-           "Retrying and provider fallback were skipped because neither can resolve this cause. " +
-           "See the structured log for the provider's original message.";
+    private static string BuildMessage(
+        string providerName, string reasonCode, IReadOnlyList<string>? failedProviders)
+    {
+        var earlier = failedProviders is { Count: > 0 }
+            ? $" Providers tried earlier and failed: {string.Join(", ", failedProviders)}."
+            : string.Empty;
+
+        return $"Provider '{providerName}' failed with a non-retryable error ({reasonCode}). " +
+               "Retrying and provider fallback were skipped because neither can resolve this cause." +
+               earlier +
+               " See the structured log for the provider's original message.";
+    }
 }

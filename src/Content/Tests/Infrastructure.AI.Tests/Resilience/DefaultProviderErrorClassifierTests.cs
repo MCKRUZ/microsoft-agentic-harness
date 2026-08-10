@@ -158,6 +158,68 @@ public sealed class DefaultProviderErrorClassifierTests
     }
 
     [Fact]
+    public void Classify_RetiredModelOn400_DoesNotStopTheChainAsABillingFailure()
+    {
+        // Azure OpenAI reports a retired deployment with this wording. A bare "no longer active"
+        // billing pattern matched it, halting the whole fallback chain and reporting an
+        // exhausted balance — for a problem the next provider in the chain could have served.
+        var sut = ResilienceTestSupport.CreateClassifier();
+
+        var classification = sut.Classify(new HttpRequestException(
+            "The model 'gpt-4-32k' is no longer active. Please use a supported model.",
+            null, HttpStatusCode.BadRequest));
+
+        classification.Kind.Should().NotBe(
+            ProviderFailureKind.FatalForChain,
+            "a retired model on one provider says nothing about the account's billing state");
+    }
+
+    [Fact]
+    public void Classify_UnrelatedResourceOn400_IsNotReportedAsAMissingModel()
+    {
+        // A bare "does not exist" pattern claimed any 4xx mentioning a missing anything.
+        var sut = ResilienceTestSupport.CreateClassifier();
+
+        var classification = sut.Classify(new HttpRequestException(
+            "Assistant with id 'asst_abc123' does not exist", null, HttpStatusCode.BadRequest));
+
+        classification.ReasonCode.Should().NotBe(
+            ProviderFatalReason.ModelNotFound,
+            "a missing assistant is not a missing model, and mis-naming it misdirects the operator");
+    }
+
+    [Fact]
+    public void Classify_GenuineMissingDeployment_IsStillReportedAsAMissingModel()
+    {
+        // The control for the test above — narrowing the patterns must not lose the real case.
+        var sut = ResilienceTestSupport.CreateClassifier();
+
+        sut.Classify(new HttpRequestException(
+                "The API deployment for this resource does not exist", null, HttpStatusCode.BadRequest))
+            .ReasonCode.Should().Be(ProviderFatalReason.ModelNotFound);
+    }
+
+    [Fact]
+    public void Classify_NullPatternArray_DoesNotThrowInsideTheFailurePredicate()
+    {
+        // The binder never yields null, but the property is settable, and this code runs inside
+        // Polly's ShouldHandle — a throw here replaces the real provider error during an incident.
+        var config = new ResilienceConfig
+        {
+            ErrorClassification = new ProviderErrorClassificationConfig
+            {
+                AdditionalChainFatalMessagePatterns = null!,
+                AdditionalProviderFatalMessagePatterns = null!
+            }
+        };
+        var sut = ResilienceTestSupport.CreateClassifier(config);
+
+        var act = () => sut.Classify(new HttpRequestException("boom", null, HttpStatusCode.BadRequest));
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
     public void Classify_DefaultConfigWithNothingSet_HasTheBuiltInPatternsActive()
     {
         // The config object is constructed with nothing configured at all — the built-in

@@ -167,6 +167,77 @@ public sealed class ProviderFatalErrorPipelineTests
         calls.Should().BeGreaterThan(1);
     }
 
+    [Fact]
+    public async Task Pipeline_CircuitAlreadyOpen_RejectsImmediatelyWithoutBurningRetries()
+    {
+        // The circuit breaker rejects with a BrokenCircuitException that *wraps the exception
+        // which broke the circuit*. Classifying by unwrapping therefore finds the original 503,
+        // calls it transient, and retries — sleeping through the entire backoff budget against a
+        // breaker that by definition will not let anything through. Measured before the fix:
+        // three attempts and the full delay, for a call that can only ever be rejected.
+        var config = CreateConfig(maxAttempts: 4, failureRatio: 0.5, minimumThroughput: 2);
+        config.Retry.BaseDelaySeconds = 0.4;
+        var pipeline = ProviderResiliencePipelineBuilder.Build(
+            "test-provider", config, ResilienceTestSupport.CreateClassifier(config), out var stateProvider);
+
+        await RunFailures(pipeline, 8,
+            () => new HttpRequestException("Service Unavailable", null, HttpStatusCode.ServiceUnavailable));
+        stateProvider.CircuitState.Should().Be(CircuitState.Open, "precondition for this test");
+
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var act = async () => await pipeline.ExecuteAsync<ChatResponse>(
+            async _ => throw new HttpRequestException("unreachable"), CancellationToken.None);
+        await act.Should().ThrowAsync<BrokenCircuitException>();
+        stopwatch.Stop();
+
+        stopwatch.ElapsedMilliseconds.Should().BeLessThan(
+            400,
+            "an open circuit must fail fast — retrying its own rejection cannot possibly succeed");
+    }
+
+    [Fact]
+    public async Task Pipeline_CircuitRejection_DoesNotFeedBackIntoTheFailureRatio()
+    {
+        // A breaker that counted its own rejections would hold itself open indefinitely.
+        var config = CreateConfig(maxAttempts: 1, failureRatio: 0.5, minimumThroughput: 2);
+        var classifier = ResilienceTestSupport.CreateClassifier(config);
+
+        var rejection = new BrokenCircuitException(
+            "circuit is open",
+            new HttpRequestException("Service Unavailable", null, HttpStatusCode.ServiceUnavailable));
+
+        var classification = classifier.Classify(rejection);
+
+        classification.Kind.Should().Be(
+            Domain.AI.Resilience.ProviderFailureKind.FatalForProvider,
+            "not retryable and not countable, but the next provider should still be tried");
+        classification.ReasonCode.Should().Be(Domain.AI.Resilience.ProviderFatalReason.CircuitOpen);
+    }
+
+    [Fact]
+    public async Task Pipeline_PerAttemptTimeout_IsStillRetried()
+    {
+        // The control for the two tests above. TimeoutRejectedException shares a base class
+        // (ExecutionRejectedException) with BrokenCircuitException, so excluding failures by
+        // that base — the obvious fix — would silently stop retrying timeouts, which are the
+        // most ordinary transient failure there is.
+        var config = CreateConfig(maxAttempts: 3);
+        config.Timeout.PerAttemptSeconds = 1;
+        var pipeline = ProviderResiliencePipelineBuilder.Build(
+            "test-provider", config, ResilienceTestSupport.CreateClassifier(config), out _);
+        var calls = 0;
+
+        var act = async () => await pipeline.ExecuteAsync<ChatResponse>(async ct =>
+        {
+            calls++;
+            await Task.Delay(TimeSpan.FromSeconds(10), ct);
+            throw new InvalidOperationException("unreachable");
+        }, CancellationToken.None);
+
+        await act.Should().ThrowAsync<Polly.Timeout.TimeoutRejectedException>();
+        calls.Should().BeGreaterThan(1, "a per-attempt timeout must still consume retries");
+    }
+
     private static async Task RunFailures(
         Polly.ResiliencePipeline<ChatResponse> pipeline, int count, Func<Exception> failure)
     {

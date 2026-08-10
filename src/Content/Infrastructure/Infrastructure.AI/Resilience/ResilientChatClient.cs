@@ -115,7 +115,7 @@ public sealed class ResilientChatClient : IChatClient
             }
             catch (Exception ex)
             {
-                if (TryBuildChainFatal(ex, provider.Name) is { } fatal)
+                if (TryBuildChainFatal(ex, provider.Name, failedProviders) is { } fatal)
                     throw fatal;
 
                 lastException = ex;
@@ -184,7 +184,7 @@ public sealed class ResilientChatClient : IChatClient
             {
                 // Build the fatal decision before disposing, but throw after — an abandoned
                 // enumerator from the failed attempt must still be released.
-                var fatal = TryBuildChainFatal(ex, provider.Name);
+                var fatal = TryBuildChainFatal(ex, provider.Name, failedProviders);
 
                 if (enumerator is not null)
                 {
@@ -216,7 +216,7 @@ public sealed class ResilientChatClient : IChatClient
                         catch (Exception ex)
                         {
                             // The enclosing finally releases the enumerator on the way out.
-                            if (TryBuildChainFatal(ex, provider.Name) is { } fatal)
+                            if (TryBuildChainFatal(ex, provider.Name, failedProviders) is { } fatal)
                                 throw fatal;
 
                             lastException = ex;
@@ -291,7 +291,8 @@ public sealed class ResilientChatClient : IChatClient
     /// the thrown exception's message — provider error text has been observed to echo back
     /// credential fragments, and this exception may reach an API response.
     /// </remarks>
-    private ProviderFatalErrorException? TryBuildChainFatal(Exception exception, string providerName)
+    private ProviderFatalErrorException? TryBuildChainFatal(
+        Exception exception, string providerName, IReadOnlyList<string> failedProviders)
     {
         var classification = _errorClassifier.Classify(exception);
 
@@ -301,10 +302,17 @@ public sealed class ResilientChatClient : IChatClient
         _logger?.LogError(
             exception,
             "Provider {Provider} failed with a non-retryable error ({ReasonCode}). Abandoning the "
-            + "fallback chain — no other provider can resolve this cause. Provider message: {ProviderMessage}",
-            providerName, classification.ReasonCode, exception.Message);
+            + "fallback chain — no other provider can resolve this cause. Providers that failed "
+            + "earlier: {FailedProviders}. Provider message: {ProviderMessage}",
+            providerName, classification.ReasonCode, failedProviders, exception.Message);
 
-        return new ProviderFatalErrorException(providerName, classification.ReasonCode!, exception);
+        // The request failed outright, exactly as it does when the chain is exhausted, so it
+        // belongs in the same counter — otherwise a fleet-wide bad credential looks like zero
+        // degradation on the dashboard.
+        ResilienceMetrics.DegradationEvents.Add(1);
+
+        return new ProviderFatalErrorException(
+            providerName, classification.ReasonCode!, exception, failedProviders);
     }
 
     private void AttachMetadata(ChatResponse response, string activeProvider, List<string> failedProviders)

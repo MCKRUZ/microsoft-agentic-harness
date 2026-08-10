@@ -126,6 +126,11 @@ public sealed class ProviderSdkRetrySuppressionTests
 
         public Uri BaseAddress { get; }
 
+        /// <summary>
+        /// Accepted connections, which equals HTTP requests here because every response carries
+        /// <c>Connection: close</c> — the SDK cannot pipeline a retry down a socket the server
+        /// has hung up. If that header is ever removed this stops counting requests.
+        /// </summary>
         public int RequestCount => Volatile.Read(ref _requestCount);
 
         private async Task AcceptLoopAsync(HttpStatusCode status, CancellationToken ct)

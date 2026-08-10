@@ -108,6 +108,26 @@ public sealed class ResilientChatClientFatalErrorTests
     }
 
     [Fact]
+    public async Task GetResponse_FatalOnAFallbackProvider_StillReportsTheProvidersThatFailedFirst()
+    {
+        // Primary is rate-limited (a normal fallback), the fallback then rejects the credential.
+        // Reporting only the fallback tells the operator a provider they never chose has a bad
+        // key, with no sign the primary was failing at all.
+        var primary = new ThrowingChatClient(
+            () => new HttpRequestException("Too many requests", null, HttpStatusCode.TooManyRequests));
+        var secondary = new ThrowingChatClient(
+            () => new HttpRequestException("Invalid API key", null, HttpStatusCode.Unauthorized));
+        var sut = CreateClient(primary, secondary);
+
+        var act = () => sut.GetResponseAsync([new ChatMessage(ChatRole.User, "hi")]);
+
+        var thrown = (await act.Should().ThrowAsync<ProviderFatalErrorException>()).Which;
+        thrown.ProviderName.Should().Be("secondary");
+        thrown.FailedProviders.Should().ContainSingle().Which.Should().Be("primary");
+        thrown.Message.Should().Contain("primary", "the operator needs the whole picture, not the last hop");
+    }
+
+    [Fact]
     public async Task GetStreamingResponse_InvalidCredentialAtInitiation_DoesNotTryTheNextProvider()
     {
         var primary = new ThrowingChatClient(

@@ -6,6 +6,7 @@ using Azure;
 using Domain.AI.Resilience;
 using Domain.Common.Config.AI.Resilience;
 using Microsoft.Extensions.Options;
+using Polly.CircuitBreaker;
 using Polly.Timeout;
 
 namespace Infrastructure.AI.Resilience;
@@ -48,11 +49,23 @@ public sealed class DefaultProviderErrorClassifier : IProviderErrorClassifier
         "api key not valid", "authentication failed", "unauthorized", "access token is invalid"
     ];
 
-    /// <summary>Wordings that mean the account cannot currently be billed.</summary>
+    /// <summary>
+    /// Wordings that mean the account cannot currently be billed.
+    /// </summary>
+    /// <remarks>
+    /// Every entry is anchored to a phrase that cannot plausibly appear in an unrelated error.
+    /// A bare <c>"billing"</c> and a bare <c>"no longer active"</c> were both tried and removed:
+    /// Azure OpenAI reports a retired deployment as a 400 reading "The model ... is no longer
+    /// active", which the bare pattern turned into a chain-fatal billing error — halting the
+    /// fallback chain and misnaming the cause for a problem another chain member could serve.
+    /// This is the failure mode the whole design calls the most damaging one, so these patterns
+    /// stay narrow even at the cost of missing a wording.
+    /// </remarks>
     private static readonly string[] BillingPatterns =
     [
         "credit balance is too low", "insufficient credits", "insufficient_quota",
-        "billing", "subscription has been suspended", "no longer active"
+        "billing details", "billing account", "billing has been disabled",
+        "subscription has been suspended", "subscription has expired"
     ];
 
     /// <summary>Wordings that mean the credential is valid but not permitted.</summary>
@@ -62,11 +75,18 @@ public sealed class DefaultProviderErrorClassifier : IProviderErrorClassifier
         "permission denied", "access denied"
     ];
 
-    /// <summary>Wordings that mean this provider does not host the requested model.</summary>
+    /// <summary>
+    /// Wordings that mean this provider does not host the requested model.
+    /// </summary>
+    /// <remarks>
+    /// A bare <c>"does not exist"</c> was tried and removed — it also matches unrelated 4xx
+    /// bodies such as "Assistant with id '...' does not exist", suppressing retry for a request
+    /// that is merely malformed and reporting the wrong cause to the operator.
+    /// </remarks>
     private static readonly string[] ModelNotFoundPatterns =
     [
-        "model not found", "model_not_found", "deployment not found",
-        "unknown model", "does not exist"
+        "model not found", "model_not_found", "deployment not found", "unknown model",
+        "model does not exist", "deployment does not exist", "resource does not exist"
     ];
 
     private readonly IOptionsMonitor<ResilienceConfig> _config;
@@ -82,6 +102,20 @@ public sealed class DefaultProviderErrorClassifier : IProviderErrorClassifier
     public ProviderFailureClassification Classify(Exception exception)
     {
         ArgumentNullException.ThrowIfNull(exception);
+
+        // Checked before anything else, and deliberately not unwrapped. An open circuit rejects
+        // the call locally and reports it as a BrokenCircuitException *wrapping the exception
+        // that broke the circuit* — so unwrapping finds the original 503, calls it transient,
+        // and the retry strategy sleeps through its whole backoff budget hammering a breaker
+        // that is by definition not going to let anything through. Not retryable, and above all
+        // not countable: a breaker must never feed its own rejections back into its failure
+        // ratio. Falling back to the next provider is still right, which is exactly
+        // FatalForProvider.
+        //
+        // Matched on BrokenCircuitException, NOT its base ExecutionRejectedException:
+        // TimeoutRejectedException shares that base, and a timeout must stay retryable.
+        if (exception is BrokenCircuitException)
+            return ProviderFailureClassification.FatalForProvider(ProviderFatalReason.CircuitOpen);
 
         if (TryGetHttpStatus(exception) is int status)
         {
@@ -233,8 +267,17 @@ public sealed class DefaultProviderErrorClassifier : IProviderErrorClassifier
         }
     }
 
-    private static bool ContainsAny(string text, string[] patterns)
+    /// <remarks>
+    /// The null check is not defensive padding. The configuration binder never yields null, but
+    /// the property is a settable array, so a consumer's <c>services.Configure</c> can. This runs
+    /// inside Polly's failure predicate, where a NullReferenceException would replace the real
+    /// provider error with a meaningless one on every failed attempt — visible only mid-incident.
+    /// </remarks>
+    private static bool ContainsAny(string text, string[]? patterns)
     {
+        if (patterns is null)
+            return false;
+
         foreach (var pattern in patterns)
         {
             if (!string.IsNullOrWhiteSpace(pattern)

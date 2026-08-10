@@ -35,4 +35,10 @@ public static class ProviderFatalReason
     /// not the category. Used when the harness cannot attribute the failure more precisely.
     /// </summary>
     public const string Configuration = "provider.fatal.configuration";
+
+    /// <summary>
+    /// The harness itself refused the call because this provider's circuit breaker is open.
+    /// Not a provider response at all — the request never left the process.
+    /// </summary>
+    public const string CircuitOpen = "provider.fatal.circuit_open";
 }
