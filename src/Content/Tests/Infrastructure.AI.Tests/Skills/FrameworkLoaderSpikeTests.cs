@@ -22,10 +22,10 @@ public class FrameworkLoaderSpikeTests
 
     public FrameworkLoaderSpikeTests()
     {
-        var repoRoot = RepoRoot.Path;
-        _skillsRoot = Path.Combine(
-            repoRoot,
-            "src", "Content", "Application", "Application.Core", "Agents", "Skills");
+        // Any real SKILL.md folder is a fine fixture for this vendor-SDK spike — it isn't testing
+        // this harness's own skill loading. Uses the repo-root skills/ tree (the real, live one)
+        // rather than the removed Application.Core/Agents/Skills duplicate.
+        _skillsRoot = RepoRoot.Combine("skills");
 
         Directory.Exists(_skillsRoot).Should().BeTrue(
             $"Skills directory must exist at {_skillsRoot}");

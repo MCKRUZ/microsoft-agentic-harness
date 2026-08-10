@@ -35,8 +35,6 @@ Files are organized by domain area: `CQRS/` (handlers, validators, commands), `C
 | `RunHarnessOptimizationCommandHandler_SnapshotTests` | Configuration snapshot management | 3 | Unit |
 | `RunHarnessOptimizationCommandTests` | Optimization command record | 3 | Unit |
 | `RunHarnessOptimizationCommandValidatorTests` | Validator for optimization command | 3 | Unit |
-| `AgentDefinitionsTests` | Agent definition loading and properties | 5 | Unit |
-| `AgentDefinitionsTests_Extended` | Extended agent definition scenarios | 4 | Unit |
 | `AgentPipelineIntegrationTests` | Full CQRS pipeline end-to-end | 4 | Integration |
 | `CommandRecordIntegrationTests` | Command record serialization round-trip | 3 | Integration |
 | `ValidatorIntegrationTests` | Validator discovery and execution | 3 | Integration |

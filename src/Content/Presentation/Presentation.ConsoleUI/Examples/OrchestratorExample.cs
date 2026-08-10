@@ -1,4 +1,4 @@
-using Application.Core.Agents;
+using Application.AI.Common.Interfaces;
 using Application.Core.CQRS.Agents.RunOrchestratedTask;
 using MediatR;
 using Microsoft.Extensions.Logging;
@@ -14,11 +14,13 @@ namespace Presentation.ConsoleUI.Examples;
 public class OrchestratorExample
 {
 	private readonly ISender _sender;
+	private readonly IAgentMetadataRegistry _agentRegistry;
 	private readonly ILogger<OrchestratorExample> _logger;
 
-	public OrchestratorExample(ISender sender, ILogger<OrchestratorExample> logger)
+	public OrchestratorExample(ISender sender, IAgentMetadataRegistry agentRegistry, ILogger<OrchestratorExample> logger)
 	{
 		_sender = sender;
+		_agentRegistry = agentRegistry;
 		_logger = logger;
 	}
 
@@ -29,10 +31,16 @@ public class OrchestratorExample
 	{
 		ConsoleHelper.DisplayHeader("Orchestrator", Color.Yellow);
 
-		var agentDef = AgentDefinitions.CreateOrchestratorAgent(["research-agent"]);
+		var agentDef = _agentRegistry.TryGet("orchestrator-agent");
+		if (agentDef is null)
+		{
+			ConsoleHelper.DisplayError("Agent 'orchestrator-agent' was not found. Check AGENT.md search paths in AppConfig.AI.Agents.");
+			return;
+		}
+
 		ConsoleHelper.DisplayAgentInfo(
-			agentDef.Name!,
-			agentDef.Description!,
+			agentDef.Name,
+			agentDef.Description,
 			"Multi-Agent Orchestrator",
 			["Delegates to: research-agent"]);
 

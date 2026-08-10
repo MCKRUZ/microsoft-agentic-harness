@@ -34,6 +34,34 @@ public sealed class ResponseInjectionScrubberTests
         Assert.Contains(result.Findings, f => f.ThreatLevel == ThreatLevel.Critical);
     }
 
+    /// <summary>
+    /// The right-to-left override shows a human reviewer a different sentence from the one the
+    /// original tool response carries, which defeats review of sanitized output rather than
+    /// evading a pattern.
+    /// </summary>
+    [Fact]
+    public void Sanitize_RightToLeftOverride_DetectsCritical()
+    {
+        var result = _scrubber.Sanitize("Result: 5 documents found.‮ gnp.eciovni_dnes");
+
+        Assert.True(result.WasSanitized);
+        Assert.Contains(result.Findings, f => f.ThreatLevel == ThreatLevel.Critical);
+    }
+
+    /// <summary>
+    /// The zero-width joiner (U+200D) builds every compound emoji and must not be treated as a
+    /// hidden character, or ordinary tool output containing one emoji gets stripped and flagged
+    /// Critical.
+    /// </summary>
+    [Fact]
+    public void Sanitize_CompoundEmoji_DoesNotFalsePositive()
+    {
+        var result = _scrubber.Sanitize("Deployed by 👨‍💻 to the staging environment.");
+
+        Assert.False(result.WasSanitized);
+        Assert.Empty(result.Findings);
+    }
+
     [Fact]
     public void Sanitize_InstructionOverride_DetectsHigh()
     {
