@@ -4,6 +4,7 @@ using Azure.AI.Agents.Persistent;
 using Azure.AI.Inference;
 using Azure.AI.OpenAI;
 using Infrastructure.AI.Clients;
+using Infrastructure.AI.Helpers;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
@@ -14,15 +15,32 @@ namespace Infrastructure.AI.Factories;
 
 public sealed partial class ChatClientFactory
 {
-    private Task<IChatClient> GetAzureOpenAIChatClientAsync(string deploymentName, CancellationToken cancellationToken)
+    private Task<IChatClient> GetAzureOpenAIChatClientAsync(
+        string deploymentName, bool disableProviderRetry, CancellationToken cancellationToken)
     {
-        var client = _serviceProvider.GetService<AzureOpenAIClient>()
+        var client = ResolveSdkClient<AzureOpenAIClient>(disableProviderRetry)
             ?? throw new AiProviderNotConfiguredException(
                 "Azure OpenAI is not configured. Set AppConfig:AI:AgentFramework:Endpoint and ApiKey, " +
                 "and ensure ClientType matches your deployment.");
 
         return Task.FromResult(client.GetChatClient(deploymentName).AsIChatClient());
     }
+
+    /// <summary>
+    /// Resolves the shared SDK client for a provider, or the keyed variant whose own retry policy
+    /// is disabled, when the caller is supplying its own retry layer.
+    /// </summary>
+    private T? ResolveSdkClient<T>(bool disableProviderRetry) where T : class
+        => disableProviderRetry
+            ? _serviceProvider.GetKeyedService<T>(AgentFrameworkHelper.NoProviderRetryClientKey)
+            : _serviceProvider.GetService<T>();
+
+    /// <summary>
+    /// Builds the client cache key. The retry-disabled variant is a distinct client and must not
+    /// share an entry with the retrying one, or whichever was created first would serve both.
+    /// </summary>
+    private static string CacheKey(string prefix, string id, bool disableProviderRetry)
+        => disableProviderRetry ? $"{prefix}_noretry_{id}" : $"{prefix}_{id}";
 
     /// <summary>
     /// Normalizes an Azure AI Inference endpoint URI. For Azure AI Foundry multi-model resources
@@ -48,9 +66,10 @@ public sealed partial class ChatClientFactory
     /// <c>api-key</c> in the request header, which is required by Azure AI Foundry. Using
     /// <see cref="OpenAI.OpenAIClient"/> here would send <c>Authorization: Bearer</c> and result in a 401.
     /// </summary>
-    private async Task<IChatClient> GetAzureAIInferenceChatClientAsync(string deploymentName, CancellationToken cancellationToken)
+    private async Task<IChatClient> GetAzureAIInferenceChatClientAsync(
+        string deploymentName, bool disableProviderRetry, CancellationToken cancellationToken)
     {
-        var cacheKey = $"inference_{deploymentName}";
+        var cacheKey = CacheKey("inference", deploymentName, disableProviderRetry);
 
         if (_clientCache.TryGetValue(cacheKey, out IChatClient? cached) && cached is not null)
             return cached;
@@ -83,7 +102,8 @@ public sealed partial class ChatClientFactory
 
             var client = new ChatCompletionsClient(
                 endpointUri,
-                new Azure.AzureKeyCredential(config.ApiKey));
+                new Azure.AzureKeyCredential(config.ApiKey),
+                AgentFrameworkHelper.GetAzureAIInferenceClientOptions(disableProviderRetry));
 
             var chatClient = client.AsIChatClient(deploymentName);
 
@@ -101,9 +121,10 @@ public sealed partial class ChatClientFactory
         }
     }
 
-    private Task<IChatClient> GetOpenAIChatClientAsync(string deploymentName, CancellationToken cancellationToken)
+    private Task<IChatClient> GetOpenAIChatClientAsync(
+        string deploymentName, bool disableProviderRetry, CancellationToken cancellationToken)
     {
-        var client = _serviceProvider.GetService<OpenAIClient>()
+        var client = ResolveSdkClient<OpenAIClient>(disableProviderRetry)
             ?? throw new AiProviderNotConfiguredException(
                 "OpenAI is not configured. Set AppConfig:AI:AgentFramework:ApiKey.");
 
@@ -115,7 +136,8 @@ public sealed partial class ChatClientFactory
     /// <see cref="IChatClient"/> for that model. The agent's instructions and tools are
     /// applied by the <see cref="Application.AI.Common.Factories.AgentFactory"/> pipeline, not by the chat client.
     /// </summary>
-    private async Task<IChatClient> GetPersistentAgentChatClientAsync(string agentId, CancellationToken cancellationToken)
+    private async Task<IChatClient> GetPersistentAgentChatClientAsync(
+        string agentId, bool disableProviderRetry, CancellationToken cancellationToken)
     {
         if (_adminClient is null)
         {
@@ -124,7 +146,9 @@ public sealed partial class ChatClientFactory
                 "Set AppConfig:AI:AIFoundry:ProjectEndpoint and ensure credentials are valid.");
         }
 
-        var cacheKey = $"persistent_agent_{agentId}";
+        // Resolves to an Azure OpenAI client, which does retry internally — so the two variants
+        // are genuinely different clients and need separate cache entries.
+        var cacheKey = CacheKey("persistent_agent", agentId, disableProviderRetry);
 
         if (_clientCache.TryGetValue(cacheKey, out IChatClient? cached) && cached is not null)
             return cached;
@@ -145,7 +169,7 @@ public sealed partial class ChatClientFactory
                 agentId, agent.Model, agent.Name);
 
             // Use the agent's model via Azure OpenAI — AI Foundry agents run on AOAI
-            var chatClient = await GetAzureOpenAIChatClientAsync(agent.Model, cancellationToken);
+            var chatClient = await GetAzureOpenAIChatClientAsync(agent.Model, disableProviderRetry, cancellationToken);
 
             var cacheOptions = new MemoryCacheEntryOptions
             {

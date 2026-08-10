@@ -32,6 +32,7 @@ public sealed class ResilientChatClientProvider : IResilientChatClientProvider
     private readonly IOptionsMonitor<ResilienceConfig> _resilienceConfig;
     private readonly IOptionsMonitor<AppConfig> _appConfig;
     private readonly PollyProviderHealthMonitor _healthMonitor;
+    private readonly IProviderErrorClassifier _errorClassifier;
     private readonly ILoggerFactory _loggerFactory;
     private readonly ILogger<ResilientChatClientProvider> _logger;
     private readonly Lazy<Task<IChatClient>> _cachedClient;
@@ -41,6 +42,7 @@ public sealed class ResilientChatClientProvider : IResilientChatClientProvider
     /// <param name="resilienceConfig">Resilience configuration from Options pattern.</param>
     /// <param name="appConfig">App configuration — used to honor the configured agent framework when resilience is disabled.</param>
     /// <param name="healthMonitor">Concrete health monitor for <see cref="PollyProviderHealthMonitor.ReportStateChange"/> wiring.</param>
+    /// <param name="errorClassifier">Decides what the pipelines retry, count, and fall back on.</param>
     /// <param name="loggerFactory">Logger factory for creating typed loggers for composed clients.</param>
     /// <param name="logger">Logger for chain composition events.</param>
     public ResilientChatClientProvider(
@@ -48,6 +50,7 @@ public sealed class ResilientChatClientProvider : IResilientChatClientProvider
         IOptionsMonitor<ResilienceConfig> resilienceConfig,
         IOptionsMonitor<AppConfig> appConfig,
         PollyProviderHealthMonitor healthMonitor,
+        IProviderErrorClassifier errorClassifier,
         ILoggerFactory loggerFactory,
         ILogger<ResilientChatClientProvider> logger)
     {
@@ -55,6 +58,7 @@ public sealed class ResilientChatClientProvider : IResilientChatClientProvider
         _resilienceConfig = resilienceConfig;
         _appConfig = appConfig;
         _healthMonitor = healthMonitor;
+        _errorClassifier = errorClassifier;
         _loggerFactory = loggerFactory;
         _logger = logger;
         // PublicationOnly: don't cache faulted tasks permanently — allow retry on transient factory errors
@@ -97,12 +101,16 @@ public sealed class ResilientChatClientProvider : IResilientChatClientProvider
 
         foreach (var entry in chain)
         {
-            var rawClient = await _chatClientFactory.GetChatClientAsync(
+            // Chain members must not retry internally: the Polly pipeline below is the single
+            // retry authority here. Leaving the SDK's own retry on would multiply attempts and
+            // let the circuit breaker only ever see already-exhausted calls.
+            var rawClient = await _chatClientFactory.GetChatClientWithoutProviderRetryAsync(
                 entry.ClientType, entry.DeploymentId);
 
             var pipeline = ProviderResiliencePipelineBuilder.Build(
                 providerName: entry.DeploymentId,
                 config: config,
+                classifier: _errorClassifier,
                 out var stateProvider,
                 onCircuitStateChanged: newState =>
                     _healthMonitor.ReportStateChange(entry.DeploymentId, newState),
@@ -114,6 +122,7 @@ public sealed class ResilientChatClientProvider : IResilientChatClientProvider
             var streamPipeline = ProviderResiliencePipelineBuilder.BuildForStreamInitiation(
                 providerName: entry.DeploymentId,
                 config: config,
+                classifier: _errorClassifier,
                 sharedStateProvider: streamStateProvider,
                 onCircuitStateChanged: newState =>
                     _healthMonitor.ReportStateChange(entry.DeploymentId, newState),
@@ -130,7 +139,7 @@ public sealed class ResilientChatClientProvider : IResilientChatClientProvider
         _logger.LogInformation("Composed resilient chat client with {Count} providers: {ProviderNames}",
             providers.Count, providerNames);
 
-        return new ResilientChatClient(providers, _healthMonitor,
+        return new ResilientChatClient(providers, _healthMonitor, _errorClassifier,
             _loggerFactory.CreateLogger<ResilientChatClient>());
     }
 }

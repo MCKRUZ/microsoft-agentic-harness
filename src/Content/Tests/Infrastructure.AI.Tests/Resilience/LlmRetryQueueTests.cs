@@ -202,6 +202,33 @@ public sealed class LlmRetryQueueTests : IDisposable
     }
 
     [Fact]
+    public async Task DrainAsync_FatalProviderError_FailsTheRequestInsteadOfRequeueingIt()
+    {
+        // The control is DrainAsync_RetryFails_RequeuesItem directly above: exhaustion is worth
+        // re-queueing because providers recover. A rejected credential is not — re-queueing it
+        // would spin the item around the drain loop until its TTL expired and then report a
+        // timeout, burying the one-line configuration fix that would have resolved it.
+        _chatClient
+            .Setup(c => c.GetResponseAsync(
+                It.IsAny<IList<ChatMessage>>(),
+                It.IsAny<ChatOptions?>(),
+                It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new ProviderFatalErrorException(
+                "test-provider",
+                ProviderFatalReason.InvalidCredentials,
+                new HttpRequestException("Invalid API key")));
+
+        var task = _sut.EnqueueAsync(TestMessages(), null, CancellationToken.None);
+
+        await _sut.DrainAsync(CancellationToken.None);
+
+        task.IsFaulted.Should().BeTrue();
+        task.Exception!.InnerException.Should().BeOfType<ProviderFatalErrorException>(
+            "the caller needs the actual cause, not a TTL timeout an hour later");
+        _sut.QueueDepth.Should().Be(0);
+    }
+
+    [Fact]
     public async Task DrainAsync_NoHealthyProvider_DoesNotAttemptRetry()
     {
         _healthMonitor.Setup(h => h.IsAnyProviderHealthy()).Returns(false);

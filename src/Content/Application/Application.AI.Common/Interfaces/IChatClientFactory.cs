@@ -31,6 +31,32 @@ public interface IChatClientFactory
 		CancellationToken cancellationToken = default);
 
 	/// <summary>
+	/// Creates a chat client whose SDK-level retry is turned off, leaving retry entirely to the
+	/// caller.
+	/// </summary>
+	/// <remarks>
+	/// <para>
+	/// The Azure OpenAI and Azure AI Inference SDKs retry transient failures on their own — four
+	/// requests for a single rate-limited call, measured. That is the right default for a bare
+	/// client, but wrong underneath the resilience pipeline: the two layers multiply, and the
+	/// circuit breaker's failure ratio ends up measured against calls the SDK already retried,
+	/// so the breaker reacts long after the provider started failing.
+	/// </para>
+	/// <para>
+	/// Only the provider fallback chain should use this. Every other caller wants a client that
+	/// retries on its own, because nothing else wraps it.
+	/// </para>
+	/// </remarks>
+	/// <param name="clientType">The AI framework client type.</param>
+	/// <param name="deploymentOrAgentId">The deployment, model, or agent identifier.</param>
+	/// <param name="cancellationToken">Cancellation token.</param>
+	/// <returns>An <see cref="IChatClient"/> that performs no retries of its own.</returns>
+	Task<IChatClient> GetChatClientWithoutProviderRetryAsync(
+		AIAgentFrameworkClientType clientType,
+		string deploymentOrAgentId,
+		CancellationToken cancellationToken = default);
+
+	/// <summary>
 	/// Gets availability status for all AI providers.
 	/// </summary>
 	IReadOnlyDictionary<AIAgentFrameworkClientType, bool> GetAvailableProviders();

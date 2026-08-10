@@ -20,17 +20,54 @@ public static class AgentFrameworkHelper
     private const int DefaultNetworkTimeoutSeconds = 300;
 
     /// <summary>
+    /// DI key for the SDK client variants that perform no retries of their own, resolved by the
+    /// provider fallback chain so the Polly pipeline is the only layer retrying.
+    /// </summary>
+    public const string NoProviderRetryClientKey = "no-provider-retry";
+
+    /// <summary>
     /// Gets configured options for <see cref="AzureOpenAIClient"/>.
     /// </summary>
     /// <param name="networkTimeoutSeconds">Network timeout in seconds. Default: 300.</param>
+    /// <param name="disableProviderRetry">
+    /// When true, turns off the SDK's own retry policy, leaving retry entirely to the caller.
+    /// Measured default behaviour is four requests for a single rate-limited call. Set this only
+    /// when something else is already retrying — see
+    /// <see cref="Application.AI.Common.Interfaces.IChatClientFactory.GetChatClientWithoutProviderRetryAsync"/>.
+    /// </param>
     /// <returns>Configured <see cref="AzureOpenAIClientOptions"/>.</returns>
-    public static AzureOpenAIClientOptions GetAzureOpenAIClientOptions(int networkTimeoutSeconds = DefaultNetworkTimeoutSeconds)
+    public static AzureOpenAIClientOptions GetAzureOpenAIClientOptions(
+        int networkTimeoutSeconds = DefaultNetworkTimeoutSeconds,
+        bool disableProviderRetry = false)
     {
-        return new AzureOpenAIClientOptions
+        var options = new AzureOpenAIClientOptions
         {
             NetworkTimeout = TimeSpan.FromSeconds(networkTimeoutSeconds),
             UserAgentApplicationId = UserAgentValue
         };
+
+        if (disableProviderRetry)
+            options.RetryPolicy = new ClientRetryPolicy(maxRetries: 0);
+
+        return options;
+    }
+
+    /// <summary>
+    /// Gets configured options for <see cref="Azure.AI.Inference.ChatCompletionsClient"/>.
+    /// </summary>
+    /// <param name="disableProviderRetry">
+    /// When true, turns off the SDK's own retry policy, leaving retry entirely to the caller.
+    /// </param>
+    /// <returns>Configured <see cref="Azure.AI.Inference.AzureAIInferenceClientOptions"/>.</returns>
+    public static Azure.AI.Inference.AzureAIInferenceClientOptions GetAzureAIInferenceClientOptions(
+        bool disableProviderRetry = false)
+    {
+        var options = new Azure.AI.Inference.AzureAIInferenceClientOptions();
+
+        if (disableProviderRetry)
+            options.Retry.MaxRetries = 0;
+
+        return options;
     }
 
     /// <summary>
@@ -47,17 +84,24 @@ public static class AgentFrameworkHelper
     /// Claude-via-OpenRouter; harmless against providers that ignore <c>cache_control</c>.
     /// </param>
     /// <param name="networkTimeoutSeconds">Network timeout in seconds. Default: 300.</param>
+    /// <param name="disableProviderRetry">
+    /// When true, turns off the SDK's own retry policy, leaving retry entirely to the caller.
+    /// </param>
     /// <returns>Configured <see cref="OpenAIClientOptions"/>.</returns>
     public static OpenAIClientOptions GetOpenAIClientOptions(
         string? endpoint = null,
         bool enablePromptCaching = false,
-        int networkTimeoutSeconds = DefaultNetworkTimeoutSeconds)
+        int networkTimeoutSeconds = DefaultNetworkTimeoutSeconds,
+        bool disableProviderRetry = false)
     {
         var options = new OpenAIClientOptions
         {
             NetworkTimeout = TimeSpan.FromSeconds(networkTimeoutSeconds),
             UserAgentApplicationId = UserAgentValue
         };
+
+        if (disableProviderRetry)
+            options.RetryPolicy = new ClientRetryPolicy(maxRetries: 0);
 
         if (!string.IsNullOrWhiteSpace(endpoint))
         {

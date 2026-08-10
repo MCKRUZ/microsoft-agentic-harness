@@ -153,6 +153,21 @@ public sealed class DependencyInjectionTests
     }
 
     [Fact]
+    public void AddInfrastructureAIDependencies_RegistersIProviderErrorClassifier()
+    {
+        // Resolved from the real composition root: the classifier is what makes retry, the
+        // circuit breaker, and provider fallback fire at all, so an unregistered one would
+        // leave the whole resilience pipeline unbuildable rather than merely degraded.
+        var services = CreateBaseServices();
+        services.AddInfrastructureAIDependencies(IsolatedAppConfig.Create());
+        using var provider = services.BuildServiceProvider();
+
+        var classifier = provider.GetService<IProviderErrorClassifier>();
+
+        classifier.Should().NotBeNull().And.BeOfType<DefaultProviderErrorClassifier>();
+    }
+
+    [Fact]
     public void AddInfrastructureAIDependencies_RegistersIResilientChatClientProvider()
     {
         var services = CreateBaseServices();

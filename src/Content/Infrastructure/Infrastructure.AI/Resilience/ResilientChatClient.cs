@@ -31,6 +31,14 @@ namespace Infrastructure.AI.Resilience;
 /// are already delivered to the consumer. The next provider starts a fresh stream. Consumers
 /// needing atomic responses should use <see cref="GetResponseAsync"/> instead.
 /// </para>
+/// <para>
+/// <b>Not every failure is worth falling back on.</b> When
+/// <see cref="IProviderErrorClassifier"/> reports a failure as fatal for the whole chain — a
+/// rejected credential, an exhausted balance, a disabled account — the loop stops immediately
+/// and throws <see cref="ProviderFatalErrorException"/>. Rotating providers cannot fix a cause
+/// that lives in shared configuration; it only spends wall-clock and replaces an actionable
+/// error with "all providers exhausted".
+/// </para>
 /// </remarks>
 public sealed class ResilientChatClient : IChatClient
 {
@@ -41,6 +49,7 @@ public sealed class ResilientChatClient : IChatClient
 
     private readonly IReadOnlyList<ProviderEntry> _providers;
     private readonly IProviderHealthMonitor _healthMonitor;
+    private readonly IProviderErrorClassifier _errorClassifier;
     private readonly ILogger<ResilientChatClient>? _logger;
 
     /// <summary>
@@ -48,18 +57,23 @@ public sealed class ResilientChatClient : IChatClient
     /// </summary>
     /// <param name="providers">Ordered provider entries. First is primary, rest are fallbacks.</param>
     /// <param name="healthMonitor">Provides circuit breaker health state for skip-on-open logic.</param>
+    /// <param name="errorClassifier">Decides whether a provider failure is worth falling back on.</param>
     /// <param name="logger">Optional logger.</param>
     /// <exception cref="ArgumentException">Thrown when <paramref name="providers"/> is empty.</exception>
     public ResilientChatClient(
         IReadOnlyList<ProviderEntry> providers,
         IProviderHealthMonitor healthMonitor,
+        IProviderErrorClassifier errorClassifier,
         ILogger<ResilientChatClient>? logger = null)
     {
         if (providers.Count == 0)
             throw new ArgumentException("At least one provider is required.", nameof(providers));
 
+        ArgumentNullException.ThrowIfNull(errorClassifier);
+
         _providers = providers;
         _healthMonitor = healthMonitor;
+        _errorClassifier = errorClassifier;
         _logger = logger;
     }
 
@@ -101,6 +115,9 @@ public sealed class ResilientChatClient : IChatClient
             }
             catch (Exception ex)
             {
+                if (TryBuildChainFatal(ex, provider.Name, failedProviders) is { } fatal)
+                    throw fatal;
+
                 lastException = ex;
                 _logger?.LogWarning(ex, "Provider {Provider} failed, attempting next", provider.Name);
                 failedProviders.Add(provider.Name);
@@ -165,13 +182,21 @@ public sealed class ResilientChatClient : IChatClient
             }
             catch (Exception ex)
             {
-                lastException = ex;
-                _logger?.LogWarning(ex, "Stream initiation failed for provider {Provider}", provider.Name);
-                failedProviders.Add(provider.Name);
+                // Build the fatal decision before disposing, but throw after — an abandoned
+                // enumerator from the failed attempt must still be released.
+                var fatal = TryBuildChainFatal(ex, provider.Name, failedProviders);
+
                 if (enumerator is not null)
                 {
                     await enumerator.DisposeAsync();
                 }
+
+                if (fatal is not null)
+                    throw fatal;
+
+                lastException = ex;
+                _logger?.LogWarning(ex, "Stream initiation failed for provider {Provider}", provider.Name);
+                failedProviders.Add(provider.Name);
                 continue;
             }
 
@@ -190,6 +215,10 @@ public sealed class ResilientChatClient : IChatClient
                         }
                         catch (Exception ex)
                         {
+                            // The enclosing finally releases the enumerator on the way out.
+                            if (TryBuildChainFatal(ex, provider.Name, failedProviders) is { } fatal)
+                                throw fatal;
+
                             lastException = ex;
                             _logger?.LogWarning(ex, "Mid-stream failure for provider {Provider}", provider.Name);
                             failedProviders.Add(provider.Name);
@@ -251,6 +280,47 @@ public sealed class ResilientChatClient : IChatClient
         {
             provider.Client.Dispose();
         }
+    }
+
+    /// <summary>
+    /// Converts a failure into the exception that must abandon the chain, or
+    /// <see langword="null"/> when the chain should continue to the next provider.
+    /// </summary>
+    /// <remarks>
+    /// The provider's own message is written to the log here and deliberately not carried on
+    /// the thrown exception's message — provider error text has been observed to echo back
+    /// credential fragments, and this exception may reach an API response.
+    /// </remarks>
+    private ProviderFatalErrorException? TryBuildChainFatal(
+        Exception exception, string providerName, IReadOnlyList<string> failedProviders)
+    {
+        var classification = _errorClassifier.Classify(exception);
+
+        if (!classification.StopsChain)
+            return null;
+
+        // A replaced classifier can return a chain-fatal verdict with no reason code — the record
+        // struct's constructor defaults it to null. Null-forgiving it here would hand a consumer
+        // an exception whose non-nullable ReasonCode is null and whose sentence trails off at
+        // "non-retryable error ()", failing at the moment the real error is being reported.
+        var reasonCode = string.IsNullOrWhiteSpace(classification.ReasonCode)
+            ? ProviderFatalReason.Configuration
+            : classification.ReasonCode;
+
+        var fatal = new ProviderFatalErrorException(
+            providerName, reasonCode, exception, failedProviders);
+
+        // Log the exception's own sentence rather than re-composing it. The operator-facing
+        // wording then has exactly one author, and the log cannot drift from what the caller sees.
+        _logger?.LogError(exception, "{FatalError} Provider message: {ProviderMessage}",
+            fatal.Message, exception.Message);
+
+        // The request failed outright, exactly as it does when the chain is exhausted, so it
+        // belongs in the same counter — otherwise a fleet-wide bad credential looks like zero
+        // degradation on the dashboard.
+        ResilienceMetrics.DegradationEvents.Add(1);
+
+        return fatal;
     }
 
     private void AttachMetadata(ChatResponse response, string activeProvider, List<string> failedProviders)

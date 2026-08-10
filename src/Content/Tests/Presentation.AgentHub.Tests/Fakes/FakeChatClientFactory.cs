@@ -46,6 +46,14 @@ public sealed class FakeChatClientFactory : IChatClientFactory
     }
 
     /// <inheritdoc />
+    /// <remarks>The fakes have no SDK retry to disable, so this yields the same client.</remarks>
+    public Task<Microsoft.Extensions.AI.IChatClient> GetChatClientWithoutProviderRetryAsync(
+        AIAgentFrameworkClientType clientType,
+        string deploymentOrAgentId,
+        CancellationToken cancellationToken = default)
+        => GetChatClientAsync(clientType, deploymentOrAgentId, cancellationToken);
+
+    /// <inheritdoc />
     public IReadOnlyDictionary<AIAgentFrameworkClientType, bool> GetAvailableProviders() =>
         new Dictionary<AIAgentFrameworkClientType, bool>
         {
