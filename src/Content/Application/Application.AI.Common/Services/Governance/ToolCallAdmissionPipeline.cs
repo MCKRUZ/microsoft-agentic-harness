@@ -123,11 +123,9 @@ public sealed class ToolCallAdmissionPipeline : IToolCallAdmissionPipeline
             .ConfigureAwait(false);
         if (!authorization.IsAllowed)
         {
-            // Put the refusal on the turn's trace. Running ahead of the governor means the governor
-            // records nothing for this call — it never sees it — so without this an RBAC denial is
-            // absent from governance reporting, the dashboard and the audit, and a turn in which an
-            // agent was refused every tool it tried reads as a turn in which nothing was denied.
-            _governor.RecordDownstreamBlock(toolName, "denied by per-agent tool authorization");
+            // Put the refusal on the turn's trace — see IGovernanceTraceRecorder.RecordDownstreamBlock
+            // for why this is routed through the recorder rather than skipped.
+            _trace.RecordDownstreamBlock(toolName, "denied by per-agent tool authorization");
             return Refuse(authorization.DeniedMessage, toolName);
         }
 

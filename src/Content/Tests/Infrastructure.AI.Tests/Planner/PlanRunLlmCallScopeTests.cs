@@ -1,3 +1,4 @@
+using Application.AI.Common;
 using Application.AI.Common.Interfaces.AI;
 using Application.AI.Common.Interfaces.Agent;
 using Application.AI.Common.Interfaces.Governance;
@@ -157,9 +158,9 @@ public sealed class PlanRunLlmCallScopeTests
         services.AddSingleton(StepExecutors.PermissiveAdmission.TraceRecorder());
         // Step executors require the admission chain rather than defaulting it to null, so that a
         // composition which forgets it fails at resolution instead of running unguarded. The real
-        // chain over the gates above — a mock of the chain would not exercise the code an enveloped
-        // run actually goes through.
-        services.AddScoped<IToolCallAdmissionPipeline, ToolCallAdmissionPipeline>();
+        // chain over the gates above, built the same way the production root builds it — a mock of
+        // the chain would not exercise the code an enveloped run actually goes through.
+        services.AddToolCallAdmissionChain();
         services.AddSingleton(Mock.Of<IPlanProgressNotifier>());
         services.AddScoped(_ => new PlanExecutionContext());
         services.AddScoped<LlmCallStepExecutor>();

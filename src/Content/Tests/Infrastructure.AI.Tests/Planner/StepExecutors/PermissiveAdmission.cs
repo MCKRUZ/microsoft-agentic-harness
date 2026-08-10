@@ -1,4 +1,5 @@
 using Application.AI.Common.Interfaces.Governance;
+using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Services.Governance;
 using Domain.Common.Config.AI;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -74,7 +75,8 @@ internal static class PermissiveAdmission
     /// </summary>
     public static IGovernanceTraceRecorder TraceRecorder() =>
         new GovernanceTraceRecorder(
-            Mock.Of<IOptionsMonitor<GovernanceConfig>>(m => m.CurrentValue == new GovernanceConfig()));
+            Mock.Of<IOptionsMonitor<GovernanceConfig>>(m => m.CurrentValue == new GovernanceConfig()),
+            Mock.Of<IToolRiskClassifier>(c => c.Classify(It.IsAny<string>()) == ToolRiskProfile.Default));
 
     /// <summary>
     /// An authorization gate that admits everything — the answer the real gate gives when

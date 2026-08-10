@@ -87,22 +87,18 @@ public sealed class ToolCallAdmissionPipelineTests
         // agent was refused every tool it attempted reports zero denials to governance reporting,
         // the dashboard and the audit — which for an access-control decision is indistinguishable
         // from not having enforced it.
-        var governor = new Mock<IToolInvocationGovernor>();
-        governor
-            .Setup(g => g.AuthorizeAsync(
-                It.IsAny<string>(), It.IsAny<CancellationToken>(), It.IsAny<IReadOnlyDictionary<string, object?>?>()))
-            .ReturnsAsync(ToolInvocationDecision.Allow());
+        var trace = new Mock<IGovernanceTraceRecorder>();
 
         var pipeline = AdmissionHarness.Pipeline(
-            governor: governor.Object,
+            trace: trace.Object,
             authorizationGate: AdmissionHarness.DenyingAuthorizationGate("nope").Object);
 
         var admission = await pipeline.AdmitAsync(
             new ToolCallAdmissionRequest(Tool, Args), CancellationToken.None);
 
         admission.IsAllowed.Should().BeFalse();
-        governor.Verify(
-            g => g.RecordDownstreamBlock(Tool, It.Is<string>(r => r.Contains("authorization"))),
+        trace.Verify(
+            t => t.RecordDownstreamBlock(Tool, It.Is<string>(r => r.Contains("authorization"))),
             Times.Once);
     }
 

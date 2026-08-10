@@ -17,11 +17,11 @@ namespace Application.AI.Common.Interfaces.Governance;
 /// </para>
 /// <para>
 /// <strong>One record per decision.</strong> Every stage that can stop a tool call writes here exactly
-/// once for that call — the governor for its own verdicts, and
-/// <see cref="IToolInvocationGovernor.RecordDownstreamBlock"/> on behalf of the stages that run before
-/// and after it. A stage that writes a second line for a call another stage already recorded makes
-/// every such call count twice for anyone tallying denials, which is why refusals are routed through
-/// the governor rather than written here directly.
+/// once for that call — the governor for its own verdicts via <see cref="Record"/>, and every other
+/// stage on its own behalf via <see cref="RecordDownstreamBlock"/>. A stage that writes a second line
+/// for a call another stage already recorded makes every such call count twice for anyone tallying
+/// denials from the audit stream, which is why <see cref="RecordDownstreamBlock"/> writes no audit
+/// entry of its own — see its remarks.
 /// </para>
 /// <para>
 /// Scoped to one agent turn, and reset between turns by the admission chain. Nested MediatR sends
@@ -74,4 +74,46 @@ public interface IGovernanceTraceRecorder
 
     /// <summary>Clears the trail so the next turn starts clean.</summary>
     void Reset();
+
+    /// <summary>
+    /// Records that a gate outside the governor refused a call — either one the governor had already
+    /// allowed, or one that never reached the governor at all.
+    /// </summary>
+    /// <param name="toolName">The tool that was stopped.</param>
+    /// <param name="reason">Operator-facing explanation, for the trace and audit only.</param>
+    /// <remarks>
+    /// <para>
+    /// The classification gate, the progress guard, the host's own <see cref="IToolCallObserver"/>
+    /// rules, and the per-agent authorization gate ahead of the governor can each stop a call the
+    /// governor never ruled on or had already permitted. Without this the trace would report such a
+    /// call as <see cref="ToolDecisionOutcome.Allowed"/> or omit it entirely, and every consumer of the
+    /// trace — bundle-run governance reporting, the dashboard, the audit — would be wrong for exactly
+    /// the calls a safety rule stopped.
+    /// </para>
+    /// <para>
+    /// When there is an earlier <see cref="ToolDecisionOutcome.Allowed"/> record for the same call, this
+    /// does not revoke it; both are kept. The governor did allow it, something downstream did not, and
+    /// an audit trail that shows only one of those facts is telling half the story.
+    /// </para>
+    /// <para>
+    /// Only meaningful on an enforced turn: off that path nothing upstream recorded an allow, so there
+    /// is no earlier decision to correct and no governance signal to add. <see cref="EnforcementEnabled"/>
+    /// is what decides that, not whether the governor happened to run first — the per-agent
+    /// authorization gate runs <em>before</em> the governor, so on the first tool call of a turn nothing
+    /// has marked the turn enforced yet via <see cref="MarkEnforced"/>. Keying this on "the governor has
+    /// already evaluated something" would silently drop every refusal that gate raises, which is most of
+    /// them, since a call it refuses never reaches the governor at all.
+    /// </para>
+    /// <para>
+    /// Classifies the tool's blast radius itself, from the same singleton risk classifier the governor
+    /// uses, rather than asking the governor for one — the governor is not the only source of that
+    /// classification, and requiring it here would mean standing one up just to correct a trace.
+    /// </para>
+    /// <para>
+    /// Deliberately writes no audit entry: the caller has already audited its own refusal in its own
+    /// vocabulary, and a second line here would make every downstream block count twice for anyone
+    /// tallying denials from the audit stream.
+    /// </para>
+    /// </remarks>
+    void RecordDownstreamBlock(string toolName, string reason);
 }

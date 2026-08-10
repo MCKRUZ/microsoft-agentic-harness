@@ -1,3 +1,4 @@
+using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Services.Governance;
 using Domain.AI.Bundles;
 using Domain.AI.Changes;
@@ -164,6 +165,44 @@ public sealed class GovernanceTraceRecorderTests
     public void Record_NullDecision_IsRejected()
     {
         Create().Invoking(r => r.Record(null!)).Should().Throw<ArgumentNullException>();
+    }
+
+    [Fact]
+    public void RecordDownstreamBlock_Enforced_ClassifiesViaTheInjectedRiskClassifier()
+    {
+        // The whole point of moving this method off the governor was that the recorder can resolve a
+        // tool's blast radius on its own, from the same singleton classifier the governor uses, rather
+        // than needing one supplied by a caller. This is the only test that would fail if the wiring
+        // regressed to a hardcoded radius instead of an actual classifier call.
+        var classifier = new Mock<IToolRiskClassifier>();
+        classifier.Setup(c => c.Classify(Tool)).Returns(new ToolRiskProfile(BlastRadius.Critical, IsReadOnly: false));
+        var monitor = Mock.Of<IOptionsMonitor<GovernanceConfig>>(
+            m => m.CurrentValue == new GovernanceConfig { EnforceToolInvocation = true });
+        var recorder = new GovernanceTraceRecorder(monitor, classifier.Object);
+
+        recorder.RecordDownstreamBlock(Tool, "blocked by observer 'wire-limit'");
+
+        var record = recorder.Snapshot().ToolDecisions.Should().ContainSingle().Subject;
+        record.BlastRadius.Should().Be(BlastRadius.Critical);
+        classifier.Verify(c => c.Classify(Tool), Times.Once);
+    }
+
+    [Fact]
+    public void RecordDownstreamBlock_Ungoverned_NeverConsultsTheRiskClassifier()
+    {
+        // The enforcement check is meant to short-circuit before classification runs, not just before
+        // the record is written — an ungoverned turn should pay nothing for a block nobody will read.
+        var classifier = new Mock<IToolRiskClassifier>();
+        var recorder = new GovernanceTraceRecorder(
+            Mock.Of<IOptionsMonitor<GovernanceConfig>>(
+                m => m.CurrentValue == new GovernanceConfig { EnforceToolInvocation = false }),
+            classifier.Object);
+
+        recorder.RecordDownstreamBlock(Tool, "blocked by observer 'wire-limit'");
+
+        classifier.Verify(c => c.Classify(It.IsAny<string>()), Times.Never);
+        recorder.Snapshot().ToolDecisions.Should().BeEmpty(
+            "there is no earlier decision to correct and nothing governance-relevant to add");
     }
 }
 

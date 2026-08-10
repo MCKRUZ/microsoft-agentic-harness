@@ -506,29 +506,4 @@ public sealed partial class ToolInvocationGovernor : IToolInvocationGovernor
             _ => decision
         };
     }
-
-    /// <inheritdoc />
-    public void RecordDownstreamBlock(string toolName, string reason)
-    {
-        // Only meaningful on an enforced turn. Off that path the governor recorded nothing, so there
-        // is no allow to correct and nothing to add.
-        //
-        // The recorder's EnforcementEnabled is the sticky-OR-live form, and both halves are
-        // load-bearing here: the authorization gate runs BEFORE this governor, so on the first tool
-        // call of a turn nothing has marked the turn enforced yet. Keying only on what was observed
-        // silently dropped every RBAC refusal that arrived first — which is most of them, since a
-        // refused call never goes on to reach the governor at all.
-        if (!_trace.EnforcementEnabled)
-            return;
-
-        var radius = _toolRiskClassifier.Classify(toolName).Radius;
-        _trace.Record(new ToolDecisionRecord(toolName, ToolDecisionOutcome.Denied, reason, radius,
-            RequiredApproval: false, ApprovalGranted: false, Enforced: true));
-
-        // Deliberately no audit write. This method corrects the trace on behalf of a gate that has
-        // already audited its own refusal in its own vocabulary; writing a second line here would make
-        // every downstream block count twice for anyone tallying denials from the audit stream. The
-        // caller audits because it always can — this method is inert off the enforced path, and a host
-        // may register observers with governance enforcement switched off.
-    }
 }
