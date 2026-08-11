@@ -31,6 +31,9 @@ public readonly record struct ProviderFailureClassification(
     public static ProviderFailureClassification FatalForChain(string reasonCode)
         => new(ProviderFailureKind.FatalForChain, reasonCode);
 
+    /// <summary>The caller withdrew — not evidence about any provider. No reason code: nothing was rejected.</summary>
+    public static ProviderFailureClassification CallerCancelled { get; } = new(ProviderFailureKind.CallerCancelled);
+
     /// <summary>
     /// Whether the same provider should be asked again.
     /// </summary>
@@ -58,7 +61,17 @@ public readonly record struct ProviderFailureClassification(
     /// </summary>
     /// <remarks>
     /// True only for causes that live in shared configuration, which every provider in the chain
-    /// would hit identically.
+    /// would hit identically. <see cref="ProviderFailureKind.CallerCancelled"/> is deliberately
+    /// excluded: it also must not fall back, but <see cref="IsCallerCancellation"/> is the
+    /// signal for that, because the two are reported differently — a chain stop surfaces
+    /// <c>ProviderFatalErrorException</c> naming a cause, cancellation propagates the caller's
+    /// own exception unchanged.
     /// </remarks>
     public bool StopsChain => Kind is ProviderFailureKind.FatalForChain;
+
+    /// <summary>
+    /// Whether this failure is the caller withdrawing rather than any provider signal —
+    /// the original exception should propagate immediately, not advance to the next provider.
+    /// </summary>
+    public bool IsCallerCancellation => Kind is ProviderFailureKind.CallerCancelled;
 }

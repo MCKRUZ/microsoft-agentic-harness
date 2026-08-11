@@ -39,6 +39,14 @@ namespace Infrastructure.AI.Resilience;
 /// that lives in shared configuration; it only spends wall-clock and replaces an actionable
 /// error with "all providers exhausted".
 /// </para>
+/// <para>
+/// <b>A caller cancellation is not a provider failure at all.</b> When the classifier reports
+/// <see cref="ProviderFailureClassification.IsCallerCancellation"/>, the loop stops immediately
+/// and rethrows the original exception unchanged — no <see cref="ProviderFatalErrorException"/>,
+/// no <see cref="ProviderExhaustedException"/>, no attempt at the next provider. Nobody is
+/// waiting for a response, so advancing the chain would only spend wall-clock, and wrapping the
+/// exception would misreport a withdrawal as a provider or chain failure.
+/// </para>
 /// </remarks>
 public sealed class ResilientChatClient : IChatClient
 {
@@ -90,12 +98,8 @@ public sealed class ResilientChatClient : IChatClient
 
         foreach (var provider in _providers)
         {
-            if (_healthMonitor.GetProviderHealth(provider.Name) == ProviderHealthState.Unavailable)
-            {
-                _logger?.LogDebug("Skipping provider {Provider} — circuit open", provider.Name);
-                failedProviders.Add(provider.Name);
+            if (SkipIfCircuitOpen(provider, failedProviders, isStreaming: false))
                 continue;
-            }
 
             try
             {
@@ -115,7 +119,12 @@ public sealed class ResilientChatClient : IChatClient
             }
             catch (Exception ex)
             {
-                if (TryBuildChainFatal(ex, provider.Name, failedProviders) is { } fatal)
+                var classification = _errorClassifier.Classify(ex, cancellationToken);
+
+                if (classification.IsCallerCancellation)
+                    throw;
+
+                if (TryBuildChainFatal(ex, classification, provider.Name, failedProviders) is { } fatal)
                     throw fatal;
 
                 lastException = ex;
@@ -143,12 +152,8 @@ public sealed class ResilientChatClient : IChatClient
 
         foreach (var provider in _providers)
         {
-            if (_healthMonitor.GetProviderHealth(provider.Name) == ProviderHealthState.Unavailable)
-            {
-                _logger?.LogDebug("Skipping streaming provider {Provider} — circuit open", provider.Name);
-                failedProviders.Add(provider.Name);
+            if (SkipIfCircuitOpen(provider, failedProviders, isStreaming: true))
                 continue;
-            }
 
             var succeeded = false;
 
@@ -182,14 +187,21 @@ public sealed class ResilientChatClient : IChatClient
             }
             catch (Exception ex)
             {
-                // Build the fatal decision before disposing, but throw after — an abandoned
-                // enumerator from the failed attempt must still be released.
-                var fatal = TryBuildChainFatal(ex, provider.Name, failedProviders);
+                // Build the decision before disposing, but act after — an abandoned enumerator
+                // from the failed attempt must still be released regardless of which way this
+                // goes. TryBuildChainFatal is safe to call unconditionally here: it already
+                // returns null for any classification that isn't StopsChain, CallerCancelled
+                // included, the same as the other two catch blocks in this class rely on.
+                var classification = _errorClassifier.Classify(ex, cancellationToken);
+                var fatal = TryBuildChainFatal(ex, classification, provider.Name, failedProviders);
 
                 if (enumerator is not null)
                 {
                     await enumerator.DisposeAsync();
                 }
+
+                if (classification.IsCallerCancellation)
+                    throw;
 
                 if (fatal is not null)
                     throw fatal;
@@ -216,7 +228,12 @@ public sealed class ResilientChatClient : IChatClient
                         catch (Exception ex)
                         {
                             // The enclosing finally releases the enumerator on the way out.
-                            if (TryBuildChainFatal(ex, provider.Name, failedProviders) is { } fatal)
+                            var classification = _errorClassifier.Classify(ex, cancellationToken);
+
+                            if (classification.IsCallerCancellation)
+                                throw;
+
+                            if (TryBuildChainFatal(ex, classification, provider.Name, failedProviders) is { } fatal)
                                 throw fatal;
 
                             lastException = ex;
@@ -265,6 +282,23 @@ public sealed class ResilientChatClient : IChatClient
             : new ProviderExhaustedException(failedProviders, DefaultRetryAfter);
     }
 
+    /// <summary>
+    /// Whether <paramref name="provider"/>'s circuit is open, recording the skip if so.
+    /// </summary>
+    /// <remarks>Shared by <see cref="GetResponseAsync"/> and <see cref="GetStreamingResponseAsync"/>, which
+    /// otherwise duplicated this check with only their log wording differing.</remarks>
+    private bool SkipIfCircuitOpen(ProviderEntry provider, List<string> failedProviders, bool isStreaming)
+    {
+        if (_healthMonitor.GetProviderHealth(provider.Name) != ProviderHealthState.Unavailable)
+            return false;
+
+        _logger?.LogDebug(
+            isStreaming ? "Skipping streaming provider {Provider} — circuit open" : "Skipping provider {Provider} — circuit open",
+            provider.Name);
+        failedProviders.Add(provider.Name);
+        return true;
+    }
+
     /// <inheritdoc/>
     public object? GetService(Type serviceType, object? serviceKey = null)
     {
@@ -287,15 +321,23 @@ public sealed class ResilientChatClient : IChatClient
     /// <see langword="null"/> when the chain should continue to the next provider.
     /// </summary>
     /// <remarks>
+    /// Takes the classification rather than re-deriving it from <paramref name="exception"/>:
+    /// every call site already classifies the exception once to decide
+    /// <see cref="ProviderFailureClassification.IsCallerCancellation"/>, and classifying twice
+    /// per failed attempt would repeat the bounded exception-chain walk and message scan for no
+    /// reason.
+    /// <para>
     /// The provider's own message is written to the log here and deliberately not carried on
     /// the thrown exception's message — provider error text has been observed to echo back
     /// credential fragments, and this exception may reach an API response.
+    /// </para>
     /// </remarks>
     private ProviderFatalErrorException? TryBuildChainFatal(
-        Exception exception, string providerName, IReadOnlyList<string> failedProviders)
+        Exception exception,
+        ProviderFailureClassification classification,
+        string providerName,
+        IReadOnlyList<string> failedProviders)
     {
-        var classification = _errorClassifier.Classify(exception);
-
         if (!classification.StopsChain)
             return null;
 

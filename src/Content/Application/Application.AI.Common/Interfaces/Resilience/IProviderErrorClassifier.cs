@@ -31,11 +31,22 @@ public interface IProviderErrorClassifier
     /// Classifies a provider failure.
     /// </summary>
     /// <param name="exception">The exception thrown by the provider call.</param>
+    /// <param name="cancellationToken">
+    /// The <b>ambient</b> token — the one the caller originally passed to the failing
+    /// operation, not a linked or per-attempt token a resilience strategy may have derived from
+    /// it. This is the ground truth for telling a caller's own withdrawal apart from a
+    /// cancellation-shaped exception raised for some other reason: implementations should treat
+    /// <see cref="OperationCanceledException"/> as the caller cancelling only when this token's
+    /// <see cref="CancellationToken.IsCancellationRequested"/> is <see langword="true"/>, never by
+    /// assuming it once every other cause has been ruled out. A caller that cannot supply the
+    /// real token should pass <see cref="CancellationToken.None"/> — this degrades to
+    /// "cancellation not confirmed", never to a false positive.
+    /// </param>
     /// <returns>
     /// The classification. Implementations must return
     /// <see cref="ProviderFailureKind.Unknown"/> rather than guessing when the failure is not
     /// positively recognised — an unrecognised failure is not retried, but is still counted
     /// against the provider's health.
     /// </returns>
-    ProviderFailureClassification Classify(Exception exception);
+    ProviderFailureClassification Classify(Exception exception, CancellationToken cancellationToken);
 }

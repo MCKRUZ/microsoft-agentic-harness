@@ -37,7 +37,10 @@ namespace Infrastructure.AI.Resilience;
 /// <para>
 /// Anything not positively recognised is <see cref="ProviderFailureKind.Unknown"/>: not
 /// retried, because an unrecognised failure may not be safe to repeat, but still counted
-/// against the provider's health, because it remains evidence something is wrong.
+/// against the provider's health, because it remains evidence something is wrong. A caller
+/// cancellation is the one exception to that "still counts" rule — see
+/// <see cref="ProviderFailureKind.CallerCancelled"/> — because it is not evidence about the
+/// provider at all.
 /// </para>
 /// </remarks>
 public class DefaultProviderErrorClassifier : IProviderErrorClassifier
@@ -118,7 +121,7 @@ public class DefaultProviderErrorClassifier : IProviderErrorClassifier
     }
 
     /// <inheritdoc/>
-    public ProviderFailureClassification Classify(Exception exception)
+    public ProviderFailureClassification Classify(Exception exception, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(exception);
 
@@ -128,24 +131,41 @@ public class DefaultProviderErrorClassifier : IProviderErrorClassifier
         // during an incident.
         var facts = Inspect(exception);
 
-        if (facts.Status is int status)
-        {
-            if (IsTransientStatus(status))
-                return ProviderFailureClassification.Transient;
+        // A transient status or an unambiguous transport fault outranks everything below,
+        // including a confirmed caller cancellation. Both are direct signals the round trip
+        // itself never completed cleanly — an HttpClient timeout racing a Stop button must still
+        // retry and count, and a 5xx already tells the breaker this provider is unwell regardless
+        // of who walked away. (This also disposes of an HttpClient timeout specifically: it
+        // surfaces as TaskCanceledException wrapping TimeoutException, and the walk below finds
+        // the inner TimeoutException — an unambiguous transport fault — before IsCancellation
+        // ever gets a say.)
+        if (facts.Status is int status && IsTransientStatus(status))
+            return ProviderFailureClassification.Transient;
 
-            if (status is >= 400 and < 500)
-                return ClassifyByMessage(facts.Messages) ?? MapClientErrorStatus(status);
+        if (facts.IsTransportFault)
+            return ProviderFailureClassification.Transient;
+
+        // A confirmed caller cancellation outranks everything from here down: a status this
+        // provider returned, or wording anywhere in the chain, is still real evidence about that
+        // provider — but nobody is waiting for the answer, so acting on it (retrying, naming a
+        // fatal reason, rotating to the next provider) serves no one. Confirmed against ground
+        // truth — cancellationToken.IsCancellationRequested, the caller's own token — never
+        // assumed from exception shape alone: a hypothetical provider SDK could raise
+        // OperationCanceledException for an unrelated reason while the caller's own token stays
+        // healthy, and shape cannot tell the two apart. Unconfirmed, it falls through to the
+        // network-level/Unknown default below like any other unrecognised failure.
+        if (facts.IsCancellation && cancellationToken.IsCancellationRequested)
+            return ProviderFailureClassification.CallerCancelled;
+
+        if (facts.Status is int nonTransientStatus)
+        {
+            if (nonTransientStatus is >= 400 and < 500)
+                return ClassifyByMessage(facts.Messages) ?? MapClientErrorStatus(nonTransientStatus);
 
             // A non-error status that still surfaced as an exception is not something we can
             // reason about — treat it as unrecognised rather than guessing.
             return ProviderFailureClassification.Unknown;
         }
-
-        // A positively identified transport fault outranks message text, for the same reason a
-        // transient status does. The request never reached the provider, so nothing in the text
-        // can be a verdict on the credential, the balance, or the model.
-        if (facts.IsTransportFault)
-            return ProviderFailureClassification.Transient;
 
         return ClassifyByMessage(facts.Messages)
             ?? (facts.IsNetworkLevel
@@ -168,6 +188,7 @@ public class DefaultProviderErrorClassifier : IProviderErrorClassifier
         int? status = null;
         var isNetworkLevel = false;
         var isTransportFault = false;
+        var isCancellation = false;
         var current = exception;
 
         for (var depth = 0; current is not null && depth < MaxInnerExceptionDepth; depth++)
@@ -175,6 +196,7 @@ public class DefaultProviderErrorClassifier : IProviderErrorClassifier
             status ??= TryGetHttpStatus(current);
             isNetworkLevel |= IsNetworkLevelFailure(current);
             isTransportFault |= IsTransportFault(current);
+            isCancellation |= current is OperationCanceledException;
 
             if (!string.IsNullOrEmpty(current.Message))
                 messages.Add(current.Message);
@@ -184,12 +206,12 @@ public class DefaultProviderErrorClassifier : IProviderErrorClassifier
                 : current.InnerException;
         }
 
-        return new FailureFacts(status, messages, isNetworkLevel, isTransportFault);
+        return new FailureFacts(status, messages, isNetworkLevel, isTransportFault, isCancellation);
     }
 
     /// <summary>What one walk of the exception chain yielded.</summary>
     private readonly record struct FailureFacts(
-        int? Status, IReadOnlyList<string> Messages, bool IsNetworkLevel, bool IsTransportFault);
+        int? Status, IReadOnlyList<string> Messages, bool IsNetworkLevel, bool IsTransportFault, bool IsCancellation);
 
     /// <summary>
     /// Reads the HTTP status out of a single exception, whichever provider SDK shape it is.
@@ -315,14 +337,14 @@ public class DefaultProviderErrorClassifier : IProviderErrorClassifier
     /// calls its most damaging.
     /// </para>
     /// <para>
-    /// <see cref="OperationCanceledException"/> is deliberately absent: a cancellation is as
+    /// <see cref="OperationCanceledException"/> is deliberately absent: a bare cancellation is as
     /// likely to be the caller withdrawing as the transport failing, so it does not gain the
-    /// power to overrule a message. Note what this does <i>not</i> do — a cancellation carrying
-    /// no recognised wording still reaches <see cref="IsNetworkLevelFailure"/> below and is
-    /// classified transient, so a caller pressing Stop is still counted against provider health.
-    /// Correcting that needs an outcome meaning "not evidence, not retryable, not worth failing
-    /// over", which this type does not have; it is tracked separately rather than smuggled in
-    /// here.
+    /// power to overrule a message. It is not left unclassified, though — see
+    /// <see cref="Classify"/>, which routes it to
+    /// <see cref="ProviderFailureKind.CallerCancelled"/> once this method and message text have
+    /// both found nothing and the caller's own <see cref="CancellationToken"/> confirms it. An
+    /// HttpClient timeout still lands here regardless of that token's state: it wraps a
+    /// <see cref="TimeoutException"/>, which this method matches directly.
     /// </para>
     /// </remarks>
     private static bool IsTransportFault(Exception exception) => exception switch
@@ -334,26 +356,29 @@ public class DefaultProviderErrorClassifier : IProviderErrorClassifier
     };
 
     /// <summary>
-    /// The shapes that suggest a network-level failure without proving one — the residual left
+    /// The shape that suggests a network-level failure without proving one — the residual left
     /// after <see cref="IsTransportFault"/> has claimed everything unambiguous.
     /// </summary>
     /// <remarks>
-    /// Only two shapes qualify, and both are ambiguous for the same reason: something other than
-    /// the transport can raise them. A bare <see cref="HttpRequestException"/> is how Anthropic's
-    /// SDK reports an ordinary API error, and an <see cref="OperationCanceledException"/> is as
-    /// likely to be the caller withdrawing. So they are consulted only after message text, where
-    /// a recognised wording can still overrule them.
+    /// A bare <see cref="HttpRequestException"/> is how Anthropic's SDK reports an ordinary API
+    /// error, so it is ambiguous and consulted only after message text, where a recognised
+    /// wording can still overrule it.
+    /// <para>
+    /// <see cref="OperationCanceledException"/> used to be a second shape here, folded into the
+    /// same transient default as a bare <see cref="HttpRequestException"/>. It has its own path
+    /// now — <see cref="FailureFacts.IsCancellation"/>, consulted in <see cref="Classify"/> — so a
+    /// caller withdrawing is not reported as evidence the provider is unwell.
+    /// </para>
     /// <para>
     /// The genuinely unambiguous shapes — sockets, I/O, timeouts, TLS — are deliberately absent
-    /// rather than duplicated here. This list is read only on the path where
+    /// rather than duplicated here. This method is read only on the path where
     /// <see cref="IsTransportFault"/> matched nothing anywhere in the chain, so repeating them
-    /// could not change an outcome. That makes the two lists disjoint, which is the point: each
-    /// shape appears once, under the precedence it earns. It does mean the split depends on
-    /// <see cref="Classify"/> testing transport faults first.
+    /// could not change an outcome. It does mean the split depends on <see cref="Classify"/>
+    /// testing transport faults first.
     /// </para>
     /// </remarks>
     private static bool IsNetworkLevelFailure(Exception exception)
-        => exception is HttpRequestException or OperationCanceledException;
+        => exception is HttpRequestException;
 
     /// <summary>
     /// Whether any of the failure's messages contains any of the patterns, case-insensitively.
