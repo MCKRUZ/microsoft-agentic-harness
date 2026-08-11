@@ -174,6 +174,133 @@ public sealed class DefaultProviderErrorClassifierTests
     }
 
     [Fact]
+    public void Classify_CallerCancellation_IsCallerCancelled_NotTransient()
+    {
+        // A user pressing Stop, or a request the caller abandoned. Nothing here says the
+        // provider is unwell — treating it as Transient means it gets retried (for a caller who
+        // already left) and counted against the circuit breaker (taking a healthy provider
+        // offline for every other caller once enough cancellations land in one sampling window).
+        // The ambient token being cancelled is the ground truth confirming this is a withdrawal —
+        // see Classify_CancellationShapedException_WithTokenNotCancelled_IsUnknown below for what
+        // happens without it.
+        var sut = ResilienceTestSupport.CreateClassifier();
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        var classification = sut.Classify(new OperationCanceledException("The operation was canceled."), cts.Token);
+
+        classification.Kind.Should().Be(ProviderFailureKind.CallerCancelled);
+        classification.ShouldRetry.Should().BeFalse("nobody is waiting for a retried response");
+        classification.CountsTowardHealth.Should().BeFalse("a withdrawal is not evidence the provider is down");
+    }
+
+    [Fact]
+    public void Classify_TaskCancelledWithNoInnerTimeout_IsAlsoCallerCancelled()
+    {
+        // TaskCanceledException is the shape HttpClient/SDKs actually throw for a signalled
+        // token, not the bare base type. Without covering it, the fix above would look complete
+        // and still miss almost every real cancellation.
+        var sut = ResilienceTestSupport.CreateClassifier();
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        var classification = sut.Classify(new TaskCanceledException("A task was canceled."), cts.Token);
+
+        classification.Kind.Should().Be(ProviderFailureKind.CallerCancelled);
+    }
+
+    [Fact]
+    public void Classify_CancellationShapedException_WithTokenNotCancelled_IsUnknown_NotAssumedCallerCancelled()
+    {
+        // The ground-truth requirement itself: reaching here cancellation-shaped is not, on its
+        // own, proof the caller withdrew — a future provider SDK could throw
+        // OperationCanceledException for some unrelated reason while the ambient token the caller
+        // actually passed is still healthy. Without confirmation, this must not be assumed
+        // CallerCancelled, which would wrongly suppress retry, breaker accounting, and fallback
+        // for something that might be a genuine provider problem. It falls back to Unknown, the
+        // same conservative default every other unrecognised failure gets.
+        var sut = ResilienceTestSupport.CreateClassifier();
+
+        var classification = sut.Classify(new OperationCanceledException("mystery cancellation"), CancellationToken.None);
+
+        classification.Kind.Should().Be(
+            ProviderFailureKind.Unknown,
+            "shape alone cannot prove the caller withdrew — only the ambient token can");
+    }
+
+    [Fact]
+    public void Classify_CallerCancellation_OutranksMessageDrivenClassification()
+    {
+        // A cancellation-shaped exception whose message happens to contain credential wording —
+        // messages are collected from every node in the chain, so this is not far-fetched — must
+        // still report CallerCancelled once the ambient token confirms it. Message text is a
+        // weaker, interpretive signal than ground truth about the caller's own intent. Without
+        // this ordering, a coincidental wording match reports an unrelated "invalid credentials"
+        // failure for a request the caller explicitly withdrew.
+        var sut = ResilienceTestSupport.CreateClassifier();
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        var classification = sut.Classify(new OperationCanceledException("invalid api key"), cts.Token);
+
+        classification.Kind.Should().Be(
+            ProviderFailureKind.CallerCancelled,
+            "a confirmed caller withdrawal outranks message-pattern classification");
+    }
+
+    [Fact]
+    public void Classify_SameWording_WithoutConfirmedCancellation_StillClassifiesByMessage()
+    {
+        // The control for the test above — moving the cancellation check earlier must not make
+        // message classification unreachable for a cancellation-shaped exception that is NOT
+        // confirmed against the ambient token.
+        var sut = ResilienceTestSupport.CreateClassifier();
+
+        var classification = sut.Classify(new OperationCanceledException("invalid api key"), CancellationToken.None);
+
+        classification.Kind.Should().Be(ProviderFailureKind.FatalForChain);
+        classification.ReasonCode.Should().Be(ProviderFatalReason.InvalidCredentials);
+    }
+
+    [Fact]
+    public void Classify_HttpClientTimeout_StaysTransient_EvenWhenTheAmbientTokenIsAlsoCancelled()
+    {
+        // The control for the tests above. An HttpClient per-request timeout throws
+        // TaskCanceledException wrapping a TimeoutException — the exact shape a caller
+        // cancellation does NOT carry. The ambient token is deliberately cancelled here too: a
+        // timeout and a caller withdrawal can coincide in the real world, and the transport-fault
+        // check must still win regardless of token state, because it runs before the cancellation
+        // check in Classify(). A fix that excluded OperationCanceledException wholesale, rather
+        // than distinguishing the two, would silently stop retrying real timeouts too.
+        var sut = ResilienceTestSupport.CreateClassifier();
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        var classification = sut.Classify(
+            new TaskCanceledException("The request was canceled due to the configured HttpClient.Timeout",
+                new TimeoutException()),
+            cts.Token);
+
+        classification.Kind.Should().Be(
+            ProviderFailureKind.Transient,
+            "an HttpClient timeout is a genuine transient failure, not a caller withdrawing");
+        classification.ShouldRetry.Should().BeTrue();
+        classification.CountsTowardHealth.Should().BeTrue();
+    }
+
+    [Fact]
+    public void Classify_PollyTimeoutRejection_StaysTransient_NotCallerCancelled()
+    {
+        // The second control: Polly's own per-attempt timeout strategy throws
+        // TimeoutRejectedException, not OperationCanceledException, and was already Transient
+        // before this fix. Confirms the new cancellation path does not regress it.
+        var sut = ResilienceTestSupport.CreateClassifier();
+
+        sut.Classify(new Polly.Timeout.TimeoutRejectedException("attempt timed out"))
+            .Kind.Should().Be(ProviderFailureKind.Transient);
+    }
+
+    [Fact]
     public void Classify_UnrecognisedFailure_IsUnknown_NotTransient()
     {
         var sut = ResilienceTestSupport.CreateClassifier();

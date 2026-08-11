@@ -156,6 +156,79 @@ public sealed class ProviderResiliencePipelineTests
     }
 
     [Fact]
+    public async Task Pipeline_CallerCancellation_DoesNotRetry()
+    {
+        // #353: a caller cancellation used to be classified Transient, so the retry strategy
+        // burned every configured attempt on a request nobody was waiting for. The callback
+        // cancels the SAME token passed to ExecuteAsync — the ambient token — before throwing,
+        // simulating the caller's own Stop button firing mid-flight. That is the ground truth the
+        // classifier now requires; a token that stays healthy would no longer prove a withdrawal.
+        var config = CreateTestConfig(maxAttempts: 3);
+        var pipeline = ProviderResiliencePipelineBuilder.Build("test-provider", config, ResilienceTestSupport.CreateClassifier(config), out _);
+        var callCount = 0;
+        using var cts = new CancellationTokenSource();
+
+        var act = async () => await pipeline.ExecuteAsync<ChatResponse>(async ct =>
+        {
+            callCount++;
+            cts.Cancel();
+            throw new OperationCanceledException("client stop", cts.Token);
+        }, cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+        callCount.Should().Be(1, "a caller withdrawal is not worth retrying");
+    }
+
+    [Fact]
+    public async Task Pipeline_CallerCancellation_DoesNotOpenTheCircuit()
+    {
+        // #353: the same misclassification meant enough concurrent user cancellations inside one
+        // sampling window opened the circuit — taking a healthy provider offline for everyone.
+        var config = CreateTestConfig(maxAttempts: 1, failureRatio: 0.5, minimumThroughput: 2, samplingDurationSeconds: 30);
+        var pipeline = ProviderResiliencePipelineBuilder.Build("test-provider", config, ResilienceTestSupport.CreateClassifier(config), out var stateProvider);
+
+        for (var i = 0; i < 4; i++)
+        {
+            using var cts = new CancellationTokenSource();
+            try
+            {
+                await pipeline.ExecuteAsync<ChatResponse>(async ct =>
+                {
+                    cts.Cancel();
+                    throw new OperationCanceledException("client stop", cts.Token);
+                }, cts.Token);
+            }
+            catch (OperationCanceledException) { }
+        }
+
+        stateProvider.CircuitState.Should().Be(
+            CircuitState.Closed,
+            "four cancellations are not evidence the provider is unhealthy");
+    }
+
+    [Fact]
+    public async Task Pipeline_HttpClientTimeout_StillRetriesAndStillOpensTheCircuit()
+    {
+        // The control for the two tests above, run through the same real pipeline rather than
+        // the classifier alone: an HttpClient timeout must keep behaving exactly as a transient
+        // failure always has, both for retry and for circuit-breaker accounting.
+        var config = CreateTestConfig(maxAttempts: 3);
+        var pipeline = ProviderResiliencePipelineBuilder.Build("test-provider", config, ResilienceTestSupport.CreateClassifier(config), out _);
+        var callCount = 0;
+
+        var result = await pipeline.ExecuteAsync(async ct =>
+        {
+            callCount++;
+            if (callCount <= 2)
+                throw new TaskCanceledException("timed out", new TimeoutException());
+            return CreateSuccessResponse();
+        }, CancellationToken.None);
+
+        callCount.Should().Be(3, "an HttpClient timeout is retried exactly like any other transient failure");
+        result.Should().NotBeNull();
+    }
+
+    [Fact]
     public async Task Pipeline_ConfigValues_AppliedCorrectly()
     {
         var config = CreateTestConfig(maxAttempts: 5);

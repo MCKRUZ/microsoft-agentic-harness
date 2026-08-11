@@ -111,7 +111,7 @@ public static class ProviderResiliencePipelineBuilder
                 Delay = TimeSpan.FromSeconds(config.Retry.BaseDelaySeconds),
                 BackoffType = ParseBackoffType(config.Retry.BackoffType),
                 UseJitter = true,
-                ShouldHandle = args => new ValueTask<bool>(ShouldRetry(classifier, args.Outcome.Exception)),
+                ShouldHandle = args => new ValueTask<bool>(ShouldRetry(classifier, args.Outcome.Exception, args.Context.CancellationToken)),
                 OnRetry = args =>
                 {
                     RecordRetry(providerName, args.AttemptNumber, args.Outcome.Exception, logger);
@@ -125,7 +125,7 @@ public static class ProviderResiliencePipelineBuilder
                 MinimumThroughput = config.CircuitBreaker.MinimumThroughput,
                 BreakDuration = TimeSpan.FromSeconds(config.CircuitBreaker.BreakDurationSeconds),
                 StateProvider = sharedStateProvider,
-                ShouldHandle = args => new ValueTask<bool>(ShouldCountTowardBreaker(classifier, args.Outcome.Exception)),
+                ShouldHandle = args => new ValueTask<bool>(ShouldCountTowardBreaker(classifier, args.Outcome.Exception, args.Context.CancellationToken)),
                 OnOpened = args =>
                 {
                     if (onCircuitStateChanged is not null)
@@ -164,7 +164,7 @@ public static class ProviderResiliencePipelineBuilder
             Delay = TimeSpan.FromSeconds(retryConfig.BaseDelaySeconds),
             BackoffType = ParseBackoffType(retryConfig.BackoffType),
             UseJitter = true,
-            ShouldHandle = args => new ValueTask<bool>(ShouldRetry(classifier, args.Outcome.Exception)),
+            ShouldHandle = args => new ValueTask<bool>(ShouldRetry(classifier, args.Outcome.Exception, args.Context.CancellationToken)),
             OnRetry = args =>
             {
                 RecordRetry(providerName, args.AttemptNumber, args.Outcome.Exception, logger);
@@ -183,7 +183,7 @@ public static class ProviderResiliencePipelineBuilder
             MinimumThroughput = cbConfig.MinimumThroughput,
             BreakDuration = TimeSpan.FromSeconds(cbConfig.BreakDurationSeconds),
             StateProvider = stateProvider,
-            ShouldHandle = args => new ValueTask<bool>(ShouldCountTowardBreaker(classifier, args.Outcome.Exception)),
+            ShouldHandle = args => new ValueTask<bool>(ShouldCountTowardBreaker(classifier, args.Outcome.Exception, args.Context.CancellationToken)),
             OnOpened = args =>
             {
                 if (onCircuitStateChanged is not null)
@@ -213,19 +213,26 @@ public static class ProviderResiliencePipelineBuilder
     /// Whether this failure should consume a retry. Delegates to the classifier for anything the
     /// provider actually said, having first excluded this pipeline's own rejections.
     /// </summary>
-    private static bool ShouldRetry(IProviderErrorClassifier classifier, Exception? exception)
+    /// <param name="cancellationToken">
+    /// The ambient token from <see cref="Polly.ResilienceContext"/> — the same one the caller
+    /// passed to this pipeline's <c>ExecuteAsync</c>, not a per-attempt or linked token. Forwarded
+    /// unchanged so the classifier can confirm a cancellation-shaped exception is the caller
+    /// withdrawing against ground truth rather than inferring it from exception shape alone.
+    /// </param>
+    private static bool ShouldRetry(IProviderErrorClassifier classifier, Exception? exception, CancellationToken cancellationToken)
         => exception is not null
            && !IsOurOwnRejection(exception)
-           && classifier.Classify(exception).ShouldRetry;
+           && classifier.Classify(exception, cancellationToken).ShouldRetry;
 
     /// <summary>
     /// Whether this failure is evidence about the provider's health. Same shape as
     /// <see cref="ShouldRetry"/>: our own rejections are excluded, then the classifier decides.
     /// </summary>
-    private static bool ShouldCountTowardBreaker(IProviderErrorClassifier classifier, Exception? exception)
+    /// <param name="cancellationToken">See the parameter of the same name on <see cref="ShouldRetry"/>.</param>
+    private static bool ShouldCountTowardBreaker(IProviderErrorClassifier classifier, Exception? exception, CancellationToken cancellationToken)
         => exception is not null
            && !IsOurOwnRejection(exception)
-           && classifier.Classify(exception).CountsTowardHealth;
+           && classifier.Classify(exception, cancellationToken).CountsTowardHealth;
 
     /// <summary>
     /// True when the failure is this pipeline refusing the call rather than a provider response —

@@ -13,7 +13,7 @@ namespace Domain.AI.Resilience;
 /// whichever provider happens to match.
 /// </para>
 /// <para>
-/// The three behaviours each kind drives:
+/// The behaviours each kind drives:
 /// <list type="table">
 ///   <listheader><term>Kind</term><description>Retry / breaker / fallback</description></listheader>
 ///   <item>
@@ -27,12 +27,19 @@ namespace Domain.AI.Resilience;
 ///   <item>
 ///     <term><see cref="FatalForChain"/></term>
 ///     <description>Not retried, not counted, and does <b>not</b> fall back — rotating providers
-///     cannot fix a rejected credential or an exhausted balance.</description>
+///     cannot fix a rejected credential or an exhausted balance. Reports the stop by throwing
+///     <see cref="ProviderFatalErrorException"/>.</description>
 ///   </item>
 ///   <item>
 ///     <term><see cref="Unknown"/></term>
 ///     <description>Not retried (an unrecognised failure may not be safe to repeat) but still
 ///     counted toward the breaker, because it remains evidence this provider is failing.</description>
+///   </item>
+///   <item>
+///     <term><see cref="CallerCancelled"/></term>
+///     <description>Not retried, not counted, and does <b>not</b> fall back — but unlike
+///     <see cref="FatalForChain"/>, it reports the stop by rethrowing the caller's own
+///     cancellation exception unchanged, not by throwing <see cref="ProviderFatalErrorException"/>.</description>
 ///   </item>
 /// </list>
 /// </para>
@@ -65,5 +72,14 @@ public enum ProviderFailureKind
     /// balance, a disabled account. Retrying burns wall-clock and rotating providers hides
     /// the real cause behind a generic availability failure.
     /// </summary>
-    FatalForChain = 3
+    FatalForChain = 3,
+
+    /// <summary>
+    /// The caller withdrew — not evidence about the provider at all. Not retried, not counted
+    /// toward the breaker, and not a reason to try the next provider in the chain: nobody is
+    /// waiting for a response, so rotating providers would only spend wall-clock on a request
+    /// already abandoned. Distinct from <see cref="FatalForChain"/>, which reports a genuine
+    /// provider-side stop; this reports none of that occurred.
+    /// </summary>
+    CallerCancelled = 4
 }
