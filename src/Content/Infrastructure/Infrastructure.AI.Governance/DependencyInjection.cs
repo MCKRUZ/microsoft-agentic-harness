@@ -81,6 +81,8 @@ public static class DependencyInjection
 
         services.AddSingleton<IGovernanceAuditService, AgtAuditAdapter>();
         services.AddSingleton<IMcpSecurityScanner, McpSecurityScannerAdapter>();
+        services.AddSingleton<IMcpDefinitionPinStore, InMemoryMcpDefinitionPinStore>();
+        services.AddSingleton<IMcpToolSurfaceScanner, McpToolSurfaceScannerAdapter>();
 
         services.AddSingleton<IResponseSanitizer, CredentialRedactor>();
         services.AddSingleton<IResponseSanitizer, ResponseInjectionScrubber>();
@@ -191,6 +193,7 @@ public static class DependencyInjection
         services.AddSingleton<IPromptInjectionScanner, NoOpInjectionScanner>();
         services.AddSingleton<IGovernanceAuditService, NoOpAuditService>();
         services.AddSingleton<IMcpSecurityScanner, NoOpMcpScanner>();
+        services.AddSingleton<IMcpToolSurfaceScanner, NoOpMcpToolSurfaceScanner>();
         services.AddSingleton<ICompositeResponseSanitizer, NoOpResponseSanitizer>();
 
         // Data-classification seam (governance disabled): the pure evaluator plus a benign no-op

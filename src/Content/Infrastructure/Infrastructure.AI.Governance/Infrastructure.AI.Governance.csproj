@@ -28,6 +28,10 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="Infrastructure.AI.Governance.Tests" />
+    <!-- ToolChainBuilderTests (Application.AI.Common.Tests) constructs the real
+         McpToolSurfaceScannerAdapter + InMemoryMcpDefinitionPinStore directly so its
+         collision/shadowing/drift tests prove the merge step end-to-end rather than against a mock. -->
+    <InternalsVisibleTo Include="Application.AI.Common.Tests" />
   </ItemGroup>
 
   <ItemGroup>

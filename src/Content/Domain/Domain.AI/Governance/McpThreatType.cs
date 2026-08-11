@@ -18,5 +18,9 @@ public enum McpThreatType
     /// <summary>Tool attempts to influence other MCP server tools.</summary>
     CrossServerAttack,
     /// <summary>Tool description contains prompt injection targeting the LLM.</summary>
-    DescriptionInjection
+    DescriptionInjection,
+    /// <summary>Two servers advertise a tool with the same normalised name.</summary>
+    ToolNameCollision,
+    /// <summary>A tool's description references another server's tool by name, redirecting the agent's choice.</summary>
+    ToolShadowing
 }

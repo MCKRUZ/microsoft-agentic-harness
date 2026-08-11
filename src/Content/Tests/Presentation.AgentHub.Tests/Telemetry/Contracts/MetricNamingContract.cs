@@ -68,6 +68,10 @@ public static class MetricNamingContract
         new InstrumentDefinition("agent.governance.injection_detections", InstrumentType.Counter, "{detection}"),
         new InstrumentDefinition("agent.governance.mcp_scans", InstrumentType.Counter, "{scan}"),
         new InstrumentDefinition("agent.governance.mcp_threats", InstrumentType.Counter, "{threat}"),
+        new InstrumentDefinition("agent.governance.mcp_tools_withheld", InstrumentType.Counter, "{tool}"),
+        new InstrumentDefinition("agent.governance.mcp_tool_collisions", InstrumentType.Counter, "{collision}"),
+        new InstrumentDefinition("agent.governance.mcp_tool_shadowing", InstrumentType.Counter, "{finding}"),
+        new InstrumentDefinition("agent.governance.mcp_tool_drift", InstrumentType.Counter, "{finding}"),
 
         // ContextBudgetMetrics
         new InstrumentDefinition("agent.context.compactions", InstrumentType.Counter, "{compaction}"),

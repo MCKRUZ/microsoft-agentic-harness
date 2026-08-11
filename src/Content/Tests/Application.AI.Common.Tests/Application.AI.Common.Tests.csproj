@@ -28,6 +28,10 @@
     <!-- Drives the real ContentCapturePolicy (backed by AppConfig) through the AgentFactory
          sensitive-data gate so the test proves the config default (off), not a stub. -->
     <ProjectReference Include="../../Infrastructure/Infrastructure.AI/Infrastructure.AI.csproj" />
+    <!-- Drives the real McpToolSurfaceScannerAdapter + InMemoryMcpDefinitionPinStore through
+         ToolChainBuilder's merge step so the collision/shadowing/drift tests prove the withhold
+         decision end-to-end, not just that a mocked scanner was called correctly. -->
+    <ProjectReference Include="../../Infrastructure/Infrastructure.AI.Governance/Infrastructure.AI.Governance.csproj" />
   </ItemGroup>
 
 </Project>

@@ -1,6 +1,5 @@
 using System.Diagnostics;
-using System.Text;
-using System.Text.Json;
+using Application.AI.Common.Helpers;
 using Application.AI.Common.Interfaces;
 using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.OpenTelemetry.Metrics;
@@ -141,7 +140,7 @@ public sealed class ScanningMcpToolProvider : IMcpToolProvider
         if (!policy.EnableMcpSecurity)
             return true;
 
-        var result = _scanner.ScanTool(tool.Name, tool.Description, ExtractSchema(tool));
+        var result = _scanner.ScanTool(tool.Name, tool.Description, AIToolSchemaText.Extract(tool));
 
         // The threat-count check is not redundant with IsSafe. IMcpSecurityScanner is a public
         // contract a consumer can implement, and one returning IsSafe=false with no threats listed
@@ -182,54 +181,4 @@ public sealed class ScanningMcpToolProvider : IMcpToolProvider
         return !withheld;
     }
 
-    /// <summary>
-    /// Returns the tool's parameter schema flattened to its <em>decoded</em> property names and
-    /// string values for scanning, or <see langword="null"/> when the tool exposes none. The schema
-    /// is scanned as well as the description because it carries attacker-controlled property names
-    /// and parameter descriptions into the same context window.
-    /// </summary>
-    /// <remarks>
-    /// Decoding is the point, not a convenience. <c>JsonElement.ToString()</c> returns the raw JSON
-    /// text with escape sequences intact, so a description containing a JSON-escaped
-    /// <c>​</c> reaches the scanner as the six literal characters <c>​</c> and the
-    /// invisible-character rule — the only Critical-severity rule — never matches. A hostile server
-    /// escaping its hidden characters would have walked straight past the strictest check.
-    /// </remarks>
-    private static string? ExtractSchema(AITool tool)
-    {
-        if (tool is not AIFunction function || function.JsonSchema.ValueKind == JsonValueKind.Undefined)
-            return null;
-
-        var builder = new StringBuilder();
-        AppendDecodedText(function.JsonSchema, builder);
-        return builder.Length == 0 ? null : builder.ToString();
-    }
-
-    /// <summary>
-    /// Appends every property name and string value in the element, decoded, separated by spaces.
-    /// </summary>
-    private static void AppendDecodedText(JsonElement element, StringBuilder builder)
-    {
-        switch (element.ValueKind)
-        {
-            case JsonValueKind.Object:
-                foreach (var property in element.EnumerateObject())
-                {
-                    builder.Append(property.Name).Append(' ');
-                    AppendDecodedText(property.Value, builder);
-                }
-
-                break;
-
-            case JsonValueKind.Array:
-                foreach (var item in element.EnumerateArray())
-                    AppendDecodedText(item, builder);
-
-                break;
-
-            case JsonValueKind.String:
-                builder.Append(element.GetString()).Append(' ');
-                break;
-        }
-    }
 }
