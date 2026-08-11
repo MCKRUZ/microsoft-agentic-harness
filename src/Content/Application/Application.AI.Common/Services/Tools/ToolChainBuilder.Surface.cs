@@ -101,6 +101,18 @@ public partial class ToolChainBuilder
         var findings = _surfaceScanner!.ScanSurface(surface);
         var withheldNames = ApplySurfaceFindings(findings);
 
+        // Only a rug-pull finding that was actually withheld must block its baseline from advancing —
+        // that is what makes StrictDriftMode's withhold durable instead of self-clearing on the very
+        // next scan. Everything else (unchanged, first-seen, a drift finding that was flagged and
+        // continued, or a tool withheld for a collision/shadowing reason unrelated to its own
+        // definition) commits normally.
+        var withheldDriftTools = findings
+            .Where(f => f.ThreatType == McpThreatType.RugPull && withheldNames.Contains(f.InvolvedTools[0].ToolName))
+            .Select(f => f.InvolvedTools[0])
+            .ToHashSet();
+
+        _surfaceScanner.CommitDefinitionPins(surface, withheldDriftTools);
+
         foreach (var candidate in mcpCandidates)
             if (!withheldNames.Contains(candidate.Tool.Name))
                 survivingNames.Add(candidate.Tool.Name);

@@ -19,5 +19,12 @@ public sealed class McpToolSurfaceScanningConfig
     /// withheld the same way a tool name collision always is — the difference is that collision is
     /// never a legitimate event and drift usually is.
     /// </remarks>
+    /// <remarks>
+    /// "Re-approved" has no human approval step today — the surface scanner's definition-pin baseline
+    /// never advances past a withheld definition, so the tool stays withheld on every subsequent scan
+    /// until the server's definition reverts to match the last-accepted baseline exactly. An explicit
+    /// approval workflow that clears a pin without requiring a revert is a legitimate future increment,
+    /// not built here.
+    /// </remarks>
     public bool StrictDriftMode { get; init; }
 }

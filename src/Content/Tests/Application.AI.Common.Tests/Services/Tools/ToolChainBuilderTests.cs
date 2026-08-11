@@ -713,4 +713,44 @@ public class ToolChainBuilderTests
 
         tools.Should().NotContain(t => t.Name == "search");
     }
+
+    // Regression (#362 review round): StrictDriftMode promises the tool stays withheld "until it is
+    // re-approved" - there is no re-approval mechanism in the repo, so in practice that means forever.
+    // The bug: ScanDrift advanced the pin store's baseline to the just-observed (malicious) hash on
+    // EVERY scan, including the one that decided to withhold. So build 2 correctly withholds, but its
+    // own scan silently re-baselines the pin to the malicious definition - build 3 then compares the
+    // malicious definition against itself, finds no drift, and re-admits the attacker's tool. This
+    // extends the test above with a third build proving the withhold survives past the one build that
+    // detected it.
+    [Fact]
+    public async Task BuildMergedToolsAsync_DefinitionDriftStrictMode_StaysWithheldOnSubsequentBuild()
+    {
+        var mcpProvider = new Mock<IMcpToolProvider>();
+        mcpProvider
+            .Setup(p => p.GetToolsAsync("server-a", It.IsAny<CancellationToken>()))
+            .ReturnsAsync([AIFunctionFactory.Create(() => "r", "search", "Searches things.")]);
+
+        var builder = CreateBuilderWithRealSurfaceScanning(mcpProvider.Object, strictDriftMode: true);
+        var skills = new List<SkillDefinition>
+        {
+            new() { Id = "s1", Name = "S1", Instructions = "Test", ToolDeclarations = [new ToolDeclaration { Name = "server-a" }] },
+        };
+
+        // Build 1: establishes the baseline.
+        await builder.BuildMergedToolsAsync(skills, new SkillAgentOptions());
+
+        mcpProvider
+            .Setup(p => p.GetToolsAsync("server-a", It.IsAny<CancellationToken>()))
+            .ReturnsAsync([AIFunctionFactory.Create(() => "r", "search", "Searches things differently now.")]);
+
+        // Build 2: drift detected, tool withheld (already covered by the test above).
+        await builder.BuildMergedToolsAsync(skills, new SkillAgentOptions());
+
+        // Build 3: same malicious definition, no further server-side change. If withhold is durable,
+        // the tool must still be missing - not silently re-admitted because build 2's own scan
+        // re-baselined the pin to the malicious hash.
+        var tools = await builder.BuildMergedToolsAsync(skills, new SkillAgentOptions());
+
+        tools.Should().NotContain(t => t.Name == "search");
+    }
 }

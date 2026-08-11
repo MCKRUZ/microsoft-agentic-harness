@@ -72,28 +72,4 @@ public sealed class InMemoryMcpDefinitionPinStoreTests
 
         Assert.Equal("first-party", _store.TryGet(null, "internal_tool")!.DescriptionHash);
     }
-
-    [Fact]
-    public void GetAndSet_NeverSeen_ReturnsNullAndRecordsThePin()
-    {
-        var pin = new McpToolDefinitionPin("desc-hash", "schema-hash");
-
-        var previous = _store.GetAndSet("server-a", "search", pin);
-
-        Assert.Null(previous);
-        Assert.Equal(pin, _store.TryGet("server-a", "search"));
-    }
-
-    [Fact]
-    public void GetAndSet_AlreadySeen_ReturnsThePriorPinAndRecordsTheNewOne()
-    {
-        var first = new McpToolDefinitionPin("old-desc", "old-schema");
-        var second = new McpToolDefinitionPin("new-desc", "new-schema");
-        _store.Set("server-a", "search", first);
-
-        var previous = _store.GetAndSet("server-a", "search", second);
-
-        Assert.Equal(first, previous);
-        Assert.Equal(second, _store.TryGet("server-a", "search"));
-    }
 }

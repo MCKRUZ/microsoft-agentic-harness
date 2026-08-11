@@ -17,28 +17,14 @@ public interface IMcpDefinitionPinStore
     /// <param name="toolName">The tool's name.</param>
     McpToolDefinitionPin? TryGet(string? serverName, string toolName);
 
-    /// <summary>Records the current definition hash pair as the new baseline for the tool.</summary>
+    /// <summary>
+    /// Records the current definition hash pair as the new baseline for the tool. The caller decides
+    /// when this may run — a rug-pulled tool whose finding was withheld must not be committed, or the
+    /// withhold would only last until the next scan (see <see cref="IMcpToolSurfaceScanner.CommitDefinitionPins"/>).
+    /// </summary>
     /// <param name="serverName">The server that advertised the tool, or <see langword="null"/> for a
     /// first-party tool.</param>
     /// <param name="toolName">The tool's name.</param>
     /// <param name="pin">The definition hash pair to record.</param>
     void Set(string? serverName, string toolName, McpToolDefinitionPin pin);
-
-    /// <summary>
-    /// Atomically records <paramref name="pin"/> as the new baseline and returns whatever pin was
-    /// previously recorded, or <see langword="null"/> for a tool seen for the first time.
-    /// </summary>
-    /// <remarks>
-    /// The drift check must read the prior baseline and write the new one as a single unit: two
-    /// concurrent scans of the same tool (the store is a process-lifetime singleton and multiple agent
-    /// turns can build tool sets at once) calling <see cref="TryGet"/> then <see cref="Set"/>
-    /// separately could both read the same stale baseline before either write lands, each
-    /// independently — and redundantly — deciding the definition drifted for what is really one
-    /// transition. This method closes that race by making the read-then-write indivisible.
-    /// </remarks>
-    /// <param name="serverName">The server that advertised the tool, or <see langword="null"/> for a
-    /// first-party tool.</param>
-    /// <param name="toolName">The tool's name.</param>
-    /// <param name="pin">The definition hash pair to record as the new baseline.</param>
-    McpToolDefinitionPin? GetAndSet(string? serverName, string toolName, McpToolDefinitionPin pin);
 }

@@ -40,22 +40,6 @@ public sealed class InMemoryMcpDefinitionPinStore : IMcpDefinitionPinStore
     public void Set(string? serverName, string toolName, McpToolDefinitionPin pin) =>
         _pins[Key(serverName, toolName)] = pin;
 
-    /// <inheritdoc />
-    public McpToolDefinitionPin? GetAndSet(string? serverName, string toolName, McpToolDefinitionPin pin)
-    {
-        McpToolDefinitionPin? previous = null;
-        _pins.AddOrUpdate(
-            Key(serverName, toolName),
-            addValueFactory: _ => pin,
-            updateValueFactory: (_, existing) =>
-            {
-                previous = existing;
-                return pin;
-            });
-
-        return previous;
-    }
-
     private static (string Server, string Tool) Key(string? serverName, string toolName) =>
         ((serverName ?? string.Empty).ToUpperInvariant(), toolName.ToUpperInvariant());
 }

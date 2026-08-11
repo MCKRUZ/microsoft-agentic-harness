@@ -39,6 +39,7 @@ internal sealed class NoOpMcpScanner : IMcpSecurityScanner
 internal sealed class NoOpMcpToolSurfaceScanner : IMcpToolSurfaceScanner
 {
     public IReadOnlyList<McpSurfaceFinding> ScanSurface(IReadOnlyList<McpSurfaceTool> tools) => [];
+    public void CommitDefinitionPins(IReadOnlyList<McpSurfaceTool> tools, IReadOnlySet<McpSurfaceToolReference> excludeFromCommit) { }
 }
 
 /// <summary>No-op response sanitizer used when governance is disabled.</summary>

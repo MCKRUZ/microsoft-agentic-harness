@@ -107,7 +107,8 @@ internal sealed class McpToolSurfaceScannerAdapter : IMcpToolSurfaceScanner
     /// A tool whose description or schema hash differs from the last-recorded pin. Reports which
     /// surface changed, because the acceptance criteria for this feature call out the schema-only
     /// case specifically: a description that is byte-identical while a parameter description changes
-    /// is exactly the attack a description-only pin would miss.
+    /// is exactly the attack a description-only pin would miss. Read-only — see
+    /// <see cref="CommitDefinitionPins"/> for why the baseline must not advance here.
     /// </summary>
     private void ScanDrift(IReadOnlyList<McpSurfaceTool> tools, List<McpSurfaceFinding> findings)
     {
@@ -119,7 +120,7 @@ internal sealed class McpToolSurfaceScannerAdapter : IMcpToolSurfaceScanner
 
             var descriptionHash = Hash(tool.Description);
             var schemaHash = Hash(tool.Schema ?? string.Empty);
-            var previous = _pins.GetAndSet(tool.ServerName, tool.ToolName, new McpToolDefinitionPin(descriptionHash, schemaHash));
+            var previous = _pins.TryGet(tool.ServerName, tool.ToolName);
 
             if (previous is not null)
             {
@@ -144,6 +145,23 @@ internal sealed class McpToolSurfaceScannerAdapter : IMcpToolSurfaceScanner
                         InvolvedTools: [new McpSurfaceToolReference(tool.ServerName, tool.ToolName)]));
                 }
             }
+        }
+    }
+
+    /// <inheritdoc />
+    public void CommitDefinitionPins(IReadOnlyList<McpSurfaceTool> tools, IReadOnlySet<McpSurfaceToolReference> excludeFromCommit)
+    {
+        foreach (var tool in tools)
+        {
+            // First-party tools never get a pin in the first place (see ScanDrift) — nothing to commit.
+            if (tool.ServerName is null)
+                continue;
+
+            if (excludeFromCommit.Contains(new McpSurfaceToolReference(tool.ServerName, tool.ToolName)))
+                continue;
+
+            var pin = new McpToolDefinitionPin(Hash(tool.Description), Hash(tool.Schema ?? string.Empty));
+            _pins.Set(tool.ServerName, tool.ToolName, pin);
         }
     }
 
