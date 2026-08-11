@@ -99,17 +99,7 @@ public partial class ToolChainBuilder
             .ToList();
 
         var findings = _surfaceScanner!.ScanSurface(surface);
-        var withheldNames = ApplySurfaceFindings(findings);
-
-        // Only a rug-pull finding that was actually withheld must block its baseline from advancing —
-        // that is what makes StrictDriftMode's withhold durable instead of self-clearing on the very
-        // next scan. Everything else (unchanged, first-seen, a drift finding that was flagged and
-        // continued, or a tool withheld for a collision/shadowing reason unrelated to its own
-        // definition) commits normally.
-        var withheldDriftTools = findings
-            .Where(f => f.ThreatType == McpThreatType.RugPull && withheldNames.Contains(f.InvolvedTools[0].ToolName))
-            .Select(f => f.InvolvedTools[0])
-            .ToHashSet();
+        var (withheldNames, withheldDriftTools) = ApplySurfaceFindings(findings);
 
         _surfaceScanner.CommitDefinitionPins(surface, withheldDriftTools);
 
@@ -165,16 +155,27 @@ public partial class ToolChainBuilder
 
     /// <summary>
     /// Applies withhold policy per finding type and returns the tool names to exclude from the final
-    /// surface. Collision is a hard rule — always withheld, never threshold-gated, because "which one
-    /// is legitimate" cannot be answered from the definitions alone. Shadowing and drift go through
-    /// the same severity/threshold mechanism the per-tool scanner already uses, so operators tune one
-    /// knob for both. Drift additionally respects <c>GovernanceConfig.McpToolSurfaceScanning.StrictDriftMode</c>:
+    /// surface, plus — separately — exactly which tools' drift findings were withheld this build.
+    /// Collision is a hard rule — always withheld, never threshold-gated, because "which one is
+    /// legitimate" cannot be answered from the definitions alone. Shadowing and drift go through the
+    /// same severity/threshold mechanism the per-tool scanner already uses, so operators tune one knob
+    /// for both. Drift additionally respects <c>GovernanceConfig.McpToolSurfaceScanning.StrictDriftMode</c>:
     /// off by default (flag-and-continue — a legitimate upstream update must not break a running host),
     /// on to withhold a drifted definition until it is re-approved.
     /// </summary>
-    private HashSet<string> ApplySurfaceFindings(IReadOnlyList<McpSurfaceFinding> findings)
+    /// <remarks>
+    /// The second return value is deliberately its own decision, not derived from the first afterward.
+    /// A tool can appear in <c>WithheldNames</c> for a reason unrelated to its own definition — e.g. a
+    /// collision or shadowing finding — while its own drift finding this build was flag-and-continue
+    /// (not withheld). Filtering findings by "is this tool's name in the withheld set at all" would
+    /// wrongly sweep that unrelated withhold into the drift-commit exclusion and freeze the tool's
+    /// baseline forever; only a drift finding that was itself withheld may block its own commit.
+    /// </remarks>
+    private (HashSet<string> WithheldNames, HashSet<McpSurfaceToolReference> WithheldDriftTools) ApplySurfaceFindings(
+        IReadOnlyList<McpSurfaceFinding> findings)
     {
         var withheld = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var withheldDrift = new HashSet<McpSurfaceToolReference>(McpSurfaceToolReference.CaseInsensitiveComparer);
         var threshold = _aiConfig!.CurrentValue.Governance.McpToolBlockThreshold;
         var strictDrift = _aiConfig.CurrentValue.Governance.McpToolSurfaceScanning.StrictDriftMode;
 
@@ -196,12 +197,15 @@ public partial class ToolChainBuilder
 
                 case McpThreatType.RugPull:
                     RecordSurfaceFinding(GovernanceMetrics.McpToolDrift, finding);
-                    LogAndMaybeWithhold(finding, strictDrift && finding.Severity >= threshold, withheld);
+                    var driftWithheld = strictDrift && finding.Severity >= threshold;
+                    LogAndMaybeWithhold(finding, driftWithheld, withheld);
+                    if (driftWithheld)
+                        withheldDrift.Add(finding.InvolvedTools[0]);
                     break;
             }
         }
 
-        return withheld;
+        return (withheld, withheldDrift);
     }
 
     private static void RecordSurfaceFinding(System.Diagnostics.Metrics.Counter<long> counter, McpSurfaceFinding finding)

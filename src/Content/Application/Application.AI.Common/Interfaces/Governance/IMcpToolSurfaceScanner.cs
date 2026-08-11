@@ -35,18 +35,26 @@ public interface IMcpToolSurfaceScanner
     /// the same call, so the withhold would last exactly one build.
     /// </para>
     /// <para>
-    /// <strong>Not atomic with <see cref="ScanSurface"/>.</strong> The withhold policy runs between the
-    /// two calls, so a concurrent scan of the same tool can read the same prior baseline before either
-    /// commit lands, redundantly reporting one definition transition as drift twice. This cannot let an
-    /// excluded (withheld) tool's baseline advance — every build that independently decides to withhold
-    /// a tool independently excludes it, regardless of how the two builds interleave — so the security
-    /// property this feature exists for is unaffected; the residual risk is a duplicate log line and
-    /// metric increment for a definition change that was already going to be accepted.
+    /// <strong>Not atomic with <see cref="ScanSurface"/>, and not atomic with a concurrent commit.</strong>
+    /// The withhold policy runs between the two calls, so two concurrent builds scanning the same tool
+    /// can each read the same prior baseline before either commit lands. When both builds reach the
+    /// <em>same</em> withhold decision — the common case, since the decision is a pure function of
+    /// governance config and the finding's (fixed) severity — the only residual effect is a duplicate
+    /// log line and metric increment for one definition transition. When the two builds reach
+    /// <em>different</em> decisions — possible if governance config is reloaded between the two scans,
+    /// or a compromised server answers the two concurrent requests inconsistently — <c>Set</c> is an
+    /// unconditional overwrite, so whichever build's commit lands last wins outright, even if the other
+    /// build correctly withheld the same tool. Closing this fully needs a compare-and-swap primitive
+    /// (commit only if the store still holds the baseline this scan read); not built here because it
+    /// requires both an unusual config-reload timing AND a server actively answering concurrent requests
+    /// differently, and is a legitimate future increment rather than something this fix's scope covers.
     /// </para>
     /// </remarks>
     /// <param name="tools">The same tool surface passed to <see cref="ScanSurface"/> for this build.</param>
     /// <param name="excludeFromCommit">
-    /// Tools whose drift finding was withheld this build — their baseline must not advance.
+    /// Tools whose drift finding was withheld this build — their baseline must not advance. Compared via
+    /// <see cref="McpSurfaceToolReference.CaseInsensitiveComparer"/> by every implementation, matching
+    /// the identity rule the rest of this subsystem already uses.
     /// </param>
     void CommitDefinitionPins(IReadOnlyList<McpSurfaceTool> tools, IReadOnlySet<McpSurfaceToolReference> excludeFromCommit);
 }
