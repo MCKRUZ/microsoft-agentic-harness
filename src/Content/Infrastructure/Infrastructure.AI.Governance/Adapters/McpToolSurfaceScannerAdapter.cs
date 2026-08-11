@@ -118,14 +118,13 @@ internal sealed class McpToolSurfaceScannerAdapter : IMcpToolSurfaceScanner
             if (tool.ServerName is null)
                 continue;
 
-            var descriptionHash = Hash(tool.Description);
-            var schemaHash = Hash(tool.Schema ?? string.Empty);
+            var current = ComputePin(tool);
             var previous = _pins.TryGet(tool.ServerName, tool.ToolName);
 
             if (previous is not null)
             {
-                var descriptionChanged = !string.Equals(previous.DescriptionHash, descriptionHash, StringComparison.Ordinal);
-                var schemaChanged = !string.Equals(previous.SchemaHash, schemaHash, StringComparison.Ordinal);
+                var descriptionChanged = !string.Equals(previous.DescriptionHash, current.DescriptionHash, StringComparison.Ordinal);
+                var schemaChanged = !string.Equals(previous.SchemaHash, current.SchemaHash, StringComparison.Ordinal);
 
                 if (descriptionChanged || schemaChanged)
                 {
@@ -160,10 +159,12 @@ internal sealed class McpToolSurfaceScannerAdapter : IMcpToolSurfaceScanner
             if (excludeFromCommit.Contains(new McpSurfaceToolReference(tool.ServerName, tool.ToolName)))
                 continue;
 
-            var pin = new McpToolDefinitionPin(Hash(tool.Description), Hash(tool.Schema ?? string.Empty));
-            _pins.Set(tool.ServerName, tool.ToolName, pin);
+            _pins.Set(tool.ServerName, tool.ToolName, ComputePin(tool));
         }
     }
+
+    private static McpToolDefinitionPin ComputePin(McpSurfaceTool tool) =>
+        new(Hash(tool.Description), Hash(tool.Schema ?? string.Empty));
 
     /// <summary>Trimmed, lower-cased — the same normalisation AgentHound's collision rule uses.</summary>
     private static string Normalize(string name) => name.Trim().ToLowerInvariant();

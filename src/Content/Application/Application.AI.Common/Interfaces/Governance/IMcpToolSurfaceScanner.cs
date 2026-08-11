@@ -26,12 +26,23 @@ public interface IMcpToolSurfaceScanner
     /// decided which drift findings to honor.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// The exclusion set is what makes a withheld rug-pull durable: skipping the commit for a
     /// withheld tool leaves its prior (accepted) baseline in place, so the next scan compares the
     /// attacker's definition against the last-known-good one again — not against itself — and keeps
     /// reporting drift. Committing unconditionally here is the defect this method exists to prevent:
     /// it would let a single scan both report a rug pull and silently accept it as the new normal in
     /// the same call, so the withhold would last exactly one build.
+    /// </para>
+    /// <para>
+    /// <strong>Not atomic with <see cref="ScanSurface"/>.</strong> The withhold policy runs between the
+    /// two calls, so a concurrent scan of the same tool can read the same prior baseline before either
+    /// commit lands, redundantly reporting one definition transition as drift twice. This cannot let an
+    /// excluded (withheld) tool's baseline advance — every build that independently decides to withhold
+    /// a tool independently excludes it, regardless of how the two builds interleave — so the security
+    /// property this feature exists for is unaffected; the residual risk is a duplicate log line and
+    /// metric increment for a definition change that was already going to be accepted.
+    /// </para>
     /// </remarks>
     /// <param name="tools">The same tool surface passed to <see cref="ScanSurface"/> for this build.</param>
     /// <param name="excludeFromCommit">
