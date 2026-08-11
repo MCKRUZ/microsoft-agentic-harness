@@ -35,6 +35,12 @@ internal sealed class NoOpMcpScanner : IMcpSecurityScanner
         tools.Select(t => McpToolScanResult.Safe(t.Name)).ToList().AsReadOnly();
 }
 
+/// <summary>No-op MCP tool-surface scanner used when governance is disabled.</summary>
+internal sealed class NoOpMcpToolSurfaceScanner : IMcpToolSurfaceScanner
+{
+    public IReadOnlyList<McpSurfaceFinding> ScanSurface(IReadOnlyList<McpSurfaceTool> tools) => [];
+}
+
 /// <summary>No-op response sanitizer used when governance is disabled.</summary>
 internal sealed class NoOpResponseSanitizer : ICompositeResponseSanitizer
 {

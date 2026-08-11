@@ -104,6 +104,23 @@ public sealed class GovernanceConfigValidator : AbstractValidator<GovernanceConf
                     "present to users as tools failing for no stated reason.");
         });
 
+        // Same landmine as EnablePromptInjectionDetection/EnableMcpSecurity above, one level down: the
+        // cross-server structural scan (collision/shadowing/drift) that StrictDriftMode tunes only
+        // runs when EnableMcpSecurity is true — see ToolChainBuilder.Surface.cs's
+        // ResolveSurvivingTools. An operator who turns StrictDriftMode on believing drift is now
+        // withheld, while MCP security scanning itself is off, gets a drifted tool definition admitted
+        // silently — the same "operator believes a control is on because a related flag is on" trap
+        // this file already guards against above.
+        When(x => x.McpToolSurfaceScanning.StrictDriftMode, () =>
+        {
+            RuleFor(x => x.EnableMcpSecurity)
+                .Equal(true)
+                .WithMessage(
+                    "McpToolSurfaceScanning.StrictDriftMode requires Governance.EnableMcpSecurity=true. " +
+                    "The scan StrictDriftMode tunes only runs when MCP security scanning is enabled — " +
+                    "with it off, a drifted tool definition is silently admitted regardless of this setting.");
+        });
+
         // Exemptions are checked whether or not the posture is on, because a malformed entry is a typo
         // in either case and the list is read by operators long before it is read by the governor.
         RuleForEach(x => x.ToolBehaviorGating.Exemptions)

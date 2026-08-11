@@ -1,13 +1,15 @@
 using Application.AI.Common.Interfaces;
+using Application.AI.Common.Interfaces.Governance;
 using Application.AI.Common.Interfaces.Plugins;
 using Application.AI.Common.Interfaces.Tools;
 using Application.AI.Common.Services.Governance;
-using Domain.AI.Planner;
 using Domain.AI.Skills;
+using Domain.Common.Config.AI;
 using Domain.Common.Config.AI.Plugins;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace Application.AI.Common.Services.Tools;
 
@@ -17,73 +19,118 @@ namespace Application.AI.Common.Services.Tools;
 /// with keyed DI fallback), and Managed with AllowedTools (simple name-based resolution).
 /// Applies plugin governance boundary filtering (AllowedTools/DeniedTools) for plugin-sourced skills.
 /// </summary>
-public class ToolChainBuilder : IToolChainBuilder
+public partial class ToolChainBuilder : IToolChainBuilder
 {
     private readonly ILogger<ToolChainBuilder> _logger;
     private readonly IServiceProvider _serviceProvider;
     private readonly IToolConverter? _toolConverter;
     private readonly IMcpToolProvider? _mcpToolProvider;
+    private readonly IMcpToolSurfaceScanner? _surfaceScanner;
+    private readonly IOptionsMonitor<AIConfig>? _aiConfig;
 
     public ToolChainBuilder(
         ILogger<ToolChainBuilder> logger,
         IServiceProvider serviceProvider,
         IToolConverter? toolConverter = null,
-        IMcpToolProvider? mcpToolProvider = null)
+        IMcpToolProvider? mcpToolProvider = null,
+        IMcpToolSurfaceScanner? surfaceScanner = null,
+        IOptionsMonitor<AIConfig>? aiConfig = null)
     {
         _logger = logger;
         _serviceProvider = serviceProvider;
         _toolConverter = toolConverter;
         _mcpToolProvider = mcpToolProvider;
+        _surfaceScanner = surfaceScanner;
+        _aiConfig = aiConfig;
     }
 
-    /// <inheritdoc />
-    public Task<List<AITool>> BuildToolsAsync(SkillDefinition skill, SkillAgentOptions options, CancellationToken cancellationToken = default)
-        // Public callers don't need MCP attribution — use a throwaway collector so
-        // resolution paths still record where each tool came from but the result is
-        // discarded.
-        => BuildToolsAsync(skill, options, new HashSet<string>(StringComparer.OrdinalIgnoreCase), cancellationToken);
+    /// <summary>
+    /// A tool paired with where it was resolved from — recorded at the moment of resolution, before
+    /// dedup, the reserved-name filter, or governance wrapping run. <see langword="null"/>
+    /// <see cref="McpServerName"/> means first-party (keyed DI or caller-supplied); a non-null value
+    /// names the MCP server that advertised it.
+    /// </summary>
+    /// <remarks>
+    /// This is the single source of truth for "where did this tool come from" used by
+    /// <c>ResolveSurvivingTools</c> (see <c>ToolChainBuilder.Surface.cs</c>) to decide first-party
+    /// precedence. Earlier revisions tried to reconstruct provenance after the fact — by tool-instance
+    /// identity, which does not survive <see cref="WrapGoverned"/>'s per-skill wrapping, and by
+    /// (name, description) content signature, which an attacker can defeat by copying a first-party
+    /// tool's description verbatim onto a same-named MCP tool, making both instances indistinguishable
+    /// and causing the exclusion to drop them both. Tracking provenance positionally as each tool is
+    /// produced makes both failure modes structurally impossible: origin is a label attached at
+    /// creation, never re-derived from content.
+    /// </remarks>
+    private readonly record struct ProvisionedTool(AITool Tool, string? McpServerName);
 
-    private async Task<List<AITool>> BuildToolsAsync(
+    /// <summary>
+    /// Resolves one skill's tools. Runs the same first-party-precedence and collision/shadowing/drift
+    /// policy <see cref="BuildMergedToolsWithSourcesAsync"/> applies across skills — a single skill can
+    /// still contribute a tool from more than one MCP server (multiple <c>ToolDeclarations</c>), so this
+    /// path needs the same protection, not a narrower one just because it has only one skill's tools to
+    /// look at.
+    /// </summary>
+    /// <inheritdoc />
+    public async Task<List<AITool>> BuildToolsAsync(SkillDefinition skill, SkillAgentOptions options, CancellationToken cancellationToken = default)
+    {
+        var provisioned = await BuildProvisionedToolsAsync(skill, options, cancellationToken);
+        var (tools, _) = ResolveSurvivingTools(provisioned);
+        return tools;
+    }
+
+    private Task<List<ProvisionedTool>> BuildProvisionedToolsAsync(
         SkillDefinition skill,
         SkillAgentOptions options,
-        ISet<string> mcpCollector,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken)
+        => skill.Mode == SkillMode.Injected && _mcpToolProvider != null
+            ? BuildInjectedModeToolsAsync(skill, options, cancellationToken)
+            : BuildManagedModeToolsAsync(skill, options, cancellationToken);
+
+    private async Task<List<ProvisionedTool>> BuildInjectedModeToolsAsync(
+        SkillDefinition skill,
+        SkillAgentOptions options,
+        CancellationToken cancellationToken)
     {
-        var tools = new List<AITool>();
+        var injected = new List<ProvisionedTool>();
+        foreach (var (serverName, serverTools) in await ResolveInjectedMcpToolsAsync(cancellationToken))
+            foreach (var t in serverTools)
+                injected.Add(new ProvisionedTool(t, serverName));
 
-        if (skill.Mode == SkillMode.Injected && _mcpToolProvider != null)
-        {
-            foreach (var serverTools in await ResolveInjectedMcpToolsAsync(cancellationToken))
-            {
-                tools.AddRange(serverTools);
-                foreach (var t in serverTools) mcpCollector.Add(t.Name);
-            }
+        if (options.AdditionalTools?.Count > 0)
+            foreach (var t in options.AdditionalTools)
+                injected.Add(new ProvisionedTool(t, null));
 
-            if (options.AdditionalTools?.Count > 0)
-                tools.AddRange(options.AdditionalTools);
+        injected = ApplyPluginBoundaryIfPluginSkill(skill, injected);
 
-            tools = ApplyPluginBoundaryIfPluginSkill(skill, tools);
+        _logger.LogInformation(
+            "Injected mode: skill {SkillId} from plugin {Plugin} received {Count} MCP tools",
+            skill.Id, skill.PluginSource, injected.Count);
 
-            _logger.LogInformation(
-                "Injected mode: skill {SkillId} from plugin {Plugin} received {Count} MCP tools",
-                skill.Id, skill.PluginSource, tools.Count);
+        // Deliberately not deduped by name here: two servers advertising the same name is exactly the
+        // ambiguity ResolveSurvivingTools' collision policy exists to catch (withhold both), and a
+        // name-only dedup this early would silently pick a first-occurrence winner before that policy
+        // — or a first-party name check — ever sees more than one candidate.
+        return FinalizeChain(injected, DescribeSource(skill, "injected MCP tool resolution"));
+    }
 
-            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            return FinalizeChain(tools.Where(t => seen.Add(t.Name)), DescribeSource(skill, "injected MCP tool resolution"));
-        }
+    private async Task<List<ProvisionedTool>> BuildManagedModeToolsAsync(
+        SkillDefinition skill,
+        SkillAgentOptions options,
+        CancellationToken cancellationToken)
+    {
+        var managed = new List<ProvisionedTool>();
 
         if (skill.Tools?.Count > 0)
-            tools.AddRange(skill.Tools);
+            foreach (var t in skill.Tools)
+                managed.Add(new ProvisionedTool(t, null));
 
         if (skill.ToolDeclarations?.Count > 0)
         {
-            var provisionTasks = skill.ToolDeclarations.Select(d => ProvisionToolAsync(d, mcpCollector, cancellationToken));
+            var provisionTasks = skill.ToolDeclarations.Select(d => ProvisionToolAsync(d, cancellationToken));
             var results = await Task.WhenAll(provisionTasks);
             foreach (var provisioned in results)
-            {
                 if (provisioned != null)
-                    tools.AddRange(provisioned);
-            }
+                    managed.AddRange(provisioned);
         }
 
         if (skill.AllowedTools?.Count > 0)
@@ -92,41 +139,60 @@ public class ToolChainBuilder : IToolChainBuilder
             {
                 var resolved = ResolveToolByName(toolName);
                 if (resolved != null)
-                    tools.AddRange(resolved);
+                    foreach (var t in resolved)
+                        managed.Add(new ProvisionedTool(t, null));
             }
         }
 
         if (options.AdditionalTools?.Count > 0)
-            tools.AddRange(options.AdditionalTools);
+            foreach (var t in options.AdditionalTools)
+                managed.Add(new ProvisionedTool(t, null));
 
-        tools = ApplyPluginBoundaryIfPluginSkill(skill, tools);
+        managed = ApplyPluginBoundaryIfPluginSkill(skill, managed);
 
-        var seen2 = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        return FinalizeChain(tools.Where(t => seen2.Add(t.Name)), DescribeSource(skill, "managed tool resolution"));
+        // Deliberately not deduped by name here — see the matching note in BuildInjectedModeToolsAsync.
+        // Two ToolDeclarations in this same skill resolving from two different MCP servers to the same
+        // name is exactly the collision ResolveSurvivingTools must see both candidates for.
+        return FinalizeChain(managed, DescribeSource(skill, "managed tool resolution"));
     }
 
     /// <summary>
-    /// Applies the owning plugin's AllowedTools/DeniedTools boundary to <paramref name="tools"/>
+    /// Applies the owning plugin's AllowedTools/DeniedTools boundary to <paramref name="provisioned"/>
     /// whenever the skill is plugin-sourced and the plugin is loaded. This runs on both the
     /// Injected and Managed resolution paths so a plugin's <c>DeniedTools</c> are enforced
     /// regardless of how the skill resolves its tools. A no-op for built-in skills or when the
     /// plugin registry is unavailable.
     /// </summary>
-    private List<AITool> ApplyPluginBoundaryIfPluginSkill(SkillDefinition skill, List<AITool> tools)
+    private List<ProvisionedTool> ApplyPluginBoundaryIfPluginSkill(SkillDefinition skill, List<ProvisionedTool> provisioned)
     {
         if (string.IsNullOrEmpty(skill.PluginSource))
-            return tools;
+            return provisioned;
 
         var pluginRegistry = _serviceProvider.GetService<IPluginRegistry>();
         var loadedPlugin = pluginRegistry?.GetPlugin(skill.PluginSource);
-        return loadedPlugin is null
-            ? tools
-            : ApplyPluginToolBoundary(tools, loadedPlugin.Declaration);
+        if (loadedPlugin is null)
+            return provisioned;
+
+        return ApplyPluginToolBoundary(provisioned, loadedPlugin.Declaration);
+    }
+
+    /// <summary>
+    /// Filters <paramref name="provisioned"/> down to the entries whose <see cref="AITool"/> instance
+    /// appears (by reference) in <paramref name="survivors"/>, preserving each entry's provenance tag.
+    /// Safe to use only where <paramref name="survivors"/> was produced by a pure filter over the same
+    /// instances (never a wrap/transform) — both <see cref="ApplyPluginToolBoundary"/> and
+    /// <see cref="ReservedPlanCapabilityFilter.Exclude"/> qualify: each only removes elements, so a
+    /// surviving instance is always reference-equal to the one that went in.
+    /// </summary>
+    private static List<ProvisionedTool> KeepSurviving(List<ProvisionedTool> provisioned, IEnumerable<AITool> survivors)
+    {
+        var survivorSet = new HashSet<AITool>(survivors, ReferenceEqualityComparer.Instance);
+        return provisioned.Where(p => survivorSet.Contains(p.Tool)).ToList();
     }
 
     /// <summary>
     /// The single exit every resolution path in <em>this builder</em> returns through: drops tools whose
-    /// names collide with a reserved <see cref="PlanCapabilities"/> name (via the shared
+    /// names collide with a reserved <see cref="Domain.AI.Planner.PlanCapabilities"/> name (via the shared
     /// <see cref="ReservedPlanCapabilityFilter"/>), then governance-wraps what survives. Every public
     /// build method funnels here, so a tool the builder publishes has passed both checks exactly once.
     /// </summary>
@@ -145,10 +211,16 @@ public class ToolChainBuilder : IToolChainBuilder
     /// one helper so the two enforcement points cannot drift.
     /// </para>
     /// </remarks>
-    /// <param name="tools">The deduplicated tools resolved by one build path.</param>
+    /// <param name="provisioned">The deduplicated, attributed tools resolved by one build path.</param>
     /// <param name="source">Human-readable description of where the tools were resolved from, for the drop log.</param>
-    private List<AITool> FinalizeChain(IEnumerable<AITool> tools, string source)
-        => WrapGoverned(ReservedPlanCapabilityFilter.Exclude(tools, source, _logger));
+    private List<ProvisionedTool> FinalizeChain(List<ProvisionedTool> provisioned, string source)
+    {
+        var survivors = ReservedPlanCapabilityFilter.Exclude(provisioned.Select(p => p.Tool), source, _logger);
+        var afterReservedFilter = KeepSurviving(provisioned, survivors);
+
+        var wrapped = WrapGoverned(afterReservedFilter.Select(p => p.Tool));
+        return afterReservedFilter.Zip(wrapped, (p, w) => p with { Tool = w }).ToList();
+    }
 
     /// <summary>
     /// Describes the resolution path a tool arrived on, naming the owning plugin when the skill is
@@ -184,7 +256,8 @@ public class ToolChainBuilder : IToolChainBuilder
         }
 
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        return FinalizeChain(tools.Where(t => seen.Add(t.Name)), "keyed-DI resolution by name");
+        var provisioned = tools.Where(t => seen.Add(t.Name)).Select(t => new ProvisionedTool(t, null)).ToList();
+        return FinalizeChain(provisioned, "keyed-DI resolution by name").ConvertAll(p => p.Tool);
     }
 
     /// <inheritdoc />
@@ -205,20 +278,14 @@ public class ToolChainBuilder : IToolChainBuilder
         IReadOnlyList<string>? allowedTools = null,
         CancellationToken cancellationToken = default)
     {
-        // MCP-sourced tool names accumulate as resolution happens — no extra round trip.
-        // Injected-mode skills contribute every MCP tool; managed-mode skills contribute
-        // only tools whose ToolDeclaration was satisfied by MCP first.
-        var mcpCollector = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        var allTools = new List<AITool>();
+        var allProvisioned = new List<ProvisionedTool>();
         foreach (var skill in skills)
         {
-            var skillTools = await BuildToolsAsync(skill, options, mcpCollector, cancellationToken);
-            allTools.AddRange(skillTools);
+            var skillTools = await BuildProvisionedToolsAsync(skill, options, cancellationToken);
+            allProvisioned.AddRange(skillTools);
         }
 
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var deduplicated = allTools.Where(t => seen.Add(t.Name)).ToList();
+        var (deduplicated, attributedMcp) = ResolveSurvivingTools(allProvisioned);
 
         // A null allowlist means no restriction; a non-null one is an active restriction that keeps
         // only the listed tools — an empty (but non-null) list therefore denies every tool, which is
@@ -227,39 +294,50 @@ public class ToolChainBuilder : IToolChainBuilder
         {
             var allowed = new HashSet<string>(allowedTools, StringComparer.OrdinalIgnoreCase);
             deduplicated = deduplicated.Where(t => allowed.Contains(t.Name)).ToList();
-        }
 
-        // Filter MCP names down to what actually survived dedup + AllowedTools so the
-        // panel doesn't claim a tool was MCP-sourced when it was governance-filtered out.
-        var survivingNames = new HashSet<string>(deduplicated.Select(t => t.Name), StringComparer.OrdinalIgnoreCase);
-        var attributedMcp = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var name in mcpCollector)
-            if (survivingNames.Contains(name))
-                attributedMcp.Add(name);
+            // The panel must not claim a tool was MCP-sourced when AllowedTools just filtered it out.
+            attributedMcp.IntersectWith(deduplicated.Select(t => t.Name));
+        }
 
         return new MergedToolChain(deduplicated, attributedMcp);
     }
 
-    internal static List<AITool> ApplyPluginToolBoundary(List<AITool> tools, PluginDeclaration declaration)
+    /// <summary>
+    /// Applies a plugin's AllowedTools/DeniedTools boundary. Operates on <see cref="ProvisionedTool"/>
+    /// directly rather than <see cref="AITool"/> — this filter has exactly one caller
+    /// (<see cref="ApplyPluginBoundaryIfPluginSkill"/>) and is a pure name-based <c>Where</c>, so there
+    /// is no shared, provenance-unaware consumer to preserve compatibility with (contrast
+    /// <see cref="ReservedPlanCapabilityFilter.Exclude"/>, which is shared with
+    /// <c>GoverningToolContextProvider</c> and must stay on <see cref="AITool"/>). Taking the
+    /// provenance-carrying type directly means a survivor's origin tag never needs to be recovered
+    /// after the fact.
+    /// </summary>
+    private static List<ProvisionedTool> ApplyPluginToolBoundary(List<ProvisionedTool> tools, PluginDeclaration declaration)
     {
         if (declaration.AllowedTools is { Count: > 0 } allowed)
         {
             var allowSet = new HashSet<string>(allowed, StringComparer.OrdinalIgnoreCase);
-            tools = tools.Where(t => allowSet.Contains(t.Name)).ToList();
+            tools = tools.Where(t => allowSet.Contains(t.Tool.Name)).ToList();
         }
 
         if (declaration.DeniedTools is { Count: > 0 } denied)
         {
             var denySet = new HashSet<string>(denied, StringComparer.OrdinalIgnoreCase);
-            tools = tools.Where(t => !denySet.Contains(t.Name)).ToList();
+            tools = tools.Where(t => !denySet.Contains(t.Tool.Name)).ToList();
         }
 
         return tools;
     }
 
-    private async Task<IEnumerable<AITool>?> ProvisionToolAsync(
+    /// <summary>
+    /// Resolves one <see cref="Domain.AI.Tools.ToolDeclaration"/>, trying MCP first and falling back to
+    /// keyed DI. Deliberately touches no shared state: every tool it returns already carries its own
+    /// provenance tag, so concurrent calls from <see cref="BuildProvisionedToolsAsync"/>'s
+    /// <c>Task.WhenAll</c> never race on a mutable collection — each task's result is folded into the
+    /// caller's list sequentially, after every task has completed.
+    /// </summary>
+    private async Task<List<ProvisionedTool>?> ProvisionToolAsync(
         Domain.AI.Tools.ToolDeclaration declaration,
-        ISet<string> mcpCollector,
         CancellationToken cancellationToken = default)
     {
         // Reference-only MCP: a bundle run resolves a tool from an MCP server only when the caller's
@@ -269,12 +347,14 @@ public class ToolChainBuilder : IToolChainBuilder
         {
             try
             {
+                // In managed mode, a ToolDeclaration's Name is the MCP server name — GetToolsAsync
+                // returns that server's whole tool list, which is why every tool it returns is
+                // attributed to declaration.Name below.
                 var mcpTools = await _mcpToolProvider.GetToolsAsync(declaration.Name, cancellationToken);
                 if (mcpTools?.Count > 0)
                 {
                     _logger.LogDebug("Resolved tool {ToolName} from MCP server", declaration.Name);
-                    foreach (var t in mcpTools) mcpCollector.Add(t.Name);
-                    return mcpTools;
+                    return mcpTools.Select(t => new ProvisionedTool(t, declaration.Name)).ToList();
                 }
             }
             catch (Exception ex)
@@ -283,9 +363,10 @@ public class ToolChainBuilder : IToolChainBuilder
             }
         }
 
+        // Everything from here on is keyed-DI, not MCP — first-party.
         var resolved = ResolveToolByName(declaration.Name);
         if (resolved != null)
-            return resolved;
+            return resolved.Select(t => new ProvisionedTool(t, null)).ToList();
 
         if (declaration.HasFallback && !declaration.FallbackIsManual)
         {
@@ -294,7 +375,7 @@ public class ToolChainBuilder : IToolChainBuilder
             {
                 _logger.LogInformation("Using fallback tool {Fallback} for {ToolName}",
                     declaration.Fallback, declaration.Name);
-                return resolved;
+                return resolved.Select(t => new ProvisionedTool(t, null)).ToList();
             }
         }
 
@@ -316,30 +397,22 @@ public class ToolChainBuilder : IToolChainBuilder
     /// is never reached at all (no side-effect connection, no tool-schema disclosure), closing
     /// SSRF-by-construction. An empty grant yields no MCP tools.
     /// </summary>
-    private async Task<IReadOnlyList<IList<AITool>>> ResolveInjectedMcpToolsAsync(CancellationToken cancellationToken)
+    private async Task<IReadOnlyList<(string ServerName, IList<AITool> Tools)>> ResolveInjectedMcpToolsAsync(CancellationToken cancellationToken)
     {
         var envelope = CapabilityEnvelopeAccessor.Current;
         if (envelope is null)
-            return [.. (await _mcpToolProvider!.GetAllToolsAsync(cancellationToken)).Values];
+        {
+            var allByServer = await _mcpToolProvider!.GetAllToolsAsync(cancellationToken);
+            return [.. allByServer.Select(kvp => (kvp.Key, kvp.Value))];
+        }
 
         // Reference-only MCP on a bundle run: contact ONLY the granted servers, concurrently. A server that
         // fails is skipped (its tools are simply unavailable this turn) rather than failing the whole build.
-        var fetches = envelope.AllowedMcpServers.Select(async server =>
-        {
-            try
-            {
-                return await _mcpToolProvider!.GetToolsAsync(server, cancellationToken);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Capability envelope: granted MCP server '{Server}' could not be reached — skipped", server);
-                return null;
-            }
-        });
+        var fetches = envelope.AllowedMcpServers.Select(server => FetchServerToolsAsync(server, cancellationToken));
 
         var granted = (await Task.WhenAll(fetches))
-            .Where(t => t is { Count: > 0 })
-            .Cast<IList<AITool>>()
+            .Where(t => t.Tools is { Count: > 0 })
+            .Select(t => (t.Server, Tools: t.Tools!))
             .ToList();
 
         _logger.LogInformation(
@@ -347,6 +420,26 @@ public class ToolChainBuilder : IToolChainBuilder
             granted.Count);
 
         return granted;
+    }
+
+    /// <summary>
+    /// Fetches one granted server's tools, returning a null <c>Tools</c> when the server could not be
+    /// reached rather than throwing — a failed server is skipped, not a failed build. Declared with an
+    /// explicit nullable tuple return type rather than as an inline lambda: an anonymous async lambda
+    /// with two return statements of differing nullability infers the tuple element as non-nullable
+    /// from the first return, which silently mistypes the failure branch's <see langword="null"/>.
+    /// </summary>
+    private async Task<(string Server, IList<AITool>? Tools)> FetchServerToolsAsync(string server, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return (server, await _mcpToolProvider!.GetToolsAsync(server, cancellationToken));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Capability envelope: granted MCP server '{Server}' could not be reached — skipped", server);
+            return (server, null);
+        }
     }
 
     /// <summary>

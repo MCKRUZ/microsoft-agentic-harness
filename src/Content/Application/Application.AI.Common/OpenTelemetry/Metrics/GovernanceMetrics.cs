@@ -59,6 +59,28 @@ public static class GovernanceMetrics
     public static Counter<long> McpToolsWithheld { get; } =
         AppInstrument.Meter.CreateCounter<long>(GovernanceConventions.McpToolsWithheld, "{tool}", "MCP tools withheld after a security scan");
 
+    /// <summary>
+    /// Tool name collisions found on the aggregated MCP surface — two servers advertising a tool
+    /// under the same normalised name. Deliberately untagged with the tool or server name; both come
+    /// from an untrusted server.
+    /// </summary>
+    public static Counter<long> McpToolCollisions { get; } =
+        AppInstrument.Meter.CreateCounter<long>(GovernanceConventions.McpToolCollisions, "{collision}", "MCP tool name collisions detected across servers");
+
+    /// <summary>
+    /// Cross-server shadowing findings — a tool's description references another server's tool by
+    /// name.
+    /// </summary>
+    public static Counter<long> McpToolShadowing { get; } =
+        AppInstrument.Meter.CreateCounter<long>(GovernanceConventions.McpToolShadowing, "{finding}", "MCP cross-server tool shadowing findings");
+
+    /// <summary>
+    /// Definition drift (rug pull) findings — a previously-seen tool's description or schema hash
+    /// changed.
+    /// </summary>
+    public static Counter<long> McpToolDrift { get; } =
+        AppInstrument.Meter.CreateCounter<long>(GovernanceConventions.McpToolDrift, "{finding}", "MCP tool definition drift findings");
+
     /// <summary>Response sanitization actions taken. Tags: agent.governance.sanitization.category, agent.governance.tool.</summary>
     public static Counter<long> ResponseSanitizations { get; } =
         AppInstrument.Meter.CreateCounter<long>(GovernanceConventions.ResponseSanitizations, "{sanitization}", "Response sanitization actions");

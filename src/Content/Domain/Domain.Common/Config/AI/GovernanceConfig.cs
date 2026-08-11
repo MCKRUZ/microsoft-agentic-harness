@@ -75,6 +75,18 @@ public sealed class GovernanceConfig
     /// findings, the narrowest rule; note it still carries one known false positive, since the
     /// zero-width non-joiner it looks for is load-bearing in Persian, Arabic and several Indic
     /// scripts.
+    /// <para>
+    /// <strong>Also gates the cross-server structural scan</strong> (tool-name collision, shadowing,
+    /// definition drift — see <c>ToolChainBuilder.Surface.cs</c>'s <c>ApplySurfaceFindings</c>), which
+    /// shares this one threshold by design rather than adding a second knob an operator would have to
+    /// remember to tune in step. Collision is always withheld regardless of this setting. Shadowing and
+    /// drift are fixed at <see cref="ThreatLevel.High"/>, so raising this threshold to
+    /// <see cref="ThreatLevel.Critical"/> — narrowing the per-tool content scanner to
+    /// invisible-character findings only, as described above — also stops shadowing and drift from
+    /// being withheld (they still log and count). That is an intentional consequence of sharing the
+    /// knob, not a gap: an operator narrowing this threshold has explicitly chosen to trust more and
+    /// block less across every finding type it gates.
+    /// </para>
     /// </remarks>
     public ThreatLevel McpToolBlockThreshold { get; init; } = ThreatLevel.High;
 
@@ -137,4 +149,12 @@ public sealed class GovernanceConfig
     /// nothing.
     /// </summary>
     public ToolBehaviorGatingConfig ToolBehaviorGating { get; init; } = new();
+
+    /// <summary>
+    /// Posture for the MCP tool surface scan — collision, shadowing, and definition drift — layered
+    /// on top of the per-tool content rules. Gated by <see cref="EnableMcpSecurity"/>, the same flag
+    /// that gates the per-tool scanner, rather than a second switch: a control an operator believes is
+    /// on because a related-looking flag is on has shipped as a defect before.
+    /// </summary>
+    public McpToolSurfaceScanningConfig McpToolSurfaceScanning { get; init; } = new();
 }

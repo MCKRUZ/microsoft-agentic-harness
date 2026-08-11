@@ -18,6 +18,9 @@ public static class GovernanceConventions
     public const string McpScans = "agent.governance.mcp_scans";
     public const string McpThreats = "agent.governance.mcp_threats";
     public const string McpToolsWithheld = "agent.governance.mcp_tools_withheld";
+    public const string McpToolCollisions = "agent.governance.mcp_tool_collisions";
+    public const string McpToolShadowing = "agent.governance.mcp_tool_shadowing";
+    public const string McpToolDrift = "agent.governance.mcp_tool_drift";
 
     /// <summary>
     /// Highest severity found on a withheld MCP tool. Bounded by the <c>ThreatLevel</c> enum, unlike

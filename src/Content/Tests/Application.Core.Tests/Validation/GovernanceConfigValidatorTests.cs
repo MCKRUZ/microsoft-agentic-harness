@@ -180,6 +180,41 @@ public class GovernanceConfigValidatorTests
         result.Errors.Should().BeEmpty();
     }
 
+    [Fact]
+    public async Task Validate_StrictDriftModeOnWithoutMcpSecurity_HasError()
+    {
+        // Same dead-control shape as the tool-behaviour posture guard above: the collision/shadowing/
+        // drift scan StrictDriftMode tunes only runs when EnableMcpSecurity is true, so this
+        // combination configures a security setting that nothing at runtime reads.
+        var config = new GovernanceConfig
+        {
+            EnableMcpSecurity = false,
+            McpToolSurfaceScanning = new McpToolSurfaceScanningConfig { StrictDriftMode = true },
+        };
+
+        var result = await _validator.ValidateAsync(config);
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName == nameof(GovernanceConfig.EnableMcpSecurity));
+    }
+
+    [Fact]
+    public async Task Validate_StrictDriftModeOnWithMcpSecurity_IsValid()
+    {
+        // The control: the rule must reject only the inert combination, not the working one.
+        var config = new GovernanceConfig
+        {
+            Enabled = true,
+            EnableMcpSecurity = true,
+            McpToolSurfaceScanning = new McpToolSurfaceScanningConfig { StrictDriftMode = true },
+        };
+
+        var result = await _validator.ValidateAsync(config);
+
+        result.IsValid.Should().BeTrue();
+        result.Errors.Should().BeEmpty();
+    }
+
     [Theory]
     [InlineData("")]
     [InlineData("   ")]
