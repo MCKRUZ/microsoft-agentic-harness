@@ -36,7 +36,7 @@ public sealed class DefaultProviderErrorClassifierTests
 
         foreach (var exception in ExceptionsForStatus(status, "service is busy"))
         {
-            sut.Classify(exception, CancellationToken.None).Kind.Should().Be(
+            sut.Classify(exception).Kind.Should().Be(
                 ProviderFailureKind.Transient,
                 "{0} carrying HTTP {1} is a transient failure whatever SDK threw it",
                 exception.GetType().Name, status);
@@ -53,7 +53,7 @@ public sealed class DefaultProviderErrorClassifierTests
 
         foreach (var exception in ExceptionsForStatus(status, "request rejected"))
         {
-            var classification = sut.Classify(exception, CancellationToken.None);
+            var classification = sut.Classify(exception);
 
             classification.Kind.Should().Be(
                 ProviderFailureKind.FatalForChain,
@@ -69,7 +69,7 @@ public sealed class DefaultProviderErrorClassifierTests
         var sut = ResilienceTestSupport.CreateClassifier();
 
         var classification = sut.Classify(new HttpRequestException(
-            "model not available", null, HttpStatusCode.NotFound), CancellationToken.None);
+            "model not available", null, HttpStatusCode.NotFound));
 
         classification.Kind.Should().Be(
             ProviderFailureKind.FatalForProvider,
@@ -86,7 +86,7 @@ public sealed class DefaultProviderErrorClassifierTests
 
         var classification = sut.Classify(new HttpRequestException(
             "Your credit balance is too low to access the Anthropic API",
-            null, HttpStatusCode.BadRequest), CancellationToken.None);
+            null, HttpStatusCode.BadRequest));
 
         classification.Kind.Should().Be(ProviderFailureKind.FatalForChain);
         classification.ReasonCode.Should().Be(ProviderFatalReason.BillingExhausted);
@@ -101,7 +101,7 @@ public sealed class DefaultProviderErrorClassifierTests
         var sut = ResilienceTestSupport.CreateClassifier();
 
         var classification = sut.Classify(new HttpRequestException(
-            "Rate limit exceeded for your billing tier", null, HttpStatusCode.TooManyRequests), CancellationToken.None);
+            "Rate limit exceeded for your billing tier", null, HttpStatusCode.TooManyRequests));
 
         classification.Kind.Should().Be(
             ProviderFailureKind.Transient,
@@ -113,9 +113,9 @@ public sealed class DefaultProviderErrorClassifierTests
     {
         var sut = ResilienceTestSupport.CreateClassifier();
 
-        sut.Classify(new HttpRequestException("Connection reset by peer"), CancellationToken.None)
+        sut.Classify(new HttpRequestException("Connection reset by peer"))
             .Kind.Should().Be(ProviderFailureKind.Transient);
-        sut.Classify(new SocketException(10054), CancellationToken.None)
+        sut.Classify(new SocketException(10054))
             .Kind.Should().Be(ProviderFailureKind.Transient);
     }
 
@@ -134,7 +134,7 @@ public sealed class DefaultProviderErrorClassifierTests
             "The SSL connection could not be established, see inner exception.",
             new AuthenticationException("Authentication failed, see inner exception."));
 
-        var classification = sut.Classify(tlsFailure, CancellationToken.None);
+        var classification = sut.Classify(tlsFailure);
 
         classification.Kind.Should().Be(
             ProviderFailureKind.Transient,
@@ -155,7 +155,7 @@ public sealed class DefaultProviderErrorClassifierTests
 
         var failure = new HttpRequestException(error, "unauthorized: authentication failed");
 
-        sut.Classify(failure, CancellationToken.None).Kind.Should().Be(ProviderFailureKind.Transient);
+        sut.Classify(failure).Kind.Should().Be(ProviderFailureKind.Transient);
     }
 
     [Fact]
@@ -167,7 +167,7 @@ public sealed class DefaultProviderErrorClassifierTests
         // could have classified every status-less failure as transient and still looked green.
         var sut = ResilienceTestSupport.CreateClassifier();
 
-        var classification = sut.Classify(new HttpRequestException("invalid x-api-key"), CancellationToken.None);
+        var classification = sut.Classify(new HttpRequestException("invalid x-api-key"));
 
         classification.Kind.Should().Be(ProviderFailureKind.FatalForChain);
         classification.ReasonCode.Should().Be(ProviderFatalReason.InvalidCredentials);
@@ -296,7 +296,7 @@ public sealed class DefaultProviderErrorClassifierTests
         // before this fix. Confirms the new cancellation path does not regress it.
         var sut = ResilienceTestSupport.CreateClassifier();
 
-        sut.Classify(new Polly.Timeout.TimeoutRejectedException("attempt timed out"), CancellationToken.None)
+        sut.Classify(new Polly.Timeout.TimeoutRejectedException("attempt timed out"))
             .Kind.Should().Be(ProviderFailureKind.Transient);
     }
 
@@ -305,7 +305,7 @@ public sealed class DefaultProviderErrorClassifierTests
     {
         var sut = ResilienceTestSupport.CreateClassifier();
 
-        sut.Classify(new InvalidOperationException("something went wrong in our own code"), CancellationToken.None)
+        sut.Classify(new InvalidOperationException("something went wrong in our own code"))
             .Kind.Should().Be(
                 ProviderFailureKind.Unknown,
                 "an unrecognised failure is as likely to be our bug as a provider blip, and must not be replayed");
@@ -322,7 +322,7 @@ public sealed class DefaultProviderErrorClassifierTests
             new InvalidOperationException("outer",
                 new HttpRequestException("nope", null, HttpStatusCode.Unauthorized)));
 
-        sut.Classify(nested, CancellationToken.None).Kind.Should().Be(ProviderFailureKind.FatalForChain);
+        sut.Classify(nested).Kind.Should().Be(ProviderFailureKind.FatalForChain);
     }
 
     [Fact]
@@ -335,7 +335,7 @@ public sealed class DefaultProviderErrorClassifierTests
         var noResponse = new ClientResultException("connection failure",
             innerException: new HttpRequestException("connection refused"));
 
-        sut.Classify(noResponse, CancellationToken.None).Kind.Should().Be(ProviderFailureKind.Transient);
+        sut.Classify(noResponse).Kind.Should().Be(ProviderFailureKind.Transient);
     }
 
     [Fact]
@@ -348,7 +348,7 @@ public sealed class DefaultProviderErrorClassifierTests
 
         var classification = sut.Classify(new HttpRequestException(
             "The model 'gpt-4-32k' is no longer active. Please use a supported model.",
-            null, HttpStatusCode.BadRequest), CancellationToken.None);
+            null, HttpStatusCode.BadRequest));
 
         classification.Kind.Should().NotBe(
             ProviderFailureKind.FatalForChain,
@@ -362,7 +362,7 @@ public sealed class DefaultProviderErrorClassifierTests
         var sut = ResilienceTestSupport.CreateClassifier();
 
         var classification = sut.Classify(new HttpRequestException(
-            "Assistant with id 'asst_abc123' does not exist", null, HttpStatusCode.BadRequest), CancellationToken.None);
+            "Assistant with id 'asst_abc123' does not exist", null, HttpStatusCode.BadRequest));
 
         classification.ReasonCode.Should().NotBe(
             ProviderFatalReason.ModelNotFound,
@@ -376,7 +376,7 @@ public sealed class DefaultProviderErrorClassifierTests
         var sut = ResilienceTestSupport.CreateClassifier();
 
         sut.Classify(new HttpRequestException(
-                "The API deployment for this resource does not exist", null, HttpStatusCode.BadRequest), CancellationToken.None)
+                "The API deployment for this resource does not exist", null, HttpStatusCode.BadRequest))
             .ReasonCode.Should().Be(ProviderFatalReason.ModelNotFound);
     }
 
@@ -395,7 +395,7 @@ public sealed class DefaultProviderErrorClassifierTests
         };
         var sut = ResilienceTestSupport.CreateClassifier(config);
 
-        var act = () => sut.Classify(new HttpRequestException("boom", null, HttpStatusCode.BadRequest), CancellationToken.None);
+        var act = () => sut.Classify(new HttpRequestException("boom", null, HttpStatusCode.BadRequest));
 
         act.Should().NotThrow();
     }
@@ -407,11 +407,11 @@ public sealed class DefaultProviderErrorClassifierTests
         // patterns must not depend on a consumer having populated anything.
         var sut = ResilienceTestSupport.CreateClassifier(new ResilienceConfig());
 
-        sut.Classify(new HttpRequestException("Invalid API key provided", null, HttpStatusCode.BadRequest), CancellationToken.None)
+        sut.Classify(new HttpRequestException("Invalid API key provided", null, HttpStatusCode.BadRequest))
             .ReasonCode.Should().Be(ProviderFatalReason.InvalidCredentials);
-        sut.Classify(new HttpRequestException("insufficient credits", null, HttpStatusCode.BadRequest), CancellationToken.None)
+        sut.Classify(new HttpRequestException("insufficient credits", null, HttpStatusCode.BadRequest))
             .ReasonCode.Should().Be(ProviderFatalReason.BillingExhausted);
-        sut.Classify(new HttpRequestException("This account is disabled", null, HttpStatusCode.BadRequest), CancellationToken.None)
+        sut.Classify(new HttpRequestException("This account is disabled", null, HttpStatusCode.BadRequest))
             .ReasonCode.Should().Be(ProviderFatalReason.AccessDenied);
     }
 
@@ -427,10 +427,10 @@ public sealed class DefaultProviderErrorClassifierTests
         };
         var sut = ResilienceTestSupport.CreateClassifier(config);
 
-        sut.Classify(new HttpRequestException("tenant is not provisioned", null, HttpStatusCode.BadRequest), CancellationToken.None)
+        sut.Classify(new HttpRequestException("tenant is not provisioned", null, HttpStatusCode.BadRequest))
             .Kind.Should().Be(ProviderFailureKind.FatalForChain, "the consumer's own wording is honoured");
 
-        sut.Classify(new HttpRequestException("insufficient credits", null, HttpStatusCode.BadRequest), CancellationToken.None)
+        sut.Classify(new HttpRequestException("insufficient credits", null, HttpStatusCode.BadRequest))
             .Kind.Should().Be(
                 ProviderFailureKind.FatalForChain,
                 "adding one provider's wording must not silently drop coverage for every other provider");
@@ -454,7 +454,7 @@ public sealed class DefaultProviderErrorClassifierTests
         var sut = ResilienceTestSupport.CreateClassifier(config);
 
         var classification = sut.Classify(new HttpRequestException(
-            "Your billing account is not in good standing", null, HttpStatusCode.BadRequest), CancellationToken.None);
+            "Your billing account is not in good standing", null, HttpStatusCode.BadRequest));
 
         classification.Kind.Should().Be(
             ProviderFailureKind.FatalForChain,
@@ -476,7 +476,7 @@ public sealed class DefaultProviderErrorClassifierTests
         var sut = ResilienceTestSupport.CreateClassifier(config);
 
         sut.Classify(new HttpRequestException(
-                "This region is not enabled for the resource", null, HttpStatusCode.BadRequest), CancellationToken.None)
+                "This region is not enabled for the resource", null, HttpStatusCode.BadRequest))
             .Kind.Should().Be(ProviderFailureKind.FatalForProvider);
     }
 
@@ -489,7 +489,7 @@ public sealed class DefaultProviderErrorClassifierTests
         var sut = ResilienceTestSupport.CreateClassifier();
 
         var classification = sut.Classify(new HttpRequestException(
-            "Public access is disabled for this resource", null, HttpStatusCode.Forbidden), CancellationToken.None);
+            "Public access is disabled for this resource", null, HttpStatusCode.Forbidden));
 
         classification.StopsChain.Should().BeFalse(
             "one endpoint refusing the caller says nothing about the next provider in the chain");
@@ -505,7 +505,7 @@ public sealed class DefaultProviderErrorClassifierTests
         var sut = ResilienceTestSupport.CreateClassifier();
 
         sut.Classify(new HttpRequestException(
-                "Access denied due to Virtual Network/Firewall rules", null, HttpStatusCode.Forbidden), CancellationToken.None)
+                "Access denied due to Virtual Network/Firewall rules", null, HttpStatusCode.Forbidden))
             .StopsChain.Should().BeFalse();
     }
 
@@ -518,7 +518,7 @@ public sealed class DefaultProviderErrorClassifierTests
         var sut = ResilienceTestSupport.CreateClassifier();
 
         sut.Classify(new HttpRequestException(
-                "This account is disabled", null, HttpStatusCode.Forbidden), CancellationToken.None)
+                "This account is disabled", null, HttpStatusCode.Forbidden))
             .StopsChain.Should().BeTrue();
     }
 

@@ -1,6 +1,7 @@
 using System.ClientModel.Primitives;
 using System.Runtime.CompilerServices;
 using Application.AI.Common.Interfaces.Resilience;
+using Domain.AI.Resilience;
 using Domain.Common.Config.AI.Resilience;
 using Infrastructure.AI.Resilience;
 using Infrastructure.AI.Tests.Runs.Support;
@@ -8,6 +9,18 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 
 namespace Infrastructure.AI.Tests.Resilience;
+
+/// <summary>
+/// Convenience overload for tests that assert nothing about cancellation — the vast majority of
+/// <c>DefaultProviderErrorClassifierTests</c>. Keeps <see cref="CancellationToken.None"/> out of
+/// call sites where it carries no meaning, so it stands out at the handful of sites where the
+/// token's state IS the thing under test.
+/// </summary>
+internal static class ProviderErrorClassifierTestExtensions
+{
+    public static ProviderFailureClassification Classify(this IProviderErrorClassifier classifier, Exception exception)
+        => classifier.Classify(exception, CancellationToken.None);
+}
 
 /// <summary>
 /// Shared construction helpers and test doubles for the resilience tests.
