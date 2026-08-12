@@ -183,9 +183,16 @@ public sealed partial class DefaultEscalationService : IEscalationService, IEsca
 		// escalation with a gap in the compliance audit trail behind it. This runs before the
 		// decision reaches the strategy or the working-state store, so a failure here means the
 		// decision was never applied and never counted — the approver may retry once the store
-		// recovers. Matches RecordRequestAsync and RecordOutcomeAsync: audit-store failures
-		// propagate the provider's own exception rather than being wrapped — wrapping is
-		// reserved for the working-state store (see SaveDecisionsAsync below).
+		// recovers.
+		//
+		// Shares one thing with RecordRequestAsync and RecordOutcomeAsync (Resolution.cs), not
+		// their code shape: an audit-store failure propagates the provider's own exception
+		// rather than being wrapped (wrapping is reserved for the working-state store — see
+		// SaveDecisionsAsync below). The three bodies otherwise differ on purpose.
+		// RecordRequestAsync propagates bare with no try/catch — its caller already tears down
+		// the half-created escalation. RecordOutcomeAsync's catch does two things this one
+		// doesn't need: MarkResolutionFailed(state) and TrySetException on the caller's
+		// TaskCompletionSource, because that path is resolving a blocked awaiter this one isn't.
 		try
 		{
 			await _auditStore.RecordDecisionAsync(escalationId, decision, ct);
