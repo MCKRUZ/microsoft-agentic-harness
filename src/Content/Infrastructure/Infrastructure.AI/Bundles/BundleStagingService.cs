@@ -450,53 +450,60 @@ public sealed class BundleStagingService : IBundleStagingService
         foreach (var serverProp in block.Value.ServersElement.EnumerateObject())
         {
             var namespacedName = $"{bundleId}:{serverProp.Name}";
-
-            McpServerDefinition definition;
-            try
-            {
-                definition = McpServerDefinitionBuilder.Build(
-                    // A bundle (unlike a host-installed plugin) has no declaration-level env overrides.
-                    serverProp.Value, new Dictionary<string, string>(), $"[Bundle: {bundleId}]", serverProp.Name);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex,
-                    "Bundle {BundleId}: failed to build MCP server definition for '{ServerName}', skipping",
-                    bundleId, serverProp.Name);
-                continue;
-            }
-
-            // A bundle is untrusted, uploader-supplied content. A stdio server's Command/Args/Env come
-            // straight from the bundle's own manifest, and connecting to it launches that command as a
-            // real host process (via McpConnectionManager -> StdioClientTransport) — arbitrary command
-            // execution on the harness host, gated only by upload permission. Host-installed plugins
-            // (PluginLoader) are a different trust tier and are unaffected: only this bundle path rejects
-            // Stdio. Tracked follow-up to run a bundle's stdio server inside the existing process/Docker
-            // sandbox instead of rejecting it outright: #371.
-            if (!definition.IsRemoteServer)
-            {
-                _logger.LogWarning(
-                    "Bundle {BundleId}: MCP server '{ServerName}' declares a stdio (local command) " +
-                    "transport, which is not permitted for bundle-owned servers — rejected, not registered. " +
-                    "Only http/sse (remote) MCP servers are permitted in a bundle's own manifest.",
-                    bundleId, serverProp.Name);
-                continue;
-            }
-
-            if (_mcpServersConfig.Servers.TryAdd(namespacedName, definition))
-            {
+            if (TryBuildAndRegisterOneServer(bundleId, namespacedName, serverProp))
                 registered.Add(namespacedName);
-            }
-            else
-            {
-                _logger.LogWarning(
-                    "Bundle {BundleId}: duplicate MCP server name '{ServerName}' declared across " +
-                    "more than one plugin manifest; keeping the first",
-                    bundleId, serverProp.Name);
-            }
         }
 
         return registered;
+    }
+
+    /// <summary>
+    /// Builds one manifest-declared server and registers it under <paramref name="namespacedName"/>,
+    /// rejecting a stdio (local-command) transport and a duplicate name — see
+    /// <see cref="RegisterBundleMcpServers"/>. Returns whether registration succeeded.
+    /// </summary>
+    private bool TryBuildAndRegisterOneServer(string bundleId, string namespacedName, System.Text.Json.JsonProperty serverProp)
+    {
+        McpServerDefinition definition;
+        try
+        {
+            definition = McpServerDefinitionBuilder.Build(
+                // A bundle (unlike a host-installed plugin) has no declaration-level env overrides.
+                serverProp.Value, new Dictionary<string, string>(), $"[Bundle: {bundleId}]", serverProp.Name);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "Bundle {BundleId}: failed to build MCP server definition for '{ServerName}', skipping",
+                bundleId, serverProp.Name);
+            return false;
+        }
+
+        // A bundle is untrusted, uploader-supplied content. A stdio server's Command/Args/Env come
+        // straight from the bundle's own manifest, and connecting to it launches that command as a
+        // real host process (via McpConnectionManager -> StdioClientTransport) — arbitrary command
+        // execution on the harness host, gated only by upload permission. Host-installed plugins
+        // (PluginLoader) are a different trust tier and are unaffected: only this bundle path rejects
+        // Stdio. Tracked follow-up to run a bundle's stdio server inside the existing process/Docker
+        // sandbox instead of rejecting it outright: #371.
+        if (!definition.IsRemoteServer)
+        {
+            _logger.LogWarning(
+                "Bundle {BundleId}: MCP server '{ServerName}' declares a stdio (local command) " +
+                "transport, which is not permitted for bundle-owned servers — rejected, not registered. " +
+                "Only http/sse (remote) MCP servers are permitted in a bundle's own manifest.",
+                bundleId, serverProp.Name);
+            return false;
+        }
+
+        if (_mcpServersConfig.Servers.TryAdd(namespacedName, definition))
+            return true;
+
+        _logger.LogWarning(
+            "Bundle {BundleId}: duplicate MCP server name '{ServerName}' declared across " +
+            "more than one plugin manifest; keeping the first",
+            bundleId, serverProp.Name);
+        return false;
     }
 
     private Result<StagedBundle> CleanupAndFail(string bundleDir, params string[] errors)

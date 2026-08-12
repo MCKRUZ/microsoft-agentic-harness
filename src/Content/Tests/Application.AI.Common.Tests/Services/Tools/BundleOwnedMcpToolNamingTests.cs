@@ -50,14 +50,4 @@ public sealed class BundleOwnedMcpToolNamingTests
 
         a.Should().NotBe(b);
     }
-
-    [Theory]
-    [InlineData("bundle-abc123:echo", true)]
-    [InlineData("other-bundle:epr-mcp", true)]
-    [InlineData("granted-server", false)]
-    [InlineData("epr-mcp", false)]
-    public void IsNamespacedServerName_DetectsBundleOwnedKeyByColon(string serverName, bool expected)
-    {
-        BundleOwnedMcpToolNaming.IsNamespacedServerName(serverName).Should().Be(expected);
-    }
 }

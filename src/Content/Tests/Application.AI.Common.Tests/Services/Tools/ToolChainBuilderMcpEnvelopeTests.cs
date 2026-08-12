@@ -53,13 +53,15 @@ public sealed class ToolChainBuilderMcpEnvelopeTests
     }
 
     [Fact]
-    public async Task InjectedMode_NamespacedGrant_PublishesNamespacedToolName()
+    public async Task InjectedMode_BundleOwnedGrant_PublishesNamespacedToolName()
     {
         // A bundle-owned server is reached via its namespaced key ("{bundleId}:{serverName}") even in
         // Injected mode, where every granted server's tools pass straight through. The tool's own name
         // must still be namespaced — never the bare, bundle-chosen name — for the same reason the Managed
         // path already namespaces it: the bare name is what CapabilityEnvelope.AllowedTools was granted
         // under (BundleRunExecutor), and it must never collide with an unrelated host tool of the same name.
+        // Ownership comes from CapabilityEnvelope.BundleOwnedMcpServers (this run's own record), never from
+        // the server name's shape.
         var mcp = new Mock<IMcpToolProvider>();
         mcp.Setup(p => p.GetToolsAsync("bundle-123:epr-mcp", It.IsAny<CancellationToken>()))
             .ReturnsAsync([AIFunctionFactory.Create(() => "r", "epr_tool")]);
@@ -67,7 +69,7 @@ public sealed class ToolChainBuilderMcpEnvelopeTests
         var builder = Builder(mcp.Object);
 
         List<AITool> tools;
-        using (CapabilityEnvelopeAccessor.Begin(Envelope("bundle-123:epr-mcp")))
+        using (CapabilityEnvelopeAccessor.Begin(EnvelopeWithBundleOwned(["bundle-123:epr-mcp"], "bundle-123:epr-mcp")))
             tools = await builder.BuildToolsAsync(InjectedSkill(), new SkillAgentOptions());
 
         tools.Select(t => t.Name).Should().Contain("bundle-123_epr-mcp__epr_tool");
@@ -91,6 +93,29 @@ public sealed class ToolChainBuilderMcpEnvelopeTests
             tools = await builder.BuildToolsAsync(InjectedSkill(), new SkillAgentOptions());
 
         tools.Select(t => t.Name).Should().BeEquivalentTo(["granted_tool"]);
+    }
+
+    [Fact]
+    public async Task InjectedMode_PluginNamespacedGrant_NotBundleOwned_PublishesBareToolName()
+    {
+        // Regression test for a correctness-review finding: PluginLoader namespaces a host-installed
+        // plugin's own MCP server under the IDENTICAL "{Prefix}:{ServerName}" shape a bundle-owned server
+        // uses ("azure:filesystem" here). A colon in the name is therefore not evidence of bundle
+        // ownership — this server is granted but explicitly NOT in BundleOwnedMcpServers, so its tools
+        // must publish under their bare name, exactly as before this fix, or a plugin's DeniedTools
+        // boundary (which matches by bare name) would silently stop matching a renamed tool.
+        var mcp = new Mock<IMcpToolProvider>();
+        mcp.Setup(p => p.GetToolsAsync("azure:filesystem", It.IsAny<CancellationToken>()))
+            .ReturnsAsync([AIFunctionFactory.Create(() => "r", "read_file")]);
+
+        var builder = Builder(mcp.Object);
+
+        List<AITool> tools;
+        using (CapabilityEnvelopeAccessor.Begin(Envelope("azure:filesystem")))
+            tools = await builder.BuildToolsAsync(InjectedSkill(), new SkillAgentOptions());
+
+        tools.Select(t => t.Name).Should().BeEquivalentTo(["read_file"],
+            "a granted, colon-namespaced server that is not in BundleOwnedMcpServers must not be renamed");
     }
 
     [Fact]
@@ -195,7 +220,7 @@ public sealed class ToolChainBuilderMcpEnvelopeTests
         };
 
         List<AITool> tools;
-        using (CapabilityEnvelopeAccessor.Begin(Envelope("bundle-123:epr-mcp")))
+        using (CapabilityEnvelopeAccessor.Begin(EnvelopeWithBundleOwned(["bundle-123:epr-mcp"], "bundle-123:epr-mcp")))
             tools = await builder.BuildToolsAsync(skill, new SkillAgentOptions());
 
         // Published under a NAMESPACED name, never the bare name the (untrusted, bundle-authored)
@@ -204,6 +229,32 @@ public sealed class ToolChainBuilderMcpEnvelopeTests
         tools.Select(t => t.Name).Should().NotContain("epr_tool",
             "the bare, bundle-chosen name must never be the model-callable/governed name");
         mcp.Verify(p => p.GetToolsAsync("bundle-123:epr-mcp", It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task ManagedDeclaration_SuffixMatchesGrantedPluginServer_NotBundleOwned_PublishesBareToolName()
+    {
+        // Regression test for a correctness-review finding: a suffix match can legitimately resolve to an
+        // explicitly-granted, colon-namespaced PLUGIN server ("azure:epr-mcp") rather than a bundle-owned
+        // one. It must still be contacted (the grant is real), but its tools must NOT be renamed, since
+        // renaming is reserved for this run's own bundle-owned servers (CapabilityEnvelope.BundleOwnedMcpServers).
+        var mcp = new Mock<IMcpToolProvider>();
+        mcp.Setup(p => p.GetToolsAsync("azure:epr-mcp", It.IsAny<CancellationToken>()))
+            .ReturnsAsync([AIFunctionFactory.Create(() => "r", "host_tool")]);
+
+        var builder = Builder(mcp.Object);
+        var skill = new SkillDefinition
+        {
+            Id = "s", Name = "s", Instructions = "x",
+            ToolDeclarations = [new ToolDeclaration { Name = "epr-mcp" }]
+        };
+
+        List<AITool> tools;
+        using (CapabilityEnvelopeAccessor.Begin(Envelope("azure:epr-mcp")))
+            tools = await builder.BuildToolsAsync(skill, new SkillAgentOptions());
+
+        tools.Select(t => t.Name).Should().BeEquivalentTo(["host_tool"],
+            "a suffix-matched but non-bundle-owned grant must publish under its bare name, not a namespaced one");
     }
 
     [Fact]
@@ -254,4 +305,7 @@ public sealed class ToolChainBuilderMcpEnvelopeTests
 
     private static CapabilityEnvelope Envelope(params string[] servers) =>
         new() { AllowedMcpServers = servers };
+
+    private static CapabilityEnvelope EnvelopeWithBundleOwned(string[] servers, params string[] bundleOwned) =>
+        new() { AllowedMcpServers = servers, BundleOwnedMcpServers = bundleOwned };
 }

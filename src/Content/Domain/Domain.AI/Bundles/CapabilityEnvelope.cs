@@ -56,6 +56,18 @@ public sealed record CapabilityEnvelope
     public IReadOnlyList<string> AllowedMcpServers { get; init; } = [];
 
     /// <summary>
+    /// The subset of <see cref="AllowedMcpServers"/> that are this run's OWN bundle-owned servers (i.e.
+    /// <c>StagedBundle.McpServerNames</c>) rather than a host-configured or plugin-configured server the
+    /// envelope separately grants. Both use the identical <c>{Prefix}:{ServerName}</c> namespaced-key
+    /// shape (plugins are namespaced by <c>PluginLoader</c> under <c>{PluginName}:{ServerName}</c>, into
+    /// the SAME shared server config bundles register into), so a server name's shape alone can never
+    /// distinguish the two — only the run's own provenance can. Populated once, at the point the run's
+    /// envelope is built from the staged bundle, and never re-derived downstream from string shape.
+    /// Empty (the default) means no bundle-owned server is granted this run.
+    /// </summary>
+    public IReadOnlyList<string> BundleOwnedMcpServers { get; init; } = [];
+
+    /// <summary>
     /// The highest autonomy tier this caller's bundle run may act under. Enforced as a ceiling: the
     /// effective autonomy is the most restrictive of this value, the host's own graded-autonomy gate, and
     /// each tool's blast radius — this can only tighten, never loosen. Defaults to the most restrictive
@@ -86,4 +98,14 @@ public sealed record CapabilityEnvelope
     /// </summary>
     /// <param name="serverName">The MCP server name being checked.</param>
     public bool GrantsMcpServer(string serverName) => AllowedMcpServers.Contains(serverName, StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Whether the named, already-resolved MCP server is this run's own bundle-owned server (see
+    /// <see cref="BundleOwnedMcpServers"/>) rather than a host- or plugin-granted one — the authoritative
+    /// check callers must use to decide whether a resolved tool needs bundle-owned namespacing, instead
+    /// of inferring ownership from the server name's shape.
+    /// </summary>
+    /// <param name="serverName">The MCP server name being checked.</param>
+    public bool IsBundleOwnedMcpServer(string serverName) =>
+        BundleOwnedMcpServers.Contains(serverName, StringComparer.OrdinalIgnoreCase);
 }

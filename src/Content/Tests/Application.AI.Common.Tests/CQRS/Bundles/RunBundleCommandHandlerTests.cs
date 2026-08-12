@@ -243,6 +243,9 @@ public sealed class RunBundleCommandHandlerTests
         result.IsSuccess.Should().BeTrue();
         created!.Envelope.AllowedMcpServers.Should().BeEquivalentTo(["host-server", "b1:echo"],
             "the bundle's own server must be additively granted, never replacing the caller's own grant");
+        created.Envelope.BundleOwnedMcpServers.Should().BeEquivalentTo(["b1:echo"],
+            "the authoritative bundle-ownership record must be stamped at the same point the grant is made, " +
+            "not left for a downstream caller to re-derive from the server name's shape");
     }
 
     [Fact]

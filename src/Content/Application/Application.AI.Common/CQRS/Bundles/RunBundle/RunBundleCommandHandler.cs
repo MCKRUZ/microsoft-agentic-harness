@@ -142,8 +142,12 @@ public sealed class RunBundleCommandHandler
     /// Additively unions the bundle's own registered MCP server names (<see cref="StagedBundle.McpServerNames"/>)
     /// into the caller's resolved envelope's <see cref="CapabilityEnvelope.AllowedMcpServers"/> — union
     /// only, never replace, so the caller's own configured grant is never narrowed by running a bundle.
-    /// A bundle with no MCP servers (the common case) returns the envelope unchanged. The tool NAMES a
-    /// bundle-owned server publishes are granted separately, once the server is actually reachable — see
+    /// Also stamps the SAME names into <see cref="CapabilityEnvelope.BundleOwnedMcpServers"/> — the only
+    /// place that field is ever populated, so "is this granted server bundle-owned" is answered from this
+    /// run's own provenance, never re-derived downstream from a server name's shape (which a host-plugin
+    /// server can share, since <c>PluginLoader</c> namespaces those identically). A bundle with no MCP
+    /// servers (the common case) returns the envelope unchanged. The tool NAMES a bundle-owned server
+    /// publishes are granted separately, once the server is actually reachable — see
     /// <c>BundleRunExecutor.RunConversationAsync</c>.
     /// </summary>
     private static CapabilityEnvelope WithBundleOwnedMcpServers(CapabilityEnvelope envelope, StagedBundle staged)
@@ -151,7 +155,8 @@ public sealed class RunBundleCommandHandler
             ? envelope
             : envelope with
             {
-                AllowedMcpServers = [.. envelope.AllowedMcpServers, .. staged.McpServerNames]
+                AllowedMcpServers = [.. envelope.AllowedMcpServers, .. staged.McpServerNames],
+                BundleOwnedMcpServers = [.. envelope.BundleOwnedMcpServers, .. staged.McpServerNames]
             };
 
     /// <summary>
