@@ -53,6 +53,47 @@ public sealed class ToolChainBuilderMcpEnvelopeTests
     }
 
     [Fact]
+    public async Task InjectedMode_NamespacedGrant_PublishesNamespacedToolName()
+    {
+        // A bundle-owned server is reached via its namespaced key ("{bundleId}:{serverName}") even in
+        // Injected mode, where every granted server's tools pass straight through. The tool's own name
+        // must still be namespaced — never the bare, bundle-chosen name — for the same reason the Managed
+        // path already namespaces it: the bare name is what CapabilityEnvelope.AllowedTools was granted
+        // under (BundleRunExecutor), and it must never collide with an unrelated host tool of the same name.
+        var mcp = new Mock<IMcpToolProvider>();
+        mcp.Setup(p => p.GetToolsAsync("bundle-123:epr-mcp", It.IsAny<CancellationToken>()))
+            .ReturnsAsync([AIFunctionFactory.Create(() => "r", "epr_tool")]);
+
+        var builder = Builder(mcp.Object);
+
+        List<AITool> tools;
+        using (CapabilityEnvelopeAccessor.Begin(Envelope("bundle-123:epr-mcp")))
+            tools = await builder.BuildToolsAsync(InjectedSkill(), new SkillAgentOptions());
+
+        tools.Select(t => t.Name).Should().Contain("bundle-123_epr-mcp__epr_tool");
+        tools.Select(t => t.Name).Should().NotContain("epr_tool",
+            "the bare, bundle-chosen name must never be the model-callable/governed name in Injected mode either");
+    }
+
+    [Fact]
+    public async Task InjectedMode_HostConfiguredGrant_PublishesBareToolName()
+    {
+        // A plain, host-configured server name (no colon) is not bundle-owned — its tools keep the bare
+        // name exactly as before, so this fix must not change behaviour for the pre-existing, trusted path.
+        var mcp = new Mock<IMcpToolProvider>();
+        mcp.Setup(p => p.GetToolsAsync("granted-server", It.IsAny<CancellationToken>()))
+            .ReturnsAsync([AIFunctionFactory.Create(() => "r", "granted_tool")]);
+
+        var builder = Builder(mcp.Object);
+
+        List<AITool> tools;
+        using (CapabilityEnvelopeAccessor.Begin(Envelope("granted-server")))
+            tools = await builder.BuildToolsAsync(InjectedSkill(), new SkillAgentOptions());
+
+        tools.Select(t => t.Name).Should().BeEquivalentTo(["granted_tool"]);
+    }
+
+    [Fact]
     public async Task InjectedMode_NoEnvelope_EnumeratesAllServers()
     {
         var mcp = new Mock<IMcpToolProvider>();

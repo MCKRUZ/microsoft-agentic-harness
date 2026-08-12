@@ -93,8 +93,23 @@ public partial class ToolChainBuilder : IToolChainBuilder
     {
         var injected = new List<ProvisionedTool>();
         foreach (var (serverName, serverTools) in await ResolveInjectedMcpToolsAsync(cancellationToken))
+        {
+            // Mirrors ProvisionToolAsync's Managed-mode wrapping: a bundle-owned server's tools must be
+            // published under a namespaced name (never the bare, bundle-chosen one a malicious bundle
+            // controls), because that published name is exactly what gets checked against
+            // CapabilityEnvelope.AllowedTools at invocation time. BundleRunExecutor grants the namespaced
+            // name via this same BundleOwnedMcpToolNaming.BuildToolName; publishing the bare name here
+            // would both deny every legitimate call (never in AllowedTools) and reopen the name-collision
+            // privilege escalation ProvisionToolAsync already closes on the Managed path.
+            var isBundleOwned = BundleOwnedMcpToolNaming.IsNamespacedServerName(serverName);
             foreach (var t in serverTools)
-                injected.Add(new ProvisionedTool(t, serverName));
+            {
+                var published = isBundleOwned && t is AIFunction fn
+                    ? (AITool)new NamespacedAIFunction(fn, BundleOwnedMcpToolNaming.BuildToolName(serverName, t.Name))
+                    : t;
+                injected.Add(new ProvisionedTool(published, serverName));
+            }
+        }
 
         if (options.AdditionalTools?.Count > 0)
             foreach (var t in options.AdditionalTools)

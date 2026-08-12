@@ -42,6 +42,17 @@ public static class BundleOwnedMcpToolNaming
     public static string BuildToolName(string namespacedServerName, string rawToolName)
         => $"{Sanitize(namespacedServerName)}{Separator}{rawToolName}";
 
+    /// <summary>
+    /// Whether <paramref name="serverName"/> is a bundle-owned, namespaced server key
+    /// (<c>{BundleId}:{serverName}</c>, per <see cref="Domain.AI.Bundles.StagedBundle.McpServerNames"/>)
+    /// rather than a plain, host-configured server name. Host-configured names never contain a colon —
+    /// <c>BundleStagingService.RegisterBundleMcpServers</c> is the only producer of a colon-bearing
+    /// server key in this codebase — so this is a reliable, non-heuristic test everywhere a caller
+    /// holds an already-resolved server name (as opposed to <c>ToolChainBuilder.ResolveEffectiveMcpServerName</c>,
+    /// which instead suffix-matches a skill's bare declared name against the granted list).
+    /// </summary>
+    public static bool IsNamespacedServerName(string serverName) => serverName.Contains(':');
+
     private static string Sanitize(string value)
     {
         var chars = new char[value.Length];

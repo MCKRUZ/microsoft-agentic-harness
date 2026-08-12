@@ -466,6 +466,23 @@ public sealed class BundleStagingService : IBundleStagingService
                 continue;
             }
 
+            // A bundle is untrusted, uploader-supplied content. A stdio server's Command/Args/Env come
+            // straight from the bundle's own manifest, and connecting to it launches that command as a
+            // real host process (via McpConnectionManager -> StdioClientTransport) — arbitrary command
+            // execution on the harness host, gated only by upload permission. Host-installed plugins
+            // (PluginLoader) are a different trust tier and are unaffected: only this bundle path rejects
+            // Stdio. Tracked follow-up to run a bundle's stdio server inside the existing process/Docker
+            // sandbox instead of rejecting it outright: #371.
+            if (definition.Type == McpServerType.Stdio)
+            {
+                _logger.LogWarning(
+                    "Bundle {BundleId}: MCP server '{ServerName}' declares a stdio (local command) " +
+                    "transport, which is not permitted for bundle-owned servers — rejected, not registered. " +
+                    "Only http/sse (remote) MCP servers are permitted in a bundle's own manifest.",
+                    bundleId, serverProp.Name);
+                continue;
+            }
+
             if (_mcpServersConfig.Servers.TryAdd(namespacedName, definition))
             {
                 registered.Add(namespacedName);

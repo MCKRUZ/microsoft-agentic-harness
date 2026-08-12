@@ -78,8 +78,11 @@ public sealed class BundleStagingServiceTests : IDisposable
     // --- Bundle-owned MCP servers (issue #368) -------------------------------------------------------
 
     [Fact]
-    public async Task StageAsync_BundleWithStdioMcpServer_RegistersNamespacedServerAndPopulatesMcpServerNames()
+    public async Task StageAsync_BundleWithStdioMcpServer_IsRejectedNotRegistered()
     {
+        // A bundle is untrusted, uploader-supplied content. Registering its self-declared `command` as a
+        // live stdio server would let any bundle author run an arbitrary process on the harness host —
+        // staging must reject it, not register it under a namespaced key.
         using var zip = ZipOf(
             ("AGENT.md", "---\nid: mcp-bundle\nname: MCP Bundle\n---\nx"),
             ("plugin.json", "{ \"name\": \"root\", \"version\": \"1.0.0\", \"mcpServers\": \"./mcp.json\" }"),
@@ -92,10 +95,8 @@ public sealed class BundleStagingServiceTests : IDisposable
         var bundle = result.Value!;
         var namespacedName = $"{bundle.BundleId}:echo";
 
-        bundle.McpServerNames.Should().BeEquivalentTo([namespacedName]);
-        mcpServersConfig.Servers.Should().ContainKey(namespacedName);
-        mcpServersConfig.Servers[namespacedName].Type.Should().Be(McpServerType.Stdio);
-        mcpServersConfig.Servers[namespacedName].Command.Should().Be("npx");
+        bundle.McpServerNames.Should().BeEmpty("a stdio server must be rejected, not registered");
+        mcpServersConfig.Servers.Should().NotContainKey(namespacedName);
     }
 
     [Fact]
@@ -138,9 +139,9 @@ public sealed class BundleStagingServiceTests : IDisposable
         using var zip = ZipOf(
             ("AGENT.md", "---\nid: dup-mcp\nname: Dup MCP\n---\nx"),
             ("plugins/one/plugin.json", "{ \"name\": \"one\", \"version\": \"1.0.0\", \"mcpServers\": \"./mcp.json\" }"),
-            ("plugins/one/mcp.json", "{ \"mcpServers\": { \"shared\": { \"command\": \"npx\", \"args\": [\"one\"] } } }"),
+            ("plugins/one/mcp.json", "{ \"mcpServers\": { \"shared\": { \"type\": \"http\", \"url\": \"https://one.example.com/mcp\" } } }"),
             ("plugins/two/plugin.json", "{ \"name\": \"two\", \"version\": \"1.0.0\", \"mcpServers\": \"./mcp.json\" }"),
-            ("plugins/two/mcp.json", "{ \"mcpServers\": { \"shared\": { \"command\": \"npx\", \"args\": [\"two\"] } } }"));
+            ("plugins/two/mcp.json", "{ \"mcpServers\": { \"shared\": { \"type\": \"http\", \"url\": \"https://two.example.com/mcp\" } } }"));
 
         var mcpServersConfig = new McpServersConfig();
         var result = await CreateService(mcpServersConfig: mcpServersConfig).StageAsync(zip);
