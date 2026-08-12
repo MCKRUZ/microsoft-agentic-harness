@@ -175,6 +175,37 @@ public class EscalationConfigValidatorTests
         result.Errors.Should().Contain(e => e.PropertyName == "AuditStoragePath");
     }
 
+    [Fact]
+    public async Task Validate_ApproveOnTimeoutWithACriticalPriorityLevel_Fails()
+    {
+        // Boot-time form of the invariant EscalationRequestInvariants.TryValidate enforces per
+        // request. DefaultTimeoutAction has no per-priority override — it applies globally — so
+        // this configuration means every Critical escalation auto-approves on timeout unless
+        // some caller overrides TimeoutAction explicitly.
+        var config = CreateValidConfig();
+        config.DefaultTimeoutAction = "Approve";
+        // CreateValidConfig() already configures a "Critical" priority level.
+
+        var result = await _validator.ValidateAsync(config);
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName == "DefaultTimeoutAction");
+    }
+
+    [Fact]
+    public async Task Validate_ApproveOnTimeoutWithNoCriticalPriorityLevel_Passes()
+    {
+        // Mutation control: Approve-on-timeout alone must not fail validation — only the
+        // pairing with a configured Critical priority level.
+        var config = CreateValidConfig();
+        config.DefaultTimeoutAction = "Approve";
+        config.PriorityLevels.Remove("Critical");
+
+        var result = await _validator.ValidateAsync(config);
+
+        result.IsValid.Should().BeTrue();
+    }
+
     private static EscalationConfig CreateValidConfig() => new()
     {
         Enabled = true,

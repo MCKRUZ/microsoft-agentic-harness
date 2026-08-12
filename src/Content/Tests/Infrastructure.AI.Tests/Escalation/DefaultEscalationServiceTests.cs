@@ -372,6 +372,58 @@ public sealed class DefaultEscalationServiceTests : IDisposable
 	}
 
 	[Fact]
+	public async Task SubmitDecisionAsync_DecisionAuditWriteFails_DoesNotResolveTheEscalation()
+	{
+		// The gap this closes: RecordDecisionAsync used to be best-effort (swallowed via
+		// SafeExecuteAsync), so a decision could be applied and could resolve the escalation
+		// with no audit record that anyone approved it — every sibling write on this path
+		// (request, outcome, working-state) already fails closed; this one did not.
+		var request = CreateTestRequest();
+		SetupStrategyResolvesOnFirstApproval();
+		_auditStore
+			.Setup(a => a.RecordDecisionAsync(
+				It.IsAny<Guid>(), It.IsAny<ApproverDecision>(), It.IsAny<CancellationToken>()))
+			.ThrowsAsync(new IOException("audit sink unavailable"));
+		await _sut.QueueEscalationAsync(request, CancellationToken.None);
+
+		var act = () => _sut.SubmitDecisionAsync(
+			request.EscalationId, CreateApproval(), CancellationToken.None);
+
+		await act.Should().ThrowAsync<IOException>(
+			"a decision that cannot be durably audited must fail closed rather than resolve the escalation");
+
+		// The decision must never have reached the strategy or the working-state store — an
+		// audit failure blocks the decision from being applied at all, not just from being
+		// reported.
+		_anyOfStrategy.Verify(
+			s => s.EvaluateDecision(It.IsAny<EscalationRequest>(), It.IsAny<IReadOnlyList<ApproverDecision>>()),
+			Times.Never);
+		_notifier.Verify(
+			n => n.NotifyEscalationResolvedAsync(It.IsAny<EscalationOutcome>(), It.IsAny<CancellationToken>()),
+			Times.Never);
+	}
+
+	[Fact]
+	public async Task SubmitDecisionAsync_DecisionAuditWriteSucceeds_Resolves()
+	{
+		// Mutation control for the test above: with the audit store healthy, the same decision
+		// must still resolve normally. Without this, a defect that made every decision fail
+		// closed — audit store working or not — would pass the force-failure test above too.
+		var request = CreateTestRequest();
+		SetupStrategyResolvesOnFirstApproval();
+		await _sut.QueueEscalationAsync(request, CancellationToken.None);
+
+		var result = await _sut.SubmitDecisionAsync(
+			request.EscalationId, CreateApproval(), CancellationToken.None);
+
+		result.Status.Should().Be(EscalationDecisionStatus.Resolved);
+		result.Outcome!.IsApproved.Should().BeTrue();
+		_auditStore.Verify(
+			a => a.RecordDecisionAsync(request.EscalationId, It.IsAny<ApproverDecision>(), It.IsAny<CancellationToken>()),
+			Times.Once);
+	}
+
+	[Fact]
 	public async Task QueueEscalationAsync_EmptyApproverRoster_FailsClosed()
 	{
 		var request = CreateTestRequest(approvers: Array.Empty<string>());

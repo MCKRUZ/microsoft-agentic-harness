@@ -73,5 +73,34 @@ public sealed class EscalationConfigValidator : AbstractValidator<EscalationConf
                     .GreaterThanOrEqualTo(0)
                     .WithMessage("PriorityLevels[{PropertyName}].TimeoutSeconds must be >= 0.");
             });
+
+        // Secondary, boot-time form of the invariant EscalationRequestInvariants.TryValidate
+        // enforces per-request. DefaultTimeoutAction has no per-priority override — it applies
+        // globally — so a host that configures "Approve" while running Critical escalations
+        // (i.e. Critical appears in PriorityLevels) has configured every Critical escalation to
+        // auto-approve on timeout unless some other caller overrides TimeoutAction explicitly.
+        // Catching it here turns a silent per-request rejection into a startup error that names
+        // the setting, rather than an operator discovering it only when a request is refused.
+        //
+        // Scope: this can only see the GLOBAL default. A caller that sets TimeoutAction on an
+        // individual EscalationRequest — bypassing DefaultTimeoutAction entirely — produces the
+        // same Critical+Approve pairing invisibly to this rule; that request is caught only by
+        // EscalationRequestInvariants at request time (which throws rather than failing to boot).
+        // A clean boot here means the pairing can't happen via the default, not that it can't
+        // happen at all.
+        RuleFor(x => x)
+            .Must(c => !CriticalPriorityAutoApprovesOnTimeout(c))
+            .WithMessage(
+                "DefaultTimeoutAction is 'Approve' while PriorityLevels configures 'Critical' — a " +
+                "Critical escalation must never auto-approve on timeout. Change DefaultTimeoutAction " +
+                "or remove the Critical entry.")
+            .WithName("DefaultTimeoutAction");
     }
+
+    private static bool CriticalPriorityAutoApprovesOnTimeout(EscalationConfig config) =>
+        config.Enabled &&
+        string.Equals(config.DefaultTimeoutAction, nameof(EscalationTimeoutAction.Approve),
+            StringComparison.OrdinalIgnoreCase) &&
+        config.PriorityLevels.Keys.Any(k =>
+            string.Equals(k, nameof(EscalationPriority.Critical), StringComparison.OrdinalIgnoreCase));
 }
