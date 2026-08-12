@@ -48,7 +48,7 @@ public sealed class SubmitEscalationDecisionCommandHandlerTests
 
         captured.Should().NotBeNull();
         captured!.ApproverName.Should().Be("alice@contoso.com");
-        captured.Approved.Should().BeFalse();
+        captured.Verdict.Should().Be(ApproverVerdict.Deny);
         captured.Reason.Should().Be("touches production config");
         captured.RespondedAt.Should().BeOnOrAfter(before).And.BeOnOrBefore(after,
             "the response time must be stamped server-side, never caller-supplied");

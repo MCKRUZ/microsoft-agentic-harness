@@ -78,7 +78,7 @@ public sealed class EfCoreEscalationStateStoreTests : IDisposable
             new ApproverDecision
             {
                 ApproverName = "approver-1",
-                Approved = approved,
+                Verdict = approved ? ApproverVerdict.Approve : ApproverVerdict.Deny,
                 Reason = "reviewed",
                 RespondedAt = DateTimeOffset.UtcNow
             }
@@ -125,7 +125,7 @@ public sealed class EfCoreEscalationStateStoreTests : IDisposable
         var decision = new ApproverDecision
         {
             ApproverName = "approver-1",
-            Approved = true,
+            Verdict = ApproverVerdict.Approve,
             RespondedAt = DateTimeOffset.UtcNow
         };
 
@@ -197,6 +197,107 @@ public sealed class EfCoreEscalationStateStoreTests : IDisposable
 
         active.Should().ContainSingle()
             .Which.Request.EscalationId.Should().Be(request.EscalationId);
+    }
+
+    // ===== #321 durable-format migration: a row sealed before ApproverVerdict existed =====
+    //
+    // OutcomeJson is written and sealed as one unit; DecisionsJson is never sealed (see
+    // EfCoreEscalationStateStore around lines 102/122/149). Verification compares the SEALER'S
+    // signature against the exact stored bytes — it never re-serializes — so a row sealed under
+    // the old `"Approved": true` shape keeps a seal that still verifies after this migration.
+    // The only real risk is whether the new converter can still READ that old shape. These tests
+    // hand-construct exactly that: a legacy-shaped OutcomeJson, sealed the same way the store
+    // itself seals a fresh write, inserted directly into the row.
+
+    [Theory]
+    [InlineData(true, ApproverVerdict.Approve)]
+    [InlineData(false, ApproverVerdict.Deny)]
+    public async Task GetResolvedOutcomeAsync_LegacyBooleanApprovedShape_ReadsCorrectVerdictAndStillVerifies(
+        bool legacyApproved, ApproverVerdict expectedVerdict)
+    {
+        var store = CreateStore();
+        var request = CreateRequest();
+        await store.SavePendingAsync(request, DateTimeOffset.UtcNow, CancellationToken.None);
+
+        var respondedAt = DateTimeOffset.UtcNow;
+        var legacyOutcomeJson = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            EscalationId = request.EscalationId,
+            IsApproved = legacyApproved,
+            Decisions = new[]
+            {
+                new
+                {
+                    ApproverName = "approver-1",
+                    Approved = legacyApproved, // the pre-#321 field; no "Verdict", no "Instructions"
+                    Reason = "reviewed",
+                    RespondedAt = respondedAt
+                }
+            },
+            ResolutionType = legacyApproved ? "Approved" : "Denied",
+            ResolvedAt = respondedAt,
+            Approvers = new[] { "approver-1" }
+        });
+
+        var seal = await _sealer.SealAsync(request.EscalationId.ToString("N"), legacyOutcomeJson, CancellationToken.None);
+        var sealJson = System.Text.Json.JsonSerializer.Serialize(seal, GovernanceStateJson.Options);
+
+        await using (var context = new GovernanceStateDbContext(_options))
+        {
+            var entity = await context.Escalations.SingleAsync(e => e.Id == request.EscalationId);
+            entity.OutcomeJson = legacyOutcomeJson;
+            entity.OutcomeSealJson = sealJson;
+            entity.Status = nameof(EscalationPersistedStatus.Resolved);
+            await context.SaveChangesAsync();
+        }
+
+        var outcome = await store.GetResolvedOutcomeAsync(request.EscalationId, CancellationToken.None);
+
+        outcome.Should().NotBeNull("a legacy-shaped outcome with a verified seal must still be servable");
+        outcome!.Decisions.Should().ContainSingle()
+            .Which.Verdict.Should().Be(expectedVerdict);
+    }
+
+    [Fact]
+    public async Task GetResolvedOutcomeAsync_LegacyShapeWithTamperedByte_StillFailsVerification()
+    {
+        // Mutation control for the pair above: reading the legacy shape successfully must not
+        // come at the cost of the seal actually protecting anything. One tampered byte after
+        // sealing must still fail verification, exactly as it would for the modern shape.
+        var store = CreateStore();
+        var request = CreateRequest();
+        await store.SavePendingAsync(request, DateTimeOffset.UtcNow, CancellationToken.None);
+
+        var respondedAt = DateTimeOffset.UtcNow;
+        var legacyOutcomeJson = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            EscalationId = request.EscalationId,
+            IsApproved = true,
+            Decisions = new[]
+            {
+                new { ApproverName = "approver-1", Approved = true, Reason = "reviewed", RespondedAt = respondedAt }
+            },
+            ResolutionType = "Approved",
+            ResolvedAt = respondedAt,
+            Approvers = new[] { "approver-1" }
+        });
+
+        var seal = await _sealer.SealAsync(request.EscalationId.ToString("N"), legacyOutcomeJson, CancellationToken.None);
+        var sealJson = System.Text.Json.JsonSerializer.Serialize(seal, GovernanceStateJson.Options);
+        var tamperedOutcomeJson = legacyOutcomeJson.Replace("\"reviewed\"", "\"tampered\"", StringComparison.Ordinal);
+
+        await using (var context = new GovernanceStateDbContext(_options))
+        {
+            var entity = await context.Escalations.SingleAsync(e => e.Id == request.EscalationId);
+            entity.OutcomeJson = tamperedOutcomeJson;
+            entity.OutcomeSealJson = sealJson;
+            entity.Status = nameof(EscalationPersistedStatus.Resolved);
+            await context.SaveChangesAsync();
+        }
+
+        var outcome = await store.GetResolvedOutcomeAsync(request.EscalationId, CancellationToken.None);
+
+        outcome.Should().BeNull("a tampered legacy row must not verify just because its shape is old");
     }
 
     /// <summary>

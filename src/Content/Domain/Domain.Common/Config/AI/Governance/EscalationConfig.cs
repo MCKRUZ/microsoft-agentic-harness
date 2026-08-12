@@ -96,6 +96,13 @@ public class EscalationConfig
     /// approved attempt, how much of the prior failure's text is shown to the next approver.
     /// </summary>
     public EscalationRetryAttributionConfig RetryAttribution { get; set; } = new();
+
+    /// <summary>
+    /// Bounds on the reviewer-revision cycle (#321): how many times a single action may be sent
+    /// back for revision before the escalation service resolves it as denied instead of opening
+    /// another round.
+    /// </summary>
+    public EscalationRevisionConfig Revision { get; set; } = new();
 }
 
 /// <summary>Sizing for the retry-attribution text shown on a second-or-later approval attempt.</summary>
@@ -107,4 +114,16 @@ public sealed class EscalationRetryAttributionConfig
     /// (the hard runtime ceiling) so the two can never be configured into disagreement.
     /// </summary>
     public int MaxPriorFailureLength { get; set; } = 512;
+}
+
+/// <summary>Bounds on the reviewer-revision cycle (#321).</summary>
+public sealed class EscalationRevisionConfig
+{
+    /// <summary>
+    /// Maximum number of revision rounds a single action may go through. The escalation service
+    /// resolves a <c>Revise</c> verdict at this round as denied instead of opening another round.
+    /// Tied by <c>EscalationConfigValidator</c> to the runtime ceiling on
+    /// <c>EscalationRequest.RevisionRound</c> so the two can never disagree.
+    /// </summary>
+    public int MaxRounds { get; set; } = 2;
 }

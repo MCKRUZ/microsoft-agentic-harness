@@ -249,4 +249,148 @@ public sealed class EscalationRequestInvariantsTests
         isValid.Should().BeTrue();
         violation.Should().BeNull();
     }
+
+    // ===== #321 revision rounds: RevisionRound / PriorRevisionInstructions =====
+
+    [Fact]
+    public void TryValidate_RevisionRoundZero_IsRejected()
+    {
+        var request = CreateValidRequest() with { RevisionRound = 0 };
+
+        var isValid = EscalationRequestInvariants.TryValidate(request, out var violation);
+
+        isValid.Should().BeFalse();
+        violation.Should().Contain("revision round");
+    }
+
+    [Fact]
+    public void TryValidate_RevisionRoundNegative_IsRejected()
+    {
+        var request = CreateValidRequest() with { RevisionRound = -1 };
+
+        var isValid = EscalationRequestInvariants.TryValidate(request, out var violation);
+
+        isValid.Should().BeFalse();
+        violation.Should().Contain("revision round");
+    }
+
+    [Fact]
+    public void TryValidate_RevisionRoundOneWithNoPriorInstructions_IsAccepted()
+    {
+        // Mutation control: a first round (the default shape) must not be rejected by the
+        // revision-round floor.
+        var request = CreateValidRequest() with { RevisionRound = 1, PriorRevisionInstructions = null };
+
+        var isValid = EscalationRequestInvariants.TryValidate(request, out var violation);
+
+        isValid.Should().BeTrue();
+        violation.Should().BeNull();
+    }
+
+    [Fact]
+    public void TryValidate_RevisionRoundOneWithPriorInstructions_IsRejected()
+    {
+        // A first round cannot follow a revision — carrying instructions on round 1 is
+        // internally incoherent, reachable only via a hand-edited or corrupted durable row.
+        var request = CreateValidRequest() with
+        {
+            RevisionRound = 1,
+            PriorRevisionInstructions = "use the other path"
+        };
+
+        var isValid = EscalationRequestInvariants.TryValidate(request, out var violation);
+
+        isValid.Should().BeFalse();
+        violation.Should().Contain("round 1");
+    }
+
+    [Fact]
+    public void TryValidate_RevisionRoundTwoWithPriorInstructions_IsAccepted()
+    {
+        // Mutation control: the coherent revision shape (round > 1, instructions present) must
+        // pass.
+        var request = CreateValidRequest() with
+        {
+            RevisionRound = 2,
+            PriorRevisionInstructions = "use the other path"
+        };
+
+        var isValid = EscalationRequestInvariants.TryValidate(request, out var violation);
+
+        isValid.Should().BeTrue();
+        violation.Should().BeNull();
+    }
+
+    [Fact]
+    public void TryValidate_RevisionRoundTwoWithNoPriorInstructions_IsAccepted()
+    {
+        // Deliberately NOT rejected, mirroring the AttemptNumber/PriorFailureReason pair above:
+        // this is what a benign LRU eviction of the revision memory produces. Rejecting it would
+        // fail-close a valid escalation purely because the bounded memory it depends on evicted
+        // an entry.
+        var request = CreateValidRequest() with { RevisionRound = 2, PriorRevisionInstructions = null };
+
+        var isValid = EscalationRequestInvariants.TryValidate(request, out var violation);
+
+        isValid.Should().BeTrue();
+        violation.Should().BeNull();
+    }
+
+    [Fact]
+    public void TryValidate_RevisionRoundExceedsMaxRound_IsRejected()
+    {
+        var request = CreateValidRequest() with
+        {
+            RevisionRound = EscalationRequestInvariants.MaxRevisionRound + 1
+        };
+
+        var isValid = EscalationRequestInvariants.TryValidate(request, out var violation);
+
+        isValid.Should().BeFalse();
+        violation.Should().Contain("exceeds the");
+    }
+
+    [Fact]
+    public void TryValidate_RevisionRoundAtMaxRound_IsAccepted()
+    {
+        // Boundary control: exactly at the absolute ceiling must still pass.
+        var request = CreateValidRequest() with { RevisionRound = EscalationRequestInvariants.MaxRevisionRound };
+
+        var isValid = EscalationRequestInvariants.TryValidate(request, out var violation);
+
+        isValid.Should().BeTrue();
+        violation.Should().BeNull();
+    }
+
+    [Fact]
+    public void TryValidate_PriorRevisionInstructionsExceedsMaxLength_IsRejected()
+    {
+        var request = CreateValidRequest() with
+        {
+            RevisionRound = 2,
+            PriorRevisionInstructions = new string('x', EscalationRequestInvariants.MaxRevisionInstructionsLength + 1)
+        };
+
+        var isValid = EscalationRequestInvariants.TryValidate(request, out var violation);
+
+        isValid.Should().BeFalse();
+        violation.Should().Contain("exceed the");
+    }
+
+    [Fact]
+    public void TryValidate_PriorRevisionInstructionsAtMaxLength_IsAccepted()
+    {
+        // Boundary control: exactly at the ceiling must still pass — only exceeding it is a
+        // violation.
+        var request = CreateValidRequest() with
+        {
+            RevisionRound = 2,
+            PriorRevisionInstructions = new string('x', EscalationRequestInvariants.MaxRevisionInstructionsLength)
+        };
+
+        var isValid = EscalationRequestInvariants.TryValidate(request, out var violation);
+
+        isValid.Should().BeTrue();
+        violation.Should().BeNull();
+    }
 }

@@ -77,7 +77,13 @@ public sealed class GovernanceEnumParseChokepointTests
 
         // MemoryTrust marks a fact as quarantined. Its reader falls back to Trusted — recallable —
         // so anything that makes the marker unreadable fails open.
-        "MemoryTrust"
+        "MemoryTrust",
+
+        // ApproverVerdict decides whether a consequential tool call proceeds. Read from durable
+        // storage (a hand-edited or corrupted row) via ApproverDecisionJsonConverter — the exact
+        // shape this guard exists for: a bare Enum.TryParse read "Deny,Approve" (0|1) as a clean
+        // Approve, which Enum.IsDefined cannot distinguish from having named Approve directly.
+        "ApproverVerdict"
     ];
 
     /// <summary>

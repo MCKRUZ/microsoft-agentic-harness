@@ -72,7 +72,7 @@ public class EscalationApprovalsExample
         var aliceDecision = new ApproverDecision
         {
             ApproverName = "alice",
-            Approved = true,
+            Verdict = ApproverVerdict.Approve,
             Reason = "Looks good, cache is safe to clear.",
             RespondedAt = DateTimeOffset.UtcNow
         };
@@ -107,7 +107,7 @@ public class EscalationApprovalsExample
         var aliceDecision = new ApproverDecision
         {
             ApproverName = "alice",
-            Approved = true,
+            Verdict = ApproverVerdict.Approve,
             Reason = "Request justified by operational need.",
             RespondedAt = DateTimeOffset.UtcNow
         };
@@ -119,7 +119,7 @@ public class EscalationApprovalsExample
         var bobDecision = new ApproverDecision
         {
             ApproverName = "bob",
-            Approved = true,
+            Verdict = ApproverVerdict.Approve,
             Reason = "Security review passed.",
             RespondedAt = DateTimeOffset.UtcNow
         };
@@ -153,7 +153,7 @@ public class EscalationApprovalsExample
         var aliceDecision = new ApproverDecision
         {
             ApproverName = "alice",
-            Approved = true,
+            Verdict = ApproverVerdict.Approve,
             Reason = "Critical patch needed immediately.",
             RespondedAt = DateTimeOffset.UtcNow
         };
@@ -165,7 +165,7 @@ public class EscalationApprovalsExample
         var bobDecision = new ApproverDecision
         {
             ApproverName = "bob",
-            Approved = true,
+            Verdict = ApproverVerdict.Approve,
             Reason = "Verified patch contents, safe to deploy.",
             RespondedAt = DateTimeOffset.UtcNow
         };
@@ -315,8 +315,13 @@ public class EscalationApprovalsExample
 
             foreach (var decision in outcome.Decisions)
             {
-                var decisionColor = decision.Approved ? "green" : "red";
-                var decisionText = decision.Approved ? "Approved" : "Denied";
+                var decisionColor = decision.Verdict switch
+                {
+                    ApproverVerdict.Approve => "green",
+                    ApproverVerdict.Revise => "yellow",
+                    _ => "red"
+                };
+                var decisionText = decision.Verdict.ToString();
 
                 decisionsTable.AddRow(
                     Markup.Escape(decision.ApproverName),

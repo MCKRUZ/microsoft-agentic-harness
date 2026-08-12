@@ -68,6 +68,23 @@ public static class EscalationRequestInvariants
     public const int MaxPriorFailureReasonLength = 4096;
 
     /// <summary>
+    /// Hard ceiling on <see cref="EscalationRequest.PriorRevisionInstructions"/>, in characters.
+    /// Mirrors <see cref="MaxPriorFailureReasonLength"/>'s role: a second, stricter layer against
+    /// a hand-edited durable row, tied by <c>EscalationConfigValidator</c> to whatever soft
+    /// producer-side cap the tool-approval carve-out configures.
+    /// </summary>
+    public const int MaxRevisionInstructionsLength = 4096;
+
+    /// <summary>
+    /// Absolute ceiling on <see cref="EscalationRequest.RevisionRound"/>, independent of the
+    /// configured <c>EscalationConfig.Revision.MaxRounds</c>. Deliberately not the configured
+    /// cap itself: this class has no config access and runs identically on creation and
+    /// rehydration, so a configured cap here would fail-close a live escalation the moment an
+    /// operator lowered <c>MaxRounds</c>. This is only a backstop against a corrupted row.
+    /// </summary>
+    public const int MaxRevisionRound = 1000;
+
+    /// <summary>
     /// Validates an escalation request against every creation-time invariant.
     /// </summary>
     /// <param name="request">The request to validate.</param>
@@ -150,6 +167,37 @@ public static class EscalationRequestInvariants
             violation =
                 $"the prior failure reason ({request.PriorFailureReason.Length} chars) exceeds the " +
                 $"maximum of {MaxPriorFailureReasonLength}";
+            return false;
+        }
+
+        if (request.RevisionRound < 1)
+        {
+            violation = $"the revision round ({request.RevisionRound}) is less than 1";
+            return false;
+        }
+
+        if (request.RevisionRound > MaxRevisionRound)
+        {
+            violation =
+                $"the revision round ({request.RevisionRound}) exceeds the maximum of {MaxRevisionRound}";
+            return false;
+        }
+
+        // Deliberately NOT the mirror check (RevisionRound > 1 && PriorRevisionInstructions is
+        // null) -- same rationale as the AttemptNumber/PriorFailureReason pair above: a benign
+        // LRU eviction of the revision memory produces exactly this shape, and rejecting it would
+        // fail-close a valid escalation for a memory eviction, not a corruption.
+        if (request.RevisionRound == 1 && request.PriorRevisionInstructions is not null)
+        {
+            violation = "round 1 carries prior revision instructions, which never happened";
+            return false;
+        }
+
+        if (request.PriorRevisionInstructions is { Length: > MaxRevisionInstructionsLength })
+        {
+            violation =
+                $"the prior revision instructions ({request.PriorRevisionInstructions.Length} chars) " +
+                $"exceed the maximum of {MaxRevisionInstructionsLength}";
             return false;
         }
 

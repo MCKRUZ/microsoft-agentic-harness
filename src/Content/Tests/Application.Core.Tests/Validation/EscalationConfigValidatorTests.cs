@@ -257,6 +257,59 @@ public class EscalationConfigValidatorTests
         result.IsValid.Should().BeTrue();
     }
 
+    [Fact]
+    public async Task Validate_DefaultRevisionMaxRounds_IsTwo_NoErrors()
+    {
+        // Binds a config with the Revision section entirely absent — proving the default (2) is
+        // live, not merely "would be valid if set". A test that only ever sets the field
+        // explicitly could not distinguish a working default from a silently-ignored one.
+        var config = CreateValidConfig();
+
+        config.Revision.MaxRounds.Should().Be(2);
+        var result = await _validator.ValidateAsync(config);
+
+        result.IsValid.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Validate_RevisionMaxRoundsZero_HasError()
+    {
+        var config = CreateValidConfig();
+        config.Revision.MaxRounds = 0;
+
+        var result = await _validator.ValidateAsync(config);
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName == "Revision.MaxRounds");
+    }
+
+    [Fact]
+    public async Task Validate_RevisionMaxRoundsAboveTheAbsoluteCeiling_HasError()
+    {
+        // A configured cap above EscalationRequestInvariants.MaxRevisionRound could never be
+        // reached — the invariant would fail-close every escalation before the configured cap
+        // mattered, which is a configuration error worth surfacing at boot.
+        var config = CreateValidConfig();
+        config.Revision.MaxRounds = Application.AI.Common.Interfaces.Escalation.EscalationRequestInvariants.MaxRevisionRound + 1;
+
+        var result = await _validator.ValidateAsync(config);
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName == "Revision.MaxRounds");
+    }
+
+    [Fact]
+    public async Task Validate_RevisionMaxRoundsAtTheAbsoluteCeiling_NoErrors()
+    {
+        // Boundary control: exactly at the ceiling must still pass.
+        var config = CreateValidConfig();
+        config.Revision.MaxRounds = Application.AI.Common.Interfaces.Escalation.EscalationRequestInvariants.MaxRevisionRound;
+
+        var result = await _validator.ValidateAsync(config);
+
+        result.IsValid.Should().BeTrue();
+    }
+
     private static EscalationConfig CreateValidConfig() => new()
     {
         Enabled = true,

@@ -67,6 +67,7 @@ public static class EscalationConventions
         public const string Denied = "denied";
         public const string TimedOut = "timed_out";
         public const string Escalated = "escalated";
+        public const string Revised = "revised";
     }
 
     /// <summary>Well-known values for the <see cref="Strategy"/> attribute.</summary>

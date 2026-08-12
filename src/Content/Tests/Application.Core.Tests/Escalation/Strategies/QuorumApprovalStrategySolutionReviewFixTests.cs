@@ -33,14 +33,14 @@ public class QuorumApprovalStrategySolutionReviewFixTests
     private static ApproverDecision Approve(string name) => new()
     {
         ApproverName = name,
-        Approved = true,
+        Verdict = ApproverVerdict.Approve,
         RespondedAt = DateTimeOffset.UtcNow
     };
 
     private static ApproverDecision Deny(string name) => new()
     {
         ApproverName = name,
-        Approved = false,
+        Verdict = ApproverVerdict.Deny,
         Reason = "Denied",
         RespondedAt = DateTimeOffset.UtcNow
     };
@@ -56,7 +56,7 @@ public class QuorumApprovalStrategySolutionReviewFixTests
         var result = _sut.EvaluateDecision(request, decisions);
 
         result.IsResolved.Should().BeTrue();
-        result.IsApproved.Should().BeFalse("a non-positive quorum threshold is a misconfigured gate and must fail closed");
+        result.Verdict.Should().Be(ApproverVerdict.Deny, "a non-positive quorum threshold is a misconfigured gate and must fail closed");
     }
 
     [Fact]
@@ -68,7 +68,7 @@ public class QuorumApprovalStrategySolutionReviewFixTests
         var result = _sut.EvaluateDecision(request, decisions);
 
         result.IsResolved.Should().BeTrue();
-        result.IsApproved.Should().BeFalse("a misconfigured (default) threshold must never auto-approve");
+        result.Verdict.Should().Be(ApproverVerdict.Deny, "a misconfigured (default) threshold must never auto-approve");
     }
 
     [Fact]
@@ -79,7 +79,7 @@ public class QuorumApprovalStrategySolutionReviewFixTests
         var result = _sut.EvaluateDecision(request, [Approve("alice")]);
 
         result.IsResolved.Should().BeTrue();
-        result.IsApproved.Should().BeFalse();
+        result.Verdict.Should().Be(ApproverVerdict.Deny);
     }
 
     // ---- idx 29: only listed approvers' votes count ----

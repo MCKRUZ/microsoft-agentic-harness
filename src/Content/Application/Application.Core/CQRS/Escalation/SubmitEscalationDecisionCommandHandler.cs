@@ -40,11 +40,18 @@ public sealed class SubmitEscalationDecisionCommandHandler
     public async Task<Result<SubmitEscalationDecisionResult>> Handle(
         SubmitEscalationDecisionCommand request, CancellationToken cancellationToken)
     {
+        // Resolved once, here, so every consumer of the domain decision (audit, strategy
+        // evaluation, notification) agrees on one verdict. A legacy caller supplying only
+        // Approve keeps working unchanged; a caller supplying Verdict is preferred, and the
+        // validator has already rejected a contradiction between the two before this runs.
+        var verdict = request.Verdict ?? (request.Approve ? ApproverVerdict.Approve : ApproverVerdict.Deny);
+
         var decision = new ApproverDecision
         {
             ApproverName = request.ApproverName,
-            Approved = request.Approve,
+            Verdict = verdict,
             Reason = request.Reason,
+            Instructions = request.Instructions,
             RespondedAt = DateTimeOffset.UtcNow
         };
 
@@ -52,8 +59,8 @@ public sealed class SubmitEscalationDecisionCommandHandler
             request.EscalationId, decision, cancellationToken);
 
         _logger.LogInformation(
-            "Escalation decision: EscalationId={EscalationId}, Approver={ApproverName}, Approve={Approve}, Status={Status}",
-            request.EscalationId, request.ApproverName, request.Approve, result.Status);
+            "Escalation decision: EscalationId={EscalationId}, Approver={ApproverName}, Verdict={Verdict}, Status={Status}",
+            request.EscalationId, request.ApproverName, verdict, result.Status);
 
         // Both conflict shapes are translated here rather than at any one transport. The statuses are
         // transport-neutral by design, so a non-HTTP consumer (the console approvals example) would

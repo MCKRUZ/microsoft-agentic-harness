@@ -69,10 +69,24 @@ public sealed record EscalationSummary
     public string? PriorFailureReason { get; init; }
 
     /// <summary>
-    /// The escalation that approved the prior attempt this one retries, letting an approver open
-    /// the earlier record for full context. Null on a first attempt.
+    /// The escalation that approved the prior attempt this one retries, or the prior revision
+    /// round this one follows, letting an approver open the earlier record for full context.
+    /// Null on a first attempt or first round.
     /// </summary>
     public Guid? PredecessorEscalationId { get; init; }
+
+    /// <summary>
+    /// 1 for a first round; N when this is the Nth round of reviewer-requested revision on this
+    /// action (#321). Independent of <see cref="AttemptNumber"/> — a revision means the action
+    /// never ran, so it never advances that counter.
+    /// </summary>
+    public required int RevisionRound { get; init; }
+
+    /// <summary>
+    /// The reviewer's instructions from the prior revision round, so a second-round approver sees
+    /// what was already asked. Null on round 1.
+    /// </summary>
+    public string? PriorRevisionInstructions { get; init; }
 
     /// <summary>Projects a domain <see cref="EscalationRequest"/> to the wire-safe shape.</summary>
     /// <param name="request">The pending escalation request to project. Must not be null.</param>
@@ -96,7 +110,9 @@ public sealed record EscalationSummary
             TimeoutAction = request.TimeoutAction,
             AttemptNumber = request.AttemptNumber,
             PriorFailureReason = request.PriorFailureReason,
-            PredecessorEscalationId = request.PredecessorEscalationId
+            PredecessorEscalationId = request.PredecessorEscalationId,
+            RevisionRound = request.RevisionRound,
+            PriorRevisionInstructions = request.PriorRevisionInstructions
         };
     }
 }

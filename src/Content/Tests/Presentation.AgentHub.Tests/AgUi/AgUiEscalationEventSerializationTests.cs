@@ -161,6 +161,177 @@ public class AgUiEscalationEventSerializationTests
         result.TimeoutSeconds.Should().Be(120);
     }
 
+    // ===== #321 additive wire fields: revisionRound / priorRevisionInstructions / verdict =====
+
+    [Fact]
+    public void EscalationRequestedEvent_WithNullRevisionFields_OmitsThem()
+    {
+        // Mirrors EscalationRequestedEvent_WithNullOptionalFields_OmitsThem for the two new
+        // fields: a request on its first round must produce byte-identical JSON to what a
+        // pre-#321 client already expects.
+        var evt = new EscalationRequestedEvent
+        {
+            EscalationId = "test-id",
+            AgentId = "agent-1",
+            ToolName = "tool-1",
+            Description = "desc",
+            Priority = "Blocking",
+            Approvers = ["approver@test.com"],
+            TimeoutSeconds = 60,
+        };
+
+        var json = JsonSerializer.Serialize<AgUiEvent>(evt, JsonOptions);
+
+        json.Should().NotContain("\"revisionRound\"");
+        json.Should().NotContain("\"priorRevisionInstructions\"");
+    }
+
+    [Fact]
+    public void EscalationRequestedEvent_PayloadMissingRevisionFields_StillDeserializes()
+    {
+        // The additivity contract itself: a payload shaped exactly like what a pre-#321 build
+        // emits (no revisionRound, no priorRevisionInstructions keys at all) must still
+        // deserialize — there is no version field on this wire, so "the client can ignore
+        // fields it doesn't know about" is the only compatibility story, and it must hold in
+        // both directions: an old payload reaching new code, not just new payload reaching old.
+        const string legacyJson = """
+            {"type":"ESCALATION_REQUESTED","escalationId":"legacy-id","agentId":"agent-1","toolName":"tool-1","description":"desc","priority":"Blocking","approvers":["approver@test.com"],"timeoutSeconds":60}
+            """;
+
+        var deserialized = JsonSerializer.Deserialize<AgUiEvent>(legacyJson, JsonOptions);
+
+        deserialized.Should().BeOfType<EscalationRequestedEvent>();
+        var result = (EscalationRequestedEvent)deserialized!;
+        result.EscalationId.Should().Be("legacy-id");
+        result.RevisionRound.Should().BeNull();
+        result.PriorRevisionInstructions.Should().BeNull();
+    }
+
+    [Fact]
+    public void EscalationRequestedEvent_WithRevisionFields_RoundTrips()
+    {
+        var original = new EscalationRequestedEvent
+        {
+            EscalationId = "round-trip-revision",
+            AgentId = "agent-1",
+            ToolName = "tool-1",
+            Description = "desc",
+            Priority = "Blocking",
+            Approvers = ["approver@test.com"],
+            TimeoutSeconds = 60,
+            RevisionRound = 2,
+            PriorRevisionInstructions = "use the other path",
+        };
+
+        var json = JsonSerializer.Serialize<AgUiEvent>(original, JsonOptions);
+        var deserialized = JsonSerializer.Deserialize<AgUiEvent>(json, JsonOptions);
+
+        deserialized.Should().BeOfType<EscalationRequestedEvent>();
+        var result = (EscalationRequestedEvent)deserialized!;
+        result.RevisionRound.Should().Be(2);
+        result.PriorRevisionInstructions.Should().Be("use the other path");
+    }
+
+    [Fact]
+    public void EscalationResolvedEvent_DecisionPayloadMissingVerdict_StillDeserializes()
+    {
+        // Same additivity contract for AgUiApproverDecision.Verdict, added alongside the
+        // pre-existing Approved bool.
+        const string legacyJson = """
+            {"type":"ESCALATION_RESOLVED","escalationId":"id","isApproved":false,"resolutionType":"Denied","resolvedAt":"2026-05-08T14:30:00+00:00","decisions":[{"approverName":"admin@company.com","approved":false,"reason":"Too risky"}]}
+            """;
+
+        var deserialized = JsonSerializer.Deserialize<AgUiEvent>(legacyJson, JsonOptions);
+
+        deserialized.Should().BeOfType<EscalationResolvedEvent>();
+        var result = (EscalationResolvedEvent)deserialized!;
+        result.Decisions.Should().ContainSingle();
+        result.Decisions![0].Verdict.Should().BeNull();
+        result.Decisions[0].Approved.Should().BeFalse();
+    }
+
+    [Fact]
+    public void EscalationResolvedEvent_RevisedResolution_RoundTripsWithVerdict()
+    {
+        var resolvedAt = new DateTimeOffset(2026, 5, 8, 14, 30, 0, TimeSpan.Zero);
+        var original = new EscalationResolvedEvent
+        {
+            EscalationId = "revised-id",
+            IsApproved = false, // #321 asymmetry: Revised is not-approved
+            ResolutionType = "Revised",
+            ResolvedAt = resolvedAt,
+            Decisions =
+            [
+                new AgUiApproverDecision
+                {
+                    ApproverName = "admin@company.com",
+                    Approved = false,
+                    Verdict = "Revise",
+                    Reason = "use the other path",
+                },
+            ],
+        };
+
+        var json = JsonSerializer.Serialize<AgUiEvent>(original, JsonOptions);
+        var deserialized = JsonSerializer.Deserialize<AgUiEvent>(json, JsonOptions);
+
+        deserialized.Should().BeOfType<EscalationResolvedEvent>();
+        var result = (EscalationResolvedEvent)deserialized!;
+        result.IsApproved.Should().BeFalse();
+        result.ResolutionType.Should().Be("Revised");
+        result.Decisions![0].Verdict.Should().Be("Revise");
+        result.Decisions[0].Approved.Should().BeFalse();
+    }
+
+    [Fact]
+    public void EscalationResolvedEvent_RevisedDecision_CarriesInstructionsOverThePushChannel()
+    {
+        // Code-review finding: ApproverDecisionSummary (the REST DTO) got both Verdict and
+        // Instructions in this PR, but AgUiApproverDecision (the SignalR push DTO) only got
+        // Verdict — a dashboard client relying on the push channel alone could see that a
+        // revision was requested but never the reviewer's actual words.
+        var resolvedAt = new DateTimeOffset(2026, 5, 8, 14, 30, 0, TimeSpan.Zero);
+        var original = new EscalationResolvedEvent
+        {
+            EscalationId = "revised-with-instructions",
+            IsApproved = false,
+            ResolutionType = "Revised",
+            ResolvedAt = resolvedAt,
+            Decisions =
+            [
+                new AgUiApproverDecision
+                {
+                    ApproverName = "admin@company.com",
+                    Approved = false,
+                    Verdict = "Revise",
+                    Instructions = "use the read-only endpoint instead",
+                },
+            ],
+        };
+
+        var json = JsonSerializer.Serialize<AgUiEvent>(original, JsonOptions);
+        var deserialized = JsonSerializer.Deserialize<AgUiEvent>(json, JsonOptions);
+
+        deserialized.Should().BeOfType<EscalationResolvedEvent>();
+        var result = (EscalationResolvedEvent)deserialized!;
+        result.Decisions![0].Instructions.Should().Be("use the read-only endpoint instead");
+    }
+
+    [Fact]
+    public void EscalationResolvedEvent_DecisionPayloadMissingInstructions_StillDeserializes()
+    {
+        // Additivity contract for the new field itself.
+        const string legacyJson = """
+            {"type":"ESCALATION_RESOLVED","escalationId":"id","isApproved":false,"resolutionType":"Denied","resolvedAt":"2026-05-08T14:30:00+00:00","decisions":[{"approverName":"admin@company.com","approved":false,"reason":"Too risky"}]}
+            """;
+
+        var deserialized = JsonSerializer.Deserialize<AgUiEvent>(legacyJson, JsonOptions);
+
+        deserialized.Should().BeOfType<EscalationResolvedEvent>();
+        var result = (EscalationResolvedEvent)deserialized!;
+        result.Decisions![0].Instructions.Should().BeNull();
+    }
+
     [Fact]
     public void EscalationExpiringEvent_Deserializes_BackToCorrectType()
     {

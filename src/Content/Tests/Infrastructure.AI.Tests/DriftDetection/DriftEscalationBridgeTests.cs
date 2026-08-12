@@ -182,6 +182,27 @@ public sealed class DriftEscalationBridgeTests
     }
 
     [Fact]
+    public async Task NotifyEscalationResolvedAsync_Revised_BehavesLikeDenied_UsesFactualCorrectionCategory()
+    {
+        // #321 consumer safety: this bridge branches only on IsApproved, never on
+        // ResolutionType. A Revised outcome is not-approved by design (IsApproved stays false),
+        // so it must be handled identically to Denied here with zero source changes required.
+        var request = CreateTestRequest(DriftEscalationBridge.DriftDetectionToolName);
+        var outcome = CreateTestOutcome(request.EscalationId, approved: false, reason: "Needs revision")
+            with
+        { ResolutionType = EscalationResolutionType.Revised };
+
+        await _sut.NotifyEscalationRequestedAsync(request, CancellationToken.None);
+        await _sut.NotifyEscalationResolvedAsync(outcome, CancellationToken.None);
+
+        _senderMock.Verify(
+            s => s.Send(It.Is<RememberCommand>(cmd =>
+                cmd.Category == LearningCategory.FactualCorrection),
+            CancellationToken.None),
+            Times.Once);
+    }
+
+    [Fact]
     public async Task NotifyEscalationExpiringAsync_DoesNotNotifyDrift()
     {
         var request = CreateTestRequest(DriftEscalationBridge.DriftDetectionToolName);
@@ -273,7 +294,7 @@ public sealed class DriftEscalationBridgeTests
             new ApproverDecision
             {
                 ApproverName = "admin@company.com",
-                Approved = approved,
+                Verdict = approved ? ApproverVerdict.Approve : ApproverVerdict.Deny,
                 Reason = reason,
                 RespondedAt = DateTimeOffset.UtcNow,
             },

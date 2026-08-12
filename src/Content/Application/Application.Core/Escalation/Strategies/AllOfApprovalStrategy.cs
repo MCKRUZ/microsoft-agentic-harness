@@ -24,29 +24,43 @@ public sealed class AllOfApprovalStrategy : IApprovalStrategy
             return new ApprovalEvaluation
             {
                 IsResolved = true,
-                IsApproved = false,
+                Verdict = ApproverVerdict.Deny,
                 PendingApprovers = []
             };
         }
 
         var scoped = ApproverRoster.Scope(request, decisions);
+        var tally = new VerdictTally(scoped.Decisions);
 
-        // A single denial from a listed approver resolves immediately as denied.
-        if (scoped.Decisions.Any(d => !d.Approved))
+        // A single denial from a listed approver resolves immediately as denied, with or
+        // without other approvers still pending: no pending vote can undo a hard no.
+        if (tally.DenyCount > 0)
         {
             return new ApprovalEvaluation
             {
                 IsResolved = true,
-                IsApproved = false,
+                Verdict = ApproverVerdict.Deny,
                 PendingApprovers = scoped.Pending
             };
         }
 
-        var allResponded = scoped.Pending.Count == 0;
+        // A revise, unlike a denial, must NOT short-circuit while approvers are still pending —
+        // a pending approver may yet deny, and resolving Revise here would soften that possible
+        // hard no into "try again" before it had the chance to land.
+        if (scoped.Pending.Count > 0)
+        {
+            return new ApprovalEvaluation
+            {
+                IsResolved = false,
+                Verdict = ApproverVerdict.Deny,
+                PendingApprovers = scoped.Pending
+            };
+        }
+
         return new ApprovalEvaluation
         {
-            IsResolved = allResponded,
-            IsApproved = allResponded,
+            IsResolved = true,
+            Verdict = tally.ReviseCount > 0 ? ApproverVerdict.Revise : ApproverVerdict.Approve,
             PendingApprovers = scoped.Pending
         };
     }

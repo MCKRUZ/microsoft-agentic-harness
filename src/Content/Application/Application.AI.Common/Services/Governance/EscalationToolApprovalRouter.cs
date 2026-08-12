@@ -262,7 +262,10 @@ public sealed class EscalationToolApprovalRouter : IToolApprovalRouter
             // An outcome can resolve approved with no recorded decisions (an administrative
             // force-approve, or a rehydrated outcome). Naming the resolution beats naming nobody:
             // an approved consequential action must never be recorded as attributable to "".
-            var named = outcome.Decisions.Where(d => d.Approved).Select(d => d.ApproverName).ToList();
+            var named = outcome.Decisions
+                .Where(d => d.Verdict == ApproverVerdict.Approve)
+                .Select(d => d.ApproverName)
+                .ToList();
             var approvers = named.Count > 0
                 ? string.Join(", ", named)
                 : $"no named approver ({outcome.ResolutionType})";
@@ -276,10 +279,16 @@ public sealed class EscalationToolApprovalRouter : IToolApprovalRouter
             "Tool {ToolName} was not approved (escalation {EscalationId}, resolution {Resolution}) — call blocked.",
             toolName, escalationId, outcome.ResolutionType);
 
+        // A Revised resolution reaches this branch exactly like Denied: the outcome's approval
+        // bit is binary by design (#321's asymmetry — see EscalationOutcome), so a revise request
+        // blocks the call today with no new model-facing behavior. Only the operator-facing
+        // wording differs; the carve-out that relays instructions to the model is a separate,
+        // explicitly config-gated change, not implied by this resolution type existing.
         var why = outcome.ResolutionType switch
         {
             EscalationResolutionType.TimedOut => "no approver responded within the timeout",
             EscalationResolutionType.Escalated => "escalated to a higher authority tier without approval",
+            EscalationResolutionType.Revised => "an approver asked for the call to be revised",
             _ => "an approver refused the call"
         };
 

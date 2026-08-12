@@ -176,7 +176,7 @@ public sealed class ToolApprovalCompositionTests : IDisposable
                     new ApproverDecision
                     {
                         ApproverName = Approver,
-                        Approved = approve,
+                        Verdict = approve ? ApproverVerdict.Approve : ApproverVerdict.Deny,
                         RespondedAt = DateTimeOffset.UtcNow
                     }
                 ],

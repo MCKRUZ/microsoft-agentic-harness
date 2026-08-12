@@ -20,4 +20,13 @@ public static class EscalationValidationRules
     /// prevents a single decision from ballooning the audit store.
     /// </summary>
     public const int MaxReasonLength = 2000;
+
+    /// <summary>
+    /// Maximum accepted revise-instructions length. Deliberately smaller than
+    /// <see cref="MaxReasonLength"/>: unlike a reason, this text is designed to reach the model
+    /// (#321), so it is bounded more tightly than an operator-only field needs to be, and is
+    /// still re-checked against <c>EscalationRequestInvariants.MaxRevisionInstructionsLength</c>
+    /// on the durable request that later carries it.
+    /// </summary>
+    public const int MaxInstructionsLength = 1024;
 }

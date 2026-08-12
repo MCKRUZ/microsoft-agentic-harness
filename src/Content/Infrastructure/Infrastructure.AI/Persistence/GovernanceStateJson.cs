@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Infrastructure.AI.Escalation;
 
 namespace Infrastructure.AI.Persistence;
 
@@ -23,7 +24,8 @@ public static class GovernanceStateJson
         Converters =
         {
             new JsonStringEnumConverter(),
-            new ChangeTargetJsonConverter()
+            new ChangeTargetJsonConverter(),
+            new ApproverDecisionJsonConverter()
         }
     };
 }

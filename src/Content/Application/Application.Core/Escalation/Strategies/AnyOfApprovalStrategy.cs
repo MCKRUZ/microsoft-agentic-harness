@@ -4,7 +4,7 @@ using Domain.AI.Escalation;
 namespace Application.Core.Escalation.Strategies;
 
 /// <summary>
-/// First response wins -- any single approval or denial resolves the escalation immediately.
+/// First response wins -- any single decision resolves the escalation immediately.
 /// </summary>
 public sealed class AnyOfApprovalStrategy : IApprovalStrategy
 {
@@ -24,16 +24,23 @@ public sealed class AnyOfApprovalStrategy : IApprovalStrategy
             return new ApprovalEvaluation
             {
                 IsResolved = false,
-                IsApproved = false,
+                Verdict = ApproverVerdict.Deny,
                 PendingApprovers = scoped.Pending
             };
         }
 
-        var firstDecision = scoped.Decisions.MinBy(d => d.RespondedAt)!;
+        // Precedence over the whole scoped set, not the earliest responder by timestamp: two
+        // decisions can land in the collected set before the first evaluation runs, and picking
+        // by RespondedAt made a governance outcome depend on a timestamp tie or clock skew. Deny
+        // beats revise beats approve, deterministically, regardless of arrival order.
+        var tally = new VerdictTally(scoped.Decisions);
+        // Safe: scoped.Decisions.Count > 0 here (checked above), and VerdictTally counts every
+        // decision — including one with an undefined verdict, as a denial — so Resolve() can
+        // only return null when nothing was tallied, which cannot happen on this branch.
         return new ApprovalEvaluation
         {
             IsResolved = true,
-            IsApproved = firstDecision.Approved,
+            Verdict = tally.Resolve()!.Value,
             PendingApprovers = scoped.Pending
         };
     }

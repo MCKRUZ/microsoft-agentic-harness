@@ -165,11 +165,15 @@ public sealed partial class DefaultEscalationService : IEscalationService, IEsca
 		// recorded would be dishonest, and recording it would let a replay flip a final vote.
 		if (TryGetExistingDecision(state, decision.ApproverName) is { } existing)
 		{
-			if (existing.Approved != decision.Approved)
+			// One immutable vote per approver per escalation: an approver who revised cannot
+			// later approve within the same escalation — the next attempt is a new escalation
+			// where they vote fresh. Comparing the whole verdict, not just approved-vs-not,
+			// means a switch between any two of Deny/Approve/Revise is a conflict.
+			if (existing.Verdict != decision.Verdict)
 			{
 				_logger.LogWarning(
 					"Conflicting decision from {ApproverName} for escalation {EscalationId} rejected: {New} contradicts recorded {Recorded}",
-					decision.ApproverName, escalationId, decision.Approved, existing.Approved);
+					decision.ApproverName, escalationId, decision.Verdict, existing.Verdict);
 				return EscalationDecisionResult.ConflictingDecision();
 			}
 
@@ -285,7 +289,7 @@ public sealed partial class DefaultEscalationService : IEscalationService, IEsca
 			// contradicting verdict is a conflict here exactly as at the chokepoint above.
 			if (TryGetExistingDecision(state, decision.ApproverName) is { } raced)
 			{
-				return raced.Approved != decision.Approved
+				return raced.Verdict != decision.Verdict
 					? EscalationDecisionResult.ConflictingDecision()
 					: EscalationDecisionResult.DecisionRecorded();
 			}
@@ -386,26 +390,62 @@ public sealed partial class DefaultEscalationService : IEscalationService, IEsca
 		var evaluation = strategy.EvaluateDecision(state.Request, state.Decisions.AsReadOnly());
 
 		_logger.LogDebug(
-			"Strategy evaluation for {EscalationId}: IsResolved={IsResolved}, IsApproved={IsApproved}",
-			state.Request.EscalationId, evaluation.IsResolved, evaluation.IsApproved);
+			"Strategy evaluation for {EscalationId}: IsResolved={IsResolved}, Verdict={Verdict}",
+			state.Request.EscalationId, evaluation.IsResolved, evaluation.Verdict);
 
 		if (!evaluation.IsResolved)
 			return null;
 
+		var resolutionType = ResolveResolutionType(state.Request, evaluation.Verdict);
+
 		var outcome = new EscalationOutcome
 		{
 			EscalationId = state.Request.EscalationId,
-			IsApproved = evaluation.IsApproved,
+			// The outcome's approval bit stays binary by design: Revised is not an approval, so
+			// every one of the five consumers that only read IsApproved treats it identically to
+			// Denied with zero code change. A consumer that wants to act on a revision must
+			// explicitly check ResolutionType.
+			IsApproved = resolutionType == EscalationResolutionType.Approved,
 			Decisions = state.Decisions.ToList().AsReadOnly(),
-			ResolutionType = evaluation.IsApproved
-				? EscalationResolutionType.Approved
-				: EscalationResolutionType.Denied,
+			ResolutionType = resolutionType,
 			ResolvedAt = DateTimeOffset.UtcNow,
 			Approvers = state.Request.Approvers
 		};
 
 		MarkResolving(state, outcome);
 		return outcome;
+	}
+
+	/// <summary>
+	/// Maps a strategy's resolved verdict to the durable resolution type, enforcing the revision
+	/// round cap.
+	/// </summary>
+	/// <remarks>
+	/// A <see cref="ApproverVerdict.Revise"/> verdict on a request already at its configured
+	/// maximum round degrades to <see cref="EscalationResolutionType.Denied"/> rather than
+	/// opening another round. This is the last point before the outcome is sealed, so fail-closed
+	/// belongs here — the approval strategies themselves stay cap-unaware and purely arithmetic,
+	/// because the cap is policy, not vote math.
+	/// </remarks>
+	private EscalationResolutionType ResolveResolutionType(EscalationRequest request, ApproverVerdict verdict)
+	{
+		if (verdict == ApproverVerdict.Approve)
+			return EscalationResolutionType.Approved;
+
+		if (verdict == ApproverVerdict.Revise)
+		{
+			var maxRounds = _config.CurrentValue.Revision.MaxRounds;
+			if (request.RevisionRound < maxRounds)
+				return EscalationResolutionType.Revised;
+
+			_logger.LogWarning(
+				"Escalation {EscalationId} was asked to revise at round {Round} of {MaxRounds} " +
+				"(the maximum permitted) — resolving as denied instead of opening another round.",
+				request.EscalationId, request.RevisionRound, maxRounds);
+			return EscalationResolutionType.Denied;
+		}
+
+		return EscalationResolutionType.Denied;
 	}
 
 	/// <summary>
@@ -684,6 +724,7 @@ public sealed partial class DefaultEscalationService : IEscalationService, IEsca
 		EscalationResolutionType.Denied => EscalationConventions.ResolutionValues.Denied,
 		EscalationResolutionType.TimedOut => EscalationConventions.ResolutionValues.TimedOut,
 		EscalationResolutionType.Escalated => EscalationConventions.ResolutionValues.Escalated,
+		EscalationResolutionType.Revised => EscalationConventions.ResolutionValues.Revised,
 		_ => resolution.ToString().ToLowerInvariant()
 	};
 

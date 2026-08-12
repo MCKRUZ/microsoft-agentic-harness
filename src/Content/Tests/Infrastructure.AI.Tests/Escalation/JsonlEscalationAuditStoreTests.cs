@@ -1,10 +1,13 @@
+using System.Text.Json;
 using Domain.AI.Escalation;
 using Domain.Common.Config;
 using Domain.Common.Config.AI;
 using Domain.Common.Config.AI.Governance;
 using FluentAssertions;
+using Infrastructure.AI.Audit;
 using Infrastructure.AI.Escalation;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Moq;
 using Xunit;
@@ -62,7 +65,7 @@ public sealed class JsonlEscalationAuditStoreTests : IDisposable
     private static ApproverDecision BuildDecision(string approver = "admin") => new()
     {
         ApproverName = approver,
-        Approved = true,
+        Verdict = ApproverVerdict.Approve,
         Reason = "Looks safe",
         RespondedAt = DateTimeOffset.UtcNow
     };
@@ -186,5 +189,106 @@ public sealed class JsonlEscalationAuditStoreTests : IDisposable
 
         history[2].RecordType.Should().Be(EscalationAuditRecordType.Outcome);
         history[2].Payload.Should().Contain("Approved");
+    }
+
+    // ===== #321 durable-format migration: a record written before ApproverVerdict existed =====
+
+    private static readonly JsonSerializerOptions LegacyWriteOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
+        Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() }
+    };
+
+    private static readonly JsonSerializerOptions ModernReadOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
+        PropertyNameCaseInsensitive = true,
+        Converters =
+        {
+            new System.Text.Json.Serialization.JsonStringEnumConverter(),
+            new ApproverDecisionJsonConverter()
+        }
+    };
+
+    [Fact]
+    public async Task GetHistoryAsync_LegacyDecisionRecordWithBooleanApproved_ReadsApproveVerdict_ChainStillVerifies()
+    {
+        // Hand-writes a decision record in the pre-#321 shape (a boolean "approved", no
+        // "verdict") directly onto the chain using the SAME HashChainedJsonlWriter the store
+        // uses internally, so this exercises the real tamper-evident format — only the payload
+        // shape is old, not the chain framing.
+        var escalationId = Guid.NewGuid();
+        var respondedAt = DateTimeOffset.UtcNow;
+
+        var legacyDecisionJson = JsonSerializer.Serialize(new
+        {
+            approver_name = "admin",
+            approved = true,
+            reason = "Looks safe",
+            responded_at = respondedAt
+        }, LegacyWriteOptions);
+
+        var legacyAuditRecordJson = JsonSerializer.Serialize(new
+        {
+            record_type = "Decision",
+            escalation_id = escalationId,
+            timestamp = DateTimeOffset.UtcNow,
+            payload = legacyDecisionJson
+        }, LegacyWriteOptions);
+
+        var filePath = Path.Combine(_tempDir, "escalations.jsonl");
+        using (var rawWriter = new HashChainedJsonlWriter(filePath, NullLogger.Instance))
+        {
+            var appended = await rawWriter.AppendAsync(legacyAuditRecordJson, CancellationToken.None);
+            appended.IsSuccess.Should().BeTrue();
+        }
+
+        var history = await _store.GetHistoryAsync(escalationId, CancellationToken.None);
+        history.Should().ContainSingle();
+        var decision = JsonSerializer.Deserialize<ApproverDecision>(history[0].Payload, ModernReadOptions);
+        decision!.Verdict.Should().Be(ApproverVerdict.Approve);
+
+        // Appending a fresh, modern-shaped record onto the same chain and verifying end-to-end
+        // proves the payload-shape change did not disturb the chain framing at the boundary
+        // between the hand-written legacy line and normal store writes.
+        await _store.RecordDecisionAsync(Guid.NewGuid(), BuildDecision(), CancellationToken.None);
+        var verification = await _store.VerifyChainAsync(CancellationToken.None);
+        verification.IsValid.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task GetHistoryAsync_LegacyDecisionRecordWithApprovedFalse_ReadsDenyVerdict()
+    {
+        // Mutation control: the legacy-shape reader must not blanket-default to Approve — a
+        // legacy "approved": false record must read as Deny.
+        var escalationId = Guid.NewGuid();
+        var respondedAt = DateTimeOffset.UtcNow;
+
+        var legacyDecisionJson = JsonSerializer.Serialize(new
+        {
+            approver_name = "admin",
+            approved = false,
+            reason = "Not safe",
+            responded_at = respondedAt
+        }, LegacyWriteOptions);
+
+        var legacyAuditRecordJson = JsonSerializer.Serialize(new
+        {
+            record_type = "Decision",
+            escalation_id = escalationId,
+            timestamp = DateTimeOffset.UtcNow,
+            payload = legacyDecisionJson
+        }, LegacyWriteOptions);
+
+        var filePath = Path.Combine(_tempDir, "escalations.jsonl");
+        using (var rawWriter = new HashChainedJsonlWriter(filePath, NullLogger.Instance))
+        {
+            await rawWriter.AppendAsync(legacyAuditRecordJson, CancellationToken.None);
+        }
+
+        var history = await _store.GetHistoryAsync(escalationId, CancellationToken.None);
+        var decision = JsonSerializer.Deserialize<ApproverDecision>(history[0].Payload, ModernReadOptions);
+
+        decision!.Verdict.Should().Be(ApproverVerdict.Deny);
     }
 }

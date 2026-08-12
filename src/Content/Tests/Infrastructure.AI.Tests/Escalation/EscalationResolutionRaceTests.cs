@@ -42,9 +42,9 @@ public sealed class EscalationResolutionRaceTests : IDisposable
 			.Setup(s => s.EvaluateDecision(
 				It.IsAny<EscalationRequest>(), It.IsAny<IReadOnlyList<ApproverDecision>>()))
 			.Returns((EscalationRequest _, IReadOnlyList<ApproverDecision> decisions) =>
-				decisions.Any(d => d.Approved)
-					? new ApprovalEvaluation { IsResolved = true, IsApproved = true, PendingApprovers = [] }
-					: new ApprovalEvaluation { IsResolved = false, IsApproved = false, PendingApprovers = ["pending"] });
+				decisions.Any(d => d.Verdict == ApproverVerdict.Approve)
+					? new ApprovalEvaluation { IsResolved = true, Verdict = ApproverVerdict.Approve, PendingApprovers = [] }
+					: new ApprovalEvaluation { IsResolved = false, Verdict = ApproverVerdict.Deny, PendingApprovers = ["pending"] });
 
 		// AllOf: a single approval on a two-approver roster does NOT resolve. Required by the
 		// cancel-race test — a resolving decision would flip IsResolved inside the state lock
@@ -57,8 +57,10 @@ public sealed class EscalationResolutionRaceTests : IDisposable
 			.Returns((EscalationRequest request, IReadOnlyList<ApproverDecision> decisions) =>
 				new ApprovalEvaluation
 				{
-					IsResolved = decisions.Count >= request.Approvers.Count && decisions.All(d => d.Approved),
-					IsApproved = decisions.Count >= request.Approvers.Count && decisions.All(d => d.Approved),
+					IsResolved = decisions.Count >= request.Approvers.Count && decisions.All(d => d.Verdict == ApproverVerdict.Approve),
+					Verdict = decisions.Count >= request.Approvers.Count && decisions.All(d => d.Verdict == ApproverVerdict.Approve)
+						? ApproverVerdict.Approve
+						: ApproverVerdict.Deny,
 					PendingApprovers = []
 				});
 	}
@@ -142,7 +144,7 @@ public sealed class EscalationResolutionRaceTests : IDisposable
 	private static ApproverDecision Approval(string approverName) => new()
 	{
 		ApproverName = approverName,
-		Approved = true,
+		Verdict = ApproverVerdict.Approve,
 		RespondedAt = DateTimeOffset.UtcNow
 	};
 

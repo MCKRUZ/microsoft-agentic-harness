@@ -97,9 +97,14 @@ public sealed class MagenticHitlBridge : IMagenticPlanReviewBridge
             return new MagenticPlanReviewOutcome { Approved = true };
         }
 
+        // Instructions first, Reason as fallback: a Revise decision carries its steering text on
+        // Instructions (required by SubmitEscalationDecisionCommandValidator whenever Verdict is
+        // Revise) and may leave Reason blank, while a Deny decision has only ever had Reason.
+        // Reading Reason alone would silently drop a reviewer's actual words on exactly the verdict
+        // this relay exists to carry, falling back to the generic rejection string instead.
         var rawFeedback = outcome.Decisions
-            .Where(d => !d.Approved)
-            .Select(d => d.Reason)
+            .Where(d => d.Verdict != ApproverVerdict.Approve)
+            .Select(d => d.Instructions ?? d.Reason)
             .FirstOrDefault(r => !string.IsNullOrWhiteSpace(r))
             ?? $"Plan rejected ({outcome.ResolutionType}).";
 
