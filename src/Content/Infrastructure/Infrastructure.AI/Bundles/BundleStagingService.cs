@@ -489,10 +489,15 @@ public sealed class BundleStagingService : IBundleStagingService
         // sandbox instead of rejecting it outright: #371.
         if (!definition.IsRemoteServer)
         {
+            // "resolved to", not "declares": McpServerDefinitionBuilder.ParseType defaults an ABSENT or
+            // UNRECOGNIZED 'type' value to Stdio too (only "http"/"sse" are matched), so a bundle author
+            // who misspells a real remote transport lands here as well — this message must stay accurate
+            // for both cases, not assert an explicit stdio declaration that may not exist.
             _logger.LogWarning(
-                "Bundle {BundleId}: MCP server '{ServerName}' declares a stdio (local command) " +
-                "transport, which is not permitted for bundle-owned servers — rejected, not registered. " +
-                "Only http/sse (remote) MCP servers are permitted in a bundle's own manifest.",
+                "Bundle {BundleId}: MCP server '{ServerName}' resolved to a stdio (local-command) " +
+                "transport — either explicitly declared, or its 'type' was missing/unrecognized (only " +
+                "'http' and 'sse' are supported) and defaulted to stdio — which is not permitted for " +
+                "bundle-owned servers; rejected, not registered.",
                 bundleId, serverProp.Name);
             return false;
         }
